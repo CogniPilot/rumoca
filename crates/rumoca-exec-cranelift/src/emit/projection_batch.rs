@@ -146,6 +146,7 @@ fn define_projection_application(
 
 pub(super) struct ProjectionBatch {
     function: JacobianRowFn,
+    scratch: scratch::ScratchOwner,
     _module: Rc<ProjectionModule>,
 }
 
@@ -172,6 +173,7 @@ impl ProjectionBatch {
                 .into_iter()
                 .map(|function| Self {
                     function,
+                    scratch: Default::default(),
                     _module: module.clone(),
                 })
                 .collect()),
@@ -193,7 +195,7 @@ impl ProjectionBatch {
         // SAFETY: the prepared application checks all input/output extents and
         // exclusively leases both scratch buffers. The seed pointer refers to
         // writable storage; this entry sets and clears its issued color seeds.
-        status::check(scratch::invoke(|arena| unsafe {
+        status::check(self.scratch.invoke(|arena| unsafe {
             (self.function)(
                 y.as_ptr(),
                 p.as_ptr(),

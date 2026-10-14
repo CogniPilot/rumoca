@@ -86,6 +86,7 @@ struct CompiledResidualRow {
 
 struct CompiledResidualJit {
     jit: ResidualJit,
+    scratch: scratch::ScratchOwner,
     register_count: usize,
     output_start: usize,
     output_count: usize,
@@ -109,6 +110,7 @@ enum LoweredConditionalOutput {
 struct CompiledJacobianRow {
     plan: RowPlan,
     jit: JacobianRowFn,
+    scratch: scratch::ScratchOwner,
     validate_with_interpreter: bool,
     interpreter_supported: bool,
 }
@@ -224,6 +226,7 @@ pub(crate) struct CompiledResidualRows {
 pub(crate) struct CompiledAssignmentSchedule {
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     jit: AssignmentScheduleFn,
+    scratch: scratch::ScratchOwner,
     input_requirements: InputRequirements,
     required_y_len: usize,
     rows: usize,
@@ -253,7 +256,8 @@ impl CompiledAssignmentSchedule {
         let status = with_active_external_tables(external_tables, || {
             // SAFETY: compilation validates every input load and target offset;
             // the checks above establish both against these exact slices.
-            scratch::invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
+            self.scratch
+                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
         });
         status::check(status)
     }
@@ -324,8 +328,7 @@ impl CompiledResidualRows {
                 &mut out[compiled.output_start..compiled.output_start + compiled.output_count];
             let status = unsafe {
                 call_residual_jit(
-                    &compiled.jit,
-                    compiled.register_count,
+                    compiled,
                     &mut regs_scratch,
                     inputs.y,
                     inputs.p,
@@ -500,14 +503,14 @@ impl CompiledJacobianRows {
                 external_tables: ctx.external_tables,
             };
             execute_row(&row.plan, regs_scratch, inputs, &mut expected)?;
-            status::check(unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
+            status::check(unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
             self.record_jit_call();
             for (actual, expected) in out.iter().zip(&expected) {
                 validate_jit_matches_interpreter("jacobian", *actual, *expected)?;
             }
             return Ok(());
         }
-        status::check(unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
+        status::check(unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
         self.record_jit_call();
         Ok(())
     }
@@ -726,6 +729,7 @@ fn finalize_residual_jits(
         };
         jits.push(CompiledResidualJit {
             jit,
+            scratch: Default::default(),
             register_count,
             output_start,
             output_count,
@@ -842,6 +846,7 @@ fn compile_assignment_schedule_slices(
     Ok(CompiledAssignmentSchedule {
         _pure_calls: pure_calls,
         jit,
+        scratch: Default::default(),
         input_requirements,
         required_y_len,
         rows: rows.len(),
@@ -887,6 +892,7 @@ fn compile_jacobian_rows_attached(
         compiled_rows.push(CompiledJacobianRow {
             plan,
             jit,
+            scratch: Default::default(),
             validate_with_interpreter: row_uses_table_ops(&rows[index]),
             interpreter_supported: !row_uses_pure_calls(&rows[index]),
         });
@@ -984,29 +990,28 @@ fn finalized_assignment_schedule_fn(
 }
 
 unsafe fn call_residual_jit(
-    jit: &ResidualJit,
-    register_count: usize,
+    compiled: &CompiledResidualJit,
     regs: &mut Vec<f64>,
     y: &[f64],
     p: &[f64],
     t: f64,
     out: &mut [f64],
 ) -> u8 {
-    match jit {
+    match &compiled.jit {
         ResidualJit::Whole(jit) => {
             // SAFETY: prevalidation proves all input/output accesses.
-            scratch::invoke(|arena| unsafe {
-                jit(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr(), arena)
-            })
+            compiled
+                .scratch
+                .invoke(|arena| unsafe { jit(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr(), arena) })
         }
         ResidualJit::Chunked(chunks) => {
             // Chunk functions exchange compiler registers through this tape.
             // Each register is written before its first read by validated SSA.
-            regs.resize(register_count, 0.0);
+            regs.resize(compiled.register_count, 0.0);
             for jit in chunks {
                 // SAFETY: compilation validates row register flow and embeds
                 // output offsets against the already validated output slice.
-                let status = scratch::invoke(|arena| unsafe {
+                let status = compiled.scratch.invoke(|arena| unsafe {
                     jit(
                         y.as_ptr(),
                         p.as_ptr(),
@@ -1026,7 +1031,7 @@ unsafe fn call_residual_jit(
 }
 
 unsafe fn call_jacobian_jit(
-    jit: JacobianRowFn,
+    row: &CompiledJacobianRow,
     y: &[f64],
     p: &[f64],
     t: f64,
@@ -1036,8 +1041,8 @@ unsafe fn call_jacobian_jit(
     // SAFETY: the caller guarantees the function pointer came from
     // finalized_jacobian_fn, prevalidation ensures any loaded y/p/seed indices
     // are in bounds, and `out` has room for this program's outputs.
-    scratch::invoke(|arena| unsafe {
-        jit(
+    row.scratch.invoke(|arena| unsafe {
+        (row.jit)(
             y.as_ptr(),
             p.as_ptr(),
             t,
