@@ -1,6 +1,56 @@
 //! MLS §8.3.5 and §10.5: element events retain their own triggers and holds.
 use super::{SimOptions, compile, simulate_dae_with_diagnostics};
 
+#[test]
+fn whole_array_transactions_and_selected_real_events_retain_distinct_owners() {
+    let source = r#"
+function Pair
+  input Real value;
+  output Real a[2];
+  output Real b[2];
+algorithm
+  a := {value, value+1};
+  b := {value+10, value+11};
+end Pair;
+model WholeAndSelected
+  discrete Real a[2](each start=0, each fixed=true);
+  discrete Real b[2](each start=0, each fixed=true);
+  discrete Real c[3](each start=0, each fixed=true);
+equation
+  when time>0.15 then c[2]=7; end when;
+algorithm
+  when sample(0, 0.1) then
+    (a,b) := Pair(pre(a[1])+1);
+  end when;
+end WholeAndSelected;
+"#;
+    let compiled = compile(source, "WholeAndSelected");
+    let result = simulate_dae_with_diagnostics(
+        &compiled,
+        &SimOptions {
+            t_end: 0.35,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap();
+    for (name, expected) in [
+        ("a[1]", 4.0),
+        ("a[2]", 5.0),
+        ("b[1]", 14.0),
+        ("b[2]", 15.0),
+        ("c[1]", 0.0),
+        ("c[2]", 7.0),
+        ("c[3]", 0.0),
+    ] {
+        let channel = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap();
+        assert_eq!(result.data[channel].last(), Some(&expected), "{name}");
+    }
+}
+
 const SOURCE: &str = r#"
 model ElementEvents
   type Mode = enumeration(Off, On);

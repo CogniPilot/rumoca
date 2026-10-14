@@ -437,13 +437,13 @@ enum EventIterationOwnerClaim {
     },
 }
 
-fn selected_event_variables(view: dae::DaeView<'_>) -> BTreeSet<u32> {
-    let mut selected = view
-        .variables()
-        .filter_map(|(id, variable)| {
-            (variable.role() == dae::VariableRole::DiscreteReal && variable.scalar_count() > 1)
-                .then_some(id.index())
-        })
+fn selected_event_variables<'dae>(
+    view: dae::DaeView<'dae>,
+    plan: &rumoca_phase_structural::CausalDiscretePlan<'dae>,
+) -> BTreeSet<u32> {
+    let mut selected = (0..view.discrete_real_equation_count())
+        .filter_map(|equation| plan.discrete_real_definition(equation))
+        .filter_map(|definition| definition.element().map(|_| definition.target().index()))
         .collect::<BTreeSet<_>>();
     selected.extend(
         view.discrete_value_targets()
@@ -469,7 +469,7 @@ impl<'dae> DiscreteRows<'dae> {
                 )?,
             ),
             event_iteration_owners: vec![None; view.variable_count()],
-            selected_event_variables: selected_event_variables(view),
+            selected_event_variables: selected_event_variables(view, &plan),
             ..Self::default()
         })
     }
