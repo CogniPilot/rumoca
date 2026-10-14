@@ -1,8 +1,7 @@
-use super::*;
-
 #[cfg(test)]
-#[path = "tests/refresh_dispatch.rs"]
 mod dispatch_tests;
+
+use super::*;
 
 pub(super) fn static_refresh_parameter_indices<'a>(
     implicit: ProgramAnalysis<'_>,
