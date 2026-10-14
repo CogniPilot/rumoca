@@ -1,4 +1,5 @@
 use super::*;
+use selected_programs::{CompleteExpression, CompleteJacobian};
 
 /// Required source expressions of a compiled scalar runtime. A missing kernel
 /// has no representation in this inventory.
@@ -10,20 +11,20 @@ pub(super) struct CompiledExpressions {
     pub(super) event_transactions: Box<[Rc<dyn CompiledSolveEventTransaction>]>,
     pub(super) lifecycle: CompiledLifecycle,
     pub(super) messages: compiled_messages::CompiledMessagePrograms,
-    pub(super) implicit_rhs: Rc<dyn CompiledSolveExpression>,
-    pub(super) implicit_projection_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,
-    pub(super) implicit_full_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,
-    pub(super) initial_residual: Rc<dyn CompiledSolveExpression>,
-    pub(super) initial_residual_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,
-    pub(super) derivative_rhs: Rc<dyn CompiledSolveExpression>,
-    pub(super) derivative_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,
+    pub(super) implicit_rhs: Rc<CompleteExpression>,
+    pub(super) implicit_projection_jacobian_v: Rc<CompleteJacobian>,
+    pub(super) implicit_full_jacobian_v: Rc<CompleteJacobian>,
+    pub(super) initial_residual: Rc<CompleteExpression>,
+    pub(super) initial_residual_jacobian_v: Rc<CompleteJacobian>,
+    pub(super) derivative_rhs: Rc<CompleteExpression>,
+    pub(super) derivative_jacobian_v: Rc<CompleteJacobian>,
     pub(super) root_conditions: Rc<dyn CompiledSolveExpression>,
 }
 
 #[derive(Clone)]
 pub(super) enum InitialUpdateJacobian {
     Unavailable,
-    Compiled(Rc<dyn CompiledSolveJacobianExpression>),
+    Compiled(Rc<CompleteJacobian>),
 }
 
 impl InitialUpdateJacobian {
@@ -39,7 +40,7 @@ impl InitialUpdateJacobian {
             source.program_spans(),
             backend.compile_jacobian_expression(source),
         )?;
-        selected_programs::jacobian(backend, "initial_update_jacobian", source, whole)
+        selected_programs::jacobian_from_whole(backend, "initial_update_jacobian", source, whole)
             .map(Self::Compiled)
     }
 }
@@ -77,15 +78,15 @@ impl ScalarExecutionInventory {
     }
     pub(super) fn compiled_initial_update_jacobian(
         &self,
-    ) -> Option<&Rc<dyn CompiledSolveJacobianExpression>> {
+    ) -> Option<&dyn CompiledSolveJacobianExpression> {
         match &self.expressions {
             PreparedExpressions::Compiled(code) => match &code.initial_update_jacobian {
                 InitialUpdateJacobian::Unavailable => None,
-                InitialUpdateJacobian::Compiled(code) => Some(code),
+                InitialUpdateJacobian::Compiled(code) => Some(code.as_ref()),
             },
             PreparedExpressions::Reference => None,
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.initial_update_jacobian.as_ref(),
+            PreparedExpressions::Fixture(code) => code.initial_update_jacobian.as_deref(),
         }
     }
     pub(super) fn compiled_event_transaction(
@@ -105,76 +106,78 @@ impl ScalarExecutionInventory {
             PreparedExpressions::Fixture(code) => Ok(code.event_transactions.get(index)),
         }
     }
-    pub(super) fn compiled_implicit_rhs(&self) -> Option<&Rc<dyn CompiledSolveExpression>> {
+    pub(super) fn compiled_implicit_rhs(&self) -> Option<&dyn CompiledSolveExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.implicit_rhs),
+            PreparedExpressions::Compiled(code) => Some(code.implicit_rhs.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.implicit_rhs.as_ref(),
+            PreparedExpressions::Fixture(code) => code.implicit_rhs.as_deref(),
         }
     }
     pub(super) fn compiled_implicit_projection_jacobian_v(
         &self,
-    ) -> Option<&Rc<dyn CompiledSolveJacobianExpression>> {
+    ) -> Option<&dyn CompiledSolveJacobianExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.implicit_projection_jacobian_v),
+            PreparedExpressions::Compiled(code) => {
+                Some(code.implicit_projection_jacobian_v.as_ref())
+            }
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.implicit_projection_jacobian_v.as_ref(),
+            PreparedExpressions::Fixture(code) => code.implicit_projection_jacobian_v.as_deref(),
         }
     }
     pub(super) fn compiled_implicit_full_jacobian_v(
         &self,
-    ) -> Option<&Rc<dyn CompiledSolveJacobianExpression>> {
+    ) -> Option<&dyn CompiledSolveJacobianExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.implicit_full_jacobian_v),
+            PreparedExpressions::Compiled(code) => Some(code.implicit_full_jacobian_v.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.implicit_full_jacobian_v.as_ref(),
+            PreparedExpressions::Fixture(code) => code.implicit_full_jacobian_v.as_deref(),
         }
     }
-    pub(super) fn compiled_initial_residual(&self) -> Option<&Rc<dyn CompiledSolveExpression>> {
+    pub(super) fn compiled_initial_residual(&self) -> Option<&dyn CompiledSolveExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.initial_residual),
+            PreparedExpressions::Compiled(code) => Some(code.initial_residual.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.initial_residual.as_ref(),
+            PreparedExpressions::Fixture(code) => code.initial_residual.as_deref(),
         }
     }
     pub(super) fn compiled_initial_residual_jacobian_v(
         &self,
-    ) -> Option<&Rc<dyn CompiledSolveJacobianExpression>> {
+    ) -> Option<&dyn CompiledSolveJacobianExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.initial_residual_jacobian_v),
+            PreparedExpressions::Compiled(code) => Some(code.initial_residual_jacobian_v.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.initial_residual_jacobian_v.as_ref(),
+            PreparedExpressions::Fixture(code) => code.initial_residual_jacobian_v.as_deref(),
         }
     }
-    pub(super) fn compiled_derivative_rhs(&self) -> Option<&Rc<dyn CompiledSolveExpression>> {
+    pub(super) fn compiled_derivative_rhs(&self) -> Option<&dyn CompiledSolveExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.derivative_rhs),
+            PreparedExpressions::Compiled(code) => Some(code.derivative_rhs.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.derivative_rhs.as_ref(),
+            PreparedExpressions::Fixture(code) => code.derivative_rhs.as_deref(),
         }
     }
     pub(super) fn compiled_derivative_jacobian_v(
         &self,
-    ) -> Option<&Rc<dyn CompiledSolveJacobianExpression>> {
+    ) -> Option<&dyn CompiledSolveJacobianExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.derivative_jacobian_v),
+            PreparedExpressions::Compiled(code) => Some(code.derivative_jacobian_v.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.derivative_jacobian_v.as_ref(),
+            PreparedExpressions::Fixture(code) => code.derivative_jacobian_v.as_deref(),
         }
     }
-    pub(super) fn compiled_root_conditions(&self) -> Option<&Rc<dyn CompiledSolveExpression>> {
+    pub(super) fn compiled_root_conditions(&self) -> Option<&dyn CompiledSolveExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(&code.root_conditions),
+            PreparedExpressions::Compiled(code) => Some(code.root_conditions.as_ref()),
             #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.root_conditions.as_ref(),
+            PreparedExpressions::Fixture(code) => code.root_conditions.as_deref(),
         }
     }
 }
@@ -203,17 +206,17 @@ impl ScalarExecutionInventory {
                 PreparedExpressions::Compiled(code) => FixtureExpressions {
                     initial_update_jacobian: match &code.initial_update_jacobian {
                         InitialUpdateJacobian::Unavailable => None,
-                        InitialUpdateJacobian::Compiled(code) => Some(Rc::clone(code)),
+                        InitialUpdateJacobian::Compiled(code) => Some(code.clone()),
                     },
-                    implicit_rhs: Some(Rc::clone(&code.implicit_rhs)),
-                    implicit_projection_jacobian_v: Some(Rc::clone(
-                        &code.implicit_projection_jacobian_v,
-                    )),
-                    implicit_full_jacobian_v: Some(Rc::clone(&code.implicit_full_jacobian_v)),
-                    initial_residual: Some(Rc::clone(&code.initial_residual)),
-                    initial_residual_jacobian_v: Some(Rc::clone(&code.initial_residual_jacobian_v)),
-                    derivative_rhs: Some(Rc::clone(&code.derivative_rhs)),
-                    derivative_jacobian_v: Some(Rc::clone(&code.derivative_jacobian_v)),
+                    implicit_rhs: Some(code.implicit_rhs.clone()),
+                    implicit_projection_jacobian_v: Some(
+                        code.implicit_projection_jacobian_v.clone(),
+                    ),
+                    implicit_full_jacobian_v: Some(code.implicit_full_jacobian_v.clone()),
+                    initial_residual: Some(code.initial_residual.clone()),
+                    initial_residual_jacobian_v: Some(code.initial_residual_jacobian_v.clone()),
+                    derivative_rhs: Some(code.derivative_rhs.clone()),
+                    derivative_jacobian_v: Some(code.derivative_jacobian_v.clone()),
                     root_conditions: Some(Rc::clone(&code.root_conditions)),
                     event_transactions: code.event_transactions.to_vec(),
                 },
