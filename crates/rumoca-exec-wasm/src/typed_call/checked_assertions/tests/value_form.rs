@@ -179,7 +179,7 @@ fn numeric_program(site: solve::SolvePureCallSite) -> solve::ScalarProgramBlock 
 }
 
 #[test]
-fn private_numeric_no_capture_fold_continues_and_preserves_guard_atomicity() {
+fn private_numeric_no_capture_fold_keeps_scalar_boolean_conversion_and_input_atomicity() {
     let table = no_capture_loop_table(solve::SolveAssertionLevel::Error);
     let site = table.owners()[1].call_site();
     let source = numeric_program(site.clone());
@@ -229,6 +229,11 @@ fn private_numeric_no_capture_fold_continues_and_preserves_guard_atomicity() {
         scratch.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         before
     );
+    code.call(&[1.0], &[], 0.0, &mut scratch).unwrap();
+    assert_eq!(
+        scratch[..3].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        [-0.0f64, 3.0, 1.0].map(f64::to_bits)
+    );
 }
 
 #[test]
@@ -271,5 +276,18 @@ fn original_no_capture_loop_observation_keeps_fatal_stop_and_repeated_warnings()
             assert_eq!(observation.source_span(), span(4));
             assert!(observation.captures().is_empty());
         }
+        let CheckedAssertionWasmOutcome::Fault {
+            fault,
+            observations,
+        } = execution.call(&compiled, &[2])
+        else {
+            panic!("invalid packed Boolean bits must not execute the assertion body");
+        };
+        assert_eq!(fault.kind, crate::TypedCallFaultKind::InvalidInput);
+        assert!(observations.is_empty());
+        assert!(matches!(
+            execution.call(&compiled, &[1]),
+            CheckedAssertionWasmOutcome::Complete { observations, .. } if observations.is_empty()
+        ));
     }
 }
