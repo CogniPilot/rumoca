@@ -1,10 +1,10 @@
-//! Value rows and checked observations consume the same original assigned read.
+//! Complete native entries and checked observers retain the original read guard.
 use super::*;
 use rumoca_eval_solve::{AssertionInvocationEvaluation, TypedValue};
 use rumoca_ir_solve::{CheckedAssertionInvocation, RetainedAssertionSource};
 
 #[test]
-fn unconditional_body_read_keeps_value_and_observation_contracts_in_actual_native_wasm() {
+fn unconditional_body_read_stops_complete_entries_and_checked_observers_in_actual_native_wasm() {
     let original = "y := if enabled then sum(scratch) else -1;";
     assert_eq!(SOURCE.matches(original).count(), 1);
     let source = SOURCE.replace(original, "y := sum(scratch);");
@@ -22,7 +22,7 @@ fn unconditional_body_read_keeps_value_and_observation_contracts_in_actual_nativ
         let host = code.bind_resolved(root.clone()).unwrap().into_host();
         let artifact = execution_description(host.product());
         let mut execution = CallExecution::uninitialized(&artifact);
-        let y = vec![0.0; root.model().problem.layout.y_scalars()];
+        let y = vec![37.25; root.model().problem.layout.y_scalars()];
         let mut transport = host
             .transport_from_source(&y, &root.model().parameters)
             .unwrap();
@@ -46,36 +46,31 @@ fn unconditional_body_read_keeps_value_and_observation_contracts_in_actual_nativ
         let observed = rumoca_exec_wasm::compile_checked_assertion_wasm(checked).unwrap();
         let mut observer = IssuedObservation::new(&observed);
         for (enabled, values, expected) in [
-            (true, [1.0, 2.0], 3.0),
-            (false, [4.0, 5.0], 0.0),
-            (true, [4.0, 5.0], 9.0),
-            (false, [1.0, 2.0], 0.0),
-            (true, [1.0, 2.0], 3.0),
+            (true, [1.0, 2.0], Some(3.0)),
+            (false, [4.0, 5.0], None),
+            (true, [4.0, 5.0], Some(9.0)),
+            (false, [1.0, 2.0], None),
+            (true, [1.0, 2.0], Some(3.0)),
         ] {
             let case = Case {
                 values,
                 booleans: vec![("enabled", enabled)],
                 integers: Vec::new(),
-                expected: vec![("y", expected)],
+                expected: expected.map(|value| ("y", value)).into_iter().collect(),
                 fault_expression: None,
             };
             run.write_inputs(&mut transport, &case);
             run.assert_inputs_visible(&transport, &case);
             let lease = transport.enter().unwrap();
             let (status, actual) = execute_transport(&mut execution, &lease);
-            assert_eq!(status, 0, "numeric values defer the assigned-read report");
-            run.assert_expected_outputs(&case, &actual);
+            if enabled {
+                assert_eq!(status, 0);
+                run.assert_expected_outputs(&case, &actual);
+            } else {
+                // A complete entry has no later observer to reject this read.
+                run.assert_first_fault("y := sum(scratch);", status, &actual, &lease);
+            }
             let arguments = typed_arguments(retained.owner(), values, enabled);
-            let reference = rumoca_eval_solve::eval_pure_call(
-                retained.table(),
-                retained.owner().id(),
-                &arguments,
-            )
-            .unwrap();
-            assert_eq!(
-                reference[0].elements(),
-                &[SolveValueKind::Real64(expected.to_bits())]
-            );
             assert_observed_read(&run, &observed, &mut observer, &arguments, &case);
         }
         Ok(String::new())
