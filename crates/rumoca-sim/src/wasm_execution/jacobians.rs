@@ -47,6 +47,17 @@ impl WasmJacobian {
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for WasmJacobian {
+    fn bind_program(
+        &self,
+        source: &ScalarProgramBlock,
+        program: usize,
+    ) -> Result<Option<std::rc::Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>>, String>
+    {
+        self.code
+            .bind_directional(source, program, self.required_seed)
+            .map(Some)
+    }
+
     fn call_program_outputs(
         &self,
         program: usize,

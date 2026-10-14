@@ -21,6 +21,7 @@ mod runtime;
 pub use retained_event::CompiledRetainedEventWasm;
 mod scalars;
 mod tensor;
+mod value_assertions;
 mod views;
 
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
