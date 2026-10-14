@@ -145,38 +145,40 @@ fn separately_owned_concurrent_arenas_preserve_their_active_cells() {
     std::thread::scope(|scope| {
         for lane in 0..2_u64 {
             let barrier = &barrier;
-            scope.spawn(move || {
-                let owner = ScratchOwner::default();
-                for call in 0..20_u64 {
-                    assert_eq!(
-                        owner.invoke(|arena| {
-                            let value = (lane << 32) | call;
-                            // SAFETY: this thread owns this exclusively leased arena and cell.
-                            let cell = unsafe {
-                                assert_eq!(enter_native(arena), 0);
-                                let cell = allocate_native(arena, 0, 1);
-                                assert!(!cell.is_null());
-                                cell.write(value);
-                                cell
-                            };
-                            barrier.wait();
-                            // SAFETY: the other owner cannot acquire or mutate this cell.
-                            unsafe {
-                                assert_eq!(cell.read(), value);
-                            }
-                            barrier.wait();
-                            // SAFETY: both checks finished while this frame stayed active.
-                            unsafe {
-                                leave_native(arena);
-                            }
-                            0
-                        }),
-                        0
-                    );
-                }
-            });
+            scope.spawn(move || run_concurrent_owner(barrier, lane));
         }
     });
+}
+
+fn run_concurrent_owner(barrier: &std::sync::Barrier, lane: u64) {
+    let owner = ScratchOwner::default();
+    for call in 0..20_u64 {
+        assert_eq!(
+            owner.invoke(|arena| {
+                let value = (lane << 32) | call;
+                // SAFETY: this thread owns this exclusively leased arena and cell.
+                let cell = unsafe {
+                    assert_eq!(enter_native(arena), 0);
+                    let cell = allocate_native(arena, 0, 1);
+                    assert!(!cell.is_null());
+                    cell.write(value);
+                    cell
+                };
+                barrier.wait();
+                // SAFETY: the other owner cannot acquire or mutate this cell.
+                unsafe {
+                    assert_eq!(cell.read(), value);
+                }
+                barrier.wait();
+                // SAFETY: both checks finished while this frame stayed active.
+                unsafe {
+                    leave_native(arena);
+                }
+                0
+            }),
+            0
+        );
+    }
 }
 
 #[test]
