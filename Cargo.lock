@@ -4660,6 +4660,7 @@ dependencies = [
  "bincode",
  "indexmap 2.14.0",
  "rumoca-core",
+ "self_cell",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

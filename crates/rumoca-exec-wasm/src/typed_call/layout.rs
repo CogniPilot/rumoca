@@ -89,7 +89,7 @@ impl std::ops::Deref for Callees<'_> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CellRange {
+pub(crate) struct CellRange {
     pub base: u32,
     pub offset: u32,
     pub bytes: u32,

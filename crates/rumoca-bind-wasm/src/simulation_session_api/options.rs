@@ -55,22 +55,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interactive_options_require_native_by_default_and_keep_explicit_policies() {
+    fn interactive_options_require_compilation_by_default_and_preserve_explicit_policies() {
         let default = InteractiveOptions::parse("{}").unwrap();
         assert_eq!(
             default.execution_policy,
             rumoca_sim::SimExecutionPolicy::NativeRequired
         );
-        for (label, policy) in [
-            (
-                "native_required",
-                rumoca_sim::SimExecutionPolicy::NativeRequired,
-            ),
-            ("auto", rumoca_sim::SimExecutionPolicy::Auto),
+        for policy in [
+            rumoca_sim::SimExecutionPolicy::NativeRequired,
+            rumoca_sim::SimExecutionPolicy::Auto,
+            rumoca_sim::SimExecutionPolicy::Interpreter,
         ] {
-            let parsed =
-                InteractiveOptions::parse(&format!(r#"{{"execution_policy":"{label}"}}"#)).unwrap();
-            assert_eq!(parsed.execution_policy, policy);
+            let options = InteractiveOptions::parse(&format!(
+                r#"{{"execution_policy":"{}"}}"#,
+                policy.label()
+            ))
+            .unwrap();
+            assert_eq!(options.execution_policy, policy);
         }
         let reference = InteractiveOptions::parse(
             r#"{"execution_policy":"interpreter","initial_inputs":[["u",-0.0]]}"#,
@@ -89,7 +90,9 @@ mod tests {
     #[test]
     fn interactive_options_reject_unknown_policy_fields_and_malformed_values() {
         for json in [
-            r#"{"execution_policy":"unknown_policy"}"#,
+            r#"{"execution_policy":"unknown"}"#,
+            r#"{"execution_policy":true}"#,
+            r#"{"execution_policy":null}"#,
             r#"{"extra":true}"#,
             r#"{"dt":-1}"#,
             r#"{"rtol":-1}"#,

@@ -583,8 +583,8 @@ impl PreparedScalarProgramBlock {
     }
 
     /// Whether program `row_idx` holds an assertion observation, a fact fixed
-    /// when the block is prepared: such a program runs only in the reference
-    /// evaluator with its checked event-action adapter.
+    /// when the block is prepared: its execution needs an issued source/action
+    /// observation adapter that retains exact invocation captures.
     #[must_use]
     pub fn program_requires_checked_observation(&self, row_idx: usize) -> bool {
         self.row_requires_checked_observation

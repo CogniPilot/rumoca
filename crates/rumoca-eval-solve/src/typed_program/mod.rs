@@ -24,7 +24,10 @@ use number::{
     eval_binary_element, eval_binary_typed, eval_compare_typed, eval_convert_typed,
     eval_unary_typed,
 };
-pub use observation::{AssertionInvocationEvaluation, AssertionReport, eval_assertion_invocation};
+pub use observation::{
+    AssertionInvocationEvaluation, AssertionReport, eval_assertion_invocation,
+    render_retained_message,
+};
 use payload::Payload;
 
 #[cfg(test)]

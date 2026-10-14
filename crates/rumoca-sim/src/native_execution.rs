@@ -14,25 +14,24 @@ fn pure_call_execution_error(
 ) -> rumoca_eval_solve::EvalSolveError {
     use rumoca_exec_cranelift::{CompileError, NativeSourceFault};
     match error {
+        CompileError::MessageFormatting(error) => error,
         CompileError::SourceOperation {
             kind: NativeSourceFault::TensorIndex,
             message,
-        } => rumoca_eval_solve::EvalSolveError::NativeSourceIndexFault {
+            span,
+        } => rumoca_eval_solve::EvalSolveError::NativeSourceIndexFault { message, span },
+        CompileError::SourceOperation {
+            kind: NativeSourceFault::ForeignBody,
             message,
-            span: None,
-        },
+            span,
+        } => rumoca_eval_solve::EvalSolveError::SourceOperationFault { message, span },
         CompileError::SourceOperation {
             kind: NativeSourceFault::ExternalTable,
             message,
-        } => rumoca_eval_solve::EvalSolveError::SourceOperationFault {
-            message,
-            span: None,
-        },
-        CompileError::SourceOperation { message, .. } => {
-            rumoca_eval_solve::EvalSolveError::InvalidRow {
-                message,
-                span: None,
-            }
+            span,
+        } => rumoca_eval_solve::EvalSolveError::SourceOperationFault { message, span },
+        CompileError::SourceOperation { message, span, .. } => {
+            rumoca_eval_solve::EvalSolveError::InvalidRow { message, span }
         }
         error => rumoca_eval_solve::EvalSolveError::CompiledExecution {
             message: error.to_string(),
@@ -41,9 +40,33 @@ fn pure_call_execution_error(
     }
 }
 
+struct CraneliftObservedExpression(rumoca_exec_cranelift::CompiledEventObservation);
+
+impl rumoca_solver::CompiledSolveExpression for CraneliftObservedExpression {
+    fn observed_message(&self, action: &rumoca_ir_solve::SolveEventAction) -> Option<String> {
+        self.0.message_for_action(action)
+    }
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+        self.0
+            .call(y, p, t, tables, out)
+            .map_err(compiled_execution_error)
+    }
+}
+
 struct CraneliftExpression(rumoca_exec_cranelift::CompiledExpressionRows);
 
 struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
+
+struct CraneliftProgramExpression(rumoca_exec_cranelift::CompiledExpressionProgram);
+
+struct CraneliftProgramJacobian(rumoca_exec_cranelift::CompiledJacobianProgram);
 
 struct CraneliftComputeExpression(rumoca_exec_cranelift::CompiledComputeExpression);
 
@@ -60,6 +83,16 @@ struct CraneliftEventTransaction {
 }
 
 impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
+    fn bind_program(
+        &self,
+        source: &rumoca_ir_solve::ScalarProgramBlock,
+        program: usize,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveExpression>>, String> {
+        self.0
+            .bind_program(source, program)
+            .map(|entry| entry.map(|entry| Rc::new(CraneliftProgramExpression(entry)) as Rc<_>))
+            .map_err(|error| error.to_string())
+    }
     fn call_program_outputs(
         &self,
         program: usize,
@@ -128,6 +161,41 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftComputeExpression {
     }
 }
 
+impl rumoca_solver::CompiledSolveExpression for CraneliftProgramExpression {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+        self.0
+            .call(y, p, t, tables, out)
+            .map_err(compiled_execution_error)
+    }
+}
+
+impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftProgramJacobian {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+        self.0
+            .call(
+                rumoca_eval_solve::JacobianEvalInputs { y, p, t, seed },
+                tables,
+                out,
+            )
+            .map_err(compiled_execution_error)
+    }
+}
+
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftComputeJacobian {
     fn call(
         &self,
@@ -145,6 +213,16 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftComputeJacobian
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
+    fn bind_program(
+        &self,
+        source: &rumoca_ir_solve::ScalarProgramBlock,
+        program: usize,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>>, String> {
+        self.0
+            .bind_program(source, program)
+            .map(|entry| Some(Rc::new(CraneliftProgramJacobian(entry)) as Rc<_>))
+            .map_err(|error| error.to_string())
+    }
     fn prepare_projections(
         &self,
         applications: &[&rumoca_ir_solve::ProjectionJacobianApplication],
@@ -300,6 +378,15 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
 
     fn pure_call_execution(&self) -> Option<&dyn rumoca_eval_solve::PureCallExecution> {
         Some(self)
+    }
+
+    fn compile_event_observation(
+        &self,
+        program: rumoca_ir_solve::RetainedEventProgram,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+        rumoca_exec_cranelift::compile_event_observation(program, &self.pure_calls)
+            .map(|compiled| Rc::new(CraneliftObservedExpression(compiled)) as Rc<_>)
+            .map_err(|error| error.to_string())
     }
 
     fn compile_expression(

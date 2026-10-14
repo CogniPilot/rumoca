@@ -3,6 +3,10 @@
 use super::*;
 
 impl CompiledJacobianRows {
+    pub(crate) fn independent_program_output_count(&self, program: usize) -> Option<usize> {
+        self.rows.get(program).map(|row| row.plan.output_count())
+    }
+
     pub(crate) fn call_program_outputs(
         &self,
         program: usize,

@@ -1,4 +1,5 @@
 //! Emit each complete issued tuple before committing its ordered Y targets.
+mod observations;
 mod ready;
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,34 @@ pub(crate) fn emit_private_program_module(
     table: &solve::SolvePureCallTable,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     emit_module(Ready::private(block, layout, table)?, layout, true)
+}
+
+pub(crate) fn emit_event_program_module(
+    source: &solve::RetainedEventProgram,
+    layout: &VarLayout,
+) -> Result<
+    (
+        CompiledNativeCallProgramWasm,
+        Vec<crate::typed_call::retained_event::InvocationStorage>,
+    ),
+    String,
+> {
+    let ready = Ready::event(source, layout)?;
+    let records = ready.observations.clone();
+    emit_module(ready, layout, true).map(|artifact| (artifact, records))
+}
+
+pub(crate) fn emit_private_directional_module(
+    block: &solve::ScalarProgramBlock,
+    layout: &VarLayout,
+    table: &solve::SolvePureCallTable,
+    seed_len: usize,
+) -> Result<(CompiledNativeCallProgramWasm, u32), String> {
+    let ready = Ready::directional(block, layout, table, seed_len)?;
+    let seed_offset = ready
+        .seed_offset
+        .ok_or("directional entry has no issued seed storage")?;
+    emit_module(ready, layout, true).map(|artifact| (artifact, seed_offset))
 }
 
 fn emit_module(
@@ -110,7 +139,18 @@ fn emit_function(
     let mut locals = ready.arena.locals();
     locals.extend([(2, ValType::I32), (1, ValType::I64)]);
     let mut function = Function::new(locals);
+    let stops = ready
+        .faults
+        .iter()
+        .filter(|fault| fault.kind == crate::TypedCallFaultKind::AssertionFailed)
+        .map(|fault| fault.status)
+        .collect::<Vec<_>>();
     let mut emitter = BodyEmitter::new(catalog, &mut function);
+    emitter.private_seed_offset = ready.seed_offset;
+    if !ready.observations.is_empty() {
+        emitter.event_invocations = Some(&ready.observations);
+        emitter.event_stops = &stops;
+    }
     emitter.arena = Some(ready.arena.clone());
     emitter.calls = Some(&ready.calls);
     emitter.gather_status_base = Some(
@@ -121,6 +161,7 @@ fn emit_function(
     );
     emitter.guard_arena_region()?;
     emitter.begin_exact_schedule(layout)?;
+    emitter.reset_event_invocations();
     for (kernel, program) in ready.plan.programs.iter().enumerate() {
         emitter.kernel_ordinal = kernel;
         emitter.push(Instruction::LocalGet(SEED_PTR_PARAM));

@@ -1,9 +1,8 @@
-//! Conservative admission of one complete original scalar program.
+//! Portable model-context admission and exact input footprints.
 
 #[cfg(test)]
 mod tests;
-
-use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, VarLayout};
+use rumoca_ir_solve::VarLayout;
 
 pub(super) fn execution_receipt(
     policy: rumoca_solver::SimExecutionPolicy,
@@ -18,78 +17,6 @@ pub(super) fn execution_receipt(
     )
 }
 
-#[cfg(test)]
-fn model_context_admitted(
-    policy: rumoca_solver::SimExecutionPolicy,
-    states: usize,
-    external_tables: usize,
-) -> bool {
-    execution_receipt(policy, states, external_tables).is_compiled()
-}
-
-pub(super) fn single_program(
-    source: &ScalarProgramBlock,
-    program: usize,
-    layout: &VarLayout,
-) -> Result<ScalarProgramBlock, String> {
-    single_program_with_seed(source, program, layout, None)
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-pub(super) fn single_directional_program(
-    source: &ScalarProgramBlock,
-    program: usize,
-    layout: &VarLayout,
-) -> Result<ScalarProgramBlock, String> {
-    let seed_len = layout
-        .y_scalars()
-        .checked_add(layout.p_scalars())
-        .ok_or("WASM seed layout overflows")?;
-    single_program_with_seed(source, program, layout, Some(seed_len))
-}
-
-fn single_program_with_seed(
-    source: &ScalarProgramBlock,
-    program: usize,
-    layout: &VarLayout,
-    seed_len: Option<usize>,
-) -> Result<ScalarProgramBlock, String> {
-    let ops = source
-        .program(program)
-        .ok_or("WASM source program is absent")?;
-    if !matches!(ops.last(), Some(LinearOp::StoreOutput { .. }))
-        || ScalarProgramBlock::program_output_count(ops) != 1
-    {
-        return Err("WASM ME profile requires one terminal scalar output".into());
-    }
-    for op in ops {
-        match op {
-            LinearOp::LoadY { index, .. } if *index < layout.y_scalars() => {}
-            LinearOp::LoadP { index, .. } if *index < layout.p_scalars() => {}
-            LinearOp::LoadSeed { index, .. } if seed_len.is_some_and(|len| *index < len) => {}
-            LinearOp::Const { .. }
-            | LinearOp::LoadTime { .. }
-            | LinearOp::Move { .. }
-            | LinearOp::Unary { .. }
-            | LinearOp::Compare { .. }
-            | LinearOp::Select { .. }
-            | LinearOp::StoreOutput { .. } => {}
-            LinearOp::Binary { op, .. } if !matches!(op, BinaryOp::Min | BinaryOp::Max) => {}
-            _ => {
-                return Err(format!(
-                    "WASM ME scalar profile declines {}",
-                    op.kind_name()
-                ));
-            }
-        }
-    }
-    let span = source
-        .program_span(program)
-        .ok_or("WASM source span is absent")?;
-    ScalarProgramBlock::with_program_spans(vec![ops.to_vec()], vec![span])
-        .map_err(|error| error.to_string())
-}
-
 pub(super) fn validate_inputs(
     layout: &VarLayout,
     y: usize,
@@ -97,10 +24,10 @@ pub(super) fn validate_inputs(
     external_tables: usize,
 ) -> Result<(), String> {
     if y != layout.y_scalars() || p != layout.p_scalars() {
-        return Err("WASM ME input lengths differ from the issued layout".into());
+        return Err("WASM input lengths differ from the issued layout".into());
     }
     if external_tables != 0 {
-        return Err("WASM ME scalar profile declines external tables".into());
+        return Err("WASM profile declines external tables".into());
     }
     Ok(())
 }

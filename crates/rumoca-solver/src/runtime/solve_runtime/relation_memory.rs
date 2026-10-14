@@ -1,19 +1,47 @@
 use super::*;
 
 impl SolveRuntime {
+    fn prepared_dynamic_time_event_values(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let mut values = zero_runtime_values(
+            self.model.problem.events.dynamic_time_event_rhs.len(),
+            "prepared dynamic deadline values",
+        )?;
+        if !values.is_empty() {
+            self.eval_dynamic_time_event_rows_into(t, y, params, &mut values)?;
+        }
+        values.extend(
+            self.model
+                .problem
+                .events
+                .dynamic_time_event_names
+                .iter()
+                .filter_map(|name| {
+                    crate::runtime::solve_events::dynamic_time_event_value(
+                        &self.model,
+                        params,
+                        name,
+                    )
+                }),
+        );
+        Ok(values)
+    }
+
     pub fn current_dynamic_time_event_stop(
         &self,
         y: &[f64],
         params: &[f64],
         current_t: f64,
     ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
-        let rows = self.prepared_dynamic_time_event_row_values(y, params, current_t)?;
-        Ok(current_dynamic_time_event_stop_from_rows(
-            &self.model,
-            params,
-            &rows,
-            current_t,
-        ))
+        let values = self.prepared_dynamic_time_event_values(y, params, current_t)?;
+        Ok(values
+            .iter()
+            .any(|&time| crate::timeline::sample_time_match_with_tol(time, current_t))
+            .then(RuntimeEventStop::dynamic_time_event))
     }
 
     pub fn next_runtime_event_stop(
@@ -24,31 +52,20 @@ impl SolveRuntime {
         current_t: f64,
         target: f64,
     ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-        let rows = self.prepared_dynamic_time_event_row_values(y, params, current_t)?;
-        Ok(next_runtime_event_stop_from_rows(
-            &self.model,
-            params,
-            rows,
-            stop_schedule,
+        let static_stop = stop_schedule.next_stop(current_t, target);
+        let mut values = self.prepared_dynamic_time_event_values(y, params, current_t)?;
+        let dynamic = crate::runtime::solve_events::dynamic_time_event_in_window(
+            &mut values,
             current_t,
             target,
-        ))
-    }
-
-    fn prepared_dynamic_time_event_row_values(
-        &self,
-        y: &[f64],
-        params: &[f64],
-        current_t: f64,
-    ) -> Result<Vec<f64>, RuntimeSolveError> {
-        let row_count = self.model.problem.events.dynamic_time_event_rhs.len();
-        if self.model.problem.events.dynamic_time_event_rhs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let scalar = self.scalar_execution()?;
-        let mut rows = zero_runtime_values(row_count, "prepared dynamic time-event row values")?;
-        scalar.eval_dynamic_time_event_rows_into(current_t, y, params, &mut rows)?;
-        Ok(rows)
+        );
+        Ok(
+            crate::runtime::solve_events::next_runtime_event_stop_with_dynamic(
+                static_stop,
+                target,
+                dynamic,
+            ),
+        )
     }
 }
 
@@ -1111,14 +1128,35 @@ impl ScalarExecutionView<'_> {
             context,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
-        let request = solve_eval::event_action_request_from_values(
-            events,
-            y,
-            &action_p,
-            t,
-            context,
-            values.clone(),
-        )?;
+        let mut request = solve_eval::EventActionRequest::Continue;
+        for (value, action) in values.iter().zip(&events.actions) {
+            if *value <= 0.5 {
+                continue;
+            }
+            match action.kind {
+                solve::SolveEventActionKind::Assert => {
+                    request = solve_eval::EventActionRequest::AssertionFailed {
+                        message: self.event_action_message(
+                            action,
+                            RowEvalPoint { y, p: &action_p, t },
+                            context,
+                        )?,
+                    };
+                    break;
+                }
+                solve::SolveEventActionKind::Terminate => {
+                    request = solve_eval::EventActionRequest::Terminate {
+                        message: self.event_action_message(
+                            action,
+                            RowEvalPoint { y, p: &action_p, t },
+                            context,
+                        )?,
+                    };
+                    break;
+                }
+                solve::SolveEventActionKind::Warning | solve::SolveEventActionKind::Print => {}
+            }
+        }
         if !matches!(
             request,
             solve_eval::EventActionRequest::AssertionFailed { .. }

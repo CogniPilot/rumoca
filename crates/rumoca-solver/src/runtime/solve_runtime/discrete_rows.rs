@@ -969,11 +969,10 @@ pub(crate) struct ConditionMemorySeedInput<'a> {
 
 /// The single production implementation of initialization condition-memory
 /// seeding, factored from [`ScalarExecutionView`] so formal proofs need not construct
-/// unrelated runtime state. Its caller supplies execution explicitly: a runtime
-/// uses its prepared lifecycle code and verification uses reference evaluation.
+/// unrelated runtime state.
 pub(crate) fn seed_condition_memory_for_initialization_core(
     input: ConditionMemorySeedInput<'_>,
-    mut eval_output: impl FnMut(usize, usize, &[f64], &[f64], f64) -> Result<f64, RuntimeSolveError>,
+    mut evaluate: impl FnMut(usize, usize, (&[f64], &[f64], f64)) -> Result<f64, RuntimeSolveError>,
 ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
     let ConditionMemorySeedInput {
         model,
@@ -1024,7 +1023,7 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
                 "condition-memory output {row_idx} has no producing program"
             ))
         })?;
-        let value = eval_output(program, output, y, &seed_p, t)?;
+        let value = evaluate(program, output, (y, &seed_p, t))?;
         let target = model.problem.discrete.update_targets[row_idx];
         let solve::ScalarSlot::P { index, .. } = target else {
             return Err(RuntimeSolveError::solve_ir(format!(
@@ -1092,7 +1091,7 @@ impl ScalarExecutionView<'_> {
                 t,
                 tol,
             },
-            |program, output, y, p, t| {
+            |program, output, (y, p, t)| {
                 self.eval_lifecycle_row_output(
                     &self.scalar.discrete_rhs,
                     program,

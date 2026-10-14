@@ -1,6 +1,7 @@
 //! Consume private observations through one checked borrowed invocation.
 
 mod formatting;
+pub use formatting::render_retained_message;
 
 use super::*;
 use crate::EvalSolveError;

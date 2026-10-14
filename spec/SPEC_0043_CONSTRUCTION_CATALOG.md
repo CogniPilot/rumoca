@@ -504,7 +504,11 @@ role type/count associations. Current wire requires the forwarding field and
 replays each association through the same constructor; missing, forged or
 duplicate associations fail closed. Ordinary value-only call APIs delegate to
 the same emitter. Warning checks use the same issued flow and continue after
-recording the violation. Nested message checks, recursive owners and unsupported
+recording the violation. A SOLVE-C62 recursive group issues an empty flow only
+after its constructor proves that its members and every earlier callee are
+transitively assertion-free; pending group interfaces share that empty-flow
+obligation until the group is issued atomically. This grants no assertion
+publication for recursive owners. Nested message checks and unsupported
 shapes retain ordinary role-only ownership without publication proof. Pure map
 and message regions require transitively assertion-free checked bodies; they
 introduce no assertion publication. The opaque descriptive flow identifies
@@ -1110,6 +1114,15 @@ forwarded through the issued predicate/message association before returning the
 child status or reusing its frame. Forwarding preserves the original source and
 actual invocation while projecting only the checked parent diagnostic role.
 Neither a stopped call nor a numerical fault publishes an ordinary result tuple.
+
+Standalone numerical execution retains its immutable `SolveExecutionSource`;
+`event_program` issues a `RetainedEventProgram` containing the original scalar
+program, shared call table and ordered action bindings. Its invocation view
+reborrows those bindings without repeating the checker. This source grants no
+FMI component authority; a correlated FMI root shares its original allocation
+when producing the same execution-source view. The implementations are in
+`rumoca-ir-solve/src/assertion_observation/execution_source.rs` and
+`rumoca-exec-cranelift/src/checked_observation.rs`.
 
 A checked native observation adapter retains the exact sealed invocation by
 borrowing it or consuming it into the compiled product. The invocation continues

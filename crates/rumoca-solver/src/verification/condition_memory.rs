@@ -44,7 +44,7 @@ fn seed(
             t: T_START,
             tol: SEED_TOL,
         },
-        |program, output, y, p, t| {
+        |program, output, (y, p, t)| {
             discrete_rhs
                 .eval_row_output_unchecked_with_context(
                     program,

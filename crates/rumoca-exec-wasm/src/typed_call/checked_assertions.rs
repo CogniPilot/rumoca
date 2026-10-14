@@ -1,18 +1,8 @@
 //! An observation adapter retains its exact borrowed invocation authority.
-#[cfg(any(
-    test,
-    all(target_arch = "wasm32", target_os = "unknown"),
-    all(feature = "host-engine", not(target_arch = "wasm32"))
-))]
-mod decode;
+pub(crate) mod decode;
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(
-    test,
-    all(target_arch = "wasm32", target_os = "unknown"),
-    all(feature = "host-engine", not(target_arch = "wasm32"))
-))]
 use crate::typed_call::observations::ObservationPlan;
 use crate::typed_call::{emit, link::LinkedOwners};
 use crate::{CompiledTypedCallWasm, TypedCallCompileError, TypedCallFault, WasmCompileError};
@@ -69,11 +59,6 @@ impl<'model> NativeAssertionFrame<'model> {
 pub struct NativeAssertionObservation<'model, 'proof> {
     action: &'proof solve::CheckedAssertionAction<'model>,
     provenance: rumoca_core::Span,
-    #[cfg(any(
-        test,
-        all(target_arch = "wasm32", target_os = "unknown"),
-        all(feature = "host-engine", not(target_arch = "wasm32"))
-    ))]
     origin_predicate: usize,
     frames: Vec<NativeAssertionFrame<'model>>,
     captures: Vec<(usize, NativeAssertionCells)>,

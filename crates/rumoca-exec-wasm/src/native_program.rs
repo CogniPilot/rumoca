@@ -58,16 +58,6 @@ impl CompiledNativeCallProgramWasm {
     pub fn gather_faults(&self) -> &[NativeGatherFault] {
         &self.gather_faults
     }
-    #[cfg(any(
-        all(target_arch = "wasm32", target_os = "unknown"),
-        all(feature = "host-engine", not(target_arch = "wasm32")),
-        all(
-            feature = "fixed-native-guest-receiver",
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p2"
-        )
-    ))]
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         if let Some(fault) = self.faults().iter().find(|fault| fault.status == status) {
             return WasmCompileError::TypedSource(fault.clone());

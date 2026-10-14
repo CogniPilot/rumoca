@@ -36,6 +36,7 @@ impl ProgramLowerer<'_, '_> {
             .iconst(types::I64, native_body_code(body));
         let call = self.builder.ins().call(local, &[code, input, output]);
         let status = self.builder.inst_results(call)[0];
+        super::super::native_fault::emit_span(self.module, self.builder, self.operation)?;
         status::propagate(self.builder, status);
         self.unpack_registers(output, destinations)
     }
@@ -87,7 +88,10 @@ pub(in crate::emit) unsafe extern "C" fn rumoca_host_native(
     let inputs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let outputs = match body.evaluate(&inputs) {
         Ok(outputs) => outputs,
-        Err(NativeBodyError::Failure { .. }) => return status::NATIVE_BODY_FOREIGN_ERROR,
+        Err(NativeBodyError::Failure { message, .. }) => {
+            super::super::native_fault::foreign(message);
+            return status::NATIVE_BODY_FOREIGN_ERROR;
+        }
         Err(NativeBodyError::OperandMismatch { .. }) => return status::NATIVE_BODY_FAILURE,
     };
     for (cell, element) in outputs.into_iter().flatten().enumerate() {

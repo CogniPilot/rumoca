@@ -68,6 +68,34 @@ impl ProgramHelpers {
         Self::with_demands(table, sites, |_| Demand::all())
     }
 
+    pub(crate) fn event(
+        source: &solve::RetainedEventProgram,
+        sites: &[solve::SolvePureCallSite],
+    ) -> Result<Self, TypedCallCompileError> {
+        if source.table().arithmetic().real_format() != solve::SolveRealFormat::Binary64 {
+            return Err(TypedCallCompileError::UnsupportedArithmetic);
+        }
+        if sites.iter().any(|site| !source.table().matches_site(site)) {
+            return Err(TypedCallCompileError::SiteMismatch);
+        }
+        let roots = sites
+            .iter()
+            .map(solve::SolvePureCallSite::owner)
+            .collect::<Vec<_>>();
+        Ok(Self {
+            linked: LinkedOwners::construct_event(source, &roots)?,
+            relocated: false,
+        })
+    }
+
+    pub(crate) fn observations(
+        &self,
+        site: &solve::SolvePureCallSite,
+    ) -> Result<Option<super::observations::ObservationPlan>, TypedCallCompileError> {
+        let unit = self.linked.root_unit(site.owner());
+        Ok(self.linked.unit_plan(unit)?.observations.clone())
+    }
+
     /// Link the program whose root `site` is built for the outputs
     /// `demand(site)` of it that some stage reads (SOLVE-C95).
     pub(crate) fn with_demands(

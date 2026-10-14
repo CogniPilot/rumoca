@@ -1143,6 +1143,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compiled_delay_rows_preserve_the_accepted_timeline() {
+        let delay = scalar_row(vec![
+            solve::LinearOp::Const { dst: 0, value: 0.5 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]);
+        let partition = solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: delay.clone(),
+            delay_max_rhs: delay,
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![true],
+        };
+        let backend = crate::runtime::solve_runtime::test_kernels::ReferenceBackend;
+        let compiled = DelayRuntime::new_with_backend(&partition, Some(&backend)).unwrap();
+        assert!(matches!(
+            compiled.execution,
+            DelayExecution::Compiled { .. }
+        ));
+        let reference = DelayRuntime::new(&partition).unwrap();
+        let mut compiled_p = [1.0, 0.0];
+        let mut reference_p = compiled_p;
+        for (time, value) in [(0.0, 1.0), (1.0, 2.0), (1.25, 2.0), (1.5, 3.0), (2.0, 3.0)] {
+            compiled_p[0] = value;
+            reference_p[0] = value;
+            for (runtime, params) in [(&compiled, &mut compiled_p), (&reference, &mut reference_p)]
+            {
+                runtime
+                    .refresh(time, &[], params, RowEvalContext::default())
+                    .unwrap();
+                runtime
+                    .commit(time, &[], params, RowEvalContext::default())
+                    .unwrap();
+            }
+            assert_eq!(compiled_p.map(f64::to_bits), reference_p.map(f64::to_bits));
+        }
+    }
+
     fn scalar_row(ops: Vec<solve::LinearOp>) -> solve::ScalarProgramBlock {
         solve::ScalarProgramBlock::with_source_span(
             vec![ops],

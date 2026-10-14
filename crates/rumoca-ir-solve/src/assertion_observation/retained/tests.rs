@@ -96,7 +96,16 @@ fn retained_inputs_preserve_original_sources_and_private_binding_identity() {
     let second_view = invocation.projections().next().unwrap();
     assert!(invocation.owns_projection(&projection));
     assert!(invocation.owns_projection(&second_view));
-    assert!(std::ptr::eq(projection.binding, second_view.binding));
+    let (
+        RetainedActionView::Retained { binding: first, .. },
+        RetainedActionView::Retained {
+            binding: second, ..
+        },
+    ) = (&projection.view, &second_view.view)
+    else {
+        panic!("retained projections keep their private retained binding");
+    };
+    assert!(std::ptr::eq(*first, *second));
     assert!(std::ptr::eq(
         projection.action(),
         &original.problem.events.actions[0]

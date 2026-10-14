@@ -57,12 +57,11 @@ impl BodyEmitter<'_> {
                     .checked_add(1)
                     .ok_or("WASM tensor tangent register overflow")?;
                 match seed_start {
-                    Some(start) => self.emit_array_load(
+                    Some(start) => self.emit_seed_load(
                         tangent,
                         start
                             .checked_add(element)
                             .ok_or("WASM tensor seed range overflow")?,
-                        SEED_PTR_PARAM,
                     )?,
                     None => self.emit_const(tangent, 0.0)?,
                 }
