@@ -29,11 +29,8 @@ definitions, using the source declaration's initialization. Solve keeps one
 declaration history run with a checked partition into exact producer ranges;
 independent elements retain their individual activations and holds.
 
-The PR is stacked on PR #421 at
-`65478f8e89210f6bf77d347e1cc6b7730daaf8d0`. The earlier `bd6b6da8`,
-`f7b18ac0`,
-`eb515d9b`, `da102156` and
-`6ce369dd` compiler snapshots are historical evidence only.
+The PR now targets main after PR #421 and PR #434 merged.
+The earlier stacked compiler snapshots are historical evidence only.
 The clean historical `da102156` baseline independently reproduces ToDAE ED019
 for `e[1]` on the exact pinned model.
 
@@ -158,3 +155,12 @@ All three pinned modelica_models probes pass again. Latest paired canary
 and selected ModelicaTest are unmeasured; the valid bd6 receipts remain
 historical. The ledger also records an initial profiling cache-setting
 omission and the cheap corrected task-owned-cache reruns.
+
+Final main integration is recorded in [the main receipt](main-integration.json).
+Actual initialization-mode context and checked element partitions coexist
+without production changes to the reviewed merge. 15 compiler tests, 4 runtime tests,
+262 IR-DAE, 911 IR-Solve and 153 TypeCheck tests pass, with scoped strict lint and
+formatting. The buffered state comparison under a selected initial guard,
+current-element dependency, held element and post-clear observation pass.
+Five initialization tests and four actual FMI C cases pass on production-
+equivalent source. Earlier N1000/corpus/canary measurements remain historical.

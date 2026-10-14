@@ -1,0 +1,73 @@
+{
+  "source_commit": "9343d8d5216da4c96e06675d2aa034d658e5ea3c",
+  "main_base": "a854af99da82f4d83c6487abc055193d1e2f88f0",
+  "merge_integration": "Own commits replayed after merged421 and434; actual canonical initial-mode slot retained through event issuer and independent certificate checker; no production code conflicts or shortcut.",
+  "source_equivalence": "crates/Cargo/templates identical to reviewedcc42 after replay onto434 actual squash. C4/init5 sourcea58 differs from final source only by buffered-state-comparison refinement in one cfg(test) model string; all production blobs unchanged.",
+  "owning_results": {
+    "compiler": 15,
+    "runtime": 4,
+    "ir_dae": 262,
+    "ir_solve": 911,
+    "typecheck": 153,
+    "strict_lint": "PASS affected all-target crates",
+    "format": "PASS"
+  },
+  "strengthened_regression": {
+    "model": "SelectedInitial",
+    "selected_rhs": "when initial() then e[1]=x>=0",
+    "assertions": [
+      "current e1\u2192e2 dependency",
+      "held e3",
+      "post-clear y observable"
+    ],
+    "passed": 1,
+    "production_change": false
+  },
+  "logs": {
+    "main-combined-owning-checks.log": "eb7c44feca555f0d42bc897427ff59b13c2379365b2f9c7aca8c5c10a745b4ee",
+    "main-initial-selected-state-relation.log": "b1f9e92e778eac4cc22b941b923a4c2a3bf65ea75ec515cbd8f331f16a62b0ec"
+  },
+  "combined_initialization_and_c": {
+    "source_commit": "a58d1b19fbad684dec4844320ec2d1790a4c2747",
+    "receipt_sha256": "dfcffbcc26dbaae9c28646c5e62917e73fd8c5e7b3abc90a88eec6dc276caf8b",
+    "commands": [
+      "nix develop .#modelica --command cargo test --profile msl-fast -p rumoca-sim initial_relation_truth",
+      "nix develop .#modelica --command cargo test --profile msl-fast -p rumoca --test suite_core fmi_event_c_warnings"
+    ],
+    "results": {
+      "initial_relation_truth": {
+        "exit_code": 0,
+        "passed": 5,
+        "failed": 0,
+        "build_time": "3m 19s",
+        "test_seconds": 0.03
+      },
+      "fmi_event_c_warnings": {
+        "exit_code": 0,
+        "passed": 4,
+        "failed": 0,
+        "build_time": "4m 12s",
+        "test_seconds": 12.33
+      }
+    },
+    "logs": {
+      "combined-a58-initialization.log": {
+        "path": "$HOME/scratch/rumoca/issue430-20261013/combined-a58-initialization.log",
+        "sha256": "a74ef497549f77eeaf72dd0a43b4b4580d986f598ad8d9c0cb04df632b118cbb"
+      },
+      "combined-a58-c-apis.log": {
+        "path": "$HOME/scratch/rumoca/issue430-20261013/combined-a58-c-apis.log",
+        "sha256": "f73eb1e5a28edba809b54b99a9b8807f7e63fc87a71b6daf4fd244455b54ae7c"
+      }
+    },
+    "environment": {
+      "TMPDIR": "$HOME/scratch/rumoca/issue430-20261013/tmp",
+      "XDG_CACHE_HOME": "$HOME/scratch/rumoca/issue430-20261013/current-cache",
+      "CARGO_BUILD_JOBS": "4",
+      "RUST_TEST_THREADS": "4",
+      "RAYON_NUM_THREADS": "4",
+      "CARGO_INCREMENTAL": "0"
+    }
+  },
+  "remaining_scope": "Full workspace/all-feature/doc, full MSL cohort/coverage and latest paired canary not measured; historical corpus receipts remain scoped to original source snapshots."
+}

@@ -705,7 +705,33 @@
       }
     ]
   },
-  "latest_compatibility": {
+  "profiling_environment_correction": {
+    "initial_log_sha256": "0a1bf453411d73da2d1a10f718101e9ae8df7b1ec608659c30dfbb2d10d195fe",
+    "initial_environment": "Direct profile omitted XDG_CACHE_HOME; tool used default $HOME/.cache/rumoca",
+    "reported_auto_prune_files": 2795,
+    "reported_auto_prune_bytes": 166564097,
+    "scope": "Tool automatic pruning of default Rumoca cache; no manual cleanup or restoration attempted. Initial logs retained. Cheap probes repeated with explicit task-owned XDG_CACHE_HOME/TMPDIR; final latest receipts use corrected invocations.",
+    "corrected_environment": {
+      "XDG_CACHE_HOME": "$HOME/scratch/rumoca/issue431-20261013/canary-cache",
+      "TMPDIR": "$HOME/scratch/rumoca/issue431-20261013/tmp",
+      "RAYON_NUM_THREADS": 4,
+      "RUST_TEST_THREADS": 4,
+      "CARGO_BUILD_JOBS": 4
+    }
+  },
+  "historical_654_source_validation": {
+    "compiler_source_checkpoint": "a3e1e7400b95e91b85ab068e5aa1f07daa375575",
+    "stacked_base": "65478f8e89210f6bf77d347e1cc6b7730daaf8d0",
+    "compile_regressions_passed": 15,
+    "runtime_regressions_passed": 3,
+    "workspace_format": "PASS",
+    "focused_build_log_sha256": "87eac4bfe2a119ea4459a7b194a7bc1d2e523f802b6a01cc6c5ac5be5888e287",
+    "real_model_receipt": "omc-terminal-comparison-654-10.json",
+    "paired_canary": "NOT MEASURED on latest654 parent; proven bd6 pair remains historical",
+    "selected_ModelicaTest": "NOT MEASURED on latest654 parent; proven bd6 selected gate remains historical",
+    "scope": "Latest focused/source/compatibility gates only; no new paired-baseline/profile loop after parent rewrite."
+  },
+  "historical_compatibility_654": {
     "compiler_source_checkpoint": "a3e1e7400b95e91b85ab068e5aa1f07daa375575",
     "modelica_models_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
     "archive_sha256": "cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578",
@@ -727,30 +753,5 @@
       }
     ]
   },
-  "current_source_validation": {
-    "compiler_source_checkpoint": "a3e1e7400b95e91b85ab068e5aa1f07daa375575",
-    "stacked_base": "65478f8e89210f6bf77d347e1cc6b7730daaf8d0",
-    "compile_regressions_passed": 15,
-    "runtime_regressions_passed": 3,
-    "workspace_format": "PASS",
-    "focused_build_log_sha256": "87eac4bfe2a119ea4459a7b194a7bc1d2e523f802b6a01cc6c5ac5be5888e287",
-    "real_model_receipt": "omc-terminal-comparison-654-10.json",
-    "paired_canary": "NOT MEASURED on latest654 parent; proven bd6 pair remains historical",
-    "selected_ModelicaTest": "NOT MEASURED on latest654 parent; proven bd6 selected gate remains historical",
-    "scope": "Latest focused/source/compatibility gates only; no new paired-baseline/profile loop after parent rewrite."
-  },
-  "profiling_environment_correction": {
-    "initial_log_sha256": "0a1bf453411d73da2d1a10f718101e9ae8df7b1ec608659c30dfbb2d10d195fe",
-    "initial_environment": "Direct profile omitted XDG_CACHE_HOME; tool used default $HOME/.cache/rumoca",
-    "reported_auto_prune_files": 2795,
-    "reported_auto_prune_bytes": 166564097,
-    "scope": "Tool automatic pruning of default Rumoca cache; no manual cleanup or restoration attempted. Initial logs retained. Cheap probes repeated with explicit task-owned XDG_CACHE_HOME/TMPDIR; final latest receipts use corrected invocations.",
-    "corrected_environment": {
-      "XDG_CACHE_HOME": "$HOME/scratch/rumoca/issue431-20261013/canary-cache",
-      "TMPDIR": "$HOME/scratch/rumoca/issue431-20261013/tmp",
-      "RAYON_NUM_THREADS": 4,
-      "RUST_TEST_THREADS": 4,
-      "CARGO_BUILD_JOBS": 4
-    }
-  }
+  "current_main_integration": "main-integration.json"
 }
