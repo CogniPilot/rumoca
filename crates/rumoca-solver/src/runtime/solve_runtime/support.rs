@@ -11,11 +11,12 @@ use super::{
 
 pub(super) fn required_compiled<T>(
     label: &str,
+    source_spans: &[rumoca_core::Span],
     result: Result<T, String>,
 ) -> Result<T, EvalSolveError> {
     result.map_err(|message| EvalSolveError::CompiledExecution {
         message: format!("required compiled program `{label}` could not be lowered: {message}"),
-        span: None,
+        span: unique_span(source_spans),
     })
 }
 
@@ -42,7 +43,11 @@ pub(super) fn compiled_expression(
 ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, EvalSolveError> {
     backend
         .map(|backend| {
-            let whole = required_compiled(label, backend.compile_expression(block))?;
+            let whole = required_compiled(
+                label,
+                block.program_spans(),
+                backend.compile_expression(block),
+            )?;
             super::selected_programs::expression(backend.as_ref(), label, block, whole)
         })
         .transpose()
@@ -62,8 +67,12 @@ pub(super) fn compiled_compute_expression(
     };
     let whole = match backend.compile_compute_expression(block) {
         Ok(Some(compiled)) => compiled,
-        Ok(None) => required_compiled(label, backend.compile_expression(scalar))?,
-        Err(error) => return required_compiled(label, Err(error)),
+        Ok(None) => required_compiled(
+            label,
+            scalar.program_spans(),
+            backend.compile_expression(scalar),
+        )?,
+        Err(error) => return required_compiled(label, scalar.program_spans(), Err(error)),
     };
     super::selected_programs::expression(backend.as_ref(), label, scalar, whole).map(Some)
 }
@@ -81,8 +90,12 @@ pub(super) fn compiled_compute_jacobian(
     };
     let whole = match backend.compile_compute_jacobian_expression(block) {
         Ok(Some(compiled)) => compiled,
-        Ok(None) => required_compiled(label, backend.compile_jacobian_expression(scalar))?,
-        Err(error) => return required_compiled(label, Err(error)),
+        Ok(None) => required_compiled(
+            label,
+            scalar.program_spans(),
+            backend.compile_jacobian_expression(scalar),
+        )?,
+        Err(error) => return required_compiled(label, scalar.program_spans(), Err(error)),
     };
     super::selected_programs::jacobian(backend.as_ref(), label, scalar, whole).map(Some)
 }
@@ -95,7 +108,11 @@ pub(super) fn compiled_jacobian(
 ) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, EvalSolveError> {
     backend
         .map(|backend| {
-            let whole = required_compiled(label, backend.compile_jacobian_expression(block))?;
+            let whole = required_compiled(
+                label,
+                block.program_spans(),
+                backend.compile_jacobian_expression(block),
+            )?;
             super::selected_programs::jacobian(backend.as_ref(), label, block, whole)
         })
         .transpose()
