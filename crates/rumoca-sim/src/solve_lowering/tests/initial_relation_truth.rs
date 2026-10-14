@@ -18,6 +18,32 @@ equation
 end RelationInitialization;"#;
 
 #[test]
+fn ordinary_initialization_reads_relations_at_the_solved_discrete_definition() {
+    let dae = compile(
+        "model InitialDiscreteRelation
+         parameter Real period=1;
+         Real width;
+         discrete Real deadline(start=-5);
+         Real x; Real y;
+         equation width=period/2; der(x)=-x; y=if time < deadline+width then 3 else 0;
+         when time>0.7 then deadline=time; end when;
+         initial algorithm deadline:=0;
+         initial equation x=y;
+         end InitialDiscreteRelation;",
+        "InitialDiscreteRelation",
+    );
+    let session = SimulationSession::new(
+        &dae,
+        SimOptions { t_end: 0.25, ..Default::default() },
+    )
+    .expect("the simultaneous initial solve reads the defined discrete value");
+    let state = session.state().unwrap();
+    assert_eq!(state.time, 0.0);
+    assert_eq!(state.values["x"], 3.0);
+    assert_eq!(state.values["y"], 3.0);
+}
+
+#[test]
 fn structured_boolean_relations_retain_raw_initialization_and_held_transient_truth() {
     let dae = compile(
         "model ArrayRelations Real x[3](each start=1, each fixed=true); Boolean b[3];\n\
