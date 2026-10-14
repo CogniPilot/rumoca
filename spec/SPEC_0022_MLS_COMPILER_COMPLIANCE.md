@@ -1,47 +1,49 @@
 # SPEC_0022: MLS Compiler Compliance
 
-**Status:** REFERENCE
+## Status
+REFERENCE
+
 **Created:** 2026-01-23
 **Source:** [Modelica Language Specification 3.7](https://specification.modelica.org/maint/3.7/MLS.html)
 
-## Abstract
+## Summary
 
 This document catalogs the implicit and explicit contracts from the Modelica Language Specification (MLS) for use in contract-based compiler development. Each contract is assigned a unique ID for traceability, enabling systematic testing and assertion-based verification.
 
 **Purpose:** Pre-extracted contracts to guide implementation of a spec-compliant Modelica compiler.
 
-**Note:** This is a 1010-line reference document. Do not load it in full as AI context. Use the section index below to find the relevant section.
+**Note:** This is a reference catalog. Do not load it in full as AI context. Use the section index below to find the relevant section.
 
 ### Section Index (for selective loading)
 
 | Section | Lines | Content |
 |---------|-------|---------|
-| §1. Key Definitions | 46–57 | MLS terminology (component, element, flattening, etc.) |
-| §2. Compilation Pipeline | 58–73 | Source → Class Tree → Instance Tree → Flat → DAE → Simulation |
-| §3. Data Structures | 74–331 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
-| §4.1 LEX contracts | 332–351 | Contract catalog heading + lexical rules (13 contracts) |
-| §4.2 DECL contracts | 352–393 | Declaration rules (37 contracts) |
-| §4.3 INST contracts | 394–457 | Instantiation rules (59 contracts) |
-| §4.4 EXPR contracts | 458–504 | Expression/operator rules (42 contracts) |
-| §4.5 EQN contracts | 505–550 | Equation rules (41 contracts) |
-| §4.6 ALG contracts | 551–574 | Algorithm rules (20 contracts) |
-| §4.7 CONN contracts | 575–609 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 610–659 | Function rules (45 contracts) |
-| §4.9 TYPE contracts | 660–700 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 701–751 | Array rules (46 contracts) |
-| §4.11 PKG contracts | 752–769 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 770–786 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 787–801 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 802–826 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 827–844 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 845–951 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 952–973 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 974–989 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 990–1015 | Category counts and totals |
-| §6. Compiler Phases | 1016–1065 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1066–1093 | MLS chapter → contract category mapping |
+| §1. Key Definitions | 48–59 | MLS terminology (component, element, flattening, etc.) |
+| §2. Compilation Pipeline | 60–75 | Source → Class Tree → Instance Tree → Flat → DAE → Simulation |
+| §3. Data Structures | 76–333 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
+| §4.1 LEX contracts | 334–353 | Contract catalog heading + lexical rules (13 contracts) |
+| §4.2 DECL contracts | 354–395 | Declaration rules (37 contracts) |
+| §4.3 INST contracts | 396–459 | Instantiation rules (59 contracts) |
+| §4.4 EXPR contracts | 460–506 | Expression/operator rules (42 contracts) |
+| §4.5 EQN contracts | 507–552 | Equation rules (41 contracts) |
+| §4.6 ALG contracts | 553–576 | Algorithm rules (20 contracts) |
+| §4.7 CONN contracts | 577–611 | Connection rules (30 contracts) |
+| §4.8 FUNC contracts | 612–661 | Function rules (45 contracts) |
+| §4.9 TYPE contracts | 662–702 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 703–753 | Array rules (46 contracts) |
+| §4.11 PKG contracts | 754–771 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 772–788 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 789–803 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 804–828 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 829–846 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 847–953 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 954–975 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 976–991 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 992–1017 | Category counts and totals |
+| §6. Compiler Phases | 1018–1067 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1068–1095 | MLS chapter → contract category mapping |
 
----
+## Specification
 
 ## 1. Key Definitions ([MLS §1.3](https://specification.modelica.org/maint/3.7/introduction1.html))
 
@@ -960,7 +962,7 @@ areas.
 | ANN-005 | Derivative limit | §18.5.2.3 | "If x or y is der(v,n), then n must not exceed maximum differentiation applied to v" |
 | ANN-006 | Unit compatibility | §18.5.2.3 | "Error if unit of x or y expression is incompatible with axis unit" |
 | ANN-007 | Figure identifier unique | §18.5.2.1 | "Figure must be uniquely identified by its identifier" |
-| ANN-008 | Evaluate scope | §18.6 | "Annotation Evaluate is only allowed for parameters and constants" |
+| ANN-008 | Evaluate scope | §18.6 | Evaluate applies to parameters and constants; it may be written on the component, its type declaration, or a base of that type. |
 | ANN-009 | Evaluate non-evaluable warn | §18.6 | "For non-evaluable parameter, Evaluate has no impact; issue warning" |
 | ANN-010 | StopTime simulation model | §18.7 | "If StopTime is set in non-partial model, it is required to be a simulation model" |
 | ANN-011 | mustBeConnected error | §18.8 | "Error if connector does not appear as inside connector in any connect-equation" |

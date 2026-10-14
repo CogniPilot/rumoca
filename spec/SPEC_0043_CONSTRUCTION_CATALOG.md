@@ -11,10 +11,11 @@ by [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md).
 
 ## How To Use This Catalog
 
-This annex holds no rules of its own. Every row below is a SPEC_0036 obligation
-or a SPEC_0036 evidence requirement and is **normative by reference from
-SPEC_0036**; the owning section in SPEC_0036 states the governing requirement
-and links here. Adding, moving, or removing a row is a spec change.
+This annex holds no rules of its own. Rows linked from DRAFT SPEC_0036 are
+tracked review obligations now and become normative by reference when
+SPEC_0036 is accepted. Its owning section states each requirement and links
+here. Rows separately bound by ACCEPTED SPEC_0032 retain that parent's
+current authority. Adding, moving, or removing a row is a spec change.
 
 ## Specification
 
@@ -1003,7 +1004,7 @@ than a parallel legacy scalar block fallback.
 
 ### 11. Exact Declaration Initialization Catalog
 
-Moved from SPEC_0036 section "Exact Declaration Initialization"; rows and rules below are normative by reference from that section.
+Moved from SPEC_0036 section "Exact Declaration Initialization"; rows below track that DRAFT section and bind when SPEC_0036 is accepted.
 
 Native typed input initialization MUST borrow this retained source owner through
 the original correlated FMI inventory. It MUST preflight every source run against
@@ -1059,7 +1060,7 @@ does not authorize rendering a rounded Float64 min/max as an exact Integer bound
 
 ### 12. Function Assertion Cutover Catalog
 
-Moved from SPEC_0036 section "Source-Ordered Function Assertion Cutover"; rows and rules below are normative by reference from that section.
+Moved from SPEC_0036 section "Source-Ordered Function Assertion Cutover"; rows below track that DRAFT section and bind when SPEC_0036 is accepted.
 
 The canonical typed evaluator and compiled shared C kernel implement this
 cutover. ALG-015 remains the source-language
@@ -1158,7 +1159,7 @@ data or native execution admission by itself.
 
 ### 13. Function Assigned State Catalog
 
-Moved from SPEC_0036 section "Executed-Path Function Assigned State"; rows and rules below are normative by reference from that section.
+Moved from SPEC_0036 section "Executed-Path Function Assigned State"; rows below track that DRAFT section and bind when SPEC_0036 is accepted.
 
 Partial function state crosses DAE-to-Solve only through a separate, checked
 internal assigned-state product. Its canonical typed-program owner retains one
@@ -1275,7 +1276,7 @@ same ordered `RequireAssigned` contract.
 
 ### 14. Linked Native FMI-LS Construction Catalog
 
-Moved from SPEC_0036 section "Linked Native FMI-LS Construction"; rows and rules below are normative by reference from that section.
+Moved from SPEC_0036 section "Linked Native FMI-LS Construction"; rows below track that DRAFT section and bind when SPEC_0036 is accepted.
 
 The trusted compiler/linker boundary for a fixed guest and its direct emitted
 model is catalogued in [SPEC_0043 §8](SPEC_0043_CONSTRUCTION_CATALOG.md#8-fmi-component-construction-catalog).
@@ -1303,7 +1304,7 @@ the trusted complete-graph constructor, not a guest-supplied flag or descriptor.
 
 ### 15. Serialization Catalog
 
-Moved from SPEC_0036 section "Serialization"; rows and rules below are normative by reference from that section.
+Moved from SPEC_0036 section "Serialization"; rows below track that DRAFT section and bind when SPEC_0036 is accepted.
 
 Only the current wire identified by `rumoca_ir_dae::DAE_SCHEMA_VERSION` exists;
 older/pre-versioned payloads, adapters, migration readers, and dual writes are
@@ -1328,7 +1329,7 @@ records through checked construction; children prohibit fieldwise `Deserialize`.
 
 ### 16. Other IR Boundaries Catalog
 
-Moved from SPEC_0036 section "Other IR Boundaries"; rows and rules below are normative by reference from that section.
+Moved from SPEC_0036 section "Other IR Boundaries"; rows below track that DRAFT section and bind when SPEC_0036 is accepted.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|

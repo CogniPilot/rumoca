@@ -11,8 +11,8 @@ construct their value, derivative, and FMI mappings together.
 
 This proposal extends SPEC_0007 / STRUCT-T07. Source signature analysis and
 coupled formal derivatives, candidate coordinate maps, and an initial static
-coordinate-selection profile are implemented under STRUCT-T07. Dynamic basis
-changes remain proposed. The existing implementation retains
+coordinate-selection and limited chart-switching profiles are implemented under
+STRUCT-T07. General dynamic basis changes remain proposed. The existing implementation retains
 lower-order constraints in `ContinuousSolveSystem::manifold_residual` and
 `manifold_projection_plan` (`rumoca-ir-solve/src/model.rs`), while
 `SolveRuntime` evaluates derivatives of every retained state coordinate.
@@ -121,22 +121,19 @@ identity establishes the local chain rule, not numerical accuracy by itself.
 | Treat rank loss, inconsistent constraints, and failed reconstruction as typed failures; changing basis cannot change the model's integration dimension | runtime | A singular model is not a license to discard equations |
 | Solve the original initialization problem before mapping its result to independent coordinates; add no new fixed initial values | initialization | MLS initial obligations survive state selection |
 
-### 2a. Changing coordinate bases (proposed, not yet implemented)
+### 2a. Limited chart switching; general basis changes proposed
 
-The `CircleChart.mo` fixture has `der(q)=v`, `der(v)=lambda*q`, and
-`q*q=1`. Its initialized solution is a full circular rotation. The current
-static `q[2], der(q[2])` coordinates fold at a quarter turn: both signs of
-`q[1]` reconstruct the same selected state. A completed three-second run
-selects the wrong branch even though every algebraic residual is small.
-`GyroscopicEffects` exhibits the same geometric limitation through two
-selected position components. This is an open correctness counterexample,
-not evidence that a different fixed coordinate preference is sufficient.
-A reduced loop-closure chart folds the same way when its constraint slope
-vanishes on the manifold (`Constraints.UniversalConstraint` reconstructs the
-middle Cardan angle of a free body, whose slope vanishes where the last angle
-reaches `-pi/2`). The
-construction, certificate, and switching contract for those charts are the
-STRUCT-T07 constraint-fold chart rows in
+The norm and constraint-fold switching profiles of STRUCT-T07 are implemented.
+`reduced_state_charts::circle_chart_runtime_chart_swap_completes_the_revolution_on_the_physical_branch`
+checks a full `CircleChart` revolution against the analytic physical branch.
+Its static `q[2], der(q[2])` chart folds at a quarter turn; the issued alternate
+charts avoid the mirror solution. This limited result does not establish
+general dynamic basis changes or resolve every reconstruction failure.
+`GyroscopicEffects` retains its source basis; its historical reconstruction
+failure requires separate current evidence, not inference from CircleChart.
+A reduced loop-closure chart also folds when its constraint slope vanishes
+(`Constraints.UniversalConstraint` at a middle Cardan angle fold). Its checked
+construction and switching contract is STRUCT-T07 in
 [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#3-structural-lowering-transformation-catalog-spec_0007-structural-lowering-scope).
 
 | Rule | Owner/Where | Brief Justification |
@@ -167,7 +164,7 @@ STRUCT-T07 constraint-fold chart rows in
 | Exercise singular and changing bases, time/parameter dependence, `StateSelect`, and `reinit` | compiler and FMI suites | The reduced rotation fixture is not the general contract |
 | Compare value and AD callbacks after perturbed reconstruction guesses, not only at exact constrained points | numerical tests | Constraint roundoff can reintroduce cancellation |
 | Retain the analytical `RateCancellation.mo` cases and the saved RevoluteConstraint failure; require a normal-budget original-model OMC comparison | focused validation | A successful alternate trajectory cannot dismiss the original failure |
-| Close the `CircleChart.mo` three-second branch counterexample and complete a full revolution against its analytical solution and OMC; preserve the captured GyroscopicEffects reconstruction failure | compiler and FMI suites | Short successful runs can hide incorrect branch continuation |
+| Retain the CircleChart full-turn analytical witness; an OMC comparison of the full turn remains required; track GyroscopicEffects reconstruction independently (historical failure not reproduced on main, 0–5 s) | compiler and FMI suites | Short successful runs can hide incorrect branch continuation |
 | Require Tier 1 and a complete Tier 2 sweep preserving previously high models before breadth resumes | SPEC_0033 verification | Local derivative evidence is not cohort coverage |
 
 ## Rationale

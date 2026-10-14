@@ -105,7 +105,7 @@ declared end state that construction does not admit yet.
 | `Conditional` | Current | `condition: Boolean`, `captures: [reg]`, `destinations: [reg]` — a complete TUPLE, including the empty flow tuple — and two region bodies | two regions, both terminate; zero ordinary outputs retain the same checked body and interfaces | `NotApplicable` | Exactly one region evaluates with its ordered effects and first fault; each destination takes that region's corresponding result; an unselected region does not execute |
 | `Map` | Current | `domain`, `captures: [reg]`, one `destination`, body region | one body region over the compact domain | `NotApplicable` at this level | Elementwise over the domain; empty domain yields empty |
 | `Fold` | Current | `domain`, `initial: [reg]` and `destinations: [reg]` — CARRIED TUPLES — `captures: [reg]`, transition region | one transition region, trip count bounded by the domain | `NotApplicable` at this level | Threads the carried tuple through the domain in the profile's declared order |
-| `Reduce` | Current | `Tensor<T> -> T` scalar. `Sum`/`Product`/`Minimum`/`Maximum` require a numeric element; `All` requires Boolean. Operand must be non-scalar | none | `Reduction` for numeric leaves, `NotApplicable` for `All` | Declared reduction with the profile's accumulator and order |
+| `Reduce` | Current | `Tensor<T> -> T` scalar. `Sum`/`Product` require a numeric element; `Minimum`/`Maximum` admit numeric or Boolean elements (`false < true`, MLS §10.3.4); `All` requires Boolean. Operand must be non-scalar | none | `Reduction` for numeric leaves, `NotApplicable` for Boolean extrema and `All` | Declared reduction with the profile's accumulator and order |
 | `Scale` | Current | `(scalar, aggregate) -> aggregate`; aggregate non-scalar, scalar rank-0, numeric element | none | per §2 `Multiply` leaf | Elementwise multiplication of the aggregate by the scalar |
 | `BroadcastBinary` | Current | `(aggregate, scalar) -> aggregate` with `scalar_on_lhs` recording operand order; operator drawn from §2 | none | per §2 leaf | Elementwise with the scalar broadcast, preserving operand order |
 | `Transpose` | Current | `Tensor<T> -> Tensor<T>` index permutation | none | `NotApplicable` | Permutes indices; no element conversion |
@@ -164,7 +164,8 @@ Element-kind columns record what the checked constructor ADMITS today.
 | `SolveUnaryOperator` | `Sqrt`, `Floor`, `Ceiling`, `Truncate` | Real only | `FloatingPrimitive` | Current |
 | `SolveUnaryOperator` | `Sin`, `Cos`, `Tan`, `Asin`, `Acos`, `Atan`, `Sinh`, `Cosh`, `Tanh`, `Exp`, `Log`, `Log10` | Real only | `FloatingTranscendental` | Current |
 | `SolveBinaryOperator` | `And`, `Or` | Boolean only | `NotApplicable` | Current |
-| `SolveBinaryOperator` | `Add`, `Subtract`, `Multiply`, `Min`, `Max` | numeric: Real or Integer | `ExactIntegral` on Integer, `FloatingPrimitive` on Real (§3) | Current |
+| `SolveBinaryOperator` | `Add`, `Subtract`, `Multiply` | numeric: Real or Integer | `ExactIntegral` on Integer, `FloatingPrimitive` on Real (§3) | Current |
+| `SolveBinaryOperator` | `Min`, `Max` | Real, Integer, or Boolean (`false < true`, MLS §10.3.4) | `ExactIntegral` on Integer, `FloatingPrimitive` on Real, `NotApplicable` on Boolean (§3) | Current |
 | `SolveBinaryOperator` | `Divide` | **Real only** | `FloatingPrimitive` | Current |
 | `SolveBinaryOperator` | `Power` | **Real only** | `FloatingTranscendental` | Current |
 | `SolveBinaryOperator` | `Atan2` | **Real only** | `FloatingTranscendental` | Current |
@@ -187,7 +188,7 @@ admit Integer operands. The portable WASM executor checks faults before
 trapping instructions and publishes outputs only on success. Cranelift
 explicitly refuses the new leaves until it owns a checked failure ABI.
 | `SolveReductionOperator` | `Sum`, `Product` | numeric | `Reduction` | Current |
-| `SolveReductionOperator` | `Minimum`, `Maximum` | numeric | `Reduction`, NaN handling per the profile | Current |
+| `SolveReductionOperator` | `Minimum`, `Maximum` | numeric or Boolean (`false < true`, MLS §10.3.4) | `Reduction` for numeric, NaN handling per the profile; `NotApplicable` for Boolean | Current |
 | `SolveReductionOperator` | `All` | Boolean only | `NotApplicable` | Current |
 
 **`Relational*` classes.** A comparison resolves no arithmetic contract, but it
@@ -205,7 +206,7 @@ separate key.
 
 ### 3. Element-Kind Splitting
 
-A leaf whose contract class differs by element kind is TWO keys, not one: an
+A leaf whose contract class differs by element kind has a separate key per kind: an
 integer `Add` and a real `Add` are separate admissions with separate contracts.
 A target admitting the real leaf has admitted nothing about the integer leaf,
 and no admission implies a Complex leaf, which SEV-017 does not admit at all.
