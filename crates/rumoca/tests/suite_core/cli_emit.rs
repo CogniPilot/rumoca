@@ -86,6 +86,30 @@ model OccurrenceScopedVariabilityFixture
 end OccurrenceScopedVariabilityFixture;
 ";
 
+/// A model whose base class lives in a library that the `--source-root` the
+/// test passes does not provide (issue #432: the MSL `Modelica` package
+/// without the top-level `Complex` package beside it).
+const UNRESOLVABLE_BASE_FIXTURE: &str = "\
+model UnresolvableBaseFixture
+  extends MissingLibrary.Base;
+  Real x(start = 1);
+equation
+  der(x) = -x;
+end UnresolvableBaseFixture;
+";
+
+/// A file with no model, block, or class to select.
+const PACKAGE_ONLY_FIXTURE: &str = "\
+package HelpersOnly
+  function twice
+    input Real u;
+    output Real y;
+  algorithm
+    y := 2 * u;
+  end twice;
+end HelpersOnly;
+";
+
 fn fixture_file() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("EmitFixture.mo");
@@ -122,6 +146,37 @@ fn compile_emit_to(file: &Path, emit: &str, output: &Path) -> std::process::Outp
         .arg(output)
         .output()
         .unwrap_or_else(|err| panic!("run rumoca compile --emit {emit}: {err}"))
+}
+
+/// Run `compile --emit` with one `--source-root`, keeping the source-root
+/// cache beside the fixture so the run never touches the platform cache.
+fn compile_emit_with_source_root(file: &Path, root: &Path, emit: &str) -> std::process::Output {
+    let cache_dir = root.join(".rumoca-cache");
+    Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(file)
+        .arg("--source-root")
+        .arg(root)
+        .arg("--emit")
+        .arg(emit)
+        .arg("--cache-dir")
+        .arg(&cache_dir)
+        .output()
+        .unwrap_or_else(|err| panic!("run rumoca compile --emit {emit}: {err}"))
+}
+
+/// Write a source root holding one empty `MissingLibrary` package and return
+/// the directory that `--source-root` should name.
+fn missing_library_source_root(dir: &Path) -> std::path::PathBuf {
+    let root = dir.join("libraries");
+    let package = root.join("MissingLibrary");
+    fs::create_dir_all(&package).expect("create source root");
+    fs::write(
+        package.join("package.mo"),
+        "package MissingLibrary\nend MissingLibrary;\n",
+    )
+    .expect("write package.mo");
+    root
 }
 
 fn assert_emit_ok(file: &Path, emit: &str) -> String {
@@ -195,6 +250,68 @@ fn emit_json_stages_are_valid_json() {
         serde_json::from_str::<serde_json::Value>(&out)
             .unwrap_or_else(|err| panic!("`--emit {emit}` did not produce valid JSON: {err}"));
     }
+}
+
+#[test]
+fn emit_ast_json_needs_no_name_resolution() {
+    let (dir, file) = named_fixture_file("UnresolvableBaseFixture", UNRESOLVABLE_BASE_FIXTURE);
+    let root = missing_library_source_root(dir.path());
+
+    let ast = compile_emit_with_source_root(&file, &root, "ast-json");
+    let stdout = String::from_utf8_lossy(&ast.stdout);
+    assert!(
+        ast.status.success(),
+        "`--emit ast-json` must not need name resolution.\nstderr:\n{}",
+        String::from_utf8_lossy(&ast.stderr)
+    );
+    let json = serde_json::from_str::<serde_json::Value>(&stdout)
+        .expect("`--emit ast-json` should produce valid JSON");
+    let class = &json["classes"]["UnresolvableBaseFixture"];
+    assert!(
+        class.is_object(),
+        "the dump should be the parser's tree of the input file, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("MissingLibrary"),
+        "the unresolved extends clause should survive in the syntax tree"
+    );
+
+    let flat = compile_emit_with_source_root(&file, &root, "flat-json");
+    let stderr = String::from_utf8_lossy(&flat.stderr);
+    assert!(
+        !flat.status.success(),
+        "`--emit flat-json` still resolves the model closure and must fail"
+    );
+    assert!(
+        stderr.contains("MissingLibrary"),
+        "the flat stage should name the missing base class, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn emit_ast_json_dumps_a_file_without_a_model() {
+    let (_dir, file) = named_fixture_file("HelpersOnly", PACKAGE_ONLY_FIXTURE);
+    let out = assert_emit_ok(&file, "ast-json");
+    let json = serde_json::from_str::<serde_json::Value>(&out)
+        .expect("`--emit ast-json` should produce valid JSON");
+    assert!(
+        json["classes"]["HelpersOnly"].is_object(),
+        "the AST dump selects no model, so a package-only file dumps, got:\n{out}"
+    );
+}
+
+#[test]
+fn emit_ast_json_reports_syntax_errors() {
+    let (_dir, file) = named_fixture_file("Broken", "model Broken\n  Real x\nend Broken;\n");
+    let out = compile_emit(&file, "ast-json");
+    assert!(
+        !out.status.success(),
+        "a file that does not parse has no syntax tree to dump"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "a failed dump must not write a partial tree to stdout"
+    );
 }
 
 #[test]
