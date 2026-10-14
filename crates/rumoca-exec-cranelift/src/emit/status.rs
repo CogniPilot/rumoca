@@ -28,7 +28,7 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
         1 => Err(CompileError::SourceOperation {
             span: None,
             kind: NativeSourceFault::TensorIndex,
-            message: "native tensor index is out of bounds".into(),
+            message: "native tensor index check failed (operand details unavailable)".into(),
         }),
         2 => Err(CompileError::SourceOperation {
             span: None,
