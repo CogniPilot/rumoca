@@ -66,6 +66,7 @@ mod guarded_assignments;
 mod initial_continuation;
 mod initial_event;
 mod initial_projection;
+mod initial_relation_memory;
 mod interpreted_schedules;
 mod manifold_execution;
 mod model_owner;

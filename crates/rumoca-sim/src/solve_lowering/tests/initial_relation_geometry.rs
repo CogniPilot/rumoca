@@ -10,6 +10,7 @@ fn initial_geometry(source: &str) -> (rumoca_ir_solve::SolveModel, Vec<f64>, Vec
     let mut y = model.initial_y.to_vec();
     let mut p = model.parameters.to_vec();
     runtime.set_initial_event_flag(&mut p, true);
+    runtime.initialize_delay_history(0.0, &y, &mut p).unwrap();
     runtime
         .settle_initialization_system(&mut y, &mut p, 0.0, 1e-10, 64)
         .unwrap();
@@ -100,4 +101,35 @@ fn without_homotopy_the_root_cone_still_settles_before_memory_reads() {
     let memory = &model.problem.solve_layout.relation_memory_parameter_indices;
     assert_eq!(memory.len(), 1);
     assert_eq!(p[memory[0]], 1.0);
+}
+
+#[test]
+fn unchanged_relation_truth_still_resettles_delay_at_the_new_geometry() {
+    let (model, y, p) = initial_geometry(
+        r#"model InitialGeometry
+      Real clock(start=0,fixed=true);
+      Real x(start=0);
+      Real delayed;
+      Boolean small;
+    equation
+      der(clock)=0;
+      x=exp(clock)+2;
+      delayed=delay(x,0.01);
+      small=x<1;
+    end InitialGeometry;"#,
+    );
+    let rumoca_ir_solve::ScalarSlot::Y { index, .. } = model.problem.layout.binding("x").unwrap()
+    else {
+        panic!("the algebraic has its declared solver coordinate")
+    };
+    assert_eq!(y[index], 3.0);
+    let memory = &model.problem.solve_layout.relation_memory_parameter_indices;
+    assert_eq!(memory.len(), 1);
+    assert_eq!(p[memory[0]], 0.0);
+    let delayed = &model.problem.events.delays.value_parameter_indices;
+    assert_eq!(delayed.len(), 1);
+    assert_eq!(
+        p[delayed[0]], y[index],
+        "initial delay is the current source"
+    );
 }
