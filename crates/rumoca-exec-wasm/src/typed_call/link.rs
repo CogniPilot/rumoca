@@ -79,6 +79,23 @@ impl LinkedOwners {
         )
     }
 
+    pub(super) fn construct_event(
+        source: &solve::RetainedEventProgram,
+        roots: &[solve::SolvePureCallOwnerId],
+    ) -> Result<Self, TypedCallCompileError> {
+        let invocation = source
+            .invocations()
+            .next()
+            .ok_or(TypedCallCompileError::SiteMismatch)?;
+        let checked = invocation.checked();
+        Self::construct_admitted(
+            source.table(),
+            &all_outputs(roots),
+            Some(checked),
+            (InputConvention::Packed, InputConvention::Packed, false),
+        )
+    }
+
     fn construct_admitted(
         table: &solve::SolvePureCallTable,
         roots: &[(solve::SolvePureCallOwnerId, Demand)],

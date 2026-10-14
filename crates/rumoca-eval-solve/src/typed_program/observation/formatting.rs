@@ -107,3 +107,32 @@ fn render_conversion(
     };
     crate::pad_event_message_conversion(rendered, width, left, span)
 }
+
+/// Format initialized captures already projected by a checked native adapter.
+/// Formatting grants no action or invocation membership.
+pub fn render_retained_message(
+    action: &rumoca_ir_solve::RetainedAssertionAction<'_>,
+    captures: &[(usize, TypedValue)],
+    provenance: Span,
+    owner: SolvePureCallOwnerId,
+) -> Result<String, EvalSolveError> {
+    let observation = assertions::AssertionObservation {
+        owner,
+        predicate_output: action.predicate_output(),
+        provenance,
+        captures: captures.to_vec().into_boxed_slice(),
+    };
+    let mut message = String::new();
+    for part in action.message() {
+        let rendered;
+        let text = match part {
+            rumoca_ir_solve::RetainedAssertionMessagePart::Text(text) => text,
+            rumoca_ir_solve::RetainedAssertionMessagePart::Conversion(conversion) => {
+                rendered = render_conversion(conversion, &observation)?;
+                &rendered
+            }
+        };
+        crate::append_event_message_part(&mut message, text, provenance)?;
+    }
+    Ok(message)
+}

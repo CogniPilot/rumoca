@@ -157,6 +157,12 @@ fn coupled_event_model(discrete_jvp: bool) -> solve::SolveModel {
 
 fn solve_coupled(model: &solve::SolveModel) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
     let runtime = SolveRuntime::new_fixture(model).expect("the coupled event fixture prepares");
+    solve_prepared_coupled(&runtime)
+}
+
+fn solve_prepared_coupled(
+    runtime: &SolveRuntime,
+) -> Result<(Vec<f64>, Vec<f64>), RuntimeSolveError> {
     let mut y = vec![1.0];
     let mut p = vec![1.0];
     let snapshot = DiscretePreSnapshot {
@@ -196,4 +202,124 @@ fn coupled_event_newton_reports_a_missing_directional_derivative() {
         error.to_string().contains("no directional derivative"),
         "{error}"
     );
+}
+
+struct EventTangentBackend {
+    refused: Option<rumoca_core::Span>,
+    discrete_calls: Rc<std::cell::Cell<usize>>,
+}
+
+struct EventTangentKernel {
+    inner: Rc<dyn CompiledSolveJacobianExpression>,
+    tracked: bool,
+    calls: Rc<std::cell::Cell<usize>>,
+}
+
+impl CompiledSolveJacobianExpression for EventTangentKernel {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if self.tracked {
+            self.calls.set(self.calls.get() + 1);
+        }
+        self.inner.call(y, p, t, seed, tables, out)
+    }
+}
+
+impl SolveExecutionBackend for EventTangentBackend {
+    fn compile_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        super::super::test_kernels::expression(block)
+    }
+    fn compile_jacobian_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        if self
+            .refused
+            .is_some_and(|span| block.program_spans().contains(&span))
+        {
+            return Err("unsupported cold event derivative".into());
+        }
+        Ok(Rc::new(EventTangentKernel {
+            inner: super::super::test_kernels::jacobian(block)?,
+            tracked: block
+                .program_spans()
+                .contains(&test_span("coupled_event_discrete_jvp.mo")),
+            calls: self.discrete_calls.clone(),
+        }))
+    }
+    fn compile_assignment_schedule(
+        &self,
+        source: &solve::ComputeBlock,
+        owners: &solve::ContinuousRefreshOwners,
+        schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        super::super::test_kernels::assignment(source, owners, schedule)
+    }
+    fn compile_event_transaction(
+        &self,
+        _: &solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+        Err("fixture has no transactions".into())
+    }
+}
+
+#[test]
+fn coupled_event_newton_executes_the_prepared_discrete_derivative() {
+    let model = coupled_event_model(true);
+    let calls = Rc::new(std::cell::Cell::new(0));
+    let backend = Rc::new(EventTangentBackend {
+        refused: None,
+        discrete_calls: calls.clone(),
+    });
+    let runtime =
+        SolveRuntime::new_fixture_with_backend(&model, backend).expect("complete backend prepares");
+    assert_eq!(calls.get(), 0, "preparation does not execute derivatives");
+    let (y, p) = solve_prepared_coupled(&runtime).expect("compiled coupled derivative solves");
+    let z = 4.0 - 10.0_f64.sqrt();
+    assert!((p[0] - z).abs() <= 1.0e-10);
+    assert!((y[0] - (2.0 - z)).abs() <= 1.0e-10);
+    assert!(
+        calls.get() > 0,
+        "the discrete derivative must execute its prepared backend handle"
+    );
+}
+
+#[test]
+fn every_cold_event_derivative_family_is_required_before_runtime_execution() {
+    for family in ["discrete", "runtime_assignment", "guarded", "structured"] {
+        let mut model = coupled_event_model(true);
+        let cold = spanned_block(coupled_event_jvp_rows().1, "cold_event_derivative.mo");
+        match family {
+            "discrete" => model.artifacts.discrete.rhs_jacobian_v = Some(cold),
+            "runtime_assignment" => {
+                model.artifacts.discrete.runtime_assignment_jacobian_v = Some(cold)
+            }
+            "guarded" => model.artifacts.discrete.guarded_jacobian_v = Some(cold),
+            "structured" => model.artifacts.discrete.structured_jacobian_v = Some(cold),
+            _ => unreachable!(),
+        }
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let backend = Rc::new(EventTangentBackend {
+            refused: Some(test_span("cold_event_derivative.mo")),
+            discrete_calls: calls.clone(),
+        });
+        let error = SolveRuntime::new_fixture_with_backend(&model, backend)
+            .err()
+            .expect("unsupported required derivative rejects preparation");
+        assert!(
+            error.to_string().contains(&format!("event_{family}_jvp")),
+            "{family}: {error}"
+        );
+        assert_eq!(calls.get(), 0, "a refused inventory never executes");
+    }
 }

@@ -13,6 +13,7 @@ fn prepare<C: ?Sized>(
     label: &str,
     source: &solve::ScalarProgramBlock,
     whole: &Rc<C>,
+    mut bind: impl FnMut(&C, &solve::ScalarProgramBlock, usize) -> Result<Option<Rc<C>>, String>,
     mut compile: impl FnMut(&solve::ScalarProgramBlock) -> Result<Rc<C>, String>,
 ) -> Result<Box<[Program<C>]>, EvalSolveError> {
     let one_dense_program = source.row_count() == 1
@@ -26,7 +27,12 @@ fn prepare<C: ?Sized>(
             message: format!("selected {label} program {index} has no source span"), span: None,
         })?;
         let outputs = solve::ScalarProgramBlock::program_output_count(ops);
-        let code = if one_dense_program {
+        let bound = bind(whole, source, index).map_err(|message| EvalSolveError::CompiledExecution {
+            message: format!("selected {label} entry {index} could not bind its source: {message}"), span: Some(span),
+        })?;
+        let code = if let Some(bound) = bound {
+            bound
+        } else if one_dense_program {
             Rc::clone(whole)
         } else {
             let block = solve::ScalarProgramBlock::with_program_spans(vec![ops.clone()], vec![span])
@@ -111,9 +117,13 @@ pub(super) fn expression(
     source: &solve::ScalarProgramBlock,
     whole: Rc<dyn CompiledSolveExpression>,
 ) -> Result<Rc<dyn CompiledSolveExpression>, EvalSolveError> {
-    let programs = prepare(label, source, &whole, |block| {
-        backend.compile_expression(block)
-    })?;
+    let programs = prepare(
+        label,
+        source,
+        &whole,
+        |code, source, index| code.bind_program(source, index),
+        |block| backend.compile_expression(block),
+    )?;
     Ok(Rc::new(Expression {
         whole,
         programs,
@@ -219,9 +229,13 @@ pub(super) fn jacobian(
     source: &solve::ScalarProgramBlock,
     whole: Rc<dyn CompiledSolveJacobianExpression>,
 ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, EvalSolveError> {
-    let programs = prepare(label, source, &whole, |block| {
-        backend.compile_jacobian_expression(block)
-    })?;
+    let programs = prepare(
+        label,
+        source,
+        &whole,
+        |code, source, index| code.bind_program(source, index),
+        |block| backend.compile_jacobian_expression(block),
+    )?;
     Ok(Rc::new(Jacobian {
         whole,
         programs,

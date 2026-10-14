@@ -36,8 +36,10 @@ pub(in crate::emit) fn call_sites(
 ) -> Result<Vec<rumoca_ir_solve::SolvePureCallSite>, String> {
     let mut sites = Vec::new();
     visit_operations(rows, |operation| {
-        if let LinearOp::PureCall { site, .. } = operation {
-            sites.push(site.clone());
+        match operation {
+            LinearOp::PureCall { site, .. } => sites.push(site.clone()),
+            LinearOp::PureCallObservation { site, .. } => sites.push(site.value_site().clone()),
+            _ => {}
         }
         Ok(())
     })?;

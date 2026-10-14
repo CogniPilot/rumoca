@@ -322,15 +322,21 @@ impl SolveRuntime {
         let visible_value_plan =
             visible_value_plan(&visible_rows, model.visible_projection.scalar_count());
         let root_condition_plan = root_condition_plan(model);
-        let compiled_root_conditions = BlockReuse::of(
-            primary.map(|primary| &primary.scalar.root_condition_rows),
-            &model.problem.events.root_conditions,
-        )
-        .expression(
-            primary.and_then(|primary| primary.scalar.compiled_root_conditions()),
-            &model.problem.events.root_conditions,
-            &mut |block| compiled_expression(execution_backend.as_ref(), "root_conditions", block),
-        )?;
+        let compiled_lifecycle = execution_backend
+            .as_ref()
+            .map(|backend| {
+                CompiledLifecycle::new(
+                    &model_owner.execution_source(),
+                    &visible_rows,
+                    &structured_discrete_scalar_rhs,
+                    &guarded_assignment_programs,
+                    backend.as_ref(),
+                )
+            })
+            .transpose()?;
+        let compiled_root_conditions = compiled_lifecycle
+            .as_ref()
+            .map(CompiledLifecycle::root_expression);
         let compiled_initial_residual = BlockReuse::of(
             primary.map(|primary| &primary.scalar.initial_scalar_residual),
             &initial_scalar_residual,
@@ -482,13 +488,7 @@ impl SolveRuntime {
                     .into_iter()
                     .map(|entry| require_prepared("event_transaction", entry))
                     .collect::<Result<Box<[_]>, _>>()?,
-                lifecycle: CompiledLifecycle::new(
-                    model,
-                    &visible_rows,
-                    structured_discrete_rows.rhs.block(),
-                    &guarded_assignment_programs,
-                    backend.as_ref(),
-                )?,
+                lifecycle: require_prepared("lifecycle", compiled_lifecycle)?,
                 messages: compiled_messages::CompiledMessagePrograms::new(
                     model_owner.clone(),
                     backend.as_ref(),
@@ -516,6 +516,10 @@ impl SolveRuntime {
             })),
         };
         let mut scalar = ScalarExecutionInventory {
+            coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
+                &model.artifacts.discrete,
+                execution_backend.as_ref(),
+            )?,
             expressions,
             observation_authority: solve_eval::EventObservationAuthority::default(),
             implicit_rhs: prepare_compute(

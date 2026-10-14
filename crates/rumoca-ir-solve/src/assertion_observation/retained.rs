@@ -62,6 +62,10 @@ impl RetainedAssertionRoot {
     }
 
     #[must_use]
+    pub fn execution_source(&self) -> SolveExecutionSource {
+        SolveExecutionSource::from_shared(self.model.clone())
+    }
+
     pub fn model(&self) -> &SolveModel {
         &self.model
     }
@@ -252,23 +256,36 @@ impl RetainedAssertionInvocation {
         &self.root.model.problem.events.actions
     }
     pub fn projections(&self) -> impl ExactSizeIterator<Item = RetainedAssertionAction<'_>> {
-        self.bindings.iter().map(|binding| RetainedAssertionAction {
-            binding,
-            action: &self.actions()[binding.action_index],
+        self.bindings.iter().map(|binding| {
+            RetainedAssertionAction::retained(binding, &self.actions()[binding.action_index])
         })
     }
     pub fn owns_projection(&self, action: &RetainedAssertionAction<'_>) -> bool {
+        let RetainedActionView::Retained {
+            binding: issuing,
+            action,
+        } = action.view
+        else {
+            return false;
+        };
         self.bindings.iter().any(|binding| {
-            std::ptr::eq(binding, action.binding)
-                && std::ptr::eq(&self.actions()[binding.action_index], action.action)
+            std::ptr::eq(binding, issuing)
+                && std::ptr::eq(&self.actions()[binding.action_index], action)
         })
     }
 }
 
 /// A view of the same original source action and its private issuing binding.
 pub struct RetainedAssertionAction<'invocation> {
-    binding: &'invocation RetainedActionBinding,
-    action: &'invocation SolveEventAction,
+    view: RetainedActionView<'invocation>,
+}
+
+enum RetainedActionView<'invocation> {
+    Retained {
+        binding: &'invocation RetainedActionBinding,
+        action: &'invocation SolveEventAction,
+    },
+    Checked(&'invocation CheckedAssertionAction<'invocation>),
 }
 
 pub enum RetainedAssertionMessagePart<'invocation> {
@@ -277,23 +294,71 @@ pub enum RetainedAssertionMessagePart<'invocation> {
 }
 
 impl<'invocation> RetainedAssertionAction<'invocation> {
+    fn retained(
+        binding: &'invocation RetainedActionBinding,
+        action: &'invocation SolveEventAction,
+    ) -> Self {
+        Self {
+            view: RetainedActionView::Retained { binding, action },
+        }
+    }
+    pub(super) fn checked(action: &'invocation CheckedAssertionAction<'invocation>) -> Self {
+        Self {
+            view: RetainedActionView::Checked(action),
+        }
+    }
     pub const fn action(&self) -> &'invocation SolveEventAction {
-        self.action
+        match self.view {
+            RetainedActionView::Retained { action, .. } => action,
+            RetainedActionView::Checked(action) => action.action,
+        }
     }
     pub const fn action_index(&self) -> usize {
-        self.binding.action_index
+        match self.view {
+            RetainedActionView::Retained { binding, .. } => binding.action_index,
+            RetainedActionView::Checked(action) => action.action_index,
+        }
     }
     pub const fn predicate_output(&self) -> usize {
-        self.binding.predicate_output
+        match self.view {
+            RetainedActionView::Retained { binding, .. } => binding.predicate_output,
+            RetainedActionView::Checked(action) => action.predicate_output,
+        }
     }
     pub fn message(
         &self,
     ) -> impl ExactSizeIterator<Item = RetainedAssertionMessagePart<'invocation>> {
-        let action = self.action;
-        self.binding
-            .message
-            .iter()
-            .map(move |binding| match binding {
+        match self.view {
+            RetainedActionView::Retained { binding, action } => RetainedMessageIterator::Retained {
+                bindings: binding.message.iter(),
+                action,
+            },
+            RetainedActionView::Checked(action) => {
+                RetainedMessageIterator::Checked(action.message.iter())
+            }
+        }
+    }
+}
+
+enum RetainedMessageIterator<'invocation> {
+    Retained {
+        bindings: std::slice::Iter<'invocation, RetainedMessageBinding>,
+        action: &'invocation SolveEventAction,
+    },
+    Checked(std::slice::Iter<'invocation, CheckedAssertionMessagePart<'invocation>>),
+}
+
+impl<'invocation> Iterator for RetainedMessageIterator<'invocation> {
+    type Item = RetainedAssertionMessagePart<'invocation>;
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(match self {
+            Self::Checked(parts) => match parts.next()? {
+                CheckedAssertionMessagePart::Text(text) => RetainedAssertionMessagePart::Text(text),
+                CheckedAssertionMessagePart::Conversion(conversion) => {
+                    RetainedAssertionMessagePart::Conversion(conversion)
+                }
+            },
+            Self::Retained { bindings, action } => match bindings.next()? {
                 RetainedMessageBinding::Text { part_index } => {
                     let SolveEventMessagePart::Text(text) = &action.message.parts[*part_index]
                     else {
@@ -306,6 +371,14 @@ impl<'invocation> RetainedAssertionAction<'invocation> {
                 RetainedMessageBinding::Conversion(conversion) => {
                     RetainedAssertionMessagePart::Conversion(conversion)
                 }
-            })
+            },
+        })
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Retained { bindings, .. } => bindings.size_hint(),
+            Self::Checked(parts) => parts.size_hint(),
+        }
     }
 }
+impl ExactSizeIterator for RetainedMessageIterator<'_> {}

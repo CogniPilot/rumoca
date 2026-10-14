@@ -1,13 +1,47 @@
 use super::*;
 
 impl SolveRuntime {
+    fn prepared_dynamic_time_event_values(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let mut values = zero_runtime_values(
+            self.model.problem.events.dynamic_time_event_rhs.len(),
+            "prepared dynamic deadline values",
+        )?;
+        if !values.is_empty() {
+            self.eval_dynamic_time_event_rows_into(t, y, params, &mut values)?;
+        }
+        values.extend(
+            self.model
+                .problem
+                .events
+                .dynamic_time_event_names
+                .iter()
+                .filter_map(|name| {
+                    crate::runtime::solve_events::dynamic_time_event_value(
+                        &self.model,
+                        params,
+                        name,
+                    )
+                }),
+        );
+        Ok(values)
+    }
+
     pub fn current_dynamic_time_event_stop(
         &self,
         y: &[f64],
         params: &[f64],
         current_t: f64,
     ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
-        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
+        let values = self.prepared_dynamic_time_event_values(y, params, current_t)?;
+        Ok(values
+            .iter()
+            .any(|&time| crate::timeline::sample_time_match_with_tol(time, current_t))
+            .then(RuntimeEventStop::dynamic_time_event))
     }
 
     pub fn next_runtime_event_stop(
@@ -18,14 +52,19 @@ impl SolveRuntime {
         current_t: f64,
         target: f64,
     ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-        next_runtime_event_stop(
-            &self.model,
-            &self.runtime_state,
-            y,
-            params,
-            stop_schedule,
+        let static_stop = stop_schedule.next_stop(current_t, target);
+        let mut values = self.prepared_dynamic_time_event_values(y, params, current_t)?;
+        let dynamic = crate::runtime::solve_events::dynamic_time_event_in_window(
+            &mut values,
             current_t,
             target,
+        );
+        Ok(
+            crate::runtime::solve_events::next_runtime_event_stop_with_dynamic(
+                static_stop,
+                target,
+                dynamic,
+            ),
         )
     }
 }
@@ -1089,14 +1128,35 @@ impl ScalarExecutionView<'_> {
             context,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
-        let request = solve_eval::event_action_request_from_values(
-            events,
-            y,
-            &action_p,
-            t,
-            context,
-            values.clone(),
-        )?;
+        let mut request = solve_eval::EventActionRequest::Continue;
+        for (value, action) in values.iter().zip(&events.actions) {
+            if *value <= 0.5 {
+                continue;
+            }
+            match action.kind {
+                solve::SolveEventActionKind::Assert => {
+                    request = solve_eval::EventActionRequest::AssertionFailed {
+                        message: self.event_action_message(
+                            action,
+                            RowEvalPoint { y, p: &action_p, t },
+                            context,
+                        )?,
+                    };
+                    break;
+                }
+                solve::SolveEventActionKind::Terminate => {
+                    request = solve_eval::EventActionRequest::Terminate {
+                        message: self.event_action_message(
+                            action,
+                            RowEvalPoint { y, p: &action_p, t },
+                            context,
+                        )?,
+                    };
+                    break;
+                }
+                solve::SolveEventActionKind::Warning | solve::SolveEventActionKind::Print => {}
+            }
+        }
         if !matches!(
             request,
             solve_eval::EventActionRequest::AssertionFailed { .. }

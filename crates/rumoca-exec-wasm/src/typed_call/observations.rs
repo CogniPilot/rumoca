@@ -18,8 +18,7 @@ pub struct ObservationFrame {
 
 #[derive(Clone, Debug)]
 pub struct ObservationSource {
-    pub(super) predicate: usize,
-    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+    pub(crate) predicate: usize,
     pub(super) origin_predicate: usize,
     pub(super) provenance: rumoca_core::Span,
     pub(super) frames: Vec<ObservationFrame>,
@@ -67,12 +66,12 @@ pub(super) struct ObservationForwarding {
 /// Header: initialized record count. Records: source tag then source-shaped bits.
 /// No ordinary output shares this range, and no operation may recycle it.
 #[derive(Clone)]
-pub(super) struct ObservationPlan {
+pub(crate) struct ObservationPlan {
     pub range: CellRange,
     pub capacity: u32,
     pub stride: u32,
     pub sources: Vec<ObservationSource>,
-    pub forwarding: Vec<ObservationForwarding>,
+    pub(super) forwarding: Vec<ObservationForwarding>,
 }
 
 impl ObservationPlan {

@@ -1,4 +1,4 @@
-//! Review-only typed pure-call backend. This is not a model assignment profile.
+//! Checked typed-call helpers shared by retained programs and event transactions.
 mod aggregates;
 mod assigned_state;
 mod calls;
@@ -15,9 +15,14 @@ mod numbers;
 mod observations;
 pub(crate) mod program;
 mod promote;
+pub(crate) mod retained_event;
+mod runtime;
+pub use retained_event::CompiledRetainedEventWasm;
 mod scalars;
 mod tensor;
 mod views;
+
+pub use runtime::PreparedTypedCallWasm;
 
 pub use checked_assertions::{
     CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, NativeAssertionCells,

@@ -87,6 +87,8 @@ struct TargetValues {
     output_count: usize,
     spans: Box<[rumoca_core::Span]>,
     scratch: RefCell<Vec<f64>>,
+    row: usize,
+    coefficient_outputs: Box<[(usize, usize, usize)]>,
 }
 
 pub(super) fn compile(
@@ -106,6 +108,8 @@ pub(super) fn compile(
         output_count: source.output_count(),
         spans: source.program_spans().into(),
         scratch: RefCell::default(),
+        row: plan.row(),
+        coefficient_outputs: plan.coefficient_outputs().into(),
     }))
 }
 
@@ -133,6 +137,21 @@ impl CompiledSolveTargetValues for TargetValues {
         self.code
             .call(y, p, t, context.external_tables.unwrap_or(&[]), &mut values)
             .map_err(|error| admitted_compiled_error("private target tuple", &self.spans, error))?;
+        if let Ok(index) = self
+            .coefficient_outputs
+            .binary_search_by_key(&selected, |&(value_offset, _, _)| value_offset)
+        {
+            let (_, target_y_index, coefficient_offset) = self.coefficient_outputs[index];
+            let coefficient = values[coefficient_offset];
+            if coefficient == 0.0 || !coefficient.is_finite() {
+                return Err(RuntimeSolveError::RefreshTargetSingular {
+                    row: self.row,
+                    target_y_index,
+                    coefficient,
+                    span: self.spans.first().copied(),
+                });
+            }
+        }
         Ok(values[selected])
     }
 }

@@ -35,15 +35,28 @@ fn seed(
     discrete_rhs: &PreparedScalarProgramBlock,
     params: &mut [f64],
 ) -> Vec<(usize, f64)> {
-    seed_condition_memory_for_initialization_core(ConditionMemorySeedInput {
-        model,
-        discrete_rhs,
-        row_eval_context: RowEvalContext::default(),
-        y: &mut [],
-        p: params,
-        t: T_START,
-        tol: SEED_TOL,
-    })
+    seed_condition_memory_for_initialization_core(
+        ConditionMemorySeedInput {
+            model,
+            discrete_rhs,
+            y: &mut [],
+            p: params,
+            t: T_START,
+            tol: SEED_TOL,
+        },
+        |program, output, (y, p, t)| {
+            discrete_rhs
+                .eval_row_output_unchecked_with_context(
+                    program,
+                    output,
+                    y,
+                    p,
+                    t,
+                    RowEvalContext::default(),
+                )
+                .map_err(Into::into)
+        },
+    )
     .expect("condition memory should seed")
     .iter()
     .map(|entry| (entry.index, entry.value))
