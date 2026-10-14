@@ -127,7 +127,7 @@ model SelectedInitial
   Real y;
 equation
   der(x)=1;
-  when initial() then e[1]=true; end when;
+  when initial() then e[1]=x>=0; end when;
   when initial() then e[2]=e[1]; end when;
   y=if initial() then -1 else if e[1] and e[2] then 1 else 0;
 end SelectedInitial;
