@@ -1,6 +1,8 @@
 use super::*;
 use rumoca_core::SourceId;
 
+mod storage_reads;
+
 fn source_span() -> Span {
     Span::from_offsets(SourceId::from_source_name("selected_indices.mo"), 3, 17)
 }
@@ -45,7 +47,13 @@ fn selected_projection_refuses_capture_offset_overflow_without_partial_payload()
     region.value([5.0, 7.0]).unwrap();
     let programs = region.family.programs.clone();
     let captures = region.family.captures.clone();
-    assert_eq!(captures, vec![vec![2.0, 5.0], vec![3.0, 7.0]]);
+    assert_eq!(
+        captures,
+        vec![
+            vec![CaptureSource::Constant(2.0), CaptureSource::Constant(5.0)],
+            vec![CaptureSource::Constant(3.0), CaptureSource::Constant(7.0)],
+        ]
+    );
     assert_overflow(region.value([11.0, 13.0]).unwrap_err(), span);
     assert_eq!(region.family.programs, programs);
     assert_eq!(region.family.captures, captures);
