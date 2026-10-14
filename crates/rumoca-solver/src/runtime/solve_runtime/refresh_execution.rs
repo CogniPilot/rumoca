@@ -780,7 +780,7 @@ impl ScalarExecutionView<'_> {
         )
     }
 
-    // SPEC_0021: the selected constructor-issued remainder is part of the checked coordinate.
+    // SPEC_0021: Exception - the selected constructor-issued remainder is part of the checked coordinate.
     #[allow(clippy::too_many_arguments)]
     fn eval_root_search_conditions_after_settle(
         &self,
