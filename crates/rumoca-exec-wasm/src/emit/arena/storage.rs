@@ -83,7 +83,7 @@ impl BodyEmitter<'_> {
         Ok(())
     }
 
-    pub(super) fn relocate_arena_address(&mut self) -> Result<(), String> {
+    pub(in crate::emit) fn relocate_arena_address(&mut self) -> Result<(), String> {
         if self.arena_plan()?.storage == ArenaStorage::Pooled {
             self.push(Instruction::GlobalGet(0));
             self.push(Instruction::I32Add);
