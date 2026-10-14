@@ -21,18 +21,20 @@ impl PreparedManifoldProjection {
         let compiled = backend.filter(|_| !residual.is_empty());
         let compiled_residual = compiled
             .map(|backend| {
-                required_compiled(
-                    "manifold_residual",
-                    backend.compile_expression(&to_scalar_program_block(residual)?),
-                )
+                let source = to_scalar_program_block(residual)?;
+                let whole =
+                    required_compiled("manifold_residual", backend.compile_expression(&source))?;
+                selected_programs::expression(backend, "manifold_residual", &source, whole)
             })
             .transpose()?;
         let compiled_directional = compiled
             .map(|backend| {
-                required_compiled(
+                let source = to_scalar_program_block(directional)?;
+                let whole = required_compiled(
                     "manifold_jacobian_v",
-                    backend.compile_jacobian_expression(&to_scalar_program_block(directional)?),
-                )
+                    backend.compile_jacobian_expression(&source),
+                )?;
+                selected_programs::jacobian(backend, "manifold_jacobian_v", &source, whole)
             })
             .transpose()?;
         Ok(Self {

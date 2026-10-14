@@ -74,6 +74,8 @@ pub(super) struct CompiledLifecycle {
     event_conditions: CompiledPrograms,
     roots: CompiledPrograms,
     structured: CompiledPrograms,
+    initialization_updates: CompiledPrograms,
+    dynamic_deadlines: CompiledPrograms,
     runtime_assignments: CompiledPrograms,
     post_commit_assignments: CompiledPrograms,
     pub(super) guarded: Box<[Rc<dyn CompiledSolveExpression>]>,
@@ -121,6 +123,14 @@ impl CompiledLifecycle {
             event_conditions: compile("event_conditions", &model.problem.events.action_conditions)?,
             roots: compile("root_conditions", &model.problem.events.root_conditions)?,
             structured: compile("structured_discrete_rhs", structured)?,
+            initialization_updates: compile(
+                "initialization_updates",
+                model.problem.initialization.update_rhs(),
+            )?,
+            dynamic_deadlines: compile(
+                "dynamic_deadlines",
+                &model.problem.events.dynamic_time_event_rhs,
+            )?,
             runtime_assignments: compile("runtime_assignments", &discrete.runtime_assignment_rhs)?,
             post_commit_assignments: compile(
                 "post_commit_assignments",
@@ -158,6 +168,11 @@ impl ScalarExecutionInventory {
             (&self.event_action_conditions, &code.event_conditions),
             (&self.root_condition_rows, &code.roots),
             (&self.structured_discrete_rows.rhs, &code.structured),
+            (
+                &self.initialization_update_rhs,
+                &code.initialization_updates,
+            ),
+            (&self.dynamic_time_event_rhs, &code.dynamic_deadlines),
             (&self.runtime_assignment_rhs, &code.runtime_assignments),
             (
                 &self.post_commit_assignment_rhs,

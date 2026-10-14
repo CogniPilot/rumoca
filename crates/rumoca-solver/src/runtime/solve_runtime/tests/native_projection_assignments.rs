@@ -93,7 +93,7 @@ impl SolveExecutionBackend for AssignmentBackend {
         _context: RowEvalContext<'_>,
     ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
         if !self.target_values {
-            return Err("test backend target values are disabled".into());
+            return Err("test backend target values disabled".into());
         }
         self.target_compilations
             .set(self.target_compilations.get() + 1);
@@ -157,6 +157,7 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
     let model = warm_start_test_model();
     let backend = Rc::new(AssignmentBackend {
         schedule_failure: true,
+        target_values: true,
         ..Default::default()
     });
     let runtime = SolveRuntime::new_fixture_with_backend(&model, backend.clone()).unwrap();

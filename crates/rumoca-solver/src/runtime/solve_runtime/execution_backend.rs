@@ -53,10 +53,10 @@ pub trait SolveExecutionBackend {
 
     fn compile_target_values(
         &self,
-        _plan: &solve_eval::PreparedTargetValuePlan,
-        _context: RowEvalContext<'_>,
+        plan: &solve_eval::PreparedTargetValuePlan,
+        context: RowEvalContext<'_>,
     ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
-        Err("prepared target values are not compiled by this backend".into())
+        compiled_targets::compile(self, plan, context)
     }
 
     fn pure_call_execution(&self) -> Option<&dyn solve_eval::PureCallExecution> {

@@ -41,7 +41,10 @@ pub(super) fn compiled_expression(
     block: &solve::ScalarProgramBlock,
 ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, EvalSolveError> {
     backend
-        .map(|backend| required_compiled(label, backend.compile_expression(block)))
+        .map(|backend| {
+            let whole = required_compiled(label, backend.compile_expression(block))?;
+            super::selected_programs::expression(backend.as_ref(), label, block, whole)
+        })
         .transpose()
 }
 
@@ -57,11 +60,12 @@ pub(super) fn compiled_compute_expression(
     let Some(backend) = backend else {
         return Ok(None);
     };
-    match backend.compile_compute_expression(block) {
-        Ok(Some(compiled)) => Ok(Some(compiled)),
-        Ok(None) => required_compiled(label, backend.compile_expression(scalar)).map(Some),
-        Err(error) => required_compiled(label, Err(error)),
-    }
+    let whole = match backend.compile_compute_expression(block) {
+        Ok(Some(compiled)) => compiled,
+        Ok(None) => required_compiled(label, backend.compile_expression(scalar))?,
+        Err(error) => return required_compiled(label, Err(error)),
+    };
+    super::selected_programs::expression(backend.as_ref(), label, scalar, whole).map(Some)
 }
 
 /// [`compiled_compute_expression`] for a directional (JVP) block, with
@@ -75,11 +79,12 @@ pub(super) fn compiled_compute_jacobian(
     let Some(backend) = backend else {
         return Ok(None);
     };
-    match backend.compile_compute_jacobian_expression(block) {
-        Ok(Some(compiled)) => Ok(Some(compiled)),
-        Ok(None) => required_compiled(label, backend.compile_jacobian_expression(scalar)).map(Some),
-        Err(error) => required_compiled(label, Err(error)),
-    }
+    let whole = match backend.compile_compute_jacobian_expression(block) {
+        Ok(Some(compiled)) => compiled,
+        Ok(None) => required_compiled(label, backend.compile_jacobian_expression(scalar))?,
+        Err(error) => return required_compiled(label, Err(error)),
+    };
+    super::selected_programs::jacobian(backend.as_ref(), label, scalar, whole).map(Some)
 }
 
 /// `block` compiled by `backend` as a forward-mode Jacobian, if it compiles.
@@ -89,7 +94,10 @@ pub(super) fn compiled_jacobian(
     block: &solve::ScalarProgramBlock,
 ) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, EvalSolveError> {
     backend
-        .map(|backend| required_compiled(label, backend.compile_jacobian_expression(block)))
+        .map(|backend| {
+            let whole = required_compiled(label, backend.compile_jacobian_expression(block))?;
+            super::selected_programs::jacobian(backend.as_ref(), label, block, whole)
+        })
         .transpose()
 }
 

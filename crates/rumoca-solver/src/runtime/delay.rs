@@ -3,7 +3,20 @@ use std::rc::Rc;
 
 use rumoca_ir_solve as solve;
 
+use super::solve_runtime::{CompiledSolveExpression, SolveExecutionBackend};
+use crate::RuntimeSolveError;
 use rumoca_eval_solve::{EvalSolveError, PreparedScalarProgramBlock, RowEvalContext};
+
+#[derive(Clone)]
+enum DelayExecution {
+    NoChannels,
+    Reference,
+    Compiled {
+        source: Rc<dyn CompiledSolveExpression>,
+        time: Rc<dyn CompiledSolveExpression>,
+        maximum: Rc<dyn CompiledSolveExpression>,
+    },
+}
 
 #[derive(Clone, Copy, Debug)]
 struct DelayPoint {
@@ -54,6 +67,7 @@ struct DelayRowScratch {
 
 #[derive(Clone)]
 pub(crate) struct DelayRuntime {
+    execution: DelayExecution,
     source_rhs: PreparedScalarProgramBlock,
     delay_time_rhs: PreparedScalarProgramBlock,
     delay_max_rhs: PreparedScalarProgramBlock,
@@ -69,8 +83,33 @@ pub(crate) struct DelayRuntime {
     row_scratch: RefCell<DelayRowScratch>,
 }
 
+fn compile_delay(
+    label: &str,
+    block: &solve::ScalarProgramBlock,
+    backend: &dyn SolveExecutionBackend,
+) -> Result<Rc<dyn CompiledSolveExpression>, EvalSolveError> {
+    backend
+        .compile_expression(block)
+        .map_err(|message| EvalSolveError::CompiledExecution {
+            message: format!("required delay program `{label}` could not be lowered: {message}"),
+            span: if block.row_count() == 1 {
+                block.program_span(0)
+            } else {
+                None
+            },
+        })
+}
+
 impl DelayRuntime {
+    #[cfg(any(test, feature = "native-wasm"))]
     pub(crate) fn new(partition: &solve::SolveDelayPartition) -> Result<Self, EvalSolveError> {
+        Self::new_with_backend(partition, None)
+    }
+
+    pub(crate) fn new_with_backend(
+        partition: &solve::SolveDelayPartition,
+        backend: Option<&dyn SolveExecutionBackend>,
+    ) -> Result<Self, EvalSolveError> {
         let source_count = partition.source_rhs.len();
         for (field, actual) in [
             ("delay_time_rhs", partition.delay_time_rhs.len()),
@@ -90,7 +129,20 @@ impl DelayRuntime {
                 });
             }
         }
+        let execution = match backend {
+            _ if source_count == 0 => DelayExecution::NoChannels,
+            None => DelayExecution::Reference,
+            Some(backend) => {
+                let compile = |label, block| compile_delay(label, block, backend);
+                DelayExecution::Compiled {
+                    source: compile("source", &partition.source_rhs)?,
+                    time: compile("time", &partition.delay_time_rhs)?,
+                    maximum: compile("maximum", &partition.delay_max_rhs)?,
+                }
+            }
+        };
         Ok(Self {
+            execution,
             source_rhs: PreparedScalarProgramBlock::new(partition.source_rhs.clone())?,
             delay_time_rhs: PreparedScalarProgramBlock::new(partition.delay_time_rhs.clone())?,
             delay_max_rhs: PreparedScalarProgramBlock::new(partition.delay_max_rhs.clone())?,
@@ -128,7 +180,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &mut [f64],
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         if self.is_empty() {
             return Ok(());
         }
@@ -169,7 +221,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &mut [f64],
         context: RowEvalContext<'_>,
-    ) -> Result<Option<f64>, EvalSolveError> {
+    ) -> Result<Option<f64>, RuntimeSolveError> {
         if self.is_empty() {
             return Ok(None);
         }
@@ -231,7 +283,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &[f64],
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         self.commit_evaluated_at(time, time, solver_y, params, context)
     }
 
@@ -242,7 +294,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &[f64],
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         if self.is_empty() {
             return Ok(());
         }
@@ -398,10 +450,22 @@ impl DelayRuntime {
         params: &[f64],
         context: RowEvalContext<'_>,
         rows: &mut DelayRowScratch,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         rows.sources.resize(self.source_rhs.len(), 0.0);
         rows.delay_times.resize(self.delay_time_rhs.len(), 0.0);
         rows.delay_maxima.resize(self.delay_max_rhs.len(), 0.0);
+        if let DelayExecution::Compiled {
+            source,
+            time: delay_time,
+            maximum,
+        } = &self.execution
+        {
+            let tables = context.external_tables.unwrap_or(&[]);
+            source.call(solver_y, params, time, tables, &mut rows.sources)?;
+            delay_time.call(solver_y, params, time, tables, &mut rows.delay_times)?;
+            maximum.call(solver_y, params, time, tables, &mut rows.delay_maxima)?;
+            return Ok(());
+        }
         self.source_rhs
             .eval_with_context(solver_y, params, time, context, &mut rows.sources)?;
         self.delay_time_rhs.eval_with_context(
@@ -854,6 +918,47 @@ fn local_time_ulp(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_delay_rows_preserve_the_accepted_timeline() {
+        let delay = scalar_row(vec![
+            solve::LinearOp::Const { dst: 0, value: 0.5 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]);
+        let partition = solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: delay.clone(),
+            delay_max_rhs: delay,
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![true],
+        };
+        let backend = crate::runtime::solve_runtime::test_kernels::ReferenceBackend;
+        let compiled = DelayRuntime::new_with_backend(&partition, Some(&backend)).unwrap();
+        assert!(matches!(
+            compiled.execution,
+            DelayExecution::Compiled { .. }
+        ));
+        let reference = DelayRuntime::new(&partition).unwrap();
+        let mut compiled_p = [1.0, 0.0];
+        let mut reference_p = compiled_p;
+        for (time, value) in [(0.0, 1.0), (1.0, 2.0), (1.25, 2.0), (1.5, 3.0), (2.0, 3.0)] {
+            compiled_p[0] = value;
+            reference_p[0] = value;
+            for (runtime, params) in [(&compiled, &mut compiled_p), (&reference, &mut reference_p)]
+            {
+                runtime
+                    .refresh(time, &[], params, RowEvalContext::default())
+                    .unwrap();
+                runtime
+                    .commit(time, &[], params, RowEvalContext::default())
+                    .unwrap();
+            }
+            assert_eq!(compiled_p.map(f64::to_bits), reference_p.map(f64::to_bits));
+        }
+    }
 
     fn scalar_row(ops: Vec<solve::LinearOp>) -> solve::ScalarProgramBlock {
         solve::ScalarProgramBlock::with_source_span(
