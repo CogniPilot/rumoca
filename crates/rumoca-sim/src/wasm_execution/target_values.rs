@@ -20,9 +20,7 @@ impl WasmTargetValues {
         context: RowEvalContext<'_>,
     ) -> Result<Self, String> {
         validate_context(context)?;
-        if context.pure_calls != Some(calls) {
-            return Err("target-value call table differs from its model owner".into());
-        }
+        validate_call_owner(context, calls)?;
         let compiled =
             rumoca_exec_wasm::compile_private_program_wasm(plan.program(), layout, calls)
                 .map_err(|error| error.to_string())?;
@@ -59,6 +57,19 @@ fn validate_context(context: RowEvalContext<'_>) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_call_owner(
+    context: RowEvalContext<'_>,
+    calls: &SolvePureCallTable,
+) -> Result<(), String> {
+    if !context
+        .pure_calls
+        .is_some_and(|source| source.shares_table_owner(calls))
+    {
+        return Err("target-value call table differs from its model owner".into());
+    }
+    Ok(())
+}
+
 impl rumoca_solver::CompiledSolveTargetValues for WasmTargetValues {
     fn call(
         &self,
@@ -69,9 +80,7 @@ impl rumoca_solver::CompiledSolveTargetValues for WasmTargetValues {
         context: RowEvalContext<'_>,
     ) -> Result<f64, rumoca_solver::RuntimeSolveError> {
         validate_context(context)?;
-        if context.pure_calls != Some(&self.calls) {
-            return Err("target-value call table changed after admission".into());
-        }
+        validate_call_owner(context, &self.calls)?;
         profile::validate_inputs(
             &self.layout,
             y.len(),
@@ -94,6 +103,35 @@ impl rumoca_solver::CompiledSolveTargetValues for WasmTargetValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_value_context_binds_the_exact_call_table_owner() {
+        let calls = SolvePureCallTable::default();
+        let cloned = calls.clone();
+        let foreign = SolvePureCallTable::default();
+        assert_eq!(calls, foreign);
+        assert!(
+            validate_call_owner(
+                RowEvalContext {
+                    pure_calls: Some(&cloned),
+                    ..Default::default()
+                },
+                &calls
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_call_owner(
+                RowEvalContext {
+                    pure_calls: Some(&foreign),
+                    ..Default::default()
+                },
+                &calls
+            )
+            .is_err()
+        );
+        assert!(validate_call_owner(RowEvalContext::default(), &calls).is_err());
+    }
 
     #[test]
     fn target_value_directional_context_is_not_zero_padded() {
