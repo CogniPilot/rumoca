@@ -20,10 +20,6 @@ pub trait CompiledSolveExpression {
     ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, String> {
         Ok(None)
     }
-    /// Only the original source action can read a successful invocation's private report.
-    fn observed_message(&self, _action: &solve::SolveEventAction) -> Option<String> {
-        None
-    }
 
     /// Execute all local outputs of one retained source program. A decline
     /// occurs before execution; admitted execution errors must propagate.

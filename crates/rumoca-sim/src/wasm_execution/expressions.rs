@@ -206,7 +206,7 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
     fn compile_event_observation(
         &self,
         program: rumoca_ir_solve::RetainedEventProgram,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventObservation>, String> {
         super::observations::WasmObservations::compile(program, &self.layout, &self.calls)
             .map(|compiled| Rc::new(compiled) as Rc<_>)
     }

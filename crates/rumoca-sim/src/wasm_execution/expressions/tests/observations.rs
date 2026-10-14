@@ -1,6 +1,6 @@
 use super::*;
 use rumoca_ir_solve::{RetainedAssertionSource, SolveExecutionSource};
-use rumoca_solver::CompiledSolveExpression;
+use rumoca_solver::CompiledSolveEventObservation;
 
 #[test]
 fn emitted_warning_retains_the_first_actual_nested_frame_and_clears_old_messages() {

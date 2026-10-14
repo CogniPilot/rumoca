@@ -34,7 +34,7 @@ impl WasmObservations {
     }
 }
 
-impl rumoca_solver::CompiledSolveExpression for WasmObservations {
+impl rumoca_solver::CompiledSolveEventObservation for WasmObservations {
     fn observed_message(&self, action: &SolveEventAction) -> Option<String> {
         let index = self
             .code
