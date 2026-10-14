@@ -72,6 +72,16 @@ impl ScalarExecutionView<'_> {
         )
         .chain(
             owners
+                .root_after_algebraic()
+                .map(|relation| relation.remainder()),
+        )
+        .chain(
+            owners
+                .algebraic_after_derivative()
+                .map(|relation| relation.remainder()),
+        )
+        .chain(
+            owners
                 .clock_events_after_event()
                 .iter()
                 .map(|relation| relation.remainder()),
