@@ -37,6 +37,35 @@ fn quadratic_table() -> solve::SolvePureCallTable {
 }
 
 #[test]
+fn native_backend_rejects_a_foreign_call_table_during_context_admission() {
+    let table = quadratic_table();
+    let backend = super::backend(&table).unwrap();
+    let model = solve::SolveModel {
+        pure_calls: table.clone(),
+        ..Default::default()
+    };
+    assert!(backend.validate_model_context(&model).is_ok());
+    assert!(backend.validate_model_context(&model.clone()).is_ok());
+    let foreign = solve::SolveModel {
+        pure_calls: quadratic_table(),
+        ..Default::default()
+    };
+    assert_eq!(
+        foreign.pure_calls, table,
+        "the foreign table has identical contents"
+    );
+    assert!(!foreign.pure_calls.shares_table_owner(&table));
+    assert!(
+        backend.validate_model_context(&foreign).is_err(),
+        "native code must remain bound to its original call-table owner"
+    );
+    let error = rumoca_solver::SolveRuntime::new_with_execution_backend(&foreign, Some(backend))
+        .err()
+        .expect("foreign native context must reject runtime construction");
+    assert!(matches!(error, EvalSolveError::CompiledExecution { .. }));
+}
+
+#[test]
 fn selected_residual_keeps_the_attached_native_pure_call_owner() {
     let table = quadratic_table();
     let backend = super::backend(&table).unwrap();

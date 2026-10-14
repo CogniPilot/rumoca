@@ -258,6 +258,7 @@ impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction 
 }
 
 struct CraneliftExecutionBackend {
+    source_calls: rumoca_ir_solve::SolvePureCallTable,
     pure_calls: rumoca_exec_cranelift::CompiledPureCallTable,
     call_cells: std::cell::RefCell<(Vec<u64>, Vec<u64>)>,
 }
@@ -283,6 +284,13 @@ impl rumoca_eval_solve::PureCallExecution for CraneliftExecutionBackend {
 }
 
 impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
+    fn validate_model_context(&self, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
+        if !self.source_calls.shares_table_owner(&model.pure_calls) {
+            return Err("native helpers belong to a different canonical call table".into());
+        }
+        Ok(())
+    }
+
     fn pure_call_execution(&self) -> Option<&dyn rumoca_eval_solve::PureCallExecution> {
         Some(self)
     }
@@ -447,6 +455,7 @@ pub(crate) fn backend(
     let pure_calls =
         rumoca_exec_cranelift::compile_pure_call_table(table).map_err(|error| error.to_string())?;
     Ok(Rc::new(CraneliftExecutionBackend {
+        source_calls: table.clone(),
         pure_calls,
         call_cells: Default::default(),
     }))
