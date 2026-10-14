@@ -34,9 +34,14 @@ fn an_interactive_session_keeps_ticking_past_one_second() {
 #[test]
 fn the_execution_receipt_names_the_engine_and_any_refusal() {
     let _guard = session_test_guard();
+    let compiled_engine = if cfg!(target_arch = "wasm32") {
+        "wasm_program"
+    } else {
+        "cranelift"
+    };
     for (policy, engine, refusal) in [
-        (None, "cranelift", None),
-        (Some("native_required"), "cranelift", None),
+        (None, compiled_engine, None),
+        (Some("native_required"), compiled_engine, None),
         (Some("auto"), "interpreter", Some("no_continuous_states")),
         (Some("interpreter"), "interpreter", None),
     ] {
