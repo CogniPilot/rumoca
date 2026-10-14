@@ -17,6 +17,7 @@ mod directional_power;
 mod immutable_payloads;
 mod index_bounds;
 mod linear_solve;
+mod number_results;
 mod recursion;
 mod reduction_extrema;
 mod scalar_projection;

@@ -16,9 +16,8 @@ pub(super) fn eval_unary_typed(
         .elements
         .iter()
         .copied()
-        .map(|element| eval_unary_element(operator, element, scalar, provenance))
-        .collect::<Result<Vec<_>, _>>()?;
-    TypedValue::checked(value.value_type.clone(), elements, provenance)
+        .map(|element| eval_unary_element(operator, element, scalar, provenance));
+    TypedValue::checked_elements(value.value_type.clone(), elements, provenance)
 }
 
 pub(crate) fn eval_unary_element(
@@ -130,9 +129,8 @@ pub(super) fn eval_binary_typed(
         .iter()
         .copied()
         .zip(rhs.elements.iter().copied())
-        .map(|(lhs, rhs)| eval_binary_element(operator, lhs, rhs, scalar, provenance))
-        .collect::<Result<Vec<_>, _>>()?;
-    TypedValue::checked(lhs.value_type.clone(), elements, provenance)
+        .map(|(lhs, rhs)| eval_binary_element(operator, lhs, rhs, scalar, provenance));
+    TypedValue::checked_elements(lhs.value_type.clone(), elements, provenance)
 }
 
 pub(crate) fn eval_binary_element(
@@ -260,9 +258,8 @@ pub(super) fn eval_compare_typed(
         .iter()
         .copied()
         .zip(rhs.elements.iter().copied())
-        .map(|(lhs, rhs)| compare_elements(operator, lhs, rhs, provenance))
-        .collect::<Result<Vec<_>, _>>()?;
-    TypedValue::checked(
+        .map(|(lhs, rhs)| compare_elements(operator, lhs, rhs, provenance));
+    TypedValue::checked_elements(
         lhs.value_type.boolean_with_same_shape(),
         elements,
         provenance,
@@ -321,9 +318,8 @@ pub(super) fn eval_convert_typed(
         .elements
         .iter()
         .copied()
-        .map(|element| convert_element(operator, element, scalar, provenance))
-        .collect::<Result<Vec<_>, _>>()?;
-    TypedValue::checked(destination_type, elements, provenance)
+        .map(|element| convert_element(operator, element, scalar, provenance));
+    TypedValue::checked_elements(destination_type, elements, provenance)
 }
 
 pub(crate) fn convert_element(
