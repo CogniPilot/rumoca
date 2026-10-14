@@ -151,7 +151,55 @@ unknown policy. The stateless periodic-clock receipt requires a compiled engine,
 no refusal, and no declined kernels. This reflects the intended policy change;
 no production checker or malformed-input rejection was relaxed.
 
-Further source closure is still unproven: the audit identified direct reference
-calls in clock condition-memory/deadline/pulse handling and coupled-event JVPs.
-The latter prepares derivative programs per coupled solve. These paths require
-preparation/execution proof and fixes before an all-source claim or landing.
+The subsequent cold-path work below closes the identified clock and coupled-event
+calls. Overall source closure and landing remain unproven.
+
+## Cold runtime dispatch follow-up
+
+Before-fix tests exposed three clock dispatch bypasses, three refresh bypasses,
+four coupled-event derivative/admission failures, two additional coupled primal
+failures, two delay-root bypasses, and four public deadline-scheduling bypasses.
+These tests observed missing compiled calls or swallowed compiled faults; equal
+numeric results alone did not establish compiled execution.
+
+Clock initialization, deadlines, and pulse release now select prepared programs
+and their issued output offsets. The shared condition-memory seeding algorithm
+remains single-source, with verification explicitly selecting reference execution.
+All present coupled-event derivative artifacts are prepared eagerly; genuine
+absent derivative capability remains a typed refusal. Coupled residuals,
+derivatives, refresh calculations, delay roots, and dynamic deadline scheduling
+use prepared code. Public standalone reference scheduling retains the same shared
+deadline and tolerance logic. Missing mandatory selected outputs are errors;
+optional backend hooks still use their already prepared compiled base kernels.
+
+After these changes, all 756 release solver library tests with `native-wasm`
+passed, and solver all-target clippy passed with warnings denied. The first broad
+run exposed an obsolete partial-kernel fixture expecting interpretation after
+declining a required selected output; its expectation now requires an error.
+Another added fixture attempted a zero-output program which the existing source
+constructor correctly rejects; the corrected test asserts that exact refusal
+and original source span. Neither production checker was weakened.
+
+The frozen LabQuadrotor control again matched all 8904 values bit-for-bit across
+24 input-driven steps. NativeRequired recorded Cranelift with no refusal or
+declined kernels. Mean advance time in this single host run was 0.312 ms native
+and 21.068 ms reference; preparation was 0.911 s and 0.125 s respectively. This is
+neither whole-SLAM nor browser performance evidence. `cold-path-physics.json`
+retains the source pin, trace digest, receipts, and timing summary.
+
+`cold-path-validation.json` identifies the tested source snapshot and before/after
+log digests. The fresh message canary at d42b2e6c0 is retained separately in
+`canary-message-followup.json`: 19 compiled/19 balanced, 16 simulations, three
+unchanged solver failures, plus an AutomaticSeed worker startup timeout before
+model compilation. The 15 compared traces have no deviating channels. This is
+an incomplete capability gate, not a green delta or full-cohort result. No model
+attempt was retried or excluded.
+
+Remaining substantive gaps are visible: projected function messages have no
+native invocation capture/report producer in the scalar backend, and native table
+callbacks currently turn checked failures into NaN. CI caught the former at the
+exact invocation-observation checker. Required kernels existing in the inventory
+also does not prevent a future direct reference evaluator call at the Rust type
+boundary; sealed execution owners and read-only analysis views are under design.
+Fresh browser/SLAM and pre-landing gates remain pending. These results do not
+establish complete lowering for every source program or permission to land.

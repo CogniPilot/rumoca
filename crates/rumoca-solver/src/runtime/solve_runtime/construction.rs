@@ -517,6 +517,10 @@ impl SolveRuntime {
         };
         let mut scalar = ScalarExecutionInventory {
             expressions,
+            coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
+                &model.artifacts.discrete,
+                execution_backend.as_deref(),
+            )?,
             observation_authority: solve_eval::EventObservationAuthority::default(),
             implicit_rhs: prepare_compute(
                 |primary| &primary.implicit_rhs,

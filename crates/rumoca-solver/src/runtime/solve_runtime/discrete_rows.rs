@@ -212,17 +212,16 @@ impl ScalarExecutionView<'_> {
                 .discrete_rhs
                 .row_output_position(row_idx)
                 .ok_or_else(|| RuntimeSolveError::solve_ir("discrete output has no producer"))?;
-            let value = self
-                .scalar
-                .discrete_rhs
-                .eval_row_output_unchecked_with_context(
-                    program,
-                    output,
-                    &eval_y,
-                    &eval_p,
+            let value = self.eval_lifecycle_row_output(
+                &self.scalar.discrete_rhs,
+                program,
+                output,
+                RowEvalPoint {
+                    y: &eval_y,
+                    p: &eval_p,
                     t,
-                    self.row_eval_context(),
-                )?;
+                },
+            )?;
             assignments.push((self.model.problem.discrete.update_targets[row_idx], value));
         }
         for program_index in 0..self.scalar.guarded_assignment_programs.len() {
@@ -962,7 +961,6 @@ pub struct SeededConditionMemory {
 pub(crate) struct ConditionMemorySeedInput<'a> {
     pub(crate) model: &'a solve::SolveModel,
     pub(crate) discrete_rhs: &'a solve_eval::PreparedScalarProgramBlock,
-    pub(crate) row_eval_context: solve_eval::RowEvalContext<'a>,
     pub(crate) y: &'a mut [f64],
     pub(crate) p: &'a mut [f64],
     pub(crate) t: f64,
@@ -971,14 +969,15 @@ pub(crate) struct ConditionMemorySeedInput<'a> {
 
 /// The single production implementation of initialization condition-memory
 /// seeding, factored from [`ScalarExecutionView`] so formal proofs need not construct
-/// unrelated runtime state.
+/// unrelated runtime state. Its caller supplies execution explicitly: a runtime
+/// uses its prepared lifecycle code and verification uses reference evaluation.
 pub(crate) fn seed_condition_memory_for_initialization_core(
     input: ConditionMemorySeedInput<'_>,
+    mut eval_output: impl FnMut(usize, usize, &[f64], &[f64], f64) -> Result<f64, RuntimeSolveError>,
 ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
     let ConditionMemorySeedInput {
         model,
         discrete_rhs,
-        row_eval_context,
         y,
         p,
         t,
@@ -1025,14 +1024,7 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
                 "condition-memory output {row_idx} has no producing program"
             ))
         })?;
-        let value = discrete_rhs.eval_row_output_unchecked_with_context(
-            program,
-            output,
-            y,
-            &seed_p,
-            t,
-            row_eval_context,
-        )?;
+        let value = eval_output(program, output, y, &seed_p, t)?;
         let target = model.problem.discrete.update_targets[row_idx];
         let solve::ScalarSlot::P { index, .. } = target else {
             return Err(RuntimeSolveError::solve_ir(format!(
@@ -1091,15 +1083,24 @@ impl ScalarExecutionView<'_> {
         t: f64,
         tol: f64,
     ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
-        let mut seeded = seed_condition_memory_for_initialization_core(ConditionMemorySeedInput {
-            model: &self.model,
-            discrete_rhs: &self.scalar.discrete_rhs,
-            row_eval_context: self.row_eval_context(),
-            y,
-            p,
-            t,
-            tol,
-        })?;
+        let mut seeded = seed_condition_memory_for_initialization_core(
+            ConditionMemorySeedInput {
+                model: &self.model,
+                discrete_rhs: &self.scalar.discrete_rhs,
+                y,
+                p,
+                t,
+                tol,
+            },
+            |program, output, y, p, t| {
+                self.eval_lifecycle_row_output(
+                    &self.scalar.discrete_rhs,
+                    program,
+                    output,
+                    RowEvalPoint { y, p, t },
+                )
+            },
+        )?;
         if self.scalar.structured_discrete_rows.is_empty() {
             return Ok(seeded);
         }
@@ -1245,17 +1246,12 @@ impl ScalarExecutionView<'_> {
                         "pulse condition-memory output {row_idx} has no producing program"
                     ))
                 })?;
-            let value = self
-                .scalar
-                .discrete_rhs
-                .eval_row_output_unchecked_with_context(
-                    program,
-                    output,
-                    y,
-                    &cleared,
-                    t,
-                    self.row_eval_context(),
-                )?;
+            let value = self.eval_lifecycle_row_output(
+                &self.scalar.discrete_rhs,
+                program,
+                output,
+                RowEvalPoint { y, p: &cleared, t },
+            )?;
             writes.push((discrete.update_targets[row_idx], value));
         }
         for (target, value) in writes {
