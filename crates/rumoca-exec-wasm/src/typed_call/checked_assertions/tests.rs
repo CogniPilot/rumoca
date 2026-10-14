@@ -3,6 +3,8 @@ mod fixtures;
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 mod host_preparation;
 mod zero_result_flow;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod value_form;
 use super::*;
 use fixtures::*;
 use rumoca_core::{SourceId, Span};
