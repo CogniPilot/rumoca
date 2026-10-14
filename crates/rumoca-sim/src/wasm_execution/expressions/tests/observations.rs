@@ -71,9 +71,7 @@ end PortableWarnings;
             let mut out = vec![0.0; outputs];
             code.call(&y, &p, 0.0, &[], &mut out).unwrap();
             for action in &model.problem.events.actions {
-                if let Some(message) = code.observed_message(action) {
-                    messages.push(message);
-                }
+                messages.extend(code.observed_message(action));
                 assert!(code.observed_message(&action.clone()).is_none());
             }
             code.call(&y, &p, -1.0, &[], &mut out).unwrap();

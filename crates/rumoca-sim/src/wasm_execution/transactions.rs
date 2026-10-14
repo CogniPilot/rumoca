@@ -39,6 +39,8 @@ impl rumoca_solver::CompiledSolveEventTransaction for WasmEventTransaction {
         {
             return Err("WASM event transaction differs from its original typed interface".into());
         }
+        let binary64_required = "WASM event transaction requires Binary64";
+        let invalid_boolean = "WASM event transaction returned an invalid Boolean";
         let mut cells = self.cells.borrow_mut();
         let (arguments, results, scratch) = &mut *cells;
         let mut offset = 0;
@@ -49,9 +51,7 @@ impl rumoca_solver::CompiledSolveEventTransaction for WasmEventTransaction {
                         SolveValueKind::Real64(bits) => bits,
                         SolveValueKind::Integer(value) => value as u64,
                         SolveValueKind::Boolean(value) => u64::from(value),
-                        SolveValueKind::Real32(_) => {
-                            return Err("WASM event transaction requires Binary64".into());
-                        }
+                        SolveValueKind::Real32(_) => return Err(binary64_required.into()),
                     };
                 offset += 1;
             }
@@ -68,9 +68,7 @@ impl rumoca_solver::CompiledSolveEventTransaction for WasmEventTransaction {
                     SolveScalarType::Real { .. } => SolveValueKind::Real64(bits),
                     SolveScalarType::Integer(_) => SolveValueKind::Integer(bits as i64),
                     SolveScalarType::Boolean if bits <= 1 => SolveValueKind::Boolean(bits != 0),
-                    SolveScalarType::Boolean => {
-                        return Err("WASM event transaction returned an invalid Boolean".into());
-                    }
+                    SolveScalarType::Boolean => return Err(invalid_boolean.into()),
                 };
                 staged.push(rumoca_eval_solve::checked_scalar_payload_value(kind)?);
                 offset += 1;
