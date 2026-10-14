@@ -15,6 +15,32 @@ struct Recorded {
 struct RecordingBackend {
     expressions: RefCell<Vec<Recorded>>,
     jacobians: RefCell<Vec<Recorded>>,
+    targets: RefCell<Vec<RecordedTarget>>,
+}
+
+struct RecordedTarget {
+    row: usize,
+    source: solve::ScalarProgramBlock,
+    calls: Rc<Cell<usize>>,
+}
+
+struct TargetValues {
+    inner: Rc<dyn CompiledSolveTargetValues>,
+    calls: Rc<Cell<usize>>,
+}
+
+impl CompiledSolveTargetValues for TargetValues {
+    fn call(
+        &self,
+        selected: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, RuntimeSolveError> {
+        self.calls.set(self.calls.get() + 1);
+        self.inner.call(selected, y, p, t, context)
+    }
 }
 
 impl RecordingBackend {
@@ -115,6 +141,22 @@ impl CompiledSolveProjectionJacobian for BlockJacobian {
 }
 
 impl SolveExecutionBackend for RecordingBackend {
+    fn compile_target_values(
+        &self,
+        plan: &solve_eval::PreparedTargetValuePlan,
+        context: RowEvalContext<'_>,
+    ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
+        let calls = Rc::new(Cell::new(0));
+        self.targets.borrow_mut().push(RecordedTarget {
+            row: plan.row(),
+            source: plan.program().clone(),
+            calls: calls.clone(),
+        });
+        let inner =
+            super::super::test_kernels::ReferenceBackend.compile_target_values(plan, context)?;
+        Ok(Rc::new(TargetValues { inner, calls }))
+    }
+
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
@@ -304,8 +346,17 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         .collect();
     let primary_rhs_calls = calls_of(&backend.expressions, 3);
     let primary_jvp_calls = calls_of(&backend.jacobians, 3);
+    let primary_target_calls = backend
+        .targets
+        .borrow()
+        .iter()
+        .find(|target| target.row == 0)
+        .unwrap()
+        .calls
+        .clone();
     backend.expressions.borrow_mut().clear();
     backend.jacobians.borrow_mut().clear();
+    backend.targets.borrow_mut().clear();
 
     // The alternate replaces row 1, `2*b - 5`, and its tangent.
     let [replaced_row, replaced_tangent] = scaled_rows(1, 2.0, 5.0);
@@ -328,6 +379,11 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         );
     }
     let replacement_calls = backend.expressions.borrow()[0].calls.clone();
+    assert_alternate_target_queries_share_unchanged_families(
+        &alternate,
+        &backend,
+        &primary_target_calls,
+    );
 
     // Unreplaced programs execute the primary's compiled instance.
     let native = alternate
@@ -378,4 +434,55 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         .full_solver_y_with_guess(0.0, &[], &[], &mut refreshed, 1e-12, 20)
         .unwrap();
     assert_eq!(refreshed, [0.0, 2.5, 0.0]);
+}
+
+fn assert_alternate_target_queries_share_unchanged_families(
+    alternate: &SolveRuntime,
+    backend: &RecordingBackend,
+    primary_calls: &Cell<usize>,
+) {
+    let compiled = backend.targets.borrow();
+    assert_eq!(
+        compiled.len(),
+        1,
+        "only the replaced target family compiles"
+    );
+    let replacement = &compiled[0];
+    assert_eq!(replacement.row, 1);
+    let scalar = alternate.scalar_execution().unwrap();
+    let plan = scalar
+        .scalar
+        .implicit_scalar_rhs
+        .portable_target_value_plan(1, 0, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.source.programs(), plan.program().programs());
+    let targets = scalar.scalar.compiled_targets(false).unwrap();
+    let before = primary_calls.get();
+    assert_eq!(
+        targets
+            .call(
+                (0, 0, 0),
+                (&[1.0, 2.0, 3.0], &[], 0.0),
+                RowEvalContext::default()
+            )
+            .unwrap(),
+        Some(0.0)
+    );
+    assert_eq!(
+        primary_calls.get(),
+        before + 1,
+        "unchanged target uses its primary instance"
+    );
+    assert_eq!(
+        targets
+            .call(
+                (1, 0, 1),
+                (&[1.0, 2.0, 3.0], &[], 0.0),
+                RowEvalContext::default()
+            )
+            .unwrap(),
+        Some(2.5)
+    );
+    assert_eq!(replacement.calls.get(), 1);
 }

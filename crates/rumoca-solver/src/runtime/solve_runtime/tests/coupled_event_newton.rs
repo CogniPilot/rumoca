@@ -501,6 +501,35 @@ fn cold_coupled_event_jvps_are_rejected_during_preparation() {
 }
 
 #[test]
+fn cold_jvp_error_does_not_blame_one_of_multiple_source_spans() {
+    let spans = [test_span("first_jvp.mo"), test_span("second_jvp.mo")];
+    let program = vec![
+        solve::LinearOp::Const { dst: 0, value: 0.0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+    let source = solve::ScalarProgramBlock::with_program_spans(
+        vec![program.clone(), program],
+        spans.to_vec(),
+    )
+    .unwrap();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let backend: Rc<dyn SolveExecutionBackend> = Rc::new(JvpBackend {
+        failed: None,
+        refused: Some(spans[1]),
+        calls: calls.clone(),
+    });
+    let error = super::super::compiled_jacobian(Some(&backend), "mixed_jvp", &source)
+        .err()
+        .expect("the backend refuses this source during preparation");
+    assert!(matches!(
+        error,
+        EvalSolveError::CompiledExecution { span: None, .. }
+    ));
+    assert!(error.to_string().contains("cold event JVP is unsupported"));
+    assert!(calls.borrow().is_empty());
+}
+
+#[test]
 fn native_coupled_event_without_derivative_reports_unavailable() {
     let calls = Rc::new(RefCell::new(Vec::new()));
     let runtime = SolveRuntime::new_fixture_with_backend(

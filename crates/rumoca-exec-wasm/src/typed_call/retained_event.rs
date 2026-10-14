@@ -202,15 +202,14 @@ impl CompiledRetainedEventWasm {
                     return Err(WasmCompileError::TypedSource(fault));
                 }
             };
+            let missing_projection = || {
+                WasmCompileError::Backend("event record lost its exact action projection".into())
+            };
             for report in reports {
                 let action = invocation
                     .projections()
                     .find(|projection| projection.action_index() == report.action().action_index())
-                    .ok_or_else(|| {
-                        WasmCompileError::Backend(
-                            "event record lost its exact action projection".into(),
-                        )
-                    })?;
+                    .ok_or_else(missing_projection)?;
                 observe(
                     &action,
                     report.captures(),

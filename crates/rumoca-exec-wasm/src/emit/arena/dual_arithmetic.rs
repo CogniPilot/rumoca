@@ -17,67 +17,78 @@ impl BodyEmitter<'_> {
             return Err("expected two-lane TensorBinary".into());
         };
         let counter = self.arena_plan()?.counter;
-        let read = |this: &mut Self, start: Reg, stride: usize, lane: u32| {
-            this.dual_read((start, stride), lane, counter)
-        };
         self.loop_start(counter, count)?;
         for lane in 0..2 {
             self.push_arena_address(dst_start + lane, Some(counter), 2)?;
-            match (op, lane) {
-                (BinaryOp::Add | BinaryOp::Sub, _) => {
-                    read(self, lhs_start, lhs_stride, lane)?;
-                    read(self, rhs_start, rhs_stride, lane)?;
-                    self.push(if op == BinaryOp::Add {
-                        Instruction::F64Add
-                    } else {
-                        Instruction::F64Sub
-                    });
-                }
-                (BinaryOp::Mul | BinaryOp::Div, 0) => {
-                    read(self, lhs_start, lhs_stride, 0)?;
-                    read(self, rhs_start, rhs_stride, 0)?;
-                    self.push(if op == BinaryOp::Mul {
-                        Instruction::F64Mul
-                    } else {
-                        Instruction::F64Div
-                    });
-                    if op == BinaryOp::Div {
-                        self.push(Instruction::F64Const(0.0.into()));
-                        read(self, lhs_start, lhs_stride, 0)?;
-                        self.push(Instruction::F64Const(0.0.into()));
-                        self.push(Instruction::F64Ne);
-                        read(self, rhs_start, rhs_stride, 0)?;
-                        self.push(Instruction::F64Const(0.0.into()));
-                        self.push(Instruction::F64Ne);
-                        self.push(Instruction::I32Or);
-                        self.push(Instruction::Select);
-                    }
-                }
-                (BinaryOp::Mul, 1) => {
-                    read(self, lhs_start, lhs_stride, 1)?;
-                    read(self, rhs_start, rhs_stride, 0)?;
-                    self.push(Instruction::F64Mul);
-                    read(self, lhs_start, lhs_stride, 0)?;
-                    read(self, rhs_start, rhs_stride, 1)?;
-                    self.push(Instruction::F64Mul);
-                    self.push(Instruction::F64Add);
-                }
-                (BinaryOp::Div, 1) => {
-                    self.dual_division_tangent(
-                        (lhs_start, lhs_stride),
-                        (rhs_start, rhs_stride),
-                        counter,
-                    )?;
-                }
-                _ => {
-                    return Err(
-                        "two-lane tensor arithmetic requires add/subtract/multiply/divide".into(),
-                    );
-                }
-            }
+            self.dual_binary_lane(
+                op,
+                (lhs_start, lhs_stride),
+                (rhs_start, rhs_stride),
+                lane,
+                counter,
+            )?;
             self.push(Instruction::F64Store(memarg()));
         }
         self.loop_end(counter);
+        Ok(())
+    }
+
+    fn dual_binary_lane(
+        &mut self,
+        op: BinaryOp,
+        lhs: (Reg, usize),
+        rhs: (Reg, usize),
+        lane: u32,
+        counter: u32,
+    ) -> Result<(), String> {
+        match (op, lane) {
+            (BinaryOp::Add | BinaryOp::Sub, _) => {
+                self.dual_read(lhs, lane, counter)?;
+                self.dual_read(rhs, lane, counter)?;
+                self.push(if op == BinaryOp::Add {
+                    Instruction::F64Add
+                } else {
+                    Instruction::F64Sub
+                });
+            }
+            (BinaryOp::Mul | BinaryOp::Div, 0) => {
+                self.dual_read(lhs, 0, counter)?;
+                self.dual_read(rhs, 0, counter)?;
+                self.push(if op == BinaryOp::Mul {
+                    Instruction::F64Mul
+                } else {
+                    Instruction::F64Div
+                });
+                if op == BinaryOp::Div {
+                    self.push(Instruction::F64Const(0.0.into()));
+                    self.dual_read(lhs, 0, counter)?;
+                    self.push(Instruction::F64Const(0.0.into()));
+                    self.push(Instruction::F64Ne);
+                    self.dual_read(rhs, 0, counter)?;
+                    self.push(Instruction::F64Const(0.0.into()));
+                    self.push(Instruction::F64Ne);
+                    self.push(Instruction::I32Or);
+                    self.push(Instruction::Select);
+                }
+            }
+            (BinaryOp::Mul, 1) => {
+                self.dual_read(lhs, 1, counter)?;
+                self.dual_read(rhs, 0, counter)?;
+                self.push(Instruction::F64Mul);
+                self.dual_read(lhs, 0, counter)?;
+                self.dual_read(rhs, 1, counter)?;
+                self.push(Instruction::F64Mul);
+                self.push(Instruction::F64Add);
+            }
+            (BinaryOp::Div, 1) => {
+                self.dual_division_tangent(lhs, rhs, counter)?;
+            }
+            _ => {
+                return Err(
+                    "two-lane tensor arithmetic requires add/subtract/multiply/divide".into(),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -222,31 +233,43 @@ impl BodyEmitter<'_> {
         else {
             return Err("expected two-lane TensorCross".into());
         };
-        for (index, left, right) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
+        for indices in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
             for lane in 0..2 {
-                self.push_arena_address(dst_start + 2 * index + lane, None, 0)?;
-                self.push_reg(lhs_start + 2 * left + lane)?;
-                self.push_reg(rhs_start + 2 * right)?;
-                self.push(Instruction::F64Mul);
-                if lane == 1 {
-                    self.push_reg(lhs_start + 2 * left)?;
-                    self.push_reg(rhs_start + 2 * right + 1)?;
-                    self.push(Instruction::F64Mul);
-                    self.push(Instruction::F64Add);
-                }
-                self.push_reg(lhs_start + 2 * right + lane)?;
-                self.push_reg(rhs_start + 2 * left)?;
-                self.push(Instruction::F64Mul);
-                self.push(Instruction::F64Sub);
-                if lane == 1 {
-                    self.push_reg(lhs_start + 2 * right)?;
-                    self.push_reg(rhs_start + 2 * left + 1)?;
-                    self.push(Instruction::F64Mul);
-                    self.push(Instruction::F64Sub);
-                }
-                self.push(Instruction::F64Store(memarg()));
+                self.dual_cross_lane(dst_start, lhs_start, rhs_start, indices, lane)?;
             }
         }
+        Ok(())
+    }
+
+    fn dual_cross_lane(
+        &mut self,
+        dst_start: Reg,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        (index, left, right): (u32, u32, u32),
+        lane: u32,
+    ) -> Result<(), String> {
+        self.push_arena_address(dst_start + 2 * index + lane, None, 0)?;
+        self.push_reg(lhs_start + 2 * left + lane)?;
+        self.push_reg(rhs_start + 2 * right)?;
+        self.push(Instruction::F64Mul);
+        if lane == 1 {
+            self.push_reg(lhs_start + 2 * left)?;
+            self.push_reg(rhs_start + 2 * right + 1)?;
+            self.push(Instruction::F64Mul);
+            self.push(Instruction::F64Add);
+        }
+        self.push_reg(lhs_start + 2 * right + lane)?;
+        self.push_reg(rhs_start + 2 * left)?;
+        self.push(Instruction::F64Mul);
+        self.push(Instruction::F64Sub);
+        if lane == 1 {
+            self.push_reg(lhs_start + 2 * right)?;
+            self.push_reg(rhs_start + 2 * left + 1)?;
+            self.push(Instruction::F64Mul);
+            self.push(Instruction::F64Sub);
+        }
+        self.push(Instruction::F64Store(memarg()));
         Ok(())
     }
 }

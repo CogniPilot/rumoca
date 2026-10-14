@@ -132,6 +132,8 @@ impl PreparedScalarProgramBlock {
         let mut output_offset = ScalarProgramBlock::program_output_count(operations);
         let mut builder = rumoca_ir_solve::ExactAssignmentProgramBuilder::new(operations)
             .ok_or_else(|| invalid_prepared_row("issued target prefix cannot materialize"))?;
+        let coefficient_output_error =
+            || invalid_prepared_row("issued coefficient output cannot materialize");
         for (candidate_output, shape) in self.row_assignment_shapes[row].iter() {
             // The canonical evaluator selects the first shape for this pair.
             if !issued.insert((*candidate_output, shape.target_y_index()))
@@ -151,9 +153,7 @@ impl PreparedScalarProgramBlock {
                 let coefficient_offset = output_offset;
                 builder
                     .push(LinearOp::StoreOutput { src: coefficient })
-                    .ok_or_else(|| {
-                        invalid_prepared_row("issued coefficient output cannot materialize")
-                    })?;
+                    .ok_or_else(coefficient_output_error)?;
                 output_offset += 1;
                 coefficient_outputs.push((offset, shape.target_y_index(), coefficient_offset));
             }

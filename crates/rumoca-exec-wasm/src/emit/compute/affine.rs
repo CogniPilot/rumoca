@@ -214,6 +214,14 @@ fn constant_strides(
 }
 
 impl BodyEmitter<'_> {
+    fn affine_load_source(&self, op: &LinearOp, index: usize) -> Result<(u32, usize), String> {
+        match op {
+            LinearOp::LoadP { .. } => Ok((P_PTR_PARAM, index)),
+            LinearOp::LoadSeed { .. } => Ok((SEED_PTR_PARAM, self.seed_index(index)?)),
+            _ => Ok((Y_PTR_PARAM, index)),
+        }
+    }
+
     pub(super) fn emit_affine(
         &mut self,
         plan: &AffinePlan<'_>,
@@ -233,16 +241,7 @@ impl BodyEmitter<'_> {
                 | LinearOp::LoadSeed { dst, index }
                     if plan.loads[position].is_some() =>
                 {
-                    let ptr = match op {
-                        LinearOp::LoadP { .. } => P_PTR_PARAM,
-                        LinearOp::LoadSeed { .. } => SEED_PTR_PARAM,
-                        _ => Y_PTR_PARAM,
-                    };
-                    let index = if matches!(op, LinearOp::LoadSeed { .. }) {
-                        self.seed_index(index)?
-                    } else {
-                        index
-                    };
+                    let (ptr, index) = self.affine_load_source(op, index)?;
                     self.emit_affine_address(
                         ptr,
                         index,

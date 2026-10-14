@@ -648,33 +648,11 @@ impl TableCompiler {
         let pointer_type = config.pointer_type();
         let input_results = InputResults::new(coordinate)?;
         let mut context = self.module.make_context();
-        context
-            .func
-            .signature
-            .returns
-            .push(AbiParam::new(types::I8));
-        context
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(pointer_type));
-        context
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(pointer_type));
-        if recursion.is_some() {
-            context
-                .func
-                .signature
-                .params
-                .push(AbiParam::new(types::I64));
-        }
-        context
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(pointer_type)); // caller-owned scratch
+        program_signature(
+            &mut context.func.signature,
+            pointer_type,
+            recursion.is_some(),
+        );
         let mut builder_context = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -1996,4 +1974,18 @@ fn enter_group<'a>(
         functions,
         depth,
     }
+}
+
+fn program_signature(
+    signature: &mut cranelift_codegen::ir::Signature,
+    pointer_type: cranelift_codegen::ir::Type,
+    recursive: bool,
+) {
+    signature.returns.push(AbiParam::new(types::I8));
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(pointer_type));
+    if recursive {
+        signature.params.push(AbiParam::new(types::I64));
+    }
+    signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
 }

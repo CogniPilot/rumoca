@@ -90,6 +90,7 @@ fn compile_schedule(
 ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, EvalSolveError> {
     super::required_compiled(
         "assignment_schedule",
+        &[],
         backend.compile_assignment_schedule(source, owners, schedule),
     )
 }
