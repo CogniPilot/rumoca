@@ -179,10 +179,10 @@ fn numeric_program(site: solve::SolvePureCallSite) -> solve::ScalarProgramBlock 
 }
 
 #[test]
-fn private_numeric_no_capture_fold_continues_and_preserves_invalid_boolean_atomicity() {
+fn private_numeric_no_capture_fold_keeps_scalar_boolean_conversion_and_input_atomicity() {
     let table = no_capture_loop_table(solve::SolveAssertionLevel::Error);
     let site = table.owners()[1].call_site();
-    for input in [0, 1] {
+    for input in [0, 1, 2] {
         let expected = reference_cells(&table, &site, &[input]);
         // Nested diagnostic slots stay inactive in the ordinary value tuple.
         assert_eq!(expected, [3, 1]);
@@ -193,7 +193,7 @@ fn private_numeric_no_capture_fold_continues_and_preserves_invalid_boolean_atomi
     let code = crate::compile_private_program_wasm(&source, &layout, &table)
         .expect("the canonical private numeric value form must lower");
     let mut scratch = vec![19.0; code.scratch_bytes() as usize / 8];
-    for input in [0.0, 1.0, 0.0] {
+    for input in [0.0, 1.0, 2.0, 0.0] {
         code.call(&[input], &[], 0.0, &mut scratch).unwrap();
         assert_eq!(
             scratch[..3].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
@@ -202,14 +202,19 @@ fn private_numeric_no_capture_fold_continues_and_preserves_invalid_boolean_atomi
     }
     scratch.fill(19.0);
     let before = scratch.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-    let error = code.call(&[2.0], &[], 0.0, &mut scratch).unwrap_err();
+    let error = code.call(&[], &[], 0.0, &mut scratch).unwrap_err();
     assert!(
-        matches!(error, crate::WasmCompileError::TypedSource(ref fault) if fault.kind == crate::TypedCallFaultKind::InvalidInput),
+        matches!(error, crate::WasmCompileError::Input(_)),
         "{error:?}"
     );
     assert_eq!(
         scratch.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         before
+    );
+    code.call(&[1.0], &[], 0.0, &mut scratch).unwrap();
+    assert_eq!(
+        scratch[..3].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        [-0.0f64, 3.0, 1.0].map(f64::to_bits)
     );
 }
 
@@ -253,5 +258,18 @@ fn original_no_capture_loop_observation_keeps_fatal_stop_and_repeated_warnings()
             assert_eq!(observation.source_span(), span(4));
             assert!(observation.captures().is_empty());
         }
+        let CheckedAssertionWasmOutcome::Fault {
+            fault,
+            observations,
+        } = execution.call(&compiled, &[2])
+        else {
+            panic!("invalid packed Boolean bits must not execute the assertion body");
+        };
+        assert_eq!(fault.kind, crate::TypedCallFaultKind::InvalidInput);
+        assert!(observations.is_empty());
+        assert!(matches!(
+            execution.call(&compiled, &[1]),
+            CheckedAssertionWasmOutcome::Complete { observations, .. } if observations.is_empty()
+        ));
     }
 }
