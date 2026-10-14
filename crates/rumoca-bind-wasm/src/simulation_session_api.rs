@@ -55,8 +55,8 @@ impl WasmSimulationSession {
     }
 
     /// Construct an interactive session with checked options including the
-    /// existing `auto` or `interpreter` execution policy. Empty options retain
-    /// the model's experiment metadata and existing automatic execution default.
+    /// `native_required`, `auto`, or `interpreter` execution policy. Empty
+    /// options retain the model's experiment metadata and require compilation.
     #[wasm_bindgen(js_name = withInteractiveConfiguration)]
     pub fn with_interactive_configuration(
         source: &str,
