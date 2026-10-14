@@ -73,6 +73,26 @@ binding-only schedule omission. SOLVE-C93 explicitly refuses this ordinary
 authored action in the current stateless native profile. The assertion and
 capacity checkers were kept intact.
 
+## Canary and construction-module follow-up
+
+The fixed20 after run at `00dac0f28` compiled all20 models and completed16
+simulations, with4 typed failures and0 timeouts. Its initial comparator refusal
+(missing pinned OMC Services) remains in `canary-after-initial.json`. Official
+repository dependency setup was then run, and the existing traces were compared
+without repeating Rumoca model attempts:15 compared,15 high,0 minor/deviation,
+0 missing,1 existing typed reference-policy exclusion. The before delta is not
+yet measured; this is not cohort evidence.
+
+CI's architecture scan caught `solve_runtime.rs` at2094 lines. Construction was
+moved verbatim into its focused module at `d5d35b3cb`, leaving the runtime1406
+lines and construction694. Normalizing only the required internal visibility,
+the constructor body matched SHA-256
+`b26543d07437aee661d70d0da9cc35343435c7b61b80e567bc504198146aef46`
+before/after. Four-package release libraries passed1012 tests
+(12 opt,240 sim,728 solver,32 worker), four-package library/test clippy passed,
+and local review-scan with `--fail-on-forbidden` passed. No scanner waiver was
+added.
+
 ## Limits
 
 Full workspace, documentation, all-feature clippy, coverage, full MSL,
@@ -80,3 +100,11 @@ ModelicaTest and pinned modelica_models compatibility gates have not been run
 for this tip. There is no GATE_OK, full-cohort parity or complete-browser
 lowering claim. The SLAM refusals expose remaining target capabilities; they
 are not successful SLAM execution or a performance result.
+
+A remaining cold-source gap was identified by audit: ordinary event messages
+without an assertion projection evaluate numeric Conversion values and dynamic
+String options through `eval_row_with_context`. Compiled warnings, prints and
+action requests reach that renderer. These message programs are not yet in the
+required compiled inventory. Consequently no all-source or complete cold
+diagnostic closure claim is made. Call-scoped assertion projections use checked
+invocation observations and are a distinct source path.
