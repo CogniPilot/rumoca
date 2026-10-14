@@ -1,6 +1,8 @@
 use super::*;
 use crate::{CompareOp, FunctionConditionalProgram, TensorInputKind};
 
+mod typed_relations;
+
 fn load(index: usize) -> Vec<LinearOp> {
     vec![
         LinearOp::LoadP { dst: 0, index },
@@ -33,9 +35,14 @@ fn conditional(guard: Vec<LinearOp>, raw: Vec<LinearOp>, fallback: Vec<LinearOp>
 }
 
 fn admitted(ops: &[LinearOp]) -> bool {
+    admitted_with_calls(ops, &crate::SolvePureCallTable::default())
+}
+
+fn admitted_with_calls(ops: &[LinearOp], calls: &crate::SolvePureCallTable) -> bool {
     let mut reads = ModeReads {
         flag: 7,
         memory: &[8],
+        calls,
         seed_offset: 0,
         total: 0,
         guards: 0,
@@ -150,6 +157,7 @@ fn compact_parameter_strides_cannot_hide_a_mode_read() {
         let mut reads = ModeReads {
             flag: 7,
             memory: &[8],
+            calls: &crate::SolvePureCallTable::default(),
             seed_offset: 0,
             total: 0,
             guards: 0,
