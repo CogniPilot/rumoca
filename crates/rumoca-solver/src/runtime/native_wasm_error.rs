@@ -4,6 +4,15 @@ use rumoca_exec_wasm::{TypedCallFaultKind as Kind, WasmCompileError};
 
 pub fn execution_error(error: WasmCompileError) -> RuntimeSolveError {
     match error {
+        WasmCompileError::LinearSolveSource(fault) => {
+            rumoca_eval_solve::EvalSolveError::LinearSolve {
+                size: fault.size,
+                component: Some(fault.component),
+                reason: "singular matrix",
+                span: Some(fault.provenance),
+            }
+            .into()
+        }
         WasmCompileError::TypedSource(fault) => {
             let message = format!("WASM source operation fault: {fault:?}");
             match fault.kind {
