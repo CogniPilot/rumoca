@@ -1,4 +1,5 @@
 mod authored_models;
+mod linear_solve;
 mod observations;
 mod outer_scalar_fold;
 mod tuples;

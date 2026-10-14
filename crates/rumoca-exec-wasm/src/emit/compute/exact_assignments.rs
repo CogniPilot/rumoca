@@ -110,12 +110,12 @@ fn emit_module_with_storage(
         catalog.eval_function_index,
     );
     module.section(&exports);
-    let (function, gather_faults) = emit_function(&catalog, &ready, layout, private)?;
+    let emitted = emit_function(&catalog, &ready, layout, private)?;
     let mut code = CodeSection::new();
     for body in &ready.bodies {
         code.function(body);
     }
-    code.function(&function);
+    code.function(&emitted.function);
     module.section(&code);
     Ok(CompiledNativeCallProgramWasm {
         bytes: module.finish(),
@@ -123,11 +123,18 @@ fn emit_module_with_storage(
         scratch_bytes: ready.calls.view().bytes,
         scratch_report: ready.scratch_report,
         faults: ready.faults,
-        gather_faults,
+        gather_faults: emitted.gather_faults,
+        linear_solve_faults: emitted.linear_solve_faults,
         math_imports: ready.imports.iter().map(|import| import.symbol()).collect(),
         pooled_arena_bytes: ready.arena.pooled_bytes(),
         carried: Default::default(),
     })
+}
+
+struct EmittedFunction {
+    function: Function,
+    gather_faults: Vec<crate::NativeGatherFault>,
+    linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
 }
 
 fn emit_function(
@@ -135,7 +142,7 @@ fn emit_function(
     ready: &Ready,
     layout: &VarLayout,
     private: bool,
-) -> Result<(Function, Vec<crate::NativeGatherFault>), String> {
+) -> Result<EmittedFunction, String> {
     let mut locals = ready.arena.locals();
     locals.extend([(2, ValType::I32), (1, ValType::I64)]);
     let mut function = Function::new(locals);
@@ -175,8 +182,13 @@ fn emit_function(
     emitter.require_complete_root_programs()?;
     emitter.push(Instruction::I32Const(0));
     let gather_faults = std::mem::take(&mut emitter.gather_faults);
+    let linear_solve_faults = std::mem::take(&mut emitter.linear_solve_faults);
     function.instruction(&Instruction::End);
-    Ok((function, gather_faults))
+    Ok(EmittedFunction {
+        function,
+        gather_faults,
+        linear_solve_faults,
+    })
 }
 
 fn emit_commit(emitter: &mut BodyEmitter<'_>, targets: &[usize]) -> Result<(), String> {

@@ -4,14 +4,7 @@ use rumoca_ir_solve::TensorIndex;
 
 impl BodyEmitter<'_> {
     fn gather_fault(&mut self, kind: crate::TypedCallFaultKind) -> Result<u32, String> {
-        let base = self
-            .gather_status_base
-            .ok_or("model gather requires checked status ABI")?;
-        let status = u32::try_from(self.gather_faults.len())
-            .ok()
-            .and_then(|n| base.checked_add(n))
-            .filter(|&n| n <= i32::MAX as u32)
-            .ok_or("model gather fault status overflow")?;
+        let status = self.model_fault_status()?;
         self.gather_faults.push(crate::NativeGatherFault {
             status,
             kind,
@@ -24,6 +17,19 @@ impl BodyEmitter<'_> {
                 .ok_or("model gather has no source program span")?,
         });
         Ok(status)
+    }
+
+    pub(super) fn model_fault_status(&self) -> Result<u32, String> {
+        let base = self
+            .gather_status_base
+            .ok_or("model source fault requires checked status ABI")?;
+        self.gather_faults
+            .len()
+            .checked_add(self.linear_solve_faults.len())
+            .and_then(|count| u32::try_from(count).ok())
+            .and_then(|count| base.checked_add(count))
+            .filter(|status| *status <= i32::MAX as u32)
+            .ok_or_else(|| "model source fault status overflows".into())
     }
 
     pub(super) fn emit_checked_gather(

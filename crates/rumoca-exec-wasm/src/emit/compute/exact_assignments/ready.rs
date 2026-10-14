@@ -105,7 +105,7 @@ impl Ready {
         } else {
             arena::ArenaPlan::required(&programs, 0)?
         };
-        let calls = CallProgramPlan::new(&programs, &helpers, work, arena.inner_counter)?;
+        let calls = CallProgramPlan::new(&programs, &helpers, work, arena.last_integer_local())?;
         if plan
             .maximum_tuple
             .checked_mul(8)

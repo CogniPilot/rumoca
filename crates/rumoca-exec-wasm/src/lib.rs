@@ -63,7 +63,7 @@ mod typed_call;
 mod wasm_runtime;
 pub use exact_assignments::{CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm};
 pub use native_program::{
-    CompiledNativeCallProgramWasm, NativeGatherFault,
+    CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault,
     compile_native_assignment_schedule_with_calls_wasm,
     compile_native_assignment_schedule_with_calls_wasm_and_policy,
 };
@@ -102,6 +102,7 @@ pub enum WasmCompileError {
     TypedSource(TypedCallFault),
     TypedAdmission(TypedCallCompileError),
     GatherSource(NativeGatherFault),
+    LinearSolveSource(NativeLinearSolveFault),
 }
 
 impl std::fmt::Display for WasmCompileError {
@@ -112,6 +113,9 @@ impl std::fmt::Display for WasmCompileError {
             Self::TypedSource(fault) => write!(f, "WASM source operation fault: {fault:?}"),
             Self::TypedAdmission(error) => write!(f, "WASM typed admission refusal: {error}"),
             Self::GatherSource(fault) => write!(f, "WASM source gather fault: {fault:?}"),
+            Self::LinearSolveSource(fault) => {
+                write!(f, "WASM source linear solve fault: {fault:?}")
+            }
         }
     }
 }

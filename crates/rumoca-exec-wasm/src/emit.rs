@@ -4,6 +4,7 @@ mod arena;
 mod compute;
 mod conditional;
 mod gather;
+mod linear_solve;
 mod seed;
 mod tensor;
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
@@ -383,6 +384,7 @@ struct BodyEmitter<'a> {
     region_frame_end: Option<Reg>,
     conditional_region: Option<conditional::Region>,
     gather_faults: Vec<crate::NativeGatherFault>,
+    linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
     gather_status_base: Option<u32>,
     kernel_ordinal: usize,
     program_ordinal: usize,
@@ -422,6 +424,7 @@ impl<'a> BodyEmitter<'a> {
             region_frame_end: None,
             conditional_region: None,
             gather_faults: Vec::new(),
+            linear_solve_faults: Vec::new(),
             gather_status_base: None,
             kernel_ordinal: 0,
             program_ordinal: 0,
@@ -565,6 +568,9 @@ impl<'a> BodyEmitter<'a> {
         } = op
         {
             return Some(self.emit_checked_gather(*dst, *base, *stride, dimensions, indices));
+        }
+        if self.calls.is_some() && matches!(op, LinearOp::LinearSolveComponent { .. }) {
+            return Some(self.emit_dense_linear_solve(op));
         }
         if self.calls.is_some() && matches!(op, LinearOp::PureCallDirectional { .. }) {
             return Some(self.emit_native_directional_call(op));
