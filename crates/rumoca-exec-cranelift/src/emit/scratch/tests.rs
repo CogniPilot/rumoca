@@ -90,7 +90,7 @@ fn zero_slot_calls_need_no_backing_allocation() {
 #[test]
 fn retained_calls_reuse_cells_after_success_and_balanced_source_failure() {
     let owner = ScratchOwner::default();
-    let mut original = std::ptr::null_mut();
+    let mut original: *mut u64 = std::ptr::null_mut();
     for status in [0, 3, 0] {
         assert_eq!(
             owner.invoke(|arena| {
