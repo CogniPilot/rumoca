@@ -61,13 +61,13 @@ impl rumoca_solver::CompiledSolveExpression for WasmObservations {
         tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+        self.messages.borrow_mut().clear();
         super::profile::validate_inputs(
             &self.code.source().source().model().problem.layout,
             y.len(),
             p.len(),
             tables.len(),
         )?;
-        self.messages.borrow_mut().clear();
         let mut messages = Vec::new();
         let mut formatting_error = None;
         let result = self

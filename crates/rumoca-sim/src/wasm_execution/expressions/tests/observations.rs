@@ -74,6 +74,18 @@ end PortableWarnings;
                 messages.extend(code.observed_message(action));
                 assert!(code.observed_message(&action.clone()).is_none());
             }
+            out.fill(19.0);
+            let invalid_y = vec![0.0; y.len() + 1];
+            assert!(code.call(&invalid_y, &p, 0.0, &[], &mut out).is_err());
+            assert!(out.iter().all(|value| *value == 19.0));
+            assert!(
+                model
+                    .problem
+                    .events
+                    .actions
+                    .iter()
+                    .all(|action| code.observed_message(action).is_none())
+            );
             code.call(&y, &p, -1.0, &[], &mut out).unwrap();
             assert!(
                 model
