@@ -719,6 +719,11 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         gradient: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
+        // The optional reverse evaluator is reference execution. The compiled
+        // runtime uses its prepared forward JVP when this optimization declines.
+        if self.jacobian_v.compiled(self.runtime).is_some() {
+            return Ok(false);
+        }
         let Some((program_idx, _)) = self
             .runtime
             .scalar
@@ -938,6 +943,13 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if let Some(queries) = self.runtime.scalar.compiled_targets(false) {
+            return queries.call(
+                (program_idx, output_offset, target_y_index),
+                (y, p, t),
+                self.runtime.row_eval_context(),
+            );
+        }
         if let Some((compiled, selected)) = self.runtime.compiled_projection_target_values(
             program_idx,
             output_offset,
@@ -1039,6 +1051,9 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         let Some(entry) = self.runtime.prepared_torn_sweep(tearing) else {
             return per_row_torn_block_sweep(self, tearing, y, p, t, residual_out);
         };
+        if self.runtime.scalar.compiled_implicit_rhs().is_some() && entry.compiled.is_none() {
+            return per_row_torn_block_sweep(self, tearing, y, p, t, residual_out);
+        }
         #[cfg(debug_assertions)]
         let entry_y = y.to_vec();
         let mut raw = Vec::with_capacity(tearing.residual_rows.len());

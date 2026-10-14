@@ -4,6 +4,9 @@ use super::*;
 /// has no representation in this inventory.
 #[derive(Clone)]
 pub(super) struct CompiledExpressions {
+    pub(super) implicit_targets: compiled_targets::TargetQueries,
+    pub(super) initial_targets: compiled_targets::TargetQueries,
+    pub(super) initial_update_jacobian: InitialUpdateJacobian,
     pub(super) event_transactions: Box<[Rc<dyn CompiledSolveEventTransaction>]>,
     pub(super) lifecycle: CompiledLifecycle,
     pub(super) implicit_rhs: Rc<dyn CompiledSolveExpression>,
@@ -14,6 +17,29 @@ pub(super) struct CompiledExpressions {
     pub(super) derivative_rhs: Rc<dyn CompiledSolveExpression>,
     pub(super) derivative_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,
     pub(super) root_conditions: Rc<dyn CompiledSolveExpression>,
+}
+
+#[derive(Clone)]
+pub(super) enum InitialUpdateJacobian {
+    Unavailable,
+    Compiled(Rc<dyn CompiledSolveJacobianExpression>),
+}
+
+impl InitialUpdateJacobian {
+    pub(super) fn new(
+        source: Option<&solve::ScalarProgramBlock>,
+        backend: &dyn SolveExecutionBackend,
+    ) -> Result<Self, EvalSolveError> {
+        let Some(source) = source else {
+            return Ok(Self::Unavailable);
+        };
+        let whole = required_compiled(
+            "initial_update_jacobian",
+            backend.compile_jacobian_expression(source),
+        )?;
+        selected_programs::jacobian(backend, "initial_update_jacobian", source, whole)
+            .map(Self::Compiled)
+    }
 }
 
 #[derive(Clone)]
@@ -32,6 +58,34 @@ pub(super) fn require_prepared<T>(label: &str, prepared: Option<T>) -> Result<T,
 }
 
 impl ScalarExecutionInventory {
+    pub(super) fn compiled_targets(
+        &self,
+        initial: bool,
+    ) -> Option<&compiled_targets::TargetQueries> {
+        match &self.expressions {
+            PreparedExpressions::Compiled(code) => Some(if initial {
+                &code.initial_targets
+            } else {
+                &code.implicit_targets
+            }),
+            PreparedExpressions::Reference => None,
+            #[cfg(test)]
+            PreparedExpressions::Fixture(_) => None,
+        }
+    }
+    pub(super) fn compiled_initial_update_jacobian(
+        &self,
+    ) -> Option<&Rc<dyn CompiledSolveJacobianExpression>> {
+        match &self.expressions {
+            PreparedExpressions::Compiled(code) => match &code.initial_update_jacobian {
+                InitialUpdateJacobian::Unavailable => None,
+                InitialUpdateJacobian::Compiled(code) => Some(code),
+            },
+            PreparedExpressions::Reference => None,
+            #[cfg(test)]
+            PreparedExpressions::Fixture(code) => code.initial_update_jacobian.as_ref(),
+        }
+    }
     pub(super) fn compiled_event_transaction(
         &self,
         index: usize,
@@ -126,6 +180,7 @@ impl ScalarExecutionInventory {
 #[cfg(test)]
 #[derive(Clone, Default)]
 pub(super) struct FixtureExpressions {
+    initial_update_jacobian: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     implicit_rhs: Option<Rc<dyn CompiledSolveExpression>>,
     implicit_projection_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     implicit_full_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
@@ -144,6 +199,10 @@ impl ScalarExecutionInventory {
             let code = match &self.expressions {
                 PreparedExpressions::Reference => FixtureExpressions::default(),
                 PreparedExpressions::Compiled(code) => FixtureExpressions {
+                    initial_update_jacobian: match &code.initial_update_jacobian {
+                        InitialUpdateJacobian::Unavailable => None,
+                        InitialUpdateJacobian::Compiled(code) => Some(Rc::clone(code)),
+                    },
                     implicit_rhs: Some(Rc::clone(&code.implicit_rhs)),
                     implicit_projection_jacobian_v: Some(Rc::clone(
                         &code.implicit_projection_jacobian_v,

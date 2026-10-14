@@ -53,6 +53,8 @@ mod chart_sharing;
 mod compiled_expressions;
 mod compiled_inventory;
 mod compiled_lifecycle;
+mod compiled_targets;
+mod selected_programs;
 #[cfg(test)]
 pub(crate) mod test_kernels;
 use chart_sharing::BlockReuse;
@@ -311,6 +313,8 @@ struct ScalarExecutionInventory {
     guarded_assignment_programs: Vec<PreparedGuardedAssignmentProgram>,
     event_transaction_programs: Vec<PreparedEventTransactionProgram>,
     event_transaction_coverage: PreparedEventTransactionCoverage,
+    initialization_update_rhs: PreparedScalarProgramBlock,
+    dynamic_time_event_rhs: PreparedScalarProgramBlock,
     runtime_assignment_rhs: PreparedScalarProgramBlock,
     post_commit_assignment_rhs: PreparedScalarProgramBlock,
     update_values_scratch: RefCell<Vec<f64>>,
@@ -508,9 +512,15 @@ impl SolveRuntime {
                 execution_backend
                     .as_ref()
                     .map(|backend| {
-                        required_compiled(
+                        let whole = required_compiled(
                             "implicit_rhs",
                             backend.compile_selectable_expression(block),
+                        )?;
+                        selected_programs::expression(
+                            backend.as_ref(),
+                            "implicit_rhs",
+                            block,
+                            whole,
                         )
                     })
                     .transpose()
@@ -781,7 +791,10 @@ impl SolveRuntime {
                         )
                     },
                 )?;
-        let delay_runtime = DelayRuntime::new(&model.problem.events.delays)?;
+        let delay_runtime = DelayRuntime::new_with_backend(
+            &model.problem.events.delays,
+            execution_backend.as_deref(),
+        )?;
         let root_condition_count =
             total_root_condition_count(model, delay_runtime.event_root_count())?;
         let structured_discrete_rows =
@@ -831,6 +844,54 @@ impl SolveRuntime {
         let expressions = match &execution_backend {
             None => PreparedExpressions::Reference,
             Some(backend) => PreparedExpressions::Compiled(Box::new(CompiledExpressions {
+                implicit_targets: compiled_targets::TargetQueries::prepare(
+                    &implicit_scalar_rhs,
+                    model
+                        .problem
+                        .continuous
+                        .algebraic_projection_plan
+                        .blocks
+                        .scalar_blocks()
+                        .iter()
+                        .flat_map(|block| {
+                            block.rows.iter().flat_map(|&row| {
+                                block.y_indices.iter().map(move |&target| (row, target))
+                            })
+                        }),
+                    backend.as_ref(),
+                    RowEvalContext {
+                        pure_calls: Some(&model.pure_calls),
+                        external_tables: Some(model.external_tables.as_slice()),
+                        ..Default::default()
+                    },
+                )?,
+                initial_targets: compiled_targets::TargetQueries::prepare(
+                    &PreparedScalarProgramBlock::new(initial_scalar_residual.clone())?,
+                    model
+                        .problem
+                        .initialization
+                        .projection_plan()
+                        .blocks
+                        .iter()
+                        .flat_map(|block| {
+                            block.rows.iter().flat_map(|&row| {
+                                block.unknowns.iter().filter_map(move |slot| match slot {
+                                    solve::ScalarSlot::Y { index, .. } => Some((row, *index)),
+                                    _ => None,
+                                })
+                            })
+                        }),
+                    backend.as_ref(),
+                    RowEvalContext {
+                        pure_calls: Some(&model.pure_calls),
+                        external_tables: Some(model.external_tables.as_slice()),
+                        ..Default::default()
+                    },
+                )?,
+                initial_update_jacobian: compiled_inventory::InitialUpdateJacobian::new(
+                    model.artifacts.initialization.update_jacobian_v.as_ref(),
+                    backend.as_ref(),
+                )?,
                 event_transactions: compiled_event_transactions
                     .into_iter()
                     .map(|entry| require_prepared("event_transaction", entry))
@@ -974,6 +1035,14 @@ impl SolveRuntime {
             guarded_assignment_programs,
             event_transaction_programs,
             event_transaction_coverage,
+            initialization_update_rhs: prepare(
+                |primary| &primary.initialization_update_rhs,
+                model.problem.initialization.update_rhs().clone(),
+            )?,
+            dynamic_time_event_rhs: prepare(
+                |primary| &primary.dynamic_time_event_rhs,
+                model.problem.events.dynamic_time_event_rhs.clone(),
+            )?,
             runtime_assignment_rhs: prepare(
                 |primary| &primary.runtime_assignment_rhs,
                 model.problem.discrete.runtime_assignment_rhs.clone(),
@@ -1952,7 +2021,6 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         self.delay_runtime
             .initialize(time, solver_y, params, self.row_eval_context())
-            .map_err(Into::into)
     }
     pub fn refresh_delay_values(
         &self,
@@ -1962,7 +2030,6 @@ impl SolveRuntime {
     ) -> Result<Option<f64>, RuntimeSolveError> {
         self.delay_runtime
             .refresh(time, solver_y, params, self.row_eval_context())
-            .map_err(Into::into)
     }
     pub fn commit_delay_history(
         &self,
@@ -1972,6 +2039,5 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         self.delay_runtime
             .commit(time, solver_y, params, self.row_eval_context())
-            .map_err(Into::into)
     }
 }

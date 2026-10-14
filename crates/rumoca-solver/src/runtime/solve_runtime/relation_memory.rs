@@ -85,12 +85,13 @@ impl ScalarExecutionView<'_> {
         if block.is_empty() {
             return Ok(());
         }
-        solve_eval::eval_scalar_program_block_with_context(
-            block,
-            solver_y,
-            params,
-            t,
-            self.row_eval_context(),
+        self.eval_lifecycle_block(
+            &self.scalar.dynamic_time_event_rhs,
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
+                t,
+            },
             out,
         )?;
         Ok(())
@@ -104,17 +105,14 @@ impl ScalarExecutionView<'_> {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        let scalar_changed =
-            solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-                block: self.model.problem.initialization.update_rhs(),
-                targets: self.model.problem.initialization.update_targets(),
-                y,
-                p,
-                t,
-                context: self.row_eval_context(),
-                max_iters,
-            })
-            .map_err(RuntimeSolveError::from)?;
+        let scalar_changed = self.apply_prepared_update_rows_until_stable(
+            &self.scalar.initialization_update_rhs,
+            self.model.problem.initialization.update_targets(),
+            y,
+            p,
+            t,
+            max_iters,
+        )?;
         let structured_changed = self.apply_initial_quotient_maps(y, p, t, max_iters)?;
         Ok(scalar_changed || structured_changed)
     }
