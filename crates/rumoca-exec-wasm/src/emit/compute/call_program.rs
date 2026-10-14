@@ -168,7 +168,7 @@ fn link_helpers(
     sites: &[solve::SolvePureCallSite],
 ) -> Result<ProgramHelpers, String> {
     let demands = glue::root_demands(schedule, plans, sites);
-    ProgramHelpers::with_demands(table, sites, |site| {
+    ProgramHelpers::native_with_demands(table, sites, |site| {
         demands
             .get(&site.owner().index())
             .cloned()

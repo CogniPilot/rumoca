@@ -69,6 +69,7 @@ impl LinkedOwners {
     pub(super) fn construct_program(
         table: &solve::SolvePureCallTable,
         roots: &[(solve::SolvePureCallOwnerId, Demand)],
+        assertion_mode: AssertionMode,
     ) -> Result<Self, TypedCallCompileError> {
         Self::construct_admitted(
             table,
@@ -76,7 +77,7 @@ impl LinkedOwners {
             None,
             (InputConvention::Stage, InputConvention::ByReference, true),
             Form::Primal,
-            AssertionMode::Value,
+            assertion_mode,
         )
     }
 
