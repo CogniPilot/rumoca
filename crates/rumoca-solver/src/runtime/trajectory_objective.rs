@@ -190,7 +190,7 @@ impl ResolvedObjective {
         Ok(Self {
             running,
             terminal,
-            solver_count: runtime.solver_count,
+            solver_count: runtime.solver_count(),
             gradient_parameters,
         })
     }
@@ -422,7 +422,7 @@ struct StateOde {
 
 impl ContinuousOde for StateOde {
     fn width(&self) -> usize {
-        self.problem.runtime.state_count + 1
+        self.problem.runtime.state_count() + 1
     }
 
     fn derivatives_into(&self, t: f64, state: &[f64], out: &mut [f64]) -> Result<(), String> {
@@ -433,7 +433,7 @@ impl ContinuousOde for StateOde {
 
 impl StateOde {
     fn evaluate(&self, t: f64, state: &[f64], out: &mut [f64]) -> Result<(), RuntimeSolveError> {
-        let n = self.problem.runtime.state_count;
+        let n = self.problem.runtime.state_count();
         let settle = self.problem.settle;
         let runtime = &self.problem.runtime;
         runtime.eval_state_derivatives_into(
@@ -466,7 +466,7 @@ struct AdjointOde {
 
 impl ContinuousOde for AdjointOde {
     fn width(&self) -> usize {
-        self.problem.runtime.state_count + self.problem.parameters().len()
+        self.problem.runtime.state_count() + self.problem.parameters().len()
     }
 
     fn derivatives_into(&self, tau: f64, state: &[f64], out: &mut [f64]) -> Result<(), String> {
@@ -478,7 +478,7 @@ impl ContinuousOde for AdjointOde {
 impl AdjointOde {
     fn evaluate(&self, tau: f64, state: &[f64], out: &mut [f64]) -> Result<(), TrajectoryError> {
         let problem = &self.problem;
-        let n = problem.runtime.state_count;
+        let n = problem.runtime.state_count();
         let t = (problem.config.t_end - tau).clamp(problem.config.t_start, problem.config.t_end);
         let mut x = self.scratch.borrow_mut();
         self.path.state_at(t, &mut x);
@@ -513,9 +513,9 @@ pub(crate) fn total_cotangent(
     lambda: &[f64],
     c: &[f64],
 ) -> Result<(Vec<f64>, Vec<f64>), TrajectoryError> {
-    let n = runtime.state_count;
-    let solver = runtime.solver_count;
-    let width = solver + runtime.model.problem.layout.p_scalars();
+    let n = runtime.state_count();
+    let solver = runtime.solver_count();
+    let width = solver + runtime.model().problem.layout.p_scalars();
     let mut full = vec![0.0; solver];
     full[..n].copy_from_slice(lambda);
     let mut out = vec![0.0; width];
@@ -552,7 +552,7 @@ pub fn adjoint_objective_gradient(
     objective: &TrajectoryObjective,
 ) -> Result<ObjectiveGradient, TrajectoryError> {
     let resolved = Rc::new(ResolvedObjective::resolve(problem, objective, 0)?);
-    let n = problem.runtime.state_count;
+    let n = problem.runtime.state_count();
     let m = problem.parameters().len();
     let settle = problem.settle;
     let policy = problem.construction.checkpoint_policy();
@@ -661,7 +661,7 @@ fn adjoint_parameter_gradient(
     final_state: &[f64],
     terminal_parameter: &[f64],
 ) -> Vec<f64> {
-    let n = problem.runtime.state_count;
+    let n = problem.runtime.state_count();
     problem
         .parameters()
         .iter()

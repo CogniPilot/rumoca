@@ -79,7 +79,7 @@ impl ReducedChartRuntimes {
     /// carried in its Solve IR artifacts: a superset valid whichever chart is
     /// active. `None` when some chart carries none.
     pub(super) fn state_jacobian(&self) -> Option<rumoca_ir_solve::StructuralPattern> {
-        let primary = &self.primary.model;
+        let primary = self.primary.model();
         let mut union = primary
             .artifacts
             .continuous
@@ -109,7 +109,7 @@ impl ReducedChartRuntimes {
         let runtime = if index == 0 {
             Rc::clone(&self.primary)
         } else {
-            let Some(alternate) = alternate_chart_model(&self.primary.model, chart.set_index)
+            let Some(alternate) = alternate_chart_model(self.primary.model(), chart.set_index)
             else {
                 return Err(RuntimeSolveError::solve_ir("reduced chart carries no plan"));
             };
@@ -124,13 +124,13 @@ impl ReducedChartRuntimes {
         };
         let binding_rows = runtime.implicit_state_binding_rows(
             0.0,
-            &runtime.model.initial_y,
-            &runtime.model.parameters,
+            &runtime.model().initial_y,
+            &runtime.model().parameters,
             self.state_count,
         )?;
         let state_nominals = if index == 0 {
             (0..self.state_count)
-                .map(|state| runtime.model.solver_variable_scale(state))
+                .map(|state| runtime.model().solver_variable_scale(state))
                 .collect()
         } else {
             alternate_state_nominals(self.built(0)?, &runtime, &binding_rows)?
@@ -381,7 +381,7 @@ fn alternate_state_nominals(
                 .flatten();
             Ok(match source {
                 Some(source) if Some(source) != primary_source => {
-                    runtime.model.solver_variable_scale(source)
+                    runtime.model().solver_variable_scale(source)
                 }
                 _ => primary.state_nominals[state],
             })
@@ -437,7 +437,7 @@ pub(super) fn build_reduced_charts(
     runtime: &Rc<SolveRuntime>,
     state_count: usize,
 ) -> Result<Option<ReducedChartRuntimes>, RuntimeSolveError> {
-    let model = &runtime.model;
+    let model = runtime.model();
     let chart_set = &model.problem.continuous.reduced_chart_set;
     if chart_set.charts.iter().all(|chart| chart.plan.is_none()) {
         return Ok(None);
