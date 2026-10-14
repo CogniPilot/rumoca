@@ -43,7 +43,7 @@ pub fn build_web_vendor_assets(root: &Path) -> Result<PathBuf> {
     build.arg("run").arg("build").current_dir(&web_root);
     run_status(build).with_context(|| {
         format!(
-            "failed to build browser assets in {}; verify Node 20/npm are installed",
+            "failed to build browser assets in {}; verify Node 22/npm are installed",
             web_root.display()
         )
     })?;
@@ -66,11 +66,11 @@ fn web_vendor_assets_ready(vendor_dir: &Path) -> bool {
 fn ensure_web_toolchain_available() -> Result<()> {
     ensure!(
         command_exists("node"),
-        "web/package workflows require Node.js 20 and npm; install Node, then retry the selected xtask command"
+        "web/package workflows require Node.js 22 and npm; install Node, then retry the selected xtask command"
     );
     ensure!(
         command_exists("npm"),
-        "web/package workflows require npm from Node.js 20; install Node/npm, then retry the selected xtask command"
+        "web/package workflows require npm from Node.js 22; install Node/npm, then retry the selected xtask command"
     );
     Ok(())
 }

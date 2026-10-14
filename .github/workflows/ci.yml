@@ -789,7 +789,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           # Cache npm's download store keyed by the committed lockfiles so the
           # `npm ci` in the VS Code + browser smokes reuses packages across runs.
           cache: npm
@@ -1944,7 +1944,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Rust cache (vscode)
         uses: Swatinem/rust-cache@v2
@@ -2136,7 +2136,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Rust cache (playground)
         uses: Swatinem/rust-cache@v2
@@ -2628,7 +2628,7 @@ jobs:
       - name: Setup Node.js for VSIX packaging
         uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install VS Code extension dependencies
         shell: bash
