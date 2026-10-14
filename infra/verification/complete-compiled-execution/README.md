@@ -203,3 +203,21 @@ also does not prevent a future direct reference evaluator call at the Rust type
 boundary; sealed execution owners and read-only analysis views are under design.
 Fresh browser/SLAM and pre-landing gates remain pending. These results do not
 establish complete lowering for every source program or permission to land.
+
+## Native table fault follow-up
+
+A native row containing a PureCall bypasses reference validation. Its before-fix
+control accepted valid table interpolation, but returned success for a missing
+table which the reference evaluator rejected. Native table callbacks now return
+checked status and write their result only on success. The emitter propagates
+that status before reading the private result cell. Invocation-scoped typed
+fault storage restores outer table/fault state across nested calls and unwinding.
+
+The table fault is classified as `NativeSourceFault::ExternalTable` and mapped
+to a source operation fault, retaining checked details and normal source-owner
+span wrapping. The existing validation mirror remains enabled; its checked table
+failures receive the same source category. All 164 Cranelift library tests,
+three simulation table controls and both packages' all-target clippy passed.
+`native-table-faults.json` retains the source/log digests and exact validation
+scope. The projected warning product and type-level execution-owner work remain
+unfinished, so this is not a whole-runtime closure claim.
