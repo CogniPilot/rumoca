@@ -15,6 +15,7 @@ cranelift-codegen = "0.125"
 cranelift-frontend = "0.125"
 cranelift-jit = "0.125"
 cranelift-module = "0.125"
+region = "3.0"
 
 [dev-dependencies]
 rumoca-ir-solve = { workspace = true, features = ["pattern-fixtures"] }

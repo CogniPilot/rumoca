@@ -1,3 +1,8 @@
+mod memory;
+
+#[cfg(test)]
+mod tests;
+
 use cranelift_codegen::ir::LibCall;
 use cranelift_jit::JITBuilder;
 use rumoca_core::ExternalTableData;
@@ -8,9 +13,6 @@ use rumoca_eval_solve::{
 use std::cell::{Cell, RefCell};
 
 use super::{CompileError, to_backend_err};
-
-#[cfg(test)]
-mod tests;
 
 /// Whether Cranelift's IR verifier runs on every function a JIT module
 /// defines. The verifier checks IR well-formedness and never changes the
@@ -37,6 +39,7 @@ pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
         libcall_names,
     )
     .map_err(to_backend_err)?;
+    builder.memory_provider(Box::new(memory::ChunkedMemory::default()));
     // Link the libcall directly: static PIE executables need not export libc symbols.
     builder.symbols(memory_symbols);
     Ok(builder)
