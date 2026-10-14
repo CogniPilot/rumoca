@@ -52,9 +52,8 @@ pub(in crate::typechecker) enum ComponentReferenceTypeError {
 }
 
 impl TypeCheckTraversalCallbacks for TypeChecker {
-    fn on_when_assignment(&mut self, lhs: &Expression, _types: &TypeTable) {
-        self.check_when_target_variability(lhs);
-    }
+    const WHEN_ASSIGNMENT: Option<fn(&mut Self, &Expression)> =
+        Some(Self::check_when_target_variability);
 
     fn on_component_reference(
         &mut self,

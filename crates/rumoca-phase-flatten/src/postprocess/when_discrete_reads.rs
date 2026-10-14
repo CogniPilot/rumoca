@@ -195,3 +195,6 @@ impl ExpressionVisitor for ParameterReads<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

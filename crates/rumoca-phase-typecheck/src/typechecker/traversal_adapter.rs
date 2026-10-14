@@ -45,7 +45,7 @@ pub(crate) trait TypeCheckTraversalCallbacks {
     fn push_iterator(&mut self, index: &ast::ForIndex, types: &TypeTable);
 
     /// Leave one or more nested `for` iterator scopes.
-    fn pop_iterators(&mut self, _count: usize) {}
+    fn pop_iterators(&mut self, count: usize);
 
     /// Called after an expression-form function call and all arguments are traversed.
     fn on_expression_function_call(
@@ -59,7 +59,9 @@ pub(crate) trait TypeCheckTraversalCallbacks {
     /// Called for every when-equation branch condition.
     fn on_when_condition(&mut self, _condition: &Expression, _type_table: &TypeTable) {}
 
-    fn on_when_assignment(&mut self, _lhs: &Expression, _types: &TypeTable) {}
+    /// Optional source-target variability checker for model when-equations.
+    /// Function-call discovery supplies no equation-target checker.
+    const WHEN_ASSIGNMENT: Option<fn(&mut Self, &Expression)> = None;
 
     /// MLS §8.3.4: report which branch of an if-equation is selected at
     /// translation time.
@@ -189,8 +191,10 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         self.visit_expression(lhs)?;
         self.visit_expression(rhs)?;
         self.callbacks.on_simple_equation(lhs, rhs, self.type_table);
-        if self.when_depth != 0 {
-            self.callbacks.on_when_assignment(lhs, self.type_table);
+        if self.when_depth != 0
+            && let Some(check) = C::WHEN_ASSIGNMENT
+        {
+            check(self.callbacks, lhs);
         }
         ControlFlow::Continue(())
     }

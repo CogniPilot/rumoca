@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn visible_discrete_sources_follow_prefixes_and_the_current_parameter_snapshot() {
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: solve::VarLayout::from_parts(Default::default(), 0, 5),
+                solve_layout: solve::SolveLayout {
+                    parameter_count: 1,
+                    compiled_parameter_len: 5,
+                    input_scalar_names: ["drive".to_owned()].into_iter().collect(),
+                    discrete_real_scalar_names: vec!["sampled".to_owned()],
+                    discrete_valued_scalar_names: vec!["enabled".to_owned(), "count".to_owned()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        vec!["enabled".to_owned(), "count".to_owned()],
+        solve::ScalarProgramBlock::default(),
+        Vec::new(),
+    );
+    let runtime = SolveRuntime::new_fixture(&model).expect("visible storage is in bounds");
+    let requested = vec![
+        "count".to_owned(),
+        "missing".to_owned(),
+        "enabled".to_owned(),
+    ];
+    // Distinct prefix sentinels detect accidental parameter/input/Real routing.
+    let mut parameters = vec![17.0, 19.0, 23.0, 0.0, 7.0];
+    let first = runtime
+        .visible_values_for_names(&[], &parameters, 0.0, &requested)
+        .expect("the initial discrete-value snapshot is visible");
+    assert_eq!(
+        first.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["count", "enabled"]
+    );
+    assert_eq!(first["count"], 7.0);
+    assert_eq!(first["enabled"], 0.0);
+    parameters[3] = 1.0;
+    parameters[4] = -3.0;
+    let next = runtime
+        .visible_values_for_names(&[], &parameters, 0.1, &requested)
+        .expect("a later snapshot reads the updated discrete lanes");
+    assert_eq!(next["count"], -3.0);
+    assert_eq!(next["enabled"], 1.0);
+    assert!(!next.contains_key("missing"));
+}
+
+#[test]
 fn visible_values_for_names_preserves_requested_order() {
     let model = crate::fixture_layout::with_visible_expressions(
         solve::SolveModel {

@@ -241,10 +241,6 @@ impl SolveLayout {
         self.algebraic_scalar_count
     }
 
-    pub fn output_scalar_count(&self) -> usize {
-        self.output_scalar_count
-    }
-
     pub fn solver_scalar_count(&self) -> usize {
         self.state_scalar_count
             .saturating_add(self.algebraic_scalar_count)
