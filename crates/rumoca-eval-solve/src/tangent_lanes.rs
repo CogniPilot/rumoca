@@ -88,8 +88,9 @@ pub struct TornTangentJacobian {
 }
 
 /// Answers one JVP program of a one-direction plan: `(program, seed, out)`,
-/// `false` to decline.
-pub type DirectionCall<'a> = dyn FnMut(usize, &[f64], &mut Vec<f64>) -> bool + 'a;
+/// `Ok(false)` to decline before execution; admitted errors are never declines.
+pub type DirectionCall<'a, E = EvalSolveError> =
+    dyn FnMut(usize, &[f64], &mut Vec<f64>) -> Result<bool, E> + 'a;
 
 /// The sweep buffers of one [`TornTangentEvaluator`], kept between evaluations
 /// so a sweep allocates and zeroes nothing proportional to the point. `seed`
@@ -167,18 +168,19 @@ impl TornTangentEvaluator {
         &self,
         point: TangentPoint<'_>,
     ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
-        self.eval_through(point, &mut |_, _, _| false)
+        self.eval_through(point, &mut |_, _, _| Ok(false))
     }
 
     /// [`Self::eval`] with `call` answering a one-direction plan's JVP
     /// programs: `call(program, seed, out)` writes the program's outputs under
-    /// `seed` and returns `true`, or returns `false` to leave the program to
-    /// the prepared evaluator. It must give the prepared evaluator's values.
-    pub fn eval_through(
+    /// `seed` and returns `Ok(true)`, or returns `Ok(false)` before execution
+    /// to leave the program to the prepared reference evaluator. Admitted
+    /// errors propagate unchanged. It must give the prepared evaluator's values.
+    pub fn eval_through<E: From<EvalSolveError>>(
         &self,
         point: TangentPoint<'_>,
-        call: &mut DirectionCall<'_>,
-    ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
+        call: &mut DirectionCall<'_, E>,
+    ) -> Result<Option<TornTangentJacobian>, E> {
         let lanes = if self.directions.is_some() {
             1
         } else {
@@ -192,7 +194,7 @@ impl TornTangentEvaluator {
         }
         let result = match &self.directions {
             Some(directions) => self.eval_directions(directions, point, call, (seed, out)),
-            None => self.eval_lanes_through(point, seed, out),
+            None => self.eval_lanes_through(point, seed, out).map_err(E::from),
         };
         for &target in self.plan.tear_targets() {
             seed[target * lanes..(target + 1) * lanes].fill(0.0);
@@ -256,30 +258,32 @@ impl TornTangentEvaluator {
     /// alone, then each tear column's tangents through the steps in sweep
     /// order and the reduced rows. Each value equals its lane in the
     /// multi-lane form.
-    fn eval_directions(
+    fn eval_directions<E: From<EvalSolveError>>(
         &self,
         directions: &crate::PreparedScalarProgramBlock,
         point: TangentPoint<'_>,
-        call: &mut DirectionCall<'_>,
+        call: &mut DirectionCall<'_, E>,
         (seed, out): (&mut [f64], &mut Vec<f64>),
-    ) -> Result<Option<TornTangentJacobian>, EvalSolveError> {
+    ) -> Result<Option<TornTangentJacobian>, E> {
         let tears = self.plan.lanes() - 1;
         let steps = self.plan.steps();
         let mut direction = |seed: &[f64], program: usize, out: &mut Vec<f64>| {
-            if call(program, seed, out) {
+            if call(program, seed, out)? {
                 return Ok(());
             }
-            directions.eval_row_outputs_unchecked_with_context(
-                program,
-                point.y,
-                point.p,
-                point.t,
-                RowEvalContext {
-                    seed: Some(seed),
-                    ..point.context
-                },
-                out,
-            )
+            directions
+                .eval_row_outputs_unchecked_with_context(
+                    program,
+                    point.y,
+                    point.p,
+                    point.t,
+                    RowEvalContext {
+                        seed: Some(seed),
+                        ..point.context
+                    },
+                    out,
+                )
+                .map_err(E::from)
         };
         let mut coefficients = Vec::with_capacity(steps.len());
         for (index, step) in steps.iter().enumerate() {
