@@ -5,22 +5,49 @@ use super::*;
 #[derive(Clone)]
 struct TargetBinding {
     code: Rc<dyn CompiledSolveTargetValues>,
+    family: Rc<solve_eval::PreparedTargetValuePlan>,
     selected: usize,
 }
 
 #[derive(Clone, Default)]
 pub(super) struct TargetQueries {
     bindings: FxHashMap<(usize, usize, usize), TargetBinding>,
+    source: Option<solve::ScalarProgramBlock>,
+    calls: Option<solve::SolvePureCallTable>,
+    table_free: bool,
 }
 
 impl TargetQueries {
+    #[cfg(test)]
     pub(super) fn prepare(
         source: &PreparedScalarProgramBlock,
         candidates: impl IntoIterator<Item = (usize, usize)>,
         backend: &dyn SolveExecutionBackend,
         context: RowEvalContext<'_>,
     ) -> Result<Self, EvalSolveError> {
-        let mut result = Self::default();
+        Self::prepare_with_primary(source, candidates, backend, context, None)
+    }
+
+    pub(super) fn prepare_with_primary(
+        source: &PreparedScalarProgramBlock,
+        candidates: impl IntoIterator<Item = (usize, usize)>,
+        backend: &dyn SolveExecutionBackend,
+        context: RowEvalContext<'_>,
+        primary: Option<&Self>,
+    ) -> Result<Self, EvalSolveError> {
+        let unchanged = primary
+            .filter(|primary| primary.matches_context(context))
+            .and_then(|primary| {
+                let base = primary.source.as_ref()?;
+                let replaced = solve_eval::replaced_programs(base, source.block())?;
+                Some((primary, base, replaced))
+            });
+        let mut result = Self {
+            source: Some(source.block().clone()),
+            calls: context.pure_calls.cloned(),
+            table_free: context.external_tables.is_none_or(<[_]>::is_empty),
+            ..Self::default()
+        };
         let mut families = FxHashMap::default();
         for (row, target) in candidates {
             let (program, output) =
@@ -37,9 +64,19 @@ impl TargetQueries {
             let Some(plan) = source.portable_target_value_plan(program, output, target)? else {
                 continue;
             };
+            if let Some((primary, base, replaced)) = &unchanged
+                && replaced.binary_search(&program).is_err()
+                && base.program_span(program) == source.block().program_span(program)
+                && let Some(binding) = primary.bindings.get(&key)
+                && binding.matches(&plan)
+            {
+                result.bindings.insert(key, binding.clone());
+                continue;
+            }
             let family = (program, plan.canonical_prefix_len());
-            let code = match families.get(&family) {
-                Some(code) => Rc::clone(code),
+            let selected = plan.private_result_offset();
+            let (code, family) = match families.get(&family) {
+                Some((code, plan)) => (Rc::clone(code), Rc::clone(plan)),
                 None => {
                     let code =
                         backend
@@ -50,19 +87,35 @@ impl TargetQueries {
                                 ),
                                 span: source.block().program_span(program),
                             })?;
-                    families.insert(family, Rc::clone(&code));
-                    code
+                    let plan = Rc::new(plan);
+                    families.insert(family, (Rc::clone(&code), Rc::clone(&plan)));
+                    (code, plan)
                 }
             };
             result.bindings.insert(
                 key,
                 TargetBinding {
                     code,
-                    selected: plan.private_result_offset(),
+                    family,
+                    selected,
                 },
             );
         }
         Ok(result)
+    }
+
+    fn matches_context(&self, context: RowEvalContext<'_>) -> bool {
+        let empty_calls = |calls: Option<&solve::SolvePureCallTable>| {
+            calls.is_none_or(|calls| calls.owners().is_empty())
+        };
+        self.table_free
+            && context.external_tables.is_none_or(<[_]>::is_empty)
+            && (self
+                .calls
+                .as_ref()
+                .zip(context.pure_calls)
+                .is_some_and(|(base, target)| base.shares_table_owner(target))
+                || empty_calls(self.calls.as_ref()) && empty_calls(context.pure_calls))
     }
 
     pub(super) fn call(
@@ -79,6 +132,17 @@ impl TargetQueries {
                     .call(binding.selected, inputs.0, inputs.1, inputs.2, context)
             })
             .transpose()
+    }
+}
+
+impl TargetBinding {
+    fn matches(&self, plan: &solve_eval::PreparedTargetValuePlan) -> bool {
+        self.selected == plan.private_result_offset()
+            && self.family.row() == plan.row()
+            && self.family.program().programs() == plan.program().programs()
+            && self.family.program().program_spans() == plan.program().program_spans()
+            && self.family.program().output_indices() == plan.program().output_indices()
+            && self.family.coefficient_outputs() == plan.coefficient_outputs()
     }
 }
 

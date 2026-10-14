@@ -20,6 +20,16 @@ impl SolveRuntime {
                 span: None,
             })?;
         let primary = primary.map(Self::scalar_evaluation).transpose()?;
+        let primary = primary.filter(|primary| {
+            match (
+                execution_backend.as_ref(),
+                primary.scalar.execution_backend.as_ref(),
+            ) {
+                (Some(current), Some(base)) => Rc::ptr_eq(current, base),
+                (None, None) => true,
+                _ => false,
+            }
+        });
         let model = &*model_owner;
         if let Some(backend) = &execution_backend {
             backend.validate_model_context(model).map_err(|message| {
@@ -100,6 +110,7 @@ impl SolveRuntime {
                     .map(|backend| {
                         let whole = required_compiled(
                             "implicit_rhs",
+                            block.program_spans(),
                             backend.compile_selectable_expression(block),
                         )?;
                         selected_programs::expression(
@@ -206,6 +217,7 @@ impl SolveRuntime {
                     .map(|backend| {
                         required_compiled(
                             "event_transaction",
+                            &[],
                             backend.compile_event_transaction(prepared.program()),
                         )
                     })
@@ -436,7 +448,7 @@ impl SolveRuntime {
         let expressions = match &execution_backend {
             None => PreparedExpressions::Reference,
             Some(backend) => PreparedExpressions::Compiled(Box::new(CompiledExpressions {
-                implicit_targets: compiled_targets::TargetQueries::prepare(
+                implicit_targets: compiled_targets::TargetQueries::prepare_with_primary(
                     &implicit_scalar_rhs,
                     model
                         .problem
@@ -456,8 +468,9 @@ impl SolveRuntime {
                         external_tables: Some(model.external_tables.as_slice()),
                         ..Default::default()
                     },
+                    primary.and_then(|primary| primary.scalar.compiled_targets(false)),
                 )?,
-                initial_targets: compiled_targets::TargetQueries::prepare(
+                initial_targets: compiled_targets::TargetQueries::prepare_with_primary(
                     &PreparedScalarProgramBlock::new(initial_scalar_residual.clone())?,
                     model
                         .problem
@@ -479,6 +492,7 @@ impl SolveRuntime {
                         external_tables: Some(model.external_tables.as_slice()),
                         ..Default::default()
                     },
+                    primary.and_then(|primary| primary.scalar.compiled_targets(true)),
                 )?,
                 initial_update_jacobian: compiled_inventory::InitialUpdateJacobian::new(
                     model.artifacts.initialization.update_jacobian_v.as_ref(),

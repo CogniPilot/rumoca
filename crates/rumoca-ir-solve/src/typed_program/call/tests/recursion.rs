@@ -266,16 +266,7 @@ fn group_cannot_hide_assertions_in_an_earlier_callee() {
                 },
             )?;
             let callee = if hidden {
-                table.add_owner(
-                    identity(901),
-                    vec![],
-                    vec![SolvePureCallOutput::result(real())],
-                    span(901),
-                    |b, _, outputs| {
-                        let result = b.call(assertion, &[], span(901))?;
-                        b.store(outputs[0], result[0], span(901))
-                    },
-                )?
+                hide_assertion(table, assertion)?
             } else {
                 assertion
             };
@@ -297,6 +288,22 @@ fn group_cannot_hide_assertions_in_an_earlier_callee() {
             "{error}"
         );
     }
+}
+
+fn hide_assertion(
+    table: &mut SolvePureCallTableBuilder,
+    assertion: SolvePureCallOwnerId,
+) -> Result<SolvePureCallOwnerId, SolveProgramConstructionError> {
+    table.add_owner(
+        identity(901),
+        vec![],
+        vec![SolvePureCallOutput::result(real())],
+        span(901),
+        |b, _, outputs| {
+            let result = b.call(assertion, &[], span(901))?;
+            b.store(outputs[0], result[0], span(901))
+        },
+    )
 }
 
 #[test]

@@ -22,8 +22,11 @@ impl PreparedManifoldProjection {
         let compiled_residual = compiled
             .map(|backend| {
                 let source = to_scalar_program_block(residual)?;
-                let whole =
-                    required_compiled("manifold_residual", backend.compile_expression(&source))?;
+                let whole = required_compiled(
+                    "manifold_residual",
+                    source.program_spans(),
+                    backend.compile_expression(&source),
+                )?;
                 selected_programs::expression(backend, "manifold_residual", &source, whole)
             })
             .transpose()?;
@@ -32,6 +35,7 @@ impl PreparedManifoldProjection {
                 let source = to_scalar_program_block(directional)?;
                 let whole = required_compiled(
                     "manifold_jacobian_v",
+                    source.program_spans(),
                     backend.compile_jacobian_expression(&source),
                 )?;
                 selected_programs::jacobian(backend, "manifold_jacobian_v", &source, whole)
