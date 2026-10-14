@@ -218,10 +218,11 @@ fn check_model_contexts(inventory: &Value) {
 
 #[test]
 fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples() {
-    let inventory = std::fs::read_to_string(
-        repository_root().join("docs/verification/user-guide-ci/non-modelica-inventory.json"),
-    )
-    .unwrap();
+    let inventory =
+        std::fs::read_to_string(repository_root().join(
+            "crates/rumoca-bind-wasm/src/tests/fixtures/user_guide/non-modelica-inventory.json",
+        ))
+        .unwrap();
     let inventory: Value = serde_json::from_str(&inventory).unwrap();
     assert_eq!(inventory["schema"], 2);
     check_model_contexts(&inventory);
