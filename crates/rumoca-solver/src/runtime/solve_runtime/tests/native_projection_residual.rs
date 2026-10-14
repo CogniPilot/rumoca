@@ -50,7 +50,7 @@ fn selected_projection_residual_uses_native_or_explicit_decline() {
             decline,
             coordinate: (1, 0),
         });
-        runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+        *runtime.scalar_fixture_mut().fixture_compiled_implicit_rhs() = Some(native.clone());
         for value in [2.0, -7.0] {
             assert_eq!(
                 selected_projection(&runtime, false)
@@ -76,7 +76,7 @@ fn selected_projection_residual_propagates_native_errors() {
         decline: false,
         coordinate: (1, 0),
     });
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+    *runtime.scalar_fixture_mut().fixture_compiled_implicit_rhs() = Some(native.clone());
     let error = selected_projection(&runtime, false)
         .eval_implicit_residual_row(1, &[1.0, 2.0], &[], 0.0)
         .expect_err("native failure must not be retried through the interpreter");
@@ -113,7 +113,7 @@ fn selected_projection_residual_preserves_aggregate_output_mapping() {
         decline: false,
         coordinate: (0, 1),
     });
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+    *runtime.scalar_fixture_mut().fixture_compiled_implicit_rhs() = Some(native.clone());
     assert_eq!(
         selected_projection(&runtime, false)
             .eval_implicit_residual_row(1, &[1.0, 7.0], &[], 0.0)

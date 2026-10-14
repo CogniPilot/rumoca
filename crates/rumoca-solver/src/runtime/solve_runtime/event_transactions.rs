@@ -282,12 +282,7 @@ impl ScalarExecutionView<'_> {
         let output = outputs.get_mut(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
-        if let Some(compiled) = self
-            .scalar
-            .compiled_event_transactions
-            .get(transaction_index)
-            .and_then(Option::as_ref)
-        {
+        if let Some(compiled) = self.scalar.compiled_event_transaction(transaction_index)? {
             compiled
                 .call(&input, output)
                 .map_err(|error| admitted_compiled_error("event transaction", &[], error))?;

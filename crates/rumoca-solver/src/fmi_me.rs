@@ -294,14 +294,15 @@ impl From<Rc<dyn crate::SolveExecutionBackend>> for MeExecutionBackend {
 /// being trustworthy, so the contradiction is typed data, never a quiet
 /// resolution in either direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "execution policy '{policy}' forbids compiled native execution, but a compiled \
-     execution backend handle was supplied; withhold the handle or request the \
-     'auto' policy"
-)]
-pub struct MeExecutionPolicyContradiction {
-    /// The rendered label of the rejecting policy.
-    pub policy: &'static str,
+pub enum MeExecutionPolicyContradiction {
+    #[error(
+        "execution policy '{policy}' forbids compiled native execution, but a compiled execution backend handle was supplied"
+    )]
+    UnexpectedBackend { policy: &'static str },
+    #[error(
+        "execution policy '{policy}' requires compiled native execution, but no compiled execution backend is available"
+    )]
+    MissingBackend { policy: &'static str },
 }
 
 /// Admit a host-supplied opaque execution backend handle against the request's
@@ -318,7 +319,12 @@ pub fn admit_execution_backend(
     execution_backend: Option<MeExecutionBackend>,
 ) -> Result<Option<MeExecutionBackend>, MeExecutionPolicyContradiction> {
     if execution_backend.is_some() && !policy.allows_native() {
-        return Err(MeExecutionPolicyContradiction {
+        return Err(MeExecutionPolicyContradiction::UnexpectedBackend {
+            policy: policy.label(),
+        });
+    }
+    if execution_backend.is_none() && policy == crate::SimExecutionPolicy::NativeRequired {
+        return Err(MeExecutionPolicyContradiction::MissingBackend {
             policy: policy.label(),
         });
     }

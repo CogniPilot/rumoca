@@ -127,9 +127,9 @@ impl SolveExecutionBackend for AssignmentBackend {
 
     fn compile_jacobian_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Err("unused by assignment test".into())
+        super::super::test_kernels::jacobian(block)
     }
 
     fn compile_assignment_schedule(
@@ -464,16 +464,16 @@ impl CompiledSolveAssignmentSchedule for AdmittedSchedule {
 impl SolveExecutionBackend for ScheduleAdmission {
     fn compile_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        Err("unused by schedule admission test".into())
+        super::super::test_kernels::expression(block)
     }
 
     fn compile_jacobian_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Err("unused by schedule admission test".into())
+        super::super::test_kernels::jacobian(block)
     }
 
     fn compile_assignment_schedule(
@@ -547,30 +547,37 @@ fn schedules_the_backend_admits_have_no_interpreter_copy_and_run_compiled() {
 }
 
 #[test]
-fn only_the_schedule_the_backend_declines_is_prepared_for_the_interpreter() {
+fn a_declined_required_schedule_rejects_preparation() {
     let model = warm_start_test_model();
     let backend = schedule_admission(vec![0]);
-    let (runtime, issued) = runtime_with_admission(&model, &backend);
-    assert_eq!(runtime.interpreted_schedule_count(), 1);
-    assert!(issued >= 1);
+    let error = SolveRuntime::new_fixture_with_backend(&model, backend.clone())
+        .err()
+        .expect("a required schedule cannot decline");
+    assert!(
+        error
+            .to_string()
+            .contains("test backend declines this schedule")
+    );
+    assert_eq!(backend.asked.get(), 1);
+    assert_eq!(backend.executions.get(), 0);
 }
 
 #[test]
-fn the_backend_is_asked_once_per_event_transaction_and_a_decline_keeps_the_interpreter() {
+fn a_declined_transaction_rejects_preparation_before_execution() {
     let mut model = super::super::event_transactions::tests::transaction_model();
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
     let backend = schedule_admission(Vec::new());
-    let runtime = SolveRuntime::new_with_execution_backend(&model, Some(backend.clone())).unwrap();
-    assert_eq!(backend.transactions_asked.get(), 1);
+    let error = SolveRuntime::new_with_execution_backend(&model, Some(backend.clone()))
+        .err()
+        .expect("a required event transaction cannot decline");
     assert!(
-        runtime
-            .scalar_execution()
-            .unwrap()
-            .scalar
-            .compiled_event_transactions[0]
-            .is_none()
+        error
+            .to_string()
+            .contains("test backend declines every event transaction")
     );
+    assert_eq!(backend.transactions_asked.get(), 1);
+    assert_eq!(backend.executions.get(), 0);
 }
 
 #[test]

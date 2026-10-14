@@ -64,7 +64,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 rumoca-compile = { workspace = true }
-rumoca-exec-wasm = { workspace = true }
+rumoca-solver = { workspace = true, features = ["native-wasm"] }
+rumoca-exec-wasm = { workspace = true, features = ["host-engine"] }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

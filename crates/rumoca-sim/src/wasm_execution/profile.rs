@@ -32,6 +32,28 @@ pub(super) fn single_program(
     program: usize,
     layout: &VarLayout,
 ) -> Result<ScalarProgramBlock, String> {
+    single_program_with_seed(source, program, layout, None)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub(super) fn single_directional_program(
+    source: &ScalarProgramBlock,
+    program: usize,
+    layout: &VarLayout,
+) -> Result<ScalarProgramBlock, String> {
+    let seed_len = layout
+        .y_scalars()
+        .checked_add(layout.p_scalars())
+        .ok_or("WASM seed layout overflows")?;
+    single_program_with_seed(source, program, layout, Some(seed_len))
+}
+
+fn single_program_with_seed(
+    source: &ScalarProgramBlock,
+    program: usize,
+    layout: &VarLayout,
+    seed_len: Option<usize>,
+) -> Result<ScalarProgramBlock, String> {
     let ops = source
         .program(program)
         .ok_or("WASM source program is absent")?;
@@ -44,6 +66,7 @@ pub(super) fn single_program(
         match op {
             LinearOp::LoadY { index, .. } if *index < layout.y_scalars() => {}
             LinearOp::LoadP { index, .. } if *index < layout.p_scalars() => {}
+            LinearOp::LoadSeed { index, .. } if seed_len.is_some_and(|len| *index < len) => {}
             LinearOp::Const { .. }
             | LinearOp::LoadTime { .. }
             | LinearOp::Move { .. }

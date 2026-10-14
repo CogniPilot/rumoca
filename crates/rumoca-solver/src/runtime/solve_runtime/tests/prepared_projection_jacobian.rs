@@ -321,13 +321,13 @@ fn prepared_projection_rejects_a_replaced_canonical_primal_source() {
 }
 
 // The constructor receives a backend whose projection preparation is observable
-// and can fail. Other optional compiled entries explicitly decline.
+// and can fail. Required entries have explicit reference test doubles.
 impl SolveExecutionBackend for Compiler {
     fn compile_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        Err("demand fixture uses interpreted values".into())
+        super::super::test_kernels::expression(block)
     }
 
     fn compile_jacobian_expression(
@@ -339,11 +339,11 @@ impl SolveExecutionBackend for Compiler {
 
     fn compile_assignment_schedule(
         &self,
-        _source: &solve::ComputeBlock,
-        _owners: &solve::ContinuousRefreshOwners,
-        _schedule: &solve::ExactRefreshAssignmentSchedule,
+        source: &solve::ComputeBlock,
+        owners: &solve::ContinuousRefreshOwners,
+        schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("demand fixture uses interpreted assignments".into())
+        super::super::test_kernels::assignment(source, owners, schedule)
     }
 
     fn compile_event_transaction(
@@ -355,17 +355,24 @@ impl SolveExecutionBackend for Compiler {
 }
 
 #[test]
-fn declined_transaction_compilation_retains_atomic_interpreted_execution() {
+fn explicit_reference_transaction_retains_atomic_assertion_execution() {
     let model = super::super::event_transactions::tests::transaction_model();
     let native = Rc::new(PreparedNative::default());
-    let runtime = runtime_with_preparation_backend(model, native.clone())
-        .expect("optional transaction compilation may decline");
+    let mut model = model;
+    model.problem.continuous.refresh_owners =
+        solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
+    assert!(
+        runtime_with_preparation_backend(model.clone(), native.clone()).is_err(),
+        "required transaction compilation must fail early"
+    );
+    let runtime =
+        SolveRuntime::new(&model).expect("explicit reference execution remains available");
     assert_eq!(
         runtime
             .scalar_execution()
             .unwrap()
             .scalar
-            .compiled_event_transactions
+            .event_transaction_programs
             .len(),
         1
     );
@@ -374,7 +381,8 @@ fn declined_transaction_compilation_retains_atomic_interpreted_execution() {
             .scalar_execution()
             .unwrap()
             .scalar
-            .compiled_event_transactions[0]
+            .compiled_event_transaction(0)
+            .unwrap()
             .is_none()
     );
     let mut y = [];

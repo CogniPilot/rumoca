@@ -49,9 +49,9 @@ impl SolveExecutionBackend for CountingBackend {
 
     fn compile_jacobian_expression(
         &self,
-        _: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Err("directional execution uses the fixture interpreter".into())
+        crate::runtime::solve_runtime::test_kernels::jacobian(block)
     }
 
     fn compile_assignment_schedule(

@@ -71,7 +71,7 @@ impl RefreshProjectionModel<'_> {
         {
             return Ok(());
         }
-        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs
+        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs()
             && compiled.call_program_outputs(
                 program,
                 y,
