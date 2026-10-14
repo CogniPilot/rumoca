@@ -83,8 +83,8 @@ pub use runtime::solve_runtime::{
     EventTransactionExecution, EventUpdateRowFilter, InitialEventObservation,
     PrecompiledSolveBackend, PrecompiledSolveBackendBuilder, ProjectedEventUpdateInput,
     ProjectedInitialEventInput, ProjectedInitialEventOutcome, ProjectedPostInitialEventInput,
-    ScalarExecutionView, SolveExecutionBackend, SolveRuntime, SolveRuntimeModel,
-    block_residual_split_counts, reset_block_residual_split_counts,
+    ReferenceReverseExecution, ScalarExecutionView, SolveExecutionBackend, SolveRuntime,
+    SolveRuntimeModel, block_residual_split_counts, reset_block_residual_split_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{

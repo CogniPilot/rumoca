@@ -4,6 +4,7 @@ mod admitted_errors;
 mod lifecycle_preparation;
 mod native_manifold;
 mod native_projection_residual;
+mod reverse_preparation;
 mod root_remainders;
 mod seed_linearization;
 mod selected_preparation;
