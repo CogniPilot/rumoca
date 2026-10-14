@@ -38,6 +38,9 @@ impl<'a> Emitter<'a> {
             unreachable!("checked assertion dispatch")
         };
         if self.linked.unit_plan(self.unit)?.observations.is_none() {
+            if self.linked.assertion_mode == super::super::link::AssertionMode::Value {
+                return self.value_assertion(index, spanned);
+            }
             return self.assigned_read_check(index, spanned);
         }
         let tag = self
@@ -48,30 +51,7 @@ impl<'a> Emitter<'a> {
         self.push(I::I64Load(CELL));
         self.push(I::I64Eqz);
         self.push(I::If(BlockType::Empty));
-        if let solve::SolveAssertionMessage::Captures { program } = message {
-            let plan = &self.plan.regions[index][0];
-            let inputs = super::super::control::interface(
-                program.body(),
-                plan,
-                solve::SolveStorageClass::Input,
-            );
-            let arguments = captures
-                .iter()
-                .map(|register| self.reg(*register))
-                .collect::<Vec<_>>();
-            self.copy_pairs(&inputs, &arguments);
-            self.region_body(index, 0, program, plan)?;
-            let outputs = super::super::control::interface(
-                program.body(),
-                plan,
-                solve::SolveStorageClass::Output,
-            );
-            let targets = destinations
-                .iter()
-                .map(|register| self.reg(*register))
-                .collect::<Vec<_>>();
-            self.copy_pairs(&targets, &outputs);
-        }
+        self.assertion_failed_payload(index, captures, destinations, message)?;
         self.append_assertion(index, tag, destinations, spanned.provenance())?;
         if self.owner.outputs()[*predicate_output].assertion_level()
             == Some(solve::SolveAssertionLevel::Error)
@@ -86,20 +66,7 @@ impl<'a> Emitter<'a> {
             self.push(I::Return);
         }
         self.push(I::Else);
-        for destination in destinations {
-            let inactive = solve::SolveValue::inactive_assertion_message(self.scalar(*destination));
-            let bits = match inactive.kind() {
-                solve::SolveValueKind::Real64(bits) => bits as i64,
-                solve::SolveValueKind::Integer(value) => value,
-                solve::SolveValueKind::Boolean(value) => i64::from(value),
-                solve::SolveValueKind::Real32(_) => {
-                    return Err(TypedCallCompileError::UnsupportedArithmetic);
-                }
-            };
-            let target = self.reg(*destination);
-            // Compact payload storage, without synthesizing compiler operations.
-            self.fill_cells(target, bits);
-        }
+        self.assertion_inactive_payload(destinations)?;
         self.push(I::End);
         Ok(())
     }
@@ -125,14 +92,6 @@ impl<'a> Emitter<'a> {
         }
         self.commit_record()?;
         Ok(())
-    }
-
-    fn fill_cells(&mut self, target: CellRange, bits: i64) {
-        self.cells(target.bytes / 8, |emitter| {
-            emitter.cell_address(target);
-            emitter.push(I::I64Const(bits));
-            emitter.push(I::I64Store(CELL));
-        });
     }
 
     fn begin_record(

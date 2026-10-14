@@ -2,6 +2,8 @@
 mod fixtures;
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 mod host_preparation;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod value_rows;
 mod zero_result_flow;
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 mod value_form;

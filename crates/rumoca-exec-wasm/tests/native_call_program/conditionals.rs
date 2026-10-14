@@ -282,7 +282,7 @@ fn conditional_complete_scalar_tuple_keeps_earlier_private_result_on_late_fault(
 }
 
 #[test]
-fn conditional_region_range_publication_refuses_before_module_publication() {
+fn conditional_region_range_publication_emits_a_valid_module() {
     let (table, site) = call_table();
     let conditional = solve::LinearOp::FunctionConditional {
         dst_start: 2,
@@ -328,17 +328,11 @@ fn conditional_region_range_publication_refuses_before_module_publication() {
         vec![span(820)],
     )
     .unwrap();
-    let error = rumoca_exec_wasm::compile_private_program_wasm(
+    let compiled = rumoca_exec_wasm::compile_private_program_wasm(
         &block,
         &solve::VarLayout::from_parts(Default::default(), 1, 2),
         &table,
     )
-    .err()
-    .expect("conditional range publication must be refused");
-    assert!(
-        error
-            .to_string()
-            .contains("native conditional range publication is unsupported"),
-        "{error}"
-    );
+    .unwrap();
+    Module::new(&Engine::default(), compiled.module_bytes()).unwrap();
 }

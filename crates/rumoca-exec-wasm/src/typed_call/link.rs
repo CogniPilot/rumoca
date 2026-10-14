@@ -10,8 +10,15 @@ use crate::emit::MathImport;
 use rumoca_ir_solve as solve;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AssertionMode {
+    Standalone,
+    Value,
+}
+
 pub(super) struct LinkedOwners {
     pub form: Form,
+    pub assertion_mode: AssertionMode,
     pub plans: Vec<Option<FramePlan>>,
     /// The same bodies with top-level scalar registers in wasm locals, for an
     /// owner emitted as one function. Callers size frames from `plans`, which
@@ -52,6 +59,7 @@ impl LinkedOwners {
             None,
             (InputConvention::Packed, InputConvention::Packed, false),
             Form::Primal,
+            AssertionMode::Standalone,
         )
     }
 
@@ -68,6 +76,7 @@ impl LinkedOwners {
             None,
             (InputConvention::Stage, InputConvention::ByReference, true),
             Form::Primal,
+            AssertionMode::Value,
         )
     }
 
@@ -81,6 +90,7 @@ impl LinkedOwners {
             None,
             (InputConvention::Stage, InputConvention::ByReference, true),
             Form::Directional,
+            AssertionMode::Value,
         )
     }
 
@@ -94,6 +104,7 @@ impl LinkedOwners {
             Some(invocation),
             (InputConvention::Packed, InputConvention::Packed, false),
             Form::Primal,
+            AssertionMode::Standalone,
         )
     }
 
@@ -112,6 +123,7 @@ impl LinkedOwners {
             Some(checked),
             (InputConvention::Packed, InputConvention::Packed, false),
             Form::Primal,
+            AssertionMode::Standalone,
         )
     }
 
@@ -121,6 +133,7 @@ impl LinkedOwners {
         invocation: Option<&solve::CheckedAssertionInvocation<'_>>,
         (roots_convention, helpers, by_demand): (InputConvention, InputConvention, bool),
         form: Form,
+        assertion_mode: AssertionMode,
     ) -> Result<Self, TypedCallCompileError> {
         let mut reachable = vec![false; table.owners().len()];
         let mut pending = roots.iter().map(|(root, _)| *root).collect::<Vec<_>>();
@@ -140,7 +153,7 @@ impl LinkedOwners {
             }
             reachable[id.index() as usize] = true;
             if invocation.is_none() {
-                check_outputs(owner, form)?;
+                check_outputs(owner, form, assertion_mode)?;
             } else if owner
                 .outputs()
                 .iter()
@@ -176,7 +189,8 @@ impl LinkedOwners {
             })
             .collect::<Vec<_>>();
         let units = admitted_units(table, &roots, &reachable, &always, form)?;
-        let mut linked = Self::with_units(table.owners().len(), &units, always, form);
+        let mut linked =
+            Self::with_units(table.owners().len(), &units, always, form, assertion_mode);
         for (owner, demand) in &roots {
             let unit = linked.unit_of(*owner, demand)?;
             linked.root_units.insert(*owner, unit);
@@ -230,6 +244,7 @@ impl LinkedOwners {
         units: &BTreeSet<(u32, Demand)>,
         always: Vec<Box<[bool]>>,
         form: Form,
+        assertion_mode: AssertionMode,
     ) -> Self {
         let mut unit_index = BTreeMap::new();
         let mut unit_owner = (0..owners as u32).collect::<Vec<_>>();
@@ -240,6 +255,7 @@ impl LinkedOwners {
         let count = unit_owner.len();
         Self {
             form,
+            assertion_mode,
             plans: (0..count).map(|_| None).collect(),
             promoted: (0..count).map(|_| None).collect(),
             functions: vec![None; count],
@@ -403,10 +419,16 @@ fn admitted_units(
 fn check_outputs(
     owner: &solve::SolvePureCallOwner,
     form: Form,
+    mode: AssertionMode,
 ) -> Result<(), TypedCallCompileError> {
     let outputs = form
         .outputs(owner)
         .ok_or(TypedCallCompileError::SiteMismatch)?;
+    // The canonical value form publishes predicates and failed-only messages;
+    // only a separate checked invocation may observe or stop on their effects.
+    if mode == AssertionMode::Value && owner.assertion_flow().is_some() {
+        return Ok(());
+    }
     for (output, value) in outputs.iter().enumerate() {
         if value.kind() == solve::SolvePureCallOutputKind::AssertionPredicate
             && !(form == Form::Primal
