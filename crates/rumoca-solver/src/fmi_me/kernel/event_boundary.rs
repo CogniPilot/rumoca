@@ -64,7 +64,7 @@ impl SolveMeKernel {
         if event.terminal
             && let Some(index) = self
                 .runtime
-                .model
+                .model()
                 .problem
                 .solve_layout
                 .terminal_event_parameter_index
@@ -122,7 +122,7 @@ impl SolveMeKernel {
         // probe already updated, so a `when` body runs once per event.
         let terminal = self
             .runtime
-            .model
+            .model()
             .problem
             .solve_layout
             .terminal_event_parameter_index

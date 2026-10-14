@@ -708,15 +708,18 @@ impl SolveMeKernel {
             .as_ref()
             .expect("constructor owns its checked source facts");
         let indicator_plan = &facts.indicator_plan;
-        let state_count = runtime.state_count;
+        let state_count = runtime.state_count();
         let (initial_y, params) = Self::instantiation_coordinates(
             &runtime,
             #[cfg(feature = "native-wasm")]
             adoption.as_ref(),
         )?;
         let states = initial_y[..state_count].to_vec();
-        let stop_schedule =
-            SolveStopSchedule::new(&runtime.model.problem, config.start_time, config.stop_time);
+        let stop_schedule = SolveStopSchedule::new(
+            &runtime.model().problem,
+            config.start_time,
+            config.stop_time,
+        );
         // The Solve IR resolved the indicator table against the model's root
         // and delay rows; this runtime's root vector must be that vector.
         if runtime.root_condition_count() != indicator_plan.root_value_count() {
@@ -833,8 +836,8 @@ impl SolveMeKernel {
             return Ok((y.to_vec(), p.to_vec()));
         }
         Ok((
-            runtime.model.initial_y.to_vec(),
-            runtime.model.parameters.to_vec(),
+            runtime.model().initial_y.to_vec(),
+            runtime.model().parameters.to_vec(),
         ))
     }
 
@@ -1037,11 +1040,11 @@ impl SolveMeKernel {
             return Ok((y, parameters));
         }
         let settle = self.numerics_settle();
-        if solver_y.len() != self.runtime.solver_count {
+        if solver_y.len() != self.runtime.solver_count() {
             return Err(contract(format!(
                 "observation solver vector has {} entries for {} solver values",
                 solver_y.len(),
-                self.runtime.solver_count
+                self.runtime.solver_count()
             )));
         }
         if self.runtime.has_delay_channels() {
@@ -1049,7 +1052,7 @@ impl SolveMeKernel {
                 .refresh_delay_values(time, &solver_y, &mut parameters)
                 .map_err(MeError::from)?;
         }
-        write_observation_clock_activation_params(&self.runtime.model, &mut parameters);
+        write_observation_clock_activation_params(self.runtime.model(), &mut parameters);
         // Seed the coupled public fixed point from the already settled
         // component coordinate. Direct activation aliases therefore update
         // before the first algebraic projection, while a row that depends on
@@ -1078,7 +1081,7 @@ impl SolveMeKernel {
             .map_err(MeError::from)?;
         if !self
             .runtime
-            .model
+            .model()
             .problem
             .discrete
             .observation_refresh_reads_y
@@ -1264,7 +1267,7 @@ impl SolveMeKernel {
         self.runtime.reset_diagnostics();
         self.runtime.initialize_delay_history(
             self.time,
-            &self.runtime.model.initial_y,
+            &self.runtime.model().initial_y,
             &mut self.params,
         )?;
         self.runtime.set_initial_event_flag(&mut self.params, true);
@@ -1464,7 +1467,7 @@ impl SolveMeKernel {
         root_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<(), MeError> {
         commit_pre_params_after_event_at(
-            &self.runtime.model,
+            self.runtime.model(),
             &solver_y,
             &mut self.params,
             Some(event_time),
@@ -1619,7 +1622,7 @@ impl SolveMeKernel {
     pub(super) fn clear_all_scheduled_root_relation_memory(&mut self) -> Result<(), MeError> {
         let root_indices = self
             .runtime
-            .model
+            .model()
             .problem
             .events
             .scheduled_root_conditions
@@ -1633,7 +1636,7 @@ impl SolveMeKernel {
         &mut self,
         root_indices: &[usize],
     ) -> Result<(), MeError> {
-        clear_scheduled_root_relation_memory(&self.runtime.model, root_indices, &mut self.params)
+        clear_scheduled_root_relation_memory(self.runtime.model(), root_indices, &mut self.params)
             .map_err(contract)
     }
 
@@ -1655,7 +1658,12 @@ impl SolveMeKernel {
 
     pub(super) fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
         timeline::scheduled_root_indices_at_time(
-            &self.runtime.model.problem.events.scheduled_root_conditions,
+            &self
+                .runtime
+                .model()
+                .problem
+                .events
+                .scheduled_root_conditions,
             event_time,
         )
     }

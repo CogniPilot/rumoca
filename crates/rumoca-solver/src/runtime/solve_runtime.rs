@@ -212,11 +212,43 @@ fn validate_discrete_event_rows(model: &solve::SolveModel) -> Result<(), Runtime
     )))
 }
 
+/// Execution prepared for one immutable model and its derived layout counts.
+/// Callers cannot substitute another source after preparation.
+///
+/// ```
+/// use rumoca_solver::{SolveRuntime, SolveRuntimeModel};
+/// fn inspect(runtime: &SolveRuntime) {
+///     let _: &SolveRuntimeModel = runtime.model();
+///     let _: usize = runtime.state_count();
+///     let _: usize = runtime.solver_count();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use rumoca_solver::SolveRuntime;
+/// fn replace_source(runtime: &mut SolveRuntime, other: &SolveRuntime) {
+///     runtime.model = other.model.clone();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use rumoca_solver::SolveRuntime;
+/// fn corrupt_state_count(runtime: &mut SolveRuntime) {
+///     runtime.state_count = usize::MAX;
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use rumoca_solver::SolveRuntime;
+/// fn corrupt_solver_count(runtime: &mut SolveRuntime) {
+///     runtime.solver_count = 0;
+/// }
+/// ```
 #[derive(Clone)]
 pub struct SolveRuntime {
-    pub model: SolveRuntimeModel,
-    pub state_count: usize,
-    pub solver_count: usize,
+    model: SolveRuntimeModel,
+    state_count: usize,
+    solver_count: usize,
     runtime_state: solve_eval::SimulationRuntimeState,
     delay_runtime: DelayRuntime,
     root_condition_count: usize,
@@ -369,6 +401,21 @@ pub(crate) struct SolveRuntimeSnapshot {
 }
 
 impl SolveRuntime {
+    /// The immutable source owner whose execution was prepared by construction.
+    pub fn model(&self) -> &SolveRuntimeModel {
+        &self.model
+    }
+
+    /// Number of continuous states in the prepared source layout.
+    pub fn state_count(&self) -> usize {
+        self.state_count
+    }
+
+    /// Number of solver values in the prepared source layout.
+    pub fn solver_count(&self) -> usize {
+        self.solver_count
+    }
+
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         Self::new_with_execution_backend(model, None)
     }

@@ -33,7 +33,7 @@ impl SolveMeKernel {
             .as_ref()
             .and_then(|charts| charts.built_state_nominals(self.active_chart))
             .and_then(|nominals| nominals.get(index).copied())
-            .unwrap_or_else(|| self.runtime.model.solver_variable_scale(index))
+            .unwrap_or_else(|| self.runtime.model().solver_variable_scale(index))
     }
 
     fn active_state_nominals(&self) -> Vec<f64> {

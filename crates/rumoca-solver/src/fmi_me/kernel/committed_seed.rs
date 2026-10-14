@@ -48,7 +48,7 @@ impl SolveMeKernel {
         // The Solve IR rule decides where continuous refreshes start.
         let seeded = match self
             .runtime
-            .model
+            .model()
             .problem
             .continuous
             .refresh_owners

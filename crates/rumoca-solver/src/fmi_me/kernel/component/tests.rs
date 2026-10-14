@@ -417,7 +417,7 @@ fn instantiation_copies_a_scheduleless_model_exactly_once() {
             .expect("instance configuration constructs"),
     )
     .expect("fixture instantiates");
-    let owned = &kernel.runtime.model;
+    let owned = kernel.runtime.model();
     assert_eq!(owned.initial_y, model.initial_y);
     assert_eq!(owned.visible_names(), model.visible_names());
     assert!(
@@ -443,17 +443,17 @@ fn correlated_instantiation_retains_the_exact_scheduleless_root() {
         &MeInstanceConfig::new("retained-source", 1.0e-8, 2.0, 3.0).unwrap(),
     )
     .unwrap();
-    let root = kernel.runtime.model.retained_assertion_root().unwrap();
+    let root = kernel.runtime.model().retained_assertion_root().unwrap();
     assert!(root.shares_root_owner(&original));
-    assert!(std::ptr::eq(root.model(), &*kernel.runtime.model));
+    assert!(std::ptr::eq(root.model(), &**kernel.runtime.model()));
     assert_eq!(
         root.resolved_periodic_schedules_at(5.0).unwrap_err(),
         solve::RetainedAssertionResolutionError::AlreadyResolved
     );
     let standalone = crate::SolveRuntime::new(original.model()).unwrap();
-    assert!(standalone.model.retained_assertion_root().is_none());
+    assert!(standalone.model().retained_assertion_root().is_none());
     let alternate = kernel.runtime.new_alternate(root.model()).unwrap();
-    assert!(alternate.model.retained_assertion_root().is_none());
+    assert!(alternate.model().retained_assertion_root().is_none());
     drop(component);
     assert!(root.shares_root_owner(&original));
 }
@@ -482,13 +482,13 @@ fn correlated_clocked_instances_resolve_from_the_original_component() {
     };
     let first = instantiate(2.0);
     let second = instantiate(5.0);
-    let first_root = first.runtime.model.retained_assertion_root().unwrap();
-    let second_root = second.runtime.model.retained_assertion_root().unwrap();
+    let first_root = first.runtime.model().retained_assertion_root().unwrap();
+    let second_root = second.runtime.model().retained_assertion_root().unwrap();
     assert!(!first_root.shares_root_owner(&original));
     assert!(!second_root.shares_root_owner(&original));
     assert!(!first_root.shares_root_owner(second_root));
     for (kernel, root, phase) in [(&first, first_root, 2.25), (&second, second_root, 5.25)] {
-        assert!(std::ptr::eq(root.model(), &*kernel.runtime.model));
+        assert!(std::ptr::eq(root.model(), &**kernel.runtime.model()));
         assert_eq!(
             root.model().problem.clocks.periodic_event_schedules[0].phase_seconds(),
             phase

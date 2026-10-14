@@ -185,7 +185,7 @@ fn output_rows(
     outputs: &[(String, OutputSlot)],
 ) -> Result<OutputMatrices, SimulationDiagnosticError> {
     let n = state.len();
-    let mut tangent = vec![0.0; runtime.solver_count];
+    let mut tangent = vec![0.0; runtime.solver_count()];
     let mut c = vec![vec![0.0; n]; outputs.len()];
     let mut d = vec![vec![0.0; inputs.len()]; outputs.len()];
     let mut direction = vec![0.0; n];

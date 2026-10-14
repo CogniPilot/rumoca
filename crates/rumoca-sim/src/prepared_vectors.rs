@@ -105,7 +105,7 @@ pub(crate) fn settle_prepared_vectors(
     t_start: f64,
     mut params: Vec<f64>,
 ) -> Result<(Vec<f64>, Vec<f64>), PreparedVectorError> {
-    let model = &runtime.model;
+    let model = runtime.model();
     let mut y = model.initial_y.to_vec();
     let settle = |message: String| PreparedVectorError::Settle { message };
     runtime
