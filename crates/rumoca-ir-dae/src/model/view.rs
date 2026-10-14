@@ -485,6 +485,18 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    /// Borrow every finalized B.1c target in owner insertion order.
+    ///
+    /// The aggregate owns one packed target slice; construction appends complete
+    /// owner ranges atomically, so iteration carries checked target identities
+    /// without recovering owners through optional ordinal lookups.
+    pub fn discrete_value_targets(self) -> crate::DiscreteValueTargets<'dae> {
+        crate::DiscreteValueTargets {
+            raw: &self.dae.storage.discrete_value_targets,
+            marker: PhantomData,
+        }
+    }
+
     pub fn discrete_value_target_indices(
         self,
         target: crate::DiscreteValueTarget<'dae>,

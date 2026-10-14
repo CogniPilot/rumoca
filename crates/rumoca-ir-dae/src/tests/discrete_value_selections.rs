@@ -353,3 +353,21 @@ fn selected_elements_keep_independent_when_activations_and_hold() {
         }
     });
 }
+
+#[test]
+fn packed_target_view_preserves_selected_and_whole_owner_order_after_wire_replay() {
+    let model = dependency_dae(DependencyCase::WholeAfterCoverage).unwrap();
+    let json: Dae = serde_json::from_str(&serde_json::to_string(&model).unwrap()).unwrap();
+    let binary: Dae = bincode::deserialize(&bincode::serialize(&model).unwrap()).unwrap();
+    for model in [&model, &json, &binary] {
+        model.inspect(|view| {
+            let targets = view.discrete_value_targets();
+            assert_eq!(targets.len(), view.discrete_value_definition_count());
+            let actual = targets
+                .iter()
+                .map(|target| (target.index(), target.scalar_selection()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, [(0, Some(0)), (0, Some(1)), (1, None)]);
+        });
+    }
+}
