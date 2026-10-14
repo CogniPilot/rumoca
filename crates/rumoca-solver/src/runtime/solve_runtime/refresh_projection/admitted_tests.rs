@@ -59,7 +59,7 @@ fn admitted_torn_schedule_and_residual_faults_restore_only_issued_targets() {
             .unwrap()
             .scalar
             .implicit_scalar_rhs
-            .block()
+            .source()
             .program_span(1)
             .unwrap();
         let compiled = CompiledTornSweep {

@@ -146,11 +146,13 @@ impl ScalarExecutionView<'_> {
         let sweep = self
             .scalar
             .implicit_scalar_rhs
+            .source()
             .prepare_torn_sweep(&causal_steps, &tearing.residual_rows)?;
         let compiled = self.scalar.execution_backend.as_ref().and_then(|backend| {
             let composite = self
                 .scalar
                 .implicit_scalar_rhs
+                .source()
                 .torn_sweep_composite(&sweep)?;
             let schedule = optional_compiled(
                 "torn_assignment_schedule",
@@ -169,12 +171,13 @@ impl ScalarExecutionView<'_> {
                 .filter_map(|step| {
                     self.scalar
                         .implicit_scalar_rhs
+                        .source()
                         .row_output_position(step.row)
                 })
                 .filter_map(|(program, _)| {
                     self.scalar
                         .implicit_scalar_rhs
-                        .block()
+                        .source()
                         .program_span(program)
                 })
                 .chain(composite.residual_block.program_spans().iter().copied())

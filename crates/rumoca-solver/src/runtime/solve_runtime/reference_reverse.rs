@@ -161,6 +161,10 @@ impl ReferenceReverseExecution<'_> {
         self.view
             .scalar
             .implicit_scalar_rhs
+            .reference()
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir("reference execution capability is unavailable")
+            })?
             .reverse_vjp(
                 &rumoca_eval_solve::reverse::ReverseInputs {
                     y: solver_y,
@@ -175,8 +179,7 @@ impl ReferenceReverseExecution<'_> {
                     seed: &mut [],
                 },
                 &mut scratch,
-            )
-            .map_err(RuntimeSolveError::from)?;
+            )?;
         Ok(())
     }
 
@@ -248,6 +251,7 @@ impl ReferenceReverseExecution<'_> {
                     .scalar
                     .derivative_scalar
                     .reverse_vjp(inputs, state_lambda, cot, scratch)
+                    .map_err(RuntimeSolveError::from)
             },
             (t, solver_y, params),
             out,
@@ -277,13 +281,16 @@ impl ReferenceReverseExecution<'_> {
         }
         if !alg.is_empty() {
             let mu = self.scatter_algebraic_multipliers(&alg, lambda);
+            let reference = self
+                .view
+                .scalar
+                .implicit_scalar_rhs
+                .reference()
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir("reference execution capability is unavailable")
+                })?;
             self.accumulate_block_vjp(
-                &mut |inputs, cot, scratch| {
-                    self.view
-                        .scalar
-                        .implicit_scalar_rhs
-                        .reverse_vjp(inputs, &mu, cot, scratch)
-                },
+                &mut |inputs, cot, scratch| reference.reverse_vjp(inputs, &mu, cot, scratch),
                 (t, solver_y, params),
                 out,
             )?;
@@ -300,7 +307,7 @@ impl ReferenceReverseExecution<'_> {
             &rumoca_eval_solve::reverse::ReverseInputs<'_>,
             &mut rumoca_eval_solve::reverse::ReverseCotangents<'_>,
             &mut rumoca_eval_solve::reverse::ReverseScratch,
-        ) -> Result<(), rumoca_eval_solve::EvalSolveError>,
+        ) -> Result<(), RuntimeSolveError>,
         (t, solver_y, params): (f64, &[f64], &[f64]),
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
@@ -320,14 +327,13 @@ impl ReferenceReverseExecution<'_> {
             },
             &mut scratch,
         )
-        .map_err(RuntimeSolveError::from)
     }
 
     /// Build the implicit-residual row cotangent `μ` for the algebraic block: the
     /// k-th algebraic constraint row carries the multiplier `λ[state_count + k]`
     /// (the steady residual's algebraic-equation index); all other rows are zero.
     fn scatter_algebraic_multipliers(&self, alg_rows: &[usize], lambda: &[f64]) -> Vec<f64> {
-        let mut mu = vec![0.0_f64; self.view.scalar.implicit_scalar_rhs.len()];
+        let mut mu = vec![0.0_f64; self.view.scalar.implicit_scalar_rhs.source().len()];
         for (k, &row) in alg_rows.iter().enumerate() {
             if let (Some(slot), Some(&value)) =
                 (mu.get_mut(row), lambda.get(self.view.state_count + k))

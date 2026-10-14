@@ -11,9 +11,6 @@ pub(super) struct CompiledExpressions {
     pub(super) event_transactions: Box<[Rc<dyn CompiledSolveEventTransaction>]>,
     pub(super) lifecycle: CompiledLifecycle,
     pub(super) messages: compiled_messages::CompiledMessagePrograms,
-    pub(super) implicit_rhs: Rc<CompleteExpression>,
-    pub(super) implicit_projection_jacobian_v: Rc<CompleteJacobian>,
-    pub(super) implicit_full_jacobian_v: Rc<CompleteJacobian>,
     pub(super) initial_residual: Rc<CompleteExpression>,
     pub(super) initial_residual_jacobian_v: Rc<CompleteJacobian>,
     pub(super) derivative_rhs: Rc<CompleteExpression>,
@@ -106,36 +103,6 @@ impl ScalarExecutionInventory {
             PreparedExpressions::Fixture(code) => Ok(code.event_transactions.get(index)),
         }
     }
-    pub(super) fn compiled_implicit_rhs(&self) -> Option<&dyn CompiledSolveExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(code.implicit_rhs.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.implicit_rhs.as_deref(),
-        }
-    }
-    pub(super) fn compiled_implicit_projection_jacobian_v(
-        &self,
-    ) -> Option<&dyn CompiledSolveJacobianExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => {
-                Some(code.implicit_projection_jacobian_v.as_ref())
-            }
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.implicit_projection_jacobian_v.as_deref(),
-        }
-    }
-    pub(super) fn compiled_implicit_full_jacobian_v(
-        &self,
-    ) -> Option<&dyn CompiledSolveJacobianExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(code.implicit_full_jacobian_v.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.implicit_full_jacobian_v.as_deref(),
-        }
-    }
     pub(super) fn compiled_initial_residual(&self) -> Option<&dyn CompiledSolveExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
@@ -186,9 +153,6 @@ impl ScalarExecutionInventory {
 #[derive(Clone, Default)]
 pub(super) struct FixtureExpressions {
     initial_update_jacobian: Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    implicit_rhs: Option<Rc<dyn CompiledSolveExpression>>,
-    implicit_projection_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    implicit_full_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     initial_residual: Option<Rc<dyn CompiledSolveExpression>>,
     initial_residual_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     derivative_rhs: Option<Rc<dyn CompiledSolveExpression>>,
@@ -208,11 +172,6 @@ impl ScalarExecutionInventory {
                         InitialUpdateJacobian::Unavailable => None,
                         InitialUpdateJacobian::Compiled(code) => Some(code.clone()),
                     },
-                    implicit_rhs: Some(code.implicit_rhs.clone()),
-                    implicit_projection_jacobian_v: Some(
-                        code.implicit_projection_jacobian_v.clone(),
-                    ),
-                    implicit_full_jacobian_v: Some(code.implicit_full_jacobian_v.clone()),
                     initial_residual: Some(code.initial_residual.clone()),
                     initial_residual_jacobian_v: Some(code.initial_residual_jacobian_v.clone()),
                     derivative_rhs: Some(code.derivative_rhs.clone()),
@@ -229,23 +188,7 @@ impl ScalarExecutionInventory {
             _ => unreachable!("the test fixture was installed"),
         }
     }
-    pub(super) fn fixture_compiled_implicit_rhs(
-        &mut self,
-    ) -> &mut Option<Rc<dyn CompiledSolveExpression>> {
-        &mut self.fixture_expressions_mut().implicit_rhs
-    }
-    pub(super) fn fixture_compiled_implicit_projection_jacobian_v(
-        &mut self,
-    ) -> &mut Option<Rc<dyn CompiledSolveJacobianExpression>> {
-        &mut self
-            .fixture_expressions_mut()
-            .implicit_projection_jacobian_v
-    }
-    pub(super) fn fixture_compiled_implicit_full_jacobian_v(
-        &mut self,
-    ) -> &mut Option<Rc<dyn CompiledSolveJacobianExpression>> {
-        &mut self.fixture_expressions_mut().implicit_full_jacobian_v
-    }
+
     pub(super) fn fixture_compiled_initial_residual(
         &mut self,
     ) -> &mut Option<Rc<dyn CompiledSolveExpression>> {
