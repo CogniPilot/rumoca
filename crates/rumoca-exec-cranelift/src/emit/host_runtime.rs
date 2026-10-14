@@ -5,7 +5,7 @@ use rumoca_eval_solve::{
     eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
     eval_time_table_next_event_value_in,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::{CompileError, to_backend_err};
 
@@ -127,24 +127,43 @@ thread_local! {
             len: 0,
         })
     };
+    static TABLE_FAULT: RefCell<Option<rumoca_eval_solve::TableRuntimeError>> = const { RefCell::new(None) };
+}
+
+struct ActiveTableScope {
+    tables: ActiveExternalTables,
+    fault: Option<rumoca_eval_solve::TableRuntimeError>,
+}
+
+impl Drop for ActiveTableScope {
+    fn drop(&mut self) {
+        ACTIVE_EXTERNAL_TABLES.with(|cell| cell.set(self.tables));
+        TABLE_FAULT.with(|cell| cell.replace(self.fault.take()));
+    }
 }
 
 pub(super) fn with_active_external_tables<R>(
     tables: &[ExternalTableData],
     f: impl FnOnce() -> R,
 ) -> R {
-    ACTIVE_EXTERNAL_TABLES.with(|cell| {
-        let previous = cell.replace(ActiveExternalTables {
+    let previous = ACTIVE_EXTERNAL_TABLES.with(|cell| {
+        cell.replace(ActiveExternalTables {
             ptr: tables.as_ptr(),
             len: tables.len(),
-        });
-        let result = f();
-        cell.set(previous);
-        result
-    })
+        })
+    });
+    let _scope = ActiveTableScope {
+        tables: previous,
+        fault: TABLE_FAULT.with(|cell| cell.replace(None)),
+    };
+    f()
 }
 
-fn with_current_external_tables(f: impl FnOnce(&[ExternalTableData]) -> f64) -> f64 {
+pub(super) fn take_table_fault() -> Option<rumoca_eval_solve::TableRuntimeError> {
+    TABLE_FAULT.with(|cell| cell.borrow_mut().take())
+}
+
+fn with_current_external_tables<R>(f: impl FnOnce(&[ExternalTableData]) -> R) -> R {
     ACTIVE_EXTERNAL_TABLES.with(|cell| {
         let active = cell.get();
         let tables = if active.len == 0 {
@@ -223,36 +242,81 @@ extern "C" fn rumoca_host_powf(x: f64, y: f64) -> f64 {
     x.powf(y)
 }
 
-pub(super) extern "C" fn rumoca_host_table_bounds_min(table_id: f64) -> f64 {
-    with_current_external_tables(|tables| {
-        eval_table_bound_value_in(table_id, false, tables).unwrap_or(f64::NAN)
-    })
+unsafe fn publish_table_result(
+    out: *mut f64,
+    value: Result<f64, rumoca_eval_solve::TableRuntimeError>,
+) -> u8 {
+    match value {
+        Ok(value) => {
+            // SAFETY: the emitted call supplies one writable result cell.
+            unsafe { out.write(value) };
+            0
+        }
+        Err(error) => {
+            TABLE_FAULT.with(|cell| cell.replace(Some(error)));
+            super::status::TABLE_FAILURE
+        }
+    }
 }
 
-pub(super) extern "C" fn rumoca_host_table_bounds_max(table_id: f64) -> f64 {
-    with_current_external_tables(|tables| {
-        eval_table_bound_value_in(table_id, true, tables).unwrap_or(f64::NAN)
-    })
+/// # Safety
+/// `out` addresses the emitted call's single writable result cell.
+pub(super) unsafe extern "C" fn rumoca_host_table_bounds_min(table_id: f64, out: *mut f64) -> u8 {
+    let value =
+        with_current_external_tables(|tables| eval_table_bound_value_in(table_id, false, tables));
+    // SAFETY: the emitted ABI supplies the result cell described above.
+    unsafe { publish_table_result(out, value) }
 }
 
-pub(super) extern "C" fn rumoca_host_table_lookup(table_id: f64, column: f64, input: f64) -> f64 {
-    with_current_external_tables(|tables| {
-        eval_table_lookup_value_in(table_id, column, input, tables).unwrap_or(f64::NAN)
-    })
+/// # Safety
+/// `out` addresses the emitted call's single writable result cell.
+pub(super) unsafe extern "C" fn rumoca_host_table_bounds_max(table_id: f64, out: *mut f64) -> u8 {
+    let value =
+        with_current_external_tables(|tables| eval_table_bound_value_in(table_id, true, tables));
+    // SAFETY: the emitted ABI supplies the result cell described above.
+    unsafe { publish_table_result(out, value) }
 }
 
-pub(super) extern "C" fn rumoca_host_table_lookup_slope(
+/// # Safety
+/// `out` addresses the emitted call's single writable result cell.
+pub(super) unsafe extern "C" fn rumoca_host_table_lookup(
     table_id: f64,
     column: f64,
     input: f64,
-) -> f64 {
-    with_current_external_tables(|tables| {
-        eval_table_lookup_slope_value_in(table_id, column, input, tables).unwrap_or(f64::NAN)
-    })
+    out: *mut f64,
+) -> u8 {
+    let value = with_current_external_tables(|tables| {
+        eval_table_lookup_value_in(table_id, column, input, tables)
+    });
+    // SAFETY: the emitted ABI supplies the result cell described above.
+    unsafe { publish_table_result(out, value) }
 }
 
-pub(super) extern "C" fn rumoca_host_table_next_event(table_id: f64, time: f64) -> f64 {
-    with_current_external_tables(|tables| {
-        eval_time_table_next_event_value_in(table_id, time, tables).unwrap_or(f64::NAN)
-    })
+/// # Safety
+/// `out` addresses the emitted call's single writable result cell.
+pub(super) unsafe extern "C" fn rumoca_host_table_lookup_slope(
+    table_id: f64,
+    column: f64,
+    input: f64,
+    out: *mut f64,
+) -> u8 {
+    let value = with_current_external_tables(|tables| {
+        eval_table_lookup_slope_value_in(table_id, column, input, tables)
+    });
+    // SAFETY: the emitted ABI supplies the result cell described above.
+    unsafe { publish_table_result(out, value) }
+}
+
+/// # Safety
+/// `out` addresses the emitted call's single writable result cell.
+pub(super) unsafe extern "C" fn rumoca_host_table_next_event(
+    table_id: f64,
+    time: f64,
+    out: *mut f64,
+) -> u8 {
+    let value = with_current_external_tables(|tables| {
+        eval_time_table_next_event_value_in(table_id, time, tables)
+    });
+    // SAFETY: the emitted ABI supplies the result cell described above.
+    unsafe { publish_table_result(out, value) }
 }

@@ -1,6 +1,6 @@
 use super::host_runtime::{
-    rumoca_host_table_bounds_min, rumoca_host_table_lookup, rumoca_host_table_lookup_slope,
-    rumoca_host_table_next_event,
+    rumoca_host_table_bounds_max, rumoca_host_table_bounds_min, rumoca_host_table_lookup,
+    rumoca_host_table_lookup_slope, rumoca_host_table_next_event,
 };
 use super::*;
 
@@ -402,7 +402,9 @@ fn general_runtime_table_lookup_failure_is_error_not_silent_zero() {
     )
     .expect_err("missing table should report an evaluation error");
 
-    assert!(matches!(err, CompileError::Input(message) if message.contains("table id 42")));
+    assert!(matches!(err, CompileError::SourceOperation {
+        kind: crate::NativeSourceFault::ExternalTable, message, ..
+    } if message.contains("table id 42")));
 }
 
 #[test]
@@ -442,7 +444,9 @@ fn general_runtime_table_lookup_invalid_column_is_error_not_clamped() {
     .expect_err("invalid table column should report an evaluation error");
 
     assert!(
-        matches!(err, CompileError::Input(message) if message.contains("column 2")),
+        matches!(err, CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::ExternalTable, message, ..
+        } if message.contains("column 2")),
         "invalid column error should mention the requested column"
     );
 }
@@ -650,11 +654,35 @@ fn compiled_residual_program_writes_multiple_outputs() {
 }
 
 #[test]
-fn table_host_trampolines_keep_abi_boundary_nan_sentinel() {
-    assert!(rumoca_host_table_bounds_min(42.0).is_nan());
-    assert!(rumoca_host_table_lookup(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_lookup_slope(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_next_event(42.0, 0.0).is_nan());
+fn table_host_trampolines_return_fault_status_without_publishing() {
+    let mut value = 99.0;
+    // SAFETY: every callback receives one live writable result cell.
+    let status = unsafe { rumoca_host_table_bounds_min(42.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_bounds_max(42.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_lookup_slope(42.0, 1.0, 1.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_next_event(42.0, 0.0, &mut value) };
+    assert_table_host_fault(status, value);
+}
+
+fn assert_table_host_fault(status: u8, value: f64) {
+    assert_eq!(status, status::TABLE_FAILURE);
+    assert!(matches!(
+        status::check(status),
+        Err(CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::ExternalTable,
+            ..
+        })
+    ));
+    assert_eq!(value, 99.0);
 }
 
 #[test]
@@ -667,4 +695,53 @@ fn cranelift_panics_are_typed_backend_errors_at_the_adapter_boundary() {
         error.to_string(),
         "cranelift execution error: Cranelift oversized relocation failed: relative relocation exceeds i32"
     );
+}
+
+#[test]
+fn assignment_table_fault_is_decoded_inside_its_invocation_scope() {
+    let tables = [ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    let row = vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::LoadP { dst: 1, index: 1 },
+        LinearOp::Const { dst: 2, value: 1.0 },
+        LinearOp::TableLookup {
+            dst: 3,
+            table_id: 0,
+            column: 1,
+            input: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+    let compiled = compile_assignment_schedule(&[row], &[0]).unwrap();
+    for p in [[43.0, 1.0], [42.0, 2.0]] {
+        let mut y = [99.0];
+        let error = compiled
+            .call_with_external_tables(&mut y, &p, 0.0, &tables)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CompileError::SourceOperation {
+                    kind: crate::NativeSourceFault::ExternalTable,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(y, [99.0], "failed lookup must not publish its assignment");
+        compiled
+            .call_with_external_tables(&mut y, &[42.0, 1.0], 0.0, &tables)
+            .unwrap();
+        assert_eq!(
+            y,
+            [12.0],
+            "the next invocation must retain normal lookup semantics"
+        );
+    }
 }

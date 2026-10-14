@@ -25,6 +25,11 @@ fn pure_call_execution_error(
             message,
             span,
         } => rumoca_eval_solve::EvalSolveError::SourceOperationFault { message, span },
+        CompileError::SourceOperation {
+            kind: NativeSourceFault::ExternalTable,
+            message,
+            span,
+        } => rumoca_eval_solve::EvalSolveError::SourceOperationFault { message, span },
         CompileError::SourceOperation { message, span, .. } => {
             rumoca_eval_solve::EvalSolveError::InvalidRow { message, span }
         }

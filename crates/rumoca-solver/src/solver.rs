@@ -171,9 +171,9 @@ impl SimNativeRefusal {
     }
 }
 
-/// One compile request the selected backend declined. The program it names runs
-/// in the interpreter instead; the receipt lists it so the fallback is never
-/// silent.
+/// One optional optimization request the selected backend declined. Required
+/// execution still uses its prepared compiled base; missing required code rejects
+/// preparation instead of becoming a decline receipt.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SimNativeDecline {
     /// The kind of program the backend was asked to compile.
@@ -195,9 +195,8 @@ pub struct SimExecutionReceipt {
     /// Absent when compiled execution was selected or the policy pinned the
     /// interpreter.
     pub refusal: Option<SimNativeRefusal>,
-    /// Programs the selected backend declined to compile, which run in the
-    /// interpreter. Compilation happens lazily as the session runs, so this
-    /// list is read at the time the receipt is requested.
+    /// Optional optimized entries declined by the selected backend. Their
+    /// required compiled base entries remain prepared and executable.
     pub declined: Vec<SimNativeDecline>,
 }
 

@@ -255,13 +255,14 @@ impl CompiledAssignmentSchedule {
                 y.len()
             )));
         }
-        let status = with_active_external_tables(external_tables, || {
+        with_active_external_tables(external_tables, || {
             // SAFETY: compilation validates every input load and target offset;
             // the checks above establish both against these exact slices.
-            self.scratch
-                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
-        });
-        status::check(status)
+            let status = self
+                .scratch
+                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) });
+            status::check(status)
+        })
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -7068,20 +7069,28 @@ fn call_table_host(
         for _ in 0..function.arity() {
             sig.params.push(AbiParam::new(types::F64));
         }
-        sig.returns.push(AbiParam::new(types::F64));
+        sig.params
+            .push(AbiParam::new(module.target_config().pointer_type()));
+        sig.returns.push(AbiParam::new(types::I8));
         let func_id = module
             .declare_function(function.symbol(), Linkage::Import, &sig)
             .map_err(to_backend_err)?;
         math.table.insert(function, func_id);
         func_id
     };
+    let slot = scratch::create_slot(fb, std::mem::size_of::<f64>() as u32)?;
+    let result = scratch::stack_addr(fb, module.target_config().pointer_type(), slot, 0);
+    let mut operands = args.to_vec();
+    operands.push(result);
     let callee = declare_far_call_in_func(module, func_id, fb.func);
-    let call = fb.ins().call(callee, args);
-    let values = fb.inst_results(call);
-    values
+    let call = fb.ins().call(callee, &operands);
+    let status = fb
+        .inst_results(call)
         .first()
         .copied()
-        .ok_or_else(|| CompileError::Backend(format!("no return value for {}", function.symbol())))
+        .ok_or_else(|| CompileError::Backend(format!("no status for {}", function.symbol())))?;
+    status::propagate(fb, status);
+    Ok(scratch::stack_load(fb, types::F64, slot, 0))
 }
 
 fn checked_reg_offset(base: u32, offset: usize, kind: &str) -> Result<u32, CompileError> {

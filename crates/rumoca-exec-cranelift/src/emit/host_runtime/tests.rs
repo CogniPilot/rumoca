@@ -144,3 +144,78 @@ fn issue_422_memory_libcalls_relocate_without_process_symbol_export() {
     assert_eq!(unsafe { fill(dst, 0, 0) }, dst);
     assert_eq!(bytes, [99, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 99]);
 }
+
+#[test]
+fn table_fault_scopes_restore_outer_tables_and_pending_errors() {
+    use super::{rumoca_host_table_lookup, take_table_fault, with_active_external_tables};
+    use rumoca_eval_solve::TableRuntimeError;
+    let tables = [rumoca_core::ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    with_active_external_tables(&tables, || {
+        let mut value = 99.0;
+        // SAFETY: each invocation receives one live writable result cell.
+        let status = unsafe { rumoca_host_table_lookup(43.0, 1.0, 1.0, &mut value) };
+        assert_eq!(status, crate::emit::status::TABLE_FAILURE);
+        with_active_external_tables(&[], || {
+            // SAFETY: the result cell stays live across this nested invocation.
+            let status = unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) };
+            assert_eq!(status, crate::emit::status::TABLE_FAILURE);
+            assert!(matches!(
+                take_table_fault(),
+                Some(TableRuntimeError::TableNotFound { id: 42 })
+            ));
+            assert_eq!(value, 99.0);
+        });
+        assert!(matches!(
+            take_table_fault(),
+            Some(TableRuntimeError::TableNotFound { id: 43 })
+        ));
+        // SAFETY: the result cell remains live and the outer table scope was restored.
+        assert_eq!(
+            unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) },
+            0
+        );
+        assert_eq!(value, 12.0);
+    });
+    assert!(take_table_fault().is_none());
+}
+
+#[test]
+fn table_fault_scope_restores_context_after_unwind() {
+    use super::{rumoca_host_table_lookup, take_table_fault, with_active_external_tables};
+    let tables = [rumoca_core::ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    with_active_external_tables(&tables, || {
+        let result = std::panic::catch_unwind(|| {
+            with_active_external_tables(&[], || {
+                let mut value = 99.0;
+                // SAFETY: the callback receives one live writable result cell.
+                let status = unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) };
+                assert_eq!(status, crate::emit::status::TABLE_FAILURE);
+                panic!("leave nested table scope");
+            })
+        });
+        assert!(result.is_err());
+        assert!(
+            take_table_fault().is_none(),
+            "inner error must not escape its invocation"
+        );
+        let mut value = 99.0;
+        // SAFETY: the outer scope has restored its live table and result cell.
+        assert_eq!(
+            unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) },
+            0
+        );
+        assert_eq!(value, 12.0);
+    });
+}
