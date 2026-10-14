@@ -31,38 +31,17 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs() {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "initial implicit residual",
-                    &self.runtime.model.problem.continuous.implicit_rhs,
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.implicit_scalar_rhs.eval(
+                    RowEvalPoint { y, p, t },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            self.runtime
-                .report_nonfinite_implicit_residual_inputs(t, y, out);
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .implicit_rhs
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(RuntimeSolveError::from)?;
+            },
+        )?;
         self.runtime
             .report_nonfinite_implicit_residual_inputs(t, y, out);
         Ok(())
@@ -76,54 +55,20 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self
-            .runtime
-            .scalar
-            .compiled_implicit_projection_jacobian_v()
-        {
-            let map_error = |error| {
-                admitted_compiled_error(
-                    "initial implicit JVP",
-                    self.runtime
-                        .scalar
-                        .implicit_projection_scalar_jacobian_v
-                        .block()
-                        .program_spans(),
-                    error,
-                )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .implicit_projection_jacobian_v
-            .eval_with_context(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime
+                    .scalar
+                    .implicit_projection_scalar_jacobian_v
+                    .eval(
+                        solve_eval::JacobianEvalInputs { y, p, t, seed: v },
+                        self.runtime.row_eval_context(),
+                        output,
+                    )
+            },
+        )
     }
 
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
@@ -192,11 +137,13 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         self.runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
             .is_some_and(|(program_idx, output_offset)| {
                 self.runtime
                     .scalar
                     .implicit_scalar_rhs
+                    .source()
                     .certifies_exact_target_assignment_output(
                         program_idx,
                         output_offset,
@@ -625,8 +572,13 @@ impl ScalarExecutionView<'_> {
                 reason: "an initialization update row has no directional derivative".to_string(),
             });
         };
-        let seed_len =
-            (y.len() + p.len()).max(self.scalar.implicit_jacobian_v.requirements().seed_len);
+        let seed_len = (y.len() + p.len()).max(
+            self.scalar
+                .implicit_jacobian_v
+                .source()
+                .requirements()
+                .seed_len,
+        );
         let mut seed = vec![0.0; seed_len];
         let copied = v.len().min(seed_len);
         seed[..copied].copy_from_slice(&v[..copied]);
@@ -753,10 +705,9 @@ impl ScalarExecutionView<'_> {
             plan,
             block_indices,
             plan_validated: false,
-            jacobian_v: ProjectionJacobian::SolverY {
-                block: &self.scalar.implicit_projection_jacobian_v,
-                scalar: &self.scalar.implicit_projection_scalar_jacobian_v,
-            },
+            jacobian_v: ProjectionJacobian::SolverY(
+                &self.scalar.implicit_projection_scalar_jacobian_v,
+            ),
         };
         crate::runtime::projection::project_algebraics_with_plan(
             &projection_model,
@@ -804,8 +755,13 @@ impl ScalarExecutionView<'_> {
                 });
             }
         };
-        let seed_len =
-            (y.len() + p.len()).max(self.scalar.implicit_jacobian_v.requirements().seed_len);
+        let seed_len = (y.len() + p.len()).max(
+            self.scalar
+                .implicit_jacobian_v
+                .source()
+                .requirements()
+                .seed_len,
+        );
         let mut seed = vec![0.0; seed_len];
         seed[..v.len()].copy_from_slice(v);
         let lin = AlgebraicLinearization {

@@ -107,14 +107,25 @@ impl CompiledSolveProjectionJacobian for PreparedNative {
     }
 }
 
+fn projection_fixture_source(runtime: &SolveRuntime) -> solve::ScalarProgramBlock {
+    let view = runtime.scalar_execution().unwrap();
+    refresh_projection::projection_jacobian_source(
+        &view.model.artifacts.continuous.implicit_jacobian_v,
+        &view.scalar.continuous_structural,
+    )
+    .unwrap()
+}
+
 fn prepare(runtime: &mut SolveRuntime, native: Rc<PreparedNative>) {
     let prepared = {
         let view = runtime.scalar_execution().unwrap();
         refresh_projection::prepare_projection_jacobians(
             &view.scalar.continuous_structural,
-            &view.scalar.implicit_scalar_rhs,
-            view.scalar.implicit_projection_scalar_jacobian_v.block(),
-            Some(&Compiler(native)),
+            view.scalar.implicit_scalar_rhs.source(),
+            &prepare_mock_jacobian(
+                projection_fixture_source(runtime),
+                Rc::new(Compiler(native)),
+            ),
             &refresh_projection::projection_jacobian_demand(
                 &view.model,
                 view.scalar.settled_read_cones.as_deref(),
@@ -191,43 +202,39 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
     assert_eq!(out, [99.0; 4]);
     assert_eq!(native.calls.get(), 0);
 
-    let mut programs = runtime
-        .scalar_execution()
+    let mut programs = to_scalar_program_block(&runtime.model.problem.continuous.implicit_rhs)
         .unwrap()
-        .scalar
-        .implicit_scalar_rhs
-        .block()
         .programs()
         .to_vec();
     programs.push(vec![
         solve::LinearOp::LoadY { dst: 0, index: 0 },
         solve::LinearOp::StoreOutput { src: 0 },
     ]);
-    let mixed = PreparedScalarProgramBlock::new(
+    let mixed = PrimalProgram::prepare(
+        "mixed reference",
         solve::ScalarProgramBlock::with_output_indices(
             programs,
             vec![test_span("mixed_projection.mo"); 2],
             vec![0, 2, 1],
         )
         .unwrap(),
+        None,
+        None,
     )
     .unwrap();
-    assert!(!mixed.reverse_row_y_gradient_supported(0));
-    assert!(mixed.reverse_row_y_gradient_supported(1));
+    assert!(!mixed.source().reverse_row_y_gradient_supported(0));
+    assert!(mixed.source().reverse_row_y_gradient_supported(1));
     let prepared = refresh_projection::prepare_projection_jacobians(
         &runtime
             .scalar_execution()
             .unwrap()
             .scalar
             .continuous_structural,
-        &mixed,
-        runtime
-            .scalar_execution()
-            .unwrap()
-            .scalar
-            .implicit_projection_scalar_jacobian_v
-            .block(),
-        Some(&Compiler(native.clone())),
+        mixed.source(),
+        &prepare_mock_jacobian(
+            projection_fixture_source(&runtime),
+            Rc::new(Compiler(native.clone())),
+        ),
         &refresh_projection::projection_jacobian_demand(
             &runtime.model,
             runtime
@@ -247,12 +254,7 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
 #[test]
 fn complete_projection_declines_a_separately_materialized_source_view() {
     let runtime = SolveRuntime::new_fixture(&grouped_projection_jvp::coupled_model()).unwrap();
-    let original = runtime
-        .scalar_execution()
-        .unwrap()
-        .scalar
-        .implicit_projection_scalar_jacobian_v
-        .block();
+    let original = projection_fixture_source(&runtime);
     let materialized = solve::ScalarProgramBlock::with_output_indices(
         original.programs().to_vec(),
         original.program_spans().to_vec(),
@@ -266,13 +268,13 @@ fn complete_projection_declines_a_separately_materialized_source_view() {
             .unwrap()
             .scalar
             .continuous_structural,
-        &runtime
+        runtime
             .scalar_execution()
             .unwrap()
             .scalar
-            .implicit_scalar_rhs,
-        &materialized,
-        Some(&Compiler(native.clone())),
+            .implicit_scalar_rhs
+            .source(),
+        &prepare_mock_jacobian(materialized.clone(), Rc::new(Compiler(native.clone()))),
         &refresh_projection::projection_jacobian_demand(
             &runtime.model,
             runtime
@@ -505,6 +507,7 @@ fn projection_demand_causal_certificate_omits_native_applications() {
             .unwrap()
             .scalar
             .implicit_scalar_rhs
+            .source()
             .reverse_row_y_gradient_supported(0)
     );
     assert_eq!(native.prepares.get(), 0);

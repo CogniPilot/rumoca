@@ -31,29 +31,24 @@ impl ScalarExecutionView<'_> {
             .collect::<Vec<_>>()
             .join(", ");
         let mode_slots = self.mode_defining_parameter_slots();
-        let source = self.scalar.implicit_scalar_rhs.block();
+        let source = self.scalar.implicit_scalar_rhs.source();
         let mut read = BTreeSet::new();
         let mut conditional = BTreeSet::new();
-        let mut output = 0;
-        for program in source.programs() {
-            let outputs = solve::ScalarProgramBlock::program_output_count(program);
-            let rows = &source.output_indices()[output..output + outputs];
-            output += outputs;
-            let in_block = rows
-                .iter()
+        for program in 0..source.row_count() {
+            let outputs = source.row_output_count(program)?;
+            let in_block = (0..outputs)
+                .filter_map(|offset| source.row_output_index(program, offset))
                 .filter(|row| block.rows.contains(row))
-                .copied()
                 .collect::<Vec<_>>();
             if in_block.is_empty() {
                 continue;
             }
-            if selects_branch(program) {
+            if source.program_selects_branch(program)? {
                 conditional.extend(in_block);
             }
-            let mut reads = Vec::new();
-            collect_parameter_reads(program, &mut |index| reads.push(index));
             read.extend(
-                reads
+                source
+                    .mode_parameter_reads(program)?
                     .into_iter()
                     .filter(|index| mode_slots.contains_key(index)),
             );
@@ -138,16 +133,6 @@ impl ScalarExecutionView<'_> {
     }
 }
 
-/// Whether `program` selects between branches at run time.
-fn selects_branch(program: &[solve::LinearOp]) -> bool {
-    program.iter().any(|op| {
-        matches!(
-            op,
-            solve::LinearOp::Select { .. } | solve::LinearOp::FunctionConditional { .. }
-        )
-    })
-}
-
 fn branch_value(value: f64) -> String {
     if value == 0.0 {
         "false".to_string()
@@ -155,31 +140,5 @@ fn branch_value(value: f64) -> String {
         "true".to_string()
     } else {
         value.to_string()
-    }
-}
-
-/// Every parameter-storage slot `program` loads.
-fn collect_parameter_reads(program: &[solve::LinearOp], visit: &mut dyn FnMut(usize)) {
-    for op in program {
-        match op {
-            solve::LinearOp::LoadP { index, .. } => visit(*index),
-            solve::LinearOp::LoadIndexedP { base, count, .. } => {
-                (*base..*base + *count).for_each(&mut *visit)
-            }
-            solve::LinearOp::TensorLoad {
-                input: solve::TensorInputKind::P,
-                input_start,
-                count,
-                ..
-            } => (*input_start..*input_start + *count).for_each(&mut *visit),
-            solve::LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    collect_parameter_reads(&arm.condition, visit);
-                    collect_parameter_reads(&arm.result, visit);
-                }
-                collect_parameter_reads(&program.fallback, visit);
-            }
-            _ => {}
-        }
     }
 }

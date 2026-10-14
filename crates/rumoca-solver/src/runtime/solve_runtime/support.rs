@@ -53,17 +53,6 @@ pub(super) fn compiled_expression(
         .transpose()
 }
 
-/// Required selectable code when a compiled execution context is present.
-pub(super) fn compiled_selectable_expression(
-    backend: Option<&Rc<dyn SolveExecutionBackend>>,
-    label: &str,
-    source: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<CompleteExpression>>, EvalSolveError> {
-    backend
-        .map(|backend| super::selected_programs::expression(backend.as_ref(), label, source))
-        .transpose()
-}
-
 /// `block` compiled by `backend` for whole-block calls with its tensor nodes
 /// kept compact, or `scalar` (the block's scalar view) compiled when the
 /// backend has no compact form for it.
