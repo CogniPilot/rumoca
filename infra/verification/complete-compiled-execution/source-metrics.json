@@ -2,12 +2,12 @@
   "base": "c15dc75182dd029177e4cabc4a3953ed6df563ce",
   "methodology": "git diff --numstat; tests by file path. Inline tests remain in production-file totals. Public declaration inventory by changed Rust path and explicit pub declaration; includes reexports and fields, plus checked new public enum variants and their named fields; excludes pub(crate). Signature lines are source declarations, not a rustdoc ABI diff.",
   "metrics": {
-    "production_lines_added": 3725,
+    "production_lines_added": 3840,
     "production_lines_deleted": 1497,
     "test_lines_added": 1379,
     "test_lines_deleted": 133,
-    "files_touched": 88,
-    "net_added_lines": 3474,
+    "files_touched": 89,
+    "net_added_lines": 3589,
     "public_items_added": 17,
     "public_items_removed": 5
   },
