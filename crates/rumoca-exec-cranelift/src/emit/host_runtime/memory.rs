@@ -60,6 +60,16 @@ fn allocation_end(used: usize, size: usize, alignment: usize) -> io::Result<usiz
 }
 
 impl Pool {
+    fn finalize(&mut self, protection: BranchProtection) -> ModuleResult<()> {
+        for chunk in &mut self.chunks {
+            if !chunk.sealed {
+                chunk.arena.finalize(protection)?;
+                chunk.sealed = true;
+            }
+        }
+        Ok(())
+    }
+
     fn allocate(&mut self, size: usize, alignment: u64) -> io::Result<*mut u8> {
         let page = region::page::size();
         let align = usize::try_from(alignment)
@@ -174,12 +184,7 @@ impl JITMemoryProvider for ChunkedMemory {
             ));
         }
         for pool in &mut self.pools {
-            for chunk in &mut pool.chunks {
-                if !chunk.sealed {
-                    chunk.arena.finalize(protection)?;
-                    chunk.sealed = true;
-                }
-            }
+            pool.finalize(protection)?;
         }
         Ok(())
     }
