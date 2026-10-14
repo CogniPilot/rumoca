@@ -130,6 +130,16 @@ struct WasmExecutionBackend {
 }
 
 impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
+    fn validate_model_context(&self, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
+        if !self.layout.same_execution_layout(&model.problem.layout) {
+            return Err("portable kernel layout differs from the model execution layout".into());
+        }
+        if !self.calls.shares_table_owner(&model.pure_calls) {
+            return Err("portable kernels belong to a different canonical call table".into());
+        }
+        Ok(())
+    }
+
     fn compile_target_values(
         &self,
         plan: &rumoca_eval_solve::PreparedTargetValuePlan,

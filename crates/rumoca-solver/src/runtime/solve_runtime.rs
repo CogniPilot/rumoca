@@ -437,7 +437,7 @@ impl SolveRuntime {
         let model = &*model_owner;
         if let Some(backend) = &execution_backend {
             backend.validate_model_context(model).map_err(|message| {
-                EvalSolveError::InvalidRow {
+                EvalSolveError::CompiledExecution {
                     message: format!("compiled backend model context refused: {message}"),
                     span: None,
                 }
