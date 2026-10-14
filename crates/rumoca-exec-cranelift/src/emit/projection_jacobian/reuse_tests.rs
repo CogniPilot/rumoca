@@ -253,3 +253,88 @@ fn projection_reuse_preserves_native_failure_and_fresh_parameters() {
         assert_eq!(take_sin_calls(), 1);
     }
 }
+
+#[test]
+fn projection_table_fault_reaches_native_batch_and_preserves_outputs() {
+    use LinearOp as L;
+    let row = vec![
+        L::LoadP { dst: 0, index: 0 },
+        L::Const { dst: 1, value: 1.0 },
+        L::LoadY { dst: 2, index: 0 },
+        L::Unary {
+            dst: 3,
+            op: UnaryOp::Sin,
+            arg: 2,
+        },
+        L::TableLookup {
+            dst: 4,
+            table_id: 0,
+            column: 1,
+            input: 3,
+        },
+        L::LoadSeed { dst: 5, index: 0 },
+        L::Binary {
+            dst: 6,
+            op: BinaryOp::Mul,
+            lhs: 4,
+            rhs: 5,
+        },
+        L::LoadSeed { dst: 5, index: 1 },
+        L::Binary {
+            dst: 7,
+            op: BinaryOp::Mul,
+            lhs: 4,
+            rhs: 5,
+        },
+        L::StoreOutputRange {
+            start: 6,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("native_projection_table.mo"),
+        1,
+        2,
+    );
+    let source = ScalarProgramBlock::with_program_spans(vec![row], vec![span]).unwrap();
+    let compiled = crate::compile_jacobian_scalar_program_block(&source).unwrap();
+    let prepared = compiled.prepare_projection(&application(&source)).unwrap();
+    let tables = [ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    take_sin_calls();
+    let mut output = [99.0; 4];
+    let error = prepared
+        .call(&[0.5, 7.0], &[43.0], 0.0, &tables, &mut output)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CompileError::SourceOperation {
+                kind: crate::NativeSourceFault::ExternalTable,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        take_sin_calls(),
+        1,
+        "native projection batch must reach its table fault"
+    );
+    assert_eq!(output, [99.0; 4]);
+    for _ in 0..2 {
+        prepared
+            .call(&[0.5, 7.0], &[42.0], 0.0, &tables, &mut output)
+            .unwrap();
+        let value = 10.0 + 2.0 * 0.5_f64.sin();
+        for (actual, expected) in output.into_iter().zip([value, 0.0, 0.0, value]) {
+            assert!((actual - expected).abs() <= 32.0 * f64::EPSILON * expected.abs().max(1.0));
+        }
+    }
+}

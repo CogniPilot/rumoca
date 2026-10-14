@@ -8,13 +8,14 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use rumoca_core::ExternalTableData;
+#[cfg(test)]
 use rumoca_eval_solve::{
     eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
     eval_time_table_next_event_value_in,
 };
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, ScalarProgramBlock,
-    UnaryOp, resolve_indexed_slot,
+    UnaryOp,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod host_runtime;
 mod input_validation;
+#[cfg(test)]
 mod interpreter;
 mod native_fault;
 pub(crate) mod observation_carrier;
@@ -43,14 +45,18 @@ pub(crate) mod typed_program;
 
 use host_runtime::{host_jit_builder, register_math_symbols, with_active_external_tables};
 pub(crate) use input_validation::InputRequirements as EmitInputRequirements;
+#[cfg(test)]
+use input_validation::input_compile_error;
 use input_validation::{
-    InputRequirements, input_compile_error, input_requirements_for_linear_ops,
-    input_requirements_for_plans, row_input_requirements, validate_input_requirements,
-    validate_output_len,
+    InputRequirements, input_requirements_for_linear_ops, input_requirements_for_plans,
+    row_input_requirements, validate_input_requirements, validate_output_len,
 };
+#[cfg(test)]
 use interpreter::execute_row;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 pub(crate) use projection_batch::SharedProjectionModule;
+#[cfg(test)]
+use rumoca_ir_solve::resolve_indexed_slot;
 pub(crate) use scratch::NativeScratch;
 pub(crate) use tensor_kernel::{
     CompiledTensorKernels, DirectionalKernels, KernelFrame, KernelId, KernelKind, KernelProgram,
@@ -82,7 +88,7 @@ enum RowPlan {
 
 struct CompiledResidualRow {
     plan: RowPlan,
-    validate_with_interpreter: bool,
+    #[cfg(test)]
     interpreter_supported: bool,
 }
 
@@ -99,6 +105,12 @@ enum ResidualJit {
     Chunked(Box<[ResidualChunkFn]>),
 }
 
+#[derive(Clone, Copy)]
+enum TensorOffsetPurpose {
+    Access,
+    PatchMatch,
+}
+
 enum LoweredConditionalOutput {
     Value(cranelift_codegen::ir::Value),
     TapeRange {
@@ -113,7 +125,7 @@ struct CompiledJacobianRow {
     plan: RowPlan,
     jit: JacobianRowFn,
     scratch: scratch::ScratchOwner,
-    validate_with_interpreter: bool,
+    #[cfg(test)]
     interpreter_supported: bool,
 }
 
@@ -122,6 +134,7 @@ struct JacobianCallContext<'a> {
     p: &'a [f64],
     t: f64,
     v: &'a [f64],
+    #[cfg(test)]
     external_tables: &'a [ExternalTableData],
 }
 
@@ -134,12 +147,15 @@ struct RowInputs<'a> {
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
+    #[cfg(test)]
     seed: Option<&'a [f64]>,
+    #[cfg(test)]
     external_tables: &'a [ExternalTableData],
 }
 
 #[derive(Clone)]
 struct SimpleRowPlan {
+    #[cfg(test)]
     ops: Box<[SimpleOp]>,
     reg_count: usize,
     output_srcs: Box<[usize]>,
@@ -148,6 +164,7 @@ struct SimpleRowPlan {
 
 #[derive(Clone)]
 struct GeneralRowPlan {
+    #[cfg(test)]
     ops: Box<[LinearOp]>,
     reg_count: usize,
     output_srcs: Box<[usize]>,
@@ -171,6 +188,7 @@ impl RowPlan {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum SimpleOp {
     Const {
@@ -221,6 +239,7 @@ pub(crate) struct CompiledResidualRows {
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
+    transaction_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
@@ -296,11 +315,17 @@ impl CompiledResidualRows {
             y,
             p,
             t,
+            #[cfg(test)]
             seed: None,
+            #[cfg(test)]
             external_tables,
         };
         with_active_external_tables(external_tables, || {
-            self.call_active(inputs, output_count, out)
+            let mut staged = self.transaction_scratch.borrow_mut();
+            resize_native_outputs(&mut staged, output_count)?;
+            self.call_active(inputs, output_count, &mut staged)?;
+            out[..output_count].copy_from_slice(&staged);
+            Ok(())
         })
     }
 
@@ -320,11 +345,10 @@ impl CompiledResidualRows {
     fn call_active(
         &self,
         inputs: RowInputs<'_>,
-        output_count: usize,
+        _output_count: usize,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
         let mut regs_scratch = self.regs_scratch.borrow_mut();
-        let expected = self.interpreted_outputs(&mut regs_scratch, inputs, output_count)?;
         for compiled in &self.jits {
             let output =
                 &mut out[compiled.output_start..compiled.output_start + compiled.output_count];
@@ -341,23 +365,23 @@ impl CompiledResidualRows {
             self.record_jit_call();
             status::check(status)?;
         }
-        if let Some(expected) = expected {
+        #[cfg(test)]
+        if let Some(expected) =
+            self.interpreted_outputs(&mut regs_scratch, inputs, _output_count)?
+        {
             validate_interpreted_outputs(out, &expected)?;
         }
         Ok(())
     }
 
+    #[cfg(test)]
     fn interpreted_outputs(
         &self,
         regs_scratch: &mut Vec<f64>,
         inputs: RowInputs<'_>,
         output_count: usize,
     ) -> Result<Option<Vec<f64>>, CompileError> {
-        let validate = self.rows.iter().all(|row| row.interpreter_supported)
-            && self
-                .rows
-                .iter()
-                .any(|row| should_validate_jit_row(row.validate_with_interpreter));
+        let validate = self.rows.iter().all(|row| row.interpreter_supported);
         if !validate {
             return Ok(None);
         }
@@ -382,6 +406,22 @@ impl CompiledResidualRows {
     }
 }
 
+fn reserve_native_outputs(values: &mut Vec<f64>, len: usize) -> Result<(), CompileError> {
+    if len > values.len() {
+        values.try_reserve(len - values.len()).map_err(|_| {
+            CompileError::Backend("native output workspace allocation failed".into())
+        })?;
+    }
+    Ok(())
+}
+
+fn resize_native_outputs(values: &mut Vec<f64>, len: usize) -> Result<(), CompileError> {
+    reserve_native_outputs(values, len)?;
+    values.resize(len, 0.0);
+    Ok(())
+}
+
+#[cfg(test)]
 fn validate_interpreted_outputs(actual: &[f64], expected: &[f64]) -> Result<(), CompileError> {
     for (&actual, &expected) in actual.iter().zip(expected) {
         validate_jit_matches_interpreter("residual", actual, expected)?;
@@ -395,6 +435,7 @@ pub(crate) struct CompiledJacobianRows {
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
+    transaction_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
@@ -437,6 +478,7 @@ impl CompiledJacobianRows {
                     p,
                     t,
                     v,
+                    #[cfg(test)]
                     external_tables,
                 },
                 &mut output,
@@ -476,14 +518,18 @@ impl CompiledJacobianRows {
                 p,
                 t,
                 v,
+                #[cfg(test)]
                 external_tables,
             };
+            let mut staged = self.transaction_scratch.borrow_mut();
+            resize_native_outputs(&mut staged, output_count)?;
             let mut base = 0;
             for row in self.rows.iter() {
                 let k = row.plan.output_count();
-                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut out[base..base + k])?;
+                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut staged[base..base + k])?;
                 base += k;
             }
+            out[..output_count].copy_from_slice(&staged);
             Ok(())
         })
     }
@@ -491,11 +537,15 @@ impl CompiledJacobianRows {
     fn call_jacobian_row(
         &self,
         row: &CompiledJacobianRow,
-        regs_scratch: &mut Vec<f64>,
+        _regs_scratch: &mut Vec<f64>,
         ctx: &JacobianCallContext<'_>,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        if row.interpreter_supported && should_validate_jit_row(row.validate_with_interpreter) {
+        let status = unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) };
+        self.record_jit_call();
+        status::check(status)?;
+        #[cfg(test)]
+        if row.interpreter_supported {
             let mut expected = vec![0.0; out.len()];
             let inputs = RowInputs {
                 y: ctx.y,
@@ -504,16 +554,11 @@ impl CompiledJacobianRows {
                 seed: Some(ctx.v),
                 external_tables: ctx.external_tables,
             };
-            execute_row(&row.plan, regs_scratch, inputs, &mut expected)?;
-            status::check(unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
-            self.record_jit_call();
+            execute_row(&row.plan, _regs_scratch, inputs, &mut expected)?;
             for (actual, expected) in out.iter().zip(&expected) {
                 validate_jit_matches_interpreter("jacobian", *actual, *expected)?;
             }
-            return Ok(());
         }
-        status::check(unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
-        self.record_jit_call();
         Ok(())
     }
 
@@ -626,6 +671,7 @@ fn compile_residual_rows_attached(
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         output_scratch: RefCell::new(Vec::new()),
+        transaction_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
@@ -701,11 +747,11 @@ fn build_compiled_residual_rows(
     plans: Vec<RowPlan>,
 ) -> Result<Vec<CompiledResidualRow>, CompileError> {
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled residual rows")?;
-    for (index, plan) in plans.into_iter().enumerate() {
+    for (plan, _source) in plans.into_iter().zip(rows) {
         compiled_rows.push(CompiledResidualRow {
             plan,
-            validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            interpreter_supported: !row_uses_pure_calls(&rows[index]),
+            #[cfg(test)]
+            interpreter_supported: !row_uses_pure_calls(_source),
         });
     }
     Ok(compiled_rows)
@@ -889,14 +935,14 @@ fn compile_jacobian_rows_attached(
     finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
-    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+    for ((plan, func_id), _source) in plans.into_iter().zip(func_ids).zip(rows) {
         let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
         compiled_rows.push(CompiledJacobianRow {
             plan,
             jit,
             scratch: Default::default(),
-            validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            interpreter_supported: !row_uses_pure_calls(&rows[index]),
+            #[cfg(test)]
+            interpreter_supported: !row_uses_pure_calls(_source),
         });
     }
     Ok(CompiledJacobianRows {
@@ -905,6 +951,7 @@ fn compile_jacobian_rows_attached(
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         output_scratch: RefCell::new(Vec::new()),
+        transaction_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
@@ -1055,6 +1102,7 @@ unsafe fn call_jacobian_jit(
     })
 }
 
+#[cfg(test)]
 fn validate_jit_matches_interpreter(
     row_kind: &'static str,
     actual: f64,
@@ -1070,10 +1118,6 @@ fn validate_jit_matches_interpreter(
     Err(CompileError::Backend(format!(
         "Cranelift {row_kind} row result {actual} diverged from interpreter result {expected}"
     )))
-}
-
-fn should_validate_jit_row(row_requires_validation: bool) -> bool {
-    cfg!(test) || row_requires_validation
 }
 
 fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), CompileError> {
@@ -1106,18 +1150,7 @@ fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), 
     Ok(())
 }
 
-fn row_uses_table_ops(row: &[LinearOp]) -> bool {
-    row.iter().any(|op| {
-        matches!(
-            op,
-            LinearOp::TableBounds { .. }
-                | LinearOp::TableLookup { .. }
-                | LinearOp::TableLookupSlope { .. }
-                | LinearOp::TableNextEvent { .. }
-        )
-    })
-}
-
+#[cfg(test)]
 fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
     row.iter().any(|operation| {
         matches!(
@@ -5868,7 +5901,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        self.lower_tensor_offset(dimensions, indices)?;
+        self.lower_tensor_offset(dimensions, indices, TensorOffsetPurpose::Access)?;
         let invalid = self.fb.ins().iconst(types::I8, 0);
         status::require_index(self.fb, invalid);
         // The failure returns before this unreachable, builder-typed continuation.
@@ -5880,7 +5913,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let (flat, valid) =
+            self.lower_tensor_offset(dimensions, indices, TensorOffsetPurpose::Access)?;
         status::require_index(self.fb, valid);
         Ok(flat)
     }
@@ -5925,10 +5959,28 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         }
     }
 
+    fn require_tensor_coordinate(
+        &mut self,
+        purpose: TensorOffsetPurpose,
+        coordinate: (
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            u32,
+        ),
+    ) -> Result<(), CompileError> {
+        match purpose {
+            TensorOffsetPurpose::Access => {
+                native_fault::checked_index(self.module, self.fb, coordinate, std::ptr::null())
+            }
+            TensorOffsetPurpose::PatchMatch => Ok(()),
+        }
+    }
+
     fn lower_tensor_offset(
         &mut self,
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
+        purpose: TensorOffsetPurpose,
     ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), CompileError> {
         if dimensions.len() != indices.len() {
             return Err(CompileError::Backend(
@@ -5956,12 +6008,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     let axis_valid = self.fb.ins().band(integral, above_lower);
                     let axis_valid = self.fb.ins().band(axis_valid, below_upper);
                     valid = self.fb.ins().band(valid, axis_valid);
-                    native_fault::checked_index(
-                        self.module,
-                        self.fb,
-                        (axis_valid, value, extent),
-                        std::ptr::null(),
-                    )?;
+                    self.require_tensor_coordinate(purpose, (axis_valid, value, extent))?;
                     let clamped = self.fb.ins().fmax(rounded, one);
                     let clamped = self.fb.ins().fmin(clamped, upper);
                     // Invalid coordinates must reach the caller's explicit status
@@ -6335,7 +6382,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             return Ok(false);
         };
 
-        let (element, address_valid) = self.lower_tensor_offset(dimensions, &indices)?;
+        let (element, address_valid) =
+            self.lower_tensor_offset(dimensions, &indices, TensorOffsetPurpose::PatchMatch)?;
         let zero = self.fb.ins().iconst(types::I64, 0);
         let element = self.fb.ins().select(address_valid, element, zero);
         let carried_base = scratch::stack_addr(self.fb, types::I64, carried, 0);
@@ -7282,11 +7330,14 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     let output_srcs = output_srcs.into_boxed_slice();
 
     if body.iter().cloned().all(is_simple_linear_op) {
+        #[cfg(test)]
         let mut ops = checked_vec_with_capacity(body.len(), "simple runtime ops")?;
+        #[cfg(test)]
         for op in body.iter().cloned() {
             ops.push(lower_simple_op(op)?);
         }
         return Ok(RowPlan::Simple(SimpleRowPlan {
+            #[cfg(test)]
             ops: ops.into_boxed_slice(),
             reg_count,
             output_srcs,
@@ -7295,6 +7346,7 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     }
 
     Ok(RowPlan::General(GeneralRowPlan {
+        #[cfg(test)]
         ops: body.into_boxed_slice(),
         reg_count,
         output_srcs,
@@ -7368,6 +7420,7 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
     )
 }
 
+#[cfg(test)]
 fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
     match op {
         LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
@@ -7444,6 +7497,7 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
     }
 }
 
+#[cfg(test)]
 fn lower_runtime_index(index: usize, kind: &str) -> Result<u32, CompileError> {
     u32::try_from(index)
         .map_err(|_| CompileError::Backend(format!("{kind} index exceeds u32 runtime plan")))
