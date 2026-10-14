@@ -8,6 +8,7 @@ use crate::runtime::projection::{
 };
 use nalgebra::DVector;
 use rumoca_core::Span;
+use rumoca_eval_solve::JacobianEvalInputs;
 
 use super::initial_continuation::InitialContinuationCoverage;
 
@@ -347,6 +348,13 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if let Some(queries) = self.runtime.scalar.compiled_targets(true) {
+            return queries.call(
+                (row_idx, 0, target_y_index),
+                (y, p, t),
+                self.runtime.row_eval_context(),
+            );
+        }
         self.runtime
             .scalar
             .initial_scalar_residual
@@ -379,6 +387,28 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual() {
+            return compiled
+                .call_program_output(
+                    (row_idx, 0),
+                    y,
+                    p,
+                    t,
+                    self.runtime.model.external_tables.as_slice(),
+                )
+                .map_err(|error| {
+                    admitted_compiled_error(
+                        "initial residual row",
+                        self.runtime
+                            .scalar
+                            .initial_scalar_residual
+                            .block()
+                            .program_span(row_idx)
+                            .as_slice(),
+                        error,
+                    )
+                });
+        }
         self.runtime
             .scalar
             .initial_scalar_residual
@@ -600,13 +630,49 @@ impl ScalarExecutionView<'_> {
         let mut seed = vec![0.0; seed_len];
         let copied = v.len().min(seed_len);
         seed[..copied].copy_from_slice(&v[..copied]);
-        solve_eval::eval_scalar_program_block_with_context(
+        self.eval_initial_update_jacobian(
             block,
-            y,
-            p,
-            t,
+            JacobianEvalInputs {
+                y,
+                p,
+                t,
+                seed: &seed,
+            },
+            out,
+        )
+    }
+
+    fn eval_initial_update_jacobian(
+        &self,
+        source: &solve::ScalarProgramBlock,
+        inputs: JacobianEvalInputs<'_>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if let Some(code) = self.scalar.compiled_initial_update_jacobian() {
+            return code
+                .call(
+                    inputs.y,
+                    inputs.p,
+                    inputs.t,
+                    inputs.seed,
+                    self.model.external_tables.as_slice(),
+                    out,
+                )
+                .map_err(|error| {
+                    admitted_compiled_error(
+                        "initial update Jacobian",
+                        source.program_spans(),
+                        error,
+                    )
+                });
+        }
+        solve_eval::eval_scalar_program_block_with_context(
+            source,
+            inputs.y,
+            inputs.p,
+            inputs.t,
             RowEvalContext {
-                seed: Some(&seed),
+                seed: Some(inputs.seed),
                 ..self.row_eval_context()
             },
             out,
@@ -760,14 +826,13 @@ impl ScalarExecutionView<'_> {
         for pass in 0..settle.max_iters {
             let mut changed = false;
             if let Some(block) = updates {
-                solve_eval::eval_scalar_program_block_with_context(
+                self.eval_initial_update_jacobian(
                     block,
-                    y,
-                    p,
-                    t,
-                    RowEvalContext {
-                        seed: Some(&seed),
-                        ..self.row_eval_context()
+                    JacobianEvalInputs {
+                        y,
+                        p,
+                        t,
+                        seed: &seed,
                     },
                     &mut values,
                 )?;
