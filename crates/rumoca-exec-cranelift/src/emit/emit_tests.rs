@@ -1,6 +1,6 @@
 use super::host_runtime::{
-    rumoca_host_table_bounds_min, rumoca_host_table_lookup, rumoca_host_table_lookup_slope,
-    rumoca_host_table_next_event,
+    rumoca_host_table_bounds_max, rumoca_host_table_bounds_min, rumoca_host_table_lookup,
+    rumoca_host_table_lookup_slope, rumoca_host_table_next_event,
 };
 use super::*;
 
@@ -402,7 +402,9 @@ fn general_runtime_table_lookup_failure_is_error_not_silent_zero() {
     )
     .expect_err("missing table should report an evaluation error");
 
-    assert!(matches!(err, CompileError::Input(message) if message.contains("table id 42")));
+    assert!(matches!(err, CompileError::SourceOperation {
+        kind: crate::NativeSourceFault::ExternalTable, message,
+    } if message.contains("table id 42")));
 }
 
 #[test]
@@ -442,7 +444,9 @@ fn general_runtime_table_lookup_invalid_column_is_error_not_clamped() {
     .expect_err("invalid table column should report an evaluation error");
 
     assert!(
-        matches!(err, CompileError::Input(message) if message.contains("column 2")),
+        matches!(err, CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::ExternalTable, message,
+        } if message.contains("column 2")),
         "invalid column error should mention the requested column"
     );
 }
@@ -650,11 +654,35 @@ fn compiled_residual_program_writes_multiple_outputs() {
 }
 
 #[test]
-fn table_host_trampolines_keep_abi_boundary_nan_sentinel() {
-    assert!(rumoca_host_table_bounds_min(42.0).is_nan());
-    assert!(rumoca_host_table_lookup(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_lookup_slope(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_next_event(42.0, 0.0).is_nan());
+fn table_host_trampolines_return_fault_status_without_publishing() {
+    let mut value = 99.0;
+    // SAFETY: every callback receives one live writable result cell.
+    let status = unsafe { rumoca_host_table_bounds_min(42.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_bounds_max(42.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_lookup_slope(42.0, 1.0, 1.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_next_event(42.0, 0.0, &mut value) };
+    assert_table_host_fault(status, value);
+}
+
+fn assert_table_host_fault(status: u8, value: f64) {
+    assert_eq!(status, status::TABLE_FAILURE);
+    assert!(matches!(
+        status::check(status),
+        Err(CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::ExternalTable,
+            ..
+        })
+    ));
+    assert_eq!(value, 99.0);
 }
 
 #[test]

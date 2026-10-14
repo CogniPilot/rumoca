@@ -133,9 +133,9 @@ impl PrecompiledSolveBackendBuilder {
 ///
 /// This adapter admits scalar expression/JVP owners and an optional canonical
 /// pure-call executor. Other
-/// requests explicitly decline. The existing optional-backend runtime may
-/// interpret a decline; this adapter therefore does not itself admit a direct
-/// FMI-LS deployment or establish complete compiled execution.
+/// requests explicitly decline. Runtime preparation requires complete numeric
+/// coverage, so this adapter alone does not establish a runnable compiled model
+/// or admit a direct FMI-LS deployment.
 pub struct PrecompiledSolveBackend {
     layout: solve::VarLayout,
     calls: solve::SolvePureCallTable,

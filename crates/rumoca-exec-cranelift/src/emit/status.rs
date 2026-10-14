@@ -16,6 +16,8 @@ pub(super) const NATIVE_BODY_FOREIGN_ERROR: u8 = 5;
 const RECURSION_DEPTH_EXCEEDED: i64 = 6;
 const SCALAR_PAYLOAD_FAILURE: i64 = 7;
 const INTEGER_ARITHMETIC_FAILURE: i64 = 8;
+/// A table callback retained its checked source fault in this invocation.
+pub(super) const TABLE_FAILURE: u8 = 10;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     if let Some(fault) = super::native_fault::take(status) {
@@ -63,6 +65,15 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
             kind: NativeSourceFault::IntegerArithmetic,
             message: "native Integer arithmetic left the checked target domain".into(),
         }),
+        TABLE_FAILURE => match super::host_runtime::take_table_fault() {
+            Some(error) => Err(CompileError::SourceOperation {
+                kind: NativeSourceFault::ExternalTable,
+                message: error.to_string(),
+            }),
+            None => Err(CompileError::Backend(
+                "native table status has no invocation fault".into(),
+            )),
+        },
         scratch::FAILURE => Err(CompileError::Backend(
             "native scratch allocation or frame contract failed".into(),
         )),

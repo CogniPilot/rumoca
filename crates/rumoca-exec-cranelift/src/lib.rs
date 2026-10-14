@@ -41,6 +41,7 @@ pub enum NativeSourceFault {
     RecursionDepth,
     ScalarPayload,
     IntegerArithmetic,
+    ExternalTable,
 }
 
 impl std::fmt::Display for CompileError {
