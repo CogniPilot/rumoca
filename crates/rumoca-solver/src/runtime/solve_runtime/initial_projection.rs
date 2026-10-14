@@ -13,6 +13,8 @@ use super::initial_continuation::InitialContinuationCoverage;
 
 use super::*;
 
+pub(super) type InitialReadCones = Box<[Box<[usize]>]>;
+
 struct InitialProjectionModel<'a> {
     runtime: ScalarExecutionView<'a>,
     tol: f64,
@@ -799,7 +801,7 @@ pub(super) fn settled_read_cones(
     residual: &solve::ScalarProgramBlock,
     implicit: &solve::ScalarProgramBlock,
     plan: &solve::AlgebraicProjectionPlan,
-) -> Result<Option<Box<[Box<[usize]>]>>, EvalSolveError> {
+) -> Result<Option<InitialReadCones>, EvalSolveError> {
     if updates_read_algebraic_slots(model) {
         return Ok(None);
     }
@@ -1516,7 +1518,7 @@ mod tests {
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]]);
-        solve::SolveModel {
+        let mut model = solve::SolveModel {
             problem: solve::SolveProblem {
                 layout: crate::fixture_layout::named_y_layout(
                     rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 2),
@@ -1581,7 +1583,9 @@ mod tests {
             initial_y: vec![51.0].into(),
             parameters: vec![100.0, 100.0].into(),
             ..Default::default()
-        }
+        };
+        crate::test_fixtures::derive_structural_artifacts(&mut model);
+        model
     }
 
     #[test]

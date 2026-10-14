@@ -272,7 +272,7 @@ struct ScalarExecutionInventory {
     /// refresh blocks it reads directly or through other blocks; `None` when
     /// a block Jacobian must carry its direction through every block
     /// ([`initial_projection::settled_read_cones`]).
-    settled_read_cones: Option<Box<[Box<[usize]>]>>,
+    settled_read_cones: Option<initial_projection::InitialReadCones>,
     derivative_refresh: solve::RefreshPlan,
     root_refresh: solve::RefreshPlan,
     event_refresh: solve::RefreshPlan,

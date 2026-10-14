@@ -779,10 +779,18 @@ fn property_non_convergent_runtime_event_returns_error(increment: f64) {
     let model = divergent_runtime_event_model(increment);
     let mut kernel = instantiate(&model);
     run_to_continuous_time_mode(&mut kernel);
+    assert_eq!(
+        kernel.verification_observable_state().3[0],
+        0.0_f64.to_bits()
+    );
+    let event_time = 0.25;
+    kernel
+        .set_time(MeTime::at(event_time))
+        .expect("the later runtime event advances the host coordinate");
     kernel
         .enter_event_mode(MeEventEntry {
             cause: MeEventCause::StateEvent,
-            event_time: START_TIME,
+            event_time,
             horizon: STOP_TIME,
         })
         .expect("the runtime state event is reachable");
