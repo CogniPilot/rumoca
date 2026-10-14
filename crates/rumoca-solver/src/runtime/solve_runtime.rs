@@ -24,10 +24,7 @@ use crate::runtime::projection::{
     ImplicitProjectionModel, ManifoldProjectionModel, project_algebraic_seed_with_plan,
     project_algebraics_with_plan, project_algebraics_with_plan_certified,
 };
-use crate::runtime::solve_events::{
-    current_dynamic_time_event_stop_from_rows, event_action_params, next_runtime_event_stop_from_rows,
-    visible_values_with_context,
-};
+use crate::runtime::solve_events::{event_action_params, visible_values_with_context};
 use crate::runtime::solve_ops::write_clock_activation_params;
 use crate::{
     EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
@@ -265,11 +262,11 @@ pub struct SolveRuntime {
 
 #[derive(Clone)]
 struct ScalarExecutionInventory {
+    coupled_event_jvps: coupled_event::CoupledEventJvps,
     implicit_rhs: PreparedComputeBlock,
     implicit_projection_jacobian_v: PreparedComputeBlock,
     implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
-    coupled_event_jvps: coupled_event::CoupledEventJvps,
     /// Tangent plan of each algebraic projection block's tearing, aligned
     /// with the block list; `None` for an untorn block or one without a plan.
     torn_tangents: Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]>,

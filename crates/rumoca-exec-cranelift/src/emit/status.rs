@@ -20,17 +20,23 @@ const INTEGER_ARITHMETIC_FAILURE: i64 = 8;
 pub(super) const TABLE_FAILURE: u8 = 10;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
+    if let Some(fault) = super::native_fault::take(status) {
+        return Err(fault);
+    }
     match status {
         0 => Ok(()),
         1 => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::TensorIndex,
             message: "native tensor index is out of bounds".into(),
         }),
         2 => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::LinearSolve,
             message: "native tensor linear solve is singular or non-finite".into(),
         }),
         3 => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::IntegerQuotient,
             message: "native Integer quotient has a zero divisor or no representable result".into(),
         }),
@@ -38,20 +44,24 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
             "native body host call received operands outside its interface".into(),
         )),
         NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::ForeignBody,
             message: "a native foreign body reported an error for its operands".into(),
         }),
         6 => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::RecursionDepth,
             message: "recursive call exceeds the execution profile's depth limit".into(),
         }),
         7 => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::ScalarPayload,
             message:
                 "Integer value is outside its domain or not exactly representable in the scalar ABI"
                     .into(),
         }),
         8 => Err(CompileError::SourceOperation {
+            span: None,
             kind: NativeSourceFault::IntegerArithmetic,
             message: "native Integer arithmetic left the checked target domain".into(),
         }),
@@ -59,6 +69,7 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
             Some(error) => Err(CompileError::SourceOperation {
                 kind: NativeSourceFault::ExternalTable,
                 message: error.to_string(),
+                span: None,
             }),
             None => Err(CompileError::Backend(
                 "native table status has no invocation fault".into(),

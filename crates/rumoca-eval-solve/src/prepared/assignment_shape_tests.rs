@@ -162,6 +162,21 @@ fn compact_tensor_sum_isolates_a_force_coordinate_inside_its_cross_product() {
         prepared.assignment_shape_for_output(0, 0, 1),
         Some(TargetAssignmentShape::TensorAffine { .. })
     ));
+    let plan = prepared
+        .portable_target_value_plan(0, 0, 1)
+        .unwrap()
+        .unwrap();
+    let portable = PreparedScalarProgramBlock::new(plan.program().clone()).unwrap();
+    let mut tuple = vec![f64::NAN; plan.program().stored_output_count()];
+    portable
+        .eval_with_context(
+            &[4.0, 1e30, 7.0, 18.0, -4.0, 5.0],
+            &[2.0, 3.0, 5.0],
+            0.0,
+            RowEvalContext::default(),
+            &mut tuple,
+        )
+        .unwrap();
     let value = prepared
         .eval_target_assignment_output_unchecked_with_context(TargetAssignmentOutputRequest {
             row_idx: 0,
@@ -175,6 +190,10 @@ fn compact_tensor_sum_isolates_a_force_coordinate_inside_its_cross_product() {
         .unwrap()
         .unwrap();
     assert!((value - 8.6).abs() < 1e-12);
+    assert_eq!(
+        tuple[plan.private_result_offset()].to_bits(),
+        value.to_bits()
+    );
 }
 
 #[test]

@@ -9,6 +9,11 @@ pub(super) fn has_shared_conditional_owner(rows: &[Vec<LinearOp>]) -> bool {
 }
 
 impl CompiledResidualRows {
+    pub(crate) fn independent_program_output_count(&self, program: usize) -> Option<usize> {
+        self.selectable.then_some(())?;
+        self.rows.get(program).map(|row| row.plan.output_count())
+    }
+
     pub(crate) fn call_program_outputs(
         &self,
         program: usize,

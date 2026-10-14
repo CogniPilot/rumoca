@@ -5,6 +5,9 @@ use rumoca_ir_solve::TensorInputKind;
 
 impl BodyEmitter<'_> {
     pub(super) fn arena_load(&mut self, operation: LinearOp) -> Result<(), String> {
+        if matches!(operation, LinearOp::TensorLoad { lanes: 2, .. }) {
+            return self.arena_dual_load(operation);
+        }
         let LinearOp::TensorLoad {
             dst_start,
             input,
@@ -36,15 +39,24 @@ impl BodyEmitter<'_> {
             dst_start,
             value_start,
             count,
-            ..
+            lanes,
         } = operation
         else {
             return Err("expected TensorFill".into());
         };
         let counter = self.arena_plan()?.counter;
-        self.loop_start(counter, count)?;
+        self.loop_start(
+            counter,
+            count
+                .checked_mul(lanes)
+                .ok_or("tensor fill width overflow")?,
+        )?;
         self.push_arena_address(dst_start, Some(counter), 1)?;
-        self.push_reg(value_start)?;
+        self.push(Instruction::LocalGet(counter));
+        self.push(Instruction::I32Const(lanes as i32));
+        self.push(Instruction::I32RemU);
+        self.push_arena_index(value_start)?;
+        self.push(Instruction::F64Load(memarg()));
         self.push(Instruction::F64Store(memarg()));
         self.loop_end(counter);
         Ok(())
@@ -52,7 +64,9 @@ impl BodyEmitter<'_> {
 
     pub(super) fn arena_identity(&mut self, operation: LinearOp) -> Result<(), String> {
         let LinearOp::TensorIdentity {
-            dst_start, size, ..
+            dst_start,
+            size,
+            lanes,
         } = operation
         else {
             return Err("expected TensorIdentity".into());
@@ -63,7 +77,7 @@ impl BodyEmitter<'_> {
             .ok_or("native identity count overflow")?;
         let size = i32::try_from(size).map_err(|_| "native identity extent exceeds i32")?;
         self.loop_start(counter, count)?;
-        self.push_arena_address(dst_start, Some(counter), 1)?;
+        self.push_arena_address(dst_start, Some(counter), lanes)?;
         self.push(Instruction::LocalGet(counter));
         self.push(Instruction::I32Const(size));
         self.push(Instruction::I32DivU);
@@ -73,6 +87,11 @@ impl BodyEmitter<'_> {
         self.push(Instruction::I32Eq);
         self.push(Instruction::F64ConvertI32U);
         self.push(Instruction::F64Store(memarg()));
+        if lanes == 2 {
+            self.push_arena_address(dst_start + 1, Some(counter), lanes)?;
+            self.push(Instruction::F64Const(0.0.into()));
+            self.push(Instruction::F64Store(memarg()));
+        }
         self.loop_end(counter);
         Ok(())
     }
@@ -84,11 +103,14 @@ impl BodyEmitter<'_> {
             rows,
             columns,
             element_width,
-            ..
+            lanes,
         } = operation
         else {
             return Err("expected TensorTranspose".into());
         };
+        let element_width = element_width
+            .checked_mul(lanes)
+            .ok_or("transpose lane width overflow")?;
         let count = rows
             .checked_mul(columns)
             .and_then(|n| n.checked_mul(element_width))
@@ -133,14 +155,14 @@ impl BodyEmitter<'_> {
             sources,
             dimensions,
             axis,
-            ..
+            lanes,
         } = operation
         else {
             return Err("expected TensorConcatenate".into());
         };
         let inner = dimensions[axis + 1..]
             .iter()
-            .try_fold(1usize, |n, d| n.checked_mul(*d as usize))
+            .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
             .ok_or("native concatenate inner width overflow")?;
         let result_block = (dimensions[axis] as usize)
             .checked_mul(inner)
@@ -156,7 +178,7 @@ impl BodyEmitter<'_> {
             let count = source
                 .dimensions
                 .iter()
-                .try_fold(1usize, |n, d| n.checked_mul(*d as usize))
+                .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
                 .ok_or("native concatenate count overflow")?;
             let offset = axis_offset
                 .checked_mul(inner)

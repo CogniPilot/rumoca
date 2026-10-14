@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 pub(super) struct CompiledPrograms {
     programs: Box<[CompiledProgram]>,
@@ -21,23 +24,122 @@ impl CompiledPrograms {
         source: &solve::ScalarProgramBlock,
         backend: &dyn SolveExecutionBackend,
     ) -> Result<Self, EvalSolveError> {
-        let programs = source.programs().iter().enumerate().map(|(index, ops)| {
-            let span = source.program_span(index).ok_or_else(|| EvalSolveError::InvalidRow {
-                message: format!("{label} program {index} has no source span"),
-                span: None,
-            })?;
-            let block = solve::ScalarProgramBlock::with_program_spans(vec![ops.clone()], vec![span])
-                .map_err(|error| EvalSolveError::InvalidRow { message: error.to_string(), span: Some(span) })?;
-            let expression = backend.compile_expression(&block).map_err(|message| EvalSolveError::CompiledExecution {
-                message: format!("required compiled program `{label}[{index}]` could not be lowered: {message}"),
-                span: Some(span),
-            })?;
-            Ok(CompiledProgram { expression, output_count: block.output_count(), span })
-        }).collect::<Result<Box<[_]>, EvalSolveError>>()?;
+        let whole = (source.row_count() > 1)
+            .then(|| optional_compiled(label, backend.compile_selectable_expression(source)))
+            .flatten();
+        let programs = source
+            .programs()
+            .iter()
+            .enumerate()
+            .map(|(index, ops)| {
+                Self::prepare_program(label, source, index, ops, whole.as_ref(), backend)
+            })
+            .collect::<Result<Box<[_]>, EvalSolveError>>()?;
         Ok(Self {
             programs,
             scratch: RefCell::default(),
         })
+    }
+
+    fn prepare_program(
+        label: &str,
+        source: &solve::ScalarProgramBlock,
+        index: usize,
+        ops: &[solve::LinearOp],
+        whole: Option<&Rc<dyn CompiledSolveExpression>>,
+        backend: &dyn SolveExecutionBackend,
+    ) -> Result<CompiledProgram, EvalSolveError> {
+        let span = source
+            .program_span(index)
+            .ok_or_else(|| EvalSolveError::InvalidRow {
+                message: format!("{label} program {index} has no source span"),
+                span: None,
+            })?;
+        let bound = whole.map(|code| code.bind_program(source, index)).transpose()
+            .map_err(|message| EvalSolveError::CompiledExecution {
+                message: format!("required compiled program `{label}[{index}]` could not bind its source: {message}"),
+                span: Some(span),
+            })?.flatten();
+        let expression = if let Some(bound) = bound {
+            bound
+        } else {
+            let block =
+                solve::ScalarProgramBlock::with_program_spans(vec![ops.to_vec()], vec![span])
+                    .map_err(|error| EvalSolveError::InvalidRow {
+                        message: error.to_string(),
+                        span: Some(span),
+                    })?;
+            backend.compile_expression(&block).map_err(|message| EvalSolveError::CompiledExecution {
+                message: format!("required compiled program `{label}[{index}]` could not be lowered: {message}"),
+                span: Some(span),
+            })?
+        };
+        Ok(CompiledProgram {
+            expression,
+            output_count: solve::ScalarProgramBlock::program_output_count(ops),
+            span,
+        })
+    }
+
+    fn event(
+        source: &solve::SolveExecutionSource,
+        which: solve::RetainedAssertionSource,
+        backend: &dyn SolveExecutionBackend,
+    ) -> Result<Self, EvalSolveError> {
+        let block = match which {
+            solve::RetainedAssertionSource::RootConditions => {
+                &source.model().problem.events.root_conditions
+            }
+            solve::RetainedAssertionSource::ActionConditions => {
+                &source.model().problem.events.action_conditions
+            }
+        };
+        let mut programs = Vec::new();
+        for index in 0..block.row_count() {
+            let program =
+                source
+                    .event_program(which, index)
+                    .ok_or_else(|| EvalSolveError::InvalidRow {
+                        message: "event program has no checked source/action binding".into(),
+                        span: block.program_span(index),
+                    })?;
+            let span = program.span();
+            let compiled_block = solve::ScalarProgramBlock::with_program_spans(
+                vec![program.program().to_vec()],
+                vec![span],
+            )
+            .map_err(|error| EvalSolveError::InvalidRow {
+                message: error.to_string(),
+                span: Some(span),
+            })?;
+            let output_count = compiled_block.output_count();
+            let expression = if program.has_observations() {
+                backend.compile_event_observation(program)
+            } else {
+                backend.compile_expression(&compiled_block)
+            }
+            .map_err(|message| EvalSolveError::CompiledExecution {
+                message: format!(
+                    "required compiled event program {index} could not be lowered: {message}"
+                ),
+                span: Some(span),
+            })?;
+            programs.push(CompiledProgram {
+                expression,
+                output_count,
+                span,
+            });
+        }
+        Ok(Self {
+            programs: programs.into_boxed_slice(),
+            scratch: RefCell::default(),
+        })
+    }
+
+    fn observed_message(&self, action: &solve::SolveEventAction) -> Option<String> {
+        self.programs
+            .iter()
+            .find_map(|program| program.expression.observed_message(action))
     }
 
     pub(super) fn call(
@@ -72,7 +174,8 @@ pub(super) struct CompiledLifecycle {
     clock_intermediates: CompiledPrograms,
     visible: CompiledPrograms,
     event_conditions: CompiledPrograms,
-    roots: CompiledPrograms,
+    roots: Rc<CompiledPrograms>,
+    root_expression: Rc<dyn CompiledSolveExpression>,
     structured: CompiledPrograms,
     initialization_updates: CompiledPrograms,
     dynamic_deadlines: CompiledPrograms,
@@ -82,13 +185,17 @@ pub(super) struct CompiledLifecycle {
 }
 
 impl CompiledLifecycle {
+    pub(super) fn root_expression(&self) -> Rc<dyn CompiledSolveExpression> {
+        Rc::clone(&self.root_expression)
+    }
     pub(super) fn new(
-        model: &solve::SolveModel,
+        source: &solve::SolveExecutionSource,
         visible: &solve::ScalarProgramBlock,
         structured: &solve::ScalarProgramBlock,
         guarded: &[PreparedGuardedAssignmentProgram],
         backend: &dyn SolveExecutionBackend,
     ) -> Result<Self, EvalSolveError> {
+        let model = source.model();
         let discrete = &model.problem.discrete;
         let compile = |label, block| CompiledPrograms::new(label, block, backend);
         let guarded = guarded
@@ -113,6 +220,17 @@ impl CompiledLifecycle {
                 })
             })
             .collect::<Result<Box<[_]>, _>>()?;
+        let roots = Rc::new(CompiledPrograms::event(
+            source,
+            solve::RetainedAssertionSource::RootConditions,
+            backend,
+        )?);
+        let root_expression = Rc::new(CompiledRootBlock {
+            programs: Rc::clone(&roots),
+            source: model.problem.events.root_conditions.clone(),
+            values: RefCell::default(),
+            staged: RefCell::default(),
+        });
         Ok(Self {
             discrete: compile("discrete_rhs", &discrete.rhs)?,
             clock_intermediates: compile(
@@ -120,8 +238,13 @@ impl CompiledLifecycle {
                 &discrete.clock_partition_intermediates,
             )?,
             visible: compile("visible_values", visible)?,
-            event_conditions: compile("event_conditions", &model.problem.events.action_conditions)?,
-            roots: compile("root_conditions", &model.problem.events.root_conditions)?,
+            event_conditions: CompiledPrograms::event(
+                source,
+                solve::RetainedAssertionSource::ActionConditions,
+                backend,
+            )?,
+            roots,
+            root_expression,
             structured: compile("structured_discrete_rhs", structured)?,
             initialization_updates: compile(
                 "initialization_updates",
@@ -166,7 +289,7 @@ impl ScalarExecutionInventory {
             ),
             (&self.visible_value_rows, &code.visible),
             (&self.event_action_conditions, &code.event_conditions),
-            (&self.root_condition_rows, &code.roots),
+            (&self.root_condition_rows, code.roots.as_ref()),
             (&self.structured_discrete_rows.rhs, &code.structured),
             (
                 &self.initialization_update_rhs,
@@ -192,6 +315,32 @@ impl ScalarExecutionInventory {
 }
 
 impl ScalarExecutionView<'_> {
+    pub(super) fn event_action_message(
+        &self,
+        action: &solve::SolveEventAction,
+        point: RowEvalPoint<'_>,
+        context: RowEvalContext<'_>,
+    ) -> Result<String, RuntimeSolveError> {
+        let Some(code) = self.scalar.lifecycle() else {
+            return solve_eval::eval_event_action_message(
+                action, point.y, point.p, point.t, context,
+            )
+            .map_err(Into::into);
+        };
+        if action.assertion_projection.is_some() {
+            return code
+                .event_conditions
+                .observed_message(action)
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(
+                        "failed compiled action has no exact invocation observation",
+                    )
+                });
+        }
+        solve_eval::eval_event_action_message(action, point.y, point.p, point.t, context)
+            .map_err(Into::into)
+    }
+
     pub(super) fn eval_lifecycle_program_outputs(
         &self,
         block: &PreparedScalarProgramBlock,
@@ -204,6 +353,33 @@ impl ScalarExecutionView<'_> {
         };
         code.call(program, point, self.model.external_tables.as_slice(), out)?;
         Ok(true)
+    }
+
+    pub(super) fn eval_lifecycle_row_output(
+        &self,
+        block: &PreparedScalarProgramBlock,
+        program: usize,
+        output: usize,
+        point: RowEvalPoint<'_>,
+    ) -> Result<f64, RuntimeSolveError> {
+        let mut values = Vec::new();
+        if self.eval_lifecycle_program_outputs(block, program, point, &mut values)? {
+            return values.get(output).copied().ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "compiled lifecycle output {output} is outside program {program}"
+                ))
+            });
+        }
+        block
+            .eval_row_output_unchecked_with_context(
+                program,
+                output,
+                point.y,
+                point.p,
+                point.t,
+                self.row_eval_context(),
+            )
+            .map_err(Into::into)
     }
 
     pub(super) fn eval_lifecycle_row(
@@ -224,33 +400,6 @@ impl ScalarExecutionView<'_> {
         block
             .eval_row_unchecked_with_context(
                 program,
-                point.y,
-                point.p,
-                point.t,
-                self.row_eval_context(),
-            )
-            .map_err(Into::into)
-    }
-
-    pub(super) fn eval_lifecycle_row_output(
-        &self,
-        block: &PreparedScalarProgramBlock,
-        program: usize,
-        output: usize,
-        point: RowEvalPoint<'_>,
-    ) -> Result<f64, RuntimeSolveError> {
-        let mut values = Vec::new();
-        if self.eval_lifecycle_program_outputs(block, program, point, &mut values)? {
-            return values.get(output).copied().ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "lifecycle output {output} is outside prepared program {program}"
-                ))
-            });
-        }
-        block
-            .eval_row_output_unchecked_with_context(
-                program,
-                output,
                 point.y,
                 point.p,
                 point.t,
@@ -283,6 +432,46 @@ impl ScalarExecutionView<'_> {
             )?;
             for value in &values {
                 staged[block.block().output_indices()[ordinal]] = *value;
+                ordinal += 1;
+            }
+        }
+        out.copy_from_slice(&staged);
+        Ok(())
+    }
+}
+
+/// The whole-root entry shares the same issued per-program compiled products as selection.
+struct CompiledRootBlock {
+    programs: Rc<CompiledPrograms>,
+    source: solve::ScalarProgramBlock,
+    values: RefCell<Vec<f64>>,
+    staged: RefCell<Vec<f64>>,
+}
+
+impl CompiledSolveExpression for CompiledRootBlock {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        validate_runtime_output_len("compiled root block", self.source.output_count(), out.len())?;
+        let mut values = self.values.borrow_mut();
+        let mut staged = self.staged.borrow_mut();
+        resize_runtime_values(
+            &mut staged,
+            out.len(),
+            0.0,
+            "compiled root block transaction",
+        )?;
+        let mut ordinal = 0;
+        for program in 0..self.source.row_count() {
+            self.programs
+                .call(program, RowEvalPoint { y, p, t }, tables, &mut values)?;
+            for &value in values.iter() {
+                staged[self.source.output_indices()[ordinal]] = value;
                 ordinal += 1;
             }
         }

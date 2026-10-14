@@ -2,9 +2,37 @@
 use super::*;
 use crate::typed_call::{TypedCallFaultKind, observations::ObservationSource};
 
+#[cfg(any(
+    test,
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(feature = "host-engine", not(target_arch = "wasm32"))
+))]
 impl<'model> CompiledCheckedAssertionWasm<'model> {
     pub(super) fn decode_execution<'proof>(
         &'proof self,
+        input: &[u64],
+        output: &[u64],
+        scratch: &[u64],
+        status: u32,
+    ) -> Result<CheckedAssertionWasmOutcome<'model, 'proof>, WasmCompileError> {
+        Decoder {
+            invocation: &self.invocation,
+            faults: self.artifact.faults(),
+            carrier: self.carrier.as_ref(),
+        }
+        .decode_execution(input, output, scratch, status)
+    }
+}
+
+pub(crate) struct Decoder<'model, 'proof> {
+    pub(crate) invocation: &'proof solve::CheckedAssertionInvocation<'model>,
+    pub(crate) faults: &'proof [TypedCallFault],
+    pub(crate) carrier: Option<&'proof ObservationPlan>,
+}
+
+impl<'model, 'proof> Decoder<'model, 'proof> {
+    pub(crate) fn decode_execution(
+        &self,
         input: &[u64],
         output: &[u64],
         scratch: &[u64],
@@ -14,8 +42,7 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
             None
         } else {
             Some(
-                self.artifact
-                    .faults()
+                self.faults
                     .iter()
                     .find(|fault| fault.status == status)
                     .ok_or_else(invalid_carrier)?
@@ -62,8 +89,8 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
         }
     }
 
-    fn decode_records<'proof>(
-        &'proof self,
+    fn decode_records(
+        &self,
         input: &[u64],
         scratch: &[u64],
     ) -> Result<Vec<NativeAssertionObservation<'model, 'proof>>, WasmCompileError> {
@@ -123,7 +150,7 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
         Ok(())
     }
 
-    fn observation<'proof>(
+    fn observation(
         &self,
         source: &ObservationSource,
         action: &'proof solve::CheckedAssertionAction<'model>,

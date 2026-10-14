@@ -75,18 +75,32 @@ impl<'a> AffinePlan<'a> {
 
 // A tiny borrowed validation context keeps array limits and ordinal extents
 // together; no domain coordinates are enumerated to check an address range.
+#[derive(Clone, Copy)]
 pub(super) struct LoadContext<'a> {
     layout: &'a VarLayout,
     extents: &'a [usize],
+    seed_len: usize,
 }
 fn layout_with_extents<'a>(layout: &'a VarLayout, extents: &'a [usize]) -> LoadContext<'a> {
-    LoadContext { layout, extents }
+    LoadContext {
+        layout,
+        extents,
+        seed_len: layout.y_scalars(),
+    }
+}
+pub(super) fn directional_load_context(layout: &VarLayout, seed_len: usize) -> LoadContext<'_> {
+    LoadContext {
+        layout,
+        extents: &[],
+        seed_len,
+    }
 }
 impl<'a> From<&'a VarLayout> for LoadContext<'a> {
     fn from(layout: &'a VarLayout) -> Self {
         Self {
             layout,
             extents: &[],
+            seed_len: layout.y_scalars(),
         }
     }
 }
@@ -96,24 +110,33 @@ pub(super) fn validate_loads<'a>(
     strides: &[Option<Vec<i32>>],
     context: impl Into<LoadContext<'a>>,
 ) -> Result<(), String> {
-    let LoadContext { layout, extents } = context.into();
+    let LoadContext {
+        layout,
+        extents,
+        seed_len,
+    } = context.into();
     for (position, op) in ops.iter().enumerate() {
         if let LinearOp::FunctionConditional { program, .. } = op {
             for arm in &program.arms {
-                validate_loads(&arm.condition, &[], layout)?;
-                validate_loads(&arm.result, &[], layout)?;
+                validate_loads(
+                    &arm.condition,
+                    &[],
+                    directional_load_context(layout, seed_len),
+                )?;
+                validate_loads(&arm.result, &[], directional_load_context(layout, seed_len))?;
             }
-            validate_loads(&program.fallback, &[], layout)?;
+            validate_loads(
+                &program.fallback,
+                &[],
+                directional_load_context(layout, seed_len),
+            )?;
         }
         let (base, limit, range) = match *op {
-            LinearOp::LoadY { index, .. } | LinearOp::LoadSeed { index, .. } => {
-                (index, layout.y_scalars(), 1)
-            }
+            LinearOp::LoadY { index, .. } => (index, layout.y_scalars(), 1),
+            LinearOp::LoadSeed { index, .. } => (index, seed_len, 1),
             LinearOp::LoadP { index, .. } => (index, layout.p_scalars(), 1),
             LinearOp::LoadIndexedP { base, count, .. } => (base, layout.p_scalars(), count.max(1)),
-            LinearOp::LoadIndexedSeed { base, count, .. } => {
-                (base, layout.y_scalars(), count.max(1))
-            }
+            LinearOp::LoadIndexedSeed { base, count, .. } => (base, seed_len, count.max(1)),
             LinearOp::TensorLoad {
                 input,
                 input_start,
@@ -121,11 +144,9 @@ pub(super) fn validate_loads<'a>(
                 seed_start,
                 ..
             } => {
-                if seed_start.is_some_and(|start| {
-                    start
-                        .checked_add(count)
-                        .is_none_or(|end| end > layout.y_scalars())
-                }) {
+                if seed_start
+                    .is_some_and(|start| start.checked_add(count).is_none_or(|end| end > seed_len))
+                {
                     return Err("WASM tensor seed range exceeds layout".into());
                 }
                 let limit = match input {
@@ -216,6 +237,11 @@ impl BodyEmitter<'_> {
                         LinearOp::LoadP { .. } => P_PTR_PARAM,
                         LinearOp::LoadSeed { .. } => SEED_PTR_PARAM,
                         _ => Y_PTR_PARAM,
+                    };
+                    let index = if matches!(op, LinearOp::LoadSeed { .. }) {
+                        self.seed_index(index)?
+                    } else {
+                        index
                     };
                     self.emit_affine_address(
                         ptr,

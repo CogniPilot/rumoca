@@ -455,6 +455,143 @@ fn named_visible_expression_uses_its_prepared_compiled_program() {
     );
 }
 
+#[test]
+fn prepared_deadline_queries_preserve_compiled_source_faults() {
+    let mut model = warm_start_test_model();
+    let span = test_span("compiled_deadline.mo");
+    model.problem.events.dynamic_time_event_rhs = spanned_block(
+        vec![vec![
+            solve::LinearOp::Const {
+                dst: 0,
+                value: 0.25,
+            },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "compiled_deadline.mo",
+    );
+    let executions = Rc::new(std::cell::Cell::new(0));
+    let runtime = SolveRuntime::new_fixture_with_backend(
+        &model,
+        Rc::new(Backend {
+            refused: test_span("unused.mo"),
+            only_time: false,
+            fault: Some(span),
+            executions: executions.clone(),
+        }),
+    )
+    .unwrap();
+    let y = model.initial_y.to_vec();
+    let p = model.parameters.to_vec();
+    let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, 1.0);
+    let before = schedule.next_stop(0.0, 1.0);
+    for error in [
+        runtime
+            .current_dynamic_time_event_stop(&y, &p, 0.25)
+            .unwrap_err(),
+        runtime
+            .next_runtime_event_stop(&y, &p, &mut schedule, 0.0, 1.0)
+            .unwrap_err(),
+    ] {
+        assert!(
+            matches!(error, RuntimeSolveError::SourceFault { span: Some(issued), .. } if issued == span),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        schedule.next_stop(0.0, 1.0),
+        before,
+        "a failed deadline query cannot consume a scheduled stop"
+    );
+    assert_eq!(executions.get(), 2);
+    let reference = SolveRuntime::new_fixture(&model).unwrap();
+    assert!(
+        reference
+            .current_dynamic_time_event_stop(&y, &p, 0.25)
+            .unwrap()
+            .is_some()
+    );
+    let (time, event) = reference
+        .next_runtime_event_stop(&y, &p, &mut schedule, 0.0, 1.0)
+        .unwrap();
+    assert_eq!(time, 0.25);
+    assert!(event.is_some());
+}
+
+#[test]
+fn prepared_condition_memory_seed_and_pulse_release_preserve_compiled_faults() {
+    let span = test_span("compiled_condition_memory.mo");
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                parameter_count: 1,
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                condition_memory_parameter_indices: vec![0],
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                rhs: spanned_block(
+                    vec![vec![
+                        solve::LinearOp::Const { dst: 0, value: 1.0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                    ]],
+                    "compiled_condition_memory.mo",
+                ),
+                update_targets: vec![solve::scalar_slot_p(0)],
+                row_roles: vec![solve::DiscreteRowRole::PulseConditionMemory],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+                clock_owners: vec![None],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![0.0].into(),
+        ..Default::default()
+    };
+    let executions = Rc::new(std::cell::Cell::new(0));
+    let runtime = SolveRuntime::new_fixture_with_backend(
+        &model,
+        Rc::new(Backend {
+            refused: test_span("unused.mo"),
+            only_time: false,
+            fault: Some(span),
+            executions: executions.clone(),
+        }),
+    )
+    .unwrap();
+    let mut p = model.parameters.to_vec();
+    let scalar = runtime.scalar_execution().unwrap();
+    let seed = scalar
+        .seed_condition_memory_for_initialization(&mut [], &mut p, 0.0, 1e-10)
+        .err()
+        .expect("a compiled seed source fault must fail the seed");
+    let pulse = scalar
+        .release_condition_pulses(&mut [], &mut p, 0.0)
+        .unwrap_err();
+    for error in [seed, pulse] {
+        assert!(
+            matches!(error, RuntimeSolveError::SourceFault { span: Some(issued), .. } if issued == span),
+            "{error}"
+        );
+    }
+    assert_eq!(executions.get(), 2);
+    assert_eq!(p, [0.0], "faulted condition memory writes cannot commit");
+    let reference = SolveRuntime::new_fixture(&model).unwrap();
+    reference
+        .seed_condition_memory_for_initialization(&mut [], &mut p, 0.0, 1e-10)
+        .unwrap();
+    assert_eq!(p, [1.0]);
+    reference
+        .scalar_execution()
+        .unwrap()
+        .release_condition_pulses(&mut [], &mut p, 0.0)
+        .unwrap();
+    assert_eq!(p, [1.0]);
+}
 fn clock_buffer_model() -> solve::SolveModel {
     let mut model = warm_start_test_model();
     model.problem.layout = crate::fixture_layout::named_y_layout(

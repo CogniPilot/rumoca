@@ -17,6 +17,7 @@ pub struct PreparedTargetValuePlan {
     target: usize,
     canonical_prefix_len: usize,
     private_result_offset: usize,
+    coefficient_outputs: Vec<(usize, usize, usize)>,
 }
 
 impl PreparedTargetValuePlan {
@@ -38,11 +39,14 @@ impl PreparedTargetValuePlan {
     pub const fn private_result_offset(&self) -> usize {
         self.private_result_offset
     }
+    /// Private value offset, target, and coefficient output for each guarded isolator.
+    pub fn coefficient_outputs(&self) -> &[(usize, usize, usize)] {
+        &self.coefficient_outputs
+    }
 }
 
 impl PreparedScalarProgramBlock {
-    /// Initial portable profile covers only checked exact Direct/Zero isolators.
-    /// Other shapes keep their canonical evaluator until their error ABI is proved.
+    /// Materialize the existing checked exact isolator family without committing Y.
     pub fn portable_target_value_plan(
         &self,
         row_idx: usize,
@@ -53,19 +57,21 @@ impl PreparedScalarProgramBlock {
             operations: prefix,
             len: prefix_len,
             span,
-        }) = self.direct_target_value_prefix(row_idx, output_offset, target_y_index)?
+        }) = self.target_value_prefix(row_idx, output_offset, target_y_index)?
         else {
             return Ok(None);
         };
         // Retain every original prefix operation, including discarded output stores.
         // Typed calls retain every original tuple result and their issued table owner.
         let mut operations = prefix.to_vec();
+        let mut coefficient_outputs = Vec::new();
         let private_result_offset = self.append_target_value_family(
             row_idx,
             output_offset,
             target_y_index,
             prefix_len,
             &mut operations,
+            &mut coefficient_outputs,
         )?;
         let program = ScalarProgramBlock::with_program_spans(vec![operations], vec![span])
             .map_err(|error| invalid_prepared_row_with_span(error.to_string(), Some(span)))?;
@@ -76,9 +82,10 @@ impl PreparedScalarProgramBlock {
             target: target_y_index,
             canonical_prefix_len: prefix.len(),
             private_result_offset,
+            coefficient_outputs,
         }))
     }
-    fn direct_target_value_prefix(
+    fn target_value_prefix(
         &self,
         row_idx: usize,
         output_offset: usize,
@@ -91,9 +98,6 @@ impl PreparedScalarProgramBlock {
         else {
             return Ok(None);
         };
-        if !shape.is_direct() {
-            return Ok(None);
-        }
         let span = self.block.program_span(row_idx);
         let Some(source) = self.block.programs().get(row_idx) else {
             return Ok(None);
@@ -121,19 +125,38 @@ impl PreparedScalarProgramBlock {
         target: usize,
         prefix_len: usize,
         operations: &mut Vec<LinearOp>,
+        coefficient_outputs: &mut Vec<(usize, usize, usize)>,
     ) -> Result<usize, EvalSolveError> {
         let mut selected = None;
+        let mut issued = std::collections::BTreeSet::new();
+        let mut output_offset = ScalarProgramBlock::program_output_count(operations);
+        let mut builder = rumoca_ir_solve::ExactAssignmentProgramBuilder::new(operations)
+            .ok_or_else(|| invalid_prepared_row("issued target prefix cannot materialize"))?;
         for (candidate_output, shape) in self.row_assignment_shapes[row].iter() {
-            if shape.expr_eval_len() != prefix_len || !shape.is_direct() {
+            // The canonical evaluator selects the first shape for this pair.
+            if !issued.insert((*candidate_output, shape.target_y_index()))
+                || shape.expr_eval_len() != prefix_len
+            {
                 continue;
             }
-            let offset = ScalarProgramBlock::program_output_count(operations);
-            let result = AssignmentProgramBuilder::new(operations)
-                .and_then(|mut builder| builder.materialize(shape))
-                .ok_or_else(|| {
-                    invalid_prepared_row("issued direct target family cannot materialize")
-                })?;
-            operations.push(LinearOp::StoreOutput { src: result });
+            let offset = output_offset;
+            let (result, coefficient) = builder.materialize_guarded(shape).ok_or_else(|| {
+                invalid_prepared_row("issued exact target family cannot materialize")
+            })?;
+            builder
+                .push(LinearOp::StoreOutput { src: result })
+                .ok_or_else(|| invalid_prepared_row("issued target output cannot materialize"))?;
+            output_offset += 1;
+            if let Some(coefficient) = coefficient {
+                let coefficient_offset = output_offset;
+                builder
+                    .push(LinearOp::StoreOutput { src: coefficient })
+                    .ok_or_else(|| {
+                        invalid_prepared_row("issued coefficient output cannot materialize")
+                    })?;
+                output_offset += 1;
+                coefficient_outputs.push((offset, shape.target_y_index(), coefficient_offset));
+            }
             if *candidate_output == output && shape.target_y_index() == target {
                 selected = Some(offset);
             }

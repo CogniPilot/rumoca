@@ -69,8 +69,9 @@ pub use assertion_observation::{
     CheckedAssertionConversion, CheckedAssertionInvocation, CheckedAssertionMessagePart,
     RetainedAssertionAction, RetainedAssertionInputError, RetainedAssertionInvocation,
     RetainedAssertionMessagePart, RetainedAssertionResolutionError, RetainedAssertionRoot,
-    RetainedAssertionSource, RetainedNativePreparation, RetainedNativeSchedule,
-    RetainedNativeScheduleError, SolveAssertionObservationSite,
+    RetainedAssertionSource, RetainedEventInvocation, RetainedEventProgram,
+    RetainedNativePreparation, RetainedNativeSchedule, RetainedNativeScheduleError,
+    SolveAssertionObservationSite, SolveExecutionSource,
 };
 pub use certificate::{
     derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,

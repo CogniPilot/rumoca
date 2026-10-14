@@ -1120,6 +1120,7 @@ fn table_compile_error(
     CompileError::SourceOperation {
         kind: crate::NativeSourceFault::ExternalTable,
         message,
+        span: None,
     }
 }
 

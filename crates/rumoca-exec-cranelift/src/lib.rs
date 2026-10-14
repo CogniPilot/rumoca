@@ -5,7 +5,10 @@
 //! Cranelift is a programmatic JIT API rather than a textual-code target, and
 //! it must not own Modelica semantics, DAE lowering, or structural rewrites.
 
+mod checked_observation;
 mod compute_block;
+mod selected_program;
+pub use checked_observation::{CompiledEventObservation, compile_event_observation};
 mod emit;
 
 pub use compute_block::{
@@ -21,9 +24,11 @@ use std::{cell::RefCell, rc::Rc};
 pub enum CompileError {
     Backend(String),
     Input(String),
+    MessageFormatting(rumoca_eval_solve::EvalSolveError),
     SourceOperation {
         kind: NativeSourceFault,
         message: String,
+        span: Option<rumoca_core::Span>,
     },
 }
 
@@ -44,6 +49,7 @@ impl std::fmt::Display for CompileError {
         match self {
             Self::Backend(msg) => write!(f, "cranelift execution error: {msg}"),
             Self::Input(msg) => write!(f, "invalid input: {msg}"),
+            Self::MessageFormatting(error) => std::fmt::Display::fmt(error, f),
             Self::SourceOperation { message, .. } => write!(f, "invalid input: {message}"),
         }
     }
@@ -327,9 +333,12 @@ impl CompiledJacobianV {
 }
 
 pub struct CompiledExpressionRows {
-    jit: emit::CompiledResidualRows,
+    jit: Rc<emit::CompiledResidualRows>,
+    source: ScalarProgramBlock,
     output_placement: Option<OutputPlacement>,
 }
+
+pub use selected_program::{CompiledExpressionProgram, CompiledJacobianProgram};
 
 struct OutputPlacement {
     indices: Box<[usize]>,
@@ -508,7 +517,8 @@ pub fn compile_expression_scalar_program_block(
 ) -> Result<CompiledExpressionRows, CompileError> {
     let jit = emit::compile_residual_rows(rows.programs())?;
     Ok(CompiledExpressionRows {
-        jit,
+        jit: Rc::new(jit),
+        source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
     })
 }
@@ -525,7 +535,8 @@ pub fn compile_selectable_expression_scalar_program_block(
         pure_calls.map(|table| table.jit.clone()),
     )?;
     Ok(CompiledExpressionRows {
-        jit,
+        jit: Rc::new(jit),
+        source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
     })
 }
@@ -536,7 +547,8 @@ pub fn compile_expression_scalar_program_block_with_pure_calls(
 ) -> Result<CompiledExpressionRows, CompileError> {
     let jit = emit::compile_residual_rows_with_pure_calls(rows.programs(), pure_calls.jit.clone())?;
     Ok(CompiledExpressionRows {
-        jit,
+        jit: Rc::new(jit),
+        source: rows.clone(),
         output_placement: OutputPlacement::for_block(rows),
     })
 }

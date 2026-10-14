@@ -65,7 +65,7 @@ impl BodyEmitter<'_> {
     /// Fill the callee's input tuple: small values are packed, and a value
     /// passed by reference is read in place from host Y or P when the glue
     /// proved its registers are exactly those cells, and is otherwise staged.
-    fn pass_call_inputs(
+    pub(in crate::emit) fn pass_call_inputs(
         &mut self,
         site: &solve::SolvePureCallSite,
         input_starts: &[Reg],
@@ -144,6 +144,13 @@ impl BodyEmitter<'_> {
     /// Store, in each cell the callee reserves for it, the address of the
     /// buffer it builds a by-reference output in: the call's memo buffer, the
     /// Y cells the glue proved the output is stored to, or a staging buffer.
+    pub(in crate::emit) fn pass_observation_buffers(
+        &mut self,
+        call: &CallLayout,
+    ) -> Result<(), String> {
+        self.pass_call_buffers(call, None, None)
+    }
+
     fn pass_call_buffers(
         &mut self,
         call: &CallLayout,
@@ -302,7 +309,7 @@ impl BodyEmitter<'_> {
         Err("native call cell is outside the call outputs".into())
     }
 
-    pub(super) fn call_address(&mut self, offset: u32) {
+    pub(in crate::emit) fn call_address(&mut self, offset: u32) {
         self.push(Instruction::LocalGet(SEED_PTR_PARAM));
         self.push(Instruction::I32Const(offset as i32));
         self.push(Instruction::I32Add);

@@ -2,6 +2,30 @@ use super::*;
 use rumoca_ir_solve::BinaryOp;
 
 #[test]
+fn bound_directional_entry_retains_its_exact_source_and_local_output_tuple() {
+    let source = aggregate_and_table();
+    let compiled = compile_jacobian_scalar_program_block(&source).unwrap();
+    assert!(compiled.bind_program(&aggregate_and_table(), 0).is_err());
+    assert!(compiled.bind_program(&source, 2).is_err());
+    let entry = compiled.bind_program(&source.clone(), 0).unwrap();
+    drop(compiled);
+    let mut output = [0.0; 2];
+    entry
+        .call(
+            rumoca_eval_solve::JacobianEvalInputs {
+                y: &[3.0],
+                p: &[2.0],
+                t: 0.5,
+                seed: &[4.0, -2.0],
+            },
+            &[],
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(output, [14.0, -1.0]);
+}
+
+#[test]
 fn grouped_native_jvp_returns_all_outputs_in_one_invocation() {
     let compiled = compile_jacobian_scalar_program_block(&aggregate_and_table()).unwrap();
     let mut out = vec![99.0; 12];

@@ -56,6 +56,7 @@ fn selected_residual_does_not_split_a_shared_conditional_owner() {
         .collect();
     let block = ScalarProgramBlock::with_program_spans(rows, vec![fixture_span(); 2]).unwrap();
     let compiled = compile_selectable_expression_scalar_program_block(&block, None).unwrap();
+    assert!(compiled.bind_program(&block, 0).unwrap().is_none());
     assert_eq!(
         compiled
             .call_program_output((0, 0), &[], &[], 0.0, &[])
@@ -65,6 +66,20 @@ fn selected_residual_does_not_split_a_shared_conditional_owner() {
     let mut output = [0.0; 2];
     compiled.call(&[], &[], 0.0, &mut output).unwrap();
     assert_eq!(output, [3.0, 7.0]);
+}
+
+#[test]
+fn bound_residual_entry_retains_its_exact_source_and_local_output_tuple() {
+    let source = aggregate_and_table();
+    let unrelated = aggregate_and_table();
+    let compiled = compile_selectable_expression_scalar_program_block(&source, None).unwrap();
+    assert!(compiled.bind_program(&unrelated, 0).is_err());
+    assert!(compiled.bind_program(&source, 2).is_err());
+    let entry = compiled.bind_program(&source.clone(), 0).unwrap().unwrap();
+    drop(compiled);
+    let mut output = [0.0; 2];
+    entry.call(&[3.0], &[2.0], 0.5, &[], &mut output).unwrap();
+    assert_eq!(output, [6.0, 3.5]);
 }
 
 fn aggregate_and_table() -> ScalarProgramBlock {

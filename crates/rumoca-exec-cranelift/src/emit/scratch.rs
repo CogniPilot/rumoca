@@ -97,6 +97,7 @@ pub(crate) struct ScratchOwner(RefCell<NativeScratch>);
 
 impl ScratchOwner {
     pub(super) fn invoke(&self, call: impl FnOnce(*mut NativeScratch) -> u8) -> u8 {
+        super::native_fault::clear();
         let Ok(scratch) = self.0.try_borrow_mut() else {
             return FAILURE;
         };

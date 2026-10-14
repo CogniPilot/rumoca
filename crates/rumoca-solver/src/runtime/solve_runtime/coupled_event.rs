@@ -1,8 +1,3 @@
-mod prepared_jvps;
-mod tangent;
-
-pub(super) use prepared_jvps::CoupledEventJvps;
-
 use crate::{
     CoupledEventNewtonModel, RuntimeSolveError, runtime_values_changed, solve_coupled_event_newton,
 };
@@ -14,6 +9,9 @@ use super::event_update::{
 };
 use super::guarded_assignments::guarded_target_at;
 use super::{ScalarExecutionView, admitted_compiled_error};
+
+mod tangent;
+pub(super) use tangent::CoupledEventJvps;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoupledEventUnknown {

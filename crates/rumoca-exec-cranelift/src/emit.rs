@@ -25,6 +25,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod host_runtime;
 mod input_validation;
 mod interpreter;
+mod native_fault;
+pub(crate) mod observation_carrier;
 mod owned_jit_module;
 mod projection_batch;
 pub(crate) mod projection_jacobian;
@@ -253,13 +255,14 @@ impl CompiledAssignmentSchedule {
                 y.len()
             )));
         }
-        let status = with_active_external_tables(external_tables, || {
+        with_active_external_tables(external_tables, || {
             // SAFETY: compilation validates every input load and target offset;
             // the checks above establish both against these exact slices.
-            self.scratch
-                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
-        });
-        status::check(status)
+            let status = self
+                .scratch
+                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) });
+            status::check(status)
+        })
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -1327,6 +1330,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1429,6 +1433,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1542,6 +1547,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1663,6 +1669,7 @@ impl CraneliftEmitter {
                     fold_functions: &self.fold_functions,
                     conditional_functions: &self.conditional_functions,
                     pure_call_functions: &self.pure_call_functions,
+                    source_operation: std::ptr::null(),
                     pure_call_results: HashMap::new(),
                     nested_fold_results: HashMap::new(),
                     conditional_results: std::mem::take(&mut conditional_results),
@@ -1739,6 +1746,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1831,6 +1839,7 @@ impl CraneliftEmitter {
                     fold_functions: &self.fold_functions,
                     conditional_functions: &self.conditional_functions,
                     pure_call_functions: &self.pure_call_functions,
+                    source_operation: std::ptr::null(),
                     pure_call_results: HashMap::new(),
                     nested_fold_results: HashMap::new(),
                     conditional_results: HashMap::new(),
@@ -2050,6 +2059,7 @@ struct RowLowerCtx<'a, 'b> {
     conditional_functions: &'a HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, FuncId>,
     pure_call_functions:
         &'a HashMap<rumoca_ir_solve::SolvePureCallOwnerId, typed_program::PureCallImport>,
+    source_operation: *const LinearOp,
     pure_call_results: HashMap<PureCallResultKey, StackSlot>,
     nested_fold_results: HashMap<NestedFoldCallKey, StackSlot>,
     conditional_results: HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, StackSlot>,
@@ -2230,8 +2240,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         targets: &[usize],
     ) -> Result<(), CompileError> {
         let mut outputs = Vec::with_capacity(targets.len());
-        for op in row.iter().cloned() {
-            self.lower_assignment_output(op, &mut outputs)?;
+        for op in row {
+            self.source_operation = op as *const _;
+            self.lower_assignment_output(op.clone(), &mut outputs)?;
         }
         if outputs.len() != targets.len() {
             return Err(CompileError::Input(format!(
@@ -2294,8 +2305,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
     ) -> Result<(), CompileError> {
         let mut out_idx = i32::try_from(output_base)
             .map_err(|_| CompileError::Backend("residual output index exceeds i32".to_string()))?;
-        for op in row.iter().cloned() {
-            let values = match op {
+        for op in row {
+            self.source_operation = op as *const _;
+            let values = match op.clone() {
                 LinearOp::StoreOutputRange {
                     start,
                     count,
@@ -2913,7 +2925,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             observation: matches!(published, PublishedOutputs::Predicates(_)),
             inputs: input_starts.into(),
         };
-        if let Some(output_slot) = self.pure_call_results.get(&cache_key).copied() {
+        if let Some(output_slot) = (!matches!(published, PublishedOutputs::Predicates(_)))
+            .then(|| self.pure_call_results.get(&cache_key).copied())
+            .flatten()
+        {
             self.publish_typed_call_results(dst_start, (outputs, published), output_slot)?;
             return Ok(None);
         }
@@ -2948,6 +2963,21 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 input_cell += 1;
             }
         }
+        if matches!(published, PublishedOutputs::Predicates(_)) {
+            let marker = self
+                .fb
+                .ins()
+                .iconst(types::I64, self.source_operation as usize as i64);
+            observation_carrier::emit(
+                self.module,
+                self.fb,
+                observation_carrier::ROOT_ENTER,
+                owner.index(),
+                None,
+                (input_ptr, input_cells),
+                Some(marker),
+            )?;
+        }
         let function = declare_far_call_in_func(self.module, function, self.fb.func);
         let arena = scratch::parameter(self.fb);
         let call = self
@@ -2955,6 +2985,17 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .ins()
             .call(function, &[input_ptr, output_ptr, arena]);
         let status = self.fb.inst_results(call)[0];
+        if matches!(published, PublishedOutputs::Predicates(_)) {
+            observation_carrier::emit(
+                self.module,
+                self.fb,
+                observation_carrier::ROOT_EXIT,
+                owner.index(),
+                None,
+                (input_ptr, 0),
+                None,
+            )?;
+        }
         // An observation form that stopped at a failed Error-level assertion
         // has published its predicates; that is its result, not a failure.
         let status = match published {
@@ -2962,7 +3003,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             PublishedOutputs::Predicates(_) => status::separate_stop(self.fb, status).1,
         };
         status::propagate(self.fb, status);
-        self.pure_call_results.insert(cache_key, output_slot);
+        if !matches!(published, PublishedOutputs::Predicates(_)) {
+            self.pure_call_results.insert(cache_key, output_slot);
+        }
         self.publish_typed_call_results(dst_start, (outputs, published), output_slot)?;
         Ok(None)
     }
@@ -3238,6 +3281,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             pure_call_functions: self.pure_call_functions,
             // Conditional regions own isolated register namespaces, so their
             // register-number call keys cannot reuse parent-row results.
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: self.conditional_results.clone(),
@@ -3304,8 +3348,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         region: &[LinearOp],
     ) -> Result<Vec<LoweredConditionalOutput>, CompileError> {
         let mut outputs = Vec::new();
-        for operation in region.iter().cloned() {
-            self.lower_conditional_region_output(operation, &mut outputs)?;
+        for operation in region {
+            self.source_operation = operation as *const _;
+            self.lower_conditional_region_output(operation.clone(), &mut outputs)?;
         }
         Ok(outputs)
     }
@@ -3681,6 +3726,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             fold_functions: self.fold_functions,
             conditional_functions: self.conditional_functions,
             pure_call_functions: self.pure_call_functions,
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),
@@ -3728,6 +3774,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             fold_functions: self.fold_functions,
             conditional_functions: self.conditional_functions,
             pure_call_functions: self.pure_call_functions,
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),
@@ -3757,11 +3804,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         operations: &[LinearOp],
     ) -> Result<Vec<LinearOp>, CompileError> {
         let mut outputs = Vec::new();
-        for operation in operations.iter().cloned() {
-            if is_fold_output(&operation) {
-                outputs.push(operation);
+        for operation in operations {
+            self.source_operation = operation as *const _;
+            if is_fold_output(operation) {
+                outputs.push(operation.clone());
             } else {
-                self.lower_op(operation)?;
+                self.lower_op(operation.clone())?;
             }
         }
         Ok(outputs)
@@ -5661,7 +5709,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     stride,
                     "constant tensor projection source",
                 )?)?,
-                None => self.invalid_tensor_projection(),
+                None => self.invalid_tensor_projection(dimensions, indices)?,
             };
             return self.insert(dst, value);
         }
@@ -5718,7 +5766,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             ));
         }
         if let Some(offset) = self.constant_tensor_offset(dimensions, indices) {
-            let value = self.constant_fold_carried_value(carried, base, stride, offset)?;
+            let value = match offset {
+                Some(offset) => self.constant_fold_carried_value(carried, base, stride, offset)?,
+                None => self.invalid_tensor_projection(dimensions, indices)?,
+            };
             return self.insert(dst, value);
         }
         let flat = self.checked_tensor_projection_offset(dimensions, indices)?;
@@ -5745,11 +5796,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         carried: StackSlot,
         base: usize,
         stride: usize,
-        offset: Option<usize>,
+        offset: usize,
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        let Some(offset) = offset else {
-            return Ok(self.invalid_tensor_projection());
-        };
         let offset = offset
             .checked_mul(stride)
             .ok_or_else(|| CompileError::Backend("function-fold tensor offset overflow".into()))?;
@@ -5788,7 +5836,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                             "constant function-fold capture projection is out of range".to_string(),
                         )
                     })?,
-                None => self.invalid_tensor_projection(),
+                None => self.invalid_tensor_projection(dimensions, indices)?,
             };
             return self.insert(dst, value);
         }
@@ -5816,11 +5864,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.insert(dst, value)
     }
 
-    fn invalid_tensor_projection(&mut self) -> cranelift_codegen::ir::Value {
+    fn invalid_tensor_projection(
+        &mut self,
+        dimensions: &[u32],
+        indices: &[rumoca_ir_solve::TensorIndex],
+    ) -> Result<cranelift_codegen::ir::Value, CompileError> {
+        self.lower_tensor_offset(dimensions, indices)?;
         let invalid = self.fb.ins().iconst(types::I8, 0);
         status::require_index(self.fb, invalid);
         // The failure returns before this unreachable, builder-typed continuation.
-        self.fb.ins().f64const(0.0)
+        Ok(self.fb.ins().f64const(0.0))
     }
 
     fn checked_tensor_projection_offset(
@@ -5904,6 +5957,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     let axis_valid = self.fb.ins().band(integral, above_lower);
                     let axis_valid = self.fb.ins().band(axis_valid, below_upper);
                     valid = self.fb.ins().band(valid, axis_valid);
+                    native_fault::checked_index(
+                        self.module,
+                        self.fb,
+                        (axis_valid, value, extent),
+                        std::ptr::null(),
+                    )?;
                     let clamped = self.fb.ins().fmax(rounded, one);
                     let clamped = self.fb.ins().fmin(clamped, upper);
                     // Invalid coordinates must reach the caller's explicit status

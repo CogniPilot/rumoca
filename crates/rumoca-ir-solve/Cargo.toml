@@ -21,6 +21,7 @@ indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
 bincode = { workspace = true }
+self_cell = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

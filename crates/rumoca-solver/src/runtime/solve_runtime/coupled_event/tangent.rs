@@ -8,17 +8,64 @@
 //! until it stops changing, and each residual row takes its target's seed
 //! minus its row's JVP (the implicit rows' JVP directly).
 
-use std::borrow::Cow;
+mod program;
 
-use rumoca_eval_solve::{JacobianEvalInputs, RowEvalContext};
+use std::borrow::Cow;
+use std::rc::Rc;
+
+use rumoca_eval_solve::{EvalSolveError, RowEvalContext};
 use rumoca_ir_solve as solve;
 
-use super::super::admitted_compiled_error;
+use super::super::SolveExecutionBackend;
 use super::super::initial_projection::write_update_tangents;
-use super::prepared_jvps::{PreparedJvp, required};
 use super::{CoupledEventResidual, CoupledEventSystem, CoupledEventUnknown};
 use crate::RuntimeSolveError;
 use crate::runtime::solve_events::event_eval_params_with_relation_overrides;
+use program::TangentProgram;
+
+/// The discrete event rows' JVP programs a coupled solve differentiates,
+/// prepared with the runtime before any coupled solve can execute.
+#[derive(Clone)]
+pub(in super::super) struct CoupledEventJvps {
+    discrete: Option<TangentProgram>,
+    runtime: Option<TangentProgram>,
+    guarded: Option<TangentProgram>,
+    structured: Option<TangentProgram>,
+}
+
+impl CoupledEventJvps {
+    pub(in super::super) fn prepare(
+        artifacts: &solve::DiscreteSolveArtifacts,
+        backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    ) -> Result<Self, EvalSolveError> {
+        let prepare = |label, block: &Option<solve::ScalarProgramBlock>| {
+            block
+                .as_ref()
+                .map(|source| TangentProgram::prepare(label, source, backend))
+                .transpose()
+        };
+        Ok(Self {
+            discrete: prepare("event_discrete_jvp", &artifacts.rhs_jacobian_v)?,
+            runtime: prepare(
+                "event_runtime_assignment_jvp",
+                &artifacts.runtime_assignment_jacobian_v,
+            )?,
+            guarded: prepare("event_guarded_jvp", &artifacts.guarded_jacobian_v)?,
+            structured: prepare("event_structured_jvp", &artifacts.structured_jacobian_v)?,
+        })
+    }
+}
+
+fn required<'a>(
+    block: &'a Option<TangentProgram>,
+    rows: &str,
+) -> Result<&'a TangentProgram, RuntimeSolveError> {
+    block
+        .as_ref()
+        .ok_or_else(|| RuntimeSolveError::DirectionalDerivativeUnavailable {
+            reason: format!("the {rows} have no directional derivative"),
+        })
+}
 
 /// A slot's position in a `[solver-y | parameter]` seed.
 fn seed_index(slot: solve::ScalarSlot, y_len: usize) -> Option<usize> {
@@ -106,15 +153,14 @@ impl CoupledEventSystem<'_> {
         let block = required(&self.jvps.runtime, "runtime assignments")?;
         let mut values = vec![0.0; targets.len()];
         for _ in 0..self.max_iters {
-            block.eval(
-                JacobianEvalInputs {
-                    y,
-                    p,
-                    t: self.t,
-                    seed,
+            block.eval_with_context(
+                y,
+                p,
+                self.t,
+                RowEvalContext {
+                    seed: Some(seed),
+                    ..self.runtime.row_eval_context()
                 },
-                self.runtime.row_eval_context(),
-                self.runtime.model.external_tables.as_slice(),
                 &mut values,
             )?;
             if !write_update_tangents(targets, &values, y.len(), seed) {
@@ -151,8 +197,8 @@ impl CoupledEventSystem<'_> {
                 &mut implicit,
             )
             .map_err(|error| {
-                admitted_compiled_error(
-                    "coupled implicit JVP",
+                super::super::admitted_compiled_error(
+                    "coupled event implicit tangent",
                     runtime.scalar.implicit_jacobian_v.block().program_spans(),
                     error,
                 )
@@ -203,13 +249,20 @@ impl CoupledEventSystem<'_> {
 
     fn discrete_tangent(&self, row: usize, point: RowPoint<'_>) -> Result<f64, RuntimeSolveError> {
         let block = required(&self.jvps.discrete, "discrete update rows")?;
-        let (program, offset) = block.source().row_output_position(row).ok_or_else(|| {
+        let (program, offset) = block.row_output_position(row).ok_or_else(|| {
             RuntimeSolveError::solve_ir(format!(
                 "discrete output {row} has no directional derivative program"
             ))
         })?;
         let target = self.runtime.model.problem.discrete.update_targets[row];
-        let tangent = self.jvp_output(block, (program, offset), point)?;
+        let tangent = block.eval_row_output_unchecked_with_context(
+            program,
+            offset,
+            point.y,
+            point.p,
+            self.t,
+            point.context,
+        )?;
         Ok(seed_value(point.seed, target, point.y.len()) - tangent)
     }
 
@@ -222,18 +275,15 @@ impl CoupledEventSystem<'_> {
         cache: &mut (usize, Vec<f64>),
     ) -> Result<f64, RuntimeSolveError> {
         if cache.0 != program {
-            required(&self.jvps.guarded, "guarded assignments")?.eval_program_outputs(
-                program,
-                JacobianEvalInputs {
-                    y: point.y,
-                    p: point.p,
-                    t: self.t,
-                    seed: point.seed,
-                },
-                point.context,
-                self.runtime.model.external_tables.as_slice(),
-                &mut cache.1,
-            )?;
+            required(&self.jvps.guarded, "guarded assignments")?
+                .eval_row_outputs_unchecked_with_context(
+                    program,
+                    point.y,
+                    point.p,
+                    self.t,
+                    point.context,
+                    &mut cache.1,
+                )?;
             cache.0 = program;
         }
         Ok(seed_value(point.seed, target, point.y.len()) - cache.1[output])
@@ -245,29 +295,14 @@ impl CoupledEventSystem<'_> {
         point: RowPoint<'_>,
     ) -> Result<f64, RuntimeSolveError> {
         let entry = self.runtime.scalar.structured_discrete_rows.rows()[row];
-        let tangent = self.jvp_output(
-            required(&self.jvps.structured, "structured discrete updates")?,
-            (entry.source_row, 0),
-            point,
-        )?;
+        let tangent = required(&self.jvps.structured, "structured discrete updates")?
+            .eval_row_unchecked_with_context(
+                entry.source_row,
+                point.y,
+                point.p,
+                self.t,
+                point.context,
+            )?;
         Ok(seed_value(point.seed, entry.target, point.y.len()) - tangent)
-    }
-    fn jvp_output(
-        &self,
-        block: &PreparedJvp,
-        coordinate: (usize, usize),
-        point: RowPoint<'_>,
-    ) -> Result<f64, RuntimeSolveError> {
-        block.eval_output(
-            coordinate,
-            JacobianEvalInputs {
-                y: point.y,
-                p: point.p,
-                t: self.t,
-                seed: point.seed,
-            },
-            point.context,
-            self.runtime.model.external_tables.as_slice(),
-        )
     }
 }

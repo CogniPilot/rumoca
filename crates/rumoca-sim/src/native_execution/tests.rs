@@ -536,6 +536,7 @@ fn native_status_source_faults_remain_distinct_from_backend_failure() {
     let index = super::compiled_execution_error(CompileError::SourceOperation {
         kind: NativeSourceFault::TensorIndex,
         message: "issued source index fault".into(),
+        span: None,
     });
     assert!(matches!(
         index,
@@ -544,6 +545,7 @@ fn native_status_source_faults_remain_distinct_from_backend_failure() {
     let numerical = super::compiled_execution_error(CompileError::SourceOperation {
         kind: NativeSourceFault::LinearSolve,
         message: "issued singular trial".into(),
+        span: None,
     });
     assert!(matches!(
         numerical,
@@ -655,4 +657,238 @@ fn an_owner_the_execution_admits_is_called_and_its_failure_surfaces() {
         .unwrap_err();
     assert!(error.to_string().contains("the admitted owner was called"));
     assert_eq!(execution.calls.get(), 1);
+}
+
+#[test]
+fn compiled_nested_warning_captures_the_first_actual_loop_frame() {
+    let source = r#"
+function child
+  input Real q;
+  input Integer index;
+  output Real y;
+algorithm
+  assert(q < 0, "frame " + String(q + index, minimumLength=5,
+    leftJustified=false, significantDigits=3), level=AssertionLevel.warning);
+  y := q + index;
+end child;
+function accumulateWarnings
+  input Real q;
+  output Real y;
+algorithm
+  y := 0;
+  for i in 1:2 loop
+    for j in 1:2 loop
+      y := y + child(q, 10*i+j);
+    end for;
+  end for;
+end accumulateWarnings;
+model NestedWarnings
+  Real x(start=0, fixed=true);
+equation
+  der(x) = accumulateWarnings(time);
+end NestedWarnings;
+"#;
+    let mut compiler = rumoca_compile::Session::new(Default::default());
+    compiler.update_document("nested_warning_frames.mo", source);
+    let compiled = compiler.compile_model("NestedWarnings").unwrap();
+    let options = crate::SimOptions {
+        execution_policy: crate::SimExecutionPolicy::NativeRequired,
+        solver_mode: crate::SimSolverMode::RkLike,
+        dt: Some(0.05),
+        t_end: 0.1,
+        ..Default::default()
+    };
+    let session = crate::SimulationSession::new(&compiled.dae, options.clone()).unwrap();
+    assert_eq!(
+        session.execution_receipt().engine,
+        crate::SimExecutionEngine::Cranelift
+    );
+    let native = crate::simulate_with_diagnostics(&compiled.dae, &options).unwrap();
+    let reference = crate::simulate_with_diagnostics(
+        &compiled.dae,
+        &crate::SimOptions {
+            execution_policy: crate::SimExecutionPolicy::Interpreter,
+            ..options
+        },
+    )
+    .unwrap();
+    assert_eq!(native.names, reference.names);
+    assert_eq!(native.times, reference.times);
+    assert_eq!(native.data, reference.data);
+    assert_eq!(native.diagnostics.len(), 1);
+    assert_eq!(native.diagnostics[0].message, "frame    11");
+    assert_eq!(native.diagnostics[0].time, 0.0);
+    assert_eq!(
+        native.diagnostics[0].message,
+        reference.diagnostics[0].message
+    );
+}
+
+#[test]
+fn compiled_ordinary_message_numeric_options_are_dynamic_and_failed_only() {
+    let source = r#"
+model OrdinaryMessages
+  Real x(start=0, fixed=true);
+  parameter Integer width=7;
+equation
+  der(x)=1;
+  assert(time < 0.05, "x=" + String(x, minimumLength=width,
+    leftJustified=false, significantDigits=2), level=AssertionLevel.warning);
+  assert(time < 1, "inactive=" + String(x, minimumLength=-1), level=AssertionLevel.warning);
+end OrdinaryMessages;
+"#;
+    let mut compiler = rumoca_compile::Session::new(Default::default());
+    compiler.update_document("ordinary_message_options.mo", source);
+    let compiled = compiler.compile_model("OrdinaryMessages").unwrap();
+    let options = crate::SimOptions {
+        execution_policy: crate::SimExecutionPolicy::NativeRequired,
+        solver_mode: crate::SimSolverMode::RkLike,
+        dt: Some(0.05),
+        t_end: 0.1,
+        ..Default::default()
+    };
+    let native = crate::simulate_with_diagnostics(&compiled.dae, &options).unwrap();
+    assert_eq!(native.diagnostics.len(), 1);
+    assert_eq!(native.diagnostics[0].message, "x=   0.05");
+}
+
+#[test]
+fn compiled_warning_can_call_an_assertion_free_recursive_value_owner() {
+    let source = r#"
+function sumPositive
+  input Integer n;
+  output Integer y;
+algorithm
+  y := if n <= 0 then 0 else n + sumPositive(n-1);
+end sumPositive;
+function warnAfterCount
+  input Integer n;
+  input Real q;
+  output Real y;
+protected
+  Integer subtotal;
+algorithm
+  subtotal := sumPositive(n);
+  assert(q < 0, "count " + String(subtotal), level=AssertionLevel.warning);
+  y := subtotal + q;
+end warnAfterCount;
+model RecursiveValueAndWarning
+  parameter Integer n=3;
+  Real x(start=0, fixed=true);
+equation
+  der(x) = warnAfterCount(n, time);
+end RecursiveValueAndWarning;
+"#;
+    let mut compiler = rumoca_compile::Session::new(Default::default());
+    compiler.update_document("recursive_warning_value.mo", source);
+    let compiled = compiler.compile_model("RecursiveValueAndWarning").unwrap();
+    let options = crate::SimOptions {
+        execution_policy: crate::SimExecutionPolicy::NativeRequired,
+        solver_mode: crate::SimSolverMode::RkLike,
+        dt: Some(0.05),
+        t_end: 0.1,
+        ..Default::default()
+    };
+    let native = crate::simulate_with_diagnostics(&compiled.dae, &options).unwrap();
+    let reference = crate::simulate_with_diagnostics(
+        &compiled.dae,
+        &crate::SimOptions {
+            execution_policy: crate::SimExecutionPolicy::Interpreter,
+            ..options
+        },
+    )
+    .unwrap();
+    assert_eq!(native.times, reference.times);
+    assert_eq!(native.data, reference.data);
+    assert_eq!(native.diagnostics.len(), 1);
+    assert_eq!(native.diagnostics[0].message, "count 6");
+    assert_eq!(native.diagnostics[0].time, 0.0);
+}
+
+#[test]
+fn compiled_message_option_fault_preserves_the_reference_error() {
+    let mut compiler = rumoca_compile::Session::new(Default::default());
+    compiler.update_document(
+        "native_bad_message.mo",
+        r#"
+function badWarning
+  input Real q;
+  output Real y;
+algorithm
+  assert(q < 0, "value=" + String(q, minimumLength=-1), level=AssertionLevel.warning);
+  y := q;
+end badWarning;
+model NativeMessageFault
+  Real x(start=0, fixed=true);
+equation
+  der(x)=badWarning(time);
+end NativeMessageFault;
+"#,
+    );
+    let compiled = compiler.compile_model("NativeMessageFault").unwrap();
+    let lowered = crate::lower_correlated_for_simulation_with_overrides(
+        &compiled.dae,
+        &rumoca_solver::SimOptions::default(),
+    )
+    .unwrap();
+    let source = solve::SolveExecutionSource::new(lowered.model().clone());
+    let model = source.model();
+    let calls = rumoca_exec_cranelift::compile_pure_call_table(&model.pure_calls).unwrap();
+    let mut checked = 0;
+    for index in 0..model.problem.events.action_conditions.row_count() {
+        let program = source
+            .event_program(solve::RetainedAssertionSource::ActionConditions, index)
+            .unwrap();
+        if !program.has_observations() {
+            continue;
+        }
+        let block = solve::ScalarProgramBlock::with_program_spans(
+            vec![program.program().to_vec()],
+            vec![program.span()],
+        )
+        .unwrap();
+        let code = rumoca_exec_cranelift::compile_event_observation(program, &calls).unwrap();
+        let observations = rumoca_eval_solve::CheckedEventObservationContext::construct(
+            &model.pure_calls,
+            &block,
+            &model.problem.events.actions,
+        )
+        .unwrap();
+        let y = vec![0.0; model.problem.layout.y_scalars()];
+        let p = vec![0.0; model.problem.layout.p_scalars()];
+        let mut out = vec![19.0; block.output_count()];
+        code.call(&y, &p, -1.0, &[], &mut out).unwrap();
+        out.fill(19.0);
+        let error = code.call(&y, &p, 0.0, &[], &mut out).unwrap_err();
+        let mut reference = out.clone();
+        let expected = rumoca_eval_solve::eval_scalar_program_block_with_context(
+            &block,
+            &y,
+            &p,
+            0.0,
+            RowEvalContext {
+                pure_calls: Some(&model.pure_calls),
+                event_observations: Some(&observations),
+                ..Default::default()
+            },
+            &mut reference,
+        )
+        .unwrap_err();
+        assert!(matches!(expected, EvalSolveError::InvalidRow { .. }));
+        assert!(expected.to_string().contains("minimumLength"));
+        assert!(expected.source_span().is_some());
+        assert_eq!(error.to_string(), expected.to_string());
+        assert_eq!(super::pure_call_execution_error(error), expected);
+        assert_eq!(out, vec![19.0; block.output_count()]);
+        assert!(
+            model
+                .problem
+                .events
+                .actions
+                .iter()
+                .all(|action| code.message_for_action(action).is_none())
+        );
+        checked += 1;
+    }
+    assert!(checked > 0);
 }

@@ -63,6 +63,13 @@ pub trait SolveExecutionBackend {
         None
     }
 
+    fn compile_event_observation(
+        &self,
+        _program: solve::RetainedEventProgram,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        Err("checked event observations are not compiled by this backend".into())
+    }
+
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,

@@ -67,7 +67,10 @@ pub use native_program::{
     compile_native_assignment_schedule_with_calls_wasm,
     compile_native_assignment_schedule_with_calls_wasm_and_policy,
 };
-pub use private_program::{CompiledPrivateProgramWasm, compile_private_program_wasm};
+pub use private_program::{
+    CompiledPrivateProgramWasm, compile_private_directional_program_wasm,
+    compile_private_program_wasm,
+};
 pub use retained_native_program::{
     CompiledRetainedNativeProgramWasm, NativeInvocationLease, NativeInvocationOutcome,
     NativeTransport, NativeTransportError, NativeTransportSnapshot, NativeTypedInput,
@@ -83,11 +86,11 @@ use wasm_runtime::WasmKernelRuntime;
 pub use typed_call::PreparedCheckedAssertionHost;
 
 pub use typed_call::{
-    CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledTypedCallWasm,
-    NativeAssertionCells, NativeAssertionFrame, NativeAssertionFrameDescriptor,
-    NativeAssertionObservation, NativeAssertionSourceDescriptor, TypedCallCompileError,
-    TypedCallFault, TypedCallFaultKind, TypedCallLayout, compile_checked_assertion_wasm,
-    compile_pure_call_wasm,
+    CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledRetainedEventWasm,
+    CompiledTypedCallWasm, NativeAssertionCells, NativeAssertionFrame,
+    NativeAssertionFrameDescriptor, NativeAssertionObservation, NativeAssertionSourceDescriptor,
+    PreparedTypedCallWasm, TypedCallCompileError, TypedCallFault, TypedCallFaultKind,
+    TypedCallLayout, compile_checked_assertion_wasm, compile_pure_call_wasm,
 };
 
 use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};

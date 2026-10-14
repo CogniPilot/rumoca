@@ -1,14 +1,19 @@
 //! Execute one complete checked value program without publishing solver storage.
 use crate::{CompiledNativeCallProgramWasm, TypedCallFault, WasmCompileError};
 use rumoca_ir_solve::{ScalarProgramBlock, SolvePureCallTable, VarLayout};
+mod directional;
+pub use directional::compile_private_directional_program_wasm;
 
 pub struct CompiledPrivateProgramWasm {
     artifact: CompiledNativeCallProgramWasm,
     y: usize,
     p: usize,
     outputs: usize,
+    seed: Option<directional::SeedStorage>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
+    #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+    runtime: crate::host_runtime::HostKernelRuntime,
 }
 
 impl CompiledPrivateProgramWasm {
@@ -34,6 +39,28 @@ impl CompiledPrivateProgramWasm {
         time: f64,
         scratch: &mut [f64],
     ) -> Result<(), WasmCompileError> {
+        self.call_with_seed(y, p, time, None, scratch)
+    }
+
+    pub fn call_directional(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        seed: &[f64],
+        scratch: &mut [f64],
+    ) -> Result<(), WasmCompileError> {
+        self.call_with_seed(y, p, time, Some(seed), scratch)
+    }
+
+    fn call_with_seed(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        seed: Option<&[f64]>,
+        scratch: &mut [f64],
+    ) -> Result<(), WasmCompileError> {
         if y.len() != self.y
             || p.len() != self.p
             || scratch
@@ -45,6 +72,18 @@ impl CompiledPrivateProgramWasm {
                 "private program lengths differ from issued layout".into(),
             ));
         }
+        match (self.seed, seed) {
+            (Some(storage), Some(seed)) if seed.len() >= storage.count => {
+                scratch[storage.offset..storage.offset + storage.count]
+                    .copy_from_slice(&seed[..storage.count]);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(WasmCompileError::Input(
+                    "private program seed differs from its issued coordinate storage".into(),
+                ));
+            }
+        }
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let status = self.runtime.call_private(y, p, time, scratch)?;
@@ -53,7 +92,27 @@ impl CompiledPrivateProgramWasm {
             }
             Ok(())
         }
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+        {
+            let mut cells = scratch
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            let status = self
+                .runtime
+                .call_native(&mut y.to_vec(), p, time, &mut cells, &mut [])?;
+            if status != 0 {
+                return Err(self.artifact.status_error(status));
+            }
+            for (value, bits) in scratch.iter_mut().zip(cells) {
+                *value = f64::from_bits(bits);
+            }
+            Ok(())
+        }
+        #[cfg(not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(feature = "host-engine", not(target_arch = "wasm32"))
+        )))]
         {
             let _ = (y, p, time, scratch);
             Err(WasmCompileError::Input(
@@ -73,20 +132,40 @@ pub fn compile_private_program_wasm(
         .map_err(|error| WasmCompileError::Input(error.to_string()))?;
     let artifact = crate::emit::emit_private_program_module(block, layout, table)
         .map_err(WasmCompileError::Backend)?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let runtime = crate::WasmKernelRuntime::new_with_arena(
-        artifact.module_bytes(),
-        "eval_private",
-        artifact.pooled_arena_bytes,
-    )?;
-    Ok(CompiledPrivateProgramWasm {
-        artifact,
-        y: layout.y_scalars(),
-        p: layout.p_scalars(),
-        outputs: block.stored_output_count(),
+    CompiledPrivateProgramWasm::from_artifact(artifact, block, layout, None)
+}
+
+impl CompiledPrivateProgramWasm {
+    fn from_artifact(
+        artifact: CompiledNativeCallProgramWasm,
+        block: &ScalarProgramBlock,
+        layout: &VarLayout,
+        seed: Option<directional::SeedStorage>,
+    ) -> Result<Self, WasmCompileError> {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        runtime,
-    })
+        let runtime = crate::WasmKernelRuntime::new_with_arena(
+            artifact.module_bytes(),
+            "eval_private",
+            artifact.pooled_arena_bytes,
+        )?;
+        #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+        let runtime = crate::host_runtime::HostKernelRuntime::new_named(
+            artifact.module_bytes(),
+            "eval_private",
+        )?;
+        Ok(CompiledPrivateProgramWasm {
+            artifact,
+            y: layout.y_scalars(),
+            p: layout.p_scalars(),
+            outputs: block.stored_output_count(),
+            seed,
+            #[cfg(any(
+                all(target_arch = "wasm32", target_os = "unknown"),
+                all(feature = "host-engine", not(target_arch = "wasm32"))
+            ))]
+            runtime,
+        })
+    }
 }
 
 #[cfg(test)]
