@@ -819,18 +819,18 @@ impl ScalarExecutionView<'_> {
         };
         let tables = self.model.external_tables.as_slice();
         let compiled = self.scalar.compiled_implicit_projection_jacobian_v();
-        let mut call = |program: usize, seed: &[f64], out: &mut Vec<f64>| {
-            compiled.is_some_and(|compiled| {
-                compiled
-                    .call_program_outputs(
-                        program,
-                        solve_eval::JacobianEvalInputs { y, p, t, seed },
-                        tables,
-                        out,
-                    )
-                    .unwrap_or(false)
-            })
-        };
+        let mut call =
+            |program: usize, seed: &[f64], out: &mut Vec<f64>| -> Result<bool, RuntimeSolveError> {
+                let Some(compiled) = compiled else {
+                    return Ok(false);
+                };
+                compiled.call_program_outputs(
+                    program,
+                    solve_eval::JacobianEvalInputs { y, p, t, seed },
+                    tables,
+                    out,
+                )
+            };
         evaluator
             .eval_through(
                 rumoca_eval_solve::TangentPoint {
@@ -842,7 +842,6 @@ impl ScalarExecutionView<'_> {
                 &mut call,
             )
             .map(Some)
-            .map_err(Into::into)
     }
 
     /// Refresh every delayed value: from its source while the initialization
