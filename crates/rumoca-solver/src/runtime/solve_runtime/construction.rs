@@ -30,6 +30,12 @@ impl SolveRuntime {
                 _ => false,
             }
         });
+        let primary_compiled = primary.and_then(|primary| match &primary.scalar.expressions {
+            PreparedExpressions::Compiled(code) => Some(code.as_ref()),
+            PreparedExpressions::Reference => None,
+            #[cfg(test)]
+            PreparedExpressions::Fixture(_) => None,
+        });
         let model = &*model_owner;
         if let Some(backend) = &execution_backend {
             backend.validate_model_context(model).map_err(|message| {
@@ -101,28 +107,24 @@ impl SolveRuntime {
             primary.map(|primary| &primary.scalar.implicit_scalar_rhs),
             &implicit_scalar_programs,
         );
-        let compiled_implicit_rhs = implicit_reuse.expression(
-            primary.and_then(|primary| primary.scalar.compiled_implicit_rhs()),
-            &implicit_scalar_programs,
-            &mut |block| {
-                execution_backend
-                    .as_ref()
-                    .map(|backend| {
-                        let whole = required_compiled(
-                            "implicit_rhs",
-                            block.program_spans(),
-                            backend.compile_selectable_expression(block),
-                        )?;
-                        selected_programs::expression(
-                            backend.as_ref(),
+        let compiled_implicit_rhs = if execution_backend.is_some() {
+            Some(implicit_reuse.expression(
+                primary_compiled.map(|code| &code.implicit_rhs),
+                &implicit_scalar_programs,
+                &mut |block| {
+                    require_prepared(
+                        "implicit_rhs",
+                        super::support::compiled_selectable_expression(
+                            execution_backend.as_ref(),
                             "implicit_rhs",
                             block,
-                            whole,
-                        )
-                    })
-                    .transpose()
-            },
-        )?;
+                        )?,
+                    )
+                },
+            )?)
+        } else {
+            None
+        };
         let implicit_projection_scalar_jacobian = refresh_projection::projection_jacobian_source(
             &model.artifacts.continuous.implicit_jacobian_v,
             &continuous_structural,
@@ -131,17 +133,24 @@ impl SolveRuntime {
             primary.map(|primary| &primary.scalar.implicit_projection_scalar_jacobian_v),
             &implicit_projection_scalar_jacobian,
         );
-        let compiled_implicit_projection_jacobian_v = projection_reuse.jacobian(
-            primary.and_then(|primary| primary.scalar.compiled_implicit_projection_jacobian_v()),
-            &implicit_projection_scalar_jacobian,
-            &mut |block| {
-                compiled_jacobian(
-                    execution_backend.as_ref(),
-                    "implicit_projection_jacobian_v",
-                    block,
-                )
-            },
-        )?;
+        let compiled_implicit_projection_jacobian_v = if execution_backend.is_some() {
+            Some(projection_reuse.jacobian(
+                primary_compiled.map(|code| &code.implicit_projection_jacobian_v),
+                &implicit_projection_scalar_jacobian,
+                &mut |block| {
+                    require_prepared(
+                        "implicit_projection_jacobian_v",
+                        compiled_jacobian(
+                            execution_backend.as_ref(),
+                            "implicit_projection_jacobian_v",
+                            block,
+                        )?,
+                    )
+                },
+            )?)
+        } else {
+            None
+        };
         let implicit_full_jacobian_v = model
             .artifacts
             .continuous
@@ -151,21 +160,28 @@ impl SolveRuntime {
             primary.map(|primary| &primary.scalar.implicit_jacobian_v),
             &implicit_full_jacobian_v,
         );
-        let compiled_implicit_full_jacobian_v = full_reuse.jacobian(
-            primary.and_then(|primary| primary.scalar.compiled_implicit_full_jacobian_v()),
-            &implicit_full_jacobian_v,
-            &mut |block| {
-                compiled_jacobian(
-                    execution_backend.as_ref(),
-                    "implicit_full_jacobian_v",
-                    block,
-                )
-            },
-        )?;
+        let compiled_implicit_full_jacobian_v = if execution_backend.is_some() {
+            Some(full_reuse.jacobian(
+                primary_compiled.map(|code| &code.implicit_full_jacobian_v),
+                &implicit_full_jacobian_v,
+                &mut |block| {
+                    require_prepared(
+                        "implicit_full_jacobian_v",
+                        compiled_jacobian(
+                            execution_backend.as_ref(),
+                            "implicit_full_jacobian_v",
+                            block,
+                        )?,
+                    )
+                },
+            )?)
+        } else {
+            None
+        };
         let replaced_rows = implicit_reuse
-            .replaced_outputs(&implicit_scalar_programs)
+            .replaced_outputs(&implicit_scalar_programs)?
             .into_iter()
-            .chain(projection_reuse.replaced_outputs(&implicit_projection_scalar_jacobian))
+            .chain(projection_reuse.replaced_outputs(&implicit_projection_scalar_jacobian)?)
             .collect::<BTreeSet<_>>();
         let implicit_scalar_rhs = implicit_reuse.prepared(
             primary.map(|primary| &primary.scalar.implicit_scalar_rhs),
@@ -224,23 +240,41 @@ impl SolveRuntime {
                     .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let compiled_derivative_rhs = BlockReuse::of_programs(
-            primary.map(|primary| primary.scalar.derivative_scalar.block()),
-            &derivative_scalar_rhs,
-        )
-        .expression_with_fresh(
-            primary.and_then(|primary| primary.scalar.compiled_derivative_rhs()),
-            &derivative_scalar_rhs,
-            &mut || {
-                compiled_compute_expression(
-                    execution_backend.as_ref(),
-                    "derivative_rhs",
-                    &model.problem.continuous.derivative_rhs,
+        let compiled_derivative_rhs = if execution_backend.is_some() {
+            Some(
+                BlockReuse::of_programs(
+                    primary.map(|primary| primary.scalar.derivative_scalar.block()),
                     &derivative_scalar_rhs,
                 )
-            },
-            &mut |block| compiled_expression(execution_backend.as_ref(), "derivative_rhs", block),
-        )?;
+                .expression_with_fresh(
+                    primary_compiled.map(|code| &code.derivative_rhs),
+                    &derivative_scalar_rhs,
+                    &mut || {
+                        require_prepared(
+                            "derivative_rhs",
+                            compiled_compute_expression(
+                                execution_backend.as_ref(),
+                                "derivative_rhs",
+                                &model.problem.continuous.derivative_rhs,
+                                &derivative_scalar_rhs,
+                            )?,
+                        )
+                    },
+                    &mut |block| {
+                        require_prepared(
+                            "derivative_rhs",
+                            compiled_expression(
+                                execution_backend.as_ref(),
+                                "derivative_rhs",
+                                block,
+                            )?,
+                        )
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
         let refresh_owners = &model.problem.continuous.refresh_owners;
         let algebraic_refresh = refresh_owners.algebraic().clone();
         let derivative_refresh = refresh_owners.derivative().clone();
@@ -289,7 +323,9 @@ impl SolveRuntime {
                 &continuous_structural,
                 &implicit_scalar_rhs,
                 &implicit_projection_scalar_jacobian,
-                compiled_implicit_projection_jacobian_v.as_deref(),
+                compiled_implicit_projection_jacobian_v
+                    .as_ref()
+                    .map(|code| code.as_ref() as &dyn CompiledSolveJacobianExpression),
                 &projection_demand,
             )?,
         };
@@ -349,23 +385,41 @@ impl SolveRuntime {
         let compiled_root_conditions = compiled_lifecycle
             .as_ref()
             .map(CompiledLifecycle::root_expression);
-        let compiled_initial_residual = BlockReuse::of(
-            primary.map(|primary| &primary.scalar.initial_scalar_residual),
-            &initial_scalar_residual,
-        )
-        .expression_with_fresh(
-            primary.and_then(|primary| primary.scalar.compiled_initial_residual()),
-            &initial_scalar_residual,
-            &mut || {
-                compiled_compute_expression(
-                    execution_backend.as_ref(),
-                    "initial_residual",
-                    model.problem.initialization.residual(),
+        let compiled_initial_residual = if execution_backend.is_some() {
+            Some(
+                BlockReuse::of(
+                    primary.map(|primary| &primary.scalar.initial_scalar_residual),
                     &initial_scalar_residual,
                 )
-            },
-            &mut |block| compiled_expression(execution_backend.as_ref(), "initial_residual", block),
-        )?;
+                .expression_with_fresh(
+                    primary_compiled.map(|code| &code.initial_residual),
+                    &initial_scalar_residual,
+                    &mut || {
+                        require_prepared(
+                            "initial_residual",
+                            compiled_compute_expression(
+                                execution_backend.as_ref(),
+                                "initial_residual",
+                                model.problem.initialization.residual(),
+                                &initial_scalar_residual,
+                            )?,
+                        )
+                    },
+                    &mut |block| {
+                        require_prepared(
+                            "initial_residual",
+                            compiled_expression(
+                                execution_backend.as_ref(),
+                                "initial_residual",
+                                block,
+                            )?,
+                        )
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
         let initial_scalar_jacobian =
             to_scalar_program_block(&model.artifacts.initialization.residual_jacobian_v)?;
         let primary_initial_jacobian = primary
@@ -373,28 +427,41 @@ impl SolveRuntime {
                 to_scalar_program_block(&primary.model.artifacts.initialization.residual_jacobian_v)
             })
             .transpose()?;
-        let compiled_initial_residual_jacobian_v =
-            BlockReuse::of_programs(primary_initial_jacobian.as_ref(), &initial_scalar_jacobian)
+        let compiled_initial_residual_jacobian_v = if execution_backend.is_some() {
+            Some(
+                BlockReuse::of_programs(
+                    primary_initial_jacobian.as_ref(),
+                    &initial_scalar_jacobian,
+                )
                 .jacobian_with_fresh(
-                    primary
-                        .and_then(|primary| primary.scalar.compiled_initial_residual_jacobian_v()),
+                    primary_compiled.map(|code| &code.initial_residual_jacobian_v),
                     &initial_scalar_jacobian,
                     &mut || {
-                        compiled_compute_jacobian(
-                            execution_backend.as_ref(),
+                        require_prepared(
                             "initial_residual_jacobian_v",
-                            &model.artifacts.initialization.residual_jacobian_v,
-                            &initial_scalar_jacobian,
+                            compiled_compute_jacobian(
+                                execution_backend.as_ref(),
+                                "initial_residual_jacobian_v",
+                                &model.artifacts.initialization.residual_jacobian_v,
+                                &initial_scalar_jacobian,
+                            )?,
                         )
                     },
                     &mut |block| {
-                        compiled_jacobian(
-                            execution_backend.as_ref(),
+                        require_prepared(
                             "initial_residual_jacobian_v",
-                            block,
+                            compiled_jacobian(
+                                execution_backend.as_ref(),
+                                "initial_residual_jacobian_v",
+                                block,
+                            )?,
                         )
                     },
-                )?;
+                )?,
+            )
+        } else {
+            None
+        };
         let delay_runtime = DelayRuntime::new_with_backend(
             &model.problem.events.delays,
             execution_backend.as_deref(),
@@ -433,17 +500,30 @@ impl SolveRuntime {
                 model,
                 execution_backend.as_deref(),
             )?;
-        let compiled_derivative_jacobian_v = BlockReuse::of_programs(
-            primary.map(|primary| primary.scalar.derivative_jacobian_v.block()),
-            &model.artifacts.continuous.full_jacobian_v,
-        )
-        .jacobian(
-            primary.and_then(|primary| primary.scalar.compiled_derivative_jacobian_v()),
-            &model.artifacts.continuous.full_jacobian_v,
-            &mut |block| {
-                compiled_jacobian(execution_backend.as_ref(), "derivative_jacobian_v", block)
-            },
-        )?;
+        let compiled_derivative_jacobian_v = if execution_backend.is_some() {
+            Some(
+                BlockReuse::of_programs(
+                    primary.map(|primary| primary.scalar.derivative_jacobian_v.block()),
+                    &model.artifacts.continuous.full_jacobian_v,
+                )
+                .jacobian(
+                    primary_compiled.map(|code| &code.derivative_jacobian_v),
+                    &model.artifacts.continuous.full_jacobian_v,
+                    &mut |block| {
+                        require_prepared(
+                            "derivative_jacobian_v",
+                            compiled_jacobian(
+                                execution_backend.as_ref(),
+                                "derivative_jacobian_v",
+                                block,
+                            )?,
+                        )
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
         let has_compiled_projection = compiled_implicit_projection_jacobian_v.is_some();
         let expressions = match &execution_backend {
             None => PreparedExpressions::Reference,
