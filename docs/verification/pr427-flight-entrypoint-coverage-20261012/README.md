@@ -1,7 +1,0 @@
-# Immutable flight input command coverage
-
-The normal workspace test calls `corpus_pin::run` with a temporary dependency manifest and a locally checksum-bound ZIP. It provisions the default qualified source, checks the exact source/`--source-root` arguments handed to the fixture worker, and rejects changed cached bytes or a missing explicit input before another worker launches. The fixture worker emits a pinned refusal; this proves the command input and verdict channels, not flight-model/compiler semantics.
-
-Qualified source: `8af3f3fb4e3dd63b9bb5d9cbcfc72c5f91fc796a`, parent `ad19eb7fd2d07662dfd3fe8f6bf15137e05e73dc`. One selected test passed, 369 filtered, zero failures/ignored. Scoped xtask Clippy (all targets/features) and full formatting passed. The existing 600-second, 4-GiB resident-plus-swap, 8-GiB cache, host/scratch reserve and 4/4/4 concurrency guards were unchanged. Tracked source and HEAD seals match before/after. Raw logs, guardian, command, manifests and actual test ELF hashes are in [receipt.json](receipt.json).
-
-This closes workspace execution reachability for `qualify_flight_source`, `roots::resolve` and the command's `resolve_roots`; private archive admission is also exercised by the existing eight controls. Budget policy entrypoints already execute through the existing five harness controls and eight CLI controls. No whole-workspace coverage measurement is claimed.

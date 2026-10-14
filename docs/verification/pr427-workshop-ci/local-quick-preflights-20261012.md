@@ -1,9 +1,0 @@
-# Local quick preflight results
-
-The actual `cargo xtask verify quick --early-exit` at `944df1d543` stops in lint: the typed conditional-DAG operation census exceeds SPEC_0021 nesting limits. The production implementation and numerical/growth assertions are unchanged. `3d6c5c73f` separates the per-operation census from its outer iteration, removing the excessive nesting without a lint exemption.
-
-At `3d6c5c73f`, workspace format/traversal and Clippy over all targets/features pass (85-second dev-profile check). The canonical next stage selects all 566 MSL models with four compile/simulation workers. Its aggregate 600-second watchdog expires during execution, after the optimized artifact build, without a completed comparator or aggregate gate. The attempt exits 124 after 600.264 seconds, with peak resident+swap 7,473,372 KiB; the source is unchanged. **This does not pass verify quick, qualify MSL parity, or run corpus/architecture/workspace steps. Verify full remains unrun pending these repairs.**
-
-Both terminal attempts retain exact source manifests, logs, guardian limits and identities in `local-quick-preflights-20261012.json`. The interrupted results tree includes 80 terminal worker result files, together with partial/in-flight and trace artifacts. They are retained as an exact compressed archive after the process group is confirmed stopped; this count is not an aggregate model success or comparison count. The archive remains under `$HOME/scratch/rumoca/workshop427-final-broad-20261012/evidence/root-verify-quick-after-census-lint/archive/`.
-
-The later candidate also integrates the separately qualified browser/source-root chain and notebook inventory owner correction. Their checkpoint results are documented independently. Final combined quick/full, cohort/canary, coverage, shipped/installed example execution, GitHub CI, review and landing gates remain required. No code is pushed based on these preflights.

@@ -1,9 +1,0 @@
-# Actual structured quotient root AFTER
-
-At source `41b2b408c0c8c4ad6302ca0c9f034813d4cbd9c4`, the unchanged original `real_quotient_structured_inactive_points_keep_their_own_step` measured **1 passed / 0 failed / 0 ignored**, 0.02 s Rust runtime, with the exact-count guard accepted. At 5b824 it failed before simulation because the numeric root family did not monitor its exact live ratios.
-
-The original model keeps two source indices and their nonzero quotient steps: `mod(14*i+8*time+i,7.0)` while time<0.5, then i. It checks all eleven exact sample times 0..1 for Interpreter and Auto, both finite output lanes against the independent piecewise expression, and both integrated states against 4*min(t,0.5)^2+i*t. The original rtol/atol-aware bound is unchanged. Auto is exercised; this test alone does not establish forced native execution.
-
-Producer `7d33b3655a76f022572457c71d135549f1b5cb4d` makes numeric-root scalar views use the compact Map's checked non-folding coordinate binding, preserving exact ratio terms. Point membership and exact progression are checked by the existing domain owner. The certificate checker, held-slot affine geometry, lazy activation, source model and bounds are unchanged.
-
-[Portable measured receipt](structured-quotient-root-after.json) records the original source/fixture hash, actual summary, recipe/log/guardian/count SHA256 values and unchanged limits. Guardian time including compilation was 215.89 s, peak group RSS 3042536 KiB and peak cache 7377686528 bytes; exit0 without signal/resource termination. The three separately owned structural controls also passed, but the guide20 gate and whole-attempt terminal audit are **pending**. No lease release or global idle audit is inferred from this completed gate. Final-tip verification, full library/remote CI, instrumented coverage and issue closure remain unclaimed.
