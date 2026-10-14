@@ -50,10 +50,48 @@ impl BodyEmitter<'_> {
     }
 
     fn emit_conditional_region_operation(&mut self, operation: &LinearOp) -> Result<(), String> {
-        if matches!(operation, LinearOp::StoreOutputRange { .. }) {
-            return Err("native conditional range publication is unsupported".into());
+        if let LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } = operation
+        {
+            return self.emit_conditional_output_range(*start, *count, *stride);
         }
         self.emit_op(operation.clone())
+    }
+
+    fn emit_conditional_output_range(
+        &mut self,
+        start: Reg,
+        count: usize,
+        stride: usize,
+    ) -> Result<(), String> {
+        if count == 1 {
+            return self.emit_conditional_output(start);
+        }
+        let mut region = self
+            .conditional_region
+            .ok_or("output outside its conditional region")?;
+        let end = region
+            .written
+            .checked_add(count)
+            .filter(|end| *end <= region.output_count)
+            .ok_or("native conditional has excess outputs")?;
+        let target = Reg::try_from(region.written)
+            .ok()
+            .and_then(|offset| region.output.checked_add(offset))
+            .ok_or("native conditional output offset overflows")?;
+        let counter = self.arena_plan()?.counter;
+        self.loop_start(counter, count)?;
+        self.push_absolute_arena_address(target, Some(counter), 1)?;
+        self.push_arena_address(start, Some(counter), stride)?;
+        self.push(Instruction::F64Load(arena::memarg()));
+        self.push(Instruction::F64Store(arena::memarg()));
+        self.loop_end(counter);
+        region.written = end;
+        self.conditional_region = Some(region);
+        Ok(())
     }
 
     pub(in crate::emit) fn emit_conditional_capture(

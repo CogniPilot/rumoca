@@ -104,6 +104,10 @@ impl<'a> Emitter<'a> {
                 source,
                 ..
             } => {
+                if self.linked.assertion_mode == super::link::AssertionMode::Value {
+                    self.project_value_assigned(*destination, *source);
+                    return Ok(());
+                }
                 // The canonical constructor requires the preceding error-level
                 // presence check. Its effect ABI must be admitted before this body.
                 self.copy(
@@ -180,7 +184,7 @@ impl<'a> Emitter<'a> {
     }
 }
 
-fn payload(state: CellRange) -> CellRange {
+pub(super) fn payload(state: CellRange) -> CellRange {
     CellRange {
         offset: state.offset + 8,
         bytes: state.bytes - 8,
