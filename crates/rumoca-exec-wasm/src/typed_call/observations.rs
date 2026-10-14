@@ -19,7 +19,11 @@ pub struct ObservationFrame {
 #[derive(Clone, Debug)]
 pub struct ObservationSource {
     pub(super) predicate: usize,
-    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(any(
+        test,
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(feature = "host-engine", not(target_arch = "wasm32"))
+    ))]
     pub(super) origin_predicate: usize,
     pub(super) provenance: rumoca_core::Span,
     pub(super) frames: Vec<ObservationFrame>,
