@@ -62,15 +62,24 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 20,750 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 21,250 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 6,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 27,250 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 27,750 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-10-13 selected-coordinate review:** production measures 21,193 core +
+6,393 wire = 27,586 lines under §1a. Checked array selection, exact source
+ownership, ordered coverage and replay retain one declaration with independent
+element events. Shared target projection replaces rendered-name recovery;
+variable operations now live in their ordinary model module. The §1b rounding
+rule derives ceilings 21,250 / 6,500 / 27,750. Review triggers and totality-debt
+ceilings are unchanged; remaining code carries construction and replay evidence
+rather than parallel unchecked paths.
 
 **2026-09-12 scalar-owner index review:** production is 17,347 core + 5,431
 wire = 22,778 lines. The [module review](../docs/dev-guide/src/tooling/multibody-coverage.md#scalar-row-owner-lookup)
