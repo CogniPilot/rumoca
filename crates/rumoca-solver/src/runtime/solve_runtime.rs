@@ -55,7 +55,9 @@ mod compiled_targets;
 mod construction;
 mod execution_owners;
 mod selected_programs;
-use execution_owners::{DirectionalProgram, PrimalProgram, ProgramAnalysis};
+use execution_owners::{
+    DirectionalProgram, EvaluationDirectional, EvaluationPrimal, PrimalProgram, ProgramAnalysis,
+};
 #[cfg(test)]
 pub(crate) mod test_kernels;
 use chart_sharing::BlockReuse;
@@ -120,14 +122,14 @@ use plans::{
 use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
+#[cfg(test)]
+use support::compiled_expression;
 use support::{
-    admitted_compiled_error, admitted_compute_error, admitted_output_call,
-    build_visible_name_index, compiled_compute_expression, compiled_compute_jacobian,
-    compiled_expression, compiled_jacobian, copy_runtime_values, copy_runtime_values_into,
-    fill_inactive_root_output, optional_compiled, required_compiled,
-    reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
-    validate_finite_runtime_output, validate_runtime_output_len, visible_value_index_error,
-    zero_runtime_values,
+    admitted_compiled_error, admitted_output_call, build_visible_name_index, compiled_jacobian,
+    copy_runtime_values, copy_runtime_values_into, fill_inactive_root_output, optional_compiled,
+    required_compiled, reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity,
+    resize_runtime_values, validate_finite_runtime_output, validate_runtime_output_len,
+    visible_value_index_error, zero_runtime_values,
 };
 use tangent_evaluators::{colored_tangent_evaluators, torn_tangent_evaluators};
 
@@ -283,21 +285,19 @@ struct ScalarExecutionInventory {
     residual_row_batch: std::cell::RefCell<block_residual_split::ResidualRowBatch>,
     refresh_program_rows: FxHashMap<solve::RefreshScalarProgramSource, usize>,
     manifold: manifold_execution::PreparedManifoldProjection,
-    initial_residual: PreparedComputeBlock,
-    initial_residual_jacobian_v: PreparedComputeBlock,
-    initial_scalar_residual: PreparedScalarProgramBlock,
+    initial_residual_jacobian_v: EvaluationDirectional,
+    initial_scalar_residual: PrimalProgram,
     expressions: PreparedExpressions,
     compiled_algebraic_jacobians: Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>,
-    derivative_rhs: PreparedComputeBlock,
     /// Forward-mode AD Jacobian-vector product of `derivative_rhs`
     /// (`d(der)/d(y)·v`), lowered to `LinearOp`s with `LoadSeed`. Applied — with a
     /// seed completed by `seed_refresh_derivative_dependencies` — to form
     /// the exact state Jacobian for the state-only BDF path.
-    derivative_jacobian_v: PreparedEvaluationBlock,
+    derivative_jacobian_v: EvaluationDirectional,
     /// Primal state-derivative scalar program `der = f(solver_y, p, t)`. Reversed
     /// by [`Self::reverse_state_derivative_vjp`] to form the reverse-mode VJP
     /// `(∂der/∂[solver_y|p])ᵀ·λ` (Track A scalar reverse core).
-    derivative_scalar: PreparedEvaluationBlock,
+    derivative_scalar: EvaluationPrimal,
     /// Per-row forward-mode AD Jacobian-vector product of `implicit_rhs`
     /// (`d(residual_row)/d[y|p]·v`). Used to propagate state and parameter seeds
     /// through the algebraic projection row by row.

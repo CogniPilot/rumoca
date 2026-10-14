@@ -318,3 +318,46 @@ pub(in crate::runtime::solve_runtime) fn reset_mock_jacobian(
             .implicit_projection_scalar_jacobian_v = owner;
     }
 }
+
+pub(in crate::runtime::solve_runtime) fn install_mock_initial_primal(
+    runtime: &mut SolveRuntime,
+    whole: Rc<dyn CompiledSolveExpression>,
+) {
+    let source = to_scalar_program_block(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .model
+            .problem
+            .initialization
+            .residual(),
+    )
+    .unwrap();
+    runtime.scalar_fixture_mut().initial_scalar_residual =
+        prepare_mock_primal(source, whole, false).unwrap();
+}
+
+pub(in crate::runtime::solve_runtime) fn install_mock_initial_jacobian(
+    runtime: &mut SolveRuntime,
+    whole: Rc<dyn CompiledSolveJacobianExpression>,
+) {
+    let source = to_scalar_program_block(
+        &runtime
+            .scalar_execution()
+            .unwrap()
+            .model
+            .artifacts
+            .initialization
+            .residual_jacobian_v,
+    )
+    .unwrap();
+    let backend: Rc<dyn SolveExecutionBackend> =
+        Rc::new(FixtureBackend(FixtureKernel::Jacobian(FixtureJacobian {
+            source: source.clone(),
+            whole,
+            program: None,
+        })));
+    runtime.scalar_fixture_mut().initial_residual_jacobian_v =
+        EvaluationDirectional::prepare("mock initial JVP", source, None, Some(&backend), None)
+            .unwrap();
+}

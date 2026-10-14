@@ -1,11 +1,12 @@
 //! Runtime projection and event regression tests.
 mod fixture_owners;
 pub(super) use fixture_owners::{
-    install_mock_jacobian, install_mock_primal, prepare_mock_jacobian, prepare_mock_primal,
-    reset_mock_jacobian,
+    install_mock_initial_jacobian, install_mock_initial_primal, install_mock_jacobian,
+    install_mock_primal, prepare_mock_jacobian, prepare_mock_primal, reset_mock_jacobian,
 };
 
 mod admitted_errors;
+mod compact_owner_preparation;
 mod lifecycle_preparation;
 mod native_manifold;
 mod native_projection_residual;

@@ -1,5 +1,5 @@
 //! Numeric reference capability issued only by an explicit Reference owner.
-use super::{PrimalExecution, PrimalProgram, RuntimeSolveError};
+use super::{PrimalExecution, PrimalProgram, RowEvalPoint, RuntimeSolveError};
 use rumoca_eval_solve::reverse::{ReverseCotangents, ReverseInputs, ReverseScratch};
 use rumoca_eval_solve::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
@@ -36,6 +36,20 @@ impl ReferenceProgram<'_> {
                     .map_err(RuntimeSolveError::from)
             })
             .transpose()
+    }
+
+    pub(in crate::runtime::solve_runtime) fn eval_target_assignment_row_unchecked_with_context(
+        &self,
+        row: usize,
+        target: usize,
+        point: RowEvalPoint<'_>,
+        context: RowEvalContext<'_>,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        self.source
+            .eval_target_assignment_row_unchecked_with_context(
+                row, target, point.y, point.p, point.t, context,
+            )
+            .map_err(Into::into)
     }
 
     pub(in crate::runtime::solve_runtime) fn eval_target_assignment_output_unchecked_with_context(
