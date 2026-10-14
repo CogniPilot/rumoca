@@ -36,6 +36,157 @@ fn quadratic_table() -> solve::SolvePureCallTable {
     .unwrap()
 }
 
+fn native_table_call_row(table: &solve::SolvePureCallTable) -> solve::ScalarProgramBlock {
+    solve::ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::PureCall {
+                dst_start: 1,
+                input_starts: vec![0].into(),
+                site: table.owners()[0].call_site(),
+            },
+            solve::LinearOp::LoadP { dst: 2, index: 1 },
+            solve::LinearOp::LoadP { dst: 3, index: 2 },
+            solve::LinearOp::TableLookup {
+                dst: 4,
+                table_id: 2,
+                column: 3,
+                input: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ]],
+        vec![span()],
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_table_with_pure_call_preserves_valid_interpolation() {
+    let table = quadratic_table();
+    let block = native_table_call_row(&table);
+    let backend = super::backend(&table).unwrap();
+    let native = backend.compile_expression(&block).unwrap();
+    let reference = PreparedScalarProgramBlock::new(block).unwrap();
+    let tables = [rumoca_core::ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![4.0, 18.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    for input in [0.0, 0.5, 1.0] {
+        let p = [input, 42.0, 1.0];
+        let mut expected = [0.0];
+        reference
+            .eval_with_context(
+                &[],
+                &p,
+                0.0,
+                RowEvalContext {
+                    pure_calls: Some(&table),
+                    external_tables: Some(&tables),
+                    ..Default::default()
+                },
+                &mut expected,
+            )
+            .unwrap();
+        let mut actual = [0.0];
+        native.call(&[], &p, 0.0, &tables, &mut actual).unwrap();
+        assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));
+    }
+}
+
+#[test]
+fn native_table_with_pure_call_propagates_table_source_fault() {
+    let table = quadratic_table();
+    let block = native_table_call_row(&table);
+    let backend = super::backend(&table).unwrap();
+    let native = backend.compile_expression(&block).unwrap();
+    let reference = PreparedScalarProgramBlock::new(block).unwrap();
+    let p = [0.5, 42.0, 1.0];
+    let error = reference
+        .eval_with_context(
+            &[],
+            &p,
+            0.0,
+            RowEvalContext {
+                pure_calls: Some(&table),
+                ..Default::default()
+            },
+            &mut [0.0],
+        )
+        .unwrap_err();
+    assert!(matches!(error, EvalSolveError::ExternalTable { .. }));
+    let mut actual = [99.0];
+    let error = native.call(&[], &p, 0.0, &[], &mut actual).unwrap_err();
+    assert!(
+        matches!(error, rumoca_solver::RuntimeSolveError::SourceFault { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        actual,
+        [99.0],
+        "failed table callback must not publish output"
+    );
+}
+
+#[test]
+fn native_table_mirror_preserves_values_and_source_fault_category() {
+    let table = quadratic_table();
+    let mut ops = native_table_call_row(&table).programs()[0].clone();
+    ops[1] = solve::LinearOp::Move { dst: 1, src: 0 };
+    let block = solve::ScalarProgramBlock::with_program_spans(vec![ops], vec![span()]).unwrap();
+    let backend = super::backend(&table).unwrap();
+    let native = backend.compile_expression(&block).unwrap();
+    let reference = PreparedScalarProgramBlock::new(block).unwrap();
+    let tables = [rumoca_core::ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![4.0, 18.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    let p = [0.5, 42.0, 1.0];
+    let mut expected = [0.0];
+    reference
+        .eval_with_context(
+            &[],
+            &p,
+            0.0,
+            RowEvalContext {
+                external_tables: Some(&tables),
+                ..Default::default()
+            },
+            &mut expected,
+        )
+        .unwrap();
+    let mut actual = [0.0];
+    native.call(&[], &p, 0.0, &tables, &mut actual).unwrap();
+    assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));
+    for p in [[0.5, 43.0, 1.0], [0.5, 42.0, 2.0]] {
+        let error = reference
+            .eval_with_context(
+                &[],
+                &p,
+                0.0,
+                RowEvalContext {
+                    external_tables: Some(&tables),
+                    ..Default::default()
+                },
+                &mut expected,
+            )
+            .unwrap_err();
+        assert!(matches!(error, EvalSolveError::ExternalTable { .. }));
+        actual = [99.0];
+        let error = native.call(&[], &p, 0.0, &tables, &mut actual).unwrap_err();
+        assert!(
+            matches!(error, rumoca_solver::RuntimeSolveError::SourceFault { .. }),
+            "{error}"
+        );
+        assert_eq!(actual, [99.0]);
+    }
+}
+
 #[test]
 fn native_backend_rejects_a_foreign_call_table_during_context_admission() {
     let table = quadratic_table();
