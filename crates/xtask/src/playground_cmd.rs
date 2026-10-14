@@ -22,6 +22,11 @@ pub(crate) fn stage_playground_vendor_assets(root: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_playground_test_suite(root: &Path) -> Result<()> {
+    let mut runtime = Command::new("node");
+    runtime
+        .arg("packages/playground/tests/require_wasm_runtime.mjs")
+        .current_dir(root);
+    run_status(runtime)?;
     crate::modelica_dependency_cache::ensure_example_libraries(root, false)?;
     let mut guide_tests = Command::new("cargo");
     guide_tests

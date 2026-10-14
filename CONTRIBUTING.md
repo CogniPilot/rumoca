@@ -93,7 +93,9 @@ Use `cargo run -p rumoca -- ...` while developing the compiler. Building the
 store-native package remains an explicit `nix build .#rumoca` operation.
 
 Package, playground, VS Code, and browser-asset workflows do require Node/npm.
-CI uses Node 20, so local package validation should use Node 20 as well:
+CI and the Nix web shells use Node 22, so local package validation should use
+Node 22 as well. Compiled WASM simulation requires WebAssembly multi-memory
+support, which Node 20 does not provide:
 
 ```bash
 node --version
@@ -110,7 +112,7 @@ cargo xtask vscode package --target linux-x64
 ```
 
 Cargo builds must remain Rust-only. If a selected package/web command reports a
-missing `node` or `npm`, install Node 20 using your platform package manager,
+missing `node` or `npm`, install Node 22 using your platform package manager,
 Volta, nvm, or the official Node installer, then retry that command.
 
 ### Kani bounded verification
@@ -174,7 +176,7 @@ cargo xtask verify template-runtimes
 corpus, architecture gates, and workspace tests. `cargo xtask verify full`
 also runs examples, binary builds, template runtimes, coverage, documentation,
 VS Code, and browser/WASM gates. The full suite expects the same local
-prerequisites that CI installs: `cargo-llvm-cov`, Node 20/npm for package/web
+prerequisites that CI installs: `cargo-llvm-cov`, Node 22/npm for package/web
 tasks, and the wasm Rust target/tooling. Both suites require the external
 model libraries used by their corpus gates.
 `cargo xtask verify template-runtimes` wraps
