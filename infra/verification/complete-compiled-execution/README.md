@@ -102,10 +102,56 @@ for this tip. There is no GATE_OK, full-cohort parity or complete-browser
 lowering claim. The SLAM refusals expose remaining target capabilities; they
 are not successful SLAM execution or a performance result.
 
-A remaining cold-source gap was identified by audit: ordinary event messages
+The audit at `65244a9d1` identified a cold-source gap: ordinary event messages
 without an assertion projection evaluate numeric Conversion values and dynamic
 String options through `eval_row_with_context`. Compiled warnings, prints and
-action requests reach that renderer. These message programs are not yet in the
-required compiled inventory. Consequently no all-source or complete cold
-diagnostic closure claim is made. Call-scoped assertion projections use checked
+action requests reach that renderer. Those message programs are now in the required inventory at `6982e013b`,
+as documented below. Overall source closure remains unproven because other
+clock and coupled-event paths are still under audit. Call-scoped assertion projections use checked
 invocation observations and are a distinct source path.
+
+## Numeric messages and named reads follow-up
+
+Commit `6982e013b` prepares every unprojected message Conversion value and
+present formatting-option program before compiled runtime construction succeeds.
+A mandatory execution owner retains the immutable source model; numeric requests
+must select an actual action/conversion/field from that owner. Absent authored
+options retain the existing Modelica defaults. Projected assertion messages still
+render checked captures. Shared formatting and validation were moved intact to
+`event_messages.rs`; reference execution uses the same formatter. Source-operation
+faults preserve their category/span, and no partial warning is published.
+
+The negative cold-message constructor regression failed before this change:
+exactly one test ran and the backend's refused numeric warning program was
+accepted despite its unique source span. It passes after preparation is required.
+Accepted controls cover all four numeric fields, foreign-action refusal, runtime
+clones, malformed scalar output counts, each unsupported dynamic option, and
+source-fault publication. A real Cranelift Modelica warning control matched
+explicit reference formatting on cold activation and retained once-per-site
+reporting.
+
+Named visible reads also bypassed prepared code. The before regression returned
+value2 but recorded0 compiled calls rather than1. It now uses the existing
+lifecycle program. Broad tests caught an unchecked reference short-input panic
+in the first routing change; the checked reference entry was preserved, without
+changing its existing error-span assertion.
+
+Validation:476 evaluator tests and12 opt /241 sim tests passed in the broader
+run; that run failed1 solver test at the reference short-input regression. After
+correction,691 default-feature solver tests passed, including the new bypass
+control and unchanged error-span control. Four-package library/test clippy
+(eval, solver, sim, binding with sim-rk45), format/whitespace, and the committed
+forbidden-architecture review scan passed. Four binding options/trace tests and
+one host periodic compiled-receipt test passed. Browser guest execution and the
+new fixed-canary delta remain pending for this tip.
+
+Commit `a308734eb` updates the browser policy contracts to require native by
+default while explicitly accepting `auto` and `interpreter`, and rejecting an
+unknown policy. The stateless periodic-clock receipt requires a compiled engine,
+no refusal, and no declined kernels. This reflects the intended policy change;
+no production checker or malformed-input rejection was relaxed.
+
+Further source closure is still unproven: the audit identified direct reference
+calls in clock condition-memory/deadline/pulse handling and coupled-event JVPs.
+The latter prepares derivative programs per coupled solve. These paths require
+preparation/execution proof and fixes before an all-source claim or landing.
