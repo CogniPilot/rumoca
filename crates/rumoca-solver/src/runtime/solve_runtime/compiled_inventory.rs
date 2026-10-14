@@ -9,6 +9,7 @@ pub(super) struct CompiledExpressions {
     pub(super) initial_update_jacobian: InitialUpdateJacobian,
     pub(super) event_transactions: Box<[Rc<dyn CompiledSolveEventTransaction>]>,
     pub(super) lifecycle: CompiledLifecycle,
+    pub(super) messages: compiled_messages::CompiledMessagePrograms,
     pub(super) implicit_rhs: Rc<dyn CompiledSolveExpression>,
     pub(super) implicit_projection_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,
     pub(super) implicit_full_jacobian_v: Rc<dyn CompiledSolveJacobianExpression>,

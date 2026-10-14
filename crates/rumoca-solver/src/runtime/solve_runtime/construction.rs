@@ -489,6 +489,10 @@ impl SolveRuntime {
                     &guarded_assignment_programs,
                     backend.as_ref(),
                 )?,
+                messages: compiled_messages::CompiledMessagePrograms::new(
+                    model_owner.clone(),
+                    backend.as_ref(),
+                )?,
                 implicit_rhs: require_prepared("implicit_rhs", compiled_implicit_rhs)?,
                 implicit_projection_jacobian_v: require_prepared(
                     "implicit_projection_jacobian_v",
