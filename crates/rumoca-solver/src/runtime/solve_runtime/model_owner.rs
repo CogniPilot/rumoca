@@ -1,6 +1,6 @@
 //! Immutable runtime storage, retaining correlated FMI source identity.
 
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
 
 use rumoca_ir_solve::{RetainedAssertionResolutionError, RetainedAssertionRoot, SolveModel};
 
@@ -12,7 +12,7 @@ pub struct SolveRuntimeModel(ModelOwner);
 #[derive(Clone)]
 enum ModelOwner {
     Correlated(RetainedAssertionRoot),
-    Standalone(Arc<SolveModel>),
+    Standalone(rumoca_ir_solve::SolveExecutionSource),
 }
 
 impl SolveRuntimeModel {
@@ -21,7 +21,16 @@ impl SolveRuntimeModel {
     }
 
     pub(crate) fn copied(model: &SolveModel) -> Self {
-        Self(ModelOwner::Standalone(Arc::new(model.clone())))
+        Self(ModelOwner::Standalone(
+            rumoca_ir_solve::SolveExecutionSource::new(model.clone()),
+        ))
+    }
+
+    pub(super) fn execution_source(&self) -> rumoca_ir_solve::SolveExecutionSource {
+        match &self.0 {
+            ModelOwner::Correlated(root) => root.execution_source(),
+            ModelOwner::Standalone(source) => source.clone(),
+        }
     }
 
     /// The exact immutable FMI source, when this is a correlated runtime.
@@ -41,16 +50,10 @@ impl SolveRuntimeModel {
             ModelOwner::Correlated(root) => root
                 .resolved_periodic_schedules_at(start_time)
                 .map(Self::retained),
-            ModelOwner::Standalone(model) => {
-                let resolved = model
-                    .resolved_periodic_schedules_at(start_time)
-                    .map_err(RetainedAssertionResolutionError::Clock)?;
-                let owner = match resolved {
-                    std::borrow::Cow::Borrowed(_) => model,
-                    std::borrow::Cow::Owned(resolved) => Arc::new(resolved),
-                };
-                Ok(Self(ModelOwner::Standalone(owner)))
-            }
+            ModelOwner::Standalone(model) => model
+                .resolved_periodic_schedules_at(start_time)
+                .map(|source| Self(ModelOwner::Standalone(source)))
+                .map_err(RetainedAssertionResolutionError::Clock),
         }
     }
 }
@@ -61,7 +64,7 @@ impl Deref for SolveRuntimeModel {
     fn deref(&self) -> &Self::Target {
         match &self.0 {
             ModelOwner::Correlated(root) => root.model(),
-            ModelOwner::Standalone(model) => model,
+            ModelOwner::Standalone(model) => model.model(),
         }
     }
 }

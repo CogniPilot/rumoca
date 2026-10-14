@@ -44,6 +44,14 @@ impl ProgramLowerer<'_, '_> {
             self.unpack_registers(output, destinations)?;
         }
         if self.observation.is_some() {
+            let captures = self.packed_tape(destinations, "native assertion observations")?;
+            let width = self.register_cell_count(destinations, "native assertion observations")?;
+            self.carrier_event(
+                super::super::observation_carrier::RECORD,
+                captures,
+                width as usize,
+                None,
+            )?;
             self.clear_predicate(predicate_output)?;
         }
         if self.stops_at(predicate_output) {
@@ -69,6 +77,29 @@ impl ProgramLowerer<'_, '_> {
         self.builder.switch_to_block(continuation);
         self.builder.seal_block(continuation);
         Ok(())
+    }
+
+    pub(super) fn carrier_event(
+        &mut self,
+        kind: u32,
+        bits: Value,
+        width: usize,
+        ordinal: Option<Value>,
+    ) -> Result<(), CompileError> {
+        if self.observation.is_none() {
+            return Ok(());
+        }
+        // SAFETY: the immutable source table retained beside generated code pins this operation.
+        let operation = unsafe { self.operation.as_ref() };
+        super::super::observation_carrier::emit(
+            self.module,
+            self.builder,
+            kind,
+            0,
+            operation,
+            (bits, width),
+            ordinal,
+        )
     }
 
     /// Whether a failed assertion on `predicate_output` ends this form.

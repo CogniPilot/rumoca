@@ -56,7 +56,7 @@ impl ScalarExecutionView<'_> {
             {
                 continue;
             }
-            let message = solve_eval::eval_event_action_message(action, y, p, t, context)?;
+            let message = self.event_action_message(action, RowEvalPoint { y, p, t }, context)?;
             pending.push((
                 row,
                 SimDiagnostic {
@@ -94,8 +94,11 @@ impl ScalarExecutionView<'_> {
             if action.kind != solve::SolveEventActionKind::Print || *value <= 0.5 {
                 continue;
             }
-            let message =
-                solve_eval::eval_event_action_message(action, y, p, t, self.row_eval_context())?;
+            let message = self.event_action_message(
+                action,
+                RowEvalPoint { y, p, t },
+                self.row_eval_context(),
+            )?;
             log.diagnostics.push(SimDiagnostic {
                 code: MODEL_MESSAGE_CODE,
                 time: t,

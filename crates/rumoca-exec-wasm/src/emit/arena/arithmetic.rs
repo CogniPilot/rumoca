@@ -18,6 +18,9 @@ impl BodyEmitter<'_> {
     }
 
     fn arena_binary(&mut self, operation: LinearOp) -> Result<(), String> {
+        if matches!(operation, LinearOp::TensorBinary { lanes: 2, .. }) {
+            return self.arena_dual_binary(operation);
+        }
         let LinearOp::TensorBinary {
             dst_start,
             op,
@@ -56,6 +59,9 @@ impl BodyEmitter<'_> {
     }
 
     fn arena_matrix(&mut self, operation: LinearOp) -> Result<(), String> {
+        if matches!(operation, LinearOp::MatrixMultiply { lanes: 2, .. }) {
+            return self.arena_dual_matrix(operation);
+        }
         let LinearOp::MatrixMultiply {
             dst_start,
             lhs_start,
@@ -109,6 +115,9 @@ impl BodyEmitter<'_> {
     }
 
     fn arena_cross(&mut self, operation: LinearOp) -> Result<(), String> {
+        if matches!(operation, LinearOp::TensorCross { lanes: 2, .. }) {
+            return self.arena_dual_cross(operation);
+        }
         let LinearOp::TensorCross {
             dst_start,
             lhs_start,

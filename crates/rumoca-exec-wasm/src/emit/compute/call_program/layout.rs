@@ -165,8 +165,10 @@ impl CallProgramLayout {
         let mut call_outputs = 0usize;
         let mut components = Components::default();
         conditional::visit_operations(rows, |op| {
-            let LinearOp::PureCall { site, .. } = op else {
-                return Ok(());
+            let site = match op {
+                LinearOp::PureCall { site, .. } => site,
+                LinearOp::PureCallObservation { site, .. } => site.value_site(),
+                _ => return Ok(()),
             };
             call_outputs += site.outputs().len();
             let layout = helpers.layout(site).map_err(|e| e.to_string())?;
@@ -392,7 +394,10 @@ impl CallProgramLayout {
         Some(piece)
     }
 
-    pub(super) fn call(&self, site: &solve::SolvePureCallSite) -> Result<CallLayout, String> {
+    pub(in crate::emit) fn call(
+        &self,
+        site: &solve::SolvePureCallSite,
+    ) -> Result<CallLayout, String> {
         self.helpers
             .iter()
             .find(|(issued, _)| issued == site)
@@ -416,6 +421,18 @@ impl CallProgramLayout {
 }
 
 impl CallProgramPlan {
+    pub(in crate::emit) fn with_private_extension_bytes(
+        mut self,
+        bytes: u32,
+    ) -> Result<Self, String> {
+        crate::CheckedNativeWasmCapacityPolicy::default().require_public_bytes(bytes)?;
+        self.layout.components.call_scratch += bytes
+            .checked_sub(self.layout.bytes)
+            .ok_or("private scratch extension size shrank")?;
+        self.layout.bytes = bytes;
+        Ok(self)
+    }
+
     pub(in crate::emit) fn view(&self) -> &CallProgramLayout {
         &self.layout
     }
@@ -466,7 +483,10 @@ impl CallProgramPlan {
         self.layout.with_carried(state)?.admit(self.policy)
     }
 
-    pub(super) fn call(&self, site: &solve::SolvePureCallSite) -> Result<CallLayout, String> {
+    pub(in crate::emit) fn call(
+        &self,
+        site: &solve::SolvePureCallSite,
+    ) -> Result<CallLayout, String> {
         self.layout.call(site)
     }
 

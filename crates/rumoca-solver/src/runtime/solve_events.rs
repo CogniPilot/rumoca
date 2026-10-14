@@ -18,14 +18,26 @@ pub fn next_runtime_event_stop(
     current_t: f64,
     target: f64,
 ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-    let (static_stop, static_event) = stop_schedule.next_stop(current_t, target);
-    let Some(dynamic_stop) =
-        next_dynamic_time_event(model, runtime_state, y, params, current_t, target)?
-    else {
-        return Ok((static_stop, static_event));
+    let static_stop = stop_schedule.next_stop(current_t, target);
+    let dynamic_stop = next_dynamic_time_event(model, runtime_state, y, params, current_t, target)?;
+    Ok(next_runtime_event_stop_with_dynamic(
+        static_stop,
+        target,
+        dynamic_stop,
+    ))
+}
+
+pub(super) fn next_runtime_event_stop_with_dynamic(
+    static_stop: (f64, Option<RuntimeEventStop>),
+    target: f64,
+    dynamic_stop: Option<f64>,
+) -> (f64, Option<RuntimeEventStop>) {
+    let (static_stop, static_event) = static_stop;
+    let Some(dynamic_stop) = dynamic_stop else {
+        return (static_stop, static_event);
     };
     if dynamic_stop < static_stop && !sample_time_match_with_tol(dynamic_stop, static_stop) {
-        return Ok((dynamic_stop, Some(RuntimeEventStop::dynamic_time_event())));
+        return (dynamic_stop, Some(RuntimeEventStop::dynamic_time_event()));
     }
     if sample_time_match_with_tol(dynamic_stop, static_stop) {
         let event = static_event
@@ -38,9 +50,9 @@ pub fn next_runtime_event_stop(
         // host target bounds this step. Returning the earlier value can leave
         // the later relation false and replay the clock when that dynamic
         // deadline is processed immediately after it.
-        return Ok((static_stop.max(dynamic_stop).min(target), Some(event)));
+        return (static_stop.max(dynamic_stop).min(target), Some(event));
     }
-    Ok((static_stop, static_event))
+    (static_stop, static_event)
 }
 
 pub fn current_dynamic_time_event_stop(
@@ -206,14 +218,26 @@ fn next_dynamic_time_event(
         .filter_map(|name| dynamic_time_event_value(model, params, name));
     let mut candidates = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
     candidates.extend(named_events);
-    candidates.retain(|event_t| event_time_in_window(*event_t, current_t, target));
-    Ok(canonical_dynamic_time_event(&candidates))
+    Ok(dynamic_time_event_in_window(
+        &mut candidates,
+        current_t,
+        target,
+    ))
 }
 
 /// Return the reached instant for the earliest tolerance-coincident deadline
 /// cluster.  Dynamic owners can compute the same mathematical time through
 /// different floating-point expressions; choosing the cluster's earliest bit
 /// pattern would leave its slightly later owners armed for an immediate replay.
+pub(super) fn dynamic_time_event_in_window(
+    candidates: &mut Vec<f64>,
+    current_t: f64,
+    target: f64,
+) -> Option<f64> {
+    candidates.retain(|event_t| event_time_in_window(*event_t, current_t, target));
+    canonical_dynamic_time_event(candidates)
+}
+
 fn canonical_dynamic_time_event(candidates: &[f64]) -> Option<f64> {
     let earliest = candidates.iter().copied().min_by(f64::total_cmp)?;
     candidates
@@ -250,7 +274,11 @@ fn dynamic_time_event_row_values(
     Ok(values)
 }
 
-fn dynamic_time_event_value(model: &solve::SolveModel, params: &[f64], name: &str) -> Option<f64> {
+pub(super) fn dynamic_time_event_value(
+    model: &solve::SolveModel,
+    params: &[f64],
+    name: &str,
+) -> Option<f64> {
     runtime_parameter_index(&model.problem.solve_layout, name)
         .and_then(|idx| params.get(idx).copied())
 }

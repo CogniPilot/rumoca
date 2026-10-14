@@ -66,6 +66,11 @@ unsafe extern "C" {
 }
 
 pub(super) fn register_math_symbols(builder: &mut JITBuilder) {
+    super::native_fault::register(builder);
+    builder.symbol(
+        "rumoca_native_observe",
+        super::observation_carrier::observe as *const u8,
+    );
     builder.symbol(
         "rumoca_host_native",
         super::typed_program::rumoca_host_native as *const u8,

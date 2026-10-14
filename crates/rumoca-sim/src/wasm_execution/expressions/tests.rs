@@ -1,3 +1,6 @@
+mod authored_models;
+mod observations;
+mod tuples;
 use super::*;
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_solve::LinearOp;
@@ -95,7 +98,12 @@ fn selectable_expression_refuses_an_unlowered_program_before_any_execution() {
     .unwrap();
     let layout = VarLayout::from_parts(Default::default(), 2, 1);
     assert!(
-        WasmExpression::compile(&source, &layout).is_err(),
+        WasmExpression::compile(
+            &source,
+            &layout,
+            &rumoca_ir_solve::SolvePureCallTable::default()
+        )
+        .is_err(),
         "a runnable expression must not retain unlowered cold programs"
     );
 }
@@ -122,14 +130,18 @@ fn complete_expression_owns_code_for_every_original_program() {
     )
     .unwrap();
     let layout = VarLayout::from_parts(Default::default(), 2, 1);
-    let compiled = WasmExpression::compile(&source, &layout).unwrap();
+    let compiled = WasmExpression::compile(
+        &source,
+        &layout,
+        &rumoca_ir_solve::SolvePureCallTable::default(),
+    )
+    .unwrap();
     assert_eq!(compiled.selected.len(), source.row_count());
-    assert_eq!(compiled.full.rows(), source.row_count());
     assert_eq!(compiled.source.output_indices(), source.output_indices());
     assert!(
         compiled
             .selected
             .iter()
-            .all(|code| !code.module_bytes().is_empty())
+            .all(|(code, _)| !code.module_bytes().is_empty())
     );
 }

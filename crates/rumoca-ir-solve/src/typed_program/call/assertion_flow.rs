@@ -54,6 +54,13 @@ impl AssertionSource {
 }
 
 impl CheckedAssertionFlow {
+    pub(super) fn empty() -> Self {
+        Self {
+            sources: Box::default(),
+            assigned_read_predicates: Box::default(),
+        }
+    }
+
     /// Canonical structural coordinates; execution order remains control-owned.
     #[must_use]
     pub fn sources(&self) -> &[AssertionSource] {

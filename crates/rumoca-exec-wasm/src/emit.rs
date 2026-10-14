@@ -4,9 +4,13 @@ mod arena;
 mod compute;
 mod conditional;
 mod gather;
+mod seed;
 mod tensor;
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
-pub(super) use compute::{emit_exact_assignment_module, emit_private_program_module};
+pub(super) use compute::{
+    emit_event_program_module, emit_exact_assignment_module, emit_private_directional_module,
+    emit_private_program_module,
+};
 pub(super) use compute::{
     emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
 };
@@ -391,6 +395,9 @@ struct BodyEmitter<'a> {
     /// The native stage being emitted, whose issued exact Integer bindings
     /// (SOLVE-C69) its top-level pure calls follow.
     native_stage: Option<&'a rumoca_ir_solve::NativeRefreshAssignmentStage>,
+    event_invocations: Option<&'a [crate::typed_call::retained_event::InvocationStorage]>,
+    event_stops: &'a [u32],
+    private_seed_offset: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -423,6 +430,9 @@ impl<'a> BodyEmitter<'a> {
             region_path: Vec::new(),
             integer_capture: Vec::new(),
             native_stage: None,
+            event_invocations: None,
+            event_stops: &[],
+            private_seed_offset: None,
         }
     }
 
@@ -447,7 +457,7 @@ impl<'a> BodyEmitter<'a> {
             LinearOp::LoadY { dst, index } => self.emit_array_load(dst, index, Y_PTR_PARAM)?,
             LinearOp::LoadP { dst, index } => self.emit_array_load(dst, index, P_PTR_PARAM)?,
             LinearOp::LoadSeed { dst, index } => {
-                self.emit_array_load(dst, index, SEED_PTR_PARAM)?;
+                self.emit_seed_load(dst, index)?;
             }
             LinearOp::LoadIndexedP {
                 dst,
@@ -460,7 +470,7 @@ impl<'a> BodyEmitter<'a> {
                 base,
                 count,
                 index,
-            } => self.emit_indexed_load(dst, base, count, index, SEED_PTR_PARAM)?,
+            } => self.emit_indexed_seed_load(dst, base, count, index)?,
             LinearOp::LoadIndexedRegister { .. }
             | LinearOp::LoadIndexedFoldCarried { .. }
             | LinearOp::LoadIndexedFoldCapture { .. }
@@ -538,6 +548,9 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_compact(&mut self, op: &LinearOp) -> Option<Result<(), String>> {
+        if self.event_invocations.is_some() && matches!(op, LinearOp::PureCallObservation { .. }) {
+            return Some(self.emit_event_observation(op));
+        }
         if matches!(op, LinearOp::PureCallObservation { .. }) {
             return Some(Err(
                 "WASM backend requires a checked event-action assertion adapter".to_string(),
@@ -588,8 +601,7 @@ impl<'a> BodyEmitter<'a> {
 
     /// Emit `mem[ptr + 8*(base + clamp(round(index), 0, count-1))]` as an f64
     /// load, matching [`rumoca_ir_solve::resolve_indexed_slot`]: round the
-    /// runtime f64 index to nearest, clamp into `[0, count-1]`, scale to bytes,
-    /// add the run-relative base via the static load offset.
+    /// Resolve a synthetic slot coordinate, then read its checked input range.
     fn emit_indexed_load(
         &mut self,
         dst: Reg,
@@ -598,14 +610,7 @@ impl<'a> BodyEmitter<'a> {
         index: Reg,
         ptr_param: u32,
     ) -> Result<(), String> {
-        let last = if count == 0 { 0.0 } else { (count - 1) as f64 };
-        self.push_reg(index)?;
-        self.push(Instruction::F64Nearest);
-        self.push(Instruction::F64Const(0.0f64.into()));
-        self.push(Instruction::F64Max);
-        self.push(Instruction::F64Const(last.into()));
-        self.push(Instruction::F64Min);
-        self.push(Instruction::I32TruncF64S);
+        self.emit_synthetic_index_slot(index, count)?;
         self.push(Instruction::I32Const(8));
         self.push(Instruction::I32Mul);
         self.push(Instruction::LocalGet(ptr_param));

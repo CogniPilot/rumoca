@@ -394,3 +394,70 @@ fn seventeen_on_failure<'program>(
     })?;
     Ok(message[0])
 }
+
+#[test]
+fn checked_native_messages_keep_the_source_binding_across_repeated_invocations() {
+    let table = observed_table();
+    let site = table.owners()[0].call_site();
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![invocation(observation(&site), 2)],
+        vec![fixture_span()],
+    )
+    .unwrap();
+    let mut model = rumoca_ir_solve::SolveModel::default();
+    model.pure_calls = table.clone();
+    model.problem.events.action_conditions = block;
+    model.problem.events.actions = vec![action(&site)];
+    let source = rumoca_ir_solve::SolveExecutionSource::new(model);
+    let calls = compile_pure_call_table(&table).unwrap();
+    let compiled = crate::compile_event_observation(
+        source
+            .event_program(
+                rumoca_ir_solve::RetainedAssertionSource::ActionConditions,
+                0,
+            )
+            .unwrap(),
+        &calls,
+    )
+    .unwrap();
+    let foreign_calls = compile_pure_call_table(&observed_table()).unwrap();
+    let foreign_binding = source
+        .event_program(
+            rumoca_ir_solve::RetainedAssertionSource::ActionConditions,
+            0,
+        )
+        .unwrap();
+    let rejected = crate::compile_event_observation(foreign_binding, &foreign_calls)
+        .err()
+        .expect("an equivalent detached table cannot issue native observation authority");
+    assert!(rejected.to_string().contains("different native call table"));
+    let action = &source.model().problem.events.actions[0];
+    let copied_action = action.clone();
+    for ok in [1.0, 0.0, 0.0, 1.0, 0.0] {
+        let mut out = [f64::NAN];
+        compiled.call(&[], &[ok], 0.0, &[], &mut out).unwrap();
+        assert_eq!(out, [ok]);
+        assert_eq!(
+            compiled.message_for_action(action),
+            (ok == 0.0).then(|| "captured 3.5".to_owned())
+        );
+        assert!(compiled.message_for_action(&copied_action).is_none());
+    }
+    let mut unchanged = [123.0];
+    assert!(compiled.call(&[], &[], 0.0, &[], &mut unchanged).is_err());
+    assert_eq!(unchanged, [123.0]);
+    assert!(
+        compiled.message_for_action(action).is_none(),
+        "failed input guards cannot expose an earlier invocation"
+    );
+    drop(source);
+    drop(calls);
+    let mut retained = [f64::NAN];
+    compiled.call(&[], &[0.0], 0.0, &[], &mut retained).unwrap();
+    assert_eq!(
+        retained,
+        [0.0],
+        "compiled observation retains its source after the caller drops it"
+    );
+    assert!(compiled.message_for_action(&copied_action).is_none());
+}

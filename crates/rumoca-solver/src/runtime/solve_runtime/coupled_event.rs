@@ -11,7 +11,7 @@ use super::event_update::{
 use super::guarded_assignments::guarded_target_at;
 
 mod tangent;
-use tangent::CoupledEventJvps;
+pub(super) use tangent::CoupledEventJvps;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoupledEventUnknown {
@@ -74,10 +74,9 @@ impl ScalarExecutionView<'_> {
         let before_y = input.y.to_vec();
         let before_p = input.p.to_vec();
         let mut unknowns = read_unknowns(&inventory.unknowns, input.y, input.p)?;
-        let jvps = CoupledEventJvps::prepare(&self.model.artifacts.discrete)?;
         let system = CoupledEventSystem {
             runtime: *self,
-            jvps: &jvps,
+            jvps: &self.scalar.coupled_event_jvps,
             snapshot,
             base_y: input.y,
             base_p: input.p,

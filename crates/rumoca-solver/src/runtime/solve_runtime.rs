@@ -24,10 +24,7 @@ use crate::runtime::projection::{
     ImplicitProjectionModel, ManifoldProjectionModel, project_algebraic_seed_with_plan,
     project_algebraics_with_plan, project_algebraics_with_plan_certified,
 };
-use crate::runtime::solve_events::{
-    current_dynamic_time_event_stop, event_action_params, next_runtime_event_stop,
-    visible_values_with_context,
-};
+use crate::runtime::solve_events::{event_action_params, visible_values_with_context};
 use crate::runtime::solve_ops::write_clock_activation_params;
 use crate::{
     EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
@@ -265,6 +262,7 @@ pub struct SolveRuntime {
 
 #[derive(Clone)]
 struct ScalarExecutionInventory {
+    coupled_event_jvps: coupled_event::CoupledEventJvps,
     implicit_rhs: PreparedComputeBlock,
     implicit_projection_jacobian_v: PreparedComputeBlock,
     implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,

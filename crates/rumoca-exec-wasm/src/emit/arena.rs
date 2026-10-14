@@ -1,6 +1,8 @@
 //! Private bounded register storage for compact native assignment programs.
 
 mod arithmetic;
+mod dual_arithmetic;
+mod dual_load;
 pub(in crate::emit) mod layouts;
 pub(in crate::emit) mod register_layout;
 mod storage;
@@ -46,7 +48,28 @@ impl ArenaPlan {
         rank: usize,
         policy: crate::CheckedNativeWasmCapacityPolicy,
     ) -> Result<Self, String> {
-        conditional::visit_operations(rows, validate_profile)?;
+        Self::required_with_profile(rows, rank, policy, false)
+    }
+
+    pub(super) fn required_directional(
+        rows: &[Vec<LinearOp>],
+        rank: usize,
+    ) -> Result<Self, String> {
+        Self::required_with_profile(
+            rows,
+            rank,
+            crate::CheckedNativeWasmCapacityPolicy::default(),
+            true,
+        )
+    }
+
+    fn required_with_profile(
+        rows: &[Vec<LinearOp>],
+        rank: usize,
+        policy: crate::CheckedNativeWasmCapacityPolicy,
+        directional: bool,
+    ) -> Result<Self, String> {
+        conditional::visit_operations(rows, |operation| validate_profile(operation, directional))?;
         let layouts = rows
             .iter()
             .map(|program| {
@@ -155,12 +178,12 @@ pub(super) fn is_tensor(op: &LinearOp) -> bool {
     )
 }
 
-fn validate_profile(op: &LinearOp) -> Result<(), String> {
+fn validate_profile(op: &LinearOp, directional: bool) -> Result<(), String> {
     let lanes = match op {
         LinearOp::TensorLoad {
             lanes, seed_start, ..
         } => {
-            if seed_start.is_some() {
+            if seed_start.is_some() && !directional {
                 return Err("native private register arena does not support seeds".into());
             }
             *lanes
@@ -174,7 +197,7 @@ fn validate_profile(op: &LinearOp) -> Result<(), String> {
         | LinearOp::TensorIdentity { lanes, .. } => *lanes,
         _ => return Ok(()),
     };
-    if lanes != 1 {
+    if lanes != 1 && !(directional && lanes == 2) {
         return Err("native private register arena requires one primal lane".into());
     }
     Ok(())
