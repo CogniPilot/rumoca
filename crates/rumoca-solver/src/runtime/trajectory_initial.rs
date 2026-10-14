@@ -49,7 +49,7 @@ impl<'a> InitialSystem<'a> {
             seeds: plan.seeds.clone(),
             rows: plan.rows.clone(),
             unknown_count: plan.unknown_count,
-            y_scalars: runtime.model.problem.layout.y_scalars(),
+            y_scalars: runtime.model().problem.layout.y_scalars(),
         }
     }
 
@@ -60,8 +60,8 @@ impl<'a> InitialSystem<'a> {
     /// One column of the stacked system for a unit seed at `seed_index`: the
     /// solved residual rows, then the update rows.
     fn column(&self, seed_index: usize) -> Result<Vec<f64>, TrajectoryError> {
-        let init = &self.runtime.model.problem.initialization;
-        let layout = &self.runtime.model.problem.layout;
+        let init = &self.runtime.model().problem.initialization;
+        let layout = &self.runtime.model().problem.layout;
         let mut seed = vec![0.0; self.y_scalars + layout.p_scalars()];
         seed[seed_index] = 1.0;
         let residual_len = init
@@ -129,7 +129,7 @@ impl<'a> InitialSystem<'a> {
     /// continuous row reads: the variational seed carries tangents for the
     /// requested parameters alone.
     fn refuse_moving_parameters(&self, solved: &[Vec<f64>]) -> Result<(), TrajectoryError> {
-        let reads = solve::read_continuous_parameter_slots(&self.runtime.model.problem);
+        let reads = solve::read_continuous_parameter_slots(&self.runtime.model().problem);
         for (slot, tangents) in self.slots.iter().zip(solved) {
             let solve::ScalarSlot::P { index, .. } = slot else {
                 continue;
@@ -167,7 +167,7 @@ pub(crate) fn initial_state_sensitivity(
         .map_err(initialization_error)?
     };
     system.refuse_moving_parameters(&solved)?;
-    let n = runtime.state_count;
+    let n = runtime.state_count();
     let mut result = vec![vec![0.0; n]; parameters.len()];
     for (seed, tangents) in system.seeds.iter().zip(&solved) {
         if *seed < n {
@@ -182,7 +182,7 @@ pub(crate) fn initial_state_sensitivity(
 /// The name bound to parameter slot `index`, for a diagnostic.
 fn parameter_name(runtime: &SolveRuntime, index: usize) -> String {
     runtime
-        .model
+        .model()
         .problem
         .layout
         .scalar_name_for_slot(solve::scalar_slot_p(index))

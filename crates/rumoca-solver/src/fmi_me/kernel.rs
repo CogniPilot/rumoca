@@ -356,7 +356,7 @@ impl SolveMeKernel {
     }
 
     pub(in crate::fmi_me) fn source_model(&self) -> &rumoca_ir_solve::SolveModel {
-        &self.runtime.model
+        self.runtime.model()
     }
     pub(crate) fn event_indicator_count(&self) -> usize {
         self.indicator_plan.len()
@@ -373,8 +373,8 @@ impl SolveMeKernel {
     pub(crate) fn model_description(&self) -> MeModelDescription<'_> {
         let (names, metadata) = self.visible_report.get_or_init(|| {
             (
-                self.runtime.model.visible_names(),
-                convert_variable_meta(&self.runtime.model.visible_metadata()),
+                self.runtime.model().visible_names(),
+                convert_variable_meta(&self.runtime.model().visible_metadata()),
             )
         });
         MeModelDescription {
@@ -386,7 +386,12 @@ impl SolveMeKernel {
             // profile honestly requires the call for every model.
             needs_completed_integrator_step: true,
             output_names: names,
-            input_names: self.runtime.model.problem.solve_layout.input_scalar_names(),
+            input_names: self
+                .runtime
+                .model()
+                .problem
+                .solve_layout
+                .input_scalar_names(),
             output_meta: metadata,
         }
     }
@@ -410,7 +415,7 @@ impl SolveMeKernel {
 
     pub(crate) fn value_reference(&self, name: &str) -> Option<MeValueRef> {
         self.runtime
-            .model
+            .model()
             .problem
             .solve_layout
             .input_parameter_index(name)
@@ -638,7 +643,7 @@ impl SolveMeKernel {
             Some(charts) => charts.state_jacobian()?,
             None => self
                 .runtime
-                .model
+                .model()
                 .artifacts
                 .continuous
                 .structural
@@ -789,11 +794,11 @@ impl SolveMeKernel {
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("record_outputs")?;
         self.require_observation_brand(observation)?;
-        if series.columns_mut().len() != self.runtime.model.visible_projection.scalar_count() {
+        if series.columns_mut().len() != self.runtime.model().visible_projection.scalar_count() {
             return Err(contract(format!(
                 "output series has {} columns for {} visible outputs",
                 series.columns_mut().len(),
-                self.runtime.model.visible_projection.scalar_count(),
+                self.runtime.model().visible_projection.scalar_count(),
             )));
         }
         self.runtime
@@ -1195,7 +1200,7 @@ impl SolveMeKernel {
         self.time = start_time;
         self.event_boundary = None;
         self.stop_schedule =
-            SolveStopSchedule::new(&self.runtime.model.problem, start_time, self.stop_time);
+            SolveStopSchedule::new(&self.runtime.model().problem, start_time, self.stop_time);
         self.termination = None;
         self.pending_root_crossings.clear();
         self.pending_event_pre_y = None;
@@ -1229,7 +1234,7 @@ impl SolveMeKernel {
         }
         self.stop_time = stop_time;
         self.stop_schedule =
-            SolveStopSchedule::new(&self.runtime.model.problem, from_time, stop_time);
+            SolveStopSchedule::new(&self.runtime.model().problem, from_time, stop_time);
         Ok(())
     }
 }
