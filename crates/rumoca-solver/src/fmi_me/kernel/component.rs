@@ -1205,6 +1205,7 @@ impl SolveMeKernel {
             )));
         }
         solver_y[..state.len()].copy_from_slice(state);
+        self.copy_cached_algebraic_solver_y(time, state, &self.params, &mut solver_y);
         self.runtime
             .refresh_delay_values(time, &solver_y, &mut params)?;
         Ok(f(&params))
@@ -1224,17 +1225,16 @@ impl SolveMeKernel {
             )));
         }
         solver_y[..self.states.len()].copy_from_slice(&self.states);
+        self.copy_cached_algebraic_solver_y(self.time, &self.states, &self.params, &mut solver_y);
         self.max_step_duration =
             self.runtime
                 .refresh_delay_values(self.time, &solver_y, &mut self.params)?;
-        let algebraic_cached = self
-            .continuous_linearization_cache
-            .borrow()
-            .as_ref()
-            .is_some_and(|cached| {
-                cached.kind == SettledCoordinateKind::Algebraic
-                    && cached.matches(self.time, &self.states, &self.params)
-            });
+        let algebraic_cached = self.copy_cached_algebraic_solver_y(
+            self.time,
+            &self.states,
+            &self.params,
+            &mut solver_y,
+        );
         if !algebraic_cached {
             self.invalidate_continuous_linearization();
             self.runtime.full_solver_y_with_guess_certified(

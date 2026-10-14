@@ -607,3 +607,122 @@ fn a_deadline_read_completes_the_checked_remainder_of_a_partial_derivative_view(
     assert_eq!(indicators.len(), 1);
     assert!((indicators[0] - (ALGEBRAIC_SLOPE * time - time)).abs() < 1e-6);
 }
+
+#[test]
+fn certified_algebraic_delay_history_uses_the_owned_values_after_a_warm_guess_changes() {
+    let mut model = steep_algebraic_time_event_model();
+    let duration = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.5 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_owned_delay_duration.mo",
+    );
+    model.problem.events.delays = solve::SolveDelayPartition {
+        source_rhs: block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "fmi_me_owned_delay_source.mo",
+        ),
+        delay_time_rhs: duration.clone(),
+        delay_max_rhs: duration,
+        value_parameter_indices: vec![0],
+        source_is_discrete: vec![false],
+    };
+    model.problem.solve_layout.parameter_count = 1;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![0.0].into();
+    let mut kernel = instantiate(&model);
+    kernel
+        .runtime
+        .initialize_delay_history(0.0, &model.initial_y, &mut kernel.params)
+        .unwrap();
+    kernel
+        .runtime
+        .commit_delay_history(0.0, &model.initial_y, &kernel.params)
+        .unwrap();
+    kernel.time = 0.25;
+    let complete = kernel
+        .solver_y_at_parameters(kernel.time, &kernel.params)
+        .unwrap();
+    kernel.cache_algebraic_coordinate(kernel.time, &kernel.states, &kernel.params, &complete);
+    kernel.solver_y_guess.borrow_mut()[1] = -123.0;
+    kernel.commit_delay_point().unwrap();
+    let mut queried = kernel.params.clone();
+    kernel
+        .runtime
+        .refresh_delay_values(0.75, &complete, &mut queried)
+        .unwrap();
+    assert_eq!(
+        queried[0], complete[1],
+        "accepted delay history must use the certified coordinate"
+    );
+}
+
+#[test]
+fn certified_algebraic_delay_inputs_use_owned_values_before_duration_evaluation() {
+    let mut model = steep_algebraic_time_event_model();
+    model.problem.events.delays = solve::SolveDelayPartition {
+        source_rhs: block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "fmi_me_owned_dynamic_delay_source.mo",
+        ),
+        delay_time_rhs: block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::Const {
+                    dst: 1,
+                    value: 2.0e-6,
+                },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            "fmi_me_owned_dynamic_delay_duration.mo",
+        ),
+        delay_max_rhs: block(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.5 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "fmi_me_owned_dynamic_delay_max.mo",
+        ),
+        value_parameter_indices: vec![0],
+        source_is_discrete: vec![false],
+    };
+    model.problem.solve_layout.parameter_count = 1;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![0.0].into();
+    let mut kernel = instantiate(&model);
+    kernel
+        .runtime
+        .initialize_delay_history(0.0, &model.initial_y, &mut kernel.params)
+        .unwrap();
+    kernel
+        .runtime
+        .commit_delay_history(0.0, &model.initial_y, &kernel.params)
+        .unwrap();
+    kernel.time = 0.25;
+    let complete = kernel
+        .solver_y_at_parameters(kernel.time, &kernel.params)
+        .unwrap();
+    kernel.cache_algebraic_coordinate(kernel.time, &kernel.states, &kernel.params, &complete);
+    kernel.solver_y_guess.borrow_mut()[1] = -123.0;
+    assert_eq!(
+        kernel
+            .with_delay_params_unseeded(kernel.time, &kernel.states, |p| p[0])
+            .unwrap(),
+        0.0
+    );
+    kernel.commit_delay_point().unwrap();
+    assert_eq!(kernel.max_step_duration, Some(0.5));
+}

@@ -198,6 +198,25 @@ impl SolveMeKernel {
             .is_some_and(|cached| cached.matches(time, state, parameters))
     }
 
+    pub(super) fn copy_cached_algebraic_solver_y(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+        out: &mut [f64],
+    ) -> bool {
+        let cache = self.continuous_linearization_cache.borrow();
+        let Some(cached) = cache.as_ref().filter(|cached| {
+            cached.kind == SettledCoordinateKind::Algebraic
+                && cached.matches(time, state, parameters)
+                && cached.solver_y.len() == out.len()
+        }) else {
+            return false;
+        };
+        out.copy_from_slice(&cached.solver_y);
+        true
+    }
+
     pub(super) fn cached_continuous_solver_y(
         &self,
         time: f64,

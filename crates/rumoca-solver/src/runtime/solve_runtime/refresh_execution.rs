@@ -800,7 +800,7 @@ impl ScalarExecutionView<'_> {
             )));
         }
         let remainder = relation.remainder();
-        if !remainder.value_stages.is_empty() {
+        if remainder.causal_solution_certified || !remainder.value_stages.is_empty() {
             self.refresh_slots_with_plan(
                 remainder,
                 RefreshSlotArgs {
