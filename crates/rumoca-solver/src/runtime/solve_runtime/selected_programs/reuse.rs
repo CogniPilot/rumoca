@@ -1,5 +1,8 @@
 //! Chart reuse preserves current scalar authority and original compiled entries.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
 use rumoca_eval_solve::replaced_programs;
 
@@ -606,7 +609,3 @@ pub(in crate::runtime::solve_runtime) fn shared_projection_jacobians(
         })
         .collect()
 }
-
-#[cfg(test)]
-#[path = "reuse_tests.rs"]
-mod tests;
