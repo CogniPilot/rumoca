@@ -131,6 +131,11 @@ impl ScalarExecutionView<'_> {
             failed,
         } = rows;
         for &row in row_indices {
+            if self.scalar.lifecycle().is_some() {
+                let value = self.eval_lifecycle_row(block, row, point)?;
+                copy_compiled_program_outputs(&[value], row, &[(row, 0)], out)?;
+                continue;
+            }
             if self.try_compiled_single_output(cache, row, point, out)? {
                 continue;
             }
@@ -204,6 +209,11 @@ impl ScalarExecutionView<'_> {
             programs.entry(program).or_default().push((output, offset));
         }
         for (program, selected) in programs {
+            let mut values = Vec::new();
+            if self.eval_lifecycle_program_outputs(block, program, point, &mut values)? {
+                copy_compiled_program_outputs(&values, program, &selected, out)?;
+                continue;
+            }
             if self.try_compiled_program_outputs(cache, program, &selected, point, out)? {
                 continue;
             }

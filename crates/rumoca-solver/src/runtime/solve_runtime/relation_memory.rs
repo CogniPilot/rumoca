@@ -178,7 +178,7 @@ impl ScalarExecutionView<'_> {
         values.resize(targets.len(), 0.0);
         let mut changed_any = false;
         for _ in 0..max_iters {
-            block.eval_with_context(y, p, t, self.row_eval_context(), &mut values)?;
+            self.eval_lifecycle_block(block, RowEvalPoint { y, p, t }, &mut values)?;
             let changed = solve_eval::apply_scalar_slot_values_exact(targets, &values, y, p)?;
             if !changed {
                 return Ok(changed_any);
@@ -1329,7 +1329,7 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
-        if let Some(compiled) = self.scalar.compiled_derivative_rhs.as_ref() {
+        if let Some(compiled) = self.scalar.compiled_derivative_rhs() {
             compiled.call(
                 solver_y,
                 params,

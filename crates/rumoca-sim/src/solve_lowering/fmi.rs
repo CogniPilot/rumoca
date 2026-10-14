@@ -29,7 +29,7 @@ pub(crate) fn finish_runtime_fmi_artifact(
     SimulationDiagnosticError,
 > {
     let execution_backend =
-        crate::native_execution::admitted_native_execution_backend(opts, lowered.model());
+        crate::native_execution::admitted_native_execution_backend(opts, lowered.model())?;
     let receipt = crate::native_execution::execution_receipt(opts, lowered.model());
     let component = rumoca_phase_solve::fmi::finish_fmi_component(lowered).map_err(|error| {
         let span = error.span();

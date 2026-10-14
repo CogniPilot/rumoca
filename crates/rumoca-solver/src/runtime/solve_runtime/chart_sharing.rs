@@ -9,6 +9,8 @@
 //! overwrites the replaced programs' outputs from their own compiled block.
 
 use super::*;
+
+type PreparedCode<T> = Result<Option<Rc<T>>, EvalSolveError>;
 use rumoca_eval_solve::replaced_programs;
 
 /// The replaced programs of one block and where their outputs land.
@@ -281,21 +283,29 @@ impl BlockReuse {
         block: &solve::ScalarProgramBlock,
         compile: &mut dyn FnMut(
             &solve::ScalarProgramBlock,
-        ) -> Option<Rc<dyn CompiledSolveExpression>>,
-    ) -> Option<Rc<dyn CompiledSolveExpression>> {
-        match self {
-            Self::Fresh => compile(block),
-            Self::Same => primary.cloned(),
-            Self::Replaced(replaced) => {
-                let primary = Rc::clone(primary?);
+        ) -> PreparedCode<dyn CompiledSolveExpression>,
+    ) -> PreparedCode<dyn CompiledSolveExpression> {
+        match (self, primary) {
+            (Self::Fresh, _) | (_, None) => compile(block),
+            (Self::Same, Some(primary)) => Ok(Some(Rc::clone(primary))),
+            (Self::Replaced(replaced), Some(primary)) => {
+                let primary = Rc::clone(primary);
                 let replaced = ReplacedPrograms::new(block, replaced.clone());
-                let replacement = compile(&replaced.block(block)?)?;
-                Some(Rc::new(ReplacedExpression {
+                let source = replaced
+                    .block(block)
+                    .ok_or_else(|| EvalSolveError::InvalidRow {
+                        message: "replacement expression source is absent".into(),
+                        span: None,
+                    })?;
+                let Some(replacement) = compile(&source)? else {
+                    return Ok(None);
+                };
+                Ok(Some(Rc::new(ReplacedExpression {
                     primary,
                     replaced,
                     replacement,
                     scratch: RefCell::new(Vec::new()),
-                }))
+                })))
             }
         }
     }
@@ -306,11 +316,11 @@ impl BlockReuse {
         &self,
         primary: Option<&Rc<dyn CompiledSolveExpression>>,
         block: &solve::ScalarProgramBlock,
-        fresh: &mut dyn FnMut() -> Option<Rc<dyn CompiledSolveExpression>>,
+        fresh: &mut dyn FnMut() -> PreparedCode<dyn CompiledSolveExpression>,
         compile: &mut dyn FnMut(
             &solve::ScalarProgramBlock,
-        ) -> Option<Rc<dyn CompiledSolveExpression>>,
-    ) -> Option<Rc<dyn CompiledSolveExpression>> {
+        ) -> PreparedCode<dyn CompiledSolveExpression>,
+    ) -> PreparedCode<dyn CompiledSolveExpression> {
         match self {
             Self::Fresh => fresh(),
             _ => self.expression(primary, block, compile),
@@ -322,11 +332,11 @@ impl BlockReuse {
         &self,
         primary: Option<&Rc<dyn CompiledSolveJacobianExpression>>,
         block: &solve::ScalarProgramBlock,
-        fresh: &mut dyn FnMut() -> Option<Rc<dyn CompiledSolveJacobianExpression>>,
+        fresh: &mut dyn FnMut() -> PreparedCode<dyn CompiledSolveJacobianExpression>,
         compile: &mut dyn FnMut(
             &solve::ScalarProgramBlock,
-        ) -> Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    ) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
+        ) -> PreparedCode<dyn CompiledSolveJacobianExpression>,
+    ) -> PreparedCode<dyn CompiledSolveJacobianExpression> {
         match self {
             Self::Fresh => fresh(),
             _ => self.jacobian(primary, block, compile),
@@ -340,21 +350,29 @@ impl BlockReuse {
         block: &solve::ScalarProgramBlock,
         compile: &mut dyn FnMut(
             &solve::ScalarProgramBlock,
-        ) -> Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    ) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
-        match self {
-            Self::Fresh => compile(block),
-            Self::Same => primary.cloned(),
-            Self::Replaced(replaced) => {
-                let primary = Rc::clone(primary?);
+        ) -> PreparedCode<dyn CompiledSolveJacobianExpression>,
+    ) -> PreparedCode<dyn CompiledSolveJacobianExpression> {
+        match (self, primary) {
+            (Self::Fresh, _) | (_, None) => compile(block),
+            (Self::Same, Some(primary)) => Ok(Some(Rc::clone(primary))),
+            (Self::Replaced(replaced), Some(primary)) => {
+                let primary = Rc::clone(primary);
                 let replaced = ReplacedPrograms::new(block, replaced.clone());
-                let replacement = compile(&replaced.block(block)?)?;
-                Some(Rc::new(ReplacedJacobian {
+                let source = replaced
+                    .block(block)
+                    .ok_or_else(|| EvalSolveError::InvalidRow {
+                        message: "replacement Jacobian source is absent".into(),
+                        span: None,
+                    })?;
+                let Some(replacement) = compile(&source)? else {
+                    return Ok(None);
+                };
+                Ok(Some(Rc::new(ReplacedJacobian {
                     primary,
                     replaced,
                     replacement,
                     scratch: RefCell::new(Vec::new()),
-                }))
+                })))
             }
         }
     }

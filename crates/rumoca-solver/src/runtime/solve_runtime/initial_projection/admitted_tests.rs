@@ -38,17 +38,21 @@ fn admitted_initial_full_and_partial_faults_preserve_output_bits() {
         let calls = Rc::new(Cell::new(0));
         let compiled = Rc::new(Fault(calls.clone()));
         match owner {
-            0 => runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(compiled),
+            0 => *runtime.scalar_fixture_mut().fixture_compiled_implicit_rhs() = Some(compiled),
             1 => {
-                runtime
+                *runtime
                     .scalar_fixture_mut()
-                    .compiled_implicit_projection_jacobian_v = Some(compiled)
+                    .fixture_compiled_implicit_projection_jacobian_v() = Some(compiled)
             }
-            2 => runtime.scalar_fixture_mut().compiled_initial_residual = Some(compiled),
-            _ => {
-                runtime
+            2 => {
+                *runtime
                     .scalar_fixture_mut()
-                    .compiled_initial_residual_jacobian_v = Some(compiled)
+                    .fixture_compiled_initial_residual() = Some(compiled)
+            }
+            _ => {
+                *runtime
+                    .scalar_fixture_mut()
+                    .fixture_compiled_initial_residual_jacobian_v() = Some(compiled)
             }
         }
         let projection = InitialProjectionModel {

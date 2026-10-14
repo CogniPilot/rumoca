@@ -5,7 +5,19 @@ use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use super::{CompiledSolveExpression, CompiledSolveJacobianExpression, SolveExecutionBackend};
+use super::{
+    CompiledSolveExpression, CompiledSolveJacobianExpression, EvalSolveError, SolveExecutionBackend,
+};
+
+pub(super) fn required_compiled<T>(
+    label: &str,
+    result: Result<T, String>,
+) -> Result<T, EvalSolveError> {
+    result.map_err(|message| EvalSolveError::CompiledExecution {
+        message: format!("required compiled program `{label}` could not be lowered: {message}"),
+        span: None,
+    })
+}
 
 pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
     match result {
@@ -27,8 +39,10 @@ pub(super) fn compiled_expression(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,
     label: &str,
     block: &solve::ScalarProgramBlock,
-) -> Option<Rc<dyn CompiledSolveExpression>> {
-    backend.and_then(|backend| optional_compiled(label, backend.compile_expression(block)))
+) -> Result<Option<Rc<dyn CompiledSolveExpression>>, EvalSolveError> {
+    backend
+        .map(|backend| required_compiled(label, backend.compile_expression(block)))
+        .transpose()
 }
 
 /// `block` compiled by `backend` for whole-block calls with its tensor nodes
@@ -39,12 +53,14 @@ pub(super) fn compiled_compute_expression(
     label: &str,
     block: &solve::ComputeBlock,
     scalar: &solve::ScalarProgramBlock,
-) -> Option<Rc<dyn CompiledSolveExpression>> {
-    let backend = backend?;
+) -> Result<Option<Rc<dyn CompiledSolveExpression>>, EvalSolveError> {
+    let Some(backend) = backend else {
+        return Ok(None);
+    };
     match backend.compile_compute_expression(block) {
-        Ok(Some(compiled)) => Some(compiled),
-        Ok(None) => optional_compiled(label, backend.compile_expression(scalar)),
-        Err(error) => optional_compiled(label, Err(error)),
+        Ok(Some(compiled)) => Ok(Some(compiled)),
+        Ok(None) => required_compiled(label, backend.compile_expression(scalar)).map(Some),
+        Err(error) => required_compiled(label, Err(error)),
     }
 }
 
@@ -55,12 +71,14 @@ pub(super) fn compiled_compute_jacobian(
     label: &str,
     block: &solve::ComputeBlock,
     scalar: &solve::ScalarProgramBlock,
-) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
-    let backend = backend?;
+) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, EvalSolveError> {
+    let Some(backend) = backend else {
+        return Ok(None);
+    };
     match backend.compile_compute_jacobian_expression(block) {
-        Ok(Some(compiled)) => Some(compiled),
-        Ok(None) => optional_compiled(label, backend.compile_jacobian_expression(scalar)),
-        Err(error) => optional_compiled(label, Err(error)),
+        Ok(Some(compiled)) => Ok(Some(compiled)),
+        Ok(None) => required_compiled(label, backend.compile_jacobian_expression(scalar)).map(Some),
+        Err(error) => required_compiled(label, Err(error)),
     }
 }
 
@@ -69,8 +87,10 @@ pub(super) fn compiled_jacobian(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,
     label: &str,
     block: &solve::ScalarProgramBlock,
-) -> Option<Rc<dyn CompiledSolveJacobianExpression>> {
-    backend.and_then(|backend| optional_compiled(label, backend.compile_jacobian_expression(block)))
+) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, EvalSolveError> {
+    backend
+        .map(|backend| required_compiled(label, backend.compile_jacobian_expression(block)))
+        .transpose()
 }
 
 pub(super) fn zero_runtime_values(

@@ -134,11 +134,11 @@ impl SolveExecutionBackend for Backend {
 
     fn compile_assignment_schedule(
         &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
+        source: &solve::ComputeBlock,
+        owners: &solve::ContinuousRefreshOwners,
+        schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("unused by manifold test".into())
+        super::super::test_kernels::assignment(source, owners, schedule)
     }
 
     fn compile_event_transaction(
@@ -206,7 +206,11 @@ fn runtime(backend: Rc<Backend>) -> SolveRuntime {
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
     derive_test_structural_artifacts(&mut model);
-    SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap()
+    if backend.decline {
+        SolveRuntime::new(&model).unwrap()
+    } else {
+        SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap()
+    }
 }
 
 #[test]
@@ -327,7 +331,11 @@ fn independent_runtime(backend: Rc<Backend>) -> SolveRuntime {
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
     derive_test_structural_artifacts(&mut model);
-    SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap()
+    if backend.decline {
+        SolveRuntime::new(&model).unwrap()
+    } else {
+        SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap()
+    }
 }
 
 #[test]

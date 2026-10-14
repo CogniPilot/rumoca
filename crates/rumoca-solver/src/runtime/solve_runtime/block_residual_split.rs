@@ -304,7 +304,7 @@ impl ScalarExecutionView<'_> {
         let Some(Some(splits)) = self.scalar.block_splits.get(block) else {
             return Ok(());
         };
-        let compiled = self.scalar.compiled_implicit_rhs.is_some();
+        let compiled = self.scalar.compiled_implicit_rhs().is_some();
         if compiled && splits.compiled.is_none() {
             return Ok(());
         }
@@ -519,7 +519,7 @@ impl ScalarExecutionView<'_> {
         (y, p, t): (&[f64], &[f64], f64),
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
-        let Some(compiled) = &self.scalar.compiled_implicit_rhs else {
+        let Some(compiled) = self.scalar.compiled_implicit_rhs() else {
             return Ok(false);
         };
         let split = match self.scalar.active_split.get() {

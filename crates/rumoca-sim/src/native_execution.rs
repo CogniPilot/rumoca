@@ -258,15 +258,13 @@ impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction 
 }
 
 struct CraneliftExecutionBackend {
-    pure_calls: Option<rumoca_exec_cranelift::CompiledPureCallTable>,
+    pure_calls: rumoca_exec_cranelift::CompiledPureCallTable,
     call_cells: std::cell::RefCell<(Vec<u64>, Vec<u64>)>,
 }
 
 impl rumoca_eval_solve::PureCallExecution for CraneliftExecutionBackend {
     fn executes(&self, invocation: rumoca_eval_solve::PureCallInvocation<'_>) -> bool {
-        self.pure_calls
-            .as_ref()
-            .is_some_and(|table| table.executes(invocation))
+        self.pure_calls.executes(invocation)
     }
 
     fn call(
@@ -275,11 +273,7 @@ impl rumoca_eval_solve::PureCallExecution for CraneliftExecutionBackend {
         input: &[f64],
         output: &mut [f64],
     ) -> Result<(), rumoca_eval_solve::EvalSolveError> {
-        let table = self.pure_calls.as_ref().ok_or(
-            rumoca_eval_solve::EvalSolveError::MissingRuntimeState {
-                operation: "native pure-call table",
-            },
-        )?;
+        let table = &self.pure_calls;
         let mut cells = self.call_cells.borrow_mut();
         let (input_cells, output_cells) = &mut *cells;
         table
@@ -290,23 +284,18 @@ impl rumoca_eval_solve::PureCallExecution for CraneliftExecutionBackend {
 
 impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     fn pure_call_execution(&self) -> Option<&dyn rumoca_eval_solve::PureCallExecution> {
-        self.pure_calls
-            .as_ref()
-            .map(|_| self as &dyn rumoca_eval_solve::PureCallExecution)
+        Some(self)
     }
 
     fn compile_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => {
-                rumoca_exec_cranelift::compile_expression_scalar_program_block_with_pure_calls(
-                    block, pure_calls,
-                )
-            }
-            None => rumoca_exec_cranelift::compile_expression_scalar_program_block(block),
-        };
+        let compiled =
+            rumoca_exec_cranelift::compile_expression_scalar_program_block_with_pure_calls(
+                block,
+                &self.pure_calls,
+            );
         compiled
             .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
@@ -318,7 +307,7 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
         rumoca_exec_cranelift::compile_selectable_expression_scalar_program_block(
             block,
-            self.pure_calls.as_ref(),
+            Some(&self.pure_calls),
         )
         .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
         .map_err(|error| error.to_string())
@@ -328,7 +317,7 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         block: &rumoca_ir_solve::ComputeBlock,
     ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveExpression>>, String> {
-        rumoca_exec_cranelift::compile_expression_compute_block(block, self.pure_calls.as_ref())
+        rumoca_exec_cranelift::compile_expression_compute_block(block, Some(&self.pure_calls))
             .map(|compiled| {
                 compiled.map(|compiled| Rc::new(CraneliftComputeExpression(compiled)) as Rc<_>)
             })
@@ -339,7 +328,7 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         block: &rumoca_ir_solve::ComputeBlock,
     ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>>, String> {
-        rumoca_exec_cranelift::compile_jacobian_compute_block(block, self.pure_calls.as_ref())
+        rumoca_exec_cranelift::compile_jacobian_compute_block(block, Some(&self.pure_calls))
             .map(|compiled| {
                 compiled.map(|compiled| Rc::new(CraneliftComputeJacobian(compiled)) as Rc<_>)
             })
@@ -350,14 +339,10 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => {
-                rumoca_exec_cranelift::compile_jacobian_scalar_program_block_with_pure_calls(
-                    block, pure_calls,
-                )
-            }
-            None => rumoca_exec_cranelift::compile_jacobian_scalar_program_block(block),
-        };
+        let compiled = rumoca_exec_cranelift::compile_jacobian_scalar_program_block_with_pure_calls(
+            block,
+            &self.pure_calls,
+        );
         compiled
             .map(|compiled| Rc::new(CraneliftJacobianExpression(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
@@ -369,16 +354,12 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         owners: &rumoca_ir_solve::ContinuousRefreshOwners,
         schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => {
-                rumoca_exec_cranelift::compile_exact_assignment_schedule_with_pure_calls(
-                    source, owners, schedule, pure_calls,
-                )
-            }
-            None => {
-                rumoca_exec_cranelift::compile_exact_assignment_schedule(source, owners, schedule)
-            }
-        };
+        let compiled = rumoca_exec_cranelift::compile_exact_assignment_schedule_with_pure_calls(
+            source,
+            owners,
+            schedule,
+            &self.pure_calls,
+        );
         compiled
             .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
@@ -389,14 +370,11 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         rows: &[Vec<rumoca_ir_solve::LinearOp>],
         target_y_indices: &[usize],
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
-                rows,
-                target_y_indices,
-                pure_calls,
-            ),
-            None => rumoca_exec_cranelift::compile_assignment_schedule(rows, target_y_indices),
-        };
+        let compiled = rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
+            rows,
+            target_y_indices,
+            &self.pure_calls,
+        );
         compiled
             .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
@@ -406,17 +384,19 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         program: &rumoca_ir_solve::EventTransactionProgram,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventTransaction>, String> {
-        self.pure_calls
-            .as_ref()
-            .cloned()
-            .map(|pure_calls| {
-                Rc::new(CraneliftEventTransaction {
-                    pure_calls,
-                    site: program.site().clone(),
-                    cells: std::cell::RefCell::new((Vec::new(), Vec::new())),
-                }) as Rc<_>
-            })
-            .ok_or_else(|| "the typed pure-call table is unavailable".to_string())
+        if !self
+            .pure_calls
+            .executes(rumoca_eval_solve::PureCallInvocation::Primal(
+                program.site(),
+            ))
+        {
+            return Err("required event transaction has no native pure-call helper".into());
+        }
+        Ok(Rc::new(CraneliftEventTransaction {
+            pure_calls: self.pure_calls.clone(),
+            site: program.site().clone(),
+            cells: std::cell::RefCell::new((Vec::new(), Vec::new())),
+        }))
     }
 }
 
@@ -429,10 +409,8 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
 /// - `SimExecutionPolicy::Interpreter` withholds the handle, which is what
 ///   makes the interpreter side of the backend differential oracle selectable
 ///   from the request itself rather than from an ambient process setting;
-/// - a zero-state (pure-discrete) model withholds it too, BEFORE any backend
-///   is built: neither host's zero-state session instantiates an integrator
-///   component, so constructing a backend would pay compilation cost for
-///   compiled code that is discarded unused.
+/// - NativeRequired also prepares pure-discrete models; the legacy Auto
+///   selection retains its recorded zero-state refusal.
 pub(crate) fn execution_receipt(
     opts: &rumoca_solver::SimOptions,
     model: &rumoca_ir_solve::SolveModel,
@@ -448,48 +426,30 @@ pub(crate) fn execution_receipt(
 pub(crate) fn admitted_native_execution_backend(
     opts: &rumoca_solver::SimOptions,
     model: &rumoca_ir_solve::SolveModel,
-) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
+) -> Result<Option<rumoca_solver::fmi_me::MeExecutionBackend>, crate::SimulationDiagnosticError> {
     if !execution_receipt(opts, model).is_compiled() {
-        return None;
+        return Ok(None);
     }
-    Some(rumoca_solver::fmi_me::MeExecutionBackend::new(backend(
-        &model.pure_calls,
+    let prepared = backend(&model.pure_calls).map_err(|message| {
+        crate::SimulationDiagnosticError::RuntimePreparation {
+            message,
+            span: None,
+        }
+    })?;
+    Ok(Some(rumoca_solver::fmi_me::MeExecutionBackend::new(
+        prepared,
     )))
 }
 
 pub(crate) fn backend(
     table: &rumoca_ir_solve::SolvePureCallTable,
-) -> Rc<dyn rumoca_solver::SolveExecutionBackend> {
-    let pure_calls = match rumoca_exec_cranelift::compile_pure_call_table(table) {
-        Ok(compiled) => {
-            for owner in table.owners() {
-                if let Some(rumoca_exec_cranelift::NativeFormSupport::Declined(decline)) = compiled
-                    .owner_support(owner.id())
-                    .map(|support| support.primal())
-                {
-                    tracing::debug!(
-                        target: "rumoca_sim::native_execution",
-                        owner = owner.id().index(),
-                        ?decline,
-                        "typed pure-call owner runs in the interpreter"
-                    );
-                }
-            }
-            Some(compiled)
-        }
-        Err(error) => {
-            tracing::debug!(
-                target: "rumoca_sim::native_execution",
-                %error,
-                "typed pure-call table is unavailable to the native backend"
-            );
-            None
-        }
-    };
-    Rc::new(CraneliftExecutionBackend {
+) -> Result<Rc<dyn rumoca_solver::SolveExecutionBackend>, String> {
+    let pure_calls =
+        rumoca_exec_cranelift::compile_pure_call_table(table).map_err(|error| error.to_string())?;
+    Ok(Rc::new(CraneliftExecutionBackend {
         pure_calls,
         call_cells: Default::default(),
-    })
+    }))
 }
 
 /// How the native backend compiles one compute block for whole-block calls:

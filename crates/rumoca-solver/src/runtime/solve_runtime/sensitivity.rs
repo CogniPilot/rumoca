@@ -639,6 +639,24 @@ impl ScalarExecutionView<'_> {
             seed: Some(seed_buf.as_slice()),
             ..self.row_eval_context()
         };
+        if let Some(compiled) = self.scalar.compiled_derivative_jacobian_v() {
+            return compiled
+                .call(
+                    solver_y,
+                    params,
+                    t,
+                    seed_buf,
+                    self.model.external_tables.as_slice(),
+                    out,
+                )
+                .map_err(|error| {
+                    admitted_compiled_error(
+                        "derivative Jacobian",
+                        self.scalar.derivative_jacobian_v.block().program_spans(),
+                        error,
+                    )
+                });
+        }
         self.scalar
             .derivative_jacobian_v
             .eval_with_context(solver_y, params, t, context, out)

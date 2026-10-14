@@ -53,6 +53,23 @@ impl ScalarExecutionView<'_> {
                     "prepared guarded assignment program {program_index} is out of bounds"
                 ))
             })?;
+        if let Some(lifecycle) = self.scalar.lifecycle() {
+            let compiled = lifecycle.guarded.get(program_index).ok_or_else(|| {
+                RuntimeSolveError::solve_ir("guarded assignment has no prepared source")
+            })?;
+            let mut values =
+                super::zero_runtime_values(prepared.output_count(), "guarded assignment outputs")?;
+            compiled
+                .call(y, p, t, self.model.external_tables.as_slice(), &mut values)
+                .map_err(|error| {
+                    super::admitted_compiled_error("guarded assignment", &[prepared.span()], error)
+                })?;
+            return super::copy_runtime_values_into(
+                out,
+                &values,
+                "guarded assignment output commit",
+            );
+        }
         if let Some(compiled) = self
             .scalar
             .compiled_guarded_assignments

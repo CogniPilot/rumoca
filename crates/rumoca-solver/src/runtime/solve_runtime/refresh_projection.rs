@@ -381,11 +381,12 @@ impl<'a> ProjectionJacobian<'a> {
         match self {
             Self::SolverY { .. } => runtime
                 .scalar
-                .compiled_implicit_projection_jacobian_v
-                .as_deref(),
-            Self::SolverYAndParameters(_) => {
-                runtime.scalar.compiled_implicit_full_jacobian_v.as_deref()
-            }
+                .compiled_implicit_projection_jacobian_v()
+                .map(|code| code.as_ref()),
+            Self::SolverYAndParameters(_) => runtime
+                .scalar
+                .compiled_implicit_full_jacobian_v()
+                .map(|code| code.as_ref()),
         }
     }
 }
@@ -499,7 +500,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs.as_ref() {
+        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs() {
             let map_error = |error| {
                 admitted_compute_error(
                     "refresh implicit residual",
@@ -617,7 +618,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
             return Ok(Some(value));
         }
-        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs
+        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs()
             && let Some(value) = compiled.call_program_output(
                 (program_idx, output_offset),
                 y,
