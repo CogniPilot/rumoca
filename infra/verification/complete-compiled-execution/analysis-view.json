@@ -1,0 +1,26 @@
+{
+  "priorRevision": "07f0079107160c483f9f59ad779852acfbeeabf5",
+  "sourceFiles": {
+    "crates/rumoca-eval-solve/src/lib.rs": "3f259cebfcb1af9f079d1492d4b713ccc275d67709791b4b63996012a73c929a",
+    "crates/rumoca-eval-solve/src/prepared.rs": "edc52bd10db3b30a53c95cc47c4fdb406dac51dedd884814b0be5f685a9b38e4",
+    "crates/rumoca-eval-solve/src/prepared/analysis.rs": "a55d0120b24b7e650f4840984057ed470e10f89757d41f8cb67d6ec8a678db3d"
+  },
+  "command": "cargo test --release -p rumoca-eval-solve --doc ScalarProgramAnalysis under Nix, owned release cache and job/test/Rayon budgets 4",
+  "result": {
+    "acceptedApiDoctestsPassed": 1,
+    "compileFailDoctestsPassed": 2,
+    "exitCode": 0
+  },
+  "log": {
+    "name": "analysis-view-doctests.log",
+    "sha256": "ee8042344b1a86adc47964cdbcca070bf6e7d8da27eeaef0c843705fa392be06"
+  },
+  "provenBoundary": "analysis view has no numeric evaluator, raw whole source getter or Deref to prepared evaluator",
+  "scopeLimits": [
+    "runtime inventory migration incomplete",
+    "preparation derivations still expose target/torn source products",
+    "this is a type/API control, not proof of whole-runtime compiled coverage",
+    "coupled owner pilot archived because remote TangentProgram already provides the stronger boundary"
+  ],
+  "completeSourceClosure": false
+}

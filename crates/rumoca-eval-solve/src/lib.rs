@@ -87,7 +87,7 @@ use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedEvaluationBlock,
-    PreparedScalarProgramBlock, PreparedTargetValuePlan, PreparedTornSweep,
+    PreparedScalarProgramBlock, PreparedTargetValuePlan, PreparedTornSweep, ScalarProgramAnalysis,
     TargetAssignmentOutputRequest, TargetIsolationProgram, TornSweepComposite, TornSweepRun,
     TornSweepStatus, replaced_programs, target_assignment_shape, target_assignment_shapes,
 };
