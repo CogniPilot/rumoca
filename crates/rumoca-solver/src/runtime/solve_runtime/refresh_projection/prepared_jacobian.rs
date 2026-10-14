@@ -186,7 +186,7 @@ impl RefreshProjectionModel<'_> {
         if self
             .runtime
             .scalar
-            .compiled_implicit_projection_jacobian_v
+            .compiled_implicit_projection_jacobian_v()
             .is_some()
         {
             return Ok(None);

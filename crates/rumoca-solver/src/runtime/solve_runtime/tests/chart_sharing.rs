@@ -131,11 +131,11 @@ impl SolveExecutionBackend for RecordingBackend {
 
     fn compile_assignment_schedule(
         &self,
-        _source: &solve::ComputeBlock,
-        _owners: &solve::ContinuousRefreshOwners,
-        _schedule: &solve::ExactRefreshAssignmentSchedule,
+        source: &solve::ComputeBlock,
+        owners: &solve::ContinuousRefreshOwners,
+        schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("the sharing fixture refreshes through the interpreter".into())
+        super::super::test_kernels::assignment(source, owners, schedule)
     }
 
     fn compile_event_transaction(
@@ -334,8 +334,7 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         .scalar_execution()
         .unwrap()
         .scalar
-        .compiled_implicit_rhs
-        .as_ref()
+        .compiled_implicit_rhs()
         .unwrap();
     let (y, mut out) = ([1.0, 2.0, 3.0], Vec::new());
     assert!(
@@ -361,8 +360,7 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         .scalar_execution()
         .unwrap()
         .scalar
-        .compiled_implicit_projection_jacobian_v
-        .as_ref()
+        .compiled_implicit_projection_jacobian_v()
         .unwrap();
     let mut tangent = [0.0; 3];
     jacobian

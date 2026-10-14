@@ -95,20 +95,20 @@ fn selected_projection_jvp_uses_the_compiled_program_in_both_seed_spaces() {
         coordinate: (1, 0),
     });
     for full_seed in [false, true] {
-        runtime
+        *runtime
             .scalar_fixture_mut()
-            .compiled_implicit_projection_jacobian_v = None;
-        runtime
+            .fixture_compiled_implicit_projection_jacobian_v() = None;
+        *runtime
             .scalar_fixture_mut()
-            .compiled_implicit_full_jacobian_v = None;
+            .fixture_compiled_implicit_full_jacobian_v() = None;
         if full_seed {
-            runtime
+            *runtime
                 .scalar_fixture_mut()
-                .compiled_implicit_full_jacobian_v = Some(native.clone());
+                .fixture_compiled_implicit_full_jacobian_v() = Some(native.clone());
         } else {
-            runtime
+            *runtime
                 .scalar_fixture_mut()
-                .compiled_implicit_projection_jacobian_v = Some(native.clone());
+                .fixture_compiled_implicit_projection_jacobian_v() = Some(native.clone());
         }
         let projection = selected_projection(&runtime, full_seed);
         for seed in [[1.0, 2.0], [-3.0, 5.0]] {
@@ -136,9 +136,9 @@ fn selected_native_jvp_failure_is_not_retried_in_the_interpreter() {
         fail: true,
         coordinate: (1, 0),
     });
-    runtime
+    *runtime
         .scalar_fixture_mut()
-        .compiled_implicit_projection_jacobian_v = Some(native.clone());
+        .fixture_compiled_implicit_projection_jacobian_v() = Some(native.clone());
     let error = selected_projection(&runtime, false)
         .eval_implicit_jacobian_v_row(1, &[1.0, 2.0], &[], 0.0, &[1.0, 2.0])
         .expect_err("native execution failure must propagate");
@@ -183,9 +183,9 @@ fn selected_projection_uses_the_jvp_program_mapping_and_aggregate_output_offset(
             fail: false,
             coordinate,
         });
-        runtime
+        *runtime
             .scalar_fixture_mut()
-            .compiled_implicit_projection_jacobian_v = Some(native.clone());
+            .fixture_compiled_implicit_projection_jacobian_v() = Some(native.clone());
         let actual = selected_projection(&runtime, false)
             .eval_implicit_jacobian_v_row(1, &[1.0, 2.0], &[], 0.0, &[1.0, 7.0])
             .unwrap();

@@ -39,7 +39,7 @@ fn quadratic_table() -> solve::SolvePureCallTable {
 #[test]
 fn selected_residual_keeps_the_attached_native_pure_call_owner() {
     let table = quadratic_table();
-    let backend = super::backend(&table);
+    let backend = super::backend(&table).unwrap();
     let block = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
@@ -107,7 +107,7 @@ impl PureCallExecution for CountedExecution<'_> {
 #[test]
 fn projected_target_uses_the_attached_native_call_owner() {
     let table = quadratic_table();
-    let backend = super::backend(&table);
+    let backend = super::backend(&table).unwrap();
     let execution = CountedExecution {
         inner: backend
             .pure_call_execution()
@@ -165,7 +165,7 @@ fn projected_target_uses_the_attached_native_call_owner() {
 #[test]
 fn native_directional_calls_agree_with_reference_for_changed_inputs_and_seeds() {
     let table = quadratic_table();
-    let backend = super::backend(&table);
+    let backend = super::backend(&table).unwrap();
     let execution = CountedExecution {
         inner: backend
             .pure_call_execution()

@@ -30,7 +30,7 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs.as_ref() {
+        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs() {
             let map_error = |error| {
                 admitted_compute_error(
                     "initial implicit residual",
@@ -78,8 +78,7 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         if let Some(compiled) = self
             .runtime
             .scalar
-            .compiled_implicit_projection_jacobian_v
-            .as_ref()
+            .compiled_implicit_projection_jacobian_v()
         {
             let map_error = |error| {
                 admitted_compiled_error(
@@ -240,7 +239,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             Some((settled_y, settled_p)) => (settled_y.as_slice(), settled_p.as_slice()),
             None => (y, p),
         };
-        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual.as_ref() {
+        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual() {
             let map_error = |error| {
                 admitted_compute_error(
                     "initial residual",
@@ -513,12 +512,7 @@ impl InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self
-            .runtime
-            .scalar
-            .compiled_initial_residual_jacobian_v
-            .as_ref()
-        {
+        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual_jacobian_v() {
             let map_error = |error| {
                 admitted_compute_error(
                     "initial residual JVP",

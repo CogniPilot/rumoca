@@ -1829,3 +1829,19 @@ fn an_open_ended_instance_has_no_defined_stop_time() {
     assert!(MeInstanceConfig::open_ended("", 1.0e-6, 0.0).is_err());
     assert!(MeInstanceConfig::open_ended("live", 1.0e-6, f64::NAN).is_err());
 }
+#[test]
+fn required_native_execution_rejects_a_missing_backend_handle() {
+    use crate::{
+        SimExecutionPolicy,
+        fmi_me::{MeExecutionPolicyContradiction, admit_execution_backend},
+    };
+    assert!(matches!(
+        admit_execution_backend(SimExecutionPolicy::NativeRequired, None),
+        Err(MeExecutionPolicyContradiction::MissingBackend { .. })
+    ));
+    assert!(
+        admit_execution_backend(SimExecutionPolicy::Interpreter, None)
+            .unwrap()
+            .is_none()
+    );
+}

@@ -112,6 +112,11 @@ pub enum SimError {
     )]
     ExecutionPolicyContradiction { policy: &'static str },
 
+    #[error(
+        "execution policy '{policy}' requires compiled native execution, but no compiled execution backend is available"
+    )]
+    RequiredExecutionBackendMissing { policy: &'static str },
+
     /// A failure annotated with the stage that raised it.
     ///
     /// The rendered form is exactly the inner failure's, so annotating a path
@@ -245,8 +250,13 @@ impl From<MeError> for SimError {
 
 impl From<rumoca_solver::fmi_me::MeExecutionPolicyContradiction> for SimError {
     fn from(value: rumoca_solver::fmi_me::MeExecutionPolicyContradiction) -> Self {
-        Self::ExecutionPolicyContradiction {
-            policy: value.policy,
+        match value {
+            rumoca_solver::fmi_me::MeExecutionPolicyContradiction::UnexpectedBackend { policy } => {
+                Self::ExecutionPolicyContradiction { policy }
+            }
+            rumoca_solver::fmi_me::MeExecutionPolicyContradiction::MissingBackend { policy } => {
+                Self::RequiredExecutionBackendMissing { policy }
+            }
         }
     }
 }

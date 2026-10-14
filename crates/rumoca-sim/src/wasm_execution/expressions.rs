@@ -6,60 +6,37 @@ use rumoca_exec_wasm::CompiledExpressionRowsWasm;
 use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
 use std::{cell::RefCell, rc::Rc};
 
+#[cfg(test)]
+mod tests;
+
 struct WasmExpression {
     layout: VarLayout,
     source: ScalarProgramBlock,
-    full: Option<CompiledExpressionRowsWasm>,
-    selected: Vec<Option<CompiledExpressionRowsWasm>>,
+    full: CompiledExpressionRowsWasm,
+    selected: Vec<CompiledExpressionRowsWasm>,
     scratch: RefCell<Vec<f64>>,
 }
 
 impl WasmExpression {
-    fn compile(
-        source: &ScalarProgramBlock,
-        layout: &VarLayout,
-        selectable: bool,
-    ) -> Result<Self, String> {
+    fn compile(source: &ScalarProgramBlock, layout: &VarLayout) -> Result<Self, String> {
         let profiles = (0..source.row_count())
-            .map(|program| profile::single_program(source, program, layout).ok())
-            .collect::<Vec<_>>();
-        let complete = profiles.iter().all(Option::is_some);
-        if !selectable && !complete {
-            return Err("WASM ME whole expression has unsupported original programs".into());
-        }
-        let full = if complete {
-            let local = ScalarProgramBlock::with_program_spans(
-                source.programs().to_vec(),
-                source.program_spans().to_vec(),
-            )
+            .map(|program| profile::single_program(source, program, layout))
+            .collect::<Result<Vec<_>, _>>()?;
+        let selected = profiles
+            .iter()
+            .map(|block| {
+                rumoca_exec_wasm::compile_expression_scalar_program_block_wasm(block, layout)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let local = ScalarProgramBlock::with_program_spans(
+            source.programs().to_vec(),
+            source.program_spans().to_vec(),
+        )
+        .map_err(|error| error.to_string())?;
+        let full = rumoca_exec_wasm::compile_expression_scalar_program_block_wasm(&local, layout)
             .map_err(|error| error.to_string())?;
-            Some(
-                rumoca_exec_wasm::compile_expression_scalar_program_block_wasm(&local, layout)
-                    .map_err(|error| error.to_string())?,
-            )
-        } else {
-            None
-        };
-        let selected = if selectable {
-            profiles
-                .iter()
-                .map(|profile| {
-                    profile.as_ref().and_then(|block| {
-                        rumoca_exec_wasm::compile_expression_scalar_program_block_wasm(
-                            block, layout,
-                        )
-                        .ok()
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let admitted = selected.iter().filter(|program| program.is_some()).count();
-        if full.is_none() && admitted == 0 {
-            return Err("WASM ME expression has no admitted original programs".into());
-        }
-        tracing::debug!(target: "rumoca_sim::native_execution", programs=source.row_count(), selected=admitted, whole=full.is_some(), "portable ME scalar admission");
+        tracing::debug!(target: "rumoca_sim::native_execution", programs=source.row_count(), "portable ME scalar preparation complete");
         Ok(Self {
             layout: layout.clone(),
             source: source.clone(),
@@ -76,19 +53,18 @@ impl WasmExpression {
         p: &[f64],
         t: f64,
         tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, rumoca_solver::RuntimeSolveError> {
-        let Some(compiled) = self.selected.get(program).and_then(Option::as_ref) else {
-            return Ok(None);
-        };
-        if !tables.is_empty() {
-            return Ok(None);
-        }
+    ) -> Result<f64, rumoca_solver::RuntimeSolveError> {
+        let compiled = self.selected.get(program).ok_or_else(|| {
+            rumoca_solver::RuntimeSolveError::solve_ir(format!(
+                "WASM ME source program {program} is outside the prepared expression"
+            ))
+        })?;
         profile::validate_inputs(&self.layout, y.len(), p.len(), tables.len())?;
         let mut value = [0.0];
         compiled
             .call(y, p, t, &mut value)
             .map_err(rumoca_solver::runtime::native_wasm_error::execution_error)?;
-        Ok(Some(value[0]))
+        Ok(value[0])
     }
 }
 
@@ -102,9 +78,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
     ) -> Result<bool, rumoca_solver::RuntimeSolveError> {
-        let Some(value) = self.selected_value(program, y, p, t, tables)? else {
-            return Ok(false);
-        };
+        let value = self.selected_value(program, y, p, t, tables)?;
         out.try_reserve(1_usize.saturating_sub(out.len()))
             .map_err(|error| error.to_string())?;
         out.clear();
@@ -121,9 +95,9 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         tables: &[rumoca_core::ExternalTableData],
     ) -> Result<Option<f64>, rumoca_solver::RuntimeSolveError> {
         if coordinate.1 != 0 {
-            return Ok(None);
+            return Err("WASM ME scalar source output offset must be zero".into());
         }
-        self.selected_value(coordinate.0, y, p, t, tables)
+        self.selected_value(coordinate.0, y, p, t, tables).map(Some)
     }
 
     fn call(
@@ -134,16 +108,12 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), rumoca_solver::RuntimeSolveError> {
-        let compiled = self
-            .full
-            .as_ref()
-            .ok_or("WASM ME whole expression is unsupported")?;
         profile::validate_inputs(&self.layout, y.len(), p.len(), tables.len())?;
         if out.len() != self.source.output_count() {
             return Err("WASM ME output length differs from the original block".into());
         }
         let mut scratch = self.scratch.borrow_mut();
-        compiled
+        self.full
             .call(y, p, t, &mut scratch)
             .map_err(rumoca_solver::runtime::native_wasm_error::execution_error)?;
         out.fill(0.0);
@@ -173,21 +143,14 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         &self,
         block: &ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
-        WasmExpression::compile(block, &self.layout, false)
-            .map(|compiled| Rc::new(compiled) as Rc<_>)
-    }
-    fn compile_selectable_expression(
-        &self,
-        block: &ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
-        WasmExpression::compile(block, &self.layout, true)
-            .map(|compiled| Rc::new(compiled) as Rc<_>)
+        WasmExpression::compile(block, &self.layout).map(|compiled| Rc::new(compiled) as Rc<_>)
     }
     fn compile_jacobian_expression(
         &self,
-        _: &ScalarProgramBlock,
+        block: &ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
-        Err("WASM ME directional execution is not admitted".into())
+        super::jacobians::WasmJacobian::compile(block, &self.layout)
+            .map(|code| Rc::new(code) as Rc<_>)
     }
     fn compile_assignment_schedule(
         &self,
@@ -220,14 +183,14 @@ pub(crate) fn execution_receipt(
 pub(crate) fn admitted_native_execution_backend(
     opts: &rumoca_solver::SimOptions,
     model: &rumoca_ir_solve::SolveModel,
-) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
+) -> Result<Option<rumoca_solver::fmi_me::MeExecutionBackend>, crate::SimulationDiagnosticError> {
     if !execution_receipt(opts, model).is_compiled() {
-        return None;
+        return Ok(None);
     }
-    Some(rumoca_solver::fmi_me::MeExecutionBackend::new(Rc::new(
-        WasmExecutionBackend {
+    Ok(Some(rumoca_solver::fmi_me::MeExecutionBackend::new(
+        Rc::new(WasmExecutionBackend {
             layout: model.problem.layout.clone(),
             calls: model.pure_calls.clone(),
-        },
+        }),
     )))
 }

@@ -21,22 +21,20 @@ impl PreparedManifoldProjection {
         let compiled = backend.filter(|_| !residual.is_empty());
         let compiled_residual = compiled
             .map(|backend| {
-                Ok::<_, EvalSolveError>(optional_compiled(
+                required_compiled(
                     "manifold_residual",
                     backend.compile_expression(&to_scalar_program_block(residual)?),
-                ))
+                )
             })
-            .transpose()?
-            .flatten();
+            .transpose()?;
         let compiled_directional = compiled
             .map(|backend| {
-                Ok::<_, EvalSolveError>(optional_compiled(
+                required_compiled(
                     "manifold_jacobian_v",
                     backend.compile_jacobian_expression(&to_scalar_program_block(directional)?),
-                ))
+                )
             })
-            .transpose()?
-            .flatten();
+            .transpose()?;
         Ok(Self {
             residual: PreparedComputeBlock::new_with_label(residual, "runtime_manifold_residual")?,
             directional: PreparedComputeBlock::new_with_label(

@@ -196,8 +196,10 @@ pub fn simulate_fmi_component(
     component: rumoca_ir_solve::fmi::FmiComponent,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    let execution_backend =
-        native_execution::admitted_native_execution_backend(opts, component.runtime_view().model());
+    let execution_backend = native_execution::admitted_native_execution_backend(
+        opts,
+        component.runtime_view().model(),
+    )?;
     let receipt = native_execution::execution_receipt(opts, component.runtime_view().model());
     let artifact =
         rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);

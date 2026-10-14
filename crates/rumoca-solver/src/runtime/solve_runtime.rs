@@ -51,8 +51,14 @@ pub use block_residual_split::{
 };
 mod chart_sharing;
 mod compiled_expressions;
+mod compiled_inventory;
+mod compiled_lifecycle;
+#[cfg(test)]
+pub(crate) mod test_kernels;
 use chart_sharing::BlockReuse;
 pub use compiled_expressions::{CompiledSolveExpression, CompiledSolveJacobianExpression};
+use compiled_inventory::{CompiledExpressions, PreparedExpressions, require_prepared};
+use compiled_lifecycle::CompiledLifecycle;
 mod coupled_event;
 mod discrete_rows;
 mod event_transactions;
@@ -113,9 +119,10 @@ use support::{
     admitted_compiled_error, admitted_compute_error, admitted_output_call,
     build_visible_name_index, compiled_compute_expression, compiled_compute_jacobian,
     compiled_expression, compiled_jacobian, copy_runtime_values, copy_runtime_values_into,
-    fill_inactive_root_output, optional_compiled, reserve_runtime_index_map_capacity,
-    reserve_runtime_vec_capacity, resize_runtime_values, validate_finite_runtime_output,
-    validate_runtime_output_len, visible_value_index_error, zero_runtime_values,
+    fill_inactive_root_output, optional_compiled, required_compiled,
+    reserve_runtime_index_map_capacity, reserve_runtime_vec_capacity, resize_runtime_values,
+    validate_finite_runtime_output, validate_runtime_output_len, visible_value_index_error,
+    zero_runtime_values,
 };
 use tangent_evaluators::{colored_tangent_evaluators, torn_tangent_evaluators};
 
@@ -242,14 +249,9 @@ struct ScalarExecutionInventory {
     initial_residual: PreparedComputeBlock,
     initial_residual_jacobian_v: PreparedComputeBlock,
     initial_scalar_residual: PreparedScalarProgramBlock,
-    compiled_implicit_rhs: Option<Rc<dyn CompiledSolveExpression>>,
-    compiled_implicit_projection_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
+    expressions: PreparedExpressions,
     compiled_algebraic_jacobians: Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>,
-    compiled_implicit_full_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    compiled_initial_residual: Option<Rc<dyn CompiledSolveExpression>>,
-    compiled_initial_residual_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     derivative_rhs: PreparedComputeBlock,
-    compiled_derivative_rhs: Option<Rc<dyn CompiledSolveExpression>>,
     /// Forward-mode AD Jacobian-vector product of `derivative_rhs`
     /// (`d(der)/d(y)·v`), lowered to `LinearOp`s with `LoadSeed`. Applied — with a
     /// seed completed by `seed_refresh_derivative_dependencies` — to form
@@ -288,7 +290,6 @@ struct ScalarExecutionInventory {
     /// checked once when the runtime is built.
     observation_authority: solve_eval::EventObservationAuthority,
     root_condition_rows: PreparedScalarProgramBlock,
-    compiled_root_conditions: Option<Rc<dyn CompiledSolveExpression>>,
     event_action_conditions: PreparedScalarProgramBlock,
     event_action_active_row_indices: RefCell<Vec<usize>>,
     root_condition_plan: Option<RootConditionPlan>,
@@ -342,7 +343,6 @@ struct ScalarExecutionInventory {
     clock_partition_intermediate_scratch: RefCell<Vec<f64>>,
     compiled_guarded_assignments: RefCell<FxHashMap<usize, Rc<dyn CompiledSolveExpression>>>,
     failed_guarded_assignments: RefCell<BTreeSet<usize>>,
-    compiled_event_transactions: Vec<Option<Rc<dyn CompiledSolveEventTransaction>>>,
     event_transaction_input_scratch: RefCell<Vec<f64>>,
     event_transaction_output_scratch: RefCell<Vec<Vec<f64>>>,
     compiled_root_rows: RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
@@ -502,14 +502,20 @@ impl SolveRuntime {
             &implicit_scalar_programs,
         );
         let compiled_implicit_rhs = implicit_reuse.expression(
-            primary.and_then(|primary| primary.scalar.compiled_implicit_rhs.as_ref()),
+            primary.and_then(|primary| primary.scalar.compiled_implicit_rhs()),
             &implicit_scalar_programs,
             &mut |block| {
-                execution_backend.as_ref().and_then(|backend| {
-                    optional_compiled("implicit_rhs", backend.compile_selectable_expression(block))
-                })
+                execution_backend
+                    .as_ref()
+                    .map(|backend| {
+                        required_compiled(
+                            "implicit_rhs",
+                            backend.compile_selectable_expression(block),
+                        )
+                    })
+                    .transpose()
             },
-        );
+        )?;
         let implicit_projection_scalar_jacobian = refresh_projection::projection_jacobian_source(
             &model.artifacts.continuous.implicit_jacobian_v,
             &continuous_structural,
@@ -519,12 +525,7 @@ impl SolveRuntime {
             &implicit_projection_scalar_jacobian,
         );
         let compiled_implicit_projection_jacobian_v = projection_reuse.jacobian(
-            primary.and_then(|primary| {
-                primary
-                    .scalar
-                    .compiled_implicit_projection_jacobian_v
-                    .as_ref()
-            }),
+            primary.and_then(|primary| primary.scalar.compiled_implicit_projection_jacobian_v()),
             &implicit_projection_scalar_jacobian,
             &mut |block| {
                 compiled_jacobian(
@@ -533,7 +534,7 @@ impl SolveRuntime {
                     block,
                 )
             },
-        );
+        )?;
         let implicit_full_jacobian_v = model
             .artifacts
             .continuous
@@ -544,7 +545,7 @@ impl SolveRuntime {
             &implicit_full_jacobian_v,
         );
         let compiled_implicit_full_jacobian_v = full_reuse.jacobian(
-            primary.and_then(|primary| primary.scalar.compiled_implicit_full_jacobian_v.as_ref()),
+            primary.and_then(|primary| primary.scalar.compiled_implicit_full_jacobian_v()),
             &implicit_full_jacobian_v,
             &mut |block| {
                 compiled_jacobian(
@@ -553,7 +554,7 @@ impl SolveRuntime {
                     block,
                 )
             },
-        );
+        )?;
         let replaced_rows = implicit_reuse
             .replaced_outputs(&implicit_scalar_programs)
             .into_iter()
@@ -604,20 +605,23 @@ impl SolveRuntime {
         let compiled_event_transactions = event_transaction_programs
             .iter()
             .map(|prepared| {
-                execution_backend.as_ref().and_then(|backend| {
-                    optional_compiled(
-                        "event_transaction",
-                        backend.compile_event_transaction(prepared.program()),
-                    )
-                })
+                execution_backend
+                    .as_ref()
+                    .map(|backend| {
+                        required_compiled(
+                            "event_transaction",
+                            backend.compile_event_transaction(prepared.program()),
+                        )
+                    })
+                    .transpose()
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let compiled_derivative_rhs = BlockReuse::of_programs(
             primary.map(|primary| primary.scalar.derivative_scalar.block()),
             &derivative_scalar_rhs,
         )
         .expression_with_fresh(
-            primary.and_then(|primary| primary.scalar.compiled_derivative_rhs.as_ref()),
+            primary.and_then(|primary| primary.scalar.compiled_derivative_rhs()),
             &derivative_scalar_rhs,
             &mut || {
                 compiled_compute_expression(
@@ -628,7 +632,7 @@ impl SolveRuntime {
                 )
             },
             &mut |block| compiled_expression(execution_backend.as_ref(), "derivative_rhs", block),
-        );
+        )?;
         let refresh_owners = &model.problem.continuous.refresh_owners;
         let algebraic_refresh = refresh_owners.algebraic().clone();
         let derivative_refresh = refresh_owners.derivative().clone();
@@ -727,16 +731,16 @@ impl SolveRuntime {
             &model.problem.events.root_conditions,
         )
         .expression(
-            primary.and_then(|primary| primary.scalar.compiled_root_conditions.as_ref()),
+            primary.and_then(|primary| primary.scalar.compiled_root_conditions()),
             &model.problem.events.root_conditions,
             &mut |block| compiled_expression(execution_backend.as_ref(), "root_conditions", block),
-        );
+        )?;
         let compiled_initial_residual = BlockReuse::of(
             primary.map(|primary| &primary.scalar.initial_scalar_residual),
             &initial_scalar_residual,
         )
         .expression_with_fresh(
-            primary.and_then(|primary| primary.scalar.compiled_initial_residual.as_ref()),
+            primary.and_then(|primary| primary.scalar.compiled_initial_residual()),
             &initial_scalar_residual,
             &mut || {
                 compiled_compute_expression(
@@ -747,7 +751,7 @@ impl SolveRuntime {
                 )
             },
             &mut |block| compiled_expression(execution_backend.as_ref(), "initial_residual", block),
-        );
+        )?;
         let initial_scalar_jacobian =
             to_scalar_program_block(&model.artifacts.initialization.residual_jacobian_v)?;
         let primary_initial_jacobian = primary
@@ -758,9 +762,8 @@ impl SolveRuntime {
         let compiled_initial_residual_jacobian_v =
             BlockReuse::of_programs(primary_initial_jacobian.as_ref(), &initial_scalar_jacobian)
                 .jacobian_with_fresh(
-                    primary.and_then(|primary| {
-                        primary.scalar.compiled_initial_residual_jacobian_v.as_ref()
-                    }),
+                    primary
+                        .and_then(|primary| primary.scalar.compiled_initial_residual_jacobian_v()),
                     &initial_scalar_jacobian,
                     &mut || {
                         compiled_compute_jacobian(
@@ -777,7 +780,7 @@ impl SolveRuntime {
                             block,
                         )
                     },
-                );
+                )?;
         let delay_runtime = DelayRuntime::new(&model.problem.events.delays)?;
         let root_condition_count =
             total_root_condition_count(model, delay_runtime.event_root_count())?;
@@ -813,7 +816,56 @@ impl SolveRuntime {
                 model,
                 execution_backend.as_deref(),
             )?;
+        let compiled_derivative_jacobian_v = BlockReuse::of_programs(
+            primary.map(|primary| primary.scalar.derivative_jacobian_v.block()),
+            &model.artifacts.continuous.full_jacobian_v,
+        )
+        .jacobian(
+            primary.and_then(|primary| primary.scalar.compiled_derivative_jacobian_v()),
+            &model.artifacts.continuous.full_jacobian_v,
+            &mut |block| {
+                compiled_jacobian(execution_backend.as_ref(), "derivative_jacobian_v", block)
+            },
+        )?;
+        let has_compiled_projection = compiled_implicit_projection_jacobian_v.is_some();
+        let expressions = match &execution_backend {
+            None => PreparedExpressions::Reference,
+            Some(backend) => PreparedExpressions::Compiled(Box::new(CompiledExpressions {
+                event_transactions: compiled_event_transactions
+                    .into_iter()
+                    .map(|entry| require_prepared("event_transaction", entry))
+                    .collect::<Result<Box<[_]>, _>>()?,
+                lifecycle: CompiledLifecycle::new(
+                    model,
+                    &visible_rows,
+                    structured_discrete_rows.rhs.block(),
+                    &guarded_assignment_programs,
+                    backend.as_ref(),
+                )?,
+                implicit_rhs: require_prepared("implicit_rhs", compiled_implicit_rhs)?,
+                implicit_projection_jacobian_v: require_prepared(
+                    "implicit_projection_jacobian_v",
+                    compiled_implicit_projection_jacobian_v,
+                )?,
+                implicit_full_jacobian_v: require_prepared(
+                    "implicit_full_jacobian_v",
+                    compiled_implicit_full_jacobian_v,
+                )?,
+                initial_residual: require_prepared("initial_residual", compiled_initial_residual)?,
+                initial_residual_jacobian_v: require_prepared(
+                    "initial_residual_jacobian_v",
+                    compiled_initial_residual_jacobian_v,
+                )?,
+                derivative_rhs: require_prepared("derivative_rhs", compiled_derivative_rhs)?,
+                derivative_jacobian_v: require_prepared(
+                    "derivative_jacobian_v",
+                    compiled_derivative_jacobian_v,
+                )?,
+                root_conditions: require_prepared("root_conditions", compiled_root_conditions)?,
+            })),
+        };
         let mut scalar = ScalarExecutionInventory {
+            expressions,
             observation_authority: solve_eval::EventObservationAuthority::default(),
             implicit_rhs: prepare_compute(
                 |primary| &primary.implicit_rhs,
@@ -828,11 +880,11 @@ impl SolveRuntime {
             torn_tangents: torn_tangent_evaluators(
                 &model.problem.continuous.algebraic_projection_plan,
                 &implicit_projection_scalar_jacobian,
-                compiled_implicit_projection_jacobian_v.is_some(),
+                has_compiled_projection,
             ),
             // A backend-compiled JVP evaluates the colors natively, so the
             // colored lanes are built only for the interpreted runtime.
-            colored_tangents: if compiled_implicit_projection_jacobian_v.is_some() {
+            colored_tangents: if has_compiled_projection {
                 Rc::from(Vec::new())
             } else {
                 colored_tangent_evaluators(
@@ -863,17 +915,11 @@ impl SolveRuntime {
                 |primary| &primary.initial_scalar_residual,
                 initial_scalar_residual,
             )?,
-            compiled_implicit_rhs,
-            compiled_implicit_projection_jacobian_v,
             compiled_algebraic_jacobians,
-            compiled_implicit_full_jacobian_v,
-            compiled_initial_residual,
-            compiled_initial_residual_jacobian_v,
             derivative_rhs: PreparedComputeBlock::new_with_label(
                 &model.problem.continuous.derivative_rhs,
                 "runtime_derivative_rhs",
             )?,
-            compiled_derivative_rhs,
             derivative_jacobian_v: prepare_evaluation(
                 |primary| &primary.derivative_jacobian_v,
                 model.artifacts.continuous.full_jacobian_v.clone(),
@@ -904,7 +950,6 @@ impl SolveRuntime {
                 |primary| &primary.root_condition_rows,
                 model.problem.events.root_conditions.clone(),
             )?,
-            compiled_root_conditions,
             event_action_conditions: prepare(
                 |primary| &primary.event_action_conditions,
                 model.problem.events.action_conditions.clone(),
@@ -961,7 +1006,6 @@ impl SolveRuntime {
             clock_partition_intermediate_scratch: RefCell::new(Vec::new()),
             compiled_guarded_assignments: RefCell::new(FxHashMap::default()),
             failed_guarded_assignments: RefCell::new(BTreeSet::new()),
-            compiled_event_transactions,
             event_transaction_input_scratch: RefCell::new(Vec::new()),
             event_transaction_output_scratch: RefCell::new(event_transaction_output_scratch),
             compiled_root_rows: RefCell::new(FxHashMap::default()),
@@ -1106,6 +1150,15 @@ impl ScalarExecutionView<'_> {
         t: f64,
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
+        if self.eval_lifecycle_program_outputs(
+            &self.scalar.discrete_rhs,
+            program,
+            RowEvalPoint { y, p, t },
+            out,
+        )? {
+            self.report_nonfinite_discrete_program_outputs(program, t, out);
+            return Ok(());
+        }
         let mut compiled_rows = self.scalar.compiled_discrete_rows.borrow_mut();
         let had_compiled = compiled_rows.contains_key(&program);
         let used_compiled = match compiled_rows.get_mut(&program) {
@@ -1335,8 +1388,8 @@ impl ScalarExecutionView<'_> {
         let tables = self.model.external_tables.as_slice();
         let compiled = self
             .scalar
-            .compiled_implicit_projection_jacobian_v
-            .as_deref();
+            .compiled_implicit_projection_jacobian_v()
+            .map(|code| code.as_ref());
         let mut call = |program: usize, seed: &[f64], out: &mut Vec<f64>| {
             compiled.is_some_and(|compiled| {
                 compiled
@@ -1680,7 +1733,7 @@ impl ScalarExecutionView<'_> {
         if let Some(plan) = &self.scalar.root_condition_plan {
             return self.write_planned_root_conditions(plan, y, p, t, out);
         }
-        if let Some(compiled) = &self.scalar.compiled_root_conditions {
+        if let Some(compiled) = self.scalar.compiled_root_conditions() {
             compiled.call(y, p, t, self.model.external_tables.as_slice(), out)?;
             return validate_finite_runtime_output("root condition output", out);
         }
