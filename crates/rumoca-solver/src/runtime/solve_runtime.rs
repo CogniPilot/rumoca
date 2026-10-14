@@ -1096,12 +1096,14 @@ impl SolveRuntime {
                 scalar.event_action_conditions.block(),
             ],
         )?;
-        Ok(Self::with_inventory(
+        let runtime = Self::with_inventory(
             model_owner,
             RuntimeExecutionInventory::Scalar(Box::new(scalar)),
             delay_runtime,
             root_condition_count,
-        ))
+        );
+        runtime.scalar_evaluation()?.prepare_torn_sweeps();
+        Ok(runtime)
     }
 
     /// Classify each periodic clock once per exact event instant.
