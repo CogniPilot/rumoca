@@ -92,7 +92,7 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_event_observation(
         &self,
         program: solve::RetainedEventProgram,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn crate::CompiledSolveEventObservation>, String> {
         self.log.observe(
             "event_observation",
             self.inner.compile_event_observation(program),

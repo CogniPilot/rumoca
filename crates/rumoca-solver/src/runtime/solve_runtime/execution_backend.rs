@@ -44,6 +44,53 @@ pub trait CompiledSolveTargetValues {
     ) -> Result<f64, crate::RuntimeSolveError>;
 }
 
+/// Compiled numeric results and private source-bound event observations.
+/// Both concrete engines must implement message access; ordinary expressions
+/// cannot substitute a predicate-only implementation of this product.
+/// ```
+/// use rumoca_solver::{CompiledSolveExpression, CompiledSolveEventObservation, RuntimeSolveError};
+/// use std::rc::Rc;
+/// let _keep_numeric: fn(Rc<dyn CompiledSolveExpression>) -> Rc<dyn CompiledSolveExpression> = |code| code;
+/// struct NoFailedRecords;
+/// impl CompiledSolveEventObservation for NoFailedRecords {
+///     fn call(&self, _: &[f64], _: &[f64], _: f64,
+///         _: &[rumoca_core::ExternalTableData], _: &mut [f64])
+///         -> Result<(), RuntimeSolveError> { Ok(()) }
+///     fn observed_message(&self, _: &rumoca_ir_solve::SolveEventAction) -> Option<String> { None }
+/// }
+/// let _observed: Rc<dyn CompiledSolveEventObservation> = Rc::new(NoFailedRecords);
+/// ```
+///
+/// ```compile_fail
+/// use rumoca_solver::{CompiledSolveExpression, CompiledSolveEventObservation};
+/// use std::rc::Rc;
+/// fn substitute_numeric(code: Rc<dyn CompiledSolveExpression>)
+///     -> Rc<dyn CompiledSolveEventObservation> { code }
+/// ```
+///
+/// ```compile_fail
+/// use rumoca_solver::{CompiledSolveEventObservation, RuntimeSolveError};
+/// struct PredicateOnly;
+/// impl CompiledSolveEventObservation for PredicateOnly {
+///     fn call(&self, _: &[f64], _: &[f64], _: f64,
+///         _: &[rumoca_core::ExternalTableData], _: &mut [f64])
+///         -> Result<(), RuntimeSolveError> { Ok(()) }
+/// }
+/// ```
+pub trait CompiledSolveEventObservation {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), crate::RuntimeSolveError>;
+
+    /// None means this successful invocation produced no matching failed record.
+    fn observed_message(&self, action: &solve::SolveEventAction) -> Option<String>;
+}
+
 pub trait SolveExecutionBackend {
     /// Admit the complete model execution context before preparation or calls.
     /// A rejection is fatal; it must never become an interpreted fallback.
@@ -66,7 +113,7 @@ pub trait SolveExecutionBackend {
     fn compile_event_observation(
         &self,
         _program: solve::RetainedEventProgram,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveEventObservation>, String> {
         Err("checked event observations are not compiled by this backend".into())
     }
 

@@ -13,9 +13,35 @@ pub(super) struct CompiledPrograms {
 
 #[derive(Clone)]
 struct CompiledProgram {
-    expression: Rc<dyn CompiledSolveExpression>,
+    expression: ProgramExecution,
     output_count: usize,
     span: rumoca_core::Span,
+}
+
+#[derive(Clone)]
+enum ProgramExecution {
+    Numeric(Rc<dyn CompiledSolveExpression>),
+    Observed(Rc<dyn CompiledSolveEventObservation>),
+}
+
+impl ProgramExecution {
+    fn call(
+        &self,
+        point: RowEvalPoint<'_>,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        match self {
+            Self::Numeric(code) => code.call(point.y, point.p, point.t, tables, out),
+            Self::Observed(code) => code.call(point.y, point.p, point.t, tables, out),
+        }
+    }
+    fn observed_message(&self, action: &solve::SolveEventAction) -> Option<String> {
+        match self {
+            Self::Numeric(_) => None,
+            Self::Observed(code) => code.observed_message(action),
+        }
+    }
 }
 
 impl CompiledPrograms {
@@ -75,7 +101,7 @@ impl CompiledPrograms {
             })?
         };
         Ok(CompiledProgram {
-            expression,
+            expression: ProgramExecution::Numeric(expression),
             output_count: solve::ScalarProgramBlock::program_output_count(ops),
             span,
         })
@@ -114,9 +140,13 @@ impl CompiledPrograms {
             })?;
             let output_count = compiled_block.output_count();
             let expression = if program.has_observations() {
-                backend.compile_event_observation(program)
+                backend
+                    .compile_event_observation(program)
+                    .map(ProgramExecution::Observed)
             } else {
-                backend.compile_expression(&compiled_block)
+                backend
+                    .compile_expression(&compiled_block)
+                    .map(ProgramExecution::Numeric)
             }
             .map_err(|message| EvalSolveError::CompiledExecution {
                 message: format!(
@@ -162,7 +192,7 @@ impl CompiledPrograms {
             "compiled lifecycle outputs",
         )?;
         code.expression
-            .call(point.y, point.p, point.t, tables, &mut values)
+            .call(point, tables, &mut values)
             .map_err(|error| admitted_compiled_error("lifecycle program", &[code.span], error))?;
         copy_runtime_values_into(out, &values, "compiled lifecycle output commit")
     }

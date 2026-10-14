@@ -1,5 +1,6 @@
 mod authored_models;
 mod observations;
+mod outer_scalar_fold;
 mod tuples;
 use super::*;
 use rumoca_core::{SourceId, Span};

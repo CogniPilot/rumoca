@@ -42,7 +42,7 @@ fn pure_call_execution_error(
 
 struct CraneliftObservedExpression(rumoca_exec_cranelift::CompiledEventObservation);
 
-impl rumoca_solver::CompiledSolveExpression for CraneliftObservedExpression {
+impl rumoca_solver::CompiledSolveEventObservation for CraneliftObservedExpression {
     fn observed_message(&self, action: &rumoca_ir_solve::SolveEventAction) -> Option<String> {
         self.0.message_for_action(action)
     }
@@ -383,7 +383,7 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     fn compile_event_observation(
         &self,
         program: rumoca_ir_solve::RetainedEventProgram,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventObservation>, String> {
         rumoca_exec_cranelift::compile_event_observation(program, &self.pure_calls)
             .map(|compiled| Rc::new(CraneliftObservedExpression(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())

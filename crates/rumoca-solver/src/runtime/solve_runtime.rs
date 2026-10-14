@@ -3,7 +3,7 @@
 mod execution_backend;
 
 pub use execution_backend::{
-    CompiledSolveAssignmentSchedule, CompiledSolveEventTransaction,
+    CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
     CompiledSolveProjectionJacobian, CompiledSolveTargetValues, SolveExecutionBackend,
 };
 use indexmap::IndexMap;
