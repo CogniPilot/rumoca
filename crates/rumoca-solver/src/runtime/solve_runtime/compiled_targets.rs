@@ -139,7 +139,8 @@ impl TargetBinding {
     fn matches(&self, plan: &solve_eval::PreparedTargetValuePlan) -> bool {
         self.selected == plan.private_result_offset()
             && self.family.row() == plan.row()
-            && self.family.program().programs() == plan.program().programs()
+            && solve_eval::replaced_programs(self.family.program(), plan.program())
+                .is_some_and(|replaced| replaced.is_empty())
             && self.family.program().program_spans() == plan.program().program_spans()
             && self.family.program().output_indices() == plan.program().output_indices()
             && self.family.coefficient_outputs() == plan.coefficient_outputs()

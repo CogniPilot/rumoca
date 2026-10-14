@@ -486,3 +486,67 @@ fn assert_alternate_target_queries_share_unchanged_families(
     );
     assert_eq!(replacement.calls.get(), 1);
 }
+#[test]
+fn a_signed_zero_change_replaces_its_exact_target_family() {
+    let source = |value| {
+        PreparedScalarProgramBlock::new(spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::Const { dst: 1, value },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            "signed_zero_target.mo",
+        ))
+        .unwrap()
+    };
+    let backend = RecordingBackend::default();
+    let base_source = source(0.0);
+    let target_source = source(-0.0);
+    let base = super::super::compiled_targets::TargetQueries::prepare(
+        &base_source,
+        [(0, 0)],
+        &backend,
+        RowEvalContext::default(),
+    )
+    .unwrap();
+    backend.targets.borrow_mut().clear();
+    let target = super::super::compiled_targets::TargetQueries::prepare_with_primary(
+        &target_source,
+        [(0, 0)],
+        &backend,
+        RowEvalContext::default(),
+        Some(&base),
+    )
+    .unwrap();
+    let expected = target_source
+        .eval_target_assignment_output_unchecked_with_context(
+            solve_eval::TargetAssignmentOutputRequest {
+                row_idx: 0,
+                output_offset: 0,
+                target_y_index: 0,
+                y: &[1.0],
+                p: &[],
+                t: 0.0,
+                context: RowEvalContext::default(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(expected.to_bits(), (-0.0f64).to_bits());
+    let value = target
+        .call((0, 0, 0), (&[1.0], &[], 0.0), RowEvalContext::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        value.to_bits(),
+        expected.to_bits(),
+        "a signed-zero source replacement cannot reuse the old family"
+    );
+    assert_eq!(backend.targets.borrow().len(), 1);
+}

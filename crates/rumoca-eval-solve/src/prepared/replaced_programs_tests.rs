@@ -113,3 +113,46 @@ fn a_replacement_must_name_exactly_the_differing_programs_of_one_layout() {
     let same = block(vec![difference(0, 0), difference(1, 1)]);
     assert_eq!(replaced_programs(base.block(), &same), Some(Vec::new()));
 }
+#[test]
+fn nested_conditional_signed_zero_is_a_replacement_in_a_compute_block() {
+    let row = |value| {
+        let value_ops = |value| {
+            vec![
+                LinearOp::Const { dst: 0, value },
+                LinearOp::StoreOutput { src: 0 },
+            ]
+        };
+        let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
+            0,
+            vec![1],
+            [(value_ops(1.0), value_ops(value))],
+            value_ops(0.0),
+        )
+        .unwrap();
+        vec![
+            LinearOp::FunctionConditional {
+                dst_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(conditional),
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]
+    };
+    let base = block(vec![row(0.0)]);
+    let target = block(vec![row(-0.0)]);
+    assert_eq!(replaced_programs(&base, &target), Some(vec![0]));
+    let base = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(base);
+    let target = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(target);
+    let prepared = PreparedComputeBlock::new_with_label(&base, "signed-zero base").unwrap();
+    let shared =
+        PreparedComputeBlock::with_shared_programs(&prepared, &target, "signed-zero alternate")
+            .unwrap();
+    let fresh = PreparedComputeBlock::new_with_label(&target, "signed-zero fresh").unwrap();
+    for program in [&shared, &fresh] {
+        let mut out = [1.0];
+        program
+            .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut out)
+            .unwrap();
+        assert_eq!(out[0].to_bits(), (-0.0f64).to_bits());
+    }
+}
