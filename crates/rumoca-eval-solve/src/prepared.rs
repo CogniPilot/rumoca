@@ -5,7 +5,6 @@
 #[cfg(test)]
 mod additive_assignment_tests;
 mod affine_eval;
-mod analysis;
 mod assignment_shape;
 #[cfg(test)]
 mod assignment_shape_tests;
@@ -58,7 +57,6 @@ use crate::{
     validate_input_requirements, validate_input_requirements_with_span, validate_output_len,
 };
 use affine_eval::*;
-pub use analysis::ScalarProgramAnalysis;
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
 use assignment_shape::eval_assignment_shape;
