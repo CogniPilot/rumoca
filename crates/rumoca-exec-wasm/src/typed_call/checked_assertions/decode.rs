@@ -2,7 +2,11 @@
 use super::*;
 use crate::typed_call::{TypedCallFaultKind, observations::ObservationSource};
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(any(
+    test,
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(feature = "host-engine", not(target_arch = "wasm32"))
+))]
 impl<'model> CompiledCheckedAssertionWasm<'model> {
     pub(super) fn decode_execution<'proof>(
         &'proof self,

@@ -22,6 +22,8 @@ mod scalars;
 mod tensor;
 mod views;
 
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+pub use checked_assertions::PreparedCheckedAssertionHost;
 pub use runtime::PreparedTypedCallWasm;
 
 pub use checked_assertions::{

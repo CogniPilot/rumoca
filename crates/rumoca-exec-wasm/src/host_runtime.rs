@@ -32,35 +32,7 @@ fn backend(context: &str, error: impl std::fmt::Display) -> WasmCompileError {
 
 impl HostKernelRuntime {
     pub(crate) fn new_named(module_bytes: &[u8], export: &str) -> Result<Self, WasmCompileError> {
-        let engine = Engine::default();
-        let module =
-            Module::new(&engine, module_bytes).map_err(|e| backend("module create failed", e))?;
-        let mut store = Store::new(&engine, ());
-        let required = module
-            .imports()
-            .find_map(|import| match import.ty() {
-                wasmi::ExternType::Memory(ty) if import.name() == "memory" => Some(*ty),
-                _ => None,
-            })
-            .ok_or_else(|| WasmCompileError::Backend("module imports no memory".into()))?;
-        let memory = Memory::new(
-            &mut store,
-            MemoryType::new(
-                u32::try_from(required.minimum().max(1))
-                    .map_err(|e| backend("memory minimum", e))?,
-                None,
-            ),
-        )
-        .map_err(|e| backend("memory create failed", e))?;
-        let mut linker = Linker::new(&engine);
-        linker
-            .define("env", "memory", Extern::Memory(memory))
-            .map_err(|e| backend("memory import set failed", e))?;
-        define_math(&mut linker)?;
-        let instance = linker
-            .instantiate(&mut store, &module)
-            .and_then(|pre| pre.start(&mut store))
-            .map_err(|e| backend("module instantiate failed", e))?;
+        let (store, memory, instance) = instantiate_host_module(module_bytes)?;
         let entry = instance
             .get_typed_func::<(i32, i32, f64, i32, i32), i32>(&store, export)
             .map_err(|e| backend("missing eval export", e))?;
@@ -92,12 +64,7 @@ impl HostKernelRuntime {
         let scratch_at = p_at + p.len() * 8;
         let lanes_at = scratch_at + scratch.len() * 8;
         let end = lanes_at + lanes.len() * 8;
-        let have = memory.data_size(&*store);
-        if end > have {
-            memory
-                .grow(&mut *store, (end - have).div_ceil(PAGE_BYTES) as u64)
-                .map_err(|e| backend("memory grow failed", e))?;
-        }
+        ensure_memory_capacity(store, *memory, end)?;
         let bytes = |cells: &[u64]| {
             cells
                 .iter()
@@ -153,6 +120,55 @@ impl HostKernelRuntime {
         }
         Ok(status as u32)
     }
+}
+
+/// One engine/import policy shared by the native and typed-call ABIs.
+pub(crate) fn instantiate_host_module(
+    module_bytes: &[u8],
+) -> Result<(Store<()>, Memory, wasmi::Instance), WasmCompileError> {
+    let engine = Engine::default();
+    let module =
+        Module::new(&engine, module_bytes).map_err(|e| backend("module create failed", e))?;
+    let mut store = Store::new(&engine, ());
+    let required = module
+        .imports()
+        .find_map(|import| match import.ty() {
+            wasmi::ExternType::Memory(ty) if import.name() == "memory" => Some(*ty),
+            _ => None,
+        })
+        .ok_or_else(|| WasmCompileError::Backend("module imports no memory".into()))?;
+    let memory = Memory::new(
+        &mut store,
+        MemoryType::new(
+            u32::try_from(required.minimum().max(1)).map_err(|e| backend("memory minimum", e))?,
+            None,
+        ),
+    )
+    .map_err(|e| backend("memory create failed", e))?;
+    let mut linker = Linker::new(&engine);
+    linker
+        .define("env", "memory", Extern::Memory(memory))
+        .map_err(|e| backend("memory import set failed", e))?;
+    define_math(&mut linker)?;
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .and_then(|pre| pre.start(&mut store))
+        .map_err(|e| backend("module instantiate failed", e))?;
+    Ok((store, memory, instance))
+}
+
+pub(crate) fn ensure_memory_capacity(
+    store: &mut Store<()>,
+    memory: Memory,
+    end: usize,
+) -> Result<(), WasmCompileError> {
+    let have = memory.data_size(&*store);
+    if end > have {
+        memory
+            .grow(store, (end - have).div_ceil(PAGE_BYTES) as u64)
+            .map_err(|e| backend("memory grow failed", e))?;
+    }
+    Ok(())
 }
 
 /// Bind every math ABI symbol to the same `libm` routines the guests export.
