@@ -179,3 +179,78 @@ end MessageFault;
     }
     assert!(checked > 0);
 }
+
+#[test]
+fn wasm_failed_input_guard_clears_previous_source_bound_warning_records() {
+    let mut compiler = rumoca_compile::Session::new(Default::default());
+    compiler.update_document(
+        "wasm-warning-guard.mo",
+        r#"
+function guardCapture
+  input Real q;
+  output Real y;
+algorithm
+  assert(q < 0, "value=" + String(q), level=AssertionLevel.warning);
+  y := q;
+end guardCapture;
+model GuardCapture
+  Real x(start=0, fixed=true);
+equation
+  der(x)=guardCapture(time);
+end GuardCapture;
+"#,
+    );
+    let compiled = compiler.compile_model("GuardCapture").unwrap();
+    let lowered = crate::lower_correlated_for_simulation_with_overrides(
+        &compiled.dae,
+        &rumoca_solver::SimOptions::default(),
+    )
+    .unwrap();
+    let source = SolveExecutionSource::new(lowered.model().clone());
+    let model = source.model();
+    let mut checked = 0;
+    for index in 0..model.problem.events.action_conditions.row_count() {
+        let program = source
+            .event_program(RetainedAssertionSource::ActionConditions, index)
+            .unwrap();
+        if !program.has_observations() {
+            continue;
+        }
+        let action_index = program
+            .invocations()
+            .next()
+            .unwrap()
+            .projections()
+            .next()
+            .unwrap()
+            .action_index();
+        let action = &model.problem.events.actions[action_index];
+        let outputs = ScalarProgramBlock::program_output_count(program.program());
+        let code = super::super::super::observations::WasmObservations::compile(
+            program,
+            &model.problem.layout,
+            &model.pure_calls,
+        )
+        .unwrap();
+        let y = vec![0.0; model.problem.layout.y_scalars()];
+        let p = vec![0.0; model.problem.layout.p_scalars()];
+        let mut out = vec![19.0; outputs];
+        code.call(&y, &p, 0.0, &[], &mut out).unwrap();
+        assert_eq!(code.observed_message(action), Some("value=0".into()));
+        assert!(code.observed_message(&action.clone()).is_none());
+        out.fill(19.0);
+        let invalid_y = vec![0.0; y.len() + 1];
+        let _error = code.call(&invalid_y, &p, 0.0, &[], &mut out).unwrap_err();
+        assert_eq!(
+            out,
+            vec![19.0; outputs],
+            "failed guard preserves ordinary caller outputs"
+        );
+        assert!(
+            code.observed_message(action).is_none(),
+            "a failed input guard cannot expose a previous invocation's warning record"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0);
+}

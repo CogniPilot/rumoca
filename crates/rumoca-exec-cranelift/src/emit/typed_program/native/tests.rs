@@ -127,8 +127,12 @@ fn draw_table() -> solve::SolvePureCallTable {
             |builder, inputs, outputs| {
                 let id = builder.load(inputs[0], at)?;
                 let cell = builder.load(inputs[1], at)?;
-                let values =
-                    builder.native(NativeBody::Xorshift1024StarImpureDraw, &[id, cell], at)?;
+                let native_at = rumoca_core::Span::from_offsets(at.source, 3, 5);
+                let values = builder.native(
+                    NativeBody::Xorshift1024StarImpureDraw,
+                    &[id, cell],
+                    native_at,
+                )?;
                 builder.store(outputs[0], values[0], at)?;
                 builder.store(outputs[1], values[1], at)
             },
@@ -145,6 +149,21 @@ fn a_foreign_error_fails_the_call_in_every_evaluator() {
     let table = draw_table();
     let compiled = CompiledPureCallTable::compile(&table).unwrap();
     let site = table.owners()[0].call_site();
+    let expected_span = table.owners()[0]
+        .body()
+        .operations()
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.operation(),
+                solve::SolveOperation::Native {
+                    body: NativeBody::Xorshift1024StarImpureDraw,
+                    ..
+                }
+            )
+        })
+        .expect("fixture retains the original foreign operation")
+        .provenance();
     let mut inputs = vec![7_u64];
     inputs.extend([0_u64; 34]);
     let mut outputs = [0_u64; 35];
@@ -155,7 +174,15 @@ fn a_foreign_error_fails_the_call_in_every_evaluator() {
             &mut outputs,
         )
         .unwrap_err();
-    assert!(error.to_string().contains("foreign body"), "{error}");
+    assert!(
+        matches!(&error, CompileError::SourceOperation {
+        kind: crate::NativeSourceFault::ForeignBody,
+        message,
+        span: Some(span),
+    } if message == "Function impureRandom not initialized with function initializeImpureRandom"
+        && *span == expected_span),
+        "{error}"
+    );
 
     let owner = &table.owners()[0];
     let arguments = [
@@ -172,5 +199,5 @@ fn a_foreign_error_fails_the_call_in_every_evaluator() {
     ];
     let error = eval_pure_call(&table, owner.id(), &arguments).unwrap_err();
     assert!(error.to_string().contains("not initialized"), "{error}");
-    assert!(error.source_span().is_some());
+    assert_eq!(error.source_span(), Some(expected_span));
 }

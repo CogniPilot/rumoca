@@ -111,14 +111,22 @@ fn known_runtime_index_preserves_selected_fault_and_inactive_protection() {
     let error = call_native(&direct, 0.0, &mut out)
         .expect_err("a known runtime index must retain its selected fault");
     assert!(
-        error.to_string().contains("index is out of bounds"),
+        matches!(&error, CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::TensorIndex,
+            message,
+            span: None,
+        } if message == "index 2 is outside 1..=1"),
         "{error:?}"
     );
     assert_eq!(direct.jit_call_count(), 1);
     let error = call_native(&native, 1.0, &mut out)
         .expect_err("a guarded known runtime index faults when selected");
     assert!(
-        error.to_string().contains("index is out of bounds"),
+        matches!(&error, CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::TensorIndex,
+            message,
+            span: None,
+        } if message == "index 2 is outside 1..=1"),
         "{error:?}"
     );
     assert_eq!(native.jit_call_count(), 2);

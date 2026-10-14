@@ -1308,3 +1308,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod native_admission_tests;
