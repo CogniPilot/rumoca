@@ -5,8 +5,13 @@
 **"class not found" / unresolved names** — The model references a package
 Rumoca cannot see. Add the library with `--source-root` (CLI), top-level
 `source_roots` (scenario), or `rumoca-workspace.toml` (workspace). Check
-`MODELICAPATH` if you rely on it. See
-[Using Modelica Libraries](./language/libraries.md).
+`MODELICAPATH` if you rely on it. For the Modelica Standard Library, name
+the directory that contains `Modelica/`, `ModelicaServices/`, and
+`Complex.mo`, not the `Modelica/` package itself: `Modelica` references the
+other two top-level packages. See
+[Using Modelica Libraries](./language/libraries.md). The parser's view of a
+file, `rumoca compile Model.mo --emit ast-json`, does not resolve names and
+so stays available while you sort out the library paths.
 
 **"Duplicate class 'X' ... with non-identical definition" (EM001)** — Two
 files in the same source root define the same class name. This commonly

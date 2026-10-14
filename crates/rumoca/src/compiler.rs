@@ -48,7 +48,7 @@ use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, Session, SessionConfig,
     SourceRootKind, VariableRole,
 };
-use rumoca_compile::parsing::collect_compile_unit_source_files;
+use rumoca_compile::parsing::{StoredDefinition, collect_compile_unit_source_files};
 use rumoca_compile::source_roots::{
     PackageLayoutError, canonical_path_key, parse_source_root_with_cache, plan_source_root_loads,
     referenced_unloaded_source_root_paths, render_source_root_status_message,
@@ -503,12 +503,17 @@ impl Compiler {
         self.compile_str(&source, path)
     }
 
-    /// Compile a Modelica file through the resolved AST stage only.
-    pub fn compile_file_ast(&self, path: &str) -> Result<ResolvedTree, CompilerError> {
+    /// Parse a Modelica file into its syntax tree (SPEC_0007 Stage 1).
+    ///
+    /// The AST stage carries syntax, comments, and spans only, so this reads
+    /// just the named file: no source root is loaded, no model is selected,
+    /// and no name is resolved. The dump therefore stays available for a file
+    /// whose referenced libraries are missing or fail to resolve.
+    pub fn parse_file(&self, path: &str) -> Result<StoredDefinition, CompilerError> {
         let source =
             fs::read_to_string(path).map_err(|e| CompilerError::io_error(path, e.to_string()))?;
 
-        self.compile_str_ast(&source, path)
+        self.parse_str(&source, path)
     }
 
     /// Compile a Modelica file through the flat-model stage only.
@@ -603,23 +608,42 @@ impl Compiler {
         ))
     }
 
-    /// Compile Modelica source code through the resolved AST stage only.
-    pub fn compile_str_ast(
+    /// Parse Modelica source code into its syntax tree (SPEC_0007 Stage 1).
+    ///
+    /// In-memory counterpart to [`Self::parse_file`]: the session stores the
+    /// document exactly as a compile would (extension constructs expanded to
+    /// standard Modelica), and a syntax error is reported with the parser's
+    /// spans instead of a tree.
+    pub fn parse_str(
         &self,
         source: &str,
         file_name: &str,
-    ) -> Result<ResolvedTree, CompilerError> {
+    ) -> Result<StoredDefinition, CompilerError> {
         if self.verbose {
-            eprintln!("[rumoca] Compiling source through AST: {}", file_name);
-            eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
+            eprintln!("[rumoca] Parsing source: {}", file_name);
+            eprintln!("[rumoca] Phase 1: Parsing (no source roots, no resolution)...");
         }
 
         let mut session = Session::new(SessionConfig::default());
-        self.load_required_source_roots(&mut session, source)?;
-        self.load_local_compile_unit(&mut session, source, file_name)?;
+        let parse_error = session.update_document(file_name, source);
+        if let Some(message) = parse_error {
+            let Some((diagnostics, source_map)) =
+                session.document_parse_diagnostics_with_source_map(file_name)
+            else {
+                return Err(CompilerError::ParseError(message));
+            };
+            return Err(CompilerError::SourceDiagnosticsError {
+                summary: format!("failed to parse `{file_name}`"),
+                diagnostics,
+                source_map: Box::new(source_map),
+            });
+        }
         session
-            .resolved()
-            .map_err(|err| CompilerError::ResolveError(err.to_string()))
+            .get_document(file_name)
+            .and_then(|document| document.parsed().cloned())
+            .ok_or_else(|| {
+                CompilerError::ParseError(format!("no syntax tree stored for `{file_name}`"))
+            })
     }
 
     /// Compile Modelica source code through the flat-model stage only.
