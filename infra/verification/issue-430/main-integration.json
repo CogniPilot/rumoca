@@ -1,0 +1,63 @@
+{
+  "source_tip": "7cd586b2246b0705acf7700ac606aa61ca62583e",
+  "main_base": "9f507597dd0a462b767a9761a53f4c3e3ffdfbd8",
+  "git_worktree_dirty": false,
+  "integration": "only issue430 commits rebased after PR421 squash merge; no textual conflict; all five current-main files preserved byte-for-byte",
+  "independent_review": "original issue patches unchanged; upstream native-library/extremum files match main; no findings",
+  "source_cache_binding": {
+    "previous_own_head": "1bcdd9bdd361e8277dca75d1d2786c3b477f388c",
+    "new_base": "9f507597dd0a462b767a9761a53f4c3e3ffdfbd8",
+    "source_tip": "7cd586b2246b0705acf7700ac606aa61ca62583e",
+    "byte_identical_files_mtime_restored": 4819,
+    "changed_files_keep_fresh_mtimes": [
+      "crates/rumoca-exec-wasm/src/component_build/native_model.rs",
+      "crates/rumoca-phase-codegen/src/codegen/pure_call_families/tests/reductions.rs",
+      "crates/rumoca-phase-codegen/src/codegen/real_extremum.rs",
+      "crates/rumoca-phase-codegen/src/codegen/real_extremum/tests.rs",
+      "crates/rumoca-phase-codegen/src/codegen/real_extremum/tests/typed.rs"
+    ],
+    "method": "byte-for-byte comparison to the last measured own source; no baseline build intervened; changed main files preserved"
+  },
+  "passed": {
+    "IR_unit_tests": 904,
+    "phase_unit_tests": 268,
+    "integration_tests": 3,
+    "doc_tests": 9,
+    "initial_relation_regressions": 5,
+    "actual_FMI_C_cases": 4,
+    "fmt": true,
+    "strict_clippy": "ir-solve/phase-solve/codegen all-targets default features -D warnings"
+  },
+  "existing_evidence": "prior real-model, corpus, canary and ModelicaTest results retain their measured commits; not relabeled main",
+  "remaining_broad_checks": [
+    "full coverage verification gate",
+    "literal all-features workspace clippy",
+    "remaining full workspace/doc checks",
+    "main canary and selected ModelicaTest",
+    "full 566-model MSL parity",
+    "reporter original 27 s reset point"
+  ],
+  "merge_instruction": "user explicitly requests resolving merge integration and merging both issue PRs; root coordinates merge after focused checks; no claim broad gates passed",
+  "logs": {
+    "main-integration-owning.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/main-integration-owning.log",
+      "sha256": "d33a96cd7b2823b15e83b187d540ceaab220a4b44d9d175efef61655d8efc4f7"
+    },
+    "main-integration-initialization.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/main-integration-initialization.log",
+      "sha256": "44765255df4a27bbde009f08397d034680ad929582f90ca54d3920ff4863e10a"
+    },
+    "main-integration-c-apis.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/main-integration-c-apis.log",
+      "sha256": "27ae9c28f35df0f1a73fd4129e9fce8a5d536bf08fd470ae9836cd05f5295d3f"
+    },
+    "main-integration-clippy.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/main-integration-clippy.log",
+      "sha256": "6408c4e7636bdc245bc5c49d789c80b838a3cf8014997a411ba137e1314b8277"
+    },
+    "main-integration-fmt.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/main-integration-fmt.log",
+      "sha256": "5186d43cf6369163e46733cad3187b126e1643e0384aba029446748dfe592d66"
+    }
+  }
+}

@@ -1,14 +1,13 @@
 # Issue 430 verification ledger
 
-This change is stacked on PR #421 at
-`65478f8e89210f6bf77d347e1cc6b7730daaf8d0`. Latest focused/compiler/C and
-compatibility checks use clean source checkpoint
-`b1de69c791c6c8051302123ce13a2dc66d48792b`, recorded at the end of this ledger.
-The completed clean bd6 Tier 1 pair and selected ModelicaTest gate retain their
-measured source checkpoint 8c34dd9e and are historical for this latest parent.
-Earlier da102 numerical/reset and eb515 measurements also retain their exact
-contexts. Artifact names are relative to `$HOME/scratch/rumoca/issue430-20261013`
-unless noted.
+PR #421 was merged into main at
+`9f507597dd0a462b767a9761a53f4c3e3ffdfbd8`. This issue’s commits are now
+rebased directly onto that main commit. Main integration checks use clean
+source checkpoint `7cd586b2246b0705acf7700ac606aa61ca62583e` and are recorded
+below. All previous numerical, reset, canary, ModelicaTest and compatibility
+results retain their original source commits; they are historical rather
+than current-main parity claims. Artifact names are relative to
+`$HOME/scratch/rumoca/issue430-20261013` unless noted.
 
 ## Reproduction inputs
 
@@ -296,3 +295,24 @@ bd6 pair and selected ModelicaTest result remain historical, never relabeled
 as latest. Broad workspace/doc/all-features/coverage/full-MSL and original
 27-second reset gaps remain as recorded above. The final evidence update
 changes no compiler or test source from measured b1de69c7; the PR remains draft.
+
+## Main integration after PR #421 merge
+
+`main-integration.json` records the replay of only this issue’s commits onto
+main 9f507597 after the parent squash merge. Rebase required no textual conflict
+resolution. All five upstream native-library/extremum files are preserved
+byte-for-byte. Independent review confirmed the original issue patches are
+unchanged, including mode ownership, C admission, affine bounds and lifecycle.
+
+Clean source 7cd586b2 passes 904 IR and 268 phase unit tests, three integration
+and nine doc tests, all five initialization regressions and all four actual
+FMI C cases. Formatting and scoped all-targets default-feature strict clippy
+also pass. Cache reuse restores only files proven byte-identical to the last
+measured own source; the five changed main files keep fresh timestamps.
+
+The user explicitly requested resolving the integration and merging both issue
+PRs. The coordinator handles merge after the current focused checks. Earlier
+main-only CI filtering and draft statements above describe their historical
+stacked tips; this PR now targets main and standard CI is applicable. Remaining
+broad coverage/workspace/doc/all-features/full-MSL and main canary/ModelicaTest
+checks are recorded honestly; no broader pass or parity claim is added.
