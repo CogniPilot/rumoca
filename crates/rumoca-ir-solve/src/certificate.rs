@@ -467,15 +467,17 @@ fn evaluates_transient_relation(program: &[LinearOp], initial_mode: Option<usize
         }
         _ => {
             let mut effect = RelationEffect(false);
-            crate::visitor::walk_linear_op_slice(
+            match crate::visitor::walk_linear_op_slice(
                 &mut effect,
                 crate::visitor::LinearOpSliceKind::ScalarProgram {
                     program_index: 0,
                     span: None,
                 },
                 std::slice::from_ref(op),
-            )
-            .expect("relation-effect traversal is infallible");
+            ) {
+                Ok(()) => {}
+                Err(never) => match never {},
+            }
             effect.0
         }
     })

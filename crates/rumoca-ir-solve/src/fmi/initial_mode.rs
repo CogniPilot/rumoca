@@ -18,9 +18,10 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
         guards: 0,
         unknown: false,
     };
-    reads
-        .visit_solve_model(model)
-        .expect("initialization-mode traversal is infallible");
+    match reads.visit_solve_model(model) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
     if reads.unknown {
         return Err("the C profile cannot prove compact reads independent of initialization mode");
     }
