@@ -1,5 +1,6 @@
 use super::super::tests::warm_start_test_model;
 use super::*;
+use crate::runtime::solve_runtime::tests::{install_mock_jacobian, install_mock_primal};
 use std::cell::Cell;
 
 struct Fault(Rc<Cell<usize>>);
@@ -38,12 +39,8 @@ fn admitted_initial_full_and_partial_faults_preserve_output_bits() {
         let calls = Rc::new(Cell::new(0));
         let compiled = Rc::new(Fault(calls.clone()));
         match owner {
-            0 => *runtime.scalar_fixture_mut().fixture_compiled_implicit_rhs() = Some(compiled),
-            1 => {
-                *runtime
-                    .scalar_fixture_mut()
-                    .fixture_compiled_implicit_projection_jacobian_v() = Some(compiled)
-            }
+            0 => install_mock_primal(&mut runtime, compiled),
+            1 => install_mock_jacobian(&mut runtime, false, compiled),
             2 => {
                 *runtime
                     .scalar_fixture_mut()

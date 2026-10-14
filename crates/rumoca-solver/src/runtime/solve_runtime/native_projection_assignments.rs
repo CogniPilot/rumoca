@@ -53,6 +53,7 @@ impl ScalarExecutionView<'_> {
         let Some(plan) = self
             .scalar
             .implicit_scalar_rhs
+            .source()
             .portable_target_value_plan(program, output, target)?
         else {
             return Ok(None);
@@ -95,6 +96,7 @@ impl ScalarExecutionView<'_> {
         if self
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_count(program_index)
             != Some(1)
         {
@@ -124,13 +126,13 @@ impl ScalarExecutionView<'_> {
         backend: &dyn SolveExecutionBackend,
         (program_index, target_y_index): (usize, usize),
     ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, RuntimeSolveError> {
-        let source = &self.scalar.implicit_scalar_rhs;
+        let source = self.scalar.implicit_scalar_rhs.source();
         let Some(program) =
             source.exact_target_assignment_output_program(program_index, 0, target_y_index)
         else {
             return Ok(None);
         };
-        let span = source.block().program_span(program_index).ok_or_else(|| {
+        let span = source.program_span(program_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("projection assignment source span is missing")
         })?;
         let block = solve::ScalarProgramBlock::with_program_spans(vec![program], vec![span])

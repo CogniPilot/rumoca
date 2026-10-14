@@ -5,7 +5,7 @@ use super::*;
 mod dispatch_tests;
 
 pub(super) fn static_refresh_parameter_indices<'a>(
-    implicit: &PreparedScalarProgramBlock,
+    implicit: ProgramAnalysis<'_>,
     plans: impl IntoIterator<Item = &'a solve::RefreshPlan>,
     program_rows: &FxHashMap<solve::RefreshScalarProgramSource, usize>,
 ) -> Box<[usize]> {
@@ -370,10 +370,9 @@ impl ScalarExecutionView<'_> {
             plan: projection_plan,
             block_indices: &plan.simultaneous_block_indices,
             plan_validated: false,
-            jacobian_v: ProjectionJacobian::SolverY {
-                block: &self.scalar.implicit_projection_jacobian_v,
-                scalar: &self.scalar.implicit_projection_scalar_jacobian_v,
-            },
+            jacobian_v: ProjectionJacobian::SolverY(
+                &self.scalar.implicit_projection_scalar_jacobian_v,
+            ),
         };
         let projection_args = crate::runtime::projection::AlgebraicProjectionArgs {
             parameters: args.params,
@@ -446,7 +445,7 @@ impl ScalarExecutionView<'_> {
         // every algebraic coordinate. Explicit states are owned by derivative
         // rows and therefore need no placeholder implicit rows.
         solve_eval::validate_input_requirements(
-            self.scalar.implicit_scalar_rhs.requirements(),
+            self.scalar.implicit_scalar_rhs.source().requirements(),
             solver_y,
             params,
             None,
@@ -527,20 +526,18 @@ impl ScalarExecutionView<'_> {
                 return Ok(value);
             }
         } else if row.assignment_target() == Some(index)
-            && let Some(value) = self
-                .scalar
-                .implicit_scalar_rhs
-                .eval_target_assignment_output_unchecked_with_context(
-                    rumoca_eval_solve::TargetAssignmentOutputRequest {
-                        row_idx: program_row,
-                        output_offset: row.output_offset(),
-                        target_y_index: index,
-                        y: solver_y,
-                        p: params,
-                        t,
-                        context: self.row_eval_context(),
-                    },
-                )?
+            && let Some(reference) = self.scalar.implicit_scalar_rhs.reference()
+            && let Some(value) = reference.eval_target_assignment_output_unchecked_with_context(
+                rumoca_eval_solve::TargetAssignmentOutputRequest {
+                    row_idx: program_row,
+                    output_offset: row.output_offset(),
+                    target_y_index: index,
+                    y: solver_y,
+                    p: params,
+                    t,
+                    context: self.row_eval_context(),
+                },
+            )?
         {
             return Ok(value);
         }
@@ -557,28 +554,15 @@ impl ScalarExecutionView<'_> {
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
         let program_row = self.refresh_program_row(row)?;
-        if let Some(code) = self.scalar.compiled_implicit_rhs() {
-            return code
-                .call_program_output(
-                    (program_row, row.output_offset()),
-                    solver_y,
-                    params,
-                    t,
-                    self.model.external_tables.as_slice(),
-                )?
-                .ok_or_else(|| RuntimeSolveError::solve_ir("prepared refresh residual is absent"));
-        }
-        self.scalar
-            .implicit_scalar_rhs
-            .eval_row_output_unchecked_with_context(
-                program_row,
-                row.output_offset(),
-                solver_y,
-                params,
+        self.scalar.implicit_scalar_rhs.eval_output(
+            (program_row, row.output_offset()),
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
                 t,
-                self.row_eval_context(),
-            )
-            .map_err(Into::into)
+            },
+            self.row_eval_context(),
+        )
     }
 
     fn solve_refresh_residual_row(
@@ -626,19 +610,17 @@ impl ScalarExecutionView<'_> {
             self.validate_refresh_values(plan, solver_y, params)?;
             return Ok(());
         }
-        if self.scalar.compiled_implicit_rhs().is_none() && self.can_batch_assignment_refresh(plan)
+        if let Some(reference) = self.scalar.implicit_scalar_rhs.reference()
+            && self.can_batch_assignment_refresh(plan)
         {
-            self.scalar
-                .implicit_scalar_rhs
-                .apply_target_assignment_rows_unchecked_with_context(
-                    plan.iter(),
-                    |row| self.scalar.refresh_program_rows.get(&row.source()).copied(),
-                    solver_y,
-                    params,
-                    t,
-                    self.row_eval_context(),
-                )
-                .map_err(RuntimeSolveError::from)?;
+            reference.apply_target_assignment_rows_unchecked_with_context(
+                plan.iter(),
+                |row| self.scalar.refresh_program_rows.get(&row.source()).copied(),
+                solver_y,
+                params,
+                t,
+                self.row_eval_context(),
+            )?;
             self.validate_refresh_values(plan, solver_y, params)?;
             return Ok(());
         }

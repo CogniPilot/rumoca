@@ -53,7 +53,9 @@ mod compiled_lifecycle;
 mod compiled_messages;
 mod compiled_targets;
 mod construction;
+mod execution_owners;
 mod selected_programs;
+use execution_owners::{DirectionalProgram, PrimalProgram, ProgramAnalysis};
 #[cfg(test)]
 pub(crate) mod test_kernels;
 use chart_sharing::BlockReuse;
@@ -263,10 +265,8 @@ pub struct SolveRuntime {
 #[derive(Clone)]
 struct ScalarExecutionInventory {
     coupled_event_jvps: coupled_event::CoupledEventJvps,
-    implicit_rhs: PreparedComputeBlock,
-    implicit_projection_jacobian_v: PreparedComputeBlock,
-    implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
-    implicit_scalar_rhs: PreparedScalarProgramBlock,
+    implicit_projection_scalar_jacobian_v: DirectionalProgram,
+    implicit_scalar_rhs: PrimalProgram,
     /// Tangent plan of each algebraic projection block's tearing, aligned
     /// with the block list; `None` for an untorn block or one without a plan.
     torn_tangents: Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]>,
@@ -301,7 +301,7 @@ struct ScalarExecutionInventory {
     /// Per-row forward-mode AD Jacobian-vector product of `implicit_rhs`
     /// (`d(residual_row)/d[y|p]·v`). Used to propagate state and parameter seeds
     /// through the algebraic projection row by row.
-    implicit_jacobian_v: PreparedScalarProgramBlock,
+    implicit_jacobian_v: DirectionalProgram,
     continuous_structural: solve::ContinuousStructuralArtifacts,
     initialization_structural: solve::InitializationStructuralArtifacts,
     algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
@@ -740,35 +740,23 @@ impl ScalarExecutionView<'_> {
         if value.is_finite() || !solve_eval::nan_trace::nan_trace_enabled() {
             return;
         }
-        let Some((program, _)) = self.scalar.implicit_scalar_rhs.row_output_position(row) else {
-            return;
-        };
-        let Some(ops) = self
+        let Some((program, _)) = self
             .scalar
             .implicit_scalar_rhs
-            .block()
-            .programs()
-            .get(program)
+            .source()
+            .row_output_position(row)
         else {
             return;
         };
-        let mut inputs = BTreeSet::new();
-        for op in ops {
-            match op {
-                solve::LinearOp::LoadY { index, .. } => {
-                    inputs.insert(*index);
-                }
-                solve::LinearOp::TensorLoad {
-                    input: solve::TensorInputKind::Y,
-                    input_start,
-                    count,
-                    ..
-                } => {
-                    inputs.extend(*input_start..input_start.saturating_add(*count));
-                }
-                _ => {}
-            }
-        }
+        let Some(reads) = self
+            .scalar
+            .implicit_scalar_rhs
+            .source()
+            .nonfinite_y_reads(program)
+        else {
+            return;
+        };
+        let inputs = reads.collect::<BTreeSet<_>>();
         eprintln!(
             "[nan-trace] implicit residual row {row} ({}) @ t={t} = {}",
             self.row_target_name(row),
@@ -817,19 +805,19 @@ impl ScalarExecutionView<'_> {
         let Some(evaluator) = evaluator else {
             return Ok(None);
         };
-        let tables = self.model.external_tables.as_slice();
-        let compiled = self.scalar.compiled_implicit_projection_jacobian_v();
+        let owner = &self.scalar.implicit_projection_scalar_jacobian_v;
         let mut call =
             |program: usize, seed: &[f64], out: &mut Vec<f64>| -> Result<bool, RuntimeSolveError> {
-                let Some(compiled) = compiled else {
+                if !owner.is_compiled() {
                     return Ok(false);
-                };
-                compiled.call_program_outputs(
+                }
+                owner.eval_program_outputs(
                     program,
                     solve_eval::JacobianEvalInputs { y, p, t, seed },
-                    tables,
+                    self.row_eval_context(),
                     out,
-                )
+                )?;
+                Ok(true)
             };
         evaluator
             .eval_through(

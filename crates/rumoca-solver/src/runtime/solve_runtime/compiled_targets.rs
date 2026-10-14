@@ -17,6 +17,44 @@ pub(super) struct TargetQueries {
     table_free: bool,
 }
 
+enum TargetSource<'a> {
+    Prepared(&'a PreparedScalarProgramBlock),
+    Implicit {
+        canonical: &'a solve::ScalarProgramBlock,
+        analysis: ProgramAnalysis<'a>,
+    },
+}
+
+impl TargetSource<'_> {
+    fn canonical(&self) -> &solve::ScalarProgramBlock {
+        match self {
+            Self::Prepared(source) => source.block(),
+            Self::Implicit { canonical, .. } => canonical,
+        }
+    }
+
+    fn row_output_position(&self, row: usize) -> Option<(usize, usize)> {
+        match self {
+            Self::Prepared(source) => source.row_output_position(row),
+            Self::Implicit { analysis, .. } => analysis.row_output_position(row),
+        }
+    }
+
+    fn portable_target_value_plan(
+        &self,
+        program: usize,
+        offset: usize,
+        target: usize,
+    ) -> Result<Option<solve_eval::PreparedTargetValuePlan>, EvalSolveError> {
+        match self {
+            Self::Prepared(source) => source.portable_target_value_plan(program, offset, target),
+            Self::Implicit { analysis, .. } => {
+                analysis.portable_target_value_plan(program, offset, target)
+            }
+        }
+    }
+}
+
 impl TargetQueries {
     #[cfg(test)]
     pub(super) fn prepare(
@@ -35,15 +73,57 @@ impl TargetQueries {
         context: RowEvalContext<'_>,
         primary: Option<&Self>,
     ) -> Result<Self, EvalSolveError> {
+        Self::prepare_source(
+            TargetSource::Prepared(source),
+            candidates,
+            backend,
+            context,
+            primary,
+        )
+    }
+
+    pub(super) fn prepare_implicit_with_primary(
+        canonical: &solve::ScalarProgramBlock,
+        analysis: ProgramAnalysis<'_>,
+        candidates: impl IntoIterator<Item = (usize, usize)>,
+        backend: &dyn SolveExecutionBackend,
+        context: RowEvalContext<'_>,
+        primary: Option<&Self>,
+    ) -> Result<Self, EvalSolveError> {
+        if !analysis.shares_program_owner(canonical) {
+            return Err(EvalSolveError::InvalidRow {
+                message: "target-query facts belong to a different canonical source".into(),
+                span: canonical.first_source_span(),
+            });
+        }
+        Self::prepare_source(
+            TargetSource::Implicit {
+                canonical,
+                analysis,
+            },
+            candidates,
+            backend,
+            context,
+            primary,
+        )
+    }
+
+    fn prepare_source(
+        source: TargetSource<'_>,
+        candidates: impl IntoIterator<Item = (usize, usize)>,
+        backend: &dyn SolveExecutionBackend,
+        context: RowEvalContext<'_>,
+        primary: Option<&Self>,
+    ) -> Result<Self, EvalSolveError> {
         let unchanged = primary
             .filter(|primary| primary.matches_context(context))
             .and_then(|primary| {
                 let base = primary.source.as_ref()?;
-                let replaced = solve_eval::replaced_programs(base, source.block())?;
+                let replaced = solve_eval::replaced_programs(base, source.canonical())?;
                 Some((primary, base, replaced))
             });
         let mut result = Self {
-            source: Some(source.block().clone()),
+            source: Some(source.canonical().clone()),
             calls: context.pure_calls.cloned(),
             table_free: context.external_tables.is_none_or(<[_]>::is_empty),
             ..Self::default()
@@ -66,7 +146,7 @@ impl TargetQueries {
             };
             if let Some((primary, base, replaced)) = &unchanged
                 && replaced.binary_search(&program).is_err()
-                && base.program_span(program) == source.block().program_span(program)
+                && base.program_span(program) == source.canonical().program_span(program)
                 && let Some(binding) = primary.bindings.get(&key)
                 && binding.matches(&plan)
             {
@@ -85,7 +165,7 @@ impl TargetQueries {
                                 message: format!(
                                     "required private target tuple could not be lowered: {message}"
                                 ),
-                                span: source.block().program_span(program),
+                                span: source.canonical().program_span(program),
                             })?;
                     let plan = Rc::new(plan);
                     families.insert(family, (Rc::clone(&code), Rc::clone(&plan)));

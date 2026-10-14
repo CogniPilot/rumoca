@@ -89,10 +89,7 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
         plan: &scalar.algebraic_refresh.simultaneous_plan,
         block_indices: &scalar.algebraic_refresh.simultaneous_block_indices,
         plan_validated: true,
-        jacobian_v: ProjectionJacobian::SolverY {
-            block: &scalar.implicit_projection_jacobian_v,
-            scalar: &scalar.implicit_projection_scalar_jacobian_v,
-        },
+        jacobian_v: ProjectionJacobian::SolverY(&scalar.implicit_projection_scalar_jacobian_v),
     };
     assert!(projection.algebraic_projection_block_is_affine(0));
     assert!(

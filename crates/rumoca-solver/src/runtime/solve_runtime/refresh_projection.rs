@@ -200,7 +200,7 @@ pub(super) fn cached_static_refresh_value(
 
 pub(super) fn trace_reverse_projection_coverage(
     model: &solve::SolveModel,
-    implicit: &PreparedScalarProgramBlock,
+    implicit: ProgramAnalysis<'_>,
 ) {
     if !tracing::enabled!(target: "rumoca_eval_solve::refresh", tracing::Level::DEBUG) {
         return;
@@ -331,46 +331,23 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
 
 #[derive(Clone, Copy)]
 pub(super) enum ProjectionJacobian<'a> {
-    SolverY {
-        block: &'a PreparedComputeBlock,
-        scalar: &'a PreparedScalarProgramBlock,
-    },
-    SolverYAndParameters(&'a PreparedScalarProgramBlock),
+    SolverY(&'a DirectionalProgram),
+    SolverYAndParameters(&'a DirectionalProgram),
 }
 
 impl<'a> ProjectionJacobian<'a> {
-    fn eval(
-        self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        context: RowEvalContext<'_>,
-        out: &mut [f64],
-    ) -> Result<(), EvalSolveError> {
+    fn owner(self) -> &'a DirectionalProgram {
         match self {
-            Self::SolverY { block, .. } => block.eval_with_context(y, p, t, context, out),
-            Self::SolverYAndParameters(block) => block.eval_with_context(y, p, t, context, out),
+            Self::SolverY(owner) | Self::SolverYAndParameters(owner) => owner,
         }
     }
 
-    fn scalar(self) -> &'a PreparedScalarProgramBlock {
-        match self {
-            Self::SolverY { scalar, .. } | Self::SolverYAndParameters(scalar) => scalar,
-        }
+    fn source(self) -> ProgramAnalysis<'a> {
+        self.owner().source()
     }
 
     fn is_solver_y_only(self) -> bool {
-        matches!(self, Self::SolverY { .. })
-    }
-
-    fn compiled(
-        self,
-        runtime: ScalarExecutionView<'a>,
-    ) -> Option<&'a dyn CompiledSolveJacobianExpression> {
-        match self {
-            Self::SolverY { .. } => runtime.scalar.compiled_implicit_projection_jacobian_v(),
-            Self::SolverYAndParameters(_) => runtime.scalar.compiled_implicit_full_jacobian_v(),
-        }
+        matches!(self, Self::SolverY(_))
     }
 }
 
@@ -483,38 +460,17 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs() {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "refresh implicit residual",
-                    &self.runtime.model.problem.continuous.implicit_rhs,
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.implicit_scalar_rhs.eval(
+                    RowEvalPoint { y, p, t },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            self.runtime
-                .report_nonfinite_implicit_residual_inputs(t, y, out);
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .implicit_rhs
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(RuntimeSolveError::from)?;
+            },
+        )?;
         self.runtime
             .report_nonfinite_implicit_residual_inputs(t, y, out);
         Ok(())
@@ -528,45 +484,17 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let compiled = self.jacobian_v.compiled(self.runtime);
-        if let Some(compiled) = compiled {
-            let map_error = |error| {
-                admitted_compiled_error(
-                    "refresh implicit JVP",
-                    self.jacobian_v.scalar().block().program_spans(),
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.jacobian_v.owner().eval(
+                    solve_eval::JacobianEvalInputs { y, p, t, seed: v },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.jacobian_v
-            .eval(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+            },
+        )
     }
 
     fn eval_implicit_residual_rows(
@@ -585,51 +513,26 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         p: &[f64],
         t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        let Some((program_idx, output_offset)) = self
+        let Some(coordinate) = self
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
         else {
             return Ok(None);
         };
-        if let Some(value) = self
+        let value = match self
             .runtime
-            .eval_split_residual_row(program_idx, (y, p, t))?
+            .eval_split_residual_row(coordinate.0, (y, p, t))?
         {
-            self.runtime
-                .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
-            return Ok(Some(value));
-        }
-        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs() {
-            let value = compiled
-                .call_program_output(
-                    (program_idx, output_offset),
-                    y,
-                    p,
-                    t,
-                    self.runtime.model.external_tables.as_slice(),
-                )?
-                .ok_or_else(|| {
-                    RuntimeSolveError::solve_ir("prepared implicit residual output is absent")
-                })?;
-            self.runtime
-                .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
-            return Ok(Some(value));
-        }
-        let value = self
-            .runtime
-            .scalar
-            .implicit_scalar_rhs
-            .eval_row_output_unchecked_with_context(
-                program_idx,
-                output_offset,
-                y,
-                p,
-                t,
+            Some(value) => value,
+            None => self.runtime.scalar.implicit_scalar_rhs.eval_output(
+                coordinate,
+                RowEvalPoint { y, p, t },
                 self.runtime.row_eval_context(),
-            )
-            .map_err(RuntimeSolveError::from)?;
+            )?,
+        };
         self.runtime
             .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
         Ok(Some(value))
@@ -643,7 +546,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         v: &[f64],
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        let block = self.jacobian_v.scalar();
+        let block = self.jacobian_v.source();
         let Some((jvp_program_idx, output_offset)) = block.row_output_position(row_idx) else {
             return Ok(None);
         };
@@ -651,6 +554,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
             .map(|(program_idx, _)| program_idx);
         if self.jacobian_v.is_solver_y_only()
@@ -659,6 +563,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .runtime
                 .scalar
                 .implicit_scalar_rhs
+                .source()
                 .parameter_static_y_gradient_params(implicit_program_idx)
             && let Some(value) = self
                 .runtime
@@ -669,35 +574,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         {
             return Ok(Some(value));
         }
-        if let Some(compiled) = self.jacobian_v.compiled(self.runtime) {
-            let value = compiled
-                .call_program_output(
-                    (jvp_program_idx, output_offset),
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                )?
-                .ok_or_else(|| {
-                    RuntimeSolveError::solve_ir("prepared implicit directional output is absent")
-                })?;
-            return Ok(Some(value));
-        }
-        block
-            .eval_row_output_unchecked_with_context(
-                jvp_program_idx,
-                output_offset,
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
+        self.jacobian_v
+            .owner()
+            .eval_output(
+                (jvp_program_idx, output_offset),
+                solve_eval::JacobianEvalInputs { y, p, t, seed: v },
+                self.runtime.row_eval_context(),
             )
             .map(Some)
-            .map_err(Into::into)
     }
 
     fn eval_implicit_jacobian_row(
@@ -710,13 +594,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     ) -> Result<bool, RuntimeSolveError> {
         // The optional reverse evaluator is reference execution. The compiled
         // runtime uses its prepared forward JVP when this optimization declines.
-        if self.jacobian_v.compiled(self.runtime).is_some() {
+        if self.jacobian_v.owner().is_compiled() {
             return Ok(false);
         }
         let Some((program_idx, _)) = self
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
         else {
             return Ok(false);
@@ -725,6 +610,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .parameter_static_y_gradient_params(program_idx);
         if let Some(parameter_indices) = gradient_params
             && self
@@ -736,22 +622,20 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         {
             return Ok(true);
         }
-        let evaluated = self
-            .runtime
-            .scalar
-            .implicit_scalar_rhs
-            .reverse_row_y_gradient(
-                program_idx,
-                &rumoca_eval_solve::reverse::ReverseInputs {
-                    y,
-                    p,
-                    t,
-                    context: self.runtime.row_eval_context(),
-                },
-                gradient,
-                &mut self.runtime.scalar.reverse_scratch.borrow_mut(),
-            )
-            .map_err(RuntimeSolveError::from)?;
+        let Some(reference) = self.runtime.scalar.implicit_scalar_rhs.reference() else {
+            return Ok(false);
+        };
+        let evaluated = reference.reverse_row_y_gradient(
+            program_idx,
+            &rumoca_eval_solve::reverse::ReverseInputs {
+                y,
+                p,
+                t,
+                context: self.runtime.row_eval_context(),
+            },
+            gradient,
+            &mut self.runtime.scalar.reverse_scratch.borrow_mut(),
+        )?;
         if evaluated && let Some(parameter_indices) = gradient_params {
             self.runtime
                 .scalar
@@ -775,11 +659,13 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
             && let Some(parameter_indices) = self
                 .runtime
                 .scalar
                 .implicit_scalar_rhs
+                .source()
                 .parameter_static_y_gradient_params(program_idx)
             && self
                 .runtime
@@ -888,10 +774,12 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)?;
         self.runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .parameter_static_y_gradient_params(program_idx)
     }
 
@@ -928,6 +816,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
         else {
             return Ok(None);
@@ -953,7 +842,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                         self.runtime
                             .scalar
                             .implicit_scalar_rhs
-                            .block()
+                            .source()
                             .program_span(program_idx)
                             .as_slice(),
                         error,
@@ -980,7 +869,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                         self.runtime
                             .scalar
                             .implicit_scalar_rhs
-                            .block()
+                            .source()
                             .program_span(program_idx)
                             .as_slice(),
                         error,
@@ -988,32 +877,33 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 })?;
             return Ok(Some(output[0]));
         }
-        self.runtime
-            .scalar
-            .implicit_scalar_rhs
-            .eval_target_assignment_output_unchecked_with_context(
-                rumoca_eval_solve::TargetAssignmentOutputRequest {
-                    row_idx: program_idx,
-                    output_offset,
-                    target_y_index,
-                    y,
-                    p,
-                    t,
-                    context: self.runtime.row_eval_context(),
-                },
-            )
-            .map_err(Into::into)
+        let Some(reference) = self.runtime.scalar.implicit_scalar_rhs.reference() else {
+            return Ok(None);
+        };
+        reference.eval_target_assignment_output_unchecked_with_context(
+            rumoca_eval_solve::TargetAssignmentOutputRequest {
+                row_idx: program_idx,
+                output_offset,
+                target_y_index,
+                y,
+                p,
+                t,
+                context: self.runtime.row_eval_context(),
+            },
+        )
     }
 
     fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {
         self.runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
             .is_some_and(|(program_idx, output_offset)| {
                 self.runtime
                     .scalar
                     .implicit_scalar_rhs
+                    .source()
                     .certifies_exact_target_assignment_output(
                         program_idx,
                         output_offset,
@@ -1040,7 +930,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         let Some(entry) = self.runtime.prepared_torn_sweep(tearing) else {
             return per_row_torn_block_sweep(self, tearing, y, p, t, residual_out);
         };
-        if self.runtime.scalar.compiled_implicit_rhs().is_some() && entry.compiled.is_none() {
+        if self.runtime.scalar.implicit_scalar_rhs.is_compiled() && entry.compiled.is_none() {
             return per_row_torn_block_sweep(self, tearing, y, p, t, residual_out);
         }
         #[cfg(debug_assertions)]
@@ -1057,6 +947,10 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .runtime
                 .scalar
                 .implicit_scalar_rhs
+                .reference()
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir("reference execution capability is unavailable")
+                })?
                 .eval_torn_sweep_unchecked_with_context(
                     &entry.sweep,
                     y,
@@ -1064,8 +958,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                     t,
                     self.runtime.row_eval_context(),
                     &mut raw,
-                )
-                .map_err(RuntimeSolveError::from)?,
+                )?,
         };
         let completed = status == TornSweepStatus::Completed;
         if completed {
@@ -1463,10 +1356,9 @@ impl ScalarExecutionView<'_> {
             plan,
             block_indices: std::slice::from_ref(&block_index),
             plan_validated: true,
-            jacobian_v: ProjectionJacobian::SolverY {
-                block: &self.scalar.implicit_projection_jacobian_v,
-                scalar: &self.scalar.implicit_projection_scalar_jacobian_v,
-            },
+            jacobian_v: ProjectionJacobian::SolverY(
+                &self.scalar.implicit_projection_scalar_jacobian_v,
+            ),
         };
         let projection_args = crate::runtime::projection::AlgebraicProjectionArgs {
             parameters: args.params,
@@ -1515,10 +1407,9 @@ impl ScalarExecutionView<'_> {
             plan: &self.scalar.algebraic_refresh.value_projection_plan,
             block_indices: &self.scalar.algebraic_refresh.simultaneous_block_indices,
             plan_validated: true,
-            jacobian_v: ProjectionJacobian::SolverY {
-                block: &self.scalar.implicit_projection_jacobian_v,
-                scalar: &self.scalar.implicit_projection_scalar_jacobian_v,
-            },
+            jacobian_v: ProjectionJacobian::SolverY(
+                &self.scalar.implicit_projection_scalar_jacobian_v,
+            ),
         }
     }
 
@@ -1605,17 +1496,11 @@ impl ScalarExecutionView<'_> {
     /// `row` reads, when it reads exactly one: the source coordinate a
     /// state-binding row `state - source` integrates.
     pub(crate) fn binding_row_source(&self, row: usize, state: usize) -> Option<usize> {
-        let (program, _) = self.scalar.implicit_scalar_rhs.row_output_position(row)?;
-        let mut sources = self
-            .scalar
-            .implicit_scalar_rhs
-            .block()
-            .program(program)?
-            .iter()
-            .filter_map(|op| match op {
-                solve::LinearOp::LoadY { index, .. } if *index != state => Some(*index),
-                _ => None,
-            })
+        let source = self.scalar.implicit_scalar_rhs.source();
+        let (program, _) = source.row_output_position(row)?;
+        let mut sources = source
+            .direct_y_reads(program)?
+            .filter(|&index| index != state)
             .collect::<Vec<_>>();
         sources.sort_unstable();
         sources.dedup();

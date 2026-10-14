@@ -386,41 +386,41 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     );
 
     // Unreplaced programs execute the primary's compiled instance.
-    let native = alternate
-        .scalar_execution()
-        .unwrap()
-        .scalar
-        .compiled_implicit_rhs()
-        .unwrap();
+    let view = alternate.scalar_execution().unwrap();
+    let native = &view.scalar.implicit_scalar_rhs;
     let (y, mut out) = ([1.0, 2.0, 3.0], Vec::new());
-    assert!(
-        native
-            .call_program_outputs(0, &y, &[], 0.0, &[], &mut out)
-            .unwrap()
-    );
+    let point = RowEvalPoint {
+        y: &y,
+        p: &[],
+        t: 0.0,
+    };
+    native
+        .eval_program_outputs(0, point, view.row_eval_context(), &mut out)
+        .unwrap();
     assert_eq!((out.as_slice(), primary_rhs_calls.get()), (&[1.0][..], 1));
-    assert!(
-        native
-            .call_program_outputs(1, &y, &[], 0.0, &[], &mut out)
-            .unwrap()
-    );
+    native
+        .eval_program_outputs(1, point, view.row_eval_context(), &mut out)
+        .unwrap();
     assert_eq!((out.as_slice(), replacement_calls.get()), (&[-1.0][..], 1));
     let mut whole = [0.0; 3];
-    native.call(&y, &[], 0.0, &[], &mut whole).unwrap();
+    native
+        .eval(point, view.row_eval_context(), &mut whole)
+        .unwrap();
     assert_eq!(whole, [1.0, -1.0, 3.0]);
     assert_eq!((primary_rhs_calls.get(), replacement_calls.get()), (2, 2));
-
-    // The whole Jacobian runs the primary's block, then overwrites the
-    // replaced row with the replacement's tangent.
-    let jacobian = alternate
-        .scalar_execution()
-        .unwrap()
-        .scalar
-        .compiled_implicit_projection_jacobian_v()
-        .unwrap();
+    let jacobian = &view.scalar.implicit_projection_scalar_jacobian_v;
     let mut tangent = [0.0; 3];
     jacobian
-        .call(&y, &[], 0.0, &[1.0, 1.0, 1.0], &[], &mut tangent)
+        .eval(
+            solve_eval::JacobianEvalInputs {
+                y: &y,
+                p: &[],
+                t: 0.0,
+                seed: &[1.0, 1.0, 1.0],
+            },
+            view.row_eval_context(),
+            &mut tangent,
+        )
         .unwrap();
     assert_eq!(tangent, [1.0, 2.0, 1.0]);
     assert_eq!(primary_jvp_calls.get(), 1);
@@ -453,6 +453,7 @@ fn assert_alternate_target_queries_share_unchanged_families(
     let plan = scalar
         .scalar
         .implicit_scalar_rhs
+        .source()
         .portable_target_value_plan(1, 0, 1)
         .unwrap()
         .unwrap();

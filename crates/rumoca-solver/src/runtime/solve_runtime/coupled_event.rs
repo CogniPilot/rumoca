@@ -8,7 +8,7 @@ use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
 };
 use super::guarded_assignments::guarded_target_at;
-use super::{ScalarExecutionView, admitted_compiled_error};
+use super::{RowEvalPoint, ScalarExecutionView};
 
 mod tangent;
 pub(super) use tangent::CoupledEventJvps;
@@ -372,35 +372,12 @@ impl CoupledEventSystem<'_> {
         p: &[f64],
         residual: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let mut implicit = vec![0.0; self.runtime.scalar.implicit_scalar_rhs.len()];
-        if let Some(code) = self.runtime.scalar.compiled_implicit_rhs() {
-            code.call(
-                y,
-                p,
-                self.t,
-                self.runtime.model.external_tables.as_slice(),
-                &mut implicit,
-            )
-            .map_err(|error| {
-                admitted_compiled_error(
-                    "coupled implicit residual",
-                    self.runtime
-                        .scalar
-                        .implicit_scalar_rhs
-                        .block()
-                        .program_spans(),
-                    error,
-                )
-            })?;
-        } else {
-            self.runtime.scalar.implicit_scalar_rhs.eval_with_context(
-                y,
-                p,
-                self.t,
-                self.runtime.row_eval_context(),
-                &mut implicit,
-            )?;
-        }
+        let mut implicit = vec![0.0; self.runtime.scalar.implicit_scalar_rhs.source().len()];
+        self.runtime.scalar.implicit_scalar_rhs.eval(
+            RowEvalPoint { y, p, t: self.t },
+            self.runtime.row_eval_context(),
+            &mut implicit,
+        )?;
         let mut eval_p_cache = EventEvalParamCache::default();
         for (slot, row) in residual.iter_mut().zip(&self.inventory.residuals) {
             *slot = match *row {

@@ -60,13 +60,6 @@ impl SolveRuntime {
                 BlockReuse::of_programs(base.map(PreparedEvaluationBlock::block), &block)
                     .prepared_evaluation(base, block)
             };
-        let prepare_compute =
-            |pick: fn(&ScalarExecutionInventory) -> &PreparedComputeBlock,
-             block: &solve::ComputeBlock,
-             label: &'static str| match primary.map(|primary| pick(primary.scalar)) {
-                Some(base) => PreparedComputeBlock::with_shared_programs(base, block, label),
-                None => PreparedComputeBlock::new_with_label(block, label),
-            };
         if !model.problem.continuous.refresh_owners.is_issued() {
             return Err(EvalSolveError::InvalidRow {
                 message: "Solve model has no construction-issued continuous refresh owners"
@@ -103,89 +96,43 @@ impl SolveRuntime {
             &implicit_scalar_programs,
             &continuous_structural,
         )?;
-        let implicit_reuse = BlockReuse::of(
-            primary.map(|primary| &primary.scalar.implicit_scalar_rhs),
-            &implicit_scalar_programs,
-        );
-        let compiled_implicit_rhs = if execution_backend.is_some() {
-            Some(implicit_reuse.expression(
-                primary_compiled.map(|code| &code.implicit_rhs),
-                &implicit_scalar_programs,
-                &mut |block| {
-                    require_prepared(
-                        "implicit_rhs",
-                        super::support::compiled_selectable_expression(
-                            execution_backend.as_ref(),
-                            "implicit_rhs",
-                            block,
-                        )?,
-                    )
-                },
-            )?)
-        } else {
-            None
-        };
         let implicit_projection_scalar_jacobian = refresh_projection::projection_jacobian_source(
             &model.artifacts.continuous.implicit_jacobian_v,
             &continuous_structural,
         )?;
-        let projection_reuse = BlockReuse::of(
-            primary.map(|primary| &primary.scalar.implicit_projection_scalar_jacobian_v),
-            &implicit_projection_scalar_jacobian,
-        );
-        let compiled_implicit_projection_jacobian_v = if execution_backend.is_some() {
-            Some(projection_reuse.jacobian(
-                primary_compiled.map(|code| &code.implicit_projection_jacobian_v),
-                &implicit_projection_scalar_jacobian,
-                &mut |block| {
-                    require_prepared(
-                        "implicit_projection_jacobian_v",
-                        compiled_jacobian(
-                            execution_backend.as_ref(),
-                            "implicit_projection_jacobian_v",
-                            block,
-                        )?,
-                    )
-                },
-            )?)
-        } else {
-            None
-        };
         let implicit_full_jacobian_v = model
             .artifacts
             .continuous
             .implicit_jacobian_v_scalar
             .clone();
-        let full_reuse = BlockReuse::of(
-            primary.map(|primary| &primary.scalar.implicit_jacobian_v),
-            &implicit_full_jacobian_v,
-        );
-        let compiled_implicit_full_jacobian_v = if execution_backend.is_some() {
-            Some(full_reuse.jacobian(
-                primary_compiled.map(|code| &code.implicit_full_jacobian_v),
-                &implicit_full_jacobian_v,
-                &mut |block| {
-                    require_prepared(
-                        "implicit_full_jacobian_v",
-                        compiled_jacobian(
-                            execution_backend.as_ref(),
-                            "implicit_full_jacobian_v",
-                            block,
-                        )?,
-                    )
-                },
-            )?)
-        } else {
-            None
-        };
-        let replaced_rows = implicit_reuse
-            .replaced_outputs(&implicit_scalar_programs)?
-            .into_iter()
-            .chain(projection_reuse.replaced_outputs(&implicit_projection_scalar_jacobian)?)
-            .collect::<BTreeSet<_>>();
-        let implicit_scalar_rhs = implicit_reuse.prepared(
+        let replaced_rows = PrimalProgram::replaced_outputs(
             primary.map(|primary| &primary.scalar.implicit_scalar_rhs),
-            implicit_scalar_programs,
+            &implicit_scalar_programs,
+        )?
+        .into_iter()
+        .chain(DirectionalProgram::replaced_outputs(
+            primary.map(|primary| &primary.scalar.implicit_projection_scalar_jacobian_v),
+            &implicit_projection_scalar_jacobian,
+        )?)
+        .collect::<BTreeSet<_>>();
+        let implicit_scalar_rhs = PrimalProgram::prepare_with_compute(
+            "implicit_rhs",
+            implicit_scalar_programs.clone(),
+            &model.problem.continuous.implicit_rhs,
+            execution_backend.as_ref(),
+            primary.map(|primary| &primary.scalar.implicit_scalar_rhs),
+        )?;
+        let implicit_projection_scalar_jacobian_v = DirectionalProgram::prepare(
+            "implicit_projection_jacobian_v",
+            implicit_projection_scalar_jacobian.clone(),
+            execution_backend.as_ref(),
+            primary.map(|primary| &primary.scalar.implicit_projection_scalar_jacobian_v),
+        )?;
+        let implicit_jacobian_v = DirectionalProgram::prepare(
+            "implicit_full_jacobian_v",
+            implicit_full_jacobian_v.clone(),
+            execution_backend.as_ref(),
+            primary.map(|primary| &primary.scalar.implicit_jacobian_v),
         )?;
         let manifold = manifold_execution::PreparedManifoldProjection::new(
             model,
@@ -302,13 +249,13 @@ impl SolveRuntime {
         let (initial_scalar_residual, initial_continuation) =
             InitialContinuationCoverage::certify_runtime_blocks(
                 model,
-                &implicit_scalar_rhs,
+                &implicit_scalar_programs,
                 &algebraic_refresh,
             )?;
         let settled_read_cones = initial_projection::settled_read_cones(
             model,
             &initial_scalar_residual,
-            implicit_scalar_rhs.block(),
+            &implicit_scalar_programs,
             &algebraic_refresh.simultaneous_plan,
         )?;
         let projection_demand =
@@ -321,11 +268,8 @@ impl SolveRuntime {
             ),
             None => refresh_projection::prepare_projection_jacobians(
                 &continuous_structural,
-                &implicit_scalar_rhs,
-                &implicit_projection_scalar_jacobian,
-                compiled_implicit_projection_jacobian_v
-                    .as_ref()
-                    .map(|code| code.as_ref() as &dyn CompiledSolveJacobianExpression),
+                implicit_scalar_rhs.source(),
+                &implicit_projection_scalar_jacobian_v,
                 &projection_demand,
             )?,
         };
@@ -344,7 +288,7 @@ impl SolveRuntime {
         ];
         refresh_plans.extend(clock_event_refresh.iter());
         let static_refresh_parameter_indices = static_refresh_parameter_indices(
-            &implicit_scalar_rhs,
+            implicit_scalar_rhs.source(),
             refresh_plans,
             &refresh_program_rows,
         );
@@ -360,7 +304,7 @@ impl SolveRuntime {
                 span: None,
             });
         }
-        trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
+        trace_reverse_projection_coverage(model, implicit_scalar_rhs.source());
         let visible_rows = model.visible_projection().scalar_rows().map_err(|error| {
             EvalSolveError::InvalidRow {
                 message: error.to_string(),
@@ -479,7 +423,8 @@ impl SolveRuntime {
             &model.problem.continuous.refresh_owners,
             &model.problem.continuous.algebraic_projection_plan,
             &continuous_structural,
-            &implicit_scalar_rhs,
+            implicit_scalar_rhs.source(),
+            &implicit_scalar_programs,
             execution_backend.as_deref(),
             primary.map(|primary| {
                 block_residual_split::SharedSplits::new(
@@ -524,12 +469,13 @@ impl SolveRuntime {
         } else {
             None
         };
-        let has_compiled_projection = compiled_implicit_projection_jacobian_v.is_some();
+        let has_compiled_projection = implicit_projection_scalar_jacobian_v.is_compiled();
         let expressions = match &execution_backend {
             None => PreparedExpressions::Reference,
             Some(backend) => PreparedExpressions::Compiled(Box::new(CompiledExpressions {
-                implicit_targets: compiled_targets::TargetQueries::prepare_with_primary(
-                    &implicit_scalar_rhs,
+                implicit_targets: compiled_targets::TargetQueries::prepare_implicit_with_primary(
+                    &implicit_scalar_programs,
+                    implicit_scalar_rhs.source(),
                     model
                         .problem
                         .continuous
@@ -587,15 +533,6 @@ impl SolveRuntime {
                     model_owner.clone(),
                     backend.as_ref(),
                 )?,
-                implicit_rhs: require_prepared("implicit_rhs", compiled_implicit_rhs)?,
-                implicit_projection_jacobian_v: require_prepared(
-                    "implicit_projection_jacobian_v",
-                    compiled_implicit_projection_jacobian_v,
-                )?,
-                implicit_full_jacobian_v: require_prepared(
-                    "implicit_full_jacobian_v",
-                    compiled_implicit_full_jacobian_v,
-                )?,
                 initial_residual: require_prepared("initial_residual", compiled_initial_residual)?,
                 initial_residual_jacobian_v: require_prepared(
                     "initial_residual_jacobian_v",
@@ -616,16 +553,6 @@ impl SolveRuntime {
             )?,
             expressions,
             observation_authority: solve_eval::EventObservationAuthority::default(),
-            implicit_rhs: prepare_compute(
-                |primary| &primary.implicit_rhs,
-                &model.problem.continuous.implicit_rhs,
-                "runtime_implicit_rhs",
-            )?,
-            implicit_projection_jacobian_v: prepare_compute(
-                |primary| &primary.implicit_projection_jacobian_v,
-                &model.artifacts.continuous.implicit_jacobian_v,
-                "runtime_implicit_projection_jacobian_v",
-            )?,
             torn_tangents: torn_tangent_evaluators(
                 &model.problem.continuous.algebraic_projection_plan,
                 &implicit_projection_scalar_jacobian,
@@ -645,10 +572,7 @@ impl SolveRuntime {
             active_split: std::cell::Cell::new(None),
             split_row_scratch: std::cell::RefCell::new(Vec::new()),
             residual_row_batch: std::cell::RefCell::default(),
-            implicit_projection_scalar_jacobian_v: projection_reuse.prepared(
-                primary.map(|primary| &primary.scalar.implicit_projection_scalar_jacobian_v),
-                implicit_projection_scalar_jacobian,
-            )?,
+            implicit_projection_scalar_jacobian_v,
             implicit_scalar_rhs,
             refresh_program_rows,
             manifold,
@@ -677,10 +601,7 @@ impl SolveRuntime {
                 |primary| &primary.derivative_scalar,
                 derivative_scalar_rhs,
             )?,
-            implicit_jacobian_v: full_reuse.prepared(
-                primary.map(|primary| &primary.scalar.implicit_jacobian_v),
-                implicit_full_jacobian_v,
-            )?,
+            implicit_jacobian_v,
             continuous_structural,
             initialization_structural,
             algebraic_newton_caches,
