@@ -68,5 +68,34 @@
     "checked-assertion-host-after-cfg.log": "7ccaebdd2fcd5761d37d8b01303d63543fdd1cd7f4bb425c5f420bb62dddcdd4",
     "checked-assertion-host-all-lib.log": "50865b18278d0fc5c611c7ebc4624951e4a3b7f231e8f15e59d0083dbedcb916",
     "checked-assertion-host-all-lib-nix.log": "de4ccaf036dd6ac8672b1d80f4f1d73163964098ec7a7b61ae1fb0b27c257d4b"
+  },
+  "mergedGate": {
+    "revision": "a713487cbf0725c9fcb303bb93a5b210235f39e7",
+    "command": "cargo test --release -p rumoca-exec-wasm --features host-engine --lib (nix develop; shared owned target; concurrency 4)",
+    "libraryTestsPassed": 143,
+    "libraryTestsFailed": 0,
+    "exitCode": 0,
+    "sourceFiles": {
+      "crates/rumoca-exec-wasm/src/host_runtime.rs": "9aeeb16936a6dcd252cbbc3fad679a8be31abee0127ad0b519d5706a46fa0e52",
+      "crates/rumoca-exec-wasm/src/host_typed_call_runtime.rs": "0345c09943894185a61a581ed9d86aeaa177f79ab8f6eaa61137f899e9630dda",
+      "crates/rumoca-exec-wasm/src/lib.rs": "d437081736e0e94c94dacd78f340c6aab014f0b1690d2526016dcb239c3cc581",
+      "crates/rumoca-exec-wasm/src/typed_call.rs": "61fe60c99748eb44c2a77a8978f4fc88e1d691556e88de2f5e0f7afa14b2da6b",
+      "crates/rumoca-exec-wasm/src/typed_call/checked_assertions.rs": "23e925c5aabbc0000577fe56e8f2d5ae6bb63d8ee21878de4d0cb0308fdc3645",
+      "crates/rumoca-exec-wasm/src/typed_call/checked_assertions/decode.rs": "a4bd3900f4de1a4d96595770585cde646776a90e598f4460e0782443443deccd",
+      "crates/rumoca-exec-wasm/src/typed_call/checked_assertions/tests.rs": "0411c610e937fc6a0e5569a41255e08bc173d8ac5e12bf73a87d8e9275f56a27",
+      "crates/rumoca-exec-wasm/src/typed_call/checked_assertions/tests/host_preparation.rs": "ceef6106bcb480d749ae1a1987de2a30cf6a92a215b1cd4ceeafe3f09afb3ec8",
+      "crates/rumoca-exec-wasm/src/typed_call/observations.rs": "bbefa4f3714e911d5a46eba843d3a974a8570e82c8c4067a4f345ccd4ed67041",
+      "crates/rumoca-exec-wasm/src/typed_call/observations/plan.rs": "b93c93983573738d53abf0ba427e554e9607e6ec94c5d99ba62305491b5e3b85"
+    },
+    "trackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "log": {
+      "name": "merged-host-library.log",
+      "sha256": "1be2ecee6cc5a0f02f7349276686b472c8ace2ca5e7146a9b011ca00db45604c"
+    },
+    "limits": [
+      "library host controls only; retained solver acceptance and fresh browser not proven",
+      "merged clippy and doctests pending",
+      "full source closure and pre-landing gate remain unproven"
+    ]
   }
 }
