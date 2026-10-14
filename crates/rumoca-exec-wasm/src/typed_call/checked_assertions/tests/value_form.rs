@@ -179,21 +179,39 @@ fn numeric_program(site: solve::SolvePureCallSite) -> solve::ScalarProgramBlock 
 }
 
 #[test]
-fn private_numeric_no_capture_fold_continues_and_preserves_invalid_boolean_atomicity() {
+fn private_numeric_no_capture_fold_continues_and_preserves_guard_atomicity() {
     let table = no_capture_loop_table(solve::SolveAssertionLevel::Error);
     let site = table.owners()[1].call_site();
-    for input in [0, 1] {
+    let source = numeric_program(site.clone());
+    let reference = rumoca_eval_solve::PreparedScalarProgramBlock::new(source.clone()).unwrap();
+    for input in [0, 1, 2] {
         let expected = reference_cells(&table, &site, &[input]);
         // Nested diagnostic slots stay inactive in the ordinary value tuple.
         assert_eq!(expected, [3, 1]);
         native_control(&table, &site, &[input], &expected);
+        let mut values = vec![19.0; source.output_count()];
+        reference
+            .eval_with_context(
+                &[input as f64],
+                &[],
+                0.0,
+                rumoca_eval_solve::RowEvalContext {
+                    pure_calls: Some(&table),
+                    ..Default::default()
+                },
+                &mut values,
+            )
+            .unwrap();
+        assert_eq!(
+            values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            [-0.0f64, 3.0, 1.0].map(f64::to_bits)
+        );
     }
-    let source = numeric_program(site);
     let layout = solve::VarLayout::from_parts(Default::default(), 1, 0);
     let code = crate::compile_private_program_wasm(&source, &layout, &table)
         .expect("the canonical private numeric value form must lower");
     let mut scratch = vec![19.0; code.scratch_bytes() as usize / 8];
-    for input in [0.0, 1.0, 0.0] {
+    for input in [0.0, 1.0, 2.0, 0.0] {
         code.call(&[input], &[], 0.0, &mut scratch).unwrap();
         assert_eq!(
             scratch[..3].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
@@ -202,9 +220,9 @@ fn private_numeric_no_capture_fold_continues_and_preserves_invalid_boolean_atomi
     }
     scratch.fill(19.0);
     let before = scratch.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-    let error = code.call(&[2.0], &[], 0.0, &mut scratch).unwrap_err();
+    let error = code.call(&[], &[], 0.0, &mut scratch).unwrap_err();
     assert!(
-        matches!(error, crate::WasmCompileError::TypedSource(ref fault) if fault.kind == crate::TypedCallFaultKind::InvalidInput),
+        matches!(error, crate::WasmCompileError::Input(_)),
         "{error:?}"
     );
     assert_eq!(
