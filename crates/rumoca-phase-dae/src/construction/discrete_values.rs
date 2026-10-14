@@ -81,7 +81,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
         let declarations = flat
             .variables
             .values()
-            .map(|variable| (variable.instance_id, variable.source_span))
+            .map(|variable| (variable.instance_id, variable))
             .collect::<HashMap<_, _>>();
         let mut orders = HashMap::new();
         for (owner, targets) in plan.ordered_owners().iter().enumerate() {
@@ -90,14 +90,17 @@ impl<'dae> DiscreteValueStaging<'dae> {
                 | analysis::DiscreteTargetKey::Element { instance, .. }) = key;
                 let variable = coordinates.by_instance()[instance]
                     .discrete_value()
-                    .expect("B.1c analysis proves discrete-value target roles");
+                    .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+                        name: declarations[instance].name.clone(),
+                        span: declarations[instance].source_span,
+                    })?;
                 let target = match key {
                     analysis::DiscreteTargetKey::Whole(_) => variable.into(),
                     analysis::DiscreteTargetKey::Element { indices, .. } => construction
                         .discrete_value_element(
                             variable,
                             indices,
-                            dae::DaeProvenance::source(declarations[instance])?,
+                            dae::DaeProvenance::source(declarations[instance].source_span)?,
                         )?,
                 };
                 orders.insert(

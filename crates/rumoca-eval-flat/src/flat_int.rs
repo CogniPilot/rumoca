@@ -34,13 +34,7 @@ pub fn try_eval_flat_expr_i64(
         return None;
     }
     let environment = StructuralBindings { flat, depth };
-    match crate::constant::eval_expr_with_span(
-        expr,
-        &environment,
-        expr.span().unwrap_or(rumoca_core::Span::DUMMY),
-    )
-    .ok()?
-    {
+    match crate::constant::eval_expr(expr, &environment).ok()? {
         crate::constant::Value::Integer(value) => Some(value),
         _ => None,
     }
@@ -119,10 +113,7 @@ pub fn eval_size_call_i64(
     flat: &flat::Model,
     depth: u8,
 ) -> Option<i64> {
-    let span = array_arg
-        .span()
-        .or_else(|| dim_arg.span())
-        .unwrap_or(rumoca_core::Span::DUMMY);
+    let span = array_arg.span().or_else(|| dim_arg.span())?;
     try_eval_flat_expr_i64(
         &rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Size,
@@ -132,21 +123,6 @@ pub fn eval_size_call_i64(
         flat,
         depth,
     )
-}
-
-/// Size of dimension `dim` (1-based) of a literal array expression.
-pub fn literal_array_dim_size(expr: &rumoca_core::Expression, dim: usize) -> Option<i64> {
-    let rumoca_core::Expression::Array { elements, .. } = expr else {
-        return None;
-    };
-    match dim {
-        1 => Some(elements.len() as i64),
-        2 => elements.first().and_then(|first| match first {
-            rumoca_core::Expression::Array { elements, .. } => Some(elements.len() as i64),
-            _ => None,
-        }),
-        _ => None,
-    }
 }
 
 /// Structural integer value of a flat variable that is a `constant` or

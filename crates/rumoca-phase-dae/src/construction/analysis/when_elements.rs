@@ -168,7 +168,7 @@ fn claim_equation_targets(
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
-        for instance in whole_target_instances(flat, equation, calls) {
+        for instance in whole_target_instances(flat, equation, calls)? {
             owners
                 .entry(instance)
                 .or_default()
@@ -217,7 +217,7 @@ fn branch_targets(
 ) -> Result<HashSet<DiscreteTargetKey>, ToDaeError> {
     let mut targets = HashSet::new();
     let mut whole = HashSet::new();
-    collect_whole_targets(flat, equations, &mut whole, calls);
+    collect_whole_targets(flat, equations, &mut whole, calls)?;
     for equation in equations {
         let new = match equation {
             flat::WhenEquation::AssignElement {
@@ -259,30 +259,39 @@ fn collect_whole_targets(
     equations: &[flat::WhenEquation],
     whole: &mut HashSet<InstanceId>,
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
-) {
+) -> Result<(), ToDaeError> {
     for equation in equations {
-        whole.extend(whole_target_instances(flat, equation, calls));
-        collect_nested_whole_targets(flat, equation, whole, calls);
+        whole.extend(whole_target_instances(flat, equation, calls)?);
+        collect_nested_whole_targets(flat, equation, whole, calls)?;
     }
+    Ok(())
 }
 
 fn whole_target_instances(
     flat: &flat::Model,
     equation: &flat::WhenEquation,
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
-) -> Vec<InstanceId> {
+) -> Result<Vec<InstanceId>, ToDaeError> {
     let names = match equation {
         flat::WhenEquation::Assign { target, .. } => {
-            return flat
+            return Ok(flat
                 .variables
                 .get(target)
                 .map(|variable| vec![variable.instance_id])
-                .unwrap_or_default();
+                .unwrap_or_default());
         }
         flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
-            let key = when_function_call_key(flat, outputs, *span)
-                .expect("call analysis proves exact receiver identities");
-            calls[&key]
+            let invalid = || {
+                ToDaeError::unsupported_flat(
+                    "when function-call receivers",
+                    "requires an issued exact receiver plan",
+                    *span,
+                )
+            };
+            let key = when_function_call_key(flat, outputs, *span)?;
+            calls
+                .get(&key)
+                .ok_or_else(invalid)?
                 .outputs
                 .iter()
                 .flatten()
@@ -291,10 +300,10 @@ fn whole_target_instances(
         }
         _ => Vec::new(),
     };
-    names
+    Ok(names
         .into_iter()
         .map(|name| flat.variables[name].instance_id)
-        .collect()
+        .collect())
 }
 
 fn collect_nested_whole_targets(
@@ -302,7 +311,7 @@ fn collect_nested_whole_targets(
     equation: &flat::WhenEquation,
     whole: &mut HashSet<InstanceId>,
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
-) {
+) -> Result<(), ToDaeError> {
     if let flat::WhenEquation::Conditional {
         branches,
         else_branch,
@@ -314,9 +323,10 @@ fn collect_nested_whole_targets(
             .map(|(_, nested)| nested.as_slice())
             .chain(else_branch.as_deref())
         {
-            collect_whole_targets(flat, nested, whole, calls);
+            collect_whole_targets(flat, nested, whole, calls)?;
         }
     }
+    Ok(())
 }
 
 pub(in crate::construction) fn selected_target(

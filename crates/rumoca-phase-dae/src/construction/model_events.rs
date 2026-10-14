@@ -676,9 +676,12 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                     &selection.indices,
                     provenance,
                 )?;
-                let owner = owners
-                    .discrete_value
-                    .expect("selected m has its exact B.1c owner");
+                let owner = owners.discrete_value.ok_or(
+                    dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
+                        target: target.index(),
+                        span,
+                    },
+                )?;
                 self.discrete_values
                     .when(super::discrete_values::DiscreteWhenAssignment {
                         owner,

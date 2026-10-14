@@ -117,7 +117,7 @@ pub(super) fn analyze_discrete_value_topology(
     )?;
     collect_algorithm_owners(flat, roles, &mut owners)?;
     collect_when_owners(flat, roles, &mut owners)?;
-    let held_targets = add_held_owners(flat, roles, &mut owners);
+    let held_targets = add_held_owners(flat, roles, &mut owners)?;
     order_owners(flat, owners, held_targets, &observed)
 }
 
@@ -724,7 +724,7 @@ fn add_held_elements(
     flat: &flat::Model,
     owners: &mut Vec<SourceOwner>,
     held: &mut Vec<HeldTargetPlan>,
-) {
+) -> Result<(), ToDaeError> {
     let mut selected = HashMap::<InstanceId, HashSet<Box<[i64]>>>::new();
     for target in owners.iter().flat_map(|owner| &owner.targets) {
         if let Some(selection) = &target.selection {
@@ -738,11 +738,21 @@ fn add_held_elements(
         let Some(defined) = selected.get(&variable.instance_id) else {
             continue;
         };
-        let count = variable
+        let invalid_extent = || {
+            ToDaeError::unsupported_flat(
+                "selected discrete array",
+                "requires representable nonnegative scalar extents and scalar count",
+                variable.source_span,
+            )
+        };
+        let extents = variable
             .dims
             .iter()
-            .map(|&extent| usize::try_from(extent).expect("analysis checked extent"))
-            .product::<usize>();
+            .map(|&extent| usize::try_from(extent).map_err(|_| invalid_extent()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = extents.iter().try_fold(1usize, |count, &extent| {
+            count.checked_mul(extent).ok_or_else(invalid_extent)
+        })?;
         for scalar in 0..count {
             let mut remainder = scalar;
             let mut indices = vec![0; variable.dims.len()];
@@ -776,13 +786,14 @@ fn add_held_elements(
             });
         }
     }
+    Ok(())
 }
 
 fn add_held_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     owners: &mut Vec<SourceOwner>,
-) -> Vec<HeldTargetPlan> {
+) -> Result<Vec<HeldTargetPlan>, ToDaeError> {
     let defined = owners
         .iter()
         .flat_map(|owner| owner.targets.iter().map(|target| target.name.clone()))
@@ -807,8 +818,8 @@ fn add_held_owners(
             });
         }
     }
-    add_held_elements(flat, owners, &mut held_targets);
-    held_targets
+    add_held_elements(flat, owners, &mut held_targets)?;
+    Ok(held_targets)
 }
 
 fn order_owners(
@@ -1100,12 +1111,13 @@ fn collect_current_discrete_dependencies(
             .is_some_and(|value| matches!(value, Expression::VarRef { .. })) => {}
         Expression::Index {
             base, subscripts, ..
-        } if matches!(base.as_ref(), Expression::VarRef { .. }) => {
-            let Expression::VarRef { name, .. } = base.as_ref() else {
-                unreachable!()
-            };
-            if matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue)) {
+        } => {
+            if let Expression::VarRef { name, .. } = base.as_ref()
+                && matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue))
+            {
                 dependencies.insert(DiscreteTargetKey::from_reference(flat, name, expression));
+            } else {
+                collect_current_discrete_dependencies(flat, base, roles, dependencies);
             }
             for expr in subscripts.iter().filter_map(|subscript| match subscript {
                 Subscript::Expr { expr, .. } => Some(expr.as_ref()),
