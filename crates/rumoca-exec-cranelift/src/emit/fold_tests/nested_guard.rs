@@ -110,9 +110,8 @@ fn wrap_nested(
     ]
 }
 
-// The normal test call runs an interpreter precheck, which can refuse an active
-// access before reaching native code. Invoke the issued native kernel directly
-// after the same input/output admission, keeping the independent reference above.
+// Invoke the issued native kernel directly after input/output admission,
+// keeping the separately evaluated canonical reference as the oracle.
 pub(super) fn call_native(
     compiled: &CompiledResidualRows,
     condition: f64,
@@ -207,7 +206,11 @@ fn nested_fold_guard_preserves_both_polarities_and_selected_access_faults() {
         let error = call_native(&compiled, active, &mut out)
             .expect_err("native selected access preserves its fault");
         assert!(
-            error.to_string().contains("index is out of bounds"),
+            matches!(&error, CompileError::SourceOperation {
+                kind: crate::NativeSourceFault::TensorIndex,
+                message,
+                span: None,
+            } if message == "index 2 is outside 1..=1"),
             "{error:?}"
         );
         call_native(&compiled, inactive, &mut out)

@@ -1,21 +1,9 @@
 use super::{CompileError, LinearOp, RowPlan};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct InputRequirements {
-    pub(crate) y_len: usize,
-    pub(crate) p_len: usize,
-    pub(crate) seed_len: usize,
-}
+pub(crate) use rumoca_eval_solve::RowInputRequirements as InputRequirements;
 
-impl InputRequirements {
-    pub(super) fn merge(self, other: Self) -> Self {
-        Self {
-            y_len: self.y_len.max(other.y_len),
-            p_len: self.p_len.max(other.p_len),
-            seed_len: self.seed_len.max(other.seed_len),
-        }
-    }
-}
+#[cfg(test)]
+mod tests;
 
 pub(super) fn input_requirements_for_plans(rows: &[RowPlan]) -> InputRequirements {
     rows.iter()
@@ -33,74 +21,8 @@ pub(super) fn row_input_requirements(row: &RowPlan) -> InputRequirements {
 pub(super) fn input_requirements_for_linear_ops(
     row: &[LinearOp],
 ) -> Result<InputRequirements, CompileError> {
-    row.iter()
-        .cloned()
-        .map(input_requirements_for_linear_op)
-        .try_fold(InputRequirements::default(), |requirements, op| {
-            op.map(|op_requirements| requirements.merge(op_requirements))
-        })
-}
-
-fn input_requirements_for_linear_op(op: LinearOp) -> Result<InputRequirements, CompileError> {
-    match op {
-        LinearOp::LoadY { index, .. } => Ok(InputRequirements {
-            y_len: checked_required_len("y", index)?,
-            ..Default::default()
-        }),
-        LinearOp::LoadP { index, .. } => Ok(InputRequirements {
-            p_len: checked_required_len("p", index)?,
-            ..Default::default()
-        }),
-        LinearOp::LoadIndexedP { base, count, .. } => Ok(InputRequirements {
-            p_len: checked_required_indexed_len("p", base, count)?,
-            ..Default::default()
-        }),
-        LinearOp::LoadSeed { index, .. } => Ok(InputRequirements {
-            seed_len: checked_required_len("seed", index)?,
-            ..Default::default()
-        }),
-        LinearOp::LoadIndexedSeed { base, count, .. } => Ok(InputRequirements {
-            seed_len: checked_required_indexed_len("seed", base, count)?,
-            ..Default::default()
-        }),
-        LinearOp::FunctionFold { program, .. }
-        | LinearOp::GuardedFunctionFold { program, .. }
-        | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            program
-                .regions()
-                .try_fold(InputRequirements::default(), |requirements, region| {
-                    input_requirements_for_linear_ops(region).map(|found| requirements.merge(found))
-                })
-        }
-        LinearOp::FunctionConditional { program, .. } => {
-            let mut requirements = input_requirements_for_linear_ops(&program.fallback)?;
-            for arm in &program.arms {
-                requirements = requirements
-                    .merge(input_requirements_for_linear_ops(&arm.condition)?)
-                    .merge(input_requirements_for_linear_ops(&arm.result)?);
-            }
-            Ok(requirements)
-        }
-        _ => Ok(InputRequirements::default()),
-    }
-}
-
-fn checked_required_len(vector: &'static str, index: usize) -> Result<usize, CompileError> {
-    index
-        .checked_add(1)
-        .ok_or_else(|| CompileError::Backend(format!("{vector} input requirement overflow")))
-}
-
-fn checked_required_indexed_len(
-    vector: &'static str,
-    base: usize,
-    count: usize,
-) -> Result<usize, CompileError> {
-    if count == 0 {
-        return checked_required_len(vector, base);
-    }
-    base.checked_add(count)
-        .ok_or_else(|| CompileError::Backend(format!("{vector} input requirement overflow")))
+    rumoca_eval_solve::row_input_requirements(row)
+        .map_err(|error| CompileError::Backend(error.to_string()))
 }
 
 pub(super) fn validate_output_len(out: &[f64], row_count: usize) -> Result<(), CompileError> {
