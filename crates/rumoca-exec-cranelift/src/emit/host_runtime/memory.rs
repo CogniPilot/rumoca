@@ -6,8 +6,8 @@ use cranelift_jit::{ArenaMemoryProvider, BranchProtection, JITMemoryProvider};
 use cranelift_module::ModuleResult;
 use std::io;
 
-// Allocation granularity, not a limit: a larger request gets a larger chunk.
-const MIN_CHUNK_BYTES: usize = 64 * 1024;
+// Growth granularity, not a limit: a larger request gets a larger chunk.
+const CHUNK_GRANULARITY_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -75,7 +75,20 @@ impl Pool {
         {
             return chunk.allocate(self.kind, size, alignment, align, page);
         }
-        let capacity = aligned(size.max(MIN_CHUNK_BYTES), page)?;
+        // Tiny owners and newly published batches need only one actual page.
+        // Filled, unsealed pools grow geometrically to amortize protections.
+        let granularity = self
+            .chunks
+            .last()
+            .filter(|chunk| !chunk.sealed)
+            .map_or(page, |chunk| {
+                chunk
+                    .capacity
+                    .saturating_mul(2)
+                    .min(CHUNK_GRANULARITY_BYTES)
+                    .max(page)
+            });
+        let capacity = aligned(size.max(granularity), page)?;
         self.chunks
             .try_reserve(1)
             .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
