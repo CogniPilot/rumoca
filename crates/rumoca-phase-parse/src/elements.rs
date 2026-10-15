@@ -114,8 +114,8 @@ fn default_start_value(
     }
 }
 
-/// Extract annotation arguments from a component description.
-fn extract_annotation(
+/// Extract and validate annotation arguments from a class or component description.
+pub(crate) fn extract_annotation(
     desc: &modelica_grammar_trait::Description,
 ) -> anyhow::Result<Vec<rumoca_ir_ast::Expression>> {
     let Some(desc_opt) = &desc.description_opt else {

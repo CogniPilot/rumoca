@@ -960,7 +960,7 @@ areas.
 | ANN-005 | Derivative limit | §18.5.2.3 | "If x or y is der(v,n), then n must not exceed maximum differentiation applied to v" |
 | ANN-006 | Unit compatibility | §18.5.2.3 | "Error if unit of x or y expression is incompatible with axis unit" |
 | ANN-007 | Figure identifier unique | §18.5.2.1 | "Figure must be uniquely identified by its identifier" |
-| ANN-008 | Evaluate scope | §18.6 | "Annotation Evaluate is only allowed for parameters and constants" |
+| ANN-008 | Evaluate scope | §18.6 | Evaluate applies to parameters and constants; it may be written on the component, its type declaration, or a base of that type. |
 | ANN-009 | Evaluate non-evaluable warn | §18.6 | "For non-evaluable parameter, Evaluate has no impact; issue warning" |
 | ANN-010 | StopTime simulation model | §18.7 | "If StopTime is set in non-partial model, it is required to be a simulation model" |
 | ANN-011 | mustBeConnected error | §18.8 | "Error if connector does not appear as inside connector in any connect-equation" |

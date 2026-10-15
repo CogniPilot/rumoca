@@ -137,6 +137,31 @@ end UsesLoopIndexJ;
 }
 
 #[test]
+fn test_evaluate_on_type_declarations_is_allowed() {
+    // MLS §18.6 permits Evaluate on a component's type or a base of that type.
+    for declaration in [
+        "type Axis = Real[3] annotation(Evaluate=true);",
+        "type Base = Real[3] annotation(Evaluate=true); type Axis = Base;",
+    ] {
+        let source = format!("{declaration} model M parameter Axis axis={{1,0,0}}; end M;");
+        resolve_test_source(&source)
+            .expect("Evaluate on a parameter's type must not prevent resolution");
+    }
+}
+
+#[test]
+fn test_evaluate_on_model_declarations_is_an_error() {
+    let diagnostics = resolve_test_source("model M annotation(Evaluate=true); end M;")
+        .expect_err("a model declaration is not a parameter type");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER070")),
+        "expected ER070 for Evaluate on a model declaration, got: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_evaluate_on_non_parameter_component_is_always_an_error() {
     let source = r#"
 model EvaluateScopeWarning

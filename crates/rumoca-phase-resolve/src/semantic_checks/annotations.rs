@@ -9,12 +9,15 @@ pub(super) const ER070_EVALUATE_SCOPE: &str = "ER070";
 pub(super) const WR006_EVALUATE_WITHOUT_EFFECT: &str = "WR006";
 
 pub(super) fn check_annotation_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    check_non_component_evaluate_annotations(
-        &class.annotation,
-        "class",
-        class.name.text.as_ref(),
-        diags,
-    );
+    // MLS §18.6 permits Evaluate on a parameter's type declaration or its bases.
+    if class.class_type != ClassType::Type {
+        check_non_component_evaluate_annotations(
+            &class.annotation,
+            "class",
+            class.name.text.as_ref(),
+            diags,
+        );
+    }
 
     for ext in &class.extends {
         check_non_component_evaluate_annotations(
