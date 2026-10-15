@@ -1,4 +1,5 @@
 use super::*;
+use selected_programs::{CompleteExpression, CompleteJacobian};
 
 /// Both execution forms retain the same constraint programs and output order.
 #[derive(Clone)]
@@ -7,8 +8,8 @@ pub(super) struct PreparedManifoldProjection {
     directional: PreparedComputeBlock,
     directional_scalar: PreparedScalarProgramBlock,
     output_scratch: RefCell<Vec<f64>>,
-    compiled_residual: Option<Rc<dyn CompiledSolveExpression>>,
-    compiled_directional: Option<Rc<dyn CompiledSolveJacobianExpression>>,
+    compiled_residual: Option<Rc<CompleteExpression>>,
+    compiled_directional: Option<Rc<CompleteJacobian>>,
 }
 
 impl PreparedManifoldProjection {
@@ -21,22 +22,36 @@ impl PreparedManifoldProjection {
         let compiled = backend.filter(|_| !residual.is_empty());
         let compiled_residual = compiled
             .map(|backend| {
-                Ok::<_, EvalSolveError>(optional_compiled(
+                let source = to_scalar_program_block(residual)?;
+                let whole = required_compiled(
                     "manifold_residual",
-                    backend.compile_expression(&to_scalar_program_block(residual)?),
-                ))
+                    source.program_spans(),
+                    backend.compile_expression(&source),
+                )?;
+                selected_programs::expression_from_whole(
+                    backend,
+                    "manifold_residual",
+                    &source,
+                    whole,
+                )
             })
-            .transpose()?
-            .flatten();
+            .transpose()?;
         let compiled_directional = compiled
             .map(|backend| {
-                Ok::<_, EvalSolveError>(optional_compiled(
+                let source = to_scalar_program_block(directional)?;
+                let whole = required_compiled(
                     "manifold_jacobian_v",
-                    backend.compile_jacobian_expression(&to_scalar_program_block(directional)?),
-                ))
+                    source.program_spans(),
+                    backend.compile_jacobian_expression(&source),
+                )?;
+                selected_programs::jacobian_from_whole(
+                    backend,
+                    "manifold_jacobian_v",
+                    &source,
+                    whole,
+                )
             })
-            .transpose()?
-            .flatten();
+            .transpose()?;
         Ok(Self {
             residual: PreparedComputeBlock::new_with_label(residual, "runtime_manifold_residual")?,
             directional: PreparedComputeBlock::new_with_label(
@@ -91,15 +106,13 @@ impl PreparedManifoldProjection {
         context: RowEvalContext<'_>,
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = &self.compiled_directional
-            && compiled.call_program_outputs(
+        if let Some(compiled) = &self.compiled_directional {
+            return compiled.call_program_outputs(
                 program,
                 inputs,
                 context.external_tables.unwrap_or(&[]),
                 out,
-            )?
-        {
-            return Ok(());
+            );
         }
         self.directional_scalar
             .eval_row_outputs_unchecked_with_context(

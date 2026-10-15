@@ -93,7 +93,7 @@ impl SolveExecutionBackend for AssignmentBackend {
         _context: RowEvalContext<'_>,
     ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
         if !self.target_values {
-            return Err("test backend target values are disabled".into());
+            return Err("test backend target values disabled".into());
         }
         self.target_compilations
             .set(self.target_compilations.get() + 1);
@@ -127,9 +127,9 @@ impl SolveExecutionBackend for AssignmentBackend {
 
     fn compile_jacobian_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Err("unused by assignment test".into())
+        super::super::test_kernels::jacobian(block)
     }
 
     fn compile_assignment_schedule(
@@ -157,6 +157,7 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
     let model = warm_start_test_model();
     let backend = Rc::new(AssignmentBackend {
         schedule_failure: true,
+        target_values: true,
         ..Default::default()
     });
     let runtime = SolveRuntime::new_fixture_with_backend(&model, backend.clone()).unwrap();
@@ -200,18 +201,13 @@ fn projection(runtime: &SolveRuntime) -> RefreshProjectionModel<'_> {
             .algebraic_refresh
             .simultaneous_block_indices,
         plan_validated: true,
-        jacobian_v: ProjectionJacobian::SolverY {
-            block: &runtime
-                .scalar_execution()
-                .unwrap()
-                .scalar
-                .implicit_projection_jacobian_v,
-            scalar: &runtime
+        jacobian_v: ProjectionJacobian::SolverY(
+            &runtime
                 .scalar_execution()
                 .unwrap()
                 .scalar
                 .implicit_projection_scalar_jacobian_v,
-        },
+        ),
     }
 }
 
@@ -285,8 +281,13 @@ fn aggregate_outputs_do_not_generate_separate_native_assignment_programs() {
         solve::LinearOp::Const { dst: 3, value: 9.0 },
         solve::LinearOp::StoreOutput { src: 3 },
     ]);
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(spanned_block(vec![row], "shared_assignment.mo")).unwrap();
+    runtime.scalar_fixture_mut().implicit_scalar_rhs = PrimalProgram::prepare(
+        "reference fixture",
+        spanned_block(vec![row], "shared_assignment.mo"),
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         projection(&runtime)
             .eval_implicit_target_value(0, 1, &[1.0, 100.0], &[], 0.0)
@@ -302,12 +303,16 @@ fn native_assignment_preserves_a_tiny_root_beside_a_large_incoming_value() {
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
     runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(spanned_block(
+    runtime.scalar_fixture_mut().implicit_scalar_rhs = PrimalProgram::prepare(
+        "reference fixture",
+        spanned_block(
             vec![shifted_variable_residual_row(1, 1e-17)],
             "tiny_assignment.mo",
-        ))
-        .unwrap();
+        ),
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         projection(&runtime)
             .eval_implicit_target_value(0, 1, &[1.0, 1e20], &[], 0.0)
@@ -322,8 +327,9 @@ fn singular_coefficients_preserve_the_projection_decline() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(spanned_block(
+    runtime.scalar_fixture_mut().implicit_scalar_rhs = PrimalProgram::prepare(
+        "reference fixture",
+        spanned_block(
             vec![vec![
                 solve::LinearOp::LoadP { dst: 0, index: 0 },
                 solve::LinearOp::LoadY { dst: 1, index: 1 },
@@ -343,8 +349,11 @@ fn singular_coefficients_preserve_the_projection_decline() {
                 solve::LinearOp::StoreOutput { src: 4 },
             ]],
             "singular_assignment.mo",
-        ))
-        .unwrap();
+        ),
+        None,
+        None,
+    )
+    .unwrap();
     for coefficient in [2.0, 0.0, f64::INFINITY, f64::NAN] {
         runtime.scalar_fixture_mut().execution_backend = None;
         let reference = projection(&runtime)
@@ -464,16 +473,16 @@ impl CompiledSolveAssignmentSchedule for AdmittedSchedule {
 impl SolveExecutionBackend for ScheduleAdmission {
     fn compile_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        Err("unused by schedule admission test".into())
+        super::super::test_kernels::expression(block)
     }
 
     fn compile_jacobian_expression(
         &self,
-        _block: &solve::ScalarProgramBlock,
+        block: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Err("unused by schedule admission test".into())
+        super::super::test_kernels::jacobian(block)
     }
 
     fn compile_assignment_schedule(
@@ -547,30 +556,37 @@ fn schedules_the_backend_admits_have_no_interpreter_copy_and_run_compiled() {
 }
 
 #[test]
-fn only_the_schedule_the_backend_declines_is_prepared_for_the_interpreter() {
+fn a_declined_required_schedule_rejects_preparation() {
     let model = warm_start_test_model();
     let backend = schedule_admission(vec![0]);
-    let (runtime, issued) = runtime_with_admission(&model, &backend);
-    assert_eq!(runtime.interpreted_schedule_count(), 1);
-    assert!(issued >= 1);
+    let error = SolveRuntime::new_fixture_with_backend(&model, backend.clone())
+        .err()
+        .expect("a required schedule cannot decline");
+    assert!(
+        error
+            .to_string()
+            .contains("test backend declines this schedule")
+    );
+    assert_eq!(backend.asked.get(), 1);
+    assert_eq!(backend.executions.get(), 0);
 }
 
 #[test]
-fn the_backend_is_asked_once_per_event_transaction_and_a_decline_keeps_the_interpreter() {
+fn a_declined_transaction_rejects_preparation_before_execution() {
     let mut model = super::super::event_transactions::tests::transaction_model();
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
     let backend = schedule_admission(Vec::new());
-    let runtime = SolveRuntime::new_with_execution_backend(&model, Some(backend.clone())).unwrap();
-    assert_eq!(backend.transactions_asked.get(), 1);
+    let error = SolveRuntime::new_with_execution_backend(&model, Some(backend.clone()))
+        .err()
+        .expect("a required event transaction cannot decline");
     assert!(
-        runtime
-            .scalar_execution()
-            .unwrap()
-            .scalar
-            .compiled_event_transactions[0]
-            .is_none()
+        error
+            .to_string()
+            .contains("test backend declines every event transaction")
     );
+    assert_eq!(backend.transactions_asked.get(), 1);
+    assert_eq!(backend.executions.get(), 0);
 }
 
 #[test]

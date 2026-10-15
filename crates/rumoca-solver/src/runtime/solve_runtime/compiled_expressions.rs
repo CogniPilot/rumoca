@@ -8,9 +8,19 @@ use rumoca_ir_solve as solve;
 use super::CompiledSolveProjectionJacobian;
 
 /// Backend-neutral callable produced from one checked Solve-IR expression
-/// block. Native execution adapters implement this contract; the runtime
-/// retains the prepared evaluator as the correctness fallback.
+/// block. Native execution adapters implement this contract; a compiled runtime
+/// requires its whole-block implementation before construction succeeds.
 pub trait CompiledSolveExpression {
+    /// Bind an actual independent native entry of the exact source owner.
+    /// `None` requires preparation of a separate mandatory compiled program.
+    fn bind_program(
+        &self,
+        _source: &solve::ScalarProgramBlock,
+        _program: usize,
+    ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, String> {
+        Ok(None)
+    }
+
     /// Execute all local outputs of one retained source program. A decline
     /// occurs before execution; admitted execution errors must propagate.
     fn call_program_outputs(
@@ -64,8 +74,16 @@ pub trait CompiledSolveExpression {
 
 /// Backend-neutral callable for a checked forward-mode Solve-IR expression.
 pub trait CompiledSolveJacobianExpression {
+    /// Bind an existing directional entry without executing or recompiling it.
+    fn bind_program(
+        &self,
+        _source: &solve::ScalarProgramBlock,
+        _program: usize,
+    ) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, String> {
+        Ok(None)
+    }
     /// Prepare every application at once, one entry per application in
-    /// order; `None` leaves an application to the generic evaluator.
+    /// order; `None` leaves an application to its required whole compiled kernel.
     fn prepare_projections(
         &self,
         applications: &[&solve::ProjectionJacobianApplication],

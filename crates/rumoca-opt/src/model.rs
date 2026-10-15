@@ -129,9 +129,9 @@ impl DifferentiableModel {
     /// State names in solver state order.
     pub fn state_names(&self) -> Result<Vec<String>, OptError> {
         self.runtime
-            .model
+            .model()
             .problem
-            .solver_named_report(0..self.runtime.state_count)
+            .solver_named_report(0..self.runtime.state_count())
             .map_err(|error| OptError::Runtime(error.to_string()))
     }
 
@@ -184,7 +184,7 @@ impl DifferentiableModel {
 
     /// True when reverse-mode derivative VJP is exact for this model.
     pub fn supports_rhs_reverse_vjp(&self) -> bool {
-        self.runtime.solver_count == self.runtime.state_count
+        self.runtime.solver_count() == self.runtime.state_count()
     }
 
     pub(crate) fn runtime(&self) -> &rumoca_solver::SolveRuntime {

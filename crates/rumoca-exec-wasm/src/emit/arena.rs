@@ -1,6 +1,8 @@
 //! Private bounded register storage for compact native assignment programs.
 
 mod arithmetic;
+mod dual_arithmetic;
+mod dual_load;
 pub(in crate::emit) mod layouts;
 pub(in crate::emit) mod register_layout;
 mod storage;
@@ -18,6 +20,7 @@ pub(super) struct ArenaPlan {
     storage: ArenaStorage,
     pub(super) counter: u32,
     pub(super) inner_counter: u32,
+    pub(super) dense_workspace: Option<Reg>,
 }
 
 struct IssuedRegisterLayout {
@@ -46,7 +49,28 @@ impl ArenaPlan {
         rank: usize,
         policy: crate::CheckedNativeWasmCapacityPolicy,
     ) -> Result<Self, String> {
-        conditional::visit_operations(rows, validate_profile)?;
+        Self::required_with_profile(rows, rank, policy, false)
+    }
+
+    pub(super) fn required_directional(
+        rows: &[Vec<LinearOp>],
+        rank: usize,
+    ) -> Result<Self, String> {
+        Self::required_with_profile(
+            rows,
+            rank,
+            crate::CheckedNativeWasmCapacityPolicy::default(),
+            true,
+        )
+    }
+
+    fn required_with_profile(
+        rows: &[Vec<LinearOp>],
+        rank: usize,
+        policy: crate::CheckedNativeWasmCapacityPolicy,
+        directional: bool,
+    ) -> Result<Self, String> {
+        conditional::visit_operations(rows, |operation| validate_profile(operation, directional))?;
         let layouts = rows
             .iter()
             .map(|program| {
@@ -62,6 +86,14 @@ impl ArenaPlan {
             .max()
             .unwrap_or(0);
         let registers = conditional::workspace::register_extent(rows, root_registers)?;
+        let dense_cells = super::linear_solve::workspace_cells(rows)?;
+        let dense_workspace = (dense_cells != 0)
+            .then(|| Reg::try_from(registers))
+            .transpose()
+            .map_err(|_| "dense workspace address exceeds register storage")?;
+        let registers = registers
+            .checked_add(dense_cells)
+            .ok_or("dense workspace extent overflows")?;
         let bytes = registers
             .checked_mul(8)
             .ok_or("native register size overflow")?;
@@ -74,7 +106,7 @@ impl ArenaPlan {
             .checked_add(1)
             .ok_or("native arena local overflow")?;
         inner_counter
-            .checked_add(1)
+            .checked_add(if dense_workspace.is_some() { 3 } else { 1 })
             .ok_or("native arena local overflow")?;
         Ok(Self {
             layouts: layouts.into(),
@@ -83,6 +115,7 @@ impl ArenaPlan {
             storage: ArenaStorage::Defined,
             counter,
             inner_counter,
+            dense_workspace,
         })
     }
 
@@ -92,10 +125,14 @@ impl ArenaPlan {
             .ok_or_else(|| "native root program is outside its issued placement".to_owned())
     }
 
+    pub(in crate::emit) fn last_integer_local(&self) -> u32 {
+        self.inner_counter + if self.dense_workspace.is_some() { 2 } else { 0 }
+    }
+
     pub(super) fn locals(&self) -> Vec<(u32, ValType)> {
         vec![
             (2, ValType::F64),
-            (self.inner_counter - LOCAL_BASE - 1, ValType::I32),
+            (self.last_integer_local() - LOCAL_BASE - 1, ValType::I32),
         ]
     }
 
@@ -155,12 +192,12 @@ pub(super) fn is_tensor(op: &LinearOp) -> bool {
     )
 }
 
-fn validate_profile(op: &LinearOp) -> Result<(), String> {
+fn validate_profile(op: &LinearOp, directional: bool) -> Result<(), String> {
     let lanes = match op {
         LinearOp::TensorLoad {
             lanes, seed_start, ..
         } => {
-            if seed_start.is_some() {
+            if seed_start.is_some() && !directional {
                 return Err("native private register arena does not support seeds".into());
             }
             *lanes
@@ -174,7 +211,7 @@ fn validate_profile(op: &LinearOp) -> Result<(), String> {
         | LinearOp::TensorIdentity { lanes, .. } => *lanes,
         _ => return Ok(()),
     };
-    if lanes != 1 {
+    if lanes != 1 && !(directional && lanes == 2) {
         return Err("native private register arena requires one primal lane".into());
     }
     Ok(())

@@ -26,6 +26,7 @@ impl Clone for PreparedScalarProgramBlock {
             requirements: self.requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
             row_output_scratch: RefCell::new(Vec::new()),
+            target_value_families: RefCell::default(),
         }
     }
 }
@@ -106,7 +107,7 @@ pub fn replaced_programs(
     }
     let mut replaced = Vec::new();
     for (index, (base, target)) in base.programs().iter().zip(target.programs()).enumerate() {
-        if base == target {
+        if base == target && constant_bits(base) == constant_bits(target) {
             continue;
         }
         if ScalarProgramBlock::program_output_count(base)
@@ -185,6 +186,7 @@ impl PreparedScalarProgramBlock {
             requirements: RowInputRequirements::default(),
             scratch: RefCell::new(RowEvalScratch::default()),
             row_output_scratch: RefCell::new(Vec::new()),
+            target_value_families: RefCell::default(),
             block,
         };
         for row_idx in 0..row_count {
@@ -376,5 +378,36 @@ impl PreparedEvaluationBlock {
     ) -> Result<(), EvalSolveError> {
         self.0
             .eval_row_outputs_unchecked_with_context(row_idx, y, p, t, context, out)
+    }
+}
+
+#[derive(Default)]
+struct ConstantBits(Vec<u64>);
+
+impl rumoca_ir_solve::visitor::SolveVisitor for ConstantBits {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _: rumoca_ir_solve::visitor::LinearOpSliceKind,
+        _: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        if let LinearOp::Const { value, .. } = op {
+            self.0.push(value.to_bits());
+        }
+        Ok(())
+    }
+}
+
+fn constant_bits(ops: &[LinearOp]) -> Vec<u64> {
+    let mut bits = ConstantBits::default();
+    let kind = rumoca_ir_solve::visitor::LinearOpSliceKind::ScalarProgram {
+        program_index: 0,
+        span: None,
+    };
+    match rumoca_ir_solve::visitor::walk_linear_op_slice(&mut bits, kind, ops) {
+        Ok(()) => bits.0,
+        Err(infallible) => match infallible {},
     }
 }

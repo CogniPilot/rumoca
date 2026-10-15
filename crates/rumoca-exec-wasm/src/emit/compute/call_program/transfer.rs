@@ -36,7 +36,7 @@ impl BodyEmitter<'_> {
         // execution order; every later occurrence reads the memo tuple, so no
         // flag or branch decides it at run time.
         if memo.is_none_or(|memo| memo.issue()) {
-            self.pass_call_inputs(&site, &input_starts, &call, glue)?;
+            self.pass_call_inputs(site.inputs(), &input_starts, &call, glue)?;
             self.pass_call_buffers(&call, glue, memo)?;
             for offset in [plan.view().input, plan.view().output, plan.view().scratch] {
                 self.call_address(offset);
@@ -59,15 +59,50 @@ impl BodyEmitter<'_> {
         }
         // A memoized call leaves its results in the memo, where every use reads them.
         let results = memo.map_or_else(|| call_results(plan, &call.abi), |memo| memo.tuple);
-        self.read_call_outputs(dst_start, &site, (&call.abi, results), glue)
+        self.read_call_outputs(dst_start, site.outputs(), (&call.abi, results), glue)
+    }
+
+    pub(in crate::emit) fn emit_native_directional_call(
+        &mut self,
+        operation: &LinearOp,
+    ) -> Result<(), String> {
+        let LinearOp::PureCallDirectional {
+            dst_start,
+            input_starts,
+            site,
+        } = operation
+        else {
+            return Err("expected an issued directional call".into());
+        };
+        let plan = self
+            .calls
+            .ok_or("directional call requires its original model table")?;
+        let call = plan.directional_call(site)?;
+        self.pass_call_inputs(site.inputs(), input_starts, &call, None)?;
+        self.pass_call_buffers(&call, None, None)?;
+        for offset in [plan.view().input, plan.view().output, plan.view().scratch] {
+            self.call_address(offset);
+        }
+        self.push(Instruction::Call(call.function));
+        self.push(Instruction::LocalTee(plan.view().status));
+        self.push(Instruction::If(BlockType::Empty));
+        self.push(Instruction::LocalGet(plan.view().status));
+        self.push(Instruction::Return);
+        self.push(Instruction::End);
+        self.read_call_outputs(
+            *dst_start,
+            site.outputs(),
+            (&call.abi, call_results(plan, &call.abi)),
+            None,
+        )
     }
 
     /// Fill the callee's input tuple: small values are packed, and a value
     /// passed by reference is read in place from host Y or P when the glue
     /// proved its registers are exactly those cells, and is otherwise staged.
-    fn pass_call_inputs(
+    pub(in crate::emit) fn pass_call_inputs(
         &mut self,
-        site: &solve::SolvePureCallSite,
+        inputs: &[solve::SolveValueType],
         input_starts: &[Reg],
         call: &CallLayout,
         glue: Option<&CallGlue>,
@@ -75,7 +110,7 @@ impl BodyEmitter<'_> {
         let tuple = self.calls.ok_or("missing native call layout")?.view().input;
         let staging = Staging::of(&call.abi, call.input)?;
         let mut flat = 0u32;
-        for (k, (&start, value)) in input_starts.iter().zip(site.inputs()).enumerate() {
+        for (k, (&start, value)) in input_starts.iter().zip(inputs).enumerate() {
             let cell = tuple + call.abi.inputs[k].offset;
             if call.abi.inputs[k].by_reference {
                 let host = glue.and_then(|glue| glue.inputs.get(k).copied().flatten());
@@ -144,6 +179,13 @@ impl BodyEmitter<'_> {
     /// Store, in each cell the callee reserves for it, the address of the
     /// buffer it builds a by-reference output in: the call's memo buffer, the
     /// Y cells the glue proved the output is stored to, or a staging buffer.
+    pub(in crate::emit) fn pass_observation_buffers(
+        &mut self,
+        call: &CallLayout,
+    ) -> Result<(), String> {
+        self.pass_call_buffers(call, None, None)
+    }
+
     fn pass_call_buffers(
         &mut self,
         call: &CallLayout,
@@ -178,12 +220,12 @@ impl BodyEmitter<'_> {
     fn read_call_outputs(
         &mut self,
         dst_start: Reg,
-        site: &solve::SolvePureCallSite,
+        outputs: &[solve::SolvePureCallOutput],
         (abi, results): (&CallAbi, u32),
         glue: Option<&CallGlue>,
     ) -> Result<(), String> {
         let (mut register, mut flat) = (dst_start, 0u32);
-        for (k, output) in site.outputs().iter().enumerate() {
+        for (k, output) in outputs.iter().enumerate() {
             let value = output.value_type();
             let cell = results + abi.outputs[k].offset;
             if glue.is_some_and(|glue| glue.unread[k]) {
@@ -302,7 +344,7 @@ impl BodyEmitter<'_> {
         Err("native call cell is outside the call outputs".into())
     }
 
-    pub(super) fn call_address(&mut self, offset: u32) {
+    pub(in crate::emit) fn call_address(&mut self, offset: u32) {
         self.push(Instruction::LocalGet(SEED_PTR_PARAM));
         self.push(Instruction::I32Const(offset as i32));
         self.push(Instruction::I32Add);

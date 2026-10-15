@@ -1,10 +1,8 @@
 //! Records every compile request an execution backend declines.
 //!
-//! The runtime compiles programs lazily and runs a declined one in the
-//! interpreter. Wrapping the backend at the one handle every host hands to the
-//! component makes each decline observable at a single site, so the session's
-//! execution receipt can name what did not run compiled instead of leaving the
-//! fallback silent.
+//! The runtime prepares its required compiled inventory before admission.
+//! Wrapping the backend handle every host hands to the component makes each
+//! declined construction request observable in the session's execution receipt.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -89,6 +87,16 @@ impl SolveExecutionBackend for RecordingBackend {
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
         self.log
             .observe("expression", self.inner.compile_expression(block))
+    }
+
+    fn compile_event_observation(
+        &self,
+        program: solve::RetainedEventProgram,
+    ) -> Result<Rc<dyn crate::CompiledSolveEventObservation>, String> {
+        self.log.observe(
+            "event_observation",
+            self.inner.compile_event_observation(program),
+        )
     }
 
     fn compile_selectable_expression(

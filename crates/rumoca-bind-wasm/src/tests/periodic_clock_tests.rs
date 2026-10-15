@@ -34,20 +34,35 @@ fn an_interactive_session_keeps_ticking_past_one_second() {
 #[test]
 fn the_execution_receipt_names_the_engine_and_any_refusal() {
     let _guard = session_test_guard();
-    let mut session = crate::WasmSimulationSession::with_interactive_options(
-        SOURCE,
-        "PeriodicControllerClock",
-        0.005,
-        "rk-like",
-        1e-8,
-        1e-6,
-        "[]",
-    )
-    .unwrap();
-    let receipt: serde_json::Value =
-        serde_json::from_str(&session.execution_receipt_json().unwrap()).unwrap();
-    assert_eq!(
-        receipt,
-        serde_json::json!({"engine": "interpreter", "refusal": "no_continuous_states", "declined": []})
-    );
+    let compiled_engine = if cfg!(target_arch = "wasm32") {
+        "wasm_program"
+    } else {
+        "cranelift"
+    };
+    for (policy, engine, refusal) in [
+        (None, compiled_engine, None),
+        (Some("native_required"), compiled_engine, None),
+        (Some("auto"), "interpreter", Some("no_continuous_states")),
+        (Some("interpreter"), "interpreter", None),
+    ] {
+        let mut options = serde_json::json!({"dt": 0.005, "solver": "rk-like"});
+        if let Some(policy) = policy {
+            options["execution_policy"] = policy.into();
+        }
+        let mut session = crate::WasmSimulationSession::with_interactive_configuration(
+            SOURCE,
+            "PeriodicControllerClock",
+            &options.to_string(),
+        )
+        .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&session.execution_receipt_json().unwrap()).unwrap();
+        assert_eq!(
+            receipt,
+            serde_json::json!({"engine": engine, "refusal": refusal, "declined": []}),
+            "policy {policy:?}"
+        );
+        session.advance_to(0.1).unwrap();
+        assert_eq!(session.get("ticks").unwrap(), Some(11.0));
+    }
 }

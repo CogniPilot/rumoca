@@ -192,9 +192,7 @@ fn algebraic_seed_requests_reuse_one_fixed_coordinate_linearization() {
     let native = Rc::new(CountedJacobian {
         matrix_calls: Cell::new(0),
     });
-    runtime
-        .scalar_fixture_mut()
-        .compiled_implicit_full_jacobian_v = Some(native.clone());
+    install_mock_jacobian(&mut runtime, true, native.clone());
     for (sx, sp) in [(1.0, 0.0), (-3.0, 2.0), (5.0, -1.0)] {
         let mut seed = [sx, 99.0, sp];
         runtime
@@ -250,9 +248,7 @@ fn counted_runtime() -> (SolveRuntime, Rc<CountedJacobian>) {
     let native = Rc::new(CountedJacobian {
         matrix_calls: Cell::new(0),
     });
-    runtime
-        .scalar_fixture_mut()
-        .compiled_implicit_full_jacobian_v = Some(native.clone());
+    install_mock_jacobian(&mut runtime, true, native.clone());
     (runtime, native)
 }
 

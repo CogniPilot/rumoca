@@ -94,7 +94,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rumoca_eval_solve::{EvalSolveError, PreparedScalarProgramBlock, to_scalar_program_block};
+use rumoca_eval_solve::{EvalSolveError, to_scalar_program_block};
 use rumoca_ir_solve as solve;
 
 /// The exact solves the initialization homotopy continuation drives.
@@ -127,14 +127,14 @@ impl InitialContinuationCoverage {
     /// scalarization of the same compute block.
     pub(super) fn certify_runtime_blocks(
         model: &solve::SolveModel,
-        implicit_scalar_rhs: &PreparedScalarProgramBlock,
+        implicit_scalar_rhs: &solve::ScalarProgramBlock,
         algebraic_refresh: &solve::RefreshPlan,
     ) -> Result<(solve::ScalarProgramBlock, Option<Self>), EvalSolveError> {
         let initial_scalar_residual =
             to_scalar_program_block(model.problem.initialization.residual())?;
         let coverage = Self::certify(
             model,
-            implicit_scalar_rhs.block(),
+            implicit_scalar_rhs,
             &initial_scalar_residual,
             algebraic_refresh,
         )?;

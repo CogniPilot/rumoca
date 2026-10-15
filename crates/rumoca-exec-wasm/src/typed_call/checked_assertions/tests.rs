@@ -1,5 +1,11 @@
 //! Controls execute the issued WASM, not a model of its effect instructions.
 mod fixtures;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod host_preparation;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod value_form;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod value_rows;
 mod zero_result_flow;
 use super::*;
 use fixtures::*;

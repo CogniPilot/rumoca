@@ -216,7 +216,8 @@ fn private_target_gather_fault_reports_its_issued_gather_status() {
 #[test]
 fn private_host_calls_check_the_issued_layout_before_execution() {
     let fixture = fixture::plain(5);
-    let plan = prepared(&fixture)
+    let prepared = prepared(&fixture);
+    let plan = prepared
         .portable_target_value_plan(0, 0, 1)
         .unwrap()
         .unwrap();
@@ -241,7 +242,39 @@ fn private_host_calls_check_the_issued_layout_before_execution() {
             .unwrap_err();
         assert!(error.to_string().contains("differ from issued layout"));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(feature = "host-engine", not(target_arch = "wasm32"))
+    ))]
+    for (input, parameter) in [(-0., 0.5), (2.5, -0.), (2.5, -1.5), (-3., 2.)] {
+        let mut y = y;
+        y[0] = input;
+        let p = [parameter];
+        let expected = prepared
+            .eval_target_assignment_output_unchecked_with_context(
+                rumoca_eval_solve::TargetAssignmentOutputRequest {
+                    row_idx: 0,
+                    output_offset: 0,
+                    target_y_index: 1,
+                    y: &y,
+                    p: &p,
+                    t: 0.,
+                    context: rumoca_eval_solve::RowEvalContext {
+                        pure_calls: Some(&fixture.calls),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let mut scratch = vec![37.; cells];
+        compiled.call(&y, &p, 0., &mut scratch).unwrap();
+        assert_eq!(
+            scratch[plan.private_result_offset()].to_bits(),
+            expected.to_bits()
+        );
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "host-engine")))]
     {
         let mut scratch = vec![0.; cells];
         let error = compiled.call(&y, &[0.5], 0., &mut scratch).unwrap_err();

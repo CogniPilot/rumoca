@@ -1,6 +1,8 @@
 //! Borrowed observation authority for one exact scalar-program invocation.
 
+mod execution_source;
 mod retained;
+pub use execution_source::{RetainedEventInvocation, RetainedEventProgram, SolveExecutionSource};
 pub use retained::{
     RetainedAssertionAction, RetainedAssertionInputError, RetainedAssertionInvocation,
     RetainedAssertionMessagePart, RetainedAssertionResolutionError, RetainedAssertionRoot,

@@ -953,7 +953,7 @@ end DeclinedEvent;
         Rc<NativeCallCounters>,
         MeExecutionBackend,
     ) {
-        counting_handle_over(crate::native_execution::backend(&model.pure_calls))
+        counting_handle_over(crate::native_execution::backend(&model.pure_calls).unwrap())
     }
 
     /// Mutation fixture: a backend whose compiles succeed but whose every
@@ -1121,49 +1121,25 @@ end DeclinedEvent;
         }
     }
 
-    /// A program the backend declines runs in the interpreter, and the
-    /// session's receipt says so instead of leaving the fallback silent.
+    /// A required program refusal rejects the session before lifecycle entry.
     #[test]
-    fn a_declined_program_is_recorded_in_the_session_receipt() {
-        let opts = sim_opts(SimExecutionPolicy::Auto);
-        let model = event_fixture(&opts);
-        let handle = MeExecutionBackend::new(Rc::new(DecliningBackend));
-        let mut session =
-            super::SimulationSession::from_artifact(model.artifact(), opts, Some(handle))
-                .expect("a declined program falls back to the interpreter");
-        session
-            .advance_to(0.25)
-            .expect("interpreter runs the model");
-        assert_eq!(session.get("n").expect("read sampled counter"), Some(2.0));
-        let x = session.get("x").expect("read integrated state").expect("x");
-        assert!((x - 0.25).abs() < 1e-8, "x = {x}");
-        let z = session
-            .get("z")
-            .expect("read refreshed assignment")
-            .expect("z");
-        assert!((z - (0.125 + 0.25_f64.cos())).abs() < 1e-8, "z = {z}");
-        let receipt = session.execution_receipt();
-        assert!(
-            receipt
-                .declined
-                .iter()
-                .any(|decline| decline.program == "event_transaction"),
-            "declined compile requests must be listed: {receipt:?}"
-        );
-        assert!(
-            receipt
-                .declined
-                .iter()
-                .any(|decline| decline.program == "assignment_schedule"),
-            "the refreshed assignment must record its interpreter fallback: {receipt:?}"
-        );
-        assert!(
-            receipt
-                .declined
-                .iter()
-                .all(|decline| decline.reason == FORCED_DECLINE && decline.count > 0),
-            "{receipt:?}"
-        );
+    fn a_declined_required_program_rejects_session_preparation() {
+        for policy in [SimExecutionPolicy::NativeRequired, SimExecutionPolicy::Auto] {
+            let opts = sim_opts(policy);
+            let model = event_fixture(&opts);
+            let handle = MeExecutionBackend::new(Rc::new(DecliningBackend));
+            let error =
+                super::SimulationSession::from_artifact(model.artifact(), opts, Some(handle))
+                    .err()
+                    .expect("a declined required program must not construct a session");
+            assert!(error.to_string().contains(FORCED_DECLINE), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("required compiled program `implicit_rhs`"),
+                "{error}"
+            );
+        }
     }
 
     /// Discriminator (a): the Auto/native BDF path really executes compiled
@@ -1287,7 +1263,7 @@ end DeclinedEvent;
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = event_fixture(&opts);
         let backend = Rc::new(FailingEventTransactionBackend {
-            inner: crate::native_execution::backend(&model.pure_calls),
+            inner: crate::native_execution::backend(&model.pure_calls).unwrap(),
         });
         let handle = MeExecutionBackend::new(backend);
         let error = simulate_artifact(model.artifact(), &opts, Some(handle))
@@ -1403,12 +1379,16 @@ end DeclinedEvent;
         let opts = sim_opts(SimExecutionPolicy::Interpreter);
         let model = state_fixture(&opts);
         assert!(
-            admitted_native_execution_backend(&opts, &model).is_none(),
+            admitted_native_execution_backend(&opts, &model)
+                .unwrap()
+                .is_none(),
             "the interpreter policy must withhold the native execution backend"
         );
         let auto_opts = sim_opts(SimExecutionPolicy::Auto);
         assert!(
-            admitted_native_execution_backend(&auto_opts, &model).is_some(),
+            admitted_native_execution_backend(&auto_opts, &model)
+                .unwrap()
+                .is_some(),
             "the auto policy must compose a native execution backend for a state-carrying model"
         );
         let result = simulate_artifact(model.artifact(), &opts, None)
@@ -1524,13 +1504,17 @@ end DeclinedEvent;
             "fixture must be zero-state"
         );
         assert!(
-            admitted_native_execution_backend(&opts, &zero_model).is_none(),
+            admitted_native_execution_backend(&opts, &zero_model)
+                .unwrap()
+                .is_none(),
             "the shared admission gate must withhold the backend for a zero-state model \
              under Auto — no backend may even be constructed"
         );
         let state_model = state_fixture(&opts);
         assert!(
-            admitted_native_execution_backend(&opts, &state_model).is_some(),
+            admitted_native_execution_backend(&opts, &state_model)
+                .unwrap()
+                .is_some(),
             "the same gate must compose a backend for a state-carrying model under Auto, \
              or the zero-state assertion above is vacuous"
         );
@@ -1794,7 +1778,7 @@ end DeclinedEvent;
         // both), wrapped into one opaque handle per model.
         let counters = Rc::new(NativeCallCounters::default());
         let factory = Rc::new(CountingBackend {
-            inner: crate::native_execution::backend(&model_a.pure_calls),
+            inner: crate::native_execution::backend(&model_a.pure_calls).unwrap(),
             counters: counters.clone(),
         });
         let handle_a = MeExecutionBackend::new(factory.clone() as Rc<dyn SolveExecutionBackend>);
@@ -1872,7 +1856,9 @@ end DeclinedEvent;
         let model = zero_state_fixture(&opts);
         assert_eq!(model.state_scalar_count(), 0, "fixture must be zero-state");
         assert!(
-            admitted_native_execution_backend(&opts, &model).is_none(),
+            admitted_native_execution_backend(&opts, &model)
+                .unwrap()
+                .is_none(),
             "a zero-state model must not pay for a native backend it cannot use"
         );
         let (backend, counters, handle) = counting_handle(&model);

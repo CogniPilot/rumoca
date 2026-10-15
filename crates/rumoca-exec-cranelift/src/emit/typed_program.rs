@@ -123,6 +123,7 @@ pub(crate) struct CompiledPureCallTable {
     directional_symbols: Box<[Option<PureCallSymbol>]>,
     observation_symbols: Box<[Option<PureCallSymbol>]>,
     support: Box<[NativeOwnerSupport]>,
+    _source: solve::SolvePureCallTable,
     _input_results: Vec<InputResults>,
     _module: OwnedJitModule,
 }
@@ -146,6 +147,10 @@ impl CompiledPureCallTable {
         let mut compiler = TableCompiler::new(table_id, table, Emission::Define, &support)?;
         compiler.compile_all(table, &support)?;
         compiler.finish(table, support)
+    }
+
+    pub(crate) fn source_matches(&self, table: &solve::SolvePureCallTable) -> bool {
+        self._source.shares_table_owner(table)
     }
 
     pub(crate) fn owner_support(
@@ -643,33 +648,11 @@ impl TableCompiler {
         let pointer_type = config.pointer_type();
         let input_results = InputResults::new(coordinate)?;
         let mut context = self.module.make_context();
-        context
-            .func
-            .signature
-            .returns
-            .push(AbiParam::new(types::I8));
-        context
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(pointer_type));
-        context
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(pointer_type));
-        if recursion.is_some() {
-            context
-                .func
-                .signature
-                .params
-                .push(AbiParam::new(types::I64));
-        }
-        context
-            .func
-            .signature
-            .params
-            .push(AbiParam::new(pointer_type)); // caller-owned scratch
+        program_signature(
+            &mut context.func.signature,
+            pointer_type,
+            recursion.is_some(),
+        );
         let mut builder_context = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -687,7 +670,11 @@ impl TableCompiler {
                     parameters[2],
                 )
             });
-            let cache = input_results.enter(&mut builder, config, parameters[0], parameters[1])?;
+            let cache = if observation {
+                None
+            } else {
+                Some(input_results.enter(&mut builder, config, parameters[0], parameters[1])?)
+            };
             let ObservationCells {
                 cells,
                 slots: predicate_slots,
@@ -708,6 +695,7 @@ impl TableCompiler {
                 functions,
                 recursive_calls,
                 flags: MemFlags::new(),
+                operation: std::ptr::null(),
                 observation: observation.then(|| ObservationLowering {
                     owner_output: parameters[1],
                     input_slots: input_count,
@@ -717,7 +705,9 @@ impl TableCompiler {
             };
             lowerer.initialize_observation()?;
             lowerer.lower(program)?;
-            input_results.publish(&mut builder, config, cache, parameters[0], parameters[1])?;
+            if let Some(cache) = cache {
+                input_results.publish(&mut builder, config, cache, parameters[0], parameters[1])?;
+            }
             status::succeed(&mut builder);
             builder.finalize();
         }
@@ -793,6 +783,7 @@ impl TableCompiler {
             directional_symbols: directional_symbols.into_boxed_slice(),
             observation_symbols: observation_symbols.into_boxed_slice(),
             support: support.into_boxed_slice(),
+            _source: table.clone(),
             _input_results: self.input_results,
             _module: self.module,
         })
@@ -1178,11 +1169,13 @@ struct ProgramLowerer<'a, 'b> {
     flags: MemFlags,
     /// Present when lowering the assertion-observation form of an owner.
     observation: Option<ObservationLowering>,
+    operation: *const solve::SolveSpannedOperation,
 }
 
 impl ProgramLowerer<'_, '_> {
     fn lower(&mut self, program: &solve::TypedProgram) -> Result<(), CompileError> {
         for operation in program.operations() {
+            self.operation = operation as *const _;
             self.lower_operation(operation.operation())?;
         }
         Ok(())
@@ -1594,6 +1587,15 @@ impl ProgramLowerer<'_, '_> {
         output: Value,
     ) -> Result<Value, CompileError> {
         let input = self.packed_tape(arguments, "nested typed input")?;
+        if self.observation.is_some() {
+            let width = self.register_cell_count(arguments, "native child invocation")?;
+            self.carrier_event(
+                super::observation_carrier::CALL_ENTER,
+                input,
+                width as usize,
+                None,
+            )?;
+        }
         let call = match self
             .recursive_calls
             .filter(|calls| calls.group.contains(owner))
@@ -1633,6 +1635,7 @@ impl ProgramLowerer<'_, '_> {
             }
         };
         let status = self.builder.inst_results(call)[0];
+        self.carrier_event(super::observation_carrier::CALL_EXIT, input, 0, None)?;
         Ok(status)
     }
 
@@ -1971,4 +1974,18 @@ fn enter_group<'a>(
         functions,
         depth,
     }
+}
+
+fn program_signature(
+    signature: &mut cranelift_codegen::ir::Signature,
+    pointer_type: cranelift_codegen::ir::Type,
+    recursive: bool,
+) {
+    signature.returns.push(AbiParam::new(types::I8));
+    signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(pointer_type));
+    if recursive {
+        signature.params.push(AbiParam::new(types::I64));
+    }
+    signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
 }

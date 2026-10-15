@@ -1,6 +1,6 @@
 use super::host_runtime::{
-    rumoca_host_table_bounds_min, rumoca_host_table_lookup, rumoca_host_table_lookup_slope,
-    rumoca_host_table_next_event,
+    rumoca_host_table_bounds_max, rumoca_host_table_bounds_min, rumoca_host_table_lookup,
+    rumoca_host_table_lookup_slope, rumoca_host_table_next_event,
 };
 use super::*;
 
@@ -402,7 +402,9 @@ fn general_runtime_table_lookup_failure_is_error_not_silent_zero() {
     )
     .expect_err("missing table should report an evaluation error");
 
-    assert!(matches!(err, CompileError::Input(message) if message.contains("table id 42")));
+    assert!(matches!(err, CompileError::SourceOperation {
+        kind: crate::NativeSourceFault::ExternalTable, message, ..
+    } if message.contains("table id 42")));
 }
 
 #[test]
@@ -442,7 +444,9 @@ fn general_runtime_table_lookup_invalid_column_is_error_not_clamped() {
     .expect_err("invalid table column should report an evaluation error");
 
     assert!(
-        matches!(err, CompileError::Input(message) if message.contains("column 2")),
+        matches!(err, CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::ExternalTable, message, ..
+        } if message.contains("column 2")),
         "invalid column error should mention the requested column"
     );
 }
@@ -650,11 +654,35 @@ fn compiled_residual_program_writes_multiple_outputs() {
 }
 
 #[test]
-fn table_host_trampolines_keep_abi_boundary_nan_sentinel() {
-    assert!(rumoca_host_table_bounds_min(42.0).is_nan());
-    assert!(rumoca_host_table_lookup(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_lookup_slope(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_next_event(42.0, 0.0).is_nan());
+fn table_host_trampolines_return_fault_status_without_publishing() {
+    let mut value = 99.0;
+    // SAFETY: every callback receives one live writable result cell.
+    let status = unsafe { rumoca_host_table_bounds_min(42.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_bounds_max(42.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_lookup(42.0, 1.0, 1.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_lookup_slope(42.0, 1.0, 1.0, &mut value) };
+    assert_table_host_fault(status, value);
+    // SAFETY: the result cell remains live across this callback.
+    let status = unsafe { rumoca_host_table_next_event(42.0, 0.0, &mut value) };
+    assert_table_host_fault(status, value);
+}
+
+fn assert_table_host_fault(status: u8, value: f64) {
+    assert_eq!(status, status::TABLE_FAILURE);
+    assert!(matches!(
+        status::check(status),
+        Err(CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::ExternalTable,
+            ..
+        })
+    ));
+    assert_eq!(value, 99.0);
 }
 
 #[test]
@@ -667,4 +695,283 @@ fn cranelift_panics_are_typed_backend_errors_at_the_adapter_boundary() {
         error.to_string(),
         "cranelift execution error: Cranelift oversized relocation failed: relative relocation exceeds i32"
     );
+}
+
+#[test]
+fn assignment_table_fault_is_decoded_inside_its_invocation_scope() {
+    let tables = [ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    let row = vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::LoadP { dst: 1, index: 1 },
+        LinearOp::Const { dst: 2, value: 1.0 },
+        LinearOp::TableLookup {
+            dst: 3,
+            table_id: 0,
+            column: 1,
+            input: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ];
+    let compiled = compile_assignment_schedule(&[row], &[0]).unwrap();
+    for p in [[43.0, 1.0], [42.0, 2.0]] {
+        let mut y = [99.0];
+        let error = compiled
+            .call_with_external_tables(&mut y, &p, 0.0, &tables)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CompileError::SourceOperation {
+                    kind: crate::NativeSourceFault::ExternalTable,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(y, [99.0], "failed lookup must not publish its assignment");
+        compiled
+            .call_with_external_tables(&mut y, &[42.0, 1.0], 0.0, &tables)
+            .unwrap();
+        assert_eq!(
+            y,
+            [12.0],
+            "the next invocation must retain normal lookup semantics"
+        );
+    }
+}
+
+fn tensor_table_dual_row(input: rumoca_ir_solve::TensorInputKind) -> Vec<LinearOp> {
+    vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input,
+            input_start: 2,
+            count: 2,
+            seed_start: Some(3),
+            lanes: 2,
+        },
+        LinearOp::Const {
+            dst: 4,
+            value: 42.0,
+        },
+        LinearOp::Const { dst: 5, value: 1.0 },
+        LinearOp::TableLookup {
+            dst: 6,
+            table_id: 4,
+            column: 5,
+            input: 0,
+        },
+        LinearOp::TableLookupSlope {
+            dst: 7,
+            table_id: 4,
+            column: 5,
+            input: 0,
+        },
+        LinearOp::Binary {
+            dst: 8,
+            op: BinaryOp::Mul,
+            lhs: 7,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 6 },
+        LinearOp::StoreOutput { src: 8 },
+        LinearOp::StoreOutput { src: 2 },
+        LinearOp::StoreOutput { src: 3 },
+    ]
+}
+
+#[test]
+fn native_tensor_table_dual_load_preserves_values_seeds_and_preflight() {
+    use rumoca_ir_solve::TensorInputKind;
+    let tables = [ExternalTableData {
+        id: 42,
+        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 1,
+    }];
+    let input = [0.0, 0.0, 0.5, 1.0];
+    let seed = [0.0, 0.0, 0.0, 2.0, 3.0];
+    for kind in [TensorInputKind::Y, TensorInputKind::P] {
+        let compiled = compile_jacobian_rows(&[tensor_table_dual_row(kind)]).unwrap();
+        // This must fail before a before-fix build could invoke undersized pointers.
+        let expected = match kind {
+            TensorInputKind::Y => InputRequirements {
+                y_len: 4,
+                p_len: 0,
+                seed_len: 5,
+            },
+            TensorInputKind::P => InputRequirements {
+                y_len: 0,
+                p_len: 4,
+                seed_len: 5,
+            },
+        };
+        assert_eq!(compiled.input_requirements(), expected);
+        let (y, p) = match kind {
+            TensorInputKind::Y => (input.as_slice(), &[][..]),
+            TensorInputKind::P => (&[][..], input.as_slice()),
+        };
+        let mut output = [99.0; 4];
+        compiled
+            .call_with_external_tables(y, p, 0.0, &seed, &tables, &mut output)
+            .unwrap();
+        assert_eq!(output, [11.0, 4.0, 1.0, 3.0]);
+
+        for (bad_y, bad_p, bad_seed, vector) in [
+            (
+                &[][..],
+                &[][..],
+                seed.as_slice(),
+                match kind {
+                    TensorInputKind::Y => "y",
+                    TensorInputKind::P => "p",
+                },
+            ),
+            (y, p, &seed[..4], "seed"),
+        ] {
+            output = [99.0; 4];
+            let calls = compiled.jit_call_count();
+            let error = compiled
+                .call_with_external_tables(bad_y, bad_p, 0.0, bad_seed, &tables, &mut output)
+                .unwrap_err();
+            assert!(
+                matches!(error, CompileError::Input(ref message) if message.contains(&format!("missing {vector}["))),
+                "{error}"
+            );
+            assert_eq!(output, [99.0; 4]);
+            assert_eq!(
+                compiled.jit_call_count(),
+                calls,
+                "preflight must precede native entry"
+            );
+        }
+        output = [99.0; 4];
+        let error = compiled
+            .call_with_external_tables(y, p, 0.0, &seed, &[], &mut output)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                CompileError::SourceOperation {
+                    kind: crate::NativeSourceFault::ExternalTable,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(output, [99.0; 4]);
+        compiled
+            .call_with_external_tables(y, p, 0.0, &seed, &tables, &mut output)
+            .unwrap();
+        assert_eq!(output, [11.0, 4.0, 1.0, 3.0]);
+    }
+}
+
+fn native_table_fault_after_sine_row() -> Vec<LinearOp> {
+    vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::LoadY { dst: 2, index: 0 },
+        LinearOp::Unary {
+            dst: 3,
+            op: UnaryOp::Sin,
+            arg: 2,
+        },
+        LinearOp::TableLookup {
+            dst: 4,
+            table_id: 0,
+            column: 1,
+            input: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ]
+}
+
+// The native sine callback is an independent invocation witness: the RowPlan
+// interpreter evaluates sine directly and cannot increment this counter.
+#[test]
+fn native_table_fault_is_reported_by_whole_native_entry() {
+    let compiled = compile_residual_rows(&[native_table_fault_after_sine_row()]).unwrap();
+    super::host_runtime::take_sin_calls();
+    let mut output = [99.0];
+    let error = compiled
+        .call_with_external_tables(&[0.5], &[42.0], 0.0, &[], &mut output)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CompileError::SourceOperation {
+                kind: crate::NativeSourceFault::ExternalTable,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        super::host_runtime::take_sin_calls(),
+        1,
+        "the native entry must reach the table fault"
+    );
+    assert_eq!(output, [99.0]);
+}
+
+#[test]
+fn native_table_fault_is_reported_by_selected_native_entry() {
+    let compiled =
+        super::compile_selectable_residual_rows(&[native_table_fault_after_sine_row()], None)
+            .unwrap();
+    super::host_runtime::take_sin_calls();
+    let mut output = vec![99.0];
+    let error = compiled
+        .call_program_outputs(0, &[0.5], &[42.0], 0.0, &[], &mut output)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CompileError::SourceOperation {
+                kind: crate::NativeSourceFault::ExternalTable,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        super::host_runtime::take_sin_calls(),
+        1,
+        "selected native entry must reach the table fault"
+    );
+    assert_eq!(output, [99.0]);
+}
+
+#[test]
+fn native_table_fault_is_reported_by_directional_native_entry() {
+    let compiled = compile_jacobian_rows(&[native_table_fault_after_sine_row()]).unwrap();
+    super::host_runtime::take_sin_calls();
+    let mut output = [99.0];
+    let error = compiled
+        .call_with_external_tables(&[0.5], &[42.0], 0.0, &[], &[], &mut output)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CompileError::SourceOperation {
+                kind: crate::NativeSourceFault::ExternalTable,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        super::host_runtime::take_sin_calls(),
+        1,
+        "directional native entry must reach the table fault"
+    );
+    assert_eq!(output, [99.0]);
 }

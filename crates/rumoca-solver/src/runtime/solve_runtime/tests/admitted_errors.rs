@@ -100,18 +100,22 @@ fn full_refresh_residual_does_not_overwrite_fault_with_interpreted_success() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let calls = Rc::new(Cell::new(0));
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(Rc::new(FaultingExpression {
-        calls: calls.clone(),
-        fail: true,
-        write_before_failure: true,
-    }));
+    install_mock_primal(
+        &mut runtime,
+        Rc::new(FaultingExpression {
+            calls: calls.clone(),
+            fail: true,
+            write_before_failure: true,
+        }),
+    );
     let mut out = vec![
         -0.0_f64;
         runtime
             .scalar_execution()
             .unwrap()
             .scalar
-            .implicit_rhs
+            .implicit_scalar_rhs
+            .source()
             .len()
     ];
     let before = out.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
@@ -212,13 +216,9 @@ fn admitted_refresh_jvp_preserves_outputs_in_both_seed_spaces() {
             write_before_failure: true,
         });
         if full_seed {
-            runtime
-                .scalar_fixture_mut()
-                .compiled_implicit_full_jacobian_v = Some(hook);
+            install_mock_jacobian(&mut runtime, true, hook);
         } else {
-            runtime
-                .scalar_fixture_mut()
-                .compiled_implicit_projection_jacobian_v = Some(hook);
+            install_mock_jacobian(&mut runtime, false, hook);
         }
         let mut out = [-0.0_f64, f64::from_bits(0x7ff8_0000_0000_0134)];
         let before = out.map(f64::to_bits);
@@ -239,11 +239,14 @@ fn absent_full_refresh_hook_and_successful_hook_remain_accepted() {
         .eval_residual(&[1.0, 2.0], &[], 0.0, &mut out)
         .unwrap();
     let calls = Rc::new(Cell::new(0));
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(Rc::new(FaultingExpression {
-        calls: calls.clone(),
-        fail: false,
-        write_before_failure: false,
-    }));
+    install_mock_primal(
+        &mut runtime,
+        Rc::new(FaultingExpression {
+            calls: calls.clone(),
+            fail: false,
+            write_before_failure: false,
+        }),
+    );
     selected_projection(&runtime, false)
         .eval_residual(&[1.0, 2.0], &[], 0.0, &mut out)
         .unwrap();

@@ -1,10 +1,8 @@
 //! An observation adapter retains its exact borrowed invocation authority.
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-mod decode;
+pub(crate) mod decode;
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::typed_call::observations::ObservationPlan;
 use crate::typed_call::{emit, link::LinkedOwners};
 use crate::{CompiledTypedCallWasm, TypedCallCompileError, TypedCallFault, WasmCompileError};
@@ -61,7 +59,6 @@ impl<'model> NativeAssertionFrame<'model> {
 pub struct NativeAssertionObservation<'model, 'proof> {
     action: &'proof solve::CheckedAssertionAction<'model>,
     provenance: rumoca_core::Span,
-    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     origin_predicate: usize,
     frames: Vec<NativeAssertionFrame<'model>>,
     captures: Vec<(usize, NativeAssertionCells)>,
@@ -101,7 +98,11 @@ pub enum CheckedAssertionWasmOutcome<'model, 'proof> {
 pub struct CompiledCheckedAssertionWasm<'model> {
     invocation: solve::CheckedAssertionInvocation<'model>,
     artifact: CompiledTypedCallWasm,
-    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(any(
+        test,
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(feature = "host-engine", not(target_arch = "wasm32"))
+    ))]
     carrier: Option<ObservationPlan>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
@@ -115,17 +116,31 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
         &self.artifact
     }
 
+    #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+    pub fn prepare_host(self) -> Result<PreparedCheckedAssertionHost<'model>, WasmCompileError> {
+        let runtime = crate::host_typed_call_runtime::HostTypedCallRuntime::new(&self.artifact)?;
+        Ok(PreparedCheckedAssertionHost {
+            source: self,
+            runtime,
+        })
+    }
+
+    fn validate_arguments(&self, arguments: &[u64]) -> Result<(), WasmCompileError> {
+        if arguments.len().checked_mul(8) != Some(self.artifact.layout().input_bytes as usize) {
+            return Err(WasmCompileError::Input(
+                "checked invocation input footprint differs".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Executes the retained issued module. No status/byte injection surface.
     /// FMI decides transaction publication; this adapter only returns records.
     pub fn call<'proof>(
         &'proof self,
         arguments: &[u64],
     ) -> Result<CheckedAssertionWasmOutcome<'model, 'proof>, WasmCompileError> {
-        if arguments.len().checked_mul(8) != Some(self.artifact.layout().input_bytes as usize) {
-            return Err(WasmCompileError::Input(
-                "checked invocation input footprint differs".into(),
-            ));
-        }
+        self.validate_arguments(arguments)?;
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let input = arguments.to_vec();
@@ -138,6 +153,49 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
         Err(WasmCompileError::Input(
             "checked native observations have no admitted engine on this target".into(),
         ))
+    }
+}
+
+/// Explicit host execution of one exact issued assertion invocation.
+/// Its private fields retain source authority together with the admitted engine.
+///
+/// ```compile_fail,E0451
+/// use rumoca_exec_wasm::{CompiledCheckedAssertionWasm, PreparedCheckedAssertionHost};
+/// fn rebind<'model>(
+///     source: CompiledCheckedAssertionWasm<'model>,
+///     original: PreparedCheckedAssertionHost<'model>,
+/// ) -> PreparedCheckedAssertionHost<'model> {
+///     PreparedCheckedAssertionHost { source, ..original }
+/// }
+/// ```
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+pub struct PreparedCheckedAssertionHost<'model> {
+    source: CompiledCheckedAssertionWasm<'model>,
+    runtime: crate::host_typed_call_runtime::HostTypedCallRuntime,
+}
+
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+impl<'model> PreparedCheckedAssertionHost<'model> {
+    pub fn invocation(&self) -> &solve::CheckedAssertionInvocation<'model> {
+        self.source.invocation()
+    }
+
+    pub fn artifact(&self) -> &CompiledTypedCallWasm {
+        self.source.artifact()
+    }
+
+    pub fn call<'proof>(
+        &'proof self,
+        arguments: &[u64],
+    ) -> Result<CheckedAssertionWasmOutcome<'model, 'proof>, WasmCompileError> {
+        self.source.validate_arguments(arguments)?;
+        let input = arguments.to_vec();
+        let layout = self.source.artifact.layout();
+        let mut output = vec![0u64; (layout.output_bytes / 8) as usize];
+        let mut scratch = vec![0u64; (layout.scratch_bytes / 8) as usize];
+        let status = self.runtime.call_typed(&input, &mut output, &mut scratch)?;
+        self.source
+            .decode_execution(&input, &output, &scratch, status)
     }
 }
 
@@ -160,7 +218,11 @@ pub fn compile_checked_assertion_wasm<'model>(
         inputs: invocation.owner().inputs().to_vec(),
         outputs: invocation.owner().outputs().to_vec(),
     };
-    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(any(
+        test,
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(feature = "host-engine", not(target_arch = "wasm32"))
+    ))]
     let carrier = plan.observations.clone();
     let (module_bytes, faults) =
         emit::compile(invocation.table(), &linked, invocation.owner().id())
@@ -180,7 +242,11 @@ pub fn compile_checked_assertion_wasm<'model>(
     Ok(CompiledCheckedAssertionWasm {
         invocation,
         artifact,
-        #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(any(
+            test,
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(feature = "host-engine", not(target_arch = "wasm32"))
+        ))]
         carrier,
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         runtime,

@@ -309,6 +309,7 @@ impl CraneliftEmitter {
             fold_functions: &self.fold_functions,
             conditional_functions: &self.conditional_functions,
             pure_call_functions: &self.pure_call_functions,
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),

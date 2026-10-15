@@ -1,6 +1,7 @@
 //! One target helper per reachable, construction-issued pure-call owner.
 #[cfg(test)]
 mod tests;
+use super::form::Form;
 use super::{
     TypedCallCompileError,
     layout::{Callees, Demand, FramePlan, InputConvention, Liveness, visit_calls},
@@ -9,7 +10,15 @@ use crate::emit::MathImport;
 use rumoca_ir_solve as solve;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AssertionMode {
+    Standalone,
+    Value,
+}
+
 pub(super) struct LinkedOwners {
+    pub form: Form,
+    pub assertion_mode: AssertionMode,
     pub plans: Vec<Option<FramePlan>>,
     /// The same bodies with top-level scalar registers in wasm locals, for an
     /// owner emitted as one function. Callers size frames from `plans`, which
@@ -49,6 +58,8 @@ impl LinkedOwners {
             &all_outputs(roots),
             None,
             (InputConvention::Packed, InputConvention::Packed, false),
+            Form::Primal,
+            AssertionMode::Standalone,
         )
     }
 
@@ -58,12 +69,29 @@ impl LinkedOwners {
     pub(super) fn construct_program(
         table: &solve::SolvePureCallTable,
         roots: &[(solve::SolvePureCallOwnerId, Demand)],
+        assertion_mode: AssertionMode,
     ) -> Result<Self, TypedCallCompileError> {
         Self::construct_admitted(
             table,
             roots,
             None,
             (InputConvention::Stage, InputConvention::ByReference, true),
+            Form::Primal,
+            assertion_mode,
+        )
+    }
+
+    pub(super) fn construct_directional_program(
+        table: &solve::SolvePureCallTable,
+        roots: &[solve::SolvePureCallOwnerId],
+    ) -> Result<Self, TypedCallCompileError> {
+        Self::construct_admitted(
+            table,
+            &all_outputs(roots),
+            None,
+            (InputConvention::Stage, InputConvention::ByReference, true),
+            Form::Directional,
+            AssertionMode::Value,
         )
     }
 
@@ -76,6 +104,27 @@ impl LinkedOwners {
             &all_outputs(&[invocation.owner().id()]),
             Some(invocation),
             (InputConvention::Packed, InputConvention::Packed, false),
+            Form::Primal,
+            AssertionMode::Standalone,
+        )
+    }
+
+    pub(super) fn construct_event(
+        source: &solve::RetainedEventProgram,
+        roots: &[solve::SolvePureCallOwnerId],
+    ) -> Result<Self, TypedCallCompileError> {
+        let invocation = source
+            .invocations()
+            .next()
+            .ok_or(TypedCallCompileError::SiteMismatch)?;
+        let checked = invocation.checked();
+        Self::construct_admitted(
+            source.table(),
+            &all_outputs(roots),
+            Some(checked),
+            (InputConvention::Packed, InputConvention::Packed, false),
+            Form::Primal,
+            AssertionMode::Standalone,
         )
     }
 
@@ -84,6 +133,8 @@ impl LinkedOwners {
         roots: &[(solve::SolvePureCallOwnerId, Demand)],
         invocation: Option<&solve::CheckedAssertionInvocation<'_>>,
         (roots_convention, helpers, by_demand): (InputConvention, InputConvention, bool),
+        form: Form,
+        assertion_mode: AssertionMode,
     ) -> Result<Self, TypedCallCompileError> {
         let mut reachable = vec![false; table.owners().len()];
         let mut pending = roots.iter().map(|(root, _)| *root).collect::<Vec<_>>();
@@ -103,7 +154,7 @@ impl LinkedOwners {
             }
             reachable[id.index() as usize] = true;
             if invocation.is_none() {
-                check_outputs(owner)?;
+                check_outputs(owner, form, assertion_mode)?;
             } else if owner
                 .outputs()
                 .iter()
@@ -112,8 +163,9 @@ impl LinkedOwners {
             {
                 return Err(TypedCallCompileError::SiteMismatch);
             }
-            super::math::collect(owner.body(), &mut math_imports);
-            collect_calls(owner.body(), &mut pending);
+            let body = form.body(owner)?;
+            super::math::collect(body, &mut math_imports);
+            collect_calls(body, &mut pending);
         }
         let math_imports = math_imports.into_iter().collect::<Vec<_>>();
         let math_indices = math_imports
@@ -126,7 +178,7 @@ impl LinkedOwners {
         let always = table
             .owners()
             .iter()
-            .map(|owner| always_built(owner, by_demand))
+            .map(|owner| always_built(owner, by_demand, form))
             .collect::<Vec<_>>();
         let roots = roots
             .iter()
@@ -137,8 +189,9 @@ impl LinkedOwners {
                 )
             })
             .collect::<Vec<_>>();
-        let units = admitted_units(table, &roots, &reachable, &always);
-        let mut linked = Self::with_units(table.owners().len(), &units, always);
+        let units = admitted_units(table, &roots, &reachable, &always, form)?;
+        let mut linked =
+            Self::with_units(table.owners().len(), &units, always, form, assertion_mode);
         for (owner, demand) in &roots {
             let unit = linked.unit_of(*owner, demand)?;
             linked.root_units.insert(*owner, unit);
@@ -160,13 +213,14 @@ impl LinkedOwners {
             let callees = Callees::new(&linked.plans, &linked.unit_index, &linked.always);
             let plan = Self::construct_owner_plan(
                 owner_ref,
+                form,
                 invocation.is_some(),
                 (convention, demand),
                 &callees,
             )?;
             let promoted = match invocation {
                 None => Some(promoted_plan(
-                    owner_ref,
+                    form.body(owner_ref)?,
                     &callees,
                     (convention, demand),
                     &plan,
@@ -190,6 +244,8 @@ impl LinkedOwners {
         owners: usize,
         units: &BTreeSet<(u32, Demand)>,
         always: Vec<Box<[bool]>>,
+        form: Form,
+        assertion_mode: AssertionMode,
     ) -> Self {
         let mut unit_index = BTreeMap::new();
         let mut unit_owner = (0..owners as u32).collect::<Vec<_>>();
@@ -199,6 +255,8 @@ impl LinkedOwners {
         }
         let count = unit_owner.len();
         Self {
+            form,
+            assertion_mode,
             plans: (0..count).map(|_| None).collect(),
             promoted: (0..count).map(|_| None).collect(),
             functions: vec![None; count],
@@ -224,21 +282,23 @@ impl LinkedOwners {
 
     fn construct_owner_plan(
         owner: &solve::SolvePureCallOwner,
+        form: Form,
         invocation: bool,
         (convention, demand): (InputConvention, &Demand),
         callees: &Callees<'_>,
     ) -> Result<FramePlan, TypedCallCompileError> {
+        let body = form.body(owner)?;
         let plan = if invocation && owner.assertion_flow().is_some() {
             let observations = super::observations::ObservationPlan::construct(owner, callees)?;
             FramePlan::construct_with_observations(
-                owner.body(),
+                body,
                 callees,
                 observations,
                 (InputConvention::Packed, demand),
                 false,
             )?
         } else {
-            FramePlan::construct_with(owner.body(), callees, convention, demand)?
+            FramePlan::construct_with(body, callees, convention, demand)?
         };
         Ok(plan)
     }
@@ -287,12 +347,12 @@ impl LinkedOwners {
 /// The owner's body with top-level scalars in wasm locals. Its callers
 /// reserved the frame of `plain`, so it may never need more.
 fn promoted_plan(
-    owner: &solve::SolvePureCallOwner,
+    body: &solve::TypedProgram,
     callees: &Callees<'_>,
     (convention, demand): (InputConvention, &Demand),
     plain: &FramePlan,
 ) -> Result<FramePlan, TypedCallCompileError> {
-    let promoted = FramePlan::construct_promoted(owner.body(), callees, convention, demand)?;
+    let promoted = FramePlan::construct_promoted(body, callees, convention, demand)?;
     if promoted.scratch_bytes > plain.scratch_bytes
         || promoted.input_bytes != plain.input_bytes
         || promoted.output_bytes != plain.output_bytes
@@ -312,9 +372,9 @@ fn all_outputs(
 /// The outputs of the owner that are built for every site: all of them without
 /// demand, otherwise the assertion predicates and message values, which carry
 /// the owner's failures.
-fn always_built(owner: &solve::SolvePureCallOwner, by_demand: bool) -> Box<[bool]> {
-    owner
-        .outputs()
+fn always_built(owner: &solve::SolvePureCallOwner, by_demand: bool, form: Form) -> Box<[bool]> {
+    form.outputs(owner)
+        .unwrap_or_default()
         .iter()
         .map(|output| !by_demand || output.kind() != solve::SolvePureCallOutputKind::Result)
         .collect()
@@ -331,20 +391,21 @@ fn admitted_units(
     roots: &[(u32, Demand)],
     reachable: &[bool],
     always: &[Box<[bool]>],
-) -> BTreeSet<(u32, Demand)> {
+    form: Form,
+) -> Result<BTreeSet<(u32, Demand)>, TypedCallCompileError> {
     if always
         .iter()
         .all(|always| always.iter().all(|built| *built))
     {
-        return (0..reachable.len() as u32)
+        return Ok((0..reachable.len() as u32)
             .filter(|owner| reachable[*owner as usize])
             .map(|owner| (owner, Demand::all()))
-            .collect();
+            .collect());
     }
     let mut units = roots.iter().cloned().collect::<BTreeSet<_>>();
     let mut pending = units.iter().cloned().collect::<Vec<_>>();
     while let Some((owner, demand)) = pending.pop() {
-        let body = table.owners()[owner as usize].body();
+        let body = form.body(&table.owners()[owner as usize])?;
         let liveness = Liveness::of(body, &demand);
         visit_calls(body, &liveness, &mut |callee, wanted| {
             let wanted = Callees::built_for(always, callee, wanted);
@@ -353,15 +414,28 @@ fn admitted_units(
             }
         });
     }
-    units
+    Ok(units)
 }
 
-fn check_outputs(owner: &solve::SolvePureCallOwner) -> Result<(), TypedCallCompileError> {
-    for (output, value) in owner.outputs().iter().enumerate() {
+fn check_outputs(
+    owner: &solve::SolvePureCallOwner,
+    form: Form,
+    mode: AssertionMode,
+) -> Result<(), TypedCallCompileError> {
+    let outputs = form
+        .outputs(owner)
+        .ok_or(TypedCallCompileError::SiteMismatch)?;
+    // The canonical value form publishes predicates and failed-only messages;
+    // only a separate checked invocation may observe or stop on their effects.
+    if mode == AssertionMode::Value && owner.assertion_flow().is_some() {
+        return Ok(());
+    }
+    for (output, value) in outputs.iter().enumerate() {
         if value.kind() == solve::SolvePureCallOutputKind::AssertionPredicate
-            && !owner
-                .assertion_flow()
-                .is_some_and(|flow| flow.assigned_read_predicates().contains(&output))
+            && !(form == Form::Primal
+                && owner
+                    .assertion_flow()
+                    .is_some_and(|flow| flow.assigned_read_predicates().contains(&output)))
         {
             return Err(TypedCallCompileError::UnsupportedOutputKind {
                 owner: owner.id(),

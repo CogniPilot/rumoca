@@ -224,6 +224,16 @@ fn group_program_stores_each_isolator_of_one_shared_tensor_prefix() {
 fn portable_target_plan_retains_original_discarded_stores_and_exact_prefix() {
     let source = three_output_row();
     let prepared = prepare(source.clone());
+    let first = prepared
+        .portable_target_value_plan(0, 0, 0)
+        .unwrap()
+        .unwrap();
+    let second = prepared
+        .portable_target_value_plan(0, 1, 1)
+        .unwrap()
+        .unwrap();
+    assert_ne!(first.canonical_prefix_len(), second.canonical_prefix_len());
+    assert!(!first.program().shares_program_owner(second.program()));
     for (output, target) in [(0, 0), (1, 1)] {
         let plan = prepared
             .portable_target_value_plan(0, output, target)

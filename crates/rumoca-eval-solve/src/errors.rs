@@ -8,8 +8,13 @@ pub enum EvalSolveError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
-    /// Native status carries an index fault without axis/index/extent details.
+    /// Native index fault with the operand details retained by its issued entry.
     NativeSourceIndexFault {
+        message: String,
+        span: Option<rumoca_core::Span>,
+    },
+    /// A source operation fault propagated from an owned compiled program.
+    SourceOperationFault {
         message: String,
         span: Option<rumoca_core::Span>,
     },
@@ -105,9 +110,9 @@ pub enum EvalSolveError {
 impl EvalSolveError {
     pub fn source_span(&self) -> Option<rumoca_core::Span> {
         match self {
-            Self::CompiledExecution { span, .. } | Self::NativeSourceIndexFault { span, .. } => {
-                *span
-            }
+            Self::CompiledExecution { span, .. }
+            | Self::NativeSourceIndexFault { span, .. }
+            | Self::SourceOperationFault { span, .. } => *span,
             Self::MissingInput { span, .. } => *span,
             Self::RegisterOutOfBounds { span, .. } => *span,
             Self::InvalidTensorIndex { span, .. } | Self::TensorIndexOutOfBounds { span, .. } => {
@@ -134,6 +139,10 @@ impl EvalSolveError {
                 message,
                 span: None,
             } => Self::NativeSourceIndexFault { message, span },
+            Self::SourceOperationFault {
+                message,
+                span: None,
+            } => Self::SourceOperationFault { message, span },
             Self::MissingInput {
                 vector,
                 index,
@@ -222,25 +231,16 @@ impl std::fmt::Display for EvalSolveError {
             Self::CompiledExecution { message, .. } => {
                 write!(f, "compiled execution failed: {message}")
             }
-            Self::NativeSourceIndexFault { message, .. } => f.write_str(message),
+            Self::NativeSourceIndexFault { message, .. } => {
+                write!(f, "native tensor index is out of bounds: {message}")
+            }
+            Self::SourceOperationFault { message, .. } => f.write_str(message),
             Self::ExternalTable {
                 operation,
                 table_id,
                 column,
                 reason,
-            } => {
-                if let Some(column) = column {
-                    write!(
-                        f,
-                        "external table {operation} failed for table id {table_id} column {column}: {reason}"
-                    )
-                } else {
-                    write!(
-                        f,
-                        "external table {operation} failed for table id {table_id}: {reason}"
-                    )
-                }
-            }
+            } => fmt_external_table(f, operation, *table_id, *column, reason),
             Self::MissingInput {
                 vector, index, len, ..
             } => write!(
@@ -338,5 +338,24 @@ impl From<SolveProblemShapeContractError> for EvalSolveError {
             message: value.to_string(),
             span: value.source_span(),
         }
+    }
+}
+
+fn fmt_external_table(
+    f: &mut std::fmt::Formatter<'_>,
+    operation: &str,
+    table_id: f64,
+    column: Option<f64>,
+    reason: &str,
+) -> std::fmt::Result {
+    match column {
+        Some(column) => write!(
+            f,
+            "external table {operation} failed for table id {table_id} column {column}: {reason}"
+        ),
+        None => write!(
+            f,
+            "external table {operation} failed for table id {table_id}: {reason}"
+        ),
     }
 }

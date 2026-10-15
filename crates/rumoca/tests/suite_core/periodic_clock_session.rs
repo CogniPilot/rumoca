@@ -182,7 +182,7 @@ fn batch_and_session_agree_on_the_schedule_and_the_integral() {
 
 #[test]
 fn the_session_reports_the_engine_it_selected() {
-    // Auto on a model with a continuous state selects compiled execution.
+    // The default requires compiled execution for continuous and discrete models.
     let stateful = session(RESET, "ClockReset", options(1.0));
     let mut stateful = stateful;
     stateful.advance_to(0.5).unwrap();
@@ -194,9 +194,22 @@ fn the_session_reports_the_engine_it_selected() {
     assert_ne!(receipt.engine, SimExecutionEngine::Interpreter);
     assert_eq!(receipt.refusal, None);
 
-    // A pure-discrete model is refused compiled execution, with the reason.
+    // The complete native inventory includes the pure-discrete clock actions.
     let discrete = session(CLOCK, "PeriodicControllerClock", options(1.0));
     let receipt = discrete.execution_receipt();
+    assert_eq!(receipt.engine, SimExecutionEngine::Cranelift);
+    assert_eq!(receipt.refusal, None);
+    assert!(receipt.declined.is_empty());
+
+    let automatic = session(
+        CLOCK,
+        "PeriodicControllerClock",
+        SimOptions {
+            execution_policy: SimExecutionPolicy::Auto,
+            ..options(1.0)
+        },
+    );
+    let receipt = automatic.execution_receipt();
     assert_eq!(receipt.engine, SimExecutionEngine::Interpreter);
     assert_eq!(receipt.refusal, Some(SimNativeRefusal::NoContinuousStates));
 
@@ -227,6 +240,6 @@ fn the_hello_event_carries_the_engine_receipt_on_the_wire() {
     let wire = serde_json::to_value(&event).unwrap();
     assert_eq!(
         wire["engine"],
-        serde_json::json!({"engine": "interpreter", "refusal": "no_continuous_states", "declined": []})
+        serde_json::json!({"engine": "cranelift", "refusal": null, "declined": []})
     );
 }

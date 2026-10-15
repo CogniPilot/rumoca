@@ -31,7 +31,7 @@ impl ProgramLowerer<'_, '_> {
         let destination = self.register(destination)?.clone();
         let aggregate = self.register(aggregate)?.clone();
         let (offset, valid) =
-            self.dynamic_row_major_offset(aggregate.value_type.dimensions(), indices)?;
+            self.dynamic_row_major_offset(aggregate.value_type.dimensions(), indices, true)?;
         status::require_index(self.builder, valid);
         let value = self.load_scalar(&aggregate, offset)?;
         let zero = self.builder.ins().iconst(types::I64, 0);
@@ -95,7 +95,7 @@ impl ProgramLowerer<'_, '_> {
         let aggregate = self.register(aggregate)?.clone();
         let fallback = self.register(out_of_range)?.clone();
         let (offset, valid) =
-            self.dynamic_row_major_offset(aggregate.value_type.dimensions(), indices)?;
+            self.dynamic_row_major_offset(aggregate.value_type.dimensions(), indices, false)?;
         let zero = self.builder.ins().iconst(types::I64, 0);
         let safe_offset = self.builder.ins().select(valid, offset, zero);
         let selected = self.load_scalar(&aggregate, safe_offset)?;
@@ -116,7 +116,7 @@ impl ProgramLowerer<'_, '_> {
         let value = self.register(value)?.clone();
         self.copy(&aggregate, &destination)?;
         let (offset, valid) =
-            self.dynamic_row_major_offset(aggregate.value_type.dimensions(), indices)?;
+            self.dynamic_row_major_offset(aggregate.value_type.dimensions(), indices, true)?;
         status::require_index(self.builder, valid);
         let zero = self.builder.ins().iconst(types::I64, 0);
         let value = self.load_scalar(&value, zero)?;
@@ -175,6 +175,7 @@ impl ProgramLowerer<'_, '_> {
         &mut self,
         dimensions: &[u32],
         indices: &[solve::SolveRegisterId],
+        checked: bool,
     ) -> Result<(Value, Value), CompileError> {
         if dimensions.len() != indices.len() {
             return Err(CompileError::Backend(
@@ -186,8 +187,8 @@ impl ProgramLowerer<'_, '_> {
         for (&extent, index) in dimensions.iter().zip(indices) {
             let location = self.register(*index)?.clone();
             let zero = self.builder.ins().iconst(types::I64, 0);
-            let coordinate = self.load_scalar(&location, zero)?;
-            let coordinate = self.builder.ins().iadd_imm(coordinate, -1);
+            let one_based = self.load_scalar(&location, zero)?;
+            let coordinate = self.builder.ins().iadd_imm(one_based, -1);
             let nonnegative =
                 self.builder
                     .ins()
@@ -196,8 +197,16 @@ impl ProgramLowerer<'_, '_> {
                 self.builder
                     .ins()
                     .icmp_imm(IntCC::SignedLessThan, coordinate, i64::from(extent));
-            valid = self.builder.ins().band(valid, nonnegative);
-            valid = self.builder.ins().band(valid, below_extent);
+            let axis_valid = self.builder.ins().band(nonnegative, below_extent);
+            valid = self.builder.ins().band(valid, axis_valid);
+            if checked {
+                super::super::native_fault::checked_index(
+                    self.module,
+                    self.builder,
+                    (axis_valid, one_based, extent),
+                    self.operation,
+                )?;
+            }
             offset = self.builder.ins().imul_imm(offset, i64::from(extent));
             offset = self.builder.ins().iadd(offset, coordinate);
         }
@@ -224,8 +233,8 @@ impl ProgramLowerer<'_, '_> {
                 solve::SolveTensorViewAxis::Index(register) => {
                     let location = self.register(*register)?.clone();
                     let zero = self.builder.ins().iconst(types::I64, 0);
-                    let coordinate = self.load_scalar(&location, zero)?;
-                    let coordinate = self.builder.ins().iadd_imm(coordinate, -1);
+                    let one_based = self.load_scalar(&location, zero)?;
+                    let coordinate = self.builder.ins().iadd_imm(one_based, -1);
                     let nonnegative =
                         self.builder
                             .ins()
@@ -235,8 +244,14 @@ impl ProgramLowerer<'_, '_> {
                         coordinate,
                         i64::from(aggregate_extent),
                     );
-                    valid = self.builder.ins().band(valid, nonnegative);
-                    valid = self.builder.ins().band(valid, below_extent);
+                    let axis_valid = self.builder.ins().band(nonnegative, below_extent);
+                    valid = self.builder.ins().band(valid, axis_valid);
+                    super::super::native_fault::checked_index(
+                        self.module,
+                        self.builder,
+                        (axis_valid, one_based, aggregate_extent),
+                        self.operation,
+                    )?;
                     coordinate
                 }
                 solve::SolveTensorViewAxis::Span { origin, .. } => {

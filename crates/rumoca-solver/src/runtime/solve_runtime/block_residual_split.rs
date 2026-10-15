@@ -6,13 +6,11 @@
 //! stores its live-out values and the dependent program reads them as its
 //! seed vector.
 
-use super::ScalarExecutionView;
+use super::{ProgramAnalysis, RowEvalPoint, ScalarExecutionView};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rumoca_eval_solve::{
-    JacobianEvalInputs, PreparedBlockResidualSplit, PreparedScalarProgramBlock,
-};
+use rumoca_eval_solve::{JacobianEvalInputs, PreparedBlockResidualSplit};
 use rumoca_ir_solve::{self as solve, BlockResidualSplit};
 use rustc_hash::FxHashMap;
 
@@ -106,7 +104,8 @@ pub(super) fn block_residual_splits(
     owners: &solve::ContinuousRefreshOwners,
     plan: &solve::AlgebraicProjectionPlan,
     structures: &solve::ContinuousStructuralArtifacts,
-    implicit: &PreparedScalarProgramBlock,
+    implicit: ProgramAnalysis<'_>,
+    canonical: &solve::ScalarProgramBlock,
     backend: Option<&dyn SolveExecutionBackend>,
     shared: Option<SharedSplits<'_>>,
 ) -> Box<[Option<Rc<BlockSplits>>]> {
@@ -122,7 +121,7 @@ pub(super) fn block_residual_splits(
             if let Some(splits) = shared.as_ref().and_then(|shared| shared.splits_of(block)) {
                 return splits;
             }
-            let splits = block_splits(block, structure, implicit)?;
+            let splits = block_splits(block, structure, implicit, canonical)?;
             Some(Rc::new(prepared_block_splits(splits, implicit, backend)))
         })
         .collect()
@@ -180,7 +179,7 @@ impl<'a> SharedSplits<'a> {
 
 fn prepared_block_splits(
     splits: Vec<(usize, PreparedBlockResidualSplit)>,
-    implicit: &PreparedScalarProgramBlock,
+    implicit: ProgramAnalysis<'_>,
     backend: Option<&dyn SolveExecutionBackend>,
 ) -> BlockSplits {
     let mut offsets = vec![0];
@@ -208,7 +207,8 @@ fn prepared_block_splits(
 fn block_splits(
     block: &solve::AlgebraicProjectionBlock,
     structure: &solve::ColoredJacobianStructure,
-    implicit: &PreparedScalarProgramBlock,
+    implicit: ProgramAnalysis<'_>,
+    canonical: &solve::ScalarProgramBlock,
 ) -> Option<Vec<(usize, PreparedBlockResidualSplit)>> {
     let sources: Vec<usize> = match structure.residual_output_evaluation() {
         Some(selection) => selection
@@ -228,13 +228,13 @@ fn block_splits(
         {
             continue;
         }
-        let ops = implicit.block().programs().get(index)?;
+        let ops = canonical.program(index)?;
         let Some(split) = BlockResidualSplit::derive(ops, &block.y_indices) else {
             continue;
         };
         split.check(ops, &block.y_indices).ok()?;
         let outputs = solve::ScalarProgramBlock::program_output_count(ops);
-        let span = implicit.block().program_span(index);
+        let span = implicit.program_span(index);
         splits.push((index, PreparedBlockResidualSplit::new(split, outputs, span)));
     }
     (!splits.is_empty()).then_some(splits)
@@ -243,12 +243,12 @@ fn block_splits(
 fn compile_block_splits(
     splits: &[(usize, PreparedBlockResidualSplit)],
     offsets: &[usize],
-    implicit: &PreparedScalarProgramBlock,
+    implicit: ProgramAnalysis<'_>,
     backend: &dyn SolveExecutionBackend,
 ) -> Option<CompiledBlockSplits> {
     let spans = splits
         .iter()
-        .map(|(program, _)| implicit.block().program_span(*program))
+        .map(|(program, _)| implicit.program_span(*program))
         .collect::<Option<Vec<_>>>()?;
     let block = |programs: Vec<Vec<solve::LinearOp>>| {
         solve::ScalarProgramBlock::with_program_spans(programs, spans.clone()).ok()
@@ -304,7 +304,7 @@ impl ScalarExecutionView<'_> {
         let Some(Some(splits)) = self.scalar.block_splits.get(block) else {
             return Ok(());
         };
-        let compiled = self.scalar.compiled_implicit_rhs.is_some();
+        let compiled = self.scalar.implicit_scalar_rhs.is_compiled();
         if compiled && splits.compiled.is_none() {
             return Ok(());
         }
@@ -403,7 +403,13 @@ impl ScalarExecutionView<'_> {
         program: usize,
         (y, p, t): (&[f64], &[f64], f64),
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        if self.scalar.implicit_scalar_rhs.row_output_count(program) != Some(1) {
+        if self
+            .scalar
+            .implicit_scalar_rhs
+            .source()
+            .row_output_count(program)
+            != Some(1)
+        {
             return Ok(None);
         }
         let mut out = self.scalar.split_row_scratch.borrow_mut();
@@ -481,13 +487,23 @@ impl ResidualRowBatch {
         self.dependent.clear();
         self.direct.clear();
         self.batched = rows.iter().enumerate().all(|(slot, &row)| {
-            let Some((program, offset)) =
-                runtime.scalar.implicit_scalar_rhs.row_output_position(row)
+            let Some((program, offset)) = runtime
+                .scalar
+                .implicit_scalar_rhs
+                .source()
+                .row_output_position(row)
             else {
                 return false;
             };
             let ordinal = split
-                .filter(|_| runtime.scalar.implicit_scalar_rhs.row_output_count(program) == Some(1))
+                .filter(|_| {
+                    runtime
+                        .scalar
+                        .implicit_scalar_rhs
+                        .source()
+                        .row_output_count(program)
+                        == Some(1)
+                })
                 .and_then(|(_, splits)| splits.ordinals.get(&program).copied());
             match ordinal {
                 Some(ordinal) => self.dependent.push((ordinal, 0), slot),
@@ -519,7 +535,8 @@ impl ScalarExecutionView<'_> {
         (y, p, t): (&[f64], &[f64], f64),
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
-        let Some(compiled) = &self.scalar.compiled_implicit_rhs else {
+        let owner = &self.scalar.implicit_scalar_rhs;
+        if !owner.is_compiled() {
             return Ok(false);
         };
         let split = match self.scalar.active_split.get() {
@@ -569,15 +586,13 @@ impl ScalarExecutionView<'_> {
                 return Ok(false);
             }
         }
-        if !direct.coordinates.is_empty()
-            && !compiled.call_program_outputs_at(
+        if !direct.coordinates.is_empty() {
+            owner.eval_outputs_at(
                 &direct.coordinates,
-                (y, p, t),
-                tables,
+                RowEvalPoint { y, p, t },
+                self.row_eval_context(),
                 &mut direct.values,
-            )?
-        {
-            return Ok(false);
+            )?;
         }
         dependent.scatter(out);
         direct.scatter(out);

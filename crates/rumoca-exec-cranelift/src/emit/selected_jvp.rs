@@ -3,6 +3,10 @@
 use super::*;
 
 impl CompiledJacobianRows {
+    pub(crate) fn independent_program_output_count(&self, program: usize) -> Option<usize> {
+        self.rows.get(program).map(|row| row.plan.output_count())
+    }
+
     pub(crate) fn call_program_outputs(
         &self,
         program: usize,
@@ -21,8 +25,10 @@ impl CompiledJacobianRows {
             inputs.p,
             Some(inputs.seed),
         )?;
-        out.resize(row.plan.output_count(), 0.0);
+        reserve_native_outputs(out, row.plan.output_count())?;
         with_active_external_tables(external_tables, || {
+            let mut staged = self.output_scratch.borrow_mut();
+            resize_native_outputs(&mut staged, row.plan.output_count())?;
             self.call_jacobian_row(
                 row,
                 &mut self.regs_scratch.borrow_mut(),
@@ -31,10 +37,14 @@ impl CompiledJacobianRows {
                     p: inputs.p,
                     t: inputs.t,
                     v: inputs.seed,
+                    #[cfg(test)]
                     external_tables,
                 },
-                out,
-            )
+                &mut staged,
+            )?;
+            out.clear();
+            out.extend_from_slice(&staged);
+            Ok(())
         })
     }
 }
@@ -76,17 +86,21 @@ impl CompiledJacobianRows {
             p: inputs.p,
             t: inputs.t,
             v: inputs.seed,
+            #[cfg(test)]
             external_tables,
         };
         with_active_external_tables(external_tables, || {
             let mut output = self.output_scratch.borrow_mut();
             let mut registers = self.regs_scratch.borrow_mut();
-            for (&(program, offset), value) in coordinates.iter().zip(out) {
+            let mut staged = self.transaction_scratch.borrow_mut();
+            resize_native_outputs(&mut staged, coordinates.len())?;
+            for (&(program, offset), value) in coordinates.iter().zip(staged.iter_mut()) {
                 let row = &self.rows[program];
                 output.resize(row.plan.output_count(), 0.0);
                 self.call_jacobian_row(row, &mut registers, &context, &mut output)?;
                 *value = output[offset];
             }
+            out[..coordinates.len()].copy_from_slice(&staged);
             Ok(())
         })
     }

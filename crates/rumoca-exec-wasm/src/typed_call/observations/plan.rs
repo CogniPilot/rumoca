@@ -153,7 +153,6 @@ impl ObservationPlan {
             })?;
         self.sources.push(ObservationSource {
             predicate,
-            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             origin_predicate: predicate,
             projected_captures: messages.to_vec(),
             provenance,

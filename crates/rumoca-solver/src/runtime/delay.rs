@@ -3,7 +3,20 @@ use std::rc::Rc;
 
 use rumoca_ir_solve as solve;
 
+use super::solve_runtime::{CompiledSolveExpression, SolveExecutionBackend};
+use crate::RuntimeSolveError;
 use rumoca_eval_solve::{EvalSolveError, PreparedScalarProgramBlock, RowEvalContext};
+
+#[derive(Clone)]
+enum DelayExecution {
+    NoChannels,
+    Reference,
+    Compiled {
+        source: Rc<dyn CompiledSolveExpression>,
+        time: Rc<dyn CompiledSolveExpression>,
+        maximum: Rc<dyn CompiledSolveExpression>,
+    },
+}
 
 #[derive(Clone, Copy, Debug)]
 struct DelayPoint {
@@ -54,6 +67,7 @@ struct DelayRowScratch {
 
 #[derive(Clone)]
 pub(crate) struct DelayRuntime {
+    execution: DelayExecution,
     source_rhs: PreparedScalarProgramBlock,
     delay_time_rhs: PreparedScalarProgramBlock,
     delay_max_rhs: PreparedScalarProgramBlock,
@@ -69,8 +83,33 @@ pub(crate) struct DelayRuntime {
     row_scratch: RefCell<DelayRowScratch>,
 }
 
+fn compile_delay(
+    label: &str,
+    block: &solve::ScalarProgramBlock,
+    backend: &dyn SolveExecutionBackend,
+) -> Result<Rc<dyn CompiledSolveExpression>, EvalSolveError> {
+    backend
+        .compile_expression(block)
+        .map_err(|message| EvalSolveError::CompiledExecution {
+            message: format!("required delay program `{label}` could not be lowered: {message}"),
+            span: if block.row_count() == 1 {
+                block.program_span(0)
+            } else {
+                None
+            },
+        })
+}
+
 impl DelayRuntime {
+    #[cfg(any(test, feature = "native-wasm"))]
     pub(crate) fn new(partition: &solve::SolveDelayPartition) -> Result<Self, EvalSolveError> {
+        Self::new_with_backend(partition, None)
+    }
+
+    pub(crate) fn new_with_backend(
+        partition: &solve::SolveDelayPartition,
+        backend: Option<&dyn SolveExecutionBackend>,
+    ) -> Result<Self, EvalSolveError> {
         let source_count = partition.source_rhs.len();
         for (field, actual) in [
             ("delay_time_rhs", partition.delay_time_rhs.len()),
@@ -90,7 +129,20 @@ impl DelayRuntime {
                 });
             }
         }
+        let execution = match backend {
+            _ if source_count == 0 => DelayExecution::NoChannels,
+            None => DelayExecution::Reference,
+            Some(backend) => {
+                let compile = |label, block| compile_delay(label, block, backend);
+                DelayExecution::Compiled {
+                    source: compile("source", &partition.source_rhs)?,
+                    time: compile("time", &partition.delay_time_rhs)?,
+                    maximum: compile("maximum", &partition.delay_max_rhs)?,
+                }
+            }
+        };
         Ok(Self {
+            execution,
             source_rhs: PreparedScalarProgramBlock::new(partition.source_rhs.clone())?,
             delay_time_rhs: PreparedScalarProgramBlock::new(partition.delay_time_rhs.clone())?,
             delay_max_rhs: PreparedScalarProgramBlock::new(partition.delay_max_rhs.clone())?,
@@ -128,7 +180,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &mut [f64],
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         if self.is_empty() {
             return Ok(());
         }
@@ -169,7 +221,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &mut [f64],
         context: RowEvalContext<'_>,
-    ) -> Result<Option<f64>, EvalSolveError> {
+    ) -> Result<Option<f64>, RuntimeSolveError> {
         if self.is_empty() {
             return Ok(None);
         }
@@ -231,7 +283,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &[f64],
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         self.commit_evaluated_at(time, time, solver_y, params, context)
     }
 
@@ -242,7 +294,7 @@ impl DelayRuntime {
         solver_y: &[f64],
         params: &[f64],
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         if self.is_empty() {
             return Ok(());
         }
@@ -334,7 +386,7 @@ impl DelayRuntime {
         params: &[f64],
         context: RowEvalContext<'_>,
         out: &mut [f64],
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         let expected = self.event_root_count();
         if out.len() != expected {
             return Err(EvalSolveError::ShapeContract {
@@ -343,7 +395,8 @@ impl DelayRuntime {
                     out.len()
                 ),
                 span: None,
-            });
+            }
+            .into());
         }
         if expected == 0 {
             return Ok(());
@@ -354,13 +407,23 @@ impl DelayRuntime {
         }
         let mut rows = self.row_scratch.borrow_mut();
         rows.delay_times.resize(self.delay_time_rhs.len(), 0.0);
-        self.delay_time_rhs.eval_with_context(
-            solver_y,
-            params,
-            time,
-            context,
-            &mut rows.delay_times,
-        )?;
+        if let DelayExecution::Compiled { time: code, .. } = &self.execution {
+            code.call(
+                solver_y,
+                params,
+                time,
+                context.external_tables.unwrap_or(&[]),
+                &mut rows.delay_times,
+            )?;
+        } else {
+            self.delay_time_rhs.eval_with_context(
+                solver_y,
+                params,
+                time,
+                context,
+                &mut rows.delay_times,
+            )?;
+        }
         validate_delay_times(&rows.delay_times)?;
         let state = self.state.borrow();
         if state.channels.len() != expected {
@@ -370,7 +433,8 @@ impl DelayRuntime {
                     state.channels.len()
                 ),
                 span: None,
-            });
+            }
+            .into());
         }
         for ((slot, channel), delay_time) in
             out.iter_mut().zip(&state.channels).zip(&rows.delay_times)
@@ -398,10 +462,22 @@ impl DelayRuntime {
         params: &[f64],
         context: RowEvalContext<'_>,
         rows: &mut DelayRowScratch,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), RuntimeSolveError> {
         rows.sources.resize(self.source_rhs.len(), 0.0);
         rows.delay_times.resize(self.delay_time_rhs.len(), 0.0);
         rows.delay_maxima.resize(self.delay_max_rhs.len(), 0.0);
+        if let DelayExecution::Compiled {
+            source,
+            time: delay_time,
+            maximum,
+        } = &self.execution
+        {
+            let tables = context.external_tables.unwrap_or(&[]);
+            source.call(solver_y, params, time, tables, &mut rows.sources)?;
+            delay_time.call(solver_y, params, time, tables, &mut rows.delay_times)?;
+            maximum.call(solver_y, params, time, tables, &mut rows.delay_maxima)?;
+            return Ok(());
+        }
         self.source_rhs
             .eval_with_context(solver_y, params, time, context, &mut rows.sources)?;
         self.delay_time_rhs.eval_with_context(
@@ -854,6 +930,218 @@ fn local_time_ulp(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    struct RootKernel {
+        inner: Rc<dyn CompiledSolveExpression>,
+        calls: Rc<Cell<usize>>,
+        fault: Rc<Cell<u8>>,
+        span: rumoca_core::Span,
+    }
+
+    impl CompiledSolveExpression for RootKernel {
+        fn call(
+            &self,
+            y: &[f64],
+            p: &[f64],
+            t: f64,
+            tables: &[rumoca_core::ExternalTableData],
+            out: &mut [f64],
+        ) -> Result<(), RuntimeSolveError> {
+            self.calls.set(self.calls.get() + 1);
+            match self.fault.get() {
+                1 => {
+                    out[0] = 777.0;
+                    return Err(RuntimeSolveError::SourceFault {
+                        message: "issued delay-time source fault".into(),
+                        span: Some(self.span),
+                    });
+                }
+                2 => {
+                    out[0] = 777.0;
+                    return Err(RuntimeSolveError::CompiledExecution {
+                        context: "delay-time test kernel",
+                        message: "issued delay-time backend fault".into(),
+                        source_spans: vec![self.span].into(),
+                    });
+                }
+                _ => {}
+            }
+            self.inner.call(y, p, t, tables, out)
+        }
+    }
+
+    fn root_partition() -> solve::SolveDelayPartition {
+        let delay = scalar_row(vec![
+            solve::LinearOp::Const { dst: 0, value: 0.2 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]);
+        solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: delay.clone(),
+            delay_max_rhs: delay,
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![true],
+        }
+    }
+
+    fn compiled_root_runtime() -> (DelayRuntime, Rc<Cell<usize>>, Rc<Cell<u8>>) {
+        let partition = root_partition();
+        let backend = crate::runtime::solve_runtime::test_kernels::ReferenceBackend;
+        let mut runtime = DelayRuntime::new_with_backend(&partition, Some(&backend)).unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let fault = Rc::new(Cell::new(0));
+        let DelayExecution::Compiled { time, .. } = &mut runtime.execution else {
+            panic!("test backend must prepare compiled delay code");
+        };
+        *time = Rc::new(RootKernel {
+            inner: time.clone(),
+            calls: calls.clone(),
+            fault: fault.clone(),
+            span: partition.delay_time_rhs.program_span(0).unwrap(),
+        });
+        (runtime, calls, fault)
+    }
+
+    fn commit_root_history(runtime: &DelayRuntime) -> [f64; 2] {
+        let mut params = [0.0, 0.0];
+        runtime
+            .initialize(0.0, &[], &mut params, RowEvalContext::default())
+            .unwrap();
+        runtime
+            .commit(0.0, &[], &params, RowEvalContext::default())
+            .unwrap();
+        params[0] = 1.0;
+        runtime
+            .commit(1.0, &[], &params, RowEvalContext::default())
+            .unwrap();
+        params
+    }
+
+    #[test]
+    fn compiled_delay_event_roots_execute_prepared_time_code() {
+        let (compiled, calls, _) = compiled_root_runtime();
+        let mut roots = [42.0];
+        compiled
+            .evaluate_event_roots(0.0, &[], &[0.0, 0.0], RowEvalContext::default(), &mut roots)
+            .unwrap();
+        assert_eq!(roots, [1.0]);
+        assert_eq!(
+            calls.get(),
+            0,
+            "uninitialized history needs no source evaluation"
+        );
+        let reference = DelayRuntime::new(&root_partition()).unwrap();
+        let params = commit_root_history(&compiled);
+        assert_eq!(params, commit_root_history(&reference));
+        calls.set(0);
+        for time in [1.1, 1.2, 1.3] {
+            let mut expected = [0.0];
+            compiled
+                .evaluate_event_roots(time, &[], &params, RowEvalContext::default(), &mut roots)
+                .unwrap();
+            reference
+                .evaluate_event_roots(time, &[], &params, RowEvalContext::default(), &mut expected)
+                .unwrap();
+            assert_eq!(roots.map(f64::to_bits), expected.map(f64::to_bits));
+        }
+        assert_eq!(
+            calls.get(),
+            3,
+            "each root query must execute its prepared delay-time kernel"
+        );
+    }
+
+    #[test]
+    fn compiled_delay_event_root_faults_preserve_category_and_history() {
+        let (runtime, calls, fault) = compiled_root_runtime();
+        let params = commit_root_history(&runtime);
+        let snapshot = runtime.snapshot();
+        let span = root_partition().delay_time_rhs.program_span(0).unwrap();
+        for kind in [1, 2] {
+            calls.set(0);
+            fault.set(kind);
+            let mut roots = [42.0];
+            let result = runtime.evaluate_event_roots(
+                1.1,
+                &[],
+                &params,
+                RowEvalContext::default(),
+                &mut roots,
+            );
+            assert_eq!(
+                calls.get(),
+                1,
+                "the admitted kernel must execute before returning its fault"
+            );
+            let error = result.unwrap_err();
+            match (kind, error) {
+                (
+                    1,
+                    RuntimeSolveError::SourceFault {
+                        span: Some(issued), ..
+                    },
+                ) => assert_eq!(issued, span),
+                (2, RuntimeSolveError::CompiledExecution { source_spans, .. }) => {
+                    assert_eq!(source_spans.as_ref(), &[span])
+                }
+                (_, error) => panic!("fault category changed: {error}"),
+            }
+            assert_eq!(
+                roots,
+                [42.0],
+                "failed kernel output must not publish a root"
+            );
+            assert!(
+                runtime.state.borrow().bit_eq(&snapshot.0),
+                "root failure must not change accepted history"
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_delay_rows_preserve_the_accepted_timeline() {
+        let delay = scalar_row(vec![
+            solve::LinearOp::Const { dst: 0, value: 0.5 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]);
+        let partition = solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: delay.clone(),
+            delay_max_rhs: delay,
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![true],
+        };
+        let backend = crate::runtime::solve_runtime::test_kernels::ReferenceBackend;
+        let compiled = DelayRuntime::new_with_backend(&partition, Some(&backend)).unwrap();
+        assert!(matches!(
+            compiled.execution,
+            DelayExecution::Compiled { .. }
+        ));
+        let reference = DelayRuntime::new(&partition).unwrap();
+        let mut compiled_p = [1.0, 0.0];
+        let mut reference_p = compiled_p;
+        for (time, value) in [(0.0, 1.0), (1.0, 2.0), (1.25, 2.0), (1.5, 3.0), (2.0, 3.0)] {
+            compiled_p[0] = value;
+            reference_p[0] = value;
+            for (runtime, params) in [(&compiled, &mut compiled_p), (&reference, &mut reference_p)]
+            {
+                runtime
+                    .refresh(time, &[], params, RowEvalContext::default())
+                    .unwrap();
+                runtime
+                    .commit(time, &[], params, RowEvalContext::default())
+                    .unwrap();
+            }
+            assert_eq!(compiled_p.map(f64::to_bits), reference_p.map(f64::to_bits));
+        }
+    }
 
     fn scalar_row(ops: Vec<solve::LinearOp>) -> solve::ScalarProgramBlock {
         solve::ScalarProgramBlock::with_source_span(

@@ -3,7 +3,7 @@ use super::{
     create_tape, observation::ObservationLowering,
 };
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{InstBuilder, Value, types};
+use cranelift_codegen::ir::{Block, InstBuilder, Value, types};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve as solve;
 
@@ -122,6 +122,12 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(body);
         self.builder.seal_block(body);
+        self.carrier_event(
+            super::super::observation_carrier::LOOP_ENTER,
+            current,
+            0,
+            Some(ordinal),
+        )?;
         self.store_domain_binders(
             domain,
             &extents,
@@ -134,33 +140,20 @@ impl ProgramLowerer<'_, '_> {
         // binders of the pass about to run, and leaves with that tuple when it
         // is false.
         if let (Some(continuation), Some(predicate)) = (continuation, predicate) {
-            let predicate_source = if let Some(frame) = predicate_input {
-                let ordinary_cells = checked_cells(
-                    carried_cells + capture_cells,
-                    binder_cells,
-                    "assigned predicate input copy",
-                )?;
-                self.copy_frame_cells(current, frame, ordinary_cells)?;
-                frame
-            } else {
-                current
-            };
-            self.lower_region(continuation, predicate_source, predicate)?;
-            let value = self.builder.ins().load(
-                types::I64,
-                cranelift_codegen::ir::MemFlags::trusted(),
-                predicate,
-                0,
-            );
-            let proceed = self.builder.ins().icmp_imm(IntCC::NotEqual, value, 0);
-            let pass = self.builder.create_block();
-            self.builder
-                .ins()
-                .brif(proceed, pass, &[], exit, &[current.into()]);
-            self.builder.switch_to_block(pass);
-            self.builder.seal_block(pass);
+            self.lower_fold_continuation(
+                continuation,
+                (current, predicate_input, predicate),
+                (carried_cells, capture_cells, binder_cells),
+                exit,
+            )?;
         }
         self.lower_region(transition, current, next_frame)?;
+        self.carrier_event(
+            super::super::observation_carrier::LOOP_EXIT,
+            current,
+            0,
+            None,
+        )?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
         self.builder
             .ins()
@@ -171,6 +164,49 @@ impl ProgramLowerer<'_, '_> {
         self.builder.seal_block(exit);
         let result = self.builder.block_params(exit)[0];
         self.unpack_registers(result, destinations)
+    }
+
+    fn lower_fold_continuation(
+        &mut self,
+        continuation: &solve::SolveProgramRegion,
+        (current, predicate_input, predicate): (Value, Option<Value>, Value),
+        (carried_cells, capture_cells, binder_cells): (u32, u32, u32),
+        exit: Block,
+    ) -> Result<(), CompileError> {
+        let predicate_source = if let Some(frame) = predicate_input {
+            let ordinary_cells = checked_cells(
+                carried_cells + capture_cells,
+                binder_cells,
+                "assigned predicate input copy",
+            )?;
+            self.copy_frame_cells(current, frame, ordinary_cells)?;
+            frame
+        } else {
+            current
+        };
+        self.lower_region(continuation, predicate_source, predicate)?;
+        let value = self.builder.ins().load(
+            types::I64,
+            cranelift_codegen::ir::MemFlags::trusted(),
+            predicate,
+            0,
+        );
+        let proceed = self.builder.ins().icmp_imm(IntCC::NotEqual, value, 0);
+        let pass = self.builder.create_block();
+        let stopped = self.builder.create_block();
+        self.builder.ins().brif(proceed, pass, &[], stopped, &[]);
+        self.builder.switch_to_block(stopped);
+        self.builder.seal_block(stopped);
+        self.carrier_event(
+            super::super::observation_carrier::LOOP_EXIT,
+            current,
+            0,
+            None,
+        )?;
+        self.builder.ins().jump(exit, &[current.into()]);
+        self.builder.switch_to_block(pass);
+        self.builder.seal_block(pass);
+        Ok(())
     }
 
     fn prepare_fold_frames(
@@ -309,6 +345,16 @@ impl ProgramLowerer<'_, '_> {
         input: Value,
         output: Value,
     ) -> Result<(), CompileError> {
+        let region_address = self
+            .builder
+            .ins()
+            .iconst(types::I64, region as *const _ as usize as i64);
+        self.carrier_event(
+            super::super::observation_carrier::REGION_ENTER,
+            input,
+            0,
+            Some(region_address),
+        )?;
         let layout = ProgramLayout::region(region)?;
         let tape = create_tape(self.builder, self.pointer_type, layout.tape_cells)?;
         let mut nested = ProgramLowerer {
@@ -325,8 +371,15 @@ impl ProgramLowerer<'_, '_> {
             recursive_calls: self.recursive_calls,
             flags: self.flags,
             observation: self.observation.as_ref().map(ObservationLowering::nested),
+            operation: std::ptr::null(),
         };
-        nested.lower(region.body())
+        nested.lower(region.body())?;
+        self.carrier_event(
+            super::super::observation_carrier::REGION_EXIT,
+            input,
+            0,
+            None,
+        )
     }
 
     pub(super) fn register_cell_count(

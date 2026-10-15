@@ -18,7 +18,7 @@ use super::support::{
 
 #[derive(Clone)]
 pub(super) struct PreparedStructuredDiscreteRows {
-    rhs: solve_eval::PreparedScalarProgramBlock,
+    pub(super) rhs: solve_eval::PreparedScalarProgramBlock,
     rows: Vec<PreparedStructuredDiscreteRow>,
 }
 
@@ -123,17 +123,11 @@ impl ScalarExecutionView<'_> {
         let mut changed_any = false;
         for _ in 0..max_iters {
             for (output, row) in numeric().enumerate() {
-                values[output] = self
-                    .scalar
-                    .structured_discrete_rows
-                    .rhs
-                    .eval_row_unchecked_with_context(
-                        row.source_row,
-                        y,
-                        p,
-                        t,
-                        self.row_eval_context(),
-                    )?;
+                values[output] = self.eval_lifecycle_row(
+                    &self.scalar.structured_discrete_rows.rhs,
+                    row.source_row,
+                    RowEvalPoint { y, p, t },
+                )?;
             }
             let mut changed = false;
             for (output, row) in numeric().enumerate() {
@@ -218,17 +212,16 @@ impl ScalarExecutionView<'_> {
                 .discrete_rhs
                 .row_output_position(row_idx)
                 .ok_or_else(|| RuntimeSolveError::solve_ir("discrete output has no producer"))?;
-            let value = self
-                .scalar
-                .discrete_rhs
-                .eval_row_output_unchecked_with_context(
-                    program,
-                    output,
-                    &eval_y,
-                    &eval_p,
+            let value = self.eval_lifecycle_row_output(
+                &self.scalar.discrete_rhs,
+                program,
+                output,
+                RowEvalPoint {
+                    y: &eval_y,
+                    p: &eval_p,
                     t,
-                    self.row_eval_context(),
-                )?;
+                },
+            )?;
             assignments.push((self.model.problem.discrete.update_targets[row_idx], value));
         }
         for program_index in 0..self.scalar.guarded_assignment_programs.len() {
@@ -256,17 +249,15 @@ impl ScalarExecutionView<'_> {
             if ordered_clocked && row.clock_owner.is_some() {
                 continue;
             }
-            let value = self
-                .scalar
-                .structured_discrete_rows
-                .rhs
-                .eval_row_unchecked_with_context(
-                    row.source_row,
-                    &eval_y,
-                    &eval_p,
+            let value = self.eval_lifecycle_row(
+                &self.scalar.structured_discrete_rows.rhs,
+                row.source_row,
+                RowEvalPoint {
+                    y: &eval_y,
+                    p: &eval_p,
                     t,
-                    self.row_eval_context(),
-                )?;
+                },
+            )?;
             assignments.push((row.target, value));
         }
         let mut changed = false;
@@ -339,18 +330,16 @@ impl ScalarExecutionView<'_> {
             )?;
             &row_p_with_root_overrides
         };
-        self.scalar
-            .structured_discrete_rows
-            .rhs
-            .eval_row_unchecked_with_context(
-                row.source_row,
-                eval_y,
-                row_p,
+        self.eval_lifecycle_row(
+            &self.scalar.structured_discrete_rows.rhs,
+            row.source_row,
+            RowEvalPoint {
+                y: eval_y,
+                p: row_p,
                 t,
-                self.row_eval_context(),
-            )
-            .map(Some)
-            .map_err(Into::into)
+            },
+        )
+        .map(Some)
     }
 }
 
@@ -724,17 +713,15 @@ impl ScalarExecutionView<'_> {
             {
                 continue;
             }
-            let value = self
-                .scalar
-                .structured_discrete_rows
-                .rhs
-                .eval_row_unchecked_with_context(
-                    row.source_row,
-                    work.y,
-                    work.p,
-                    work.t,
-                    self.row_eval_context(),
-                )?;
+            let value = self.eval_lifecycle_row(
+                &self.scalar.structured_discrete_rows.rhs,
+                row.source_row,
+                RowEvalPoint {
+                    y: work.y,
+                    p: work.p,
+                    t: work.t,
+                },
+            )?;
             row_values.push((row.target, value));
             solve_eval::apply_scalar_slot_value_exact(row.target, value, work.y, work.p)?;
         }
@@ -974,7 +961,6 @@ pub struct SeededConditionMemory {
 pub(crate) struct ConditionMemorySeedInput<'a> {
     pub(crate) model: &'a solve::SolveModel,
     pub(crate) discrete_rhs: &'a solve_eval::PreparedScalarProgramBlock,
-    pub(crate) row_eval_context: solve_eval::RowEvalContext<'a>,
     pub(crate) y: &'a mut [f64],
     pub(crate) p: &'a mut [f64],
     pub(crate) t: f64,
@@ -986,11 +972,11 @@ pub(crate) struct ConditionMemorySeedInput<'a> {
 /// unrelated runtime state.
 pub(crate) fn seed_condition_memory_for_initialization_core(
     input: ConditionMemorySeedInput<'_>,
+    mut evaluate: impl FnMut(usize, usize, (&[f64], &[f64], f64)) -> Result<f64, RuntimeSolveError>,
 ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
     let ConditionMemorySeedInput {
         model,
         discrete_rhs,
-        row_eval_context,
         y,
         p,
         t,
@@ -1037,14 +1023,7 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
                 "condition-memory output {row_idx} has no producing program"
             ))
         })?;
-        let value = discrete_rhs.eval_row_output_unchecked_with_context(
-            program,
-            output,
-            y,
-            &seed_p,
-            t,
-            row_eval_context,
-        )?;
+        let value = evaluate(program, output, (y, &seed_p, t))?;
         let target = model.problem.discrete.update_targets[row_idx];
         let solve::ScalarSlot::P { index, .. } = target else {
             return Err(RuntimeSolveError::solve_ir(format!(
@@ -1103,15 +1082,24 @@ impl ScalarExecutionView<'_> {
         t: f64,
         tol: f64,
     ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
-        let mut seeded = seed_condition_memory_for_initialization_core(ConditionMemorySeedInput {
-            model: &self.model,
-            discrete_rhs: &self.scalar.discrete_rhs,
-            row_eval_context: self.row_eval_context(),
-            y,
-            p,
-            t,
-            tol,
-        })?;
+        let mut seeded = seed_condition_memory_for_initialization_core(
+            ConditionMemorySeedInput {
+                model: &self.model,
+                discrete_rhs: &self.scalar.discrete_rhs,
+                y,
+                p,
+                t,
+                tol,
+            },
+            |program, output, (y, p, t)| {
+                self.eval_lifecycle_row_output(
+                    &self.scalar.discrete_rhs,
+                    program,
+                    output,
+                    RowEvalPoint { y, p, t },
+                )
+            },
+        )?;
         if self.scalar.structured_discrete_rows.is_empty() {
             return Ok(seeded);
         }
@@ -1126,17 +1114,11 @@ impl ScalarExecutionView<'_> {
             if !row.role.is_condition_memory() || !self.structured_discrete_row_active_at(row, t)? {
                 continue;
             }
-            let value = self
-                .scalar
-                .structured_discrete_rows
-                .rhs
-                .eval_row_unchecked_with_context(
-                    row.source_row,
-                    y,
-                    &seed_p,
-                    t,
-                    self.row_eval_context(),
-                )?;
+            let value = self.eval_lifecycle_row(
+                &self.scalar.structured_discrete_rows.rhs,
+                row.source_row,
+                RowEvalPoint { y, p: &seed_p, t },
+            )?;
             let solve::ScalarSlot::P { index, .. } = row.target else {
                 return Err(RuntimeSolveError::solve_ir(
                     "structured condition-memory row does not target a parameter slot",
@@ -1263,17 +1245,12 @@ impl ScalarExecutionView<'_> {
                         "pulse condition-memory output {row_idx} has no producing program"
                     ))
                 })?;
-            let value = self
-                .scalar
-                .discrete_rhs
-                .eval_row_output_unchecked_with_context(
-                    program,
-                    output,
-                    y,
-                    &cleared,
-                    t,
-                    self.row_eval_context(),
-                )?;
+            let value = self.eval_lifecycle_row_output(
+                &self.scalar.discrete_rhs,
+                program,
+                output,
+                RowEvalPoint { y, p: &cleared, t },
+            )?;
             writes.push((discrete.update_targets[row_idx], value));
         }
         for (target, value) in writes {

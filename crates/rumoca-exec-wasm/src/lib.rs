@@ -55,17 +55,22 @@ mod retained_native_program;
 pub use retained_native_program::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 mod host_runtime;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod host_typed_call_runtime;
 mod scratch_report;
 mod typed_call;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm_runtime;
 pub use exact_assignments::{CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm};
 pub use native_program::{
-    CompiledNativeCallProgramWasm, NativeGatherFault,
+    CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault,
     compile_native_assignment_schedule_with_calls_wasm,
     compile_native_assignment_schedule_with_calls_wasm_and_policy,
 };
-pub use private_program::{CompiledPrivateProgramWasm, compile_private_program_wasm};
+pub use private_program::{
+    CompiledPrivateProgramWasm, compile_private_directional_program_wasm,
+    compile_private_program_wasm,
+};
 pub use retained_native_program::{
     CompiledRetainedNativeProgramWasm, NativeInvocationLease, NativeInvocationOutcome,
     NativeTransport, NativeTransportError, NativeTransportSnapshot, NativeTypedInput,
@@ -77,12 +82,15 @@ pub use scratch_report::{ScratchCall, ScratchFrame, ScratchOwner, ScratchRegion,
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_runtime::WasmKernelRuntime;
 
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+pub use typed_call::PreparedCheckedAssertionHost;
+
 pub use typed_call::{
-    CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledTypedCallWasm,
-    NativeAssertionCells, NativeAssertionFrame, NativeAssertionFrameDescriptor,
-    NativeAssertionObservation, NativeAssertionSourceDescriptor, TypedCallCompileError,
-    TypedCallFault, TypedCallFaultKind, TypedCallLayout, compile_checked_assertion_wasm,
-    compile_pure_call_wasm,
+    CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledRetainedEventWasm,
+    CompiledTypedCallWasm, NativeAssertionCells, NativeAssertionFrame,
+    NativeAssertionFrameDescriptor, NativeAssertionObservation, NativeAssertionSourceDescriptor,
+    PreparedTypedCallWasm, TypedCallCompileError, TypedCallFault, TypedCallFaultKind,
+    TypedCallLayout, compile_checked_assertion_wasm, compile_pure_call_wasm,
 };
 
 use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
@@ -94,6 +102,7 @@ pub enum WasmCompileError {
     TypedSource(TypedCallFault),
     TypedAdmission(TypedCallCompileError),
     GatherSource(NativeGatherFault),
+    LinearSolveSource(NativeLinearSolveFault),
 }
 
 impl std::fmt::Display for WasmCompileError {
@@ -104,6 +113,9 @@ impl std::fmt::Display for WasmCompileError {
             Self::TypedSource(fault) => write!(f, "WASM source operation fault: {fault:?}"),
             Self::TypedAdmission(error) => write!(f, "WASM typed admission refusal: {error}"),
             Self::GatherSource(fault) => write!(f, "WASM source gather fault: {fault:?}"),
+            Self::LinearSolveSource(fault) => {
+                write!(f, "WASM source linear solve fault: {fault:?}")
+            }
         }
     }
 }

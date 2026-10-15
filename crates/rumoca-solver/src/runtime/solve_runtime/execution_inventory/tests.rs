@@ -1,5 +1,7 @@
 use super::*;
 
+mod deadline_scheduling;
+
 impl SolveRuntime {
     pub(in crate::runtime::solve_runtime) fn scalar_fixture_mut(
         &mut self,
@@ -216,6 +218,42 @@ fn compact_component() -> solve::fmi::FmiComponent {
 }
 
 #[cfg(feature = "native-wasm")]
+fn assert_unissued_message_refused(runtime: &SolveRuntime) {
+    // A caller cannot use the generic numeric-message API to introduce an
+    // unissued diagnostic program into the retained native execution owner.
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("foreign-message.mo"),
+        1,
+        2,
+    );
+    let action = solve::SolveEventAction {
+        kind: solve::SolveEventActionKind::Warning,
+        message: solve::SolveEventMessage {
+            parts: vec![solve::SolveEventMessagePart::Conversion {
+                value: vec![
+                    solve::LinearOp::Const { dst: 0, value: 3.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                source: solve::SolveStringConversionSource::Real,
+                format: solve::SolveStringConversionFormat::Options {
+                    minimum_length: None,
+                    left_justified: None,
+                    significant_digits: None,
+                },
+            }],
+        },
+        span,
+        origin: "foreign message".into(),
+        clock_owner: None,
+        assertion_projection: None,
+    };
+    assert!(
+        matches!(solve_eval::eval_event_action_message(&action, &[], &[], 0.0, runtime.row_eval_context()),
+        Err(EvalSolveError::CompiledExecution { span: Some(issued), message }) if issued == span && message.contains("require their checked invocation observation"))
+    );
+}
+
+#[cfg(feature = "native-wasm")]
 #[test]
 fn prepared_compact_owner_skips_scalar_preparation_and_preserves_refusal() {
     let component = compact_component();
@@ -255,6 +293,7 @@ fn prepared_compact_owner_skips_scalar_preparation_and_preserves_refusal() {
         runtime.execution,
         RuntimeExecutionInventory::Native(_)
     ));
+    assert_unissued_message_refused(&runtime);
     assert!(std::ptr::eq(
         runtime.native_host().unwrap().product(),
         host.product()

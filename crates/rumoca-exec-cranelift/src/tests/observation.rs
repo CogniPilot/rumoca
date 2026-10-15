@@ -394,3 +394,182 @@ fn seventeen_on_failure<'program>(
     })?;
     Ok(message[0])
 }
+
+#[test]
+fn checked_native_messages_keep_the_source_binding_across_repeated_invocations() {
+    let table = observed_table();
+    let site = table.owners()[0].call_site();
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![invocation(observation(&site), 2)],
+        vec![fixture_span()],
+    )
+    .unwrap();
+    let mut model = rumoca_ir_solve::SolveModel {
+        pure_calls: table.clone(),
+        ..Default::default()
+    };
+    model.problem.events.action_conditions = block;
+    model.problem.events.actions = vec![action(&site)];
+    let source = rumoca_ir_solve::SolveExecutionSource::new(model);
+    let calls = compile_pure_call_table(&table).unwrap();
+    let compiled = crate::compile_event_observation(
+        source
+            .event_program(
+                rumoca_ir_solve::RetainedAssertionSource::ActionConditions,
+                0,
+            )
+            .unwrap(),
+        &calls,
+    )
+    .unwrap();
+    let foreign_calls = compile_pure_call_table(&observed_table()).unwrap();
+    let foreign_binding = source
+        .event_program(
+            rumoca_ir_solve::RetainedAssertionSource::ActionConditions,
+            0,
+        )
+        .unwrap();
+    let rejected = crate::compile_event_observation(foreign_binding, &foreign_calls)
+        .err()
+        .expect("an equivalent detached table cannot issue native observation authority");
+    assert!(rejected.to_string().contains("different native call table"));
+    let action = &source.model().problem.events.actions[0];
+    let copied_action = action.clone();
+    for ok in [1.0, 0.0, 0.0, 1.0, 0.0] {
+        let mut out = [f64::NAN];
+        compiled.call(&[], &[ok], 0.0, &[], &mut out).unwrap();
+        assert_eq!(out, [ok]);
+        assert_eq!(
+            compiled.message_for_action(action),
+            (ok == 0.0).then(|| "captured 3.5".to_owned())
+        );
+        assert!(compiled.message_for_action(&copied_action).is_none());
+    }
+    let mut unchanged = [123.0];
+    assert!(compiled.call(&[], &[], 0.0, &[], &mut unchanged).is_err());
+    assert_eq!(unchanged, [123.0]);
+    assert!(
+        compiled.message_for_action(action).is_none(),
+        "failed input guards cannot expose an earlier invocation"
+    );
+    drop(source);
+    drop(calls);
+    let mut retained = [f64::NAN];
+    compiled.call(&[], &[0.0], 0.0, &[], &mut retained).unwrap();
+    assert_eq!(
+        retained,
+        [0.0],
+        "compiled observation retains its source after the caller drops it"
+    );
+    assert!(compiled.message_for_action(&copied_action).is_none());
+}
+
+fn repeated_assertion_transition<'program>(
+    body: &mut rumoca_ir_solve::TypedProgramBuilder<'program>,
+    carried: &[rumoca_ir_solve::ProgramSlot<'program>],
+    _: &[rumoca_ir_solve::ProgramSlot<'program>],
+    _: &[rumoca_ir_solve::ProgramSlot<'program>],
+    outputs: &[rumoca_ir_solve::ProgramSlot<'program>],
+) -> Result<(), rumoca_ir_solve::SolveProgramConstructionError> {
+    let span = fixture_span();
+    let condition = body.load(carried[0], span)?;
+    for index in 0..3 {
+        let assertion = body.assertion_output(index, span)?;
+        body.check_assertion(assertion, condition, &[], span, |_, _, _| Ok(()))?;
+    }
+    body.store(outputs[0], condition, span)
+}
+
+fn overflowing_observation_table() -> SolvePureCallTable {
+    let span = fixture_span();
+    SolvePureCallTable::construct(arithmetic(), |table| {
+        table.add_owner(
+            SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
+            vec![],
+            vec![SolvePureCallOutput::assertion_predicate(); 3],
+            span,
+            |b, _, outputs| {
+                let domain = rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
+                        id: 0,
+                        display_name: "i".into(),
+                        lower: 1,
+                        upper: i64::MAX,
+                        step: 1,
+                    }],
+                };
+                let initial = b.constant(SolveValue::boolean(true), span)?;
+                b.fold(domain, &[initial], &[], span, repeated_assertion_transition)?;
+                for output in outputs {
+                    b.store(*output, initial, span)?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn checked_native_observation_refuses_overflowing_compact_capacity_before_execution() {
+    let table = overflowing_observation_table();
+    let site = table.owners()[0].call_site();
+    let mut model = rumoca_ir_solve::SolveModel {
+        pure_calls: table.clone(),
+        ..Default::default()
+    };
+    model.problem.events.action_conditions = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::PureCallObservation {
+                dst_start: 0,
+                input_starts: Box::new([]),
+                site: SolveAssertionObservationSite::new(site.clone()).unwrap(),
+            },
+            LinearOp::StoreOutputRange {
+                start: 0,
+                count: 3,
+                stride: 1,
+            },
+        ]],
+        vec![fixture_span()],
+    )
+    .unwrap();
+    model.problem.events.actions = (0..3)
+        .map(|predicate| SolveEventAction {
+            kind: SolveEventActionKind::Assert,
+            message: SolveEventMessage {
+                parts: vec![SolveEventMessagePart::Text("compact loop assertion".into())],
+            },
+            span: fixture_span(),
+            origin: "authored assertion".into(),
+            clock_owner: None,
+            assertion_projection: SolveAssertionActionProjection::new(site.clone(), predicate),
+        })
+        .collect();
+    model
+        .validate()
+        .expect("the compact observation model is valid");
+    let source = rumoca_ir_solve::SolveExecutionSource::new(model);
+    let calls = compile_pure_call_table(&table).unwrap();
+    assert!(
+        calls
+            .owner_support(site.owner())
+            .unwrap()
+            .primal()
+            .is_native()
+    );
+    let program = source
+        .event_program(
+            rumoca_ir_solve::RetainedAssertionSource::ActionConditions,
+            0,
+        )
+        .unwrap();
+    let error = crate::compile_event_observation(program, &calls)
+        .err()
+        .expect("three records per pass cannot fit in the observation address space");
+    assert!(
+        matches!(error, CompileError::Backend(ref message) if message == "observation bound overflows")
+    );
+}

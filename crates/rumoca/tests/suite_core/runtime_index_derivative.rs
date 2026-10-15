@@ -1,6 +1,7 @@
 //! MLS 10.5: a runtime index on a derivative equation's value side stays dynamic.
 
 use rumoca::Compiler;
+use rumoca_solver::fmi_me::{MeError, MeSessionError};
 
 fn source(equation: &str, next: usize) -> String {
     format!(
@@ -58,16 +59,23 @@ fn a_runtime_index_is_not_a_compile_time_derivative_projection() {
 #[test]
 fn an_invalid_runtime_derivative_index_cannot_complete() {
     let error = simulate(&source("der(x)={values[k,1],values[k,2]}", 3)).unwrap_err();
+    let rumoca_sim::SimError::ModelExchangeSession(MeSessionError::Component(component)) =
+        error.kind()
+    else {
+        panic!("expected a component evaluation failure, got {error:?}");
+    };
+    let MeError::Evaluation { message } = component.kind() else {
+        panic!("expected an evaluation failure, got {component:?}");
+    };
+    // The ME facade renders the original source span into its evaluation diagnostic.
+    let (bounds, provenance) = message.split_once(" @ ").expect("source span is retained");
+    let bounds = bounds
+        .rsplit_once(": ")
+        .map_or(bounds, |(_, detail)| detail);
+    assert_eq!(bounds, "index 3 is outside 1..=2");
+    let source = rumoca_core::SourceId::from_source_name("indexed_derivative.mo");
     assert!(
-        matches!(error.kind(), rumoca_sim::SimError::ModelExchangeSession(_)),
-        "{error}"
-    );
-    // The interpreter names the index and its axis; a native source fault
-    // (SOLVE-C25) reports the typed fault without the run-time operands.
-    let message = error.to_string();
-    assert!(
-        message.contains("tensor index 3 on axis 1 is outside 1..=2")
-            || message.contains("native tensor index is out of bounds"),
-        "{error}"
+        provenance.starts_with(&format!("Span {{ source: {source:?},")),
+        "{message}"
     );
 }

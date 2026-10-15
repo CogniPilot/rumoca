@@ -16,6 +16,19 @@ pub struct NativeGatherFault {
     pub provenance: rumoca_core::Span,
 }
 
+/// One failure of an original dense component, issued with its source program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeLinearSolveFault {
+    pub status: u32,
+    pub size: usize,
+    pub component: usize,
+    pub kernel: usize,
+    pub program: usize,
+    pub operation: usize,
+    pub region_path: Vec<(usize, usize)>,
+    pub provenance: rumoca_core::Span,
+}
+
 #[derive(Debug)]
 pub struct CompiledNativeCallProgramWasm {
     pub(crate) bytes: Vec<u8>,
@@ -24,6 +37,7 @@ pub struct CompiledNativeCallProgramWasm {
     pub(crate) scratch_report: crate::ScratchReport,
     pub(crate) faults: Vec<TypedCallFault>,
     pub(crate) gather_faults: Vec<NativeGatherFault>,
+    pub(crate) linear_solve_faults: Vec<NativeLinearSolveFault>,
     pub(crate) math_imports: Vec<&'static str>,
     pub(crate) pooled_arena_bytes: Option<u32>,
     pub(crate) carried: rumoca_ir_solve::NativeCarriedState,
@@ -58,16 +72,6 @@ impl CompiledNativeCallProgramWasm {
     pub fn gather_faults(&self) -> &[NativeGatherFault] {
         &self.gather_faults
     }
-    #[cfg(any(
-        all(target_arch = "wasm32", target_os = "unknown"),
-        all(feature = "host-engine", not(target_arch = "wasm32")),
-        all(
-            feature = "fixed-native-guest-receiver",
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p2"
-        )
-    ))]
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         if let Some(fault) = self.faults().iter().find(|fault| fault.status == status) {
             return WasmCompileError::TypedSource(fault.clone());
@@ -78,6 +82,13 @@ impl CompiledNativeCallProgramWasm {
             .find(|fault| fault.status == status)
         {
             return WasmCompileError::GatherSource(fault.clone());
+        }
+        if let Some(fault) = self
+            .linear_solve_faults
+            .iter()
+            .find(|fault| fault.status == status)
+        {
+            return WasmCompileError::LinearSolveSource(fault.clone());
         }
         WasmCompileError::Backend(format!("native entry failure status {status}"))
     }

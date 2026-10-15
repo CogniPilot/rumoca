@@ -1117,7 +1117,11 @@ fn table_compile_error(
     } else {
         format!("external table {operation} failed for table id {table_id}: {error}")
     };
-    CompileError::Input(message)
+    CompileError::SourceOperation {
+        kind: crate::NativeSourceFault::ExternalTable,
+        message,
+        span: None,
+    }
 }
 
 fn read_input_value(

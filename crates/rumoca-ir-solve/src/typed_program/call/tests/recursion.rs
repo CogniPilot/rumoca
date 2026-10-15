@@ -245,6 +245,68 @@ fn group_member_with_an_assertion_output_is_refused() {
 }
 
 #[test]
+fn group_cannot_hide_assertions_in_an_earlier_callee() {
+    for hidden in [false, true] {
+        let error = SolvePureCallTable::construct(profile(), |table| {
+            let assertion = table.add_owner(
+                identity(900),
+                vec![],
+                vec![
+                    SolvePureCallOutput::result(real()),
+                    SolvePureCallOutput::assertion_predicate(),
+                ],
+                span(900),
+                |b, _, outputs| {
+                    let condition = b.constant(SolveValue::boolean(true), span(900))?;
+                    let predicate = b.assertion_output(1, span(900))?;
+                    b.check_assertion(predicate, condition, &[], span(900), |_, _, _| Ok(()))?;
+                    let value = b.constant(SolveValue::real(profile(), 0.0), span(900))?;
+                    b.store(outputs[0], value, span(900))?;
+                    b.store(outputs[1], condition, span(900))
+                },
+            )?;
+            let callee = if hidden {
+                hide_assertion(table, assertion)?
+            } else {
+                assertion
+            };
+            table.add_recursive_group(
+                vec![member(902, vec![integer()])],
+                |_, ids, b, inputs, outputs| {
+                    b.call(callee, &[], span(902))?;
+                    count_down(ids[0], b, inputs, outputs)
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SolveProgramConstructionError::RecursiveAssertion { .. }
+            ),
+            "{error}"
+        );
+    }
+}
+
+fn hide_assertion(
+    table: &mut SolvePureCallTableBuilder,
+    assertion: SolvePureCallOwnerId,
+) -> Result<SolvePureCallOwnerId, SolveProgramConstructionError> {
+    table.add_owner(
+        identity(901),
+        vec![],
+        vec![SolvePureCallOutput::result(real())],
+        span(901),
+        |b, _, outputs| {
+            let result = b.call(assertion, &[], span(901))?;
+            b.store(outputs[0], result[0], span(901))
+        },
+    )
+}
+
+#[test]
 fn group_identity_reuse_is_refused() {
     let error = SolvePureCallTable::construct(profile(), |table| {
         table.add_recursive_group(

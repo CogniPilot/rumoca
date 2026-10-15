@@ -73,7 +73,7 @@ pub(crate) fn emit_with_policy(
     let call_plan = CallProgramPlan::for_schedule(
         &programs,
         &helpers,
-        arena.inner_counter,
+        arena.last_integer_local(),
         schedule,
         layout,
         policy,
@@ -93,6 +93,7 @@ pub(crate) fn emit_with_policy(
     let mut gather_faults = groups::GatherFaults {
         status_base,
         entries: Vec::new(),
+        linear_solve: Vec::new(),
     };
     let outlined = groups::outline(
         schedule,
@@ -106,16 +107,7 @@ pub(crate) fn emit_with_policy(
     catalog.eval_function_index = first_group
         .checked_add(u32::try_from(outlined.len()).map_err(|_| "native group count overflow")?)
         .ok_or("native entrypoint index overflow")?;
-    let mut functions = FunctionSection::new();
-    for _ in &bodies {
-        functions.function(3);
-    }
-    for _ in &outlined {
-        functions.function(types.eval_type);
-    }
-    functions.function(types.eval_type);
-    functions.function(types.eval_type);
-    module.section(&functions);
+    add_function_section(&mut module, bodies.len(), outlined.len(), types.eval_type);
     arena.add_memory(&mut module);
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
@@ -147,10 +139,24 @@ pub(crate) fn emit_with_policy(
         scratch_report: call_plan.scratch_report(helpers.owner_scratch(table)),
         faults,
         gather_faults: gather_faults.entries,
+        linear_solve_faults: gather_faults.linear_solve,
         math_imports: imports.iter().map(|import| import.symbol()).collect(),
         pooled_arena_bytes: None,
         carried: schedule.carried_state().clone(),
     })
+}
+
+fn add_function_section(module: &mut Module, helpers: usize, groups: usize, eval_type: u32) {
+    let mut functions = FunctionSection::new();
+    for _ in 0..helpers {
+        functions.function(3);
+    }
+    for _ in 0..groups {
+        functions.function(eval_type);
+    }
+    functions.function(eval_type);
+    functions.function(eval_type);
+    module.section(&functions);
 }
 
 /// Link the helpers each root owner of the program calls, built for the outputs
@@ -162,7 +168,7 @@ fn link_helpers(
     sites: &[solve::SolvePureCallSite],
 ) -> Result<ProgramHelpers, String> {
     let demands = glue::root_demands(schedule, plans, sites);
-    ProgramHelpers::with_demands(table, sites, |site| {
+    ProgramHelpers::native_with_demands(table, sites, |site| {
         demands
             .get(&site.owner().index())
             .cloned()

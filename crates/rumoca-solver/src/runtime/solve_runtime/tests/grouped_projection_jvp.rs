@@ -208,7 +208,7 @@ impl CompiledSolveExpression for GroupedResidual {
 fn grouped_projection_residual_evaluates_shared_outputs_once_at_each_point() {
     let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
     let native = Rc::new(GroupedResidual::default());
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+    install_mock_primal(&mut runtime, native.clone());
     let projection = super::native_projection_jvp::selected_projection(&runtime, false);
     let selection = runtime
         .scalar_execution()
@@ -252,7 +252,7 @@ fn grouped_projection_residual_failure_propagates_without_replay_or_partial_comm
         fail: true,
         ..Default::default()
     });
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+    install_mock_primal(&mut runtime, native.clone());
     let mut y = vec![8.0, -5.0];
     let error = runtime
         .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[2.0], 1e-10, 4)
@@ -268,9 +268,7 @@ fn grouped_projection_jvp_executes_once_per_color_at_changing_coefficients() {
     let model = coupled_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let native = Rc::new(GroupedJacobian::default());
-    runtime
-        .scalar_fixture_mut()
-        .compiled_implicit_projection_jacobian_v = Some(native.clone());
+    install_mock_jacobian(&mut runtime, false, native.clone());
     for (iteration, k) in [2.0, -3.0, 0.0, 2.0].into_iter().enumerate() {
         let mut y = vec![8.0, -5.0];
         runtime
@@ -295,9 +293,7 @@ fn grouped_projection_jvp_error_propagates_without_single_row_retry() {
         fail: true,
         ..Default::default()
     });
-    runtime
-        .scalar_fixture_mut()
-        .compiled_implicit_projection_jacobian_v = Some(native.clone());
+    install_mock_jacobian(&mut runtime, false, native.clone());
     let mut y = vec![8.0, -5.0];
     let error = runtime
         .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[2.0], 1e-10, 4)
@@ -323,9 +319,7 @@ fn grouped_projection_jvp_interpreter_uses_the_same_output_projection() {
 fn grouped_projection_jvp_preserves_reverse_completed_rows_and_full_seed_space() {
     let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
     let native = Rc::new(GroupedJacobian::default());
-    runtime
-        .scalar_fixture_mut()
-        .compiled_implicit_full_jacobian_v = Some(native.clone());
+    install_mock_jacobian(&mut runtime, true, native.clone());
     let projection = super::native_projection_jvp::selected_projection(&runtime, true);
     let selection = runtime
         .scalar_execution()

@@ -99,6 +99,31 @@ fn model() -> solve::SolveModel {
     refresh_owned(model)
 }
 
+/// This lifecycle test double provides every required entry, with the real
+/// emitted WASM kernel for the derivative and reference doubles for the rest.
+struct CompleteWasmFixture {
+    source: solve::ScalarProgramBlock,
+    derivative: Rc<WasmExpression>,
+}
+
+impl SolveExecutionBackend for CompleteWasmFixture {
+    fn compile_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        if block.shares_program_owner(&self.source) {
+            return Ok(self.derivative.clone());
+        }
+        crate::runtime::solve_runtime::test_kernels::expression(block)
+    }
+    fn compile_jacobian_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        crate::runtime::solve_runtime::test_kernels::jacobian(block)
+    }
+}
+
 #[test]
 fn precompiled_pure_calls_bind_exact_table_without_execution_or_replacement() {
     use rumoca_eval_solve::{EvalSolveError, PureCallExecution, PureCallInvocation};
@@ -257,7 +282,21 @@ fn direct_wasm_hook_uses_rust_me_lifecycle_and_propagates_execution_failure() {
     let hook = Rc::new(WasmExpression::new(source, &model.problem.layout));
     let mut builder = PrecompiledSolveBackendBuilder::new(&model).unwrap();
     builder.expression(source, hook.clone()).unwrap();
-    let backend = MeExecutionBackend::new(Rc::new(builder.finish()));
+    let incomplete = MeExecutionBackend::new(Rc::new(builder.finish()));
+    assert!(
+        SolveMeKernel::instantiate_with_execution_backend(
+            MeModelSource::fixture(&model),
+            &fixture_instance_config(),
+            Some(incomplete),
+        )
+        .is_err(),
+        "one derivative hook is not a complete runtime"
+    );
+    assert_eq!(hook.calls.get(), 0);
+    let backend = MeExecutionBackend::new(Rc::new(CompleteWasmFixture {
+        source: source.clone(),
+        derivative: hook.clone(),
+    }));
     let mut kernel = SolveMeKernel::instantiate_with_execution_backend(
         MeModelSource::fixture(&model),
         &fixture_instance_config(),

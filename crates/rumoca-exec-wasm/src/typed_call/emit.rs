@@ -201,7 +201,7 @@ fn compile_helper_with(
         Ok(())
     })?;
     let mut chunks = Vec::new();
-    for (index, operation) in owner.body().operations().iter().enumerate() {
+    for (index, operation) in linked.form.body(owner)?.operations().iter().enumerate() {
         chunks.push(emitter.encode(|e| e.operation(index, operation))?);
     }
     let epilogue = emitter.encode(|e| {
@@ -243,9 +243,10 @@ impl<'a> Emitter<'a> {
         plan: &'a FramePlan,
         fault_offset: usize,
     ) -> Result<Self, TypedCallCompileError> {
+        let program = linked.form.body(owner)?;
         // Include check/capacity faults and each issued forwarding descriptor.
         // Return codes must remain positive i32 values rather than wrap at export.
-        if operation_budget(owner.body())
+        if operation_budget(program)
             .and_then(|count| {
                 count
                     .checked_mul(4)?
@@ -266,7 +267,7 @@ impl<'a> Emitter<'a> {
         let mut total = plan.demand;
         total.integers = total
             .integers
-            .checked_add(super::control::max_loop_locals(owner.body()))
+            .checked_add(super::control::max_loop_locals(program))
             .ok_or(TypedCallCompileError::SizeLimit)?;
         Ok(Self {
             code: Vec::new(),
@@ -274,7 +275,7 @@ impl<'a> Emitter<'a> {
             owner,
             unit,
             plan,
-            program: owner.body(),
+            program,
             region_path: Vec::new(),
             loop_counters: Vec::new(),
             state_cells: plan.assigned_states.clone(),
@@ -285,9 +286,9 @@ impl<'a> Emitter<'a> {
             region_loop: None,
             written_outputs: Vec::new(),
             region_result: None,
-            known: vec![None; owner.body().register_types().len()],
+            known: vec![None; program.register_types().len()],
             slot_facts: super::known::Facts::default(),
-            known_cells: vec![None; owner.body().register_types().len()],
+            known_cells: vec![None; program.register_types().len()],
             intervals: plan.intervals.clone(),
             pending_known: None,
             linked,

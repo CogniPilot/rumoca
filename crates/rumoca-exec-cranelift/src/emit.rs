@@ -8,13 +8,14 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use rumoca_core::ExternalTableData;
+#[cfg(test)]
 use rumoca_eval_solve::{
     eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
     eval_time_table_next_event_value_in,
 };
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, ScalarProgramBlock,
-    UnaryOp, resolve_indexed_slot,
+    UnaryOp,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -24,7 +25,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod host_runtime;
 mod input_validation;
+#[cfg(test)]
 mod interpreter;
+mod native_fault;
+pub(crate) mod observation_carrier;
 mod owned_jit_module;
 mod projection_batch;
 pub(crate) mod projection_jacobian;
@@ -41,14 +45,18 @@ pub(crate) mod typed_program;
 
 use host_runtime::{host_jit_builder, register_math_symbols, with_active_external_tables};
 pub(crate) use input_validation::InputRequirements as EmitInputRequirements;
+#[cfg(test)]
+use input_validation::input_compile_error;
 use input_validation::{
-    InputRequirements, input_compile_error, input_requirements_for_linear_ops,
-    input_requirements_for_plans, row_input_requirements, validate_input_requirements,
-    validate_output_len,
+    InputRequirements, input_requirements_for_linear_ops, input_requirements_for_plans,
+    row_input_requirements, validate_input_requirements, validate_output_len,
 };
+#[cfg(test)]
 use interpreter::execute_row;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 pub(crate) use projection_batch::SharedProjectionModule;
+#[cfg(test)]
+use rumoca_ir_solve::resolve_indexed_slot;
 pub(crate) use scratch::NativeScratch;
 pub(crate) use tensor_kernel::{
     CompiledTensorKernels, DirectionalKernels, KernelFrame, KernelId, KernelKind, KernelProgram,
@@ -80,7 +88,7 @@ enum RowPlan {
 
 struct CompiledResidualRow {
     plan: RowPlan,
-    validate_with_interpreter: bool,
+    #[cfg(test)]
     interpreter_supported: bool,
 }
 
@@ -97,6 +105,12 @@ enum ResidualJit {
     Chunked(Box<[ResidualChunkFn]>),
 }
 
+#[derive(Clone, Copy)]
+enum TensorOffsetPurpose {
+    Access,
+    PatchMatch,
+}
+
 enum LoweredConditionalOutput {
     Value(cranelift_codegen::ir::Value),
     TapeRange {
@@ -111,7 +125,7 @@ struct CompiledJacobianRow {
     plan: RowPlan,
     jit: JacobianRowFn,
     scratch: scratch::ScratchOwner,
-    validate_with_interpreter: bool,
+    #[cfg(test)]
     interpreter_supported: bool,
 }
 
@@ -120,6 +134,7 @@ struct JacobianCallContext<'a> {
     p: &'a [f64],
     t: f64,
     v: &'a [f64],
+    #[cfg(test)]
     external_tables: &'a [ExternalTableData],
 }
 
@@ -132,12 +147,15 @@ struct RowInputs<'a> {
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
+    #[cfg(test)]
     seed: Option<&'a [f64]>,
+    #[cfg(test)]
     external_tables: &'a [ExternalTableData],
 }
 
 #[derive(Clone)]
 struct SimpleRowPlan {
+    #[cfg(test)]
     ops: Box<[SimpleOp]>,
     reg_count: usize,
     output_srcs: Box<[usize]>,
@@ -146,6 +164,7 @@ struct SimpleRowPlan {
 
 #[derive(Clone)]
 struct GeneralRowPlan {
+    #[cfg(test)]
     ops: Box<[LinearOp]>,
     reg_count: usize,
     output_srcs: Box<[usize]>,
@@ -169,6 +188,7 @@ impl RowPlan {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum SimpleOp {
     Const {
@@ -219,6 +239,7 @@ pub(crate) struct CompiledResidualRows {
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
+    transaction_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
@@ -253,13 +274,14 @@ impl CompiledAssignmentSchedule {
                 y.len()
             )));
         }
-        let status = with_active_external_tables(external_tables, || {
+        with_active_external_tables(external_tables, || {
             // SAFETY: compilation validates every input load and target offset;
             // the checks above establish both against these exact slices.
-            self.scratch
-                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
-        });
-        status::check(status)
+            let status = self
+                .scratch
+                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) });
+            status::check(status)
+        })
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -294,11 +316,17 @@ impl CompiledResidualRows {
             y,
             p,
             t,
+            #[cfg(test)]
             seed: None,
+            #[cfg(test)]
             external_tables,
         };
         with_active_external_tables(external_tables, || {
-            self.call_active(inputs, output_count, out)
+            let mut staged = self.transaction_scratch.borrow_mut();
+            resize_native_outputs(&mut staged, output_count)?;
+            self.call_active(inputs, output_count, &mut staged)?;
+            out[..output_count].copy_from_slice(&staged);
+            Ok(())
         })
     }
 
@@ -318,11 +346,10 @@ impl CompiledResidualRows {
     fn call_active(
         &self,
         inputs: RowInputs<'_>,
-        output_count: usize,
+        _output_count: usize,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
         let mut regs_scratch = self.regs_scratch.borrow_mut();
-        let expected = self.interpreted_outputs(&mut regs_scratch, inputs, output_count)?;
         for compiled in &self.jits {
             let output =
                 &mut out[compiled.output_start..compiled.output_start + compiled.output_count];
@@ -339,23 +366,23 @@ impl CompiledResidualRows {
             self.record_jit_call();
             status::check(status)?;
         }
-        if let Some(expected) = expected {
+        #[cfg(test)]
+        if let Some(expected) =
+            self.interpreted_outputs(&mut regs_scratch, inputs, _output_count)?
+        {
             validate_interpreted_outputs(out, &expected)?;
         }
         Ok(())
     }
 
+    #[cfg(test)]
     fn interpreted_outputs(
         &self,
         regs_scratch: &mut Vec<f64>,
         inputs: RowInputs<'_>,
         output_count: usize,
     ) -> Result<Option<Vec<f64>>, CompileError> {
-        let validate = self.rows.iter().all(|row| row.interpreter_supported)
-            && self
-                .rows
-                .iter()
-                .any(|row| should_validate_jit_row(row.validate_with_interpreter));
+        let validate = self.rows.iter().all(|row| row.interpreter_supported);
         if !validate {
             return Ok(None);
         }
@@ -380,6 +407,22 @@ impl CompiledResidualRows {
     }
 }
 
+fn reserve_native_outputs(values: &mut Vec<f64>, len: usize) -> Result<(), CompileError> {
+    if len > values.len() {
+        values.try_reserve(len - values.len()).map_err(|_| {
+            CompileError::Backend("native output workspace allocation failed".into())
+        })?;
+    }
+    Ok(())
+}
+
+fn resize_native_outputs(values: &mut Vec<f64>, len: usize) -> Result<(), CompileError> {
+    reserve_native_outputs(values, len)?;
+    values.resize(len, 0.0);
+    Ok(())
+}
+
+#[cfg(test)]
 fn validate_interpreted_outputs(actual: &[f64], expected: &[f64]) -> Result<(), CompileError> {
     for (&actual, &expected) in actual.iter().zip(expected) {
         validate_jit_matches_interpreter("residual", actual, expected)?;
@@ -393,6 +436,7 @@ pub(crate) struct CompiledJacobianRows {
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
+    transaction_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
     _module: OwnedJitModule,
 }
@@ -435,6 +479,7 @@ impl CompiledJacobianRows {
                     p,
                     t,
                     v,
+                    #[cfg(test)]
                     external_tables,
                 },
                 &mut output,
@@ -474,14 +519,18 @@ impl CompiledJacobianRows {
                 p,
                 t,
                 v,
+                #[cfg(test)]
                 external_tables,
             };
+            let mut staged = self.transaction_scratch.borrow_mut();
+            resize_native_outputs(&mut staged, output_count)?;
             let mut base = 0;
             for row in self.rows.iter() {
                 let k = row.plan.output_count();
-                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut out[base..base + k])?;
+                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut staged[base..base + k])?;
                 base += k;
             }
+            out[..output_count].copy_from_slice(&staged);
             Ok(())
         })
     }
@@ -489,11 +538,15 @@ impl CompiledJacobianRows {
     fn call_jacobian_row(
         &self,
         row: &CompiledJacobianRow,
-        regs_scratch: &mut Vec<f64>,
+        _regs_scratch: &mut Vec<f64>,
         ctx: &JacobianCallContext<'_>,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        if row.interpreter_supported && should_validate_jit_row(row.validate_with_interpreter) {
+        let status = unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) };
+        self.record_jit_call();
+        status::check(status)?;
+        #[cfg(test)]
+        if row.interpreter_supported {
             let mut expected = vec![0.0; out.len()];
             let inputs = RowInputs {
                 y: ctx.y,
@@ -502,16 +555,11 @@ impl CompiledJacobianRows {
                 seed: Some(ctx.v),
                 external_tables: ctx.external_tables,
             };
-            execute_row(&row.plan, regs_scratch, inputs, &mut expected)?;
-            status::check(unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
-            self.record_jit_call();
+            execute_row(&row.plan, _regs_scratch, inputs, &mut expected)?;
             for (actual, expected) in out.iter().zip(&expected) {
                 validate_jit_matches_interpreter("jacobian", *actual, *expected)?;
             }
-            return Ok(());
         }
-        status::check(unsafe { call_jacobian_jit(row, ctx.y, ctx.p, ctx.t, ctx.v, out) })?;
-        self.record_jit_call();
         Ok(())
     }
 
@@ -624,6 +672,7 @@ fn compile_residual_rows_attached(
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         output_scratch: RefCell::new(Vec::new()),
+        transaction_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
@@ -699,11 +748,11 @@ fn build_compiled_residual_rows(
     plans: Vec<RowPlan>,
 ) -> Result<Vec<CompiledResidualRow>, CompileError> {
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled residual rows")?;
-    for (index, plan) in plans.into_iter().enumerate() {
+    for (plan, _source) in plans.into_iter().zip(rows) {
         compiled_rows.push(CompiledResidualRow {
             plan,
-            validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            interpreter_supported: !row_uses_pure_calls(&rows[index]),
+            #[cfg(test)]
+            interpreter_supported: !row_uses_pure_calls(_source),
         });
     }
     Ok(compiled_rows)
@@ -887,14 +936,14 @@ fn compile_jacobian_rows_attached(
     finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
-    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+    for ((plan, func_id), _source) in plans.into_iter().zip(func_ids).zip(rows) {
         let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
         compiled_rows.push(CompiledJacobianRow {
             plan,
             jit,
             scratch: Default::default(),
-            validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            interpreter_supported: !row_uses_pure_calls(&rows[index]),
+            #[cfg(test)]
+            interpreter_supported: !row_uses_pure_calls(_source),
         });
     }
     Ok(CompiledJacobianRows {
@@ -903,6 +952,7 @@ fn compile_jacobian_rows_attached(
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
         output_scratch: RefCell::new(Vec::new()),
+        transaction_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
@@ -1053,6 +1103,7 @@ unsafe fn call_jacobian_jit(
     })
 }
 
+#[cfg(test)]
 fn validate_jit_matches_interpreter(
     row_kind: &'static str,
     actual: f64,
@@ -1068,10 +1119,6 @@ fn validate_jit_matches_interpreter(
     Err(CompileError::Backend(format!(
         "Cranelift {row_kind} row result {actual} diverged from interpreter result {expected}"
     )))
-}
-
-fn should_validate_jit_row(row_requires_validation: bool) -> bool {
-    cfg!(test) || row_requires_validation
 }
 
 fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), CompileError> {
@@ -1104,18 +1151,7 @@ fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), 
     Ok(())
 }
 
-fn row_uses_table_ops(row: &[LinearOp]) -> bool {
-    row.iter().any(|op| {
-        matches!(
-            op,
-            LinearOp::TableBounds { .. }
-                | LinearOp::TableLookup { .. }
-                | LinearOp::TableLookupSlope { .. }
-                | LinearOp::TableNextEvent { .. }
-        )
-    })
-}
-
+#[cfg(test)]
 fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
     row.iter().any(|operation| {
         matches!(
@@ -1327,6 +1363,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1429,6 +1466,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1542,6 +1580,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1663,6 +1702,7 @@ impl CraneliftEmitter {
                     fold_functions: &self.fold_functions,
                     conditional_functions: &self.conditional_functions,
                     pure_call_functions: &self.pure_call_functions,
+                    source_operation: std::ptr::null(),
                     pure_call_results: HashMap::new(),
                     nested_fold_results: HashMap::new(),
                     conditional_results: std::mem::take(&mut conditional_results),
@@ -1739,6 +1779,7 @@ impl CraneliftEmitter {
                 fold_functions: &self.fold_functions,
                 conditional_functions: &self.conditional_functions,
                 pure_call_functions: &self.pure_call_functions,
+                source_operation: std::ptr::null(),
                 pure_call_results: HashMap::new(),
                 nested_fold_results: HashMap::new(),
                 conditional_results: HashMap::new(),
@@ -1831,6 +1872,7 @@ impl CraneliftEmitter {
                     fold_functions: &self.fold_functions,
                     conditional_functions: &self.conditional_functions,
                     pure_call_functions: &self.pure_call_functions,
+                    source_operation: std::ptr::null(),
                     pure_call_results: HashMap::new(),
                     nested_fold_results: HashMap::new(),
                     conditional_results: HashMap::new(),
@@ -2050,6 +2092,7 @@ struct RowLowerCtx<'a, 'b> {
     conditional_functions: &'a HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, FuncId>,
     pure_call_functions:
         &'a HashMap<rumoca_ir_solve::SolvePureCallOwnerId, typed_program::PureCallImport>,
+    source_operation: *const LinearOp,
     pure_call_results: HashMap<PureCallResultKey, StackSlot>,
     nested_fold_results: HashMap<NestedFoldCallKey, StackSlot>,
     conditional_results: HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, StackSlot>,
@@ -2230,8 +2273,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         targets: &[usize],
     ) -> Result<(), CompileError> {
         let mut outputs = Vec::with_capacity(targets.len());
-        for op in row.iter().cloned() {
-            self.lower_assignment_output(op, &mut outputs)?;
+        for op in row {
+            self.source_operation = op as *const _;
+            self.lower_assignment_output(op.clone(), &mut outputs)?;
         }
         if outputs.len() != targets.len() {
             return Err(CompileError::Input(format!(
@@ -2294,8 +2338,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
     ) -> Result<(), CompileError> {
         let mut out_idx = i32::try_from(output_base)
             .map_err(|_| CompileError::Backend("residual output index exceeds i32".to_string()))?;
-        for op in row.iter().cloned() {
-            let values = match op {
+        for op in row {
+            self.source_operation = op as *const _;
+            let values = match op.clone() {
                 LinearOp::StoreOutputRange {
                     start,
                     count,
@@ -2913,7 +2958,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             observation: matches!(published, PublishedOutputs::Predicates(_)),
             inputs: input_starts.into(),
         };
-        if let Some(output_slot) = self.pure_call_results.get(&cache_key).copied() {
+        if let Some(output_slot) = (!matches!(published, PublishedOutputs::Predicates(_)))
+            .then(|| self.pure_call_results.get(&cache_key).copied())
+            .flatten()
+        {
             self.publish_typed_call_results(dst_start, (outputs, published), output_slot)?;
             return Ok(None);
         }
@@ -2948,6 +2996,21 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 input_cell += 1;
             }
         }
+        if matches!(published, PublishedOutputs::Predicates(_)) {
+            let marker = self
+                .fb
+                .ins()
+                .iconst(types::I64, self.source_operation as usize as i64);
+            observation_carrier::emit(
+                self.module,
+                self.fb,
+                observation_carrier::ROOT_ENTER,
+                owner.index(),
+                None,
+                (input_ptr, input_cells),
+                Some(marker),
+            )?;
+        }
         let function = declare_far_call_in_func(self.module, function, self.fb.func);
         let arena = scratch::parameter(self.fb);
         let call = self
@@ -2955,6 +3018,17 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .ins()
             .call(function, &[input_ptr, output_ptr, arena]);
         let status = self.fb.inst_results(call)[0];
+        if matches!(published, PublishedOutputs::Predicates(_)) {
+            observation_carrier::emit(
+                self.module,
+                self.fb,
+                observation_carrier::ROOT_EXIT,
+                owner.index(),
+                None,
+                (input_ptr, 0),
+                None,
+            )?;
+        }
         // An observation form that stopped at a failed Error-level assertion
         // has published its predicates; that is its result, not a failure.
         let status = match published {
@@ -2962,7 +3036,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             PublishedOutputs::Predicates(_) => status::separate_stop(self.fb, status).1,
         };
         status::propagate(self.fb, status);
-        self.pure_call_results.insert(cache_key, output_slot);
+        if !matches!(published, PublishedOutputs::Predicates(_)) {
+            self.pure_call_results.insert(cache_key, output_slot);
+        }
         self.publish_typed_call_results(dst_start, (outputs, published), output_slot)?;
         Ok(None)
     }
@@ -3238,6 +3314,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             pure_call_functions: self.pure_call_functions,
             // Conditional regions own isolated register namespaces, so their
             // register-number call keys cannot reuse parent-row results.
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: self.conditional_results.clone(),
@@ -3304,8 +3381,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         region: &[LinearOp],
     ) -> Result<Vec<LoweredConditionalOutput>, CompileError> {
         let mut outputs = Vec::new();
-        for operation in region.iter().cloned() {
-            self.lower_conditional_region_output(operation, &mut outputs)?;
+        for operation in region {
+            self.source_operation = operation as *const _;
+            self.lower_conditional_region_output(operation.clone(), &mut outputs)?;
         }
         Ok(outputs)
     }
@@ -3681,6 +3759,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             fold_functions: self.fold_functions,
             conditional_functions: self.conditional_functions,
             pure_call_functions: self.pure_call_functions,
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),
@@ -3728,6 +3807,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             fold_functions: self.fold_functions,
             conditional_functions: self.conditional_functions,
             pure_call_functions: self.pure_call_functions,
+            source_operation: std::ptr::null(),
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),
@@ -3757,11 +3837,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         operations: &[LinearOp],
     ) -> Result<Vec<LinearOp>, CompileError> {
         let mut outputs = Vec::new();
-        for operation in operations.iter().cloned() {
-            if is_fold_output(&operation) {
-                outputs.push(operation);
+        for operation in operations {
+            self.source_operation = operation as *const _;
+            if is_fold_output(operation) {
+                outputs.push(operation.clone());
             } else {
-                self.lower_op(operation)?;
+                self.lower_op(operation.clone())?;
             }
         }
         Ok(outputs)
@@ -5661,7 +5742,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     stride,
                     "constant tensor projection source",
                 )?)?,
-                None => self.invalid_tensor_projection(),
+                None => self.invalid_tensor_projection(dimensions, indices)?,
             };
             return self.insert(dst, value);
         }
@@ -5718,7 +5799,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             ));
         }
         if let Some(offset) = self.constant_tensor_offset(dimensions, indices) {
-            let value = self.constant_fold_carried_value(carried, base, stride, offset)?;
+            let value = match offset {
+                Some(offset) => self.constant_fold_carried_value(carried, base, stride, offset)?,
+                None => self.invalid_tensor_projection(dimensions, indices)?,
+            };
             return self.insert(dst, value);
         }
         let flat = self.checked_tensor_projection_offset(dimensions, indices)?;
@@ -5745,11 +5829,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         carried: StackSlot,
         base: usize,
         stride: usize,
-        offset: Option<usize>,
+        offset: usize,
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        let Some(offset) = offset else {
-            return Ok(self.invalid_tensor_projection());
-        };
         let offset = offset
             .checked_mul(stride)
             .ok_or_else(|| CompileError::Backend("function-fold tensor offset overflow".into()))?;
@@ -5788,7 +5869,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                             "constant function-fold capture projection is out of range".to_string(),
                         )
                     })?,
-                None => self.invalid_tensor_projection(),
+                None => self.invalid_tensor_projection(dimensions, indices)?,
             };
             return self.insert(dst, value);
         }
@@ -5816,11 +5897,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.insert(dst, value)
     }
 
-    fn invalid_tensor_projection(&mut self) -> cranelift_codegen::ir::Value {
+    fn invalid_tensor_projection(
+        &mut self,
+        dimensions: &[u32],
+        indices: &[rumoca_ir_solve::TensorIndex],
+    ) -> Result<cranelift_codegen::ir::Value, CompileError> {
+        self.lower_tensor_offset(dimensions, indices, TensorOffsetPurpose::Access)?;
         let invalid = self.fb.ins().iconst(types::I8, 0);
         status::require_index(self.fb, invalid);
         // The failure returns before this unreachable, builder-typed continuation.
-        self.fb.ins().f64const(0.0)
+        Ok(self.fb.ins().f64const(0.0))
     }
 
     fn checked_tensor_projection_offset(
@@ -5828,7 +5914,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let (flat, valid) =
+            self.lower_tensor_offset(dimensions, indices, TensorOffsetPurpose::Access)?;
         status::require_index(self.fb, valid);
         Ok(flat)
     }
@@ -5873,10 +5960,28 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         }
     }
 
+    fn require_tensor_coordinate(
+        &mut self,
+        purpose: TensorOffsetPurpose,
+        coordinate: (
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            u32,
+        ),
+    ) -> Result<(), CompileError> {
+        match purpose {
+            TensorOffsetPurpose::Access => {
+                native_fault::checked_index(self.module, self.fb, coordinate, std::ptr::null())
+            }
+            TensorOffsetPurpose::PatchMatch => Ok(()),
+        }
+    }
+
     fn lower_tensor_offset(
         &mut self,
         dimensions: &[u32],
         indices: &[rumoca_ir_solve::TensorIndex],
+        purpose: TensorOffsetPurpose,
     ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), CompileError> {
         if dimensions.len() != indices.len() {
             return Err(CompileError::Backend(
@@ -5904,6 +6009,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     let axis_valid = self.fb.ins().band(integral, above_lower);
                     let axis_valid = self.fb.ins().band(axis_valid, below_upper);
                     valid = self.fb.ins().band(valid, axis_valid);
+                    self.require_tensor_coordinate(purpose, (axis_valid, value, extent))?;
                     let clamped = self.fb.ins().fmax(rounded, one);
                     let clamped = self.fb.ins().fmin(clamped, upper);
                     // Invalid coordinates must reach the caller's explicit status
@@ -6277,7 +6383,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             return Ok(false);
         };
 
-        let (element, address_valid) = self.lower_tensor_offset(dimensions, &indices)?;
+        let (element, address_valid) =
+            self.lower_tensor_offset(dimensions, &indices, TensorOffsetPurpose::PatchMatch)?;
         let zero = self.fb.ins().iconst(types::I64, 0);
         let element = self.fb.ins().select(address_valid, element, zero);
         let carried_base = scratch::stack_addr(self.fb, types::I64, carried, 0);
@@ -7010,20 +7117,28 @@ fn call_table_host(
         for _ in 0..function.arity() {
             sig.params.push(AbiParam::new(types::F64));
         }
-        sig.returns.push(AbiParam::new(types::F64));
+        sig.params
+            .push(AbiParam::new(module.target_config().pointer_type()));
+        sig.returns.push(AbiParam::new(types::I8));
         let func_id = module
             .declare_function(function.symbol(), Linkage::Import, &sig)
             .map_err(to_backend_err)?;
         math.table.insert(function, func_id);
         func_id
     };
+    let slot = scratch::create_slot(fb, std::mem::size_of::<f64>() as u32)?;
+    let result = scratch::stack_addr(fb, module.target_config().pointer_type(), slot, 0);
+    let mut operands = args.to_vec();
+    operands.push(result);
     let callee = declare_far_call_in_func(module, func_id, fb.func);
-    let call = fb.ins().call(callee, args);
-    let values = fb.inst_results(call);
-    values
+    let call = fb.ins().call(callee, &operands);
+    let status = fb
+        .inst_results(call)
         .first()
         .copied()
-        .ok_or_else(|| CompileError::Backend(format!("no return value for {}", function.symbol())))
+        .ok_or_else(|| CompileError::Backend(format!("no status for {}", function.symbol())))?;
+    status::propagate(fb, status);
+    Ok(scratch::stack_load(fb, types::F64, slot, 0))
 }
 
 fn checked_reg_offset(base: u32, offset: usize, kind: &str) -> Result<u32, CompileError> {
@@ -7216,11 +7331,14 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     let output_srcs = output_srcs.into_boxed_slice();
 
     if body.iter().cloned().all(is_simple_linear_op) {
+        #[cfg(test)]
         let mut ops = checked_vec_with_capacity(body.len(), "simple runtime ops")?;
+        #[cfg(test)]
         for op in body.iter().cloned() {
             ops.push(lower_simple_op(op)?);
         }
         return Ok(RowPlan::Simple(SimpleRowPlan {
+            #[cfg(test)]
             ops: ops.into_boxed_slice(),
             reg_count,
             output_srcs,
@@ -7229,6 +7347,7 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
     }
 
     Ok(RowPlan::General(GeneralRowPlan {
+        #[cfg(test)]
         ops: body.into_boxed_slice(),
         reg_count,
         output_srcs,
@@ -7302,6 +7421,7 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
     )
 }
 
+#[cfg(test)]
 fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
     match op {
         LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
@@ -7378,6 +7498,7 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
     }
 }
 
+#[cfg(test)]
 fn lower_runtime_index(index: usize, kind: &str) -> Result<u32, CompileError> {
     u32::try_from(index)
         .map_err(|_| CompileError::Backend(format!("{kind} index exceeds u32 runtime plan")))

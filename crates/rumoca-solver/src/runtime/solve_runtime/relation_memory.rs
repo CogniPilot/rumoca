@@ -1,13 +1,47 @@
 use super::*;
 
 impl SolveRuntime {
+    fn prepared_dynamic_time_event_values(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let mut values = zero_runtime_values(
+            self.model.problem.events.dynamic_time_event_rhs.len(),
+            "prepared dynamic deadline values",
+        )?;
+        if !values.is_empty() {
+            self.eval_dynamic_time_event_rows_into(t, y, params, &mut values)?;
+        }
+        values.extend(
+            self.model
+                .problem
+                .events
+                .dynamic_time_event_names
+                .iter()
+                .filter_map(|name| {
+                    crate::runtime::solve_events::dynamic_time_event_value(
+                        &self.model,
+                        params,
+                        name,
+                    )
+                }),
+        );
+        Ok(values)
+    }
+
     pub fn current_dynamic_time_event_stop(
         &self,
         y: &[f64],
         params: &[f64],
         current_t: f64,
     ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
-        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
+        let values = self.prepared_dynamic_time_event_values(y, params, current_t)?;
+        Ok(values
+            .iter()
+            .any(|&time| crate::timeline::sample_time_match_with_tol(time, current_t))
+            .then(RuntimeEventStop::dynamic_time_event))
     }
 
     pub fn next_runtime_event_stop(
@@ -18,14 +52,19 @@ impl SolveRuntime {
         current_t: f64,
         target: f64,
     ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-        next_runtime_event_stop(
-            &self.model,
-            &self.runtime_state,
-            y,
-            params,
-            stop_schedule,
+        let static_stop = stop_schedule.next_stop(current_t, target);
+        let mut values = self.prepared_dynamic_time_event_values(y, params, current_t)?;
+        let dynamic = crate::runtime::solve_events::dynamic_time_event_in_window(
+            &mut values,
             current_t,
             target,
+        );
+        Ok(
+            crate::runtime::solve_events::next_runtime_event_stop_with_dynamic(
+                static_stop,
+                target,
+                dynamic,
+            ),
         )
     }
 }
@@ -85,12 +124,13 @@ impl ScalarExecutionView<'_> {
         if block.is_empty() {
             return Ok(());
         }
-        solve_eval::eval_scalar_program_block_with_context(
-            block,
-            solver_y,
-            params,
-            t,
-            self.row_eval_context(),
+        self.eval_lifecycle_block(
+            &self.scalar.dynamic_time_event_rhs,
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
+                t,
+            },
             out,
         )?;
         Ok(())
@@ -104,17 +144,14 @@ impl ScalarExecutionView<'_> {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        let scalar_changed =
-            solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-                block: self.model.problem.initialization.update_rhs(),
-                targets: self.model.problem.initialization.update_targets(),
-                y,
-                p,
-                t,
-                context: self.row_eval_context(),
-                max_iters,
-            })
-            .map_err(RuntimeSolveError::from)?;
+        let scalar_changed = self.apply_prepared_update_rows_until_stable(
+            &self.scalar.initialization_update_rhs,
+            self.model.problem.initialization.update_targets(),
+            y,
+            p,
+            t,
+            max_iters,
+        )?;
         let structured_changed = self.apply_initial_quotient_maps(y, p, t, max_iters)?;
         Ok(scalar_changed || structured_changed)
     }
@@ -178,7 +215,7 @@ impl ScalarExecutionView<'_> {
         values.resize(targets.len(), 0.0);
         let mut changed_any = false;
         for _ in 0..max_iters {
-            block.eval_with_context(y, p, t, self.row_eval_context(), &mut values)?;
+            self.eval_lifecycle_block(block, RowEvalPoint { y, p, t }, &mut values)?;
             let changed = solve_eval::apply_scalar_slot_values_exact(targets, &values, y, p)?;
             if !changed {
                 return Ok(changed_any);
@@ -1091,14 +1128,35 @@ impl ScalarExecutionView<'_> {
             context,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
-        let request = solve_eval::event_action_request_from_values(
-            events,
-            y,
-            &action_p,
-            t,
-            context,
-            values.clone(),
-        )?;
+        let mut request = solve_eval::EventActionRequest::Continue;
+        for (value, action) in values.iter().zip(&events.actions) {
+            if *value <= 0.5 {
+                continue;
+            }
+            match action.kind {
+                solve::SolveEventActionKind::Assert => {
+                    request = solve_eval::EventActionRequest::AssertionFailed {
+                        message: self.event_action_message(
+                            action,
+                            RowEvalPoint { y, p: &action_p, t },
+                            context,
+                        )?,
+                    };
+                    break;
+                }
+                solve::SolveEventActionKind::Terminate => {
+                    request = solve_eval::EventActionRequest::Terminate {
+                        message: self.event_action_message(
+                            action,
+                            RowEvalPoint { y, p: &action_p, t },
+                            context,
+                        )?,
+                    };
+                    break;
+                }
+                solve::SolveEventActionKind::Warning | solve::SolveEventActionKind::Print => {}
+            }
+        }
         if !matches!(
             request,
             solve_eval::EventActionRequest::AssertionFailed { .. }
@@ -1159,14 +1217,17 @@ impl ScalarExecutionView<'_> {
                 0.0,
                 "visible values",
             )?;
-            self.scalar.visible_value_rows.eval_with_context(
-                y,
-                params,
-                t,
-                self.row_eval_context(),
+            self.eval_lifecycle_block(
+                &self.scalar.visible_value_rows,
+                RowEvalPoint { y, p: params, t },
                 values,
             )?;
             return Ok(());
+        }
+        if self.scalar.lifecycle().is_some() {
+            return Err(RuntimeSolveError::solve_ir(
+                "prepared visible output extent differs from its source",
+            ));
         }
         let computed =
             visible_values_with_context(&self.model, y, params, t, self.row_eval_context())?;
@@ -1262,13 +1323,21 @@ impl ScalarExecutionView<'_> {
                 "visible value rows",
             ));
         }
-        let value = self.scalar.visible_value_rows.eval_row_with_context(
-            idx,
-            y,
-            params,
-            t,
-            self.row_eval_context(),
-        )?;
+        let value = if self.scalar.lifecycle().is_some() {
+            self.eval_lifecycle_row(
+                &self.scalar.visible_value_rows,
+                idx,
+                RowEvalPoint { y, p: params, t },
+            )?
+        } else {
+            self.scalar.visible_value_rows.eval_row_with_context(
+                idx,
+                y,
+                params,
+                t,
+                self.row_eval_context(),
+            )?
+        };
         Ok(Some(value))
     }
 
@@ -1329,20 +1398,12 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
-        if let Some(compiled) = self.scalar.compiled_derivative_rhs.as_ref() {
-            compiled.call(
-                solver_y,
-                params,
+        self.scalar.derivative_scalar.eval(
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
                 t,
-                self.model.external_tables.as_slice(),
-                out,
-            )?;
-            return self.validate_finite_derivatives(out);
-        }
-        self.scalar.derivative_rhs.eval_with_context(
-            solver_y,
-            params,
-            t,
+            },
             self.row_eval_context(),
             out,
         )?;

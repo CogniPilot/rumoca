@@ -71,11 +71,10 @@ pub(crate) fn projection_jacobian_demand(
     Ok(demanded)
 }
 
-pub(crate) fn prepare_projection_jacobians(
+pub(in crate::runtime::solve_runtime) fn prepare_projection_jacobians(
     structures: &solve::ContinuousStructuralArtifacts,
-    primal: &PreparedScalarProgramBlock,
-    source: &solve::ScalarProgramBlock,
-    compiled: Option<&dyn CompiledSolveJacobianExpression>,
+    primal: ProgramAnalysis<'_>,
+    owner: &DirectionalProgram,
     demanded: &BTreeSet<usize>,
 ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, EvalSolveError> {
     let blocks = structures.algebraic_projection();
@@ -86,9 +85,9 @@ pub(crate) fn prepare_projection_jacobians(
         });
     }
     let mut prepared = vec![None; blocks.len()];
-    let Some(compiled) = compiled else {
+    if !owner.is_compiled() {
         return Ok(prepared);
-    };
+    }
     let (slots, applications): (Vec<usize>, Vec<&solve::ProjectionJacobianApplication>) = blocks
         .iter()
         .enumerate()
@@ -102,7 +101,10 @@ pub(crate) fn prepare_projection_jacobians(
                     .row_output_position(row)
                     .is_some_and(|(program, _)| !primal.reverse_row_y_gradient_supported(program))
             });
-            (source.shares_program_owner(application.canonical_source()) && all_forward)
+            (owner
+                .source()
+                .shares_program_owner(application.canonical_source())
+                && all_forward)
                 .then_some((slot, application))
         })
         .unzip();
@@ -111,8 +113,8 @@ pub(crate) fn prepare_projection_jacobians(
     }
     // One preparation for every demanded application, so a native backend compiles
     // them into one module and finalizes it once.
-    let compiled = compiled
-        .prepare_projections(&applications)
+    let compiled = owner
+        .prepare_projection_entries(&applications)
         .map_err(|message| EvalSolveError::InvalidRow {
             message,
             span: applications
@@ -186,8 +188,8 @@ impl RefreshProjectionModel<'_> {
         if self
             .runtime
             .scalar
-            .compiled_implicit_projection_jacobian_v
-            .is_some()
+            .implicit_projection_scalar_jacobian_v
+            .is_compiled()
         {
             return Ok(None);
         }

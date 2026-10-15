@@ -8,6 +8,7 @@ use crate::runtime::projection::{
 };
 use nalgebra::DVector;
 use rumoca_core::Span;
+use rumoca_eval_solve::JacobianEvalInputs;
 
 use super::initial_continuation::InitialContinuationCoverage;
 
@@ -30,38 +31,17 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.scalar.compiled_implicit_rhs.as_ref() {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "initial implicit residual",
-                    &self.runtime.model.problem.continuous.implicit_rhs,
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.implicit_scalar_rhs.eval(
+                    RowEvalPoint { y, p, t },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            self.runtime
-                .report_nonfinite_implicit_residual_inputs(t, y, out);
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .implicit_rhs
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(RuntimeSolveError::from)?;
+            },
+        )?;
         self.runtime
             .report_nonfinite_implicit_residual_inputs(t, y, out);
         Ok(())
@@ -75,55 +55,20 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self
-            .runtime
-            .scalar
-            .compiled_implicit_projection_jacobian_v
-            .as_ref()
-        {
-            let map_error = |error| {
-                admitted_compiled_error(
-                    "initial implicit JVP",
-                    self.runtime
-                        .scalar
-                        .implicit_projection_scalar_jacobian_v
-                        .block()
-                        .program_spans(),
-                    error,
-                )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .implicit_projection_jacobian_v
-            .eval_with_context(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime
+                    .scalar
+                    .implicit_projection_scalar_jacobian_v
+                    .eval(
+                        solve_eval::JacobianEvalInputs { y, p, t, seed: v },
+                        self.runtime.row_eval_context(),
+                        output,
+                    )
+            },
+        )
     }
 
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
@@ -192,11 +137,13 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         self.runtime
             .scalar
             .implicit_scalar_rhs
+            .source()
             .row_output_position(row_idx)
             .is_some_and(|(program_idx, output_offset)| {
                 self.runtime
                     .scalar
                     .implicit_scalar_rhs
+                    .source()
                     .certifies_exact_target_assignment_output(
                         program_idx,
                         output_offset,
@@ -240,46 +187,25 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             Some((settled_y, settled_p)) => (settled_y.as_slice(), settled_p.as_slice()),
             None => (y, p),
         };
-        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual.as_ref() {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "initial residual",
-                    self.runtime.model.problem.initialization.residual(),
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.initial_scalar_residual.eval_compact(
+                    RowEvalPoint {
+                        y: residual_y,
+                        p: residual_p,
+                        t,
+                    },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            residual_y,
-                            residual_p,
-                            t,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .initial_residual
-            .eval_with_context(
-                residual_y,
-                residual_p,
-                t,
-                self.runtime.row_eval_context(),
-                out,
-            )
-            .map_err(Into::into)
+            },
+        )
     }
 
     fn initial_residual_len(&self) -> usize {
-        self.runtime.scalar.initial_residual.len()
+        self.runtime.scalar.initial_scalar_residual.source().len()
     }
 
     fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
@@ -344,22 +270,27 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .runtime
             .scalar
             .initial_scalar_residual
+            .source()
             .single_output_row_for_output_index(output_index)
         else {
             return Ok(None);
         };
-        self.runtime
-            .scalar
-            .initial_scalar_residual
-            .eval_target_assignment_row_unchecked_with_context(
-                row_idx,
-                target_y_index,
-                y,
-                p,
-                t,
+        if let Some(queries) = self.runtime.scalar.compiled_targets(true) {
+            return queries.call(
+                (row_idx, 0, target_y_index),
+                (y, p, t),
                 self.runtime.row_eval_context(),
-            )
-            .map_err(Into::into)
+            );
+        }
+        let Some(reference) = self.runtime.scalar.initial_scalar_residual.reference() else {
+            return Ok(None);
+        };
+        reference.eval_target_assignment_row_unchecked_with_context(
+            row_idx,
+            target_y_index,
+            RowEvalPoint { y, p, t },
+            self.runtime.row_eval_context(),
+        )
     }
 
     fn eval_initial_residual_row(
@@ -376,6 +307,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .runtime
             .scalar
             .initial_scalar_residual
+            .source()
             .single_output_row_for_output_index(output_index)
         else {
             return Ok(None);
@@ -383,16 +315,12 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         self.runtime
             .scalar
             .initial_scalar_residual
-            .eval_row_output_unchecked_with_context(
-                row_idx,
-                0,
-                y,
-                p,
-                t,
+            .eval_output(
+                (row_idx, 0),
+                RowEvalPoint { y, p, t },
                 self.runtime.row_eval_context(),
             )
             .map(Some)
-            .map_err(Into::into)
     }
 }
 
@@ -513,56 +441,17 @@ impl InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self
-            .runtime
-            .scalar
-            .compiled_initial_residual_jacobian_v
-            .as_ref()
-        {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "initial residual JVP",
-                    &self
-                        .runtime
-                        .model
-                        .artifacts
-                        .initialization
-                        .residual_jacobian_v,
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.initial_residual_jacobian_v.eval(
+                    solve_eval::JacobianEvalInputs { y, p, t, seed: v },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .initial_residual_jacobian_v
-            .eval_with_context(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+            },
+        )
     }
 }
 
@@ -601,18 +490,59 @@ impl ScalarExecutionView<'_> {
                 reason: "an initialization update row has no directional derivative".to_string(),
             });
         };
-        let seed_len =
-            (y.len() + p.len()).max(self.scalar.implicit_jacobian_v.requirements().seed_len);
+        let seed_len = (y.len() + p.len()).max(
+            self.scalar
+                .implicit_jacobian_v
+                .source()
+                .requirements()
+                .seed_len,
+        );
         let mut seed = vec![0.0; seed_len];
         let copied = v.len().min(seed_len);
         seed[..copied].copy_from_slice(&v[..copied]);
-        solve_eval::eval_scalar_program_block_with_context(
+        self.eval_initial_update_jacobian(
             block,
-            y,
-            p,
-            t,
+            JacobianEvalInputs {
+                y,
+                p,
+                t,
+                seed: &seed,
+            },
+            out,
+        )
+    }
+
+    fn eval_initial_update_jacobian(
+        &self,
+        source: &solve::ScalarProgramBlock,
+        inputs: JacobianEvalInputs<'_>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if let Some(code) = self.scalar.compiled_initial_update_jacobian() {
+            return code
+                .call(
+                    inputs.y,
+                    inputs.p,
+                    inputs.t,
+                    inputs.seed,
+                    self.model.external_tables.as_slice(),
+                    out,
+                )
+                .map_err(|error| {
+                    admitted_compiled_error(
+                        "initial update Jacobian",
+                        source.program_spans(),
+                        error,
+                    )
+                });
+        }
+        solve_eval::eval_scalar_program_block_with_context(
+            source,
+            inputs.y,
+            inputs.p,
+            inputs.t,
             RowEvalContext {
-                seed: Some(&seed),
+                seed: Some(inputs.seed),
                 ..self.row_eval_context()
             },
             out,
@@ -693,10 +623,9 @@ impl ScalarExecutionView<'_> {
             plan,
             block_indices,
             plan_validated: false,
-            jacobian_v: ProjectionJacobian::SolverY {
-                block: &self.scalar.implicit_projection_jacobian_v,
-                scalar: &self.scalar.implicit_projection_scalar_jacobian_v,
-            },
+            jacobian_v: ProjectionJacobian::SolverY(
+                &self.scalar.implicit_projection_scalar_jacobian_v,
+            ),
         };
         crate::runtime::projection::project_algebraics_with_plan(
             &projection_model,
@@ -744,8 +673,13 @@ impl ScalarExecutionView<'_> {
                 });
             }
         };
-        let seed_len =
-            (y.len() + p.len()).max(self.scalar.implicit_jacobian_v.requirements().seed_len);
+        let seed_len = (y.len() + p.len()).max(
+            self.scalar
+                .implicit_jacobian_v
+                .source()
+                .requirements()
+                .seed_len,
+        );
         let mut seed = vec![0.0; seed_len];
         seed[..v.len()].copy_from_slice(v);
         let lin = AlgebraicLinearization {
@@ -766,14 +700,13 @@ impl ScalarExecutionView<'_> {
         for pass in 0..settle.max_iters {
             let mut changed = false;
             if let Some(block) = updates {
-                solve_eval::eval_scalar_program_block_with_context(
+                self.eval_initial_update_jacobian(
                     block,
-                    y,
-                    p,
-                    t,
-                    RowEvalContext {
-                        seed: Some(&seed),
-                        ..self.row_eval_context()
+                    JacobianEvalInputs {
+                        y,
+                        p,
+                        t,
+                        seed: &seed,
                     },
                     &mut values,
                 )?;

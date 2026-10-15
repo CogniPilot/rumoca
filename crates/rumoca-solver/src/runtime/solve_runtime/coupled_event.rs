@@ -3,15 +3,15 @@ use crate::{
 };
 use rumoca_ir_solve as solve;
 
-use super::ScalarExecutionView;
 use super::discrete_rows::StructuredDiscreteRowEvalInput;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
 };
 use super::guarded_assignments::guarded_target_at;
+use super::{RowEvalPoint, ScalarExecutionView};
 
 mod tangent;
-use tangent::CoupledEventJvps;
+pub(super) use tangent::CoupledEventJvps;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoupledEventUnknown {
@@ -74,10 +74,9 @@ impl ScalarExecutionView<'_> {
         let before_y = input.y.to_vec();
         let before_p = input.p.to_vec();
         let mut unknowns = read_unknowns(&inventory.unknowns, input.y, input.p)?;
-        let jvps = CoupledEventJvps::prepare(&self.model.artifacts.discrete)?;
         let system = CoupledEventSystem {
             runtime: *self,
-            jvps: &jvps,
+            jvps: &self.scalar.coupled_event_jvps,
             snapshot,
             base_y: input.y,
             base_p: input.p,
@@ -98,7 +97,12 @@ impl ScalarExecutionView<'_> {
             input.tol,
             self.event_schedule().stalled_settle(),
         )
-        .map_err(|error| coupled_recovery_error(input.t, &error.to_string()))?;
+        .map_err(|error| match error {
+            RuntimeSolveError::SolveIr { .. } => {
+                coupled_recovery_error(input.t, &error.to_string())
+            }
+            error => error,
+        })?;
         write_unknowns(&inventory.unknowns, &unknowns, input.y, input.p)?;
         self.apply_root_relation_memory_overrides(
             snapshot.root_relation_overrides,
@@ -368,11 +372,9 @@ impl CoupledEventSystem<'_> {
         p: &[f64],
         residual: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let mut implicit = vec![0.0; self.runtime.scalar.implicit_scalar_rhs.len()];
-        self.runtime.scalar.implicit_scalar_rhs.eval_with_context(
-            y,
-            p,
-            self.t,
+        let mut implicit = vec![0.0; self.runtime.scalar.implicit_scalar_rhs.source().len()];
+        self.runtime.scalar.implicit_scalar_rhs.eval(
+            RowEvalPoint { y, p, t: self.t },
             self.runtime.row_eval_context(),
             &mut implicit,
         )?;

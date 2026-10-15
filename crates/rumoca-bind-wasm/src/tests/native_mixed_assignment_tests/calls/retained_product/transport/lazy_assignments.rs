@@ -301,30 +301,4 @@ impl CaseRun<'_> {
     }
 }
 
-#[test]
-fn unconditional_body_read_checks_original_assigned_presence_in_actual_native_wasm() {
-    let original = "y := if enabled then sum(scratch) else -1;";
-    assert_eq!(SOURCE.matches(original).count(), 1);
-    let source = SOURCE.replace(original, "y := sum(scratch);");
-    let cases = [
-        (true, [1.0, 2.0], 3.0, None),
-        (false, [1.0, 2.0], 0.0, Some("y := sum(scratch);")),
-        (true, [4.0, 5.0], 9.0, None),
-        (true, [1.0, 2.0], 3.0, None),
-    ]
-    .into_iter()
-    .map(|(enabled, values, y, fault_expression)| Case {
-        values,
-        booleans: vec![("enabled", enabled)],
-        integers: Vec::new(),
-        expected: vec![("y", y)],
-        fault_expression,
-    })
-    .collect::<Vec<_>>();
-    run_source_cases(
-        &source,
-        "LazyBodyOnly",
-        &cases,
-        rumoca_exec_wasm::TypedCallFaultKind::AssertionFailed,
-    );
-}
+mod assigned_observations;

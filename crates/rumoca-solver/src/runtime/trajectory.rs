@@ -124,11 +124,11 @@ impl TrajectoryProblem {
                 config.t_start, config.t_end
             )));
         }
-        if y0.len() != runtime.solver_count {
+        if y0.len() != runtime.solver_count() {
             return Err(invalid_request(format!(
                 "the initial point has {} entries for {} solver variables",
                 y0.len(),
-                runtime.solver_count
+                runtime.solver_count()
             )));
         }
         let settle = construction.settle();
@@ -188,9 +188,9 @@ impl TrajectoryProblem {
     /// Solver-variable names in solver order (states first).
     pub fn variable_names(&self) -> Result<Vec<String>, TrajectoryError> {
         self.runtime
-            .model
+            .model()
             .problem
-            .solver_named_report(0..self.runtime.model.solver_scalar_count())
+            .solver_named_report(0..self.runtime.model().solver_scalar_count())
             .map_err(|error| TrajectoryError::InvalidRequest {
                 reason: error.to_string(),
             })
@@ -198,7 +198,7 @@ impl TrajectoryProblem {
 
     #[must_use]
     pub fn state_count(&self) -> usize {
-        self.runtime.state_count
+        self.runtime.state_count()
     }
 
     pub(crate) fn linearization(&self, t: f64) -> AlgebraicLinearization<'_> {
@@ -216,8 +216,8 @@ impl TrajectoryProblem {
     /// Plugin tolerances scaled by each state's own nominal; the construction
     /// decides how a sensitivity entry and a quadrature scale from them.
     pub(crate) fn nominals(&self, quadrature_count: usize) -> Vec<f64> {
-        let model = &self.runtime.model;
-        let state_scales: Vec<f64> = (0..self.runtime.state_count)
+        let model = self.runtime.model();
+        let state_scales: Vec<f64> = (0..self.runtime.state_count())
             .map(|index| model.solver_variable_scale(index))
             .collect();
         self.construction
@@ -346,7 +346,7 @@ pub(crate) fn solver_tangents<'a>(
         .iter()
         .enumerate()
         .map(|(j, parameter)| {
-            let mut tangent = vec![0.0; problem.runtime.solver_count];
+            let mut tangent = vec![0.0; problem.runtime.solver_count()];
             problem.runtime.project_state_sensitivity_to_solver_y(
                 lin,
                 x,

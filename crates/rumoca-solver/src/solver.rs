@@ -103,16 +103,16 @@ impl SimPacingMode {
 /// to pin one side of the comparison, so the selection must stay part of the
 /// request rather than an ambient process setting.
 ///
-/// A third value, `NativeRequired` — fail instead of silently falling back to
-/// the interpreter when compiled execution is unavailable — is reserved for the
-/// slice that threads a typed unavailability error out of backend
-/// construction; it is deliberately not offered until it can be honored.
+/// Normal simulation requires compiled execution. Explicit interpreter
+/// execution remains available for reference evaluation.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SimExecutionPolicy {
-    /// Use compiled native execution when the target and model support it,
-    /// otherwise evaluate through the Solve-IR interpreter.
+    /// Require a compiled backend and complete preparation before execution.
     #[default]
+    NativeRequired,
+    /// Legacy target selection. Profile refusals are recorded in the execution
+    /// receipt; once a backend is selected, incomplete preparation fails.
     Auto,
     /// Always evaluate through the Solve-IR interpreter, even where compiled
     /// execution is available. This is the reference side of the backend
@@ -124,6 +124,7 @@ impl SimExecutionPolicy {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::NativeRequired => "native_required",
             Self::Auto => "auto",
             Self::Interpreter => "interpreter",
         }
@@ -132,7 +133,7 @@ impl SimExecutionPolicy {
     /// True when compiled native execution may be used.
     #[must_use]
     pub const fn allows_native(self) -> bool {
-        matches!(self, Self::Auto)
+        matches!(self, Self::Auto | Self::NativeRequired)
     }
 }
 
@@ -170,9 +171,9 @@ impl SimNativeRefusal {
     }
 }
 
-/// One compile request the selected backend declined. The program it names runs
-/// in the interpreter instead; the receipt lists it so the fallback is never
-/// silent.
+/// One optional optimization request the selected backend declined. Required
+/// execution still uses its prepared compiled base; missing required code rejects
+/// preparation instead of becoming a decline receipt.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SimNativeDecline {
     /// The kind of program the backend was asked to compile.
@@ -194,9 +195,8 @@ pub struct SimExecutionReceipt {
     /// Absent when compiled execution was selected or the policy pinned the
     /// interpreter.
     pub refusal: Option<SimNativeRefusal>,
-    /// Programs the selected backend declined to compile, which run in the
-    /// interpreter. Compilation happens lazily as the session runs, so this
-    /// list is read at the time the receipt is requested.
+    /// Optional optimized entries declined by the selected backend. Their
+    /// required compiled base entries remain prepared and executable.
     pub declined: Vec<SimNativeDecline>,
 }
 
@@ -213,7 +213,7 @@ impl SimExecutionReceipt {
     ) -> Self {
         let refusal = if !policy.allows_native() {
             return Self::interpreter(None);
-        } else if state_count == 0 {
+        } else if state_count == 0 && matches!(policy, SimExecutionPolicy::Auto) {
             SimNativeRefusal::NoContinuousStates
         } else if external_tables_declined != 0 {
             SimNativeRefusal::ExternalTables
@@ -309,7 +309,7 @@ impl Default for SimOptions {
             param_overrides: Vec::new(),
             start_overrides: Vec::new(),
             initial_inputs: Vec::new(),
-            execution_policy: SimExecutionPolicy::Auto,
+            execution_policy: SimExecutionPolicy::NativeRequired,
             checkpoint_budget_bytes: DEFAULT_CHECKPOINT_BUDGET_BYTES,
         }
     }
@@ -387,6 +387,27 @@ mod tests {
         DiffsolMethod, SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt,
         SimNativeRefusal, SimOptions, SimPacingMode, SimSolverMode,
     };
+
+    #[test]
+    fn normal_simulation_requires_native_execution() {
+        assert_eq!(
+            SimOptions::default().execution_policy,
+            SimExecutionPolicy::NativeRequired
+        );
+        assert_eq!(
+            SimExecutionPolicy::default(),
+            SimExecutionPolicy::NativeRequired
+        );
+        assert!(
+            SimExecutionReceipt::admission(
+                SimExecutionPolicy::NativeRequired,
+                0,
+                0,
+                SimExecutionEngine::Cranelift
+            )
+            .is_compiled()
+        );
+    }
 
     #[test]
     fn admission_names_the_engine_and_the_refusal() {

@@ -3,11 +3,9 @@
 //! generated C also execute, each segment committing its targets before the
 //! next runs.
 //!
-//! Execution is backend-first: a schedule the compiled-code backend admits at
-//! construction runs compiled and owns no interpreter copy; a schedule the
-//! backend declines, and every schedule when there is no backend, is proved
-//! and prepared for the interpreter at construction. Nothing is prepared or
-//! decided while the runtime runs.
+//! A selected backend must lower every issued schedule at construction. Only
+//! explicit reference execution prepares interpreter schedules. Nothing is
+//! prepared or decided while the runtime runs.
 
 use super::ScalarExecutionView;
 use std::cell::RefCell;
@@ -23,8 +21,8 @@ use crate::RuntimeSolveError;
 /// One schedule prepared for the interpreter: its segments as programs and
 /// the solver slot of every output, in segment order.
 pub(crate) struct InterpretedSchedule {
-    block: PreparedEvaluationBlock,
-    targets: Vec<usize>,
+    pub(super) block: PreparedEvaluationBlock,
+    pub(super) targets: Vec<usize>,
 }
 
 /// The compiled schedules the backend admitted, by refresh sequence.
@@ -52,8 +50,8 @@ impl Clone for InterpretedSchedules {
 
 impl InterpretedSchedules {
     /// Resolve every issued exact assignment schedule of `model` to its one
-    /// executor: the backend's compiled schedule when it admits it, otherwise
-    /// a proved and prepared interpreter copy.
+    /// executor: a required compiled schedule for the selected backend, or a
+    /// proved interpreter copy for explicit reference execution.
     pub(crate) fn construct(
         model: &solve::SolveModel,
         backend: Option<&dyn SolveExecutionBackend>,
@@ -64,9 +62,9 @@ impl InterpretedSchedules {
         let mut prepared = FxHashMap::default();
         for schedule in owners.exact_assignment_schedules() {
             let sequence = schedule.sequence_id();
-            if let Some(admitted) = backend.and_then(|backend| {
-                compile_schedule(backend, &continuous.implicit_rhs, owners, schedule)
-            }) {
+            if let Some(backend) = backend {
+                let admitted =
+                    compile_schedule(backend, &continuous.implicit_rhs, owners, schedule)?;
                 compiled.insert(sequence, admitted);
                 continue;
             }
@@ -83,25 +81,18 @@ impl InterpretedSchedules {
     }
 }
 
-/// The backend's compiled schedule, or `None` (logged) when it declines.
+/// A required schedule is either lowered completely or preparation fails.
 fn compile_schedule(
     backend: &dyn SolveExecutionBackend,
     source: &solve::ComputeBlock,
     owners: &solve::ContinuousRefreshOwners,
     schedule: &solve::ExactRefreshAssignmentSchedule,
-) -> Option<Rc<dyn CompiledSolveAssignmentSchedule>> {
-    match backend.compile_assignment_schedule(source, owners, schedule) {
-        Ok(admitted) => Some(admitted),
-        Err(error) => {
-            tracing::debug!(
-                target: "rumoca_solver::native_execution",
-                programs = schedule.program_ids().len(),
-                %error,
-                "failed to compile assignment schedule"
-            );
-            None
-        }
-    }
+) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, EvalSolveError> {
+    super::required_compiled(
+        "assignment_schedule",
+        &[],
+        backend.compile_assignment_schedule(source, owners, schedule),
+    )
 }
 
 impl ScalarExecutionView<'_> {
@@ -145,7 +136,7 @@ impl ScalarExecutionView<'_> {
         Ok(true)
     }
 }
-fn prepare_schedule(
+pub(super) fn prepare_schedule(
     schedule: &solve::ExactRefreshAssignmentSchedule,
     source: &solve::ComputeBlock,
     owners: &solve::ContinuousRefreshOwners,

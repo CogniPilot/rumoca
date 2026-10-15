@@ -41,30 +41,43 @@ impl CompiledSolveExpression for SelectedResidual {
 }
 
 #[test]
-fn selected_projection_residual_uses_native_or_explicit_decline() {
-    for decline in [false, true] {
-        let mut runtime = SolveRuntime::new_fixture(&warm_start_test_model()).unwrap();
-        let native = Rc::new(SelectedResidual {
-            calls: Cell::new(0),
-            fail: false,
-            decline,
-            coordinate: (1, 0),
-        });
-        runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
-        for value in [2.0, -7.0] {
-            assert_eq!(
-                selected_projection(&runtime, false)
-                    .eval_implicit_residual_row(1, &[1.0, value], &[], 0.0)
-                    .unwrap(),
-                Some(value)
-            );
-        }
+fn selected_projection_residual_requires_complete_preparation() {
+    let mut runtime = SolveRuntime::new_fixture(&warm_start_test_model()).unwrap();
+    let native = Rc::new(SelectedResidual {
+        calls: Cell::new(0),
+        fail: false,
+        decline: false,
+        coordinate: (1, 0),
+    });
+    install_mock_primal(&mut runtime, native.clone());
+    for value in [2.0, -7.0] {
         assert_eq!(
-            native.calls.get(),
-            2,
-            "selected residual bypassed native dispatch"
+            selected_projection(&runtime, false)
+                .eval_implicit_residual_row(1, &[1.0, value], &[], 0.0)
+                .unwrap(),
+            Some(value)
         );
     }
+    assert_eq!(native.calls.get(), 2);
+    let source =
+        to_scalar_program_block(&warm_start_test_model().problem.continuous.implicit_rhs).unwrap();
+    let missing = Rc::new(SelectedResidual {
+        calls: Cell::new(0),
+        fail: false,
+        decline: true,
+        coordinate: (1, 0),
+    });
+    let error = prepare_mock_primal(source.clone(), missing.clone(), true)
+        .err()
+        .expect("missing required selected kernel must fail during preparation");
+    assert!(
+        matches!(error, EvalSolveError::CompiledExecution { span: Some(span), .. } if Some(span) == source.program_span(0))
+    );
+    assert_eq!(
+        missing.calls.get(),
+        0,
+        "a refused owner cannot execute numeric code"
+    );
 }
 
 #[test]
@@ -76,7 +89,7 @@ fn selected_projection_residual_propagates_native_errors() {
         decline: false,
         coordinate: (1, 0),
     });
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+    install_mock_primal(&mut runtime, native.clone());
     let error = selected_projection(&runtime, false)
         .eval_implicit_residual_row(1, &[1.0, 2.0], &[], 0.0)
         .expect_err("native failure must not be retried through the interpreter");
@@ -105,15 +118,14 @@ fn selected_projection_residual_preserves_aggregate_output_mapping() {
         vec![4, 1],
     )
     .unwrap();
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(block).unwrap();
     let native = Rc::new(SelectedResidual {
         calls: Cell::new(0),
         fail: false,
         decline: false,
         coordinate: (0, 1),
     });
-    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
+    runtime.scalar_fixture_mut().implicit_scalar_rhs =
+        prepare_mock_primal(block, native.clone(), false).unwrap();
     assert_eq!(
         selected_projection(&runtime, false)
             .eval_implicit_residual_row(1, &[1.0, 7.0], &[], 0.0)

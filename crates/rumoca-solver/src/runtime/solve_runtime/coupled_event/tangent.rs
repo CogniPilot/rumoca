@@ -8,48 +8,58 @@
 //! until it stops changing, and each residual row takes its target's seed
 //! minus its row's JVP (the implicit rows' JVP directly).
 
-use std::borrow::Cow;
+mod program;
 
-use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext};
+use std::borrow::Cow;
+use std::rc::Rc;
+
+use rumoca_eval_solve::{EvalSolveError, RowEvalContext};
 use rumoca_ir_solve as solve;
 
+use super::super::SolveExecutionBackend;
 use super::super::initial_projection::write_update_tangents;
 use super::{CoupledEventResidual, CoupledEventSystem, CoupledEventUnknown};
 use crate::RuntimeSolveError;
 use crate::runtime::solve_events::event_eval_params_with_relation_overrides;
+use program::TangentProgram;
 
 /// The discrete event rows' JVP programs a coupled solve differentiates,
-/// prepared once per solve.
-pub(super) struct CoupledEventJvps {
-    discrete: Option<PreparedScalarProgramBlock>,
-    runtime: Option<PreparedScalarProgramBlock>,
-    guarded: Option<PreparedScalarProgramBlock>,
-    structured: Option<PreparedScalarProgramBlock>,
+/// prepared with the runtime before any coupled solve can execute.
+#[derive(Clone)]
+pub(in super::super) struct CoupledEventJvps {
+    discrete: Option<TangentProgram>,
+    runtime: Option<TangentProgram>,
+    guarded: Option<TangentProgram>,
+    structured: Option<TangentProgram>,
 }
 
 impl CoupledEventJvps {
-    pub(super) fn prepare(
+    pub(in super::super) fn prepare(
         artifacts: &solve::DiscreteSolveArtifacts,
-    ) -> Result<Self, RuntimeSolveError> {
-        let prepare = |block: &Option<solve::ScalarProgramBlock>| {
+        backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    ) -> Result<Self, EvalSolveError> {
+        let prepare = |label, block: &Option<solve::ScalarProgramBlock>| {
             block
-                .clone()
-                .map(PreparedScalarProgramBlock::new)
+                .as_ref()
+                .map(|source| TangentProgram::prepare(label, source, backend))
                 .transpose()
         };
         Ok(Self {
-            discrete: prepare(&artifacts.rhs_jacobian_v)?,
-            runtime: prepare(&artifacts.runtime_assignment_jacobian_v)?,
-            guarded: prepare(&artifacts.guarded_jacobian_v)?,
-            structured: prepare(&artifacts.structured_jacobian_v)?,
+            discrete: prepare("event_discrete_jvp", &artifacts.rhs_jacobian_v)?,
+            runtime: prepare(
+                "event_runtime_assignment_jvp",
+                &artifacts.runtime_assignment_jacobian_v,
+            )?,
+            guarded: prepare("event_guarded_jvp", &artifacts.guarded_jacobian_v)?,
+            structured: prepare("event_structured_jvp", &artifacts.structured_jacobian_v)?,
         })
     }
 }
 
 fn required<'a>(
-    block: &'a Option<PreparedScalarProgramBlock>,
+    block: &'a Option<TangentProgram>,
     rows: &str,
-) -> Result<&'a PreparedScalarProgramBlock, RuntimeSolveError> {
+) -> Result<&'a TangentProgram, RuntimeSolveError> {
     block
         .as_ref()
         .ok_or_else(|| RuntimeSolveError::DirectionalDerivativeUnavailable {
@@ -93,6 +103,7 @@ impl CoupledEventSystem<'_> {
             self.runtime
                 .scalar
                 .implicit_jacobian_v
+                .source()
                 .requirements()
                 .seed_len,
         );
@@ -176,11 +187,14 @@ impl CoupledEventSystem<'_> {
             seed: Some(seed),
             ..runtime.row_eval_context()
         };
-        let mut implicit = vec![0.0; runtime.scalar.implicit_jacobian_v.len()];
-        runtime.scalar.implicit_jacobian_v.eval_with_context(
-            y,
-            p,
-            self.t,
+        let mut implicit = vec![0.0; runtime.scalar.implicit_jacobian_v.source().len()];
+        runtime.scalar.implicit_jacobian_v.eval(
+            rumoca_eval_solve::JacobianEvalInputs {
+                y,
+                p,
+                t: self.t,
+                seed,
+            },
             context,
             &mut implicit,
         )?;

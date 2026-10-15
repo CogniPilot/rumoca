@@ -1,11 +1,25 @@
 //! Runtime projection and event regression tests.
+mod fixture_owners;
+pub(super) use fixture_owners::{
+    install_mock_initial_jacobian, install_mock_initial_primal, install_mock_jacobian,
+    install_mock_primal, prepare_mock_jacobian, prepare_mock_primal, reset_mock_jacobian,
+};
 
 mod admitted_errors;
+mod backend_capabilities;
+mod compact_owner_preparation;
+mod execution_owner_queries;
+mod lifecycle_preparation;
 mod native_manifold;
 mod native_projection_residual;
+mod reverse_preparation;
 mod root_remainders;
 mod seed_linearization;
+mod selected_preparation;
 mod state_jacobian_pattern;
+mod target_queries;
+mod torn_preparation;
+mod torn_tangent_failures;
 
 use super::*;
 use rumoca_eval_solve::refresh_plan::{
@@ -1793,6 +1807,7 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 // Jacobian is d(der)/dx = d(a)/dx = k, which a states-only seed would miss
 // (it would yield 0) — so this pins the projection forward-sensitivity.
 
+mod chart_composite_fault;
 mod chart_sharing;
 mod grouped_projection_jvp;
 mod native_projection_assignments;

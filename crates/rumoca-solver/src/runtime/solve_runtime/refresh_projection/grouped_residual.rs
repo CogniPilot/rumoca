@@ -44,6 +44,7 @@ impl RefreshProjectionModel<'_> {
                     .runtime
                     .scalar
                     .implicit_scalar_rhs
+                    .source()
                     .row_output_index(program.program(), offset)
                     .ok_or(RuntimeSolveError::solve_ir(
                         "grouped residual source output is absent",
@@ -71,29 +72,14 @@ impl RefreshProjectionModel<'_> {
         {
             return Ok(());
         }
-        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs
-            && compiled.call_program_outputs(
-                program,
-                y,
-                p,
-                t,
-                self.runtime.model.external_tables.as_slice(),
-                out,
-            )?
-        {
-            return Ok(());
-        }
         self.runtime
             .scalar
             .implicit_scalar_rhs
-            .eval_row_outputs_unchecked_with_context(
+            .eval_program_outputs(
                 program,
-                y,
-                p,
-                t,
+                RowEvalPoint { y, p, t },
                 self.runtime.row_eval_context(),
                 out,
             )
-            .map_err(Into::into)
     }
 }

@@ -60,7 +60,10 @@ fn selected_fold_definedness_keeps_unassigned_paths_faulting() {
             SimulationSession::new(&compiled.dae, options(policy, vec![("u".into(), 0.)]))
                 .err()
                 .expect("the source never assigns y on the zero-input path");
-        assert!(failure.to_string().contains("`y` is used without a value"));
+        assert!(
+            failure.to_string().contains("`y` is used without a value"),
+            "{policy:?}: {failure}"
+        );
     }
 }
 
