@@ -9,29 +9,6 @@ impl SolveExecutionBackend for RefusingTargetBackend {
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
         Err("private target tuple is unsupported".into())
     }
-
-    fn compile_jacobian_expression(
-        &self,
-        _: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        panic!("target preparation must not compile a Jacobian")
-    }
-
-    fn compile_assignment_schedule(
-        &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        panic!("target preparation must not compile a schedule")
-    }
-
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        panic!("target preparation must not compile a transaction")
-    }
 }
 
 #[test]
@@ -42,10 +19,13 @@ fn issued_target_query_refusal_is_reported_during_preparation_with_its_source() 
     );
     let span = block.program_span(0).unwrap();
     let source = PreparedScalarProgramBlock::new(block).unwrap();
+    let backend = super::super::test_kernels::recording::RecordingBackend::new(Rc::new(
+        RefusingTargetBackend,
+    ));
     let error = super::super::compiled_targets::TargetQueries::prepare(
         &source,
         [(0, 0)],
-        &RefusingTargetBackend,
+        &backend,
         RowEvalContext::default(),
     )
     .err()
@@ -54,6 +34,11 @@ fn issued_target_query_refusal_is_reported_during_preparation_with_its_source() 
         error,
         EvalSolveError::CompiledExecution { span: Some(owner), .. } if owner == span
     ));
+    assert_eq!(
+        backend.requests(),
+        (0, 0, 0),
+        "target preparation must not request unrelated products"
+    );
 }
 
 #[test]

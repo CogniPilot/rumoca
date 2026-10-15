@@ -65,9 +65,7 @@ impl ScalarExecutionInventory {
             PreparedExpressions::Reference => None,
         }
     }
-    pub(super) fn compiled_initial_update_jacobian(
-        &self,
-    ) -> Option<&dyn CompiledSolveJacobianExpression> {
+    pub(super) fn compiled_initial_update_jacobian(&self) -> Option<&CompleteJacobian> {
         match &self.expressions {
             PreparedExpressions::Compiled(code) => match &code.initial_update_jacobian {
                 InitialUpdateJacobian::Unavailable => None,

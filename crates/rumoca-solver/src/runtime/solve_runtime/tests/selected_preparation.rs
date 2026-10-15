@@ -53,26 +53,6 @@ impl SolveExecutionBackend for Backend {
             calls: self.calls.clone(),
         }))
     }
-    fn compile_jacobian_expression(
-        &self,
-        block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        super::super::test_kernels::jacobian(block)
-    }
-    fn compile_assignment_schedule(
-        &self,
-        source: &solve::ComputeBlock,
-        owners: &solve::ContinuousRefreshOwners,
-        schedule: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        super::super::test_kernels::assignment(source, owners, schedule)
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no transactions".into())
-    }
 }
 
 fn source() -> solve::ScalarProgramBlock {

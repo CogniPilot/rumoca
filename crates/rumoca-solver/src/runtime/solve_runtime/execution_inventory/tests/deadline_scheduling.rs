@@ -67,13 +67,6 @@ impl SolveExecutionBackend for Backend {
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         test_kernels::assignment(source, owners, schedule)
     }
-
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("deadline fixture has no event transactions".into())
-    }
 }
 
 fn deadline_model(deadline: f64) -> solve::SolveModel {

@@ -295,13 +295,6 @@ impl ReplacedJacobian {
         }
     }
 
-    pub(super) fn prepare_projections(
-        &self,
-        applications: &[&solve::ProjectionJacobianApplication],
-    ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, String> {
-        Ok(vec![None; applications.len()])
-    }
-
     pub(super) fn call(
         &self,
         y: &[f64],

@@ -5,7 +5,6 @@ use std::cell::Cell;
 #[derive(Default)]
 struct CompactBackend {
     expression: Cell<usize>,
-    jacobian: Cell<usize>,
     compact_expression: Cell<usize>,
     compact_jacobian: Cell<usize>,
 }
@@ -17,13 +16,6 @@ impl SolveExecutionBackend for CompactBackend {
     ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
         self.expression.set(self.expression.get() + 1);
         test_kernels::expression(source)
-    }
-    fn compile_jacobian_expression(
-        &self,
-        source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        self.jacobian.set(self.jacobian.get() + 1);
-        test_kernels::jacobian(source)
     }
     fn compile_compute_expression(
         &self,
@@ -43,20 +35,6 @@ impl SolveExecutionBackend for CompactBackend {
         self.compact_jacobian.set(self.compact_jacobian.get() + 1);
         test_kernels::jacobian(&to_scalar_program_block(source).map_err(|error| error.to_string())?)
             .map(Some)
-    }
-    fn compile_assignment_schedule(
-        &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("factory fixture has no assignment product".into())
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("factory fixture has no transaction product".into())
     }
 }
 
@@ -78,7 +56,10 @@ fn constants(values: &[f64]) -> solve::ScalarProgramBlock {
 #[test]
 fn evaluation_primal_compiles_compact_only_when_fresh_and_reuses_exact_programs() {
     let native = Rc::new(CompactBackend::default());
-    let backend: Rc<dyn SolveExecutionBackend> = native.clone();
+    let recorded = Rc::new(test_kernels::recording::RecordingBackend::new(
+        native.clone(),
+    ));
+    let backend: Rc<dyn SolveExecutionBackend> = recorded.clone();
     let source = constants(&[7.0, 11.0]);
     let compute = solve::ComputeBlock::from_scalar_program_block(source.clone());
     let first = EvaluationPrimal::prepare(
@@ -137,12 +118,16 @@ fn evaluation_primal_compiles_compact_only_when_fresh_and_reuses_exact_programs(
         )
         .unwrap();
     assert_eq!(out, [7.0, 13.0]);
+    assert_eq!(recorded.requests(), (0, 0, 0));
 }
 
 #[test]
 fn evaluation_directional_preserves_compact_lowering_and_explicit_reference() {
     let native = Rc::new(CompactBackend::default());
-    let backend: Rc<dyn SolveExecutionBackend> = native.clone();
+    let recorded = Rc::new(test_kernels::recording::RecordingBackend::new(
+        native.clone(),
+    ));
+    let backend: Rc<dyn SolveExecutionBackend> = recorded.clone();
     let source = constants(&[17.0]);
     let compute = solve::ComputeBlock::from_scalar_program_block(source.clone());
     let compiled = EvaluationDirectional::prepare(
@@ -172,5 +157,9 @@ fn evaluation_directional_preserves_compact_lowering_and_explicit_reference() {
     assert_eq!(actual, expected);
     assert_eq!(actual, [17.0]);
     assert_eq!(native.compact_jacobian.get(), 1);
-    assert_eq!(native.jacobian.get(), 0);
+    assert_eq!(
+        recorded.requests(),
+        (0, 0, 0),
+        "compact admission must not request a scalar JVP"
+    );
 }

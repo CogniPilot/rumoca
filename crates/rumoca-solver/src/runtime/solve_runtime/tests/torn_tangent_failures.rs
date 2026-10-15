@@ -147,13 +147,6 @@ impl SolveExecutionBackend for Backend {
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         super::super::test_kernels::assignment(source, owners, schedule)
     }
-
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no event transaction".into())
-    }
 }
 
 fn identity_table() -> solve::SolvePureCallTable {
@@ -322,4 +315,70 @@ fn torn_explicit_reference_control_evaluates_the_same_source() {
         .unwrap();
     assert_eq!(jacobian.residual, [1.0]);
     assert_eq!(jacobian.recovered, [0.0]);
+    // Establish that the source-execution witness used by the failure tests
+    // really observes this exact original call relation when it is executed.
+    let probe = SourceProbe::default();
+    let reference = DirectionalProgram::prepare(
+        "explicit reference witness",
+        model
+            .artifacts
+            .continuous
+            .implicit_jacobian_v_scalar
+            .clone(),
+        None,
+        None,
+    )
+    .unwrap();
+    let mut out = [79.0; 2];
+    reference
+        .eval(
+            solve_eval::JacobianEvalInputs {
+                y: &[1.0, 2.0],
+                p: &[],
+                t: 0.0,
+                seed: &[3.0, 5.0],
+            },
+            RowEvalContext {
+                pure_calls: Some(&model.pure_calls),
+                pure_call_execution: Some(&probe),
+                ..Default::default()
+            },
+            &mut out,
+        )
+        .unwrap();
+    assert_eq!(out, [3.0, 5.0]);
+    assert_eq!(probe.calls.get(), 2);
+}
+
+#[test]
+fn whole_torn_directional_owner_preserves_faults_and_recovers_without_source_retry() {
+    let model = model();
+    let backend = Rc::new(Backend::default());
+    let runtime = SolveRuntime::new_fixture_with_backend(&model, backend.clone()).unwrap();
+    let scalar = runtime.scalar_execution().unwrap();
+    let mut output = [17.0, -0.0];
+    let inputs = solve_eval::JacobianEvalInputs {
+        y: &[1.0, 2.0],
+        p: &[],
+        t: 0.0,
+        seed: &[3.0, 5.0],
+    };
+    backend.fail.set(Failure::Source);
+    assert!(matches!(
+        scalar
+            .scalar
+            .implicit_jacobian_v
+            .eval(inputs, runtime.row_eval_context(), &mut output),
+        Err(RuntimeSolveError::SourceFault { .. })
+    ));
+    assert_eq!(output.map(f64::to_bits), [17.0, -0.0].map(f64::to_bits));
+    backend.fail.set(Failure::None);
+    scalar
+        .scalar
+        .implicit_jacobian_v
+        .eval(inputs, runtime.row_eval_context(), &mut output)
+        .unwrap();
+    assert_eq!(output, [3.0, 5.0]);
+    assert_eq!(backend.native_calls.get(), 2);
+    assert_eq!(backend.source.calls.get(), 0);
 }

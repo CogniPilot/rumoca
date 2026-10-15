@@ -1,4 +1,7 @@
 //! One compiled typed owner executes the complete event-entry tuple atomically.
+#[cfg(test)]
+mod tests;
+
 use rumoca_exec_wasm::PreparedTypedCallWasm;
 use rumoca_ir_solve::{
     EventTransactionProgram, SolvePureCallTable, SolveScalarType, SolveValueKind,

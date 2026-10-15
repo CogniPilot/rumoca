@@ -210,20 +210,6 @@ impl SolveExecutionBackend for FixtureBackend {
             _ => Err("fixture refused a required independently lowered selected JVP".into()),
         }
     }
-    fn compile_assignment_schedule(
-        &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("fixture has no assignment product".into())
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no transaction product".into())
-    }
 }
 
 pub(in crate::runtime::solve_runtime) fn prepare_mock_primal(

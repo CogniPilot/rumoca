@@ -618,6 +618,7 @@ mod tests {
     mod recursive_groups;
     mod register_constants;
     mod scalar_integer_payload;
+    mod selected_faults;
     mod selected_jvp;
     mod selected_residual;
 

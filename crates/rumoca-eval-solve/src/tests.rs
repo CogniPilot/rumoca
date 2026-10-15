@@ -756,6 +756,9 @@ fn eval_row_table_lookup_failure_is_error_not_silent_zero() {
     )
     .expect_err("missing table should report an evaluation error");
 
+    let diagnostic = err.to_string();
+    assert!(diagnostic.contains("external table lookup failed for table id 42 column 1:"));
+    assert!(diagnostic.contains("was not provided"));
     let EvalSolveError::ExternalTable {
         operation,
         table_id,
@@ -768,6 +771,43 @@ fn eval_row_table_lookup_failure_is_error_not_silent_zero() {
     assert_eq!(operation, "lookup");
     assert_eq!(table_id, 42.0);
     assert_eq!(column, Some(1.0));
+    assert!(reason.contains("was not provided"));
+}
+
+#[test]
+fn eval_row_missing_table_next_event_preserves_diagnostic_without_a_column() {
+    let row = vec![
+        LinearOp::Const {
+            dst: 0,
+            value: 42.0,
+        },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::TableNextEvent {
+            dst: 2,
+            table_id: 0,
+            time: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let error = eval_row_with_context(&row, &[], &[], 0.0, RowEvalContext::default())
+        .expect_err("missing next-event table must fail");
+    let diagnostic = error.to_string();
+    let EvalSolveError::ExternalTable {
+        operation,
+        table_id,
+        column,
+        reason,
+    } = error
+    else {
+        panic!("missing table must retain the external-table diagnostic");
+    };
+    assert_eq!(operation, "next event");
+    assert_eq!(table_id, 42.0);
+    assert_eq!(column, None);
+    assert_eq!(
+        diagnostic,
+        format!("external table next event failed for table id 42: {reason}")
+    );
     assert!(reason.contains("was not provided"));
 }
 

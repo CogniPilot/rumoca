@@ -56,13 +56,6 @@ impl SolveExecutionBackend for Backend {
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         test_kernels::assignment(source, owners, schedule)
     }
-
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("refresh fixture has no event transaction".into())
-    }
 }
 
 fn prepared_runtime() -> (SolveRuntime, Rc<Cell<usize>>, Rc<Cell<bool>>) {

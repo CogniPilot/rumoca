@@ -112,7 +112,8 @@ fn retained_inputs_preserve_original_sources_and_private_binding_identity() {
     ));
     assert_eq!(projection.action_index(), 0);
     assert_eq!(projection.predicate_output(), 0);
-    let Some(RetainedAssertionMessagePart::Text(text)) = projection.message().next() else {
+    let message: Vec<_> = projection.message().collect();
+    let [RetainedAssertionMessagePart::Text(text)] = message.as_slice() else {
         panic!("the original literal message remains borrowed");
     };
     let SolveEventMessagePart::Text(original_text) =
@@ -120,7 +121,7 @@ fn retained_inputs_preserve_original_sources_and_private_binding_identity() {
     else {
         panic!("literal source fixture");
     };
-    assert!(std::ptr::eq(text, original_text.as_str()));
+    assert!(std::ptr::eq(*text, original_text.as_str()));
     let separately_checked = root
         .checked_invocation(RetainedAssertionSource::ActionConditions, 0, 0)
         .unwrap();

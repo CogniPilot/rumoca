@@ -41,6 +41,10 @@ end PortableWarnings;
     .unwrap();
     let source = SolveExecutionSource::new(lowered.model().clone());
     let model = source.model();
+    let backend = WasmExecutionBackend {
+        layout: model.problem.layout.clone(),
+        calls: model.pure_calls.clone(),
+    };
     let mut messages = Vec::new();
     let mut compiled_count = 0;
     for (kind, block) in [
@@ -59,12 +63,7 @@ end PortableWarnings;
                 continue;
             }
             let outputs = ScalarProgramBlock::program_output_count(program.program());
-            let code = super::super::super::observations::WasmObservations::compile(
-                program,
-                &model.problem.layout,
-                &model.pure_calls,
-            )
-            .unwrap();
+            let code = backend.compile_event_observation(program).unwrap();
             compiled_count += 1;
             let y = vec![0.0; model.problem.layout.y_scalars()];
             let p = vec![0.0; model.problem.layout.p_scalars()];
