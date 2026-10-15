@@ -152,3 +152,67 @@ fn a_full_demand_still_drops_a_prunable_operation_nothing_reads() {
     }
     assert!(!liveness.drops(0) && !liveness.drops(1));
 }
+
+/// An owner whose body converts a Real nothing reads to an Integer before
+/// storing its outputs from its inputs: the conversion may fault, so it is not
+/// prunable however unread its result is.
+fn owner_with_an_unread_faultable_conversion() -> SolvePureCallTable {
+    let vector = SolveValueType::tensor(SolveScalarType::real(profile()), vec![3]).unwrap();
+    let inputs = vec![vector.clone()];
+    let outputs = vec![
+        SolvePureCallOutput::result(vector),
+        SolvePureCallOutput::assertion_predicate(),
+    ];
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1),
+            inputs,
+            outputs,
+            span(0),
+            |builder, inputs, outputs| {
+                let first = builder.load(inputs[0], span(1))?;
+                let element = builder.project_element(first, vec![0], span(2))?;
+                let _unread = builder.convert(
+                    crate::SolveConversionOperator::RealToIntegerTowardZero,
+                    element,
+                    span(3),
+                )?;
+                let safe = builder.constant(SolveValue::boolean(true), span(4))?;
+                builder.store(outputs[0], first, span(5))?;
+                builder.store(outputs[1], safe, span(6))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_full_demand_keeps_an_unread_operation_that_may_fault() {
+    let table = owner_with_an_unread_faultable_conversion();
+    let body = table.owners()[0].body();
+    let liveness = SolveLiveness::of(body, &SolveOutputDemand::all());
+    let convert = body
+        .operations()
+        .iter()
+        .position(|operation| matches!(operation.operation(), SolveOperation::Convert { .. }))
+        .unwrap();
+    assert!(matches!(body.fault_class(convert), FaultClass::MayFault(_)));
+    assert!(
+        !liveness.is_dead(convert),
+        "a conversion that may fault runs although unread"
+    );
+    // Its operand is read by it, so the projection that feeds it stays too.
+    let project = body
+        .operations()
+        .iter()
+        .position(|operation| {
+            matches!(operation.operation(), SolveOperation::ProjectElement { .. })
+        })
+        .unwrap();
+    assert!(!liveness.is_dead(project));
+    assert!(
+        liveness.dead().is_empty(),
+        "nothing is dead, so the fast path stays"
+    );
+}

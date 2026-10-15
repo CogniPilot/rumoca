@@ -113,6 +113,10 @@ impl SolveLiveness {
                 unused_captures.insert(index, unused);
             }
         }
+        // An all-false vector means nothing, so executors keep their fast paths.
+        if !dead.contains(&true) {
+            dead = Vec::new();
+        }
         Self {
             dead,
             needed,

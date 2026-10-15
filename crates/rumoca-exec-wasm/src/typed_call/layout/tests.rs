@@ -374,7 +374,10 @@ fn register_chain(keep_first: bool) -> (solve::SolvePureCallTable, solve::SolveP
                     value = b.project_element(tensor, vec![99], span(905 + index * 2))?;
                 }
                 if keep_first {
-                    value = b.project_element(first, vec![99], span(950))?;
+                    // The chain's result stays observed, so its tensors are
+                    // live while the late read of `first` pins the original.
+                    let late = b.project_element(first, vec![99], span(950))?;
+                    value = b.binary(solve::SolveBinaryOperator::Add, value, late, span(952))?;
                 }
                 b.store(output[0], value, span(951))
             },
@@ -401,7 +404,13 @@ fn a_late_tensor_read_pins_the_original_allocation_until_that_read() {
     let owners = report(table, &site);
     let frame = &owner(&owners, 0).frame;
     assert!(frame.high_water_bytes >= 8 + 2 * 800);
-    assert!(frame.high_water_bytes <= 8 + 2 * 800 + 16);
+    // Two tensors plus three scalars: the chain's current value, the late
+    // read and their sum.
+    assert!(
+        frame.high_water_bytes <= 8 + 2 * 800 + 24,
+        "high water {}",
+        frame.high_water_bytes
+    );
 }
 
 fn tensor(count: u32) -> solve::SolveValueType {
