@@ -26,6 +26,7 @@ impl Clone for PreparedScalarProgramBlock {
             requirements: self.requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
             row_output_scratch: RefCell::new(Vec::new()),
+            target_value_families: RefCell::default(),
         }
     }
 }
@@ -185,6 +186,7 @@ impl PreparedScalarProgramBlock {
             requirements: RowInputRequirements::default(),
             scratch: RefCell::new(RowEvalScratch::default()),
             row_output_scratch: RefCell::new(Vec::new()),
+            target_value_families: RefCell::default(),
             block,
         };
         for row_idx in 0..row_count {

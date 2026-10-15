@@ -1,4 +1,5 @@
 //! Execute original retained assertion owners through the admitted host engine.
+mod authored_source;
 use super::*;
 use crate::TypedCallFaultKind;
 use rumoca_core::{SourceId, Span};

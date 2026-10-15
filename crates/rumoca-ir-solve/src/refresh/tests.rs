@@ -1,4 +1,5 @@
 mod range_assignment;
+mod streamed_materialization;
 
 use super::*;
 
