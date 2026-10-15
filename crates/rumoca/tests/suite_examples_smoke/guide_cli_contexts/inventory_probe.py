@@ -83,7 +83,7 @@ def inventory(root, mode):
         if mode == "syntax":
             check_syntax(source, entry, executable)
         result.append({**entry, "source": source, "argv": commands(source)})
-    assert len(result) == 66, len(result)
+    assert len(result) == 67, len(result)
     return result
 
 

@@ -52,14 +52,14 @@ pub fn compile_to_value(args: &CompileArgs, source: &str) -> Result<Value> {
     if let Some(emit) = args.emit
         && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
     {
-        let (artifact, model) = compile_str_early_ir_with_inferred_model(
+        let artifact = compile_str_early_ir_with_inferred_model(
             source,
             file_name,
             options,
             emit.phase(),
             args.diagnostics.verbose,
         )?;
-        return early_ir_value(&artifact, &model, emit.is_json());
+        return early_ir_value(&artifact, emit.is_json());
     }
 
     let (result, model) =
@@ -75,12 +75,12 @@ pub fn compile_to_value(args: &CompileArgs, source: &str) -> Result<Value> {
     }
 }
 
-fn early_ir_value(artifact: &EarlyIrArtifact, model: &str, json: bool) -> Result<Value> {
+fn early_ir_value(artifact: &EarlyIrArtifact, json: bool) -> Result<Value> {
     if json {
         return match artifact {
-            EarlyIrArtifact::Ast(resolved) => serde_json::to_value(resolved.inner())
+            EarlyIrArtifact::Ast(parsed) => serde_json::to_value(parsed.as_ref())
                 .map_err(|e| anyhow::anyhow!("serialize AST to JSON: {e}")),
-            EarlyIrArtifact::Flat(flat) => serde_json::to_value(flat.as_ref())
+            EarlyIrArtifact::Flat { flat, .. } => serde_json::to_value(flat.as_ref())
                 .map_err(|e| anyhow::anyhow!("serialize flat model to JSON: {e}")),
         };
     }
@@ -88,7 +88,7 @@ fn early_ir_value(artifact: &EarlyIrArtifact, model: &str, json: bool) -> Result
         EarlyIrArtifact::Ast(_) => {
             bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
         }
-        EarlyIrArtifact::Flat(flat) => render_early_ir_as_modelica_flat(flat, model)?,
+        EarlyIrArtifact::Flat { flat, model } => render_early_ir_as_modelica_flat(flat, model)?,
     };
     Ok(json!({ "format": "modelica", "source": rendered }))
 }

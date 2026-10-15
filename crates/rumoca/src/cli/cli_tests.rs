@@ -712,6 +712,50 @@ fn compile_target_flat_modelica_uses_flat_template_context() {
 /// discards the `EL0xx`/`ES0xx`/`EX0xx` identity the LSP already publishes, so
 /// both `sim` surfaces render it as `[CODE] message`.
 #[test]
+fn compile_to_value_dumps_the_parser_tree_before_resolution_and_flat_after() {
+    // The AST dump is the parser's tree of the source alone, so a base class
+    // nothing provides does not stop it; the Flat dump still resolves the
+    // model's closure and names the missing class.
+    let source = "model Unresolved\n  extends Missing.Base;\n  Real x(start = 1);\n\
+                  equation\n  der(x) = -x;\nend Unresolved;\n";
+    let compile_args = |emit: &str| {
+        let cli = Cli::try_parse_from(["rumoca", "compile", "Unresolved.mo", "--emit", emit])
+            .expect("parse compile --emit");
+        let Commands::Compile(args) = cli.command else {
+            panic!("expected the compile command");
+        };
+        args
+    };
+
+    let ast = compile_to_value(&compile_args("ast-json"), source)
+        .expect("the AST dump needs no name resolution");
+    assert!(
+        ast["classes"]["Unresolved"].is_object(),
+        "the dump is the parsed stored definition, got {ast}"
+    );
+
+    let error = compile_to_value(&compile_args("flat-mo"), source)
+        .expect_err("the Flat dump resolves the closure");
+    assert!(
+        error.to_string().contains("Missing.Base"),
+        "the Flat failure names the missing base class: {error}"
+    );
+
+    let plain = "model Plain\n  Real x(start = 1);\nequation\n  der(x) = -x;\nend Plain;\n";
+    let cli = Cli::try_parse_from(["rumoca", "compile", "Plain.mo", "--emit", "flat-mo"])
+        .expect("parse compile --emit flat-mo");
+    let Commands::Compile(args) = cli.command else {
+        panic!("expected the compile command");
+    };
+    let flat = compile_to_value(&args, plain).expect("flat-mo renders");
+    assert_eq!(flat["format"], "modelica");
+    assert!(
+        flat["source"].as_str().unwrap_or("").contains("der(x)"),
+        "the Modelica render keeps the equation, got {flat}"
+    );
+}
+
+#[test]
 fn simulate_to_value_failure_carries_its_spec_0008_code() {
     // A model with nothing to solve compiles but declines deterministically in
     // solve lowering, so this pins the rendering without depending on solver

@@ -4,6 +4,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 
 ## 0.10.x
 
+- **Changed `--emit ast-json`**: the dump is now the parser's syntax tree of the file passed, produced before any source root is loaded or any name is resolved, so it no longer fails with resolution errors when a referenced library is missing (#432). It needs no `--model`; the resolved class tree with its scope and type tables is no longer emitted.
 - Export parameter-guarded rigid-body models through FMI 2/3 while preserving assertions and typed array-function execution. Recompute derived parameter bindings after legal parameter changes so invalid mass, gravity, and inertia fail validation.
 
 - Fixed interactive startup by sharing the native/WASM library cache format, opening the viewer during the Run click, and supplying configured inputs before initialization. FixedWing selects the interactive viewer and documents keyboard capture and low-throttle arming (#320).

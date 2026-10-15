@@ -10,7 +10,7 @@ pipeline. All of these work with both `rumoca compile` and `rumoca sim`.
 
 | Stage | What you see |
 |---|---|
-| `ast-json` | The parsed, resolved semantic tree (no lossy Modelica reconstruction) |
+| `ast-json` | The parser's syntax tree of the file you pass, before name resolution |
 | `flat-mo` / `flat-json` | The flattened model: hierarchy and `connect`s expanded |
 | `dae-mo` / `dae-json` | The DAE system: equations partitioned, ready for analysis |
 | `solve-json` | The solver IR: sorted, torn, scheduled for execution |
@@ -18,6 +18,24 @@ pipeline. All of these work with both `rumoca compile` and `rumoca sim`.
 ```bash
 rumoca compile Model.mo --emit flat-mo          # to stdout
 rumoca compile Model.mo --emit dae-json -o m.json
+```
+
+`ast-json` is the one stage before name resolution. It dumps the file you
+pass exactly as the parser read it: `--model` and `--source-root` are
+accepted but ignored, so the dump covers the whole file and stays available
+while a library the file references is missing or does not resolve. Every later stage needs the
+model's whole class closure, so `flat-mo` and beyond still report unresolved
+names. For the Modelica Standard Library that means naming the directory
+that holds `Modelica/`, `ModelicaServices/`, and `Complex.mo` as one
+`--source-root`, since `Modelica` references both of the other top-level
+packages.
+
+`--emit` belongs to `rumoca compile`; a scenario file has no equivalent key
+and `rumoca sim --config` does not dump stages. To inspect the model a
+scenario runs, pass its `[model]` entries and `source_roots` to `compile`:
+
+```bash
+rumoca compile models/Ball.mo --model Ball --source-root ../modelica_libraries --emit ast-json
 ```
 
 Reading `flat-mo` answers "what did my modifications and connects actually
