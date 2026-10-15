@@ -95,13 +95,6 @@ impl SolveExecutionBackend for Backend {
             calls: Rc::clone(&self.calls),
         }))
     }
-
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no transactions".into())
-    }
 }
 
 fn model() -> solve::SolveModel {

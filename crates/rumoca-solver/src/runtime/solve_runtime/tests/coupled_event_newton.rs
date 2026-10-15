@@ -265,12 +265,6 @@ impl SolveExecutionBackend for EventTangentBackend {
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         super::super::test_kernels::assignment(source, owners, schedule)
     }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no transactions".into())
-    }
 }
 
 #[test]
@@ -423,13 +417,6 @@ impl SolveExecutionBackend for JvpBackend {
         schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         super::super::test_kernels::assignment(source, owners, schedule)
-    }
-
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no transaction".into())
     }
 }
 

@@ -3,7 +3,6 @@
 
 use super::*;
 use indexmap::IndexMap;
-mod legacy;
 mod reuse;
 pub(super) use reuse::{BlockReuse, shared_projection_jacobians};
 
@@ -431,7 +430,6 @@ pub(super) struct CompleteJacobian {
     source: solve::ScalarProgramBlock,
     execution: JacobianExecution,
     scratch: RefCell<Vec<f64>>,
-    bulk_scratch: RefCell<Vec<f64>>,
     whole_scratch: RefCell<Vec<f64>>,
 }
 
@@ -452,7 +450,6 @@ pub(super) fn jacobian_from_whole(
         source: source.clone(),
         execution: JacobianExecution::Native { whole, programs },
         scratch: RefCell::default(),
-        bulk_scratch: RefCell::default(),
         whole_scratch: RefCell::default(),
     }))
 }
@@ -463,7 +460,6 @@ impl CompleteJacobian {
             source: source.clone(),
             execution: JacobianExecution::Shared(original),
             scratch: RefCell::default(),
-            bulk_scratch: RefCell::default(),
             whole_scratch: RefCell::default(),
         })
     }
@@ -482,7 +478,6 @@ impl CompleteJacobian {
                 replacement,
             )),
             scratch: RefCell::default(),
-            bulk_scratch: RefCell::default(),
             whole_scratch: RefCell::default(),
         }))
     }
@@ -498,7 +493,7 @@ impl CompleteJacobian {
         match &self.execution {
             JacobianExecution::Native { whole, .. } => whole.prepare_projections(applications),
             JacobianExecution::Shared(_) => Ok(vec![None; applications.len()]),
-            JacobianExecution::Composite(code) => code.prepare_projections(applications),
+            JacobianExecution::Composite(_) => Ok(vec![None; applications.len()]),
         }
     }
 
@@ -594,52 +589,6 @@ impl CompleteJacobian {
                 admitted_compiled_error("selected directional program", &[code.span], error)
             })?;
         Ok(values[coordinate.1])
-    }
-
-    pub(super) fn call_program_outputs_at(
-        &self,
-        coordinates: &[(usize, usize)],
-        inputs: solve_eval::JacobianEvalInputs<'_>,
-        tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        let plan = source_bulk_plan(&self.source, coordinates, out.len())?;
-        let mut staged = self.bulk_scratch.borrow_mut();
-        resize_runtime_values(
-            &mut staged,
-            out.len(),
-            0.0,
-            "selected directional bulk transaction",
-        )?;
-        let completed = match &self.execution {
-            JacobianExecution::Native { whole, .. } => whole
-                .call_program_outputs_at(coordinates, inputs, tables, &mut staged)
-                .map_err(|error| {
-                    admitted_compiled_error(
-                        "selected directional bulk outputs",
-                        self.source.program_spans(),
-                        error,
-                    )
-                })?,
-            JacobianExecution::Shared(code) => {
-                code.call_program_outputs_at(coordinates, inputs, tables, &mut staged)?;
-                true
-            }
-            JacobianExecution::Composite(code) => {
-                execute_bulk(plan, &mut staged, |index, values| {
-                    code.call_program_outputs(index, inputs, tables, values)
-                })?;
-                out.copy_from_slice(&staged);
-                return Ok(());
-            }
-        };
-        if !completed {
-            execute_bulk(plan, &mut staged, |index, values| {
-                self.call_program_outputs(index, inputs, tables, values)
-            })?;
-        }
-        out.copy_from_slice(&staged);
-        Ok(())
     }
 
     pub(super) fn call(

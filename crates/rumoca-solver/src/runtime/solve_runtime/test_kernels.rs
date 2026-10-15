@@ -1,6 +1,7 @@
 //! Reference implementations for backend test doubles, never production code.
 
 use super::*;
+pub(crate) mod recording;
 
 #[derive(Default)]
 pub(crate) struct ReferenceBackend;
@@ -25,12 +26,6 @@ impl SolveExecutionBackend for ReferenceBackend {
         schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         assignment(source, owners, schedule)
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("reference test backend has no transaction mock".into())
     }
 }
 

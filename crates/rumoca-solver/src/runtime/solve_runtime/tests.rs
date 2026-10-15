@@ -6,7 +6,9 @@ pub(super) use fixture_owners::{
 };
 
 mod admitted_errors;
+mod backend_capabilities;
 mod compact_owner_preparation;
+mod execution_owner_queries;
 mod lifecycle_preparation;
 mod native_manifold;
 mod native_projection_residual;

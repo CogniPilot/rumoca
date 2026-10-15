@@ -1,3 +1,4 @@
+use super::super::test_kernels::recording::RecordingBackend;
 use super::*;
 use std::cell::Cell;
 
@@ -23,13 +24,7 @@ struct Family {
     mode: FamilyMode,
     fault: Option<rumoca_core::Span>,
     executed: Rc<RefCell<Vec<rumoca_core::Span>>>,
-}
-
-struct Entry {
-    inner: Rc<dyn CompiledSolveExpression>,
-    span: rumoca_core::Span,
-    fault: Option<rumoca_core::Span>,
-    executed: Rc<RefCell<Vec<rumoca_core::Span>>>,
+    entry: Option<(Rc<dyn CompiledSolveExpression>, rumoca_core::Span)>,
 }
 
 impl CompiledSolveExpression for Family {
@@ -50,26 +45,14 @@ impl CompiledSolveExpression for Family {
             vec![span],
         )
         .unwrap();
-        Ok(Some(Rc::new(Entry {
-            inner: super::super::test_kernels::expression(&block)?,
-            span,
+        Ok(Some(Rc::new(Self {
+            source: self.source.clone(),
+            mode: self.mode,
+            entry: Some((super::super::test_kernels::expression(&block)?, span)),
             fault: self.fault,
             executed: self.executed.clone(),
         })))
     }
-    fn call(
-        &self,
-        _: &[f64],
-        _: &[f64],
-        _: f64,
-        _: &[rumoca_core::ExternalTableData],
-        _: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        panic!("ordinary lifecycle must call only its bound original program")
-    }
-}
-
-impl CompiledSolveExpression for Entry {
     fn call(
         &self,
         y: &[f64],
@@ -78,14 +61,18 @@ impl CompiledSolveExpression for Entry {
         tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        self.executed.borrow_mut().push(self.span);
-        if self.fault == Some(self.span) {
+        let (inner, span) = self
+            .entry
+            .as_ref()
+            .expect("lifecycle must call only its bound original program");
+        self.executed.borrow_mut().push(*span);
+        if self.fault == Some(*span) {
             return Err(RuntimeSolveError::SourceFault {
                 message: "owned operation".into(),
-                span: Some(self.span),
+                span: Some(*span),
             });
         }
-        self.inner.call(y, p, t, tables, out)
+        inner.call(y, p, t, tables, out)
     }
 }
 
@@ -103,6 +90,7 @@ impl SolveExecutionBackend for Backend {
             mode: self.mode,
             fault: self.fault,
             executed: self.executed.clone(),
+            entry: None,
         }))
     }
     fn compile_expression(
@@ -115,26 +103,6 @@ impl SolveExecutionBackend for Backend {
             return Err("mandatory base unavailable".into());
         }
         super::super::test_kernels::expression(source)
-    }
-    fn compile_jacobian_expression(
-        &self,
-        _: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        panic!("unused")
-    }
-    fn compile_assignment_schedule(
-        &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        panic!("unused")
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        panic!("unused")
     }
 }
 
@@ -175,7 +143,10 @@ fn fixture(mode: FamilyMode) -> (solve::ScalarProgramBlock, Backend) {
 fn bound_family_keeps_original_program_scope_outputs_and_fault_commit() {
     let (source, mut backend) = fixture(FamilyMode::Bind);
     backend.fault = source.program_span(1);
-    let programs = CompiledPrograms::new("family", &source, &backend).unwrap();
+    let backend = Rc::new(backend);
+    let recorded = RecordingBackend::new(backend.clone());
+    let programs = CompiledPrograms::new("family", &source, &recorded).unwrap();
+    assert_eq!(recorded.requests(), (0, 0, 0));
     assert_eq!((backend.families.get(), backend.individuals.get()), (1, 0));
     let mut out = vec![-99.0];
     let point = RowEvalPoint {
@@ -200,9 +171,12 @@ fn bound_family_keeps_original_program_scope_outputs_and_fault_commit() {
 fn declined_family_still_requires_each_original_compiled_base_cold() {
     let (source, mut backend) = fixture(FamilyMode::Decline);
     backend.refused = source.program_span(1);
-    let error = CompiledPrograms::new("family", &source, &backend)
+    let backend = Rc::new(backend);
+    let recorded = RecordingBackend::new(backend.clone());
+    let error = CompiledPrograms::new("family", &source, &recorded)
         .err()
         .unwrap();
+    assert_eq!(recorded.requests(), (0, 0, 0));
     assert!(
         matches!(error, EvalSolveError::CompiledExecution { message, span }
         if span == source.program_span(1) && message.contains("family[1]")
@@ -215,7 +189,10 @@ fn declined_family_still_requires_each_original_compiled_base_cold() {
 #[test]
 fn declined_family_entries_prepare_original_programs_before_admission() {
     let (source, backend) = fixture(FamilyMode::DeclineEntries);
-    let programs = CompiledPrograms::new("family", &source, &backend).unwrap();
+    let backend = Rc::new(backend);
+    let recorded = RecordingBackend::new(backend.clone());
+    let programs = CompiledPrograms::new("family", &source, &recorded).unwrap();
+    assert_eq!(recorded.requests(), (0, 0, 0));
     assert_eq!((backend.families.get(), backend.individuals.get()), (1, 2));
     assert!(backend.executed.borrow().is_empty());
     let mut out = vec![-99.0];
@@ -238,9 +215,12 @@ fn declined_family_entries_prepare_original_programs_before_admission() {
 #[test]
 fn family_binding_error_preserves_original_span_and_is_fatal_cold() {
     let (source, backend) = fixture(FamilyMode::BindingError);
-    let error = CompiledPrograms::new("family", &source, &backend)
+    let backend = Rc::new(backend);
+    let recorded = RecordingBackend::new(backend.clone());
+    let error = CompiledPrograms::new("family", &source, &recorded)
         .err()
         .unwrap();
+    assert_eq!(recorded.requests(), (0, 0, 0));
     assert!(
         matches!(error, EvalSolveError::CompiledExecution { message, span }
         if span == source.program_span(0) && message.contains("wrong source owner"))

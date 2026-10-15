@@ -122,20 +122,6 @@ impl SolveExecutionBackend for CompleteWasmFixture {
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
         crate::runtime::solve_runtime::test_kernels::jacobian(block)
     }
-    fn compile_assignment_schedule(
-        &self,
-        source: &solve::ComputeBlock,
-        owners: &solve::ContinuousRefreshOwners,
-        schedule: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn crate::CompiledSolveAssignmentSchedule>, String> {
-        crate::runtime::solve_runtime::test_kernels::assignment(source, owners, schedule)
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn crate::CompiledSolveEventTransaction>, String> {
-        Err("the complete harmonic fixture has no event transactions".into())
-    }
 }
 
 #[test]

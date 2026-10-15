@@ -19,6 +19,10 @@ pub(crate) struct HostTypedCallRuntime {
     input_bytes: usize,
     output_bytes: usize,
     scratch_bytes: usize,
+    output_at: usize,
+    scratch_at: usize,
+    end: usize,
+    pointers: (i32, i32, i32),
 }
 
 fn backend(context: &str, error: impl std::fmt::Display) -> WasmCompileError {
@@ -32,12 +36,23 @@ impl HostTypedCallRuntime {
             .get_typed_func::<(i32, i32, i32), i32>(&store, "eval_typed_call")
             .map_err(|e| backend("missing typed call export", e))?;
         let layout = artifact.layout();
-        let end = (layout.input_bytes as usize)
+        // The gaps keep empty spans aligned and distinct. Retain this checked
+        // placement rather than reconstructing pointers at every invocation.
+        let overflow = || WasmCompileError::Input("typed call memory footprint overflows".into());
+        let output_at = (layout.input_bytes as usize)
+            .checked_add(8)
+            .ok_or_else(overflow)?;
+        let scratch_at = output_at
             .checked_add(layout.output_bytes as usize)
-            .and_then(|bytes| bytes.checked_add(layout.scratch_bytes as usize))
-            .and_then(|bytes| bytes.checked_add(16))
-            .ok_or_else(offset_overflow)?;
-        i32::try_from(end).map_err(|e| backend("typed call memory footprint", e))?;
+            .and_then(|end| end.checked_add(8))
+            .ok_or_else(overflow)?;
+        let end = scratch_at
+            .checked_add(layout.scratch_bytes as usize)
+            .ok_or_else(overflow)?;
+        let pointer =
+            |at| i32::try_from(at).map_err(|error| backend("typed call memory footprint", error));
+        pointer(end)?;
+        let pointers = (0, pointer(output_at)?, pointer(scratch_at)?);
         ensure_memory_capacity(&mut store, memory, end)?;
         Ok(Self {
             instance: RefCell::new(Instance {
@@ -48,6 +63,10 @@ impl HostTypedCallRuntime {
             input_bytes: layout.input_bytes as usize,
             output_bytes: layout.output_bytes as usize,
             scratch_bytes: layout.scratch_bytes as usize,
+            output_at,
+            scratch_at,
+            end,
+            pointers,
         })
     }
 
@@ -68,20 +87,7 @@ impl HostTypedCallRuntime {
                 ));
             }
         }
-        // The gaps keep even empty ranges distinct, aligned and inside memory.
-        let output_at = self
-            .input_bytes
-            .checked_add(8)
-            .ok_or_else(offset_overflow)?;
-        let scratch_at = output_at
-            .checked_add(self.output_bytes)
-            .and_then(|end| end.checked_add(8))
-            .ok_or_else(offset_overflow)?;
-        let end = scratch_at
-            .checked_add(self.scratch_bytes)
-            .ok_or_else(offset_overflow)?;
-        let pointer = |at| i32::try_from(at).map_err(|e| backend("typed call pointer offset", e));
-        let pointers = (0, pointer(output_at)?, pointer(scratch_at)?);
+        let (output_at, scratch_at, end) = (self.output_at, self.scratch_at, self.end);
         let mut guard = self.instance.borrow_mut();
         let Instance {
             store,
@@ -93,13 +99,15 @@ impl HostTypedCallRuntime {
         write_cells(store, *memory, output_at, output)?;
         write_cells(store, *memory, scratch_at, scratch)?;
         let status = entry
-            .call(&mut *store, pointers)
+            .call(&mut *store, self.pointers)
             .map_err(|e| backend("typed call failed", e))? as u32;
         let data = memory.data(&*store);
-        let written_output = data
-            .get(output_at..scratch_at - 8)
-            .ok_or_else(offset_overflow)?;
-        let written_scratch = data.get(scratch_at..end).ok_or_else(offset_overflow)?;
+        let written_output = data.get(output_at..scratch_at - 8).ok_or_else(|| {
+            WasmCompileError::Input("typed call memory footprint overflows".into())
+        })?;
+        let written_scratch = data.get(scratch_at..end).ok_or_else(|| {
+            WasmCompileError::Input("typed call memory footprint overflows".into())
+        })?;
         // Stopped/faulting invocations expose initialized observations only;
         // ordinary output cells remain private until the issued success status.
         if status == 0 {
@@ -108,10 +116,6 @@ impl HostTypedCallRuntime {
         read_cells(written_scratch, scratch);
         Ok(status)
     }
-}
-
-fn offset_overflow() -> WasmCompileError {
-    WasmCompileError::Input("typed call memory footprint overflows".into())
 }
 
 fn write_cells(

@@ -1,3 +1,5 @@
+mod selected_jacobian;
+
 use std::{cell::Cell, num::NonZeroU64};
 
 use rumoca_core::{SourceId, Span};

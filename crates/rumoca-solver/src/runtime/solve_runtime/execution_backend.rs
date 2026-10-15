@@ -134,8 +134,10 @@ pub trait SolveExecutionBackend {
 
     fn compile_jacobian_expression(
         &self,
-        block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String>;
+        _block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        Err("Jacobian expressions are not compiled by this backend".into())
+    }
 
     /// [`Self::compile_compute_expression`] for a directional (JVP) block.
     fn compile_compute_jacobian_expression(
@@ -158,10 +160,12 @@ pub trait SolveExecutionBackend {
 
     fn compile_assignment_schedule(
         &self,
-        source: &solve::ComputeBlock,
-        owners: &solve::ContinuousRefreshOwners,
-        schedule: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String>;
+        _source: &solve::ComputeBlock,
+        _owners: &solve::ContinuousRefreshOwners,
+        _schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        Err("assignment schedules are not compiled by this backend".into())
+    }
 
     /// Compile a causally ordered list of single-output isolator rows whose
     /// outputs write to the paired solver-Y targets, so later rows observe
@@ -177,6 +181,8 @@ pub trait SolveExecutionBackend {
 
     fn compile_event_transaction(
         &self,
-        program: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String>;
+        _program: &solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+        Err("event transactions are not compiled by this backend".into())
+    }
 }

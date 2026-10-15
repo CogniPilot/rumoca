@@ -43,26 +43,6 @@ impl SolveExecutionBackend for Backend {
             calls: self.calls.clone(),
         }))
     }
-    fn compile_jacobian_expression(
-        &self,
-        _: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Err("fixture has no directional source".into())
-    }
-    fn compile_assignment_schedule(
-        &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("fixture has no assignment schedule".into())
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no event transaction".into())
-    }
 }
 
 #[test]

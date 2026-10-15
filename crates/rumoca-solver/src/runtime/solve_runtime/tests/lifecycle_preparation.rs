@@ -1,5 +1,71 @@
 use super::*;
 
+#[test]
+fn whole_compiled_roots_preserve_original_permutation_and_failure_atomicity() {
+    let spans = [test_span("first-root.mo"), test_span("second-root.mo")];
+    let mut model = solve::SolveModel::default();
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_output_indices(
+        vec![
+            vec![
+                solve::LinearOp::LoadTime { dst: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const {
+                    dst: 0,
+                    value: -0.0,
+                },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        spans.to_vec(),
+        vec![1, 0],
+    )
+    .unwrap();
+    model.problem.events.root_relation_memory_targets = vec![None; 2];
+    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Previous; 2];
+    let reference = SolveRuntime::new_fixture(&model).unwrap();
+    let mut expected = [19.0, 23.0];
+    reference
+        .eval_root_conditions_into(3.0, &[], &[], 1e-10, 4, &mut expected)
+        .unwrap();
+    assert_eq!(expected.map(f64::to_bits), [-0.0, 3.0].map(f64::to_bits));
+    for fault in [None, Some(spans[1])] {
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let runtime = SolveRuntime::new_fixture_with_backend(
+            &model,
+            Rc::new(Backend {
+                refused: test_span("unrelated.mo"),
+                only_time: false,
+                fault,
+                executions: calls.clone(),
+            }),
+        )
+        .unwrap();
+        assert!(
+            runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .root_condition_plan
+                .is_none()
+        );
+        assert_eq!(calls.get(), 0);
+        let mut output = [19.0, -0.0];
+        let result = runtime.eval_root_conditions_into(3.0, &[], &[], 1e-10, 4, &mut output);
+        if fault.is_some() {
+            assert!(
+                matches!(result, Err(RuntimeSolveError::SourceFault { span: Some(span), .. }) if span == spans[1])
+            );
+            assert_eq!(output.map(f64::to_bits), [19.0, -0.0].map(f64::to_bits));
+        } else {
+            result.unwrap();
+            assert_eq!(output.map(f64::to_bits), expected.map(f64::to_bits));
+        }
+        assert_eq!(calls.get(), 2);
+    }
+}
+
 struct Backend {
     refused: rumoca_core::Span,
     only_time: bool,
@@ -69,12 +135,6 @@ impl SolveExecutionBackend for Backend {
         schedule: &solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         super::super::test_kernels::assignment(source, owners, schedule)
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no transaction".into())
     }
 }
 

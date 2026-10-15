@@ -45,6 +45,21 @@ fn same_as_source(operations: Vec<LinearOp>, y: &[f64], p: &[f64], seed: &[f64],
         .unwrap()
     );
     assert_eq!(tuple.len(), outputs);
+    for (offset, expected) in expected.iter().enumerate() {
+        let selected = code
+            .call_program_output((0, offset), y, p, 0.0, seed, &[])
+            .unwrap()
+            .unwrap();
+        assert!(selected.to_bits() == expected.to_bits() || selected.is_nan() && expected.is_nan());
+    }
+    assert!(
+        code.call_program_output((0, outputs), y, p, 0.0, seed, &[])
+            .is_err()
+    );
+    assert!(
+        code.call_program_output((1, 0), y, p, 0.0, seed, &[])
+            .is_err()
+    );
     for (actual, expected) in tuple.iter().zip(expected) {
         assert!(actual.to_bits() == expected.to_bits() || actual.is_nan() && expected.is_nan());
     }

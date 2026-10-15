@@ -135,20 +135,6 @@ impl SolveExecutionBackend for Backend {
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
         Ok(self.code(source))
     }
-    fn compile_assignment_schedule(
-        &self,
-        _: &solve::ComputeBlock,
-        _: &solve::ContinuousRefreshOwners,
-        _: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("fixture has no assignment schedule".into())
-    }
-    fn compile_event_transaction(
-        &self,
-        _: &solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
-        Err("fixture has no event transaction".into())
-    }
 }
 
 fn sparse_source(second: f64) -> solve::ScalarProgramBlock {
