@@ -175,14 +175,21 @@ impl StageGlue {
                     .filter(|(run, _)| run.is_some())
                     .map(|(_, start)| (index, *start as usize)),
             );
-            glue.skipped
-                .extend(outputs.iter().flatten().map(|(store, _)| *store));
+            glue.skipped.extend(
+                outputs
+                    .iter()
+                    .flatten()
+                    .flat_map(|placed| placed.stores.iter().copied()),
+            );
             let carried = carried_outputs(plan, call.site, &outputs, stage_start);
             glue.calls.insert(
                 index,
                 CallGlue {
                     inputs: call.inputs.clone(),
-                    outputs: outputs.iter().map(|o| o.map(|(_, cell)| cell)).collect(),
+                    outputs: outputs
+                        .iter()
+                        .map(|placed| placed.as_ref().map(|placed| placed.first))
+                        .collect(),
                     carried,
                     unread: unread_outputs(&versions, index, call.dst_start, call.site),
                 },
@@ -201,7 +208,7 @@ impl StageGlue {
 fn carried_outputs(
     plan: &CallProgramPlan,
     site: &solve::SolvePureCallSite,
-    outputs: &[Option<(usize, usize)>],
+    outputs: &[Option<InPlaceOutput>],
     stage_start: usize,
 ) -> Vec<Vec<CommitPiece>> {
     let work_bytes = |first: usize, count: usize| {
@@ -214,7 +221,8 @@ fn carried_outputs(
         .map(|(output, placed)| {
             let count = output.value_type().scalar_count() as usize;
             placed
-                .and_then(|(_, first)| work_bytes(stage_start + first, count))
+                .as_ref()
+                .and_then(|placed| work_bytes(stage_start + placed.first, count))
                 .map_or_else(Vec::new, |y| plan.view().commit_pieces(&y))
         })
         .collect()
@@ -470,15 +478,24 @@ fn host_runs(
         .collect()
 }
 
-/// Per output returned by reference: the store that is its only reader and the
-/// first Y cell, relative to the stage targets, the callee can build it in.
+/// An output returned by reference that the callee builds in its final Y
+/// cells: the stores the glue then replaces and the first cell, relative to
+/// the stage targets, of the contiguous run they write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InPlaceOutput {
+    stores: Vec<usize>,
+    first: usize,
+}
+
+/// Per output returned by reference: the stores that are its only readers and
+/// the first Y cell, relative to the stage targets, the callee can build it in.
 fn in_place_outputs(
     (program, versions, call): (&[LinearOp], &RegisterVersionProgram, usize),
     dst_start: Reg,
     (site, abi): (&solve::SolvePureCallSite, &CallAbi),
     host_cells: &[Range<usize>],
     (stage_start, placements): (usize, &BTreeMap<usize, usize>),
-) -> Vec<Option<(usize, usize)>> {
+) -> Vec<Option<InPlaceOutput>> {
     let mut register = dst_start as usize;
     site.outputs()
         .iter()
@@ -488,46 +505,69 @@ fn in_place_outputs(
             let range = register..register + count;
             register += count;
             returned.buffer_cell?;
-            let (store, first) = sole_store(program, versions, call, &range, placements)?;
-            let target = stage_start + first..stage_start + first + count;
+            let placed = covering_stores(program, versions, call, &range, placements)?;
+            let target = stage_start + placed.first..stage_start + placed.first + count;
             let overlaps =
                 |cells: &Range<usize>| cells.start < target.end && target.start < cells.end;
-            let early_read =
-                host_cells.iter().any(overlaps) || reads_y_between(program, call, store, &target);
-            (!early_read).then_some((store, first))
+            // The callee writes every cell of the run when it returns, so no
+            // operation before the last replaced store may read any of them.
+            let last_store = *placed.stores.iter().max()?;
+            let early_read = host_cells.iter().any(overlaps)
+                || reads_y_between(program, call, last_store, &target);
+            (!early_read).then_some(placed)
         })
         .collect()
 }
 
-/// The one ranged store that reads exactly `range` and nothing else reads, and
-/// the first target it writes.
-fn sole_store(
+/// The ranged stores that together read exactly `range`, each one piece of it
+/// nothing else reads, writing targets contiguous in register order: one store
+/// of the whole range, or one per leaf of a record returned whole.
+fn covering_stores(
     program: &[LinearOp],
     versions: &RegisterVersionProgram,
     call: usize,
     range: &Range<usize>,
     placements: &BTreeMap<usize, usize>,
-) -> Option<(usize, usize)> {
-    let mut store = None;
+) -> Option<InPlaceOutput> {
+    // (first register, count, store operation) per piece.
+    let mut pieces: Vec<(usize, usize, usize)> = Vec::new();
     for (index, operation) in versions.operations().iter().enumerate().skip(call + 1) {
         for piece in operation.operands().iter().filter(|piece| {
             piece.producer() == call
                 && piece.registers().start < range.end
                 && range.start < piece.registers().end
         }) {
+            let registers = piece.registers();
             let exact = matches!(
                 program[index],
                 LinearOp::StoreOutputRange { start, count, stride: 1 }
-                    if start as usize == range.start && count == range.len()
-            ) && piece.registers() == *range;
-            if !exact || store.is_some_and(|seen| seen != index) {
+                    if start as usize == registers.start && count == registers.len()
+            ) && range.start <= registers.start
+                && registers.end <= range.end;
+            if !exact || pieces.iter().any(|(_, _, store)| *store == index) {
                 return None;
             }
-            store = Some(index);
+            pieces.push((registers.start, registers.len(), index));
         }
     }
-    let store = store?;
-    Some((store, *placements.get(&store)?))
+    pieces.sort_unstable();
+    let (first_register, _, first_store) = *pieces.first()?;
+    let first = *placements.get(&first_store)?;
+    if first_register != range.start {
+        return None;
+    }
+    let mut next_register = range.start;
+    for (start, count, store) in &pieces {
+        let placement = *placements.get(store)?;
+        if *start != next_register || placement != first + (start - range.start) {
+            return None;
+        }
+        next_register = start + count;
+    }
+    (next_register == range.end).then(|| InPlaceOutput {
+        stores: pieces.iter().map(|(_, _, store)| *store).collect(),
+        first,
+    })
 }
 
 /// Whether an operation between a call and its store may read the Y cells the
@@ -909,6 +949,74 @@ mod tests {
         let call = glue.call(call_index(&ops)).unwrap();
         assert_eq!(call.outputs[0], None);
         assert_eq!(call.outputs[1], Some(N));
+    }
+
+    /// The stage program with the first result stored as two half ranges, in
+    /// register order or reversed.
+    fn split_store_program(site: &solve::SolvePureCallSite, reversed: bool) -> Vec<LinearOp> {
+        let n = N as Reg;
+        let half = N / 2;
+        let call = 4 * n + 2;
+        let halves = [
+            LinearOp::StoreOutputRange {
+                start: call,
+                count: half,
+                stride: 1,
+            },
+            LinearOp::StoreOutputRange {
+                start: call + half as Reg,
+                count: N - half,
+                stride: 1,
+            },
+        ];
+        let [low, high] = halves;
+        let mut ops = vec![
+            load(0, TensorInputKind::P, 0),
+            LinearOp::LoadY { dst: n, index: 0 },
+            LinearOp::PureCall {
+                dst_start: call,
+                input_starts: vec![0, n].into_boxed_slice(),
+                site: site.clone(),
+            },
+        ];
+        if reversed {
+            ops.extend([high, low]);
+        } else {
+            ops.extend([low, high]);
+        }
+        ops.push(store(call + n));
+        ops
+    }
+    fn derive_split(reversed: bool) -> (Vec<LinearOp>, StageGlue) {
+        let (table, site) = scale();
+        let ops = split_store_program(&site, reversed);
+        let helpers = ProgramHelpers::new(&table, std::slice::from_ref(&site)).unwrap();
+        let rows = [ops.clone()];
+        let plan = CallProgramPlan::new(&rows, &helpers, 2 * N, 0).unwrap();
+        let targets = (0..2 * N).collect::<Vec<_>>();
+        let glue = StageGlue::derive(&ops, &plan, (0, None), &targets).unwrap();
+        (ops, glue)
+    }
+    #[test]
+    fn an_output_stored_in_pieces_with_contiguous_targets_is_built_in_place() {
+        let (ops, glue) = derive_split(false);
+        let call = glue.call(call_index(&ops)).unwrap();
+        assert_eq!(call.outputs, [Some(0), Some(N)]);
+        // Both pieces and the second output's store are replaced.
+        let stores = ops.len() - 3..ops.len();
+        assert!(
+            stores.clone().all(|store| glue.skips(store)),
+            "{:?}",
+            stores
+        );
+    }
+    #[test]
+    fn an_output_whose_pieces_land_out_of_register_order_is_not_built_in_place() {
+        let (ops, glue) = derive_split(true);
+        let call = glue.call(call_index(&ops)).unwrap();
+        assert_eq!(call.outputs, [None, Some(N)]);
+        assert!(!glue.skips(ops.len() - 3) && !glue.skips(ops.len() - 2));
+        assert!(glue.skips(ops.len() - 1));
     }
 }
 
