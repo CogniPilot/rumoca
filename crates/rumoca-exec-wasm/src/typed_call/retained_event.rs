@@ -1,4 +1,6 @@
 //! Source-owned event execution keeps actual invocation carriers private.
+#[cfg(all(test, feature = "host-engine", not(target_arch = "wasm32")))]
+mod tests;
 use super::observations::ObservationPlan;
 use super::*;
 use crate::{CompiledNativeCallProgramWasm, WasmCompileError};
@@ -62,6 +64,14 @@ pub struct CompiledRetainedEventWasm {
 
 impl CompiledRetainedEventWasm {
     pub fn compile(source: solve::RetainedEventProgram) -> Result<Self, WasmCompileError> {
+        if !cfg!(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(feature = "host-engine", not(target_arch = "wasm32"))
+        )) {
+            return Err(WasmCompileError::Input(
+                "event programs have no admitted engine on this target".into(),
+            ));
+        }
         let layout = &source.source().model().problem.layout;
         let (artifact, invocations) = crate::emit::emit_event_program_module(&source, layout)
             .map_err(WasmCompileError::Backend)?;
