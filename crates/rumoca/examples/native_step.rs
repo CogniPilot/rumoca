@@ -492,7 +492,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let frames = FrameSource::from_flags(&flags)?;
     let [_, source_path, model, ..] = arguments.as_slice() else {
         return Err(
-            "usage: native_step SOURCE MODEL [STEPS [PRIVATE_BYTES PUBLIC_BYTES [EXPORT_DIR]]] [--frames DIR [--interval-time T] [--interval-step DT] [--image-epoch N] [--carry-state] [--carried-state] [--state-prefixes OUTPUT_PREFIX INPUT_PREFIX] [--first-frame K] [--epoch-every N] [--set NAME=V] [--state-csv FILE]]"
+            "usage: native_step SOURCE MODEL [STEPS [PRIVATE_BYTES PUBLIC_BYTES [EXPORT_DIR]]] [--frames DIR [--interval-time T] [--interval-step DT] [--image-epoch N] [--carry-state] [--carried-state] [--state-prefixes OUTPUT_PREFIX INPUT_PREFIX] [--first-frame K] [--epoch-every N] [--set NAME=V] [--state-csv FILE | --state-bin FILE NAMES_HASH]]"
                 .into(),
         );
     };
@@ -531,6 +531,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut plan = carry_runs(&host, &product.abi, (&flags.settings, &names))?;
     if let Some(csv) = &flags.state_csv {
         (plan.initial, plan.initial_values) = initial_state(csv, &plan.previous, &names)?;
+    }
+    if let Some((bin, hash)) = &flags.state_bin {
+        (plan.initial, plan.initial_values) = initial_state_bin(bin, hash, &plan.previous)?;
         eprintln!("NATIVE_STEP initial_state scalars={}", plan.initial.len());
     }
     let (carry, carry_matched, carry_unmatched) = (&plan.runs, plan.matched, plan.unmatched);
@@ -746,6 +749,8 @@ struct Flags {
     epoch_every: Option<usize>,
     settings: Vec<(String, f64)>,
     state_csv: Option<std::path::PathBuf>,
+    /// A binary state vector and the state-name hash it was written for.
+    state_bin: Option<(std::path::PathBuf, String)>,
     carry_state: bool,
     carried_state: bool,
     /// Name prefixes of the output and input variables of the state the driver
@@ -783,6 +788,9 @@ fn split_flags(arguments: Vec<String>) -> Result<(Vec<String>, Flags), Box<dyn E
                 flags.settings.push((name.to_string(), number.parse()?));
             }
             "--state-csv" => flags.state_csv = Some(value("--state-csv")?.into()),
+            "--state-bin" => {
+                flags.state_bin = Some((value("--state-bin")?.into(), value("--state-bin")?));
+            }
             "--carry-state" => flags.carry_state = true,
             "--carried-state" => flags.carried_state = true,
             "--state-prefixes" => {
@@ -1134,6 +1142,43 @@ fn initial_state(
         triples.push((*lane, *offset, value));
         canonical.push(value);
     }
+    Ok((triples, canonical))
+}
+
+/// Reads a `state_init.bin` written by [`write_state_files`]: little-endian
+/// f64 values, one per `previous.*` state scalar in sorted-name order. The
+/// caller names the state-name hash the file was written for; a different
+/// state layout or count is refused rather than silently misaligned.
+fn initial_state_bin(
+    path: &Path,
+    expected_hash: &str,
+    previous: &std::collections::BTreeMap<String, (NativeOutputLane, usize)>,
+) -> Result<InitialState, Box<dyn Error>> {
+    let actual_hash = names_hash(previous.keys());
+    if actual_hash != expected_hash {
+        return Err(format!(
+            "state vector was written for state-name hash {expected_hash}, model has {actual_hash}"
+        )
+        .into());
+    }
+    let bytes = fs::read(path)?;
+    if bytes.len() != 8 * previous.len() {
+        return Err(format!(
+            "state vector holds {} bytes, model has {} state scalars",
+            bytes.len(),
+            previous.len()
+        )
+        .into());
+    }
+    let canonical: Vec<f64> = bytes
+        .chunks_exact(8)
+        .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("8-byte chunk")))
+        .collect();
+    let triples = previous
+        .values()
+        .zip(&canonical)
+        .map(|((lane, offset), value)| (*lane, *offset, *value))
+        .collect();
     Ok((triples, canonical))
 }
 
