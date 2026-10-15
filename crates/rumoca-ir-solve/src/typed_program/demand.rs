@@ -73,19 +73,16 @@ impl SolveLiveness {
     pub fn of(program: &solve::TypedProgram, demand: &SolveOutputDemand) -> Self {
         let registers = program.register_types().len();
         let mut needed = vec![false; registers];
-        if demand.is_all() {
-            for operation in program.operations() {
-                operation
-                    .operation()
-                    .visit_input_registers(|register| needed[register.index()] = true);
-            }
-            return Self {
-                dead: Vec::new(),
-                needed,
-                ..Self::default()
-            };
-        }
-        let dropped = dropped_slots(program, demand);
+        // A full demand drops no output, but a prunable operation whose result
+        // no running operation reads is still dead: a compiler-generated seed
+        // of a value every executed path assigns before reading, or the
+        // untaken arm's pass-through of such a value, builds nothing anyone
+        // observes.
+        let dropped = if demand.is_all() {
+            vec![false; program.slots().len()]
+        } else {
+            dropped_slots(program, demand)
+        };
         let mut dead = vec![false; program.operations().len()];
         let mut loaded = vec![false; program.slots().len()];
         let mut unused_captures = BTreeMap::new();
