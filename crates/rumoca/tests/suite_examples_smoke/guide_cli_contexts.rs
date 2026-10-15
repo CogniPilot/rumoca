@@ -82,7 +82,7 @@ fn reviewed(entry: &Entry) -> bool {
 
 #[test]
 fn bash_sources_have_valid_syntax() {
-    assert_eq!(entries("syntax").len(), 66);
+    assert_eq!(entries("syntax").len(), 67);
 }
 
 #[test]
@@ -118,10 +118,10 @@ fn cli_commands_use_declared_teaching_contexts() {
             parsed += 1;
         }
     }
-    assert_eq!(parsed, 78, "review changes to the original CLI argv roster");
+    assert_eq!(parsed, 79, "review changes to the original CLI argv roster");
     teaching_projects::execute(&entries);
     teaching_projects::first_model();
-    eprintln!("66 reviewed bash spans; {parsed} original CLI argv parsed");
+    eprintln!("67 reviewed bash spans; {parsed} original CLI argv parsed");
 }
 
 fn execution_owner(entry: &Entry) -> &'static str {
