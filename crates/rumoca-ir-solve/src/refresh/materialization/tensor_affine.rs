@@ -20,22 +20,10 @@ impl ExactAssignmentProgramBuilder<'_> {
         projection: &AffineTensorProjection,
     ) -> Option<(Reg, Reg)> {
         let zero = self.literal(0.0)?;
-        let sources = self
-            .operations
-            .iter()
-            .enumerate()
-            .filter_map(|(position, operation)| {
-                operation
-                    .dst_register()
-                    .map(|register| (register, position))
-            })
-            .collect::<BTreeMap<_, _>>();
         let mut ranges = BTreeMap::new();
         for &(source_register, rule) in projection.steps.iter() {
-            let source = self
-                .operations
-                .get(*sources.get(&source_register)?)?
-                .clone();
+            let position = self.source_position(source_register)?;
+            let source = self.operations.get(position)?.clone();
             let start = source.dst_register()?;
             let count = source.dst_register_count();
             let (offset, coefficient) = match rule {
@@ -86,10 +74,8 @@ impl ExactAssignmentProgramBuilder<'_> {
                 _ => input.1,
             })
             .collect::<Vec<_>>();
-        self.operations
-            .push(template.instantiate(offset, &offsets)?);
-        self.operations
-            .push(template.instantiate(coefficient, &coefficients)?);
+        self.append(template.instantiate(offset, &offsets)?);
+        self.append(template.instantiate(coefficient, &coefficients)?);
         Some((offset, coefficient))
     }
 
@@ -105,7 +91,7 @@ impl ExactAssignmentProgramBuilder<'_> {
         let target = u32::try_from(target).ok()?;
         let remaining = count.checked_sub(target as usize + 1)?;
         self.copy_range(offset, start, target as usize);
-        self.operations.push(LinearOp::Const {
+        self.append(LinearOp::Const {
             dst: offset.checked_add(target)?,
             value: 0.0,
         });
@@ -115,7 +101,7 @@ impl ExactAssignmentProgramBuilder<'_> {
             remaining,
         );
         self.fill_at(coefficient, zero, target as usize);
-        self.operations.push(LinearOp::Const {
+        self.append(LinearOp::Const {
             dst: coefficient.checked_add(target)?,
             value: 1.0,
         });
@@ -168,7 +154,7 @@ impl ExactAssignmentProgramBuilder<'_> {
 
     fn literal(&mut self, value: f64) -> Option<Reg> {
         let dst = self.allocate()?;
-        self.operations.push(LinearOp::Const { dst, value });
+        self.append(LinearOp::Const { dst, value });
         Some(dst)
     }
 
@@ -180,7 +166,7 @@ impl ExactAssignmentProgramBuilder<'_> {
 
     fn fill_at(&mut self, dst: Reg, value: Reg, count: usize) {
         if count != 0 {
-            self.operations.push(LinearOp::TensorFill {
+            self.append(LinearOp::TensorFill {
                 dst_start: dst,
                 value_start: value,
                 count,
@@ -191,7 +177,7 @@ impl ExactAssignmentProgramBuilder<'_> {
 
     fn copy_range(&mut self, dst: Reg, source: Reg, count: usize) {
         if count != 0 {
-            self.operations.push(LinearOp::TensorTranspose {
+            self.append(LinearOp::TensorTranspose {
                 dst_start: dst,
                 src_start: source,
                 rows: 1,

@@ -1,6 +1,19 @@
 //! Private-output executable view issued by the existing prepared target owner.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+pub(super) type TargetValueFamilies = BTreeMap<(usize, usize), TargetValueFamily>;
+
+pub(super) struct TargetValueFamily {
+    program: ScalarProgramBlock,
+    selections: BTreeMap<(usize, usize), usize>,
+    coefficient_outputs: Arc<[(usize, usize, usize)]>,
+}
 
 struct TargetValuePrefix<'a> {
     operations: &'a [LinearOp],
@@ -17,7 +30,7 @@ pub struct PreparedTargetValuePlan {
     target: usize,
     canonical_prefix_len: usize,
     private_result_offset: usize,
-    coefficient_outputs: Vec<(usize, usize, usize)>,
+    coefficient_outputs: Arc<[(usize, usize, usize)]>,
 }
 
 impl PreparedTargetValuePlan {
@@ -61,28 +74,47 @@ impl PreparedScalarProgramBlock {
         else {
             return Ok(None);
         };
-        // Retain every original prefix operation, including discarded output stores.
-        // Typed calls retain every original tuple result and their issued table owner.
-        let mut operations = prefix.to_vec();
-        let mut coefficient_outputs = Vec::new();
-        let private_result_offset = self.append_target_value_family(
-            row_idx,
-            output_offset,
-            target_y_index,
-            prefix_len,
-            &mut operations,
-            &mut coefficient_outputs,
-        )?;
-        let program = ScalarProgramBlock::with_program_spans(vec![operations], vec![span])
-            .map_err(|error| invalid_prepared_row_with_span(error.to_string(), Some(span)))?;
+        let mut families = self.target_value_families.borrow_mut();
+        let key = (row_idx, prefix_len);
+        let family = match families.entry(key) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                // Retain every original prefix operation, including discarded output stores.
+                // Typed calls retain all tuple results and their issued table owner.
+                let mut operations = prefix.to_vec();
+                let mut coefficient_outputs = Vec::new();
+                let selections = self.append_target_value_family(
+                    row_idx,
+                    prefix_len,
+                    &mut operations,
+                    &mut coefficient_outputs,
+                )?;
+                let program = ScalarProgramBlock::with_program_spans(vec![operations], vec![span])
+                    .map_err(|error| {
+                        invalid_prepared_row_with_span(error.to_string(), Some(span))
+                    })?;
+                entry.insert(TargetValueFamily {
+                    program,
+                    selections,
+                    coefficient_outputs: coefficient_outputs.into(),
+                })
+            }
+        };
+        let private_result_offset = family
+            .selections
+            .get(&(output_offset, target_y_index))
+            .copied()
+            .ok_or_else(|| {
+                invalid_prepared_row("issued target family lacks its checked selection")
+            })?;
         Ok(Some(PreparedTargetValuePlan {
-            program,
+            program: family.program.clone(),
             row: row_idx,
             output: output_offset,
             target: target_y_index,
             canonical_prefix_len: prefix.len(),
             private_result_offset,
-            coefficient_outputs,
+            coefficient_outputs: Arc::clone(&family.coefficient_outputs),
         }))
     }
     fn target_value_prefix(
@@ -121,13 +153,11 @@ impl PreparedScalarProgramBlock {
     fn append_target_value_family(
         &self,
         row: usize,
-        output: usize,
-        target: usize,
         prefix_len: usize,
         operations: &mut Vec<LinearOp>,
         coefficient_outputs: &mut Vec<(usize, usize, usize)>,
-    ) -> Result<usize, EvalSolveError> {
-        let mut selected = None;
+    ) -> Result<BTreeMap<(usize, usize), usize>, EvalSolveError> {
+        let mut selections = BTreeMap::new();
         let mut issued = std::collections::BTreeSet::new();
         let mut output_offset = ScalarProgramBlock::program_output_count(operations);
         let mut builder = rumoca_ir_solve::ExactAssignmentProgramBuilder::new(operations)
@@ -157,11 +187,8 @@ impl PreparedScalarProgramBlock {
                 output_offset += 1;
                 coefficient_outputs.push((offset, shape.target_y_index(), coefficient_offset));
             }
-            if *candidate_output == output && shape.target_y_index() == target {
-                selected = Some(offset);
-            }
+            selections.insert((*candidate_output, shape.target_y_index()), offset);
         }
-        selected
-            .ok_or_else(|| invalid_prepared_row("issued target family lacks its checked selection"))
+        Ok(selections)
     }
 }

@@ -25,6 +25,7 @@ pub fn materialize_target_assignment(
 pub struct ExactAssignmentProgramBuilder<'a> {
     operations: &'a mut Vec<LinearOp>,
     next_register: u32,
+    sources: Option<std::collections::BTreeMap<u32, usize>>,
 }
 
 impl<'a> ExactAssignmentProgramBuilder<'a> {
@@ -49,7 +50,7 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
             let count = u32::try_from(operation.dst_register_count()).ok()?;
             self.next_register = self.next_register.max(start.checked_add(count)?);
         }
-        self.operations.push(operation);
+        self.append(operation);
         Some(())
     }
 
@@ -85,13 +86,13 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
     fn poison_non_finite(&mut self, value: u32, coefficient: u32) -> Option<u32> {
         let gap = self.allocate()?;
         let result = self.allocate()?;
-        self.operations.push(LinearOp::Binary {
+        self.append(LinearOp::Binary {
             dst: gap,
             op: BinaryOp::Sub,
             lhs: coefficient,
             rhs: coefficient,
         });
-        self.operations.push(LinearOp::Binary {
+        self.append(LinearOp::Binary {
             dst: result,
             op: BinaryOp::Sub,
             lhs: value,
@@ -111,14 +112,39 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
         Some(Self {
             operations,
             next_register,
+            sources: None,
         })
+    }
+
+    fn append(&mut self, operation: LinearOp) {
+        if let Some(sources) = &mut self.sources
+            && let Some(register) = operation.dst_register()
+        {
+            sources.insert(register, self.operations.len());
+        }
+        self.operations.push(operation);
+    }
+
+    fn source_position(&mut self, register: u32) -> Option<usize> {
+        let sources = self.sources.get_or_insert_with(|| {
+            self.operations
+                .iter()
+                .enumerate()
+                .filter_map(|(position, operation)| {
+                    operation
+                        .dst_register()
+                        .map(|register| (register, position))
+                })
+                .collect()
+        });
+        sources.get(&register).copied()
     }
 
     fn materialize(&mut self, shape: &TargetAssignmentShape) -> Option<(u32, Option<u32>)> {
         match shape {
             TargetAssignmentShape::Zero { .. } => {
                 let dst = self.allocate()?;
-                self.operations.push(LinearOp::Const { dst, value: 0.0 });
+                self.append(LinearOp::Const { dst, value: 0.0 });
                 Some((dst, None))
             }
             TargetAssignmentShape::Direct { expr_reg, .. } => Some((*expr_reg, None)),
@@ -211,13 +237,13 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
 
     fn constant(&mut self, value: f64) -> Option<u32> {
         let dst = self.allocate()?;
-        self.operations.push(LinearOp::Const { dst, value });
+        self.append(LinearOp::Const { dst, value });
         Some(dst)
     }
 
     fn negate(&mut self, arg: u32) -> Option<u32> {
         let dst = self.allocate()?;
-        self.operations.push(LinearOp::Unary {
+        self.append(LinearOp::Unary {
             dst,
             op: UnaryOp::Neg,
             arg,
@@ -227,7 +253,7 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
 
     fn binary(&mut self, op: BinaryOp, lhs: u32, rhs: u32) -> Option<u32> {
         let dst = self.allocate()?;
-        self.operations.push(LinearOp::Binary { dst, op, lhs, rhs });
+        self.append(LinearOp::Binary { dst, op, lhs, rhs });
         Some(dst)
     }
 
