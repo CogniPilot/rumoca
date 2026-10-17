@@ -3,6 +3,7 @@ use crate::{SolveRealFormat, SolveTypeConstructionError, SolveValueKind};
 use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
 mod assigned_state;
+mod boolean_extrema;
 mod fault_flow;
 mod linear_solve;
 mod loop_flow;

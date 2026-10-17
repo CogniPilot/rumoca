@@ -5,6 +5,7 @@ mod assertion_observation;
 mod assertion_regions;
 mod assertions;
 mod assigned_state;
+mod boolean_extrema;
 mod broadcast_power;
 mod construction_properties;
 mod directional_abs;
