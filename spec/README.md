@@ -41,7 +41,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) | Scheduled Discrete Ownership | IR/runtime | ~187 | DRAFT |
 | [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~562 | REFERENCE |
 | [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~114 | DRAFT |
-| [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~231 | REFERENCE |
+| [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~232 | REFERENCE |
 | [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | Trace Evidence Catalog | process/verification | ~81 | REFERENCE |
 | [SPEC_0051](SPEC_0051_JACOBIAN_SYNTHESIS.md) | Jacobian Synthesis by Forward-Mode Differentiation | phase/verification | ~226 | PROPOSED |
 | [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~94 | PROPOSED |
