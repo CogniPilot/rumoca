@@ -35,8 +35,8 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.12 OPREC contracts | 772–788 | Operator record rules (12 contracts) |
 | §4.13 SIM contracts | 789–803 | Simulation rules (10 contracts) |
 | §4.14 CLK contracts | 804–828 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 829–859 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 860–953 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.15 STRM contracts | 829–846 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 847–953 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
 | §4.17 ANN contracts | 954–975 | Annotation rules (17 contracts) |
 | §4.18 UNIT contracts | 976–991 | Unit expression rules (9 contracts) |
 | §5. Contract Summary | 992–1017 | Category counts and totals |
