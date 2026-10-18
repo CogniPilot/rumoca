@@ -16,6 +16,7 @@ fn write(root: &Path, path: &str, source: &str) {
 fn fixtures(root: &Path) {
     write(root, "Model.mo", MODEL);
     write(root, "MyModel.mo", &MODEL.replace("Model", "MyModel"));
+    write(root, "models/Ball.mo", &MODEL.replace("Model", "Ball"));
     write(root, "src/Model.mo", MODEL);
     for name in ["my.jinja", "my_template.jinja"] {
         write(root, name, "caller-owned flat template: {{ model_name }}\n");
@@ -79,7 +80,7 @@ pub(super) fn execute(entries: &[Entry]) {
         verify_artifacts(entry, dir.path());
     }
     assert_eq!(
-        executed, 30,
+        executed, 31,
         "review teaching-context execution roster changes"
     );
     eprintln!("{executed} actual CLI teaching-project commands executed");
