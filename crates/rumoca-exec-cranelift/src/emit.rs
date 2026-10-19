@@ -274,13 +274,14 @@ impl CompiledAssignmentSchedule {
                 y.len()
             )));
         }
-        let status = with_active_external_tables(external_tables, || {
+        with_active_external_tables(external_tables, || {
             // SAFETY: compilation validates every input load and target offset;
             // the checks above establish both against these exact slices.
-            self.scratch
-                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
-        });
-        status::check(status)
+            let status = self
+                .scratch
+                .invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) });
+            status::check(status)
+        })
     }
 
     pub(crate) fn rows(&self) -> usize {

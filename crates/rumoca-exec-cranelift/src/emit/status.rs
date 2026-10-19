@@ -69,6 +69,7 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
             Some(error) => Err(CompileError::SourceOperation {
                 kind: NativeSourceFault::ExternalTable,
                 message: error.to_string(),
+                span: None,
             }),
             None => Err(CompileError::Backend(
                 "native table status has no invocation fault".into(),
