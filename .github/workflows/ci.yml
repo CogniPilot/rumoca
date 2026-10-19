@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['main']
+    branches: ['main', 'diag/**']
     tags: ['v*']
   pull_request:
     branches: ['main']
@@ -28,7 +28,7 @@ permissions:
 jobs:
   detect-release-tag:
     name: Detect release tag on commit
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) }}
     runs-on: ubuntu-24.04
     outputs:
       is_release: ${{ steps.detect.outputs.is_release }}
@@ -67,6 +67,7 @@ jobs:
   # Rust Testing
   # ============================================================================
   fmt:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Format
     runs-on: ubuntu-24.04
     steps:
@@ -110,6 +111,7 @@ jobs:
           echo "OK: xtask has no rumoca-* dependencies"
 
   lint:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Lint
     runs-on: ubuntu-24.04
     steps:
@@ -179,6 +181,7 @@ jobs:
   # are cached privately in GitHub Actions, so pull requests need no external
   # cache credentials.
   nix-checks:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Nix flake checks (Linux)
     runs-on: ubuntu-24.04
     steps:
@@ -221,6 +224,7 @@ jobs:
             .#checks.x86_64-linux.mlir-cpu
 
   kani:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Kani symbolic event-history contract
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -262,18 +266,23 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: ${{ fromJSON(startsWith(github.ref, 'refs/heads/diag/') && '["windows-2025"]' || '["ubuntu-24.04","macos-15","windows-2025"]') }}
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
     steps:
       - uses: actions/checkout@v5
         with:
           token: ${{ github.token }}
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Install system dependencies (Linux)
@@ -507,9 +516,118 @@ jobs:
           cargo test --package rumoca --features heavy-solve-tests \
             --test suite_heavy_solve -- --nocapture
 
+      - name: Prepare PR436 Windows crash evidence
+        id: pr436-preflight
+        if: ${{ !cancelled() && startsWith(github.ref, 'refs/heads/diag/') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') {
+            throw 'PR436 diagnostics require a disposable GitHub-hosted Windows runner'
+          }
+          $source = 'fa9863d5d44b479254fd4ad9815084014c11628e'
+          $changed = @(git diff --name-only $source HEAD)
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1 -or $changed[0] -ne '.github/workflows/ci.yml') {
+            throw 'Diagnostic head must differ from the reviewed source in ci.yml only'
+          }
+          if (@(git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Tracked source is dirty' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'pr436-windows'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $dumpDir = Join-Path $evidence 'crash-dumps'
+          New-Item -ItemType Directory -Force $dumpDir | Out-Null
+          $toolchain = ((Select-String -Path rust-toolchain.toml -Pattern '^channel').Line -split '"')[1]
+          $active = (rustup show active-toolchain | Out-String).Trim()
+          if (!$active.StartsWith($toolchain + '-')) { throw 'Active toolchain differs from the source pin' }
+          @{
+            schema = 1; source = $source; head = (git rev-parse HEAD); tree = (git rev-parse 'HEAD^{tree}')
+            startedAt = [DateTime]::UtcNow.ToString('o'); runnerOS = $env:RUNNER_OS
+            runnerArch = $env:RUNNER_ARCH; runnerEnvironment = $env:RUNNER_ENVIRONMENT
+            run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            toolchain = $toolchain; activeToolchain = $active
+            rustc = @(rustc -vV); cargo = @(cargo --version); nextest = @(cargo nextest --version)
+            cargoLockSha256 = (Get-FileHash Cargo.lock -Algorithm SHA256).Hash
+            command = 'cargo xtask verify workspace'
+            budgets = @{ cargoBuildJobs = $env:CARGO_BUILD_JOBS; rustTestThreads = $env:RUST_TEST_THREADS; rayonThreads = $env:RAYON_NUM_THREADS }
+            profiles = @{ devDebug = $env:CARGO_PROFILE_DEV_DEBUG; testDebug = $env:CARGO_PROFILE_TEST_DEBUG }
+          } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence 'run.json')
+          # Built-in WER mini dumps, not a third-party debugger or full process-memory upload.
+          # Save/restore these three global settings on this disposable VM. Absence of a dump is recorded, not a pass.
+          $reg = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+          $exists = Test-Path $reg
+          $prior = @{ keyExisted = $exists; properties = @{} }
+          $key = if ($exists) { Get-Item -LiteralPath $reg } else { $null }
+          foreach ($name in @('DumpFolder', 'DumpType', 'DumpCount')) {
+            $present = $exists -and ($key.GetValueNames() -contains $name)
+            $prior.properties[$name] = @{
+              existed = $present
+              value = if ($present) { $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
+              kind = if ($present) { $key.GetValueKind($name).ToString() } else { $null }
+            }
+          }
+          $prior | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'wer-original.json')
+          New-Item -Path $reg -Force | Out-Null
+          New-ItemProperty -Path $reg -Name DumpFolder -Value $dumpDir -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $reg -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $reg -Name DumpCount -Value 16 -PropertyType DWord -Force | Out-Null
+
       - name: Run workspace tests
-        if: runner.os != 'Linux' && !cancelled()
+        id: windows-workspace
+        if: runner.os != 'Linux' && !cancelled() && (!startsWith(github.ref, 'refs/heads/diag/') || steps.pr436-preflight.outcome == 'success')
         run: cargo xtask verify workspace
+
+      - name: Collect PR436 Windows crash evidence
+        if: always() && startsWith(github.ref, 'refs/heads/diag/')
+        shell: pwsh
+        env:
+          WORKSPACE_STEP_OUTCOME: ${{ steps.windows-workspace.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'pr436-windows'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $native = Join-Path $evidence 'native-test'
+          New-Item -ItemType Directory -Force $native | Out-Null
+          $files = @(Get-ChildItem target/debug/deps -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.BaseName -like 'suite_core-*' -and $_.Extension -in @('.exe', '.pdb')
+          })
+          $hashes = @()
+          foreach ($file in $files) {
+            Copy-Item -LiteralPath $file.FullName -Destination $native
+            $hashes += @{ name = $file.Name; bytes = $file.Length; sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
+          }
+          $dumps = @(Get-ChildItem (Join-Path $evidence 'crash-dumps') -File -Filter 'suite_core-*.dmp' -ErrorAction SilentlyContinue)
+          @{
+            schema = 1; finishedAt = [DateTime]::UtcNow.ToString('o'); workspaceOutcome = $env:WORKSPACE_STEP_OUTCOME
+            nativeFiles = $hashes; dumpCount = $dumps.Count
+            dumpHashes = @($dumps | ForEach-Object { @{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
+            stack = if ($dumps.Count) { 'Mini dumps captured; native stack analysis still required' } else { 'NOT_CAPTURED; RUST_BACKTRACE alone is not a native crash stack' }
+            symbols = if (@($files | Where-Object Extension -eq '.pdb').Count) { 'Associated PDBs retained' } else { 'NOT_PRESENT under the unchanged debug=0 profiles' }
+          } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence 'outcome.json')
+          $backup = Join-Path $evidence 'wer-original.json'
+          if (Test-Path $backup) {
+            $prior = Get-Content $backup -Raw | ConvertFrom-Json
+            $reg = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+            foreach ($name in @('DumpFolder', 'DumpType', 'DumpCount')) {
+              $property = $prior.properties.$name
+              if ($property.existed) {
+                New-ItemProperty -Path $reg -Name $name -Value $property.value -PropertyType $property.kind -Force | Out-Null
+              } else { Remove-ItemProperty -Path $reg -Name $name -ErrorAction SilentlyContinue }
+            }
+            # Leave an empty key rather than delete a runner registry tree.
+          }
+
+      - name: Upload PR436 Windows diagnostic artifacts
+        if: always() && startsWith(github.ref, 'refs/heads/diag/')
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: pr436-windows-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/pr436-windows/run.json
+            ${{ runner.temp }}/pr436-windows/outcome.json
+            ${{ runner.temp }}/pr436-windows/native-test
+            ${{ runner.temp }}/pr436-windows/crash-dumps/suite_core-*.dmp
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build all binaries
         run: cargo xtask verify binaries
@@ -535,6 +653,7 @@ jobs:
           retention-days: 7
 
   template-runtime-tests:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Template Runtime (${{ matrix.backend }})
     runs-on: ubuntu-24.04
     strategy:
@@ -758,6 +877,7 @@ jobs:
           if-no-files-found: error
 
   editor-msl-smoke:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Full-MSL LSP/Editor Gate
     runs-on: ubuntu-24.04
     # This gate runs full-MSL LSP probes, VS Code smoke, and a WASM browser
@@ -896,6 +1016,7 @@ jobs:
           retention-days: 7
 
   coverage-gate:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Coverage Gate
     runs-on: ubuntu-24.04
     # This job installs cargo-llvm-cov and generates full workspace artifacts
@@ -1026,6 +1147,7 @@ jobs:
   # then exports both as workflow artifacts. Consumers never rebuild either
   # closure independently.
   nix-build-msl:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Build MSL artifacts (Nix, once)
     runs-on: ubuntu-24.04
     steps:
@@ -1162,6 +1284,7 @@ jobs:
   # light `cargo xtask` wrapper builds.
   # ============================================================================
   msl-shards:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: MSL Quality Gate (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -1286,6 +1409,7 @@ jobs:
           retention-days: 7
 
   msl-merge:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: MSL Quality Gate (merge + gate)
     runs-on: ubuntu-24.04
     needs: [nix-build-msl, msl-shards]
@@ -1595,10 +1719,7 @@ jobs:
     name: MSL PR status (upstream failure)
     runs-on: ubuntu-24.04
     needs: [nix-build-msl, msl-shards, msl-merge]
-    if: >-
-      ${{ always() && github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          needs.msl-merge.result != 'success' }}
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.msl-merge.result != 'success') }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1629,6 +1750,7 @@ jobs:
             await upsertMslPrComment({ github, context, body });
 
   modelicatest-gate:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: ModelicaTest Semantic Gate
     runs-on: ubuntu-24.04
     needs: [nix-build-msl]
@@ -1808,6 +1930,7 @@ jobs:
           retention-days: 7
 
   modelica-models-gate:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: modelica_models Compatibility Gate
     runs-on: ubuntu-24.04
     needs: [nix-build-msl]
@@ -1881,6 +2004,7 @@ jobs:
   # Documentation
   # ============================================================================
   docs:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: Documentation
     runs-on: ubuntu-24.04
     steps:
@@ -1923,6 +2047,7 @@ jobs:
   # VS Code Extension
   # ============================================================================
   vscode:
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') }}
     name: VS Code Extension
     runs-on: ubuntu-24.04
     steps:
@@ -1963,7 +2088,7 @@ jobs:
     name: Build WASM
     # Regular CI builds the optimized WASM packages so the release package path
     # cannot drift until tag time. Only tag pushes prepare/upload Pages content.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -2094,7 +2219,7 @@ jobs:
     # Publish the docs/WASM site only on a release. Gated to the tag-push event
     # (not the co-pushed main branch ref) so a `git push origin main vX.Y.Z`
     # deploys exactly once instead of racing a duplicate from the branch push.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true') }}
     needs: [detect-release-tag, build-wasm]
     runs-on: ubuntu-24.04
     environment:
@@ -2113,7 +2238,7 @@ jobs:
     # Relocated out of build-wasm so PRs keep the playground/WASM contract test
     # without the heavy release build. Self-contained: builds the FullWeb wasm
     # bundle and runs the native + Node smoke harnesses with pinned guide libraries (no browser/GPU).
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -2161,7 +2286,7 @@ jobs:
     # tag-time deploy job, so they are deferred off PRs (native build/test
     # coverage on PRs comes from the `test` job). A PR that breaks a cross
     # target is caught at tag time.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -2372,7 +2497,7 @@ jobs:
     # Keep the full wheel matrix on PRs/main as well as tags. Python packaging
     # has target-specific native build risk, so a linux-only smoke check leaves
     # release-only macOS/Windows/aarch64 failures hidden until tag time.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -2541,7 +2666,7 @@ jobs:
     name: Build Python sdist
     # Build the sdist on PRs/main too so packaging metadata breaks before tag
     # time. Tag deploy still consumes the artifact from the release run.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -2584,7 +2709,7 @@ jobs:
     # together, which fires two CI runs (branch + tag); deploying on both made
     # the second run fail on "Release.tag_name already exists". Tag-only means
     # the release/publish path runs exactly once.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
+    if: ${{ !startsWith(github.ref, 'refs/heads/diag/') && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true') }}
     # Gate every publish on a fully green build: the release deploys to all
     # sites only when every test, gate, and build job has passed, so we never
     # publish to one site off a partially red run. A publish step failing is the
