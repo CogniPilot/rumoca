@@ -304,6 +304,185 @@ int main(void) {{
     compile_and_run_c(&driver, "c-ode algebraic refresh into named slots");
 }
 
+/// `der(x) = -b` through the chain `m = a*x`, `b = m + 1` with a tunable `a`.
+fn chained_tunable_algebraic() -> rumoca::CompilationResult {
+    Compiler::new()
+        .model("ChainedTunable")
+        .compile_str(
+            "model ChainedTunable parameter Real a = 2; Real x(start = 1); \
+             Real m(start = 2); output Real b(start = 3); \
+             equation der(x) = -b; 0 = m - a * x; 0 = b - (m + 1); end ChainedTunable;",
+            "ChainedTunable.mo",
+        )
+        .expect("the compiler accepts a chained algebraic model with a tunable coefficient")
+}
+
+/// Writes the fixed Rust ODE module beside `main.rs` and runs `main_body`
+/// against it as `mod generated`.
+fn run_fixed_rust_ode_harness(
+    result: &rumoca::CompilationResult,
+    model: &str,
+    main_body: &str,
+    label: &str,
+) {
+    let (directory, files) = rendered_model_target(result, model, "rust-fixed-ode");
+    let module = files
+        .iter()
+        .find(|file| file.path.ends_with(".rs"))
+        .expect("fixed Rust ODE target emits a Rust module");
+    fs::copy(
+        directory.path().join(&module.path),
+        directory.path().join("generated.rs"),
+    )
+    .expect("copy fixed Rust ODE module beside its normal module root");
+    let harness = directory.path().join("main.rs");
+    fs::write(
+        &harness,
+        format!("mod generated;\n\nfn main() {{\n{main_body}\n}}\n"),
+    )
+    .expect("write fixed Rust ODE harness");
+    let executable = directory.path().join("rust-fixed-ode-harness");
+    run_checked(
+        Command::new("rustc")
+            .args(["--edition=2024", "-Dwarnings"])
+            .arg(&harness)
+            .arg("-o")
+            .arg(&executable)
+            .current_dir(directory.path()),
+        &format!("compile {label}"),
+    );
+    run_checked(&mut Command::new(executable), &format!("execute {label}"));
+}
+
+/// A chained algebraic refresh runs in dependency order, reads the tunable
+/// parameter the host passes in `p`, and exposes the output by name.
+#[test]
+fn rust_fixed_ode_refresh_follows_chain_and_tunable_parameter() {
+    run_fixed_rust_ode_harness(
+        &chained_tunable_algebraic(),
+        "ChainedTunable",
+        r#"
+    let x = generated::slot(generated::Y_SLOTS, "x").expect("state slot is named");
+    let m = generated::slot(generated::Y_SLOTS, "m").expect("algebraic slot is named");
+    let b = generated::slot(generated::Y_SLOTS, "b").expect("output slot is named");
+    let a = generated::slot(generated::P_SLOTS, "a").expect("parameter slot is named");
+    assert_eq!(generated::slot(generated::Y_SLOTS, "a"), None);
+    let mut p = generated::DEFAULT_P;
+    let mut y = [0.0; generated::Y_LEN];
+    y[x] = 1.5;
+    generated::refresh_algebraics(0.0, &mut y, &p).unwrap();
+    assert!((y[m] - 3.0).abs() < 1e-12 && (y[b] - 4.0).abs() < 1e-12);
+    p[a] = 4.0;
+    generated::refresh_algebraics(0.0, &mut y, &p).unwrap();
+    assert!((y[m] - 6.0).abs() < 1e-12 && (y[b] - 7.0).abs() < 1e-12);
+    assert_eq!(y[x], 1.5);
+"#,
+        "fixed Rust ODE chained refresh harness",
+    );
+}
+
+/// Every slot name maps to a distinct in-bounds slot, so a host never aliases
+/// two variables or indexes past `State`.
+#[test]
+fn rust_fixed_ode_slot_tables_are_unique_and_in_bounds() {
+    run_fixed_rust_ode_harness(
+        &chained_tunable_algebraic(),
+        "ChainedTunable",
+        r#"
+    for (table, len) in [
+        (generated::Y_SLOTS, generated::Y_LEN),
+        (generated::P_SLOTS, generated::P_LEN),
+    ] {
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, slot) in table {
+            assert!(*slot < len, "{name} slot {slot} is outside 0..{len}");
+            assert!(seen.insert(*slot), "{name} aliases slot {slot}");
+        }
+    }
+    assert_eq!(generated::Y_SLOTS.len(), generated::Y_LEN);
+"#,
+        "fixed Rust ODE slot table harness",
+    );
+}
+
+/// A model with no algebraics refreshes as a no-op and names only its state.
+#[test]
+fn rust_fixed_ode_refresh_is_a_no_op_without_algebraics() {
+    run_fixed_rust_ode_harness(
+        &checked_decay(),
+        "Decay",
+        r#"
+    assert_eq!(generated::Y_SLOTS, &[("x", 0)]);
+    let mut y = [1.25; generated::Y_LEN];
+    generated::refresh_algebraics(0.0, &mut y, &generated::DEFAULT_P).unwrap();
+    assert_eq!(y, [1.25; generated::Y_LEN]);
+"#,
+        "fixed Rust ODE no-algebraic refresh harness",
+    );
+}
+
+/// The c-ode refresh follows the same chain, honours a host-supplied
+/// parameter, and names the output; unknown names resolve to -1.
+#[test]
+fn c_ode_refresh_follows_chain_and_tunable_parameter() {
+    let files = rumoca::render_target_files(
+        &chained_tunable_algebraic(),
+        "ChainedTunable",
+        "c-ode",
+        None,
+    )
+    .expect("c-ode renders the chained algebraic model");
+    let header = source_unit(&files, "ChainedTunable_ode.h");
+    let source = source_unit(&files, "ChainedTunable_ode.c")
+        .replace("#include \"ChainedTunable_ode.h\"", "");
+    let driver = format!(
+        r#"{header}
+{source}
+int main(void) {{
+    double y[RUMOCA_CHAINEDTUNABLE_Y_LEN] = {{0}};
+    double p[RUMOCA_CHAINEDTUNABLE_P_LEN + 1] = {{0}};
+    int x = ChainedTunable_y_slot("x");
+    int m = ChainedTunable_y_slot("m");
+    int b = ChainedTunable_y_slot("b");
+    int a = ChainedTunable_p_slot("a");
+    if (x < 0 || m < 0 || b < 0 || a < 0) return 1;
+    if (ChainedTunable_y_slot("a") != -1 || ChainedTunable_p_slot("b") != -1) return 2;
+    y[x] = 1.5;
+    p[a] = 2.0;
+    if (ChainedTunable_refresh_algebraics(0.0, y, p) != 0) return 3;
+    if (fabs(y[m] - 3.0) > 1e-12 || fabs(y[b] - 4.0) > 1e-12) return 4;
+    p[a] = 4.0;
+    if (ChainedTunable_refresh_algebraics(0.0, y, p) != 0) return 5;
+    if (fabs(y[m] - 6.0) > 1e-12 || fabs(y[b] - 7.0) > 1e-12) return 6;
+    return y[x] == 1.5 ? 0 : 7;
+}}
+"#
+    );
+    compile_and_run_c(&driver, "c-ode chained algebraic refresh");
+}
+
+/// A model with no algebraics refreshes as a no-op and names only its state.
+#[test]
+fn c_ode_refresh_is_a_no_op_without_algebraics() {
+    let files = rumoca::render_target_files(&checked_decay(), "Decay", "c-ode", None)
+        .expect("c-ode renders the decay model");
+    let header = source_unit(&files, "Decay_ode.h");
+    let source = source_unit(&files, "Decay_ode.c").replace("#include \"Decay_ode.h\"", "");
+    let driver = format!(
+        r#"{header}
+{source}
+int main(void) {{
+    double y[RUMOCA_DECAY_Y_LEN] = {{1.25}};
+    double p[RUMOCA_DECAY_P_LEN + 1] = {{0}};
+    if (Decay_y_slot("x") != 0 || Decay_y_slot("y") != -1) return 1;
+    if (Decay_refresh_algebraics(0.0, y, p) != 0) return 2;
+    return y[0] == 1.25 ? 0 : 3;
+}}
+"#
+    );
+    compile_and_run_c(&driver, "c-ode no-algebraic refresh");
+}
+
 /// Solve lowering compacts an algebraic `for` family into one pure call
 /// (SPEC_0043 §6c). The scalar ODE targets inline its body, so the family
 /// stays renderable; c-ode evaluates it to the reference values.
