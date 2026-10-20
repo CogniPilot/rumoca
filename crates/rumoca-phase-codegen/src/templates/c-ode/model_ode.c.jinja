@@ -140,6 +140,7 @@
 #include "{{ model_name }}_ode.h"
 
 #include <math.h>
+#include <string.h>
 {{ real_extremum_prelude("c") }}
 {%- set plan = (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).scalar_plan %}
 {%- set alg = solve_blocks.continuous.algebraic_assignments %}
@@ -327,3 +328,40 @@ int {{ model_name | sanitize }}_derivative_rhs(
 {%- endif %}
     return 0;
 }
+
+int {{ model_name | sanitize }}_refresh_algebraics(double time, double *y, const double *p)
+{
+    (void)time;
+    (void)y;
+    (void)p;
+{%- if alg_plan and alg_plan.output_count > 0 %}
+    {
+        double *__out = y;
+{%- for program in alg_plan.programs %}
+        {
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+        {%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+        {%- endif %}{% endfor %}
+        }
+{%- endfor %}
+    }
+{%- endif %}
+    return 0;
+}
+
+{%- for role in ["Y", "P"] %}
+
+int {{ model_name | sanitize }}_{{ role | lower }}_slot(const char *name)
+{
+    (void)name;
+{%- for name, slot in solve.layout.bindings | dictsort %}{% if slot[role] is defined %}
+    if (strcmp(name, {{ name | tojson }}) == 0) {
+        return {{ slot[role].index }};
+    }
+{%- endif %}{% endfor %}
+    return -1;
+}
+{%- endfor %}

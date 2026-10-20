@@ -37,6 +37,18 @@ int {{ model_name | sanitize }}_derivative_rhs(
     const double *p,
     double *out);
 
+/* Assign every algebraic slot of y (length Y_LEN) from its state slots, time,
+ * and p with the exact assignments derivative_rhs applies to its private copy.
+ * Call it to read algebraic variables and outputs; integration does not need
+ * it. Returns 0 on success. */
+int {{ model_name | sanitize }}_refresh_algebraics(double time, double *y, const double *p);
+
+/* Base slot of the named variable in y (y_slot) or of the named parameter or
+ * input in p (p_slot). An array variable occupies consecutive row-major slots
+ * from its base. Returns -1 for an unknown name. */
+int {{ model_name | sanitize }}_y_slot(const char *name);
+int {{ model_name | sanitize }}_p_slot(const char *name);
+
 #ifdef __cplusplus
 }
 #endif

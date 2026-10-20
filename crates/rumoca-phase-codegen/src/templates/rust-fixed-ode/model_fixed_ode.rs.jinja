@@ -156,6 +156,30 @@ pub const DEFAULT_P: [f64; P_LEN] = [
 {%- endfor %}
 ];
 
+/// Base `State` slot of each named variable. An array variable occupies
+/// consecutive row-major slots from its base.
+pub const Y_SLOTS: &[(&str, usize)] = &[
+{%- for name, slot in solve.layout.bindings | dictsort %}{% if slot.Y is defined %}
+    ({{ name | tojson }}, {{ slot.Y.index }}),
+{%- endif %}{% endfor %}
+];
+
+/// Base `Parameters` slot of each named parameter or input, with the same
+/// layout rule as `Y_SLOTS`.
+pub const P_SLOTS: &[(&str, usize)] = &[
+{%- for name, slot in solve.layout.bindings | dictsort %}{% if slot.P is defined %}
+    ({{ name | tojson }}, {{ slot.P.index }}),
+{%- endif %}{% endfor %}
+];
+
+/// Base slot of `name` in `Y_SLOTS` or `P_SLOTS`.
+pub fn slot(slots: &[(&str, usize)], name: &str) -> Option<usize> {
+    slots
+        .iter()
+        .find(|(slot_name, _)| *slot_name == name)
+        .map(|(_, index)| *index)
+}
+
 /// Compute the parameters defined by other parameters (e.g. a weight matrix
 /// built from scalar parameters) in place, from the base parameters already in
 /// `p`. Call after changing any parameter, before `derivative_rhs`.
@@ -237,5 +261,29 @@ pub fn derivative_rhs_into(
 {{ scalar_op(op) }}
 {%- endfor %}
 {%- endfor %}
+    Ok(())
+}
+
+/// Assign every algebraic slot of `y` from its state slots, `time`, and `p`
+/// with the exact assignments `derivative_rhs` applies to its private copy.
+/// Call it to read algebraic variables and outputs; integration does not need
+/// it.
+pub fn refresh_algebraics(
+    time: Scalar,
+    y: &mut State,
+    p: &Parameters,
+) -> Result<(), SolveError> {
+    let _ = (time, &p, &y);
+{%- set alg = solve_blocks.continuous.algebraic_assignments %}
+{%- set alg_plan = alg.scalar_plan if alg else none %}
+{%- if alg_plan and alg_plan.output_count > 0 %}
+{%- for program in alg_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, y="y", out="y") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
     Ok(())
 }

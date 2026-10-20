@@ -212,6 +212,98 @@ int main(void) {{
     compile_and_run_c(&driver, "c-ode exact algebraic refresh");
 }
 
+/// `der(x) = -y` with the exact algebraic assignment `y = 2*x`.
+fn exact_algebraic() -> rumoca::CompilationResult {
+    Compiler::new()
+        .model("ExactAlgebraic")
+        .compile_str(
+            "model ExactAlgebraic Real x(start = 1); Real y(start = 2); \
+             equation der(x) = -y; 0 = y - 2 * x; end ExactAlgebraic;",
+            "ExactAlgebraic.mo",
+        )
+        .expect("the compiler accepts an exactly isolable algebraic model")
+}
+
+/// The fixed Rust ODE target refreshes algebraic slots for the host and names
+/// every slot, so a host reads `y = 2*x = 3` at `x = 1.5` by name.
+#[test]
+fn rust_fixed_ode_refreshes_algebraics_into_named_slots() {
+    let (directory, files) =
+        rendered_model_target(&exact_algebraic(), "ExactAlgebraic", "rust-fixed-ode");
+    let module = files
+        .iter()
+        .find(|file| file.path.ends_with(".rs"))
+        .expect("fixed Rust ODE target emits a Rust module");
+    fs::copy(
+        directory.path().join(&module.path),
+        directory.path().join("generated.rs"),
+    )
+    .expect("copy fixed Rust ODE module beside its normal module root");
+    let harness = directory.path().join("main.rs");
+    fs::write(
+        &harness,
+        r#"mod generated;
+
+fn main() {
+    let x = generated::slot(generated::Y_SLOTS, "x").expect("state slot is named");
+    let y_slot = generated::slot(generated::Y_SLOTS, "y").expect("algebraic slot is named");
+    assert_eq!(generated::slot(generated::Y_SLOTS, "missing"), None);
+    assert_eq!(generated::slot(generated::P_SLOTS, "x"), None);
+    let mut y = [0.0; generated::Y_LEN];
+    y[x] = 1.5;
+    y[y_slot] = 999.0;
+    generated::refresh_algebraics(0.0, &mut y, &generated::DEFAULT_P).unwrap();
+    assert!((y[y_slot] - 3.0).abs() < 1e-12);
+    assert_eq!(y[x], 1.5);
+}
+"#,
+    )
+    .expect("write fixed Rust ODE refresh harness");
+    let executable = directory.path().join("rust-fixed-ode-refresh");
+    run_checked(
+        Command::new("rustc")
+            .args(["--edition=2024", "-Dwarnings"])
+            .arg(&harness)
+            .arg("-o")
+            .arg(&executable)
+            .current_dir(directory.path()),
+        "compile fixed Rust ODE refresh harness",
+    );
+    run_checked(
+        &mut Command::new(executable),
+        "execute fixed Rust ODE refresh harness",
+    );
+}
+
+/// The c-ode target refreshes algebraic slots for the host and resolves slot
+/// names, so a host reads `y = 2*x = 3` at `x = 1.5` by name.
+#[test]
+fn c_ode_refreshes_algebraics_into_named_slots() {
+    let files = rumoca::render_target_files(&exact_algebraic(), "ExactAlgebraic", "c-ode", None)
+        .expect("c-ode renders the exact algebraic model");
+    let header = source_unit(&files, "ExactAlgebraic_ode.h");
+    let source = source_unit(&files, "ExactAlgebraic_ode.c")
+        .replace("#include \"ExactAlgebraic_ode.h\"", "");
+    let driver = format!(
+        r#"{header}
+{source}
+int main(void) {{
+    double y[RUMOCA_EXACTALGEBRAIC_Y_LEN] = {{0}};
+    double p[RUMOCA_EXACTALGEBRAIC_P_LEN + 1] = {{0}};
+    int x = ExactAlgebraic_y_slot("x");
+    int y_slot = ExactAlgebraic_y_slot("y");
+    if (x < 0 || y_slot < 0) return 1;
+    if (ExactAlgebraic_y_slot("missing") != -1 || ExactAlgebraic_p_slot("x") != -1) return 2;
+    y[x] = 1.5;
+    y[y_slot] = 999.0;
+    if (ExactAlgebraic_refresh_algebraics(0.0, y, p) != 0) return 3;
+    return fabs(y[y_slot] - 3.0) < 1e-12 && y[x] == 1.5 ? 0 : 4;
+}}
+"#
+    );
+    compile_and_run_c(&driver, "c-ode algebraic refresh into named slots");
+}
+
 /// Solve lowering compacts an algebraic `for` family into one pure call
 /// (SPEC_0043 §6c). The scalar ODE targets inline its body, so the family
 /// stays renderable; c-ode evaluates it to the reference values.
