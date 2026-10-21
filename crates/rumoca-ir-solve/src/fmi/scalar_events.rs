@@ -19,12 +19,12 @@ use serde::Serialize;
 
 use crate::{
     DiscreteEventPreMode, DiscreteRowRole, PreParamSource, RootSearchPlan, RootSearchRole,
-    RootZeroDomain, ScalarSlot, SolveEventActionKind, SolveModel,
+    RootZeroDomain, ScalarSlot, SolveEventActionKind, SolveModel, SolveProblem,
 };
 
 /// The Solve IR facts the generated component reads to execute events.
 #[derive(Debug, Serialize)]
-pub(super) struct ScalarEventProfile {
+pub struct ScalarEventProfile {
     /// Per root output: whether and how it is evaluated in Event Mode.
     roots: Vec<ScalarEventRoot>,
     /// Destination and source of every pre binding, in binding order.
@@ -119,8 +119,13 @@ struct PreLane {
 
 /// Admit the scalar event profile, or say why the model needs more.
 pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'static str> {
-    let problem = &model.problem;
-    refuse_unsupported_owners(model)?;
+    scalar_event_profile(&model.problem)
+}
+
+/// Admit the scalar event profile of a lowered problem, or say why it needs
+/// more.
+pub fn scalar_event_profile(problem: &SolveProblem) -> Result<ScalarEventProfile, &'static str> {
+    refuse_unsupported_owners(problem)?;
     let events = &problem.events;
     let discrete = &problem.discrete;
     let search = RootSearchPlan::derive(problem);
@@ -195,11 +200,8 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         observation_reads_y: discrete.observation_refresh_reads_y,
         runtime_targets: slots(&discrete.runtime_assignment_targets)?,
         guarded_targets: guarded_targets(discrete)?,
-        guarded_clocks: guarded_clocks(
-            discrete,
-            model.problem.clocks.periodic_event_schedules.len(),
-        )?,
-        time_events: super::time_events::derive(model)?,
+        guarded_clocks: guarded_clocks(discrete, problem.clocks.periodic_event_schedules.len())?,
+        time_events: super::time_events::derive(problem)?,
         discrete_input_runs: discrete_inputs(problem)?,
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
         condition_memories: events.condition_memory_parameter_indices.clone(),
@@ -255,8 +257,7 @@ fn pulse_producers(
     Ok((pulse_rows, pulse_programs))
 }
 
-fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
-    let problem = &model.problem;
+fn refuse_unsupported_owners(problem: &SolveProblem) -> Result<(), &'static str> {
     let events = &problem.events;
     let discrete = &problem.discrete;
     if crate::solve_has_runtime_events(problem) {

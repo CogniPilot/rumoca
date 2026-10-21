@@ -287,3 +287,962 @@ pub fn refresh_algebraics(
 {%- endif %}
     Ok(())
 }
+
+{#- Events: the scalar event profile (SPEC_0044 ME-EVENT-002 to 006) the FMI C
+    component executes (fmi3/scalar_events.jinja), ported step for step. Every
+    decision is a Solve IR fact carried by `solve_events.profile`. -#}
+{%- if solve_events.refusal is not none %}
+{{ fail("unsupported-feature:events: " ~ solve_events.refusal) }}
+{%- endif %}
+{%- set ev = solve_events.profile %}
+{%- if ev %}
+{%- if solve.events.actions | length > 0 %}{{ fail("unsupported-feature:events.actions: rust-fixed-ode does not execute assertions, warnings, or messages") }}{% endif %}
+{%- if ev.time_events.clocks | length > 0 %}{{ fail("unsupported-feature:clocks") }}{% endif %}
+{%- if ev.pulse_rows | length > 0 %}{{ fail("unsupported-feature:events.pulse_condition_memory") }}{% endif %}
+{%- if ev.discrete_input_runs.scalar_count > 0 %}{{ fail("unsupported-feature:events.discrete_inputs: rust-fixed-ode does not track discrete-valued inputs") }}{% endif %}
+{%- if ev.observation_rows | select | list | length > 0 %}{{ fail("unsupported-feature:events.observation_rows") }}{% endif %}
+{%- endif %}
+{%- set nroots = ev.roots | length if ev else 0 %}
+{%- set search = namespace(roots=[]) %}
+{%- if ev %}{% for root in ev.roots %}{% if root.role == "search" %}{% set search.roots = search.roots + [loop.index0] %}{% endif %}{% endfor %}{% endif %}
+{%- set nind = search.roots | length %}
+
+/// Instants of the model's time events, ascending. A host lands a step
+/// exactly on each one (`step` does) so `handle_events` observes it.
+pub const TIME_EVENTS: &[f64] = &[{% if ev %}{% for instant in ev.time_events.instants | sort %}{{ instant }}{{ ", " if not loop.last else "" }}{% endfor %}{% endif %}];
+
+/// Number of root conditions: zero crossings of `root_conditions` are state
+/// events.
+pub const N_ROOTS: usize = {{ nroots }};
+
+const ROOT_SLOTS: usize = {{ [nroots, 1] | max }};
+const INDICATORS: usize = {{ nind }};
+const INDICATOR_SLOTS: usize = {{ [nind, 1] | max }};
+/// The relative tolerance within which two instants are one instant.
+const TIME_MATCH_TOLERANCE: f64 = {{ ev.time_events.match_tolerance if ev else 0.0 }};
+
+/// timeline.rs sample_time_match_with_tol.
+fn ev_time_match(a: f64, b: f64) -> bool {
+    (a - b).abs() <= TIME_MATCH_TOLERANCE * (1.0 + a.abs().max(b.abs()))
+}
+
+/// Event bookkeeping a host keeps beside `State` and `Parameters` for the
+/// whole simulation. Start from `EventState::new()`.
+#[derive(Clone, Copy, Debug)]
+pub struct EventState {
+    initialized: bool,
+    domain: [bool; INDICATOR_SLOTS],
+    domain_valid: bool,
+    entry_y: State,
+    entry_p: Parameters,
+    entry_captured: bool,
+    initial_event: bool,
+    override_root: [usize; ROOT_SLOTS],
+    override_value: [f64; ROOT_SLOTS],
+    override_count: usize,
+    pass: usize,
+}
+
+impl EventState {
+    pub const fn new() -> Self {
+        Self {
+            initialized: false,
+            domain: [false; INDICATOR_SLOTS],
+            domain_valid: false,
+            entry_y: [0.0; Y_LEN],
+            entry_p: [0.0; P_LEN],
+            entry_captured: false,
+            initial_event: false,
+            override_root: [0; ROOT_SLOTS],
+            override_value: [0.0; ROOT_SLOTS],
+            override_count: 0,
+            pass: 0,
+        }
+    }
+}
+
+impl Default for EventState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Every root condition at `time`, `y`, and `p`. A root changes sign where
+/// its relation changes side. Reads the algebraic slots of `y` as given.
+pub fn root_conditions(
+    time: Scalar,
+    y: &State,
+    p: &Parameters,
+    out: &mut [f64; N_ROOTS],
+) -> Result<(), SolveError> {
+    let mut roots = [0.0; ROOT_SLOTS];
+    ev_eval_roots(time, y, p, &mut roots)?;
+    out.copy_from_slice(&roots[..N_ROOTS]);
+    Ok(())
+}
+
+fn ev_eval_roots(
+    time: Scalar,
+    y: &State,
+    p: &Parameters,
+    roots: &mut [f64; ROOT_SLOTS],
+) -> Result<(), SolveError> {
+    let _ = (time, y, p, &roots);
+{%- if ev %}
+{%- for program in solve.events.root_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="roots") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+    if roots[..N_ROOTS].iter().any(|root| !root.is_finite()) {
+        return Err(SolveError);
+    }
+    Ok(())
+}
+
+{%- if ev %}
+{%- set ndisc = ev.discrete_targets | length %}
+{%- set nguard = ev.guarded_targets | length %}
+{%- set lanes = ev.pre_bindings %}
+{%- set schedule = ev.schedule %}
+{%- set cap = schedule.fixed_point_cap %}
+
+/// Zero domain per root: 1 positive, -1 non-positive, 0 previous side.
+const ROOT_ZERO: [i8; ROOT_SLOTS] = [{% for root in ev.roots %}{{ 1 if root.zero == "positive" else (-1 if root.zero == "non_positive" else 0) }}, {% else %}0{% endfor %}];
+/// Relation-memory parameter per root.
+const ROOT_MEMORY: [Option<usize>; ROOT_SLOTS] = [{% for root in ev.roots %}{% if root.memory is not none %}Some({{ root.memory }}){% else %}None{% endif %}, {% else %}None{% endfor %}];
+const ROOT_ALGEBRAIC: [bool; ROOT_SLOTS] = [{% for root in ev.roots %}{{ "true" if root.algebraic_dependent else "false" }}, {% else %}false{% endfor %}];
+/// The root each event indicator reads: the searched roots.
+const INDICATOR_ROOT: [usize; INDICATOR_SLOTS] = [{% for root in search.roots %}{{ root }}, {% else %}0{% endfor %}];
+
+/// solve_ops.rs orient_typed_root_zero.
+fn ev_orient_root(root: f64, zero: i8) -> f64 {
+    if root != 0.0 {
+        return root;
+    }
+    match zero {
+        1 => f64::EPSILON,
+        -1 => -f64::EPSILON,
+        _ => root,
+    }
+}
+
+/// solve_ops.rs relation_memory_value_from_root.
+fn ev_memory_value(root: f64) -> f64 {
+    if root < 0.0 { 1.0 } else { 0.0 }
+}
+
+/// solve_ops.rs runtime_value_changed at zero tolerance.
+fn ev_value_changed(before: f64, after: f64) -> bool {
+    if before.to_bits() == after.to_bits() {
+        return false;
+    }
+    !before.is_finite() || !after.is_finite() || (before - after).abs() > 0.0
+}
+
+/// Write `value` into `slot`; whether its bits changed.
+fn ev_write(slot: &mut f64, value: f64) -> bool {
+    let changed = slot.to_bits() != value.to_bits();
+    *slot = value;
+    changed
+}
+
+fn ev_overridden(events: &EventState, root: usize) -> bool {
+    events.override_root[..events.override_count].contains(&root)
+}
+
+/// component.rs event_indicators_into: the searched roots at the refreshed
+/// coordinate, an exact zero reported on its domain's side.
+fn ev_indicators(
+    events: &EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &Parameters,
+    z: &mut [f64; INDICATOR_SLOTS],
+) -> Result<(), SolveError> {
+    let mut roots = [0.0; ROOT_SLOTS];
+    refresh_algebraics(time, y, p)?;
+    ev_eval_roots(time, y, p, &mut roots)?;
+    for k in 0..INDICATORS {
+        let root = INDICATOR_ROOT[k];
+        let mut value = roots[root];
+        if value == 0.0 {
+            let frozen_positive = match ROOT_MEMORY[root] {
+                Some(memory) => p[memory] <= 0.5,
+                None => events.domain_valid && events.domain[k],
+            };
+            value = match ROOT_ZERO[root] {
+                1 => f64::EPSILON,
+                -1 => -f64::EPSILON,
+                _ if frozen_positive => f64::EPSILON,
+                _ => -f64::EPSILON,
+            };
+        }
+        z[k] = value;
+    }
+    Ok(())
+}
+
+/// component.rs complete_indicator_domains: a changed domain captures the
+/// event entry and arms each crossed root's post-event relation side.
+fn ev_completed(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &Parameters,
+) -> Result<bool, SolveError> {
+    if INDICATORS == 0 {
+        return Ok(false);
+    }
+    let mut z = [0.0; INDICATOR_SLOTS];
+    ev_indicators(events, time, y, p, &mut z)?;
+    if !events.domain_valid {
+        for k in 0..INDICATORS {
+            events.domain[k] = z[k] > 0.0;
+        }
+        events.domain_valid = true;
+        return Ok(false);
+    }
+    if (0..INDICATORS).all(|k| events.domain[k] == (z[k] > 0.0)) {
+        return Ok(false);
+    }
+    events.entry_y = *y;
+    events.entry_p = *p;
+    events.entry_captured = true;
+    events.override_count = 0;
+    for k in 0..INDICATORS {
+        let now = z[k] > 0.0;
+        if now != events.domain[k] {
+            events.override_root[events.override_count] = INDICATOR_ROOT[k];
+            events.override_value[events.override_count] = if now { 0.0 } else { 1.0 };
+            events.override_count += 1;
+        }
+        events.domain[k] = now;
+    }
+    Ok(true)
+}
+
+/// relation_memory.rs apply_root_relation_memory_overrides.
+fn ev_apply_overrides(events: &EventState, p: &mut Parameters) -> bool {
+    let mut changed = false;
+    for k in 0..events.override_count {
+        if let Some(memory) = ROOT_MEMORY[events.override_root[k]] {
+            changed |= ev_write(&mut p[memory], events.override_value[k]);
+        }
+    }
+    changed
+}
+
+/// relation_memory.rs refresh_event_relation_memory and, with
+/// `algebraic_only`, update_algebraic_relation_memory_from_solver_y_except_overrides:
+/// release overrides the roots now contradict, then encode every other root.
+fn ev_relation_refresh(
+    events: &mut EventState,
+    time: Scalar,
+    y: &State,
+    p: &mut Parameters,
+    algebraic_only: bool,
+) -> Result<bool, SolveError> {
+    let mut roots = [0.0; ROOT_SLOTS];
+    let mut changed = false;
+    ev_eval_roots(time, y, p, &mut roots)?;
+    let mut kept = 0;
+    for k in 0..events.override_count {
+        let root = events.override_root[k];
+        let include = !algebraic_only || ROOT_ALGEBRAIC[root];
+        if !include || roots[root] == 0.0 || ev_memory_value(roots[root]) == events.override_value[k] {
+            events.override_root[kept] = root;
+            events.override_value[kept] = events.override_value[k];
+            kept += 1;
+        } else {
+            changed = true;
+        }
+    }
+    events.override_count = kept;
+    for root in 0..N_ROOTS {
+        let Some(memory) = ROOT_MEMORY[root] else {
+            continue;
+        };
+        if (algebraic_only && !ROOT_ALGEBRAIC[root]) || ev_overridden(events, root) {
+            continue;
+        }
+        changed |= ev_write(&mut p[memory], ev_memory_value(ev_orient_root(roots[root], ROOT_ZERO[root])));
+    }
+    Ok(changed)
+}
+
+/// kernel.rs project_event_algebraics: refresh the algebraic coordinate and
+/// report a change.
+fn ev_projection(time: Scalar, y: &mut State, p: &Parameters) -> Result<bool, SolveError> {
+    let before = *y;
+    refresh_algebraics(time, y, p)?;
+    Ok(before.iter().zip(y.iter()).any(|(before, after)| ev_value_changed(*before, *after)))
+}
+
+/// discrete_rows.rs apply_discrete_rows_for_pre_snapshot: every row reads the
+/// pass's snapshot, a row writing an overridden relation memory keeps the
+/// located side, and a change is a change of bits. A settle pass writes the
+/// discrete equations; `memories_only` writes only the condition memories.
+fn ev_discrete_owners(
+    events: &EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+    memories_only: bool,
+) -> Result<bool, SolveError> {
+    let _ = (events, time, &y, &p, memories_only);
+    #[allow(unused_mut)]
+    let mut changed = false;
+{%- if ndisc > 0 %}
+    const TARGETS: [usize; {{ ndisc }}] = [{% for target in ev.discrete_targets %}{{ target }}, {% endfor %}];
+    const MEMORY_ROW: [bool; {{ ndisc }}] = [{% for row in ev.condition_memory_rows %}{{ "true" if row else "false" }}, {% endfor %}];
+    let mut values = [0.0; {{ ndisc }}];
+    {
+        let y: &State = y;
+        let p: &Parameters = p;
+{%- for program in solve.discrete.rhs_plan.programs %}
+        {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="values") }}
+{%- endfor %}
+        }
+{%- endfor %}
+    }
+{%- endif %}
+{%- if nguard > 0 %}
+    const GINDEX: [usize; {{ nguard }}] = [{% for slot in ev.guarded_targets %}{{ slot.index }}, {% endfor %}];
+    const GIN_Y: [bool; {{ nguard }}] = [{% for slot in ev.guarded_targets %}{{ "true" if slot.column == "y" else "false" }}, {% endfor %}];
+    let mut gvalues = [0.0; {{ nguard }}];
+    if !memories_only {
+        let y: &State = y;
+        let p: &Parameters = p;
+{%- for program in solve.discrete.guarded_assignment_plan.programs %}
+        {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="gvalues") }}
+{%- endfor %}
+        }
+{%- endfor %}
+    }
+{%- endif %}
+{%- if ndisc > 0 %}
+    for k in 0..events.override_count {
+        if let Some(memory) = ROOT_MEMORY[events.override_root[k]] {
+            for d in 0..{{ ndisc }} {
+                if TARGETS[d] == memory {
+                    values[d] = events.override_value[k];
+                }
+            }
+        }
+    }
+    for d in 0..{{ ndisc }} {
+        if memories_only == MEMORY_ROW[d] {
+            changed |= ev_write(&mut p[TARGETS[d]], values[d]);
+        }
+    }
+{%- endif %}
+{%- if nguard > 0 %}
+    if !memories_only {
+        for k in 0..events.override_count {
+            if let Some(memory) = ROOT_MEMORY[events.override_root[k]] {
+                for g in 0..{{ nguard }} {
+                    if !GIN_Y[g] && GINDEX[g] == memory {
+                        gvalues[g] = events.override_value[k];
+                    }
+                }
+            }
+        }
+        for g in 0..{{ nguard }} {
+            let slot = if GIN_Y[g] { &mut y[GINDEX[g]] } else { &mut p[GINDEX[g]] };
+            changed |= ev_write(slot, gvalues[g]);
+        }
+    }
+{%- endif %}
+    Ok(changed)
+}
+
+{%- macro update_rows(name, plan, targets) %}
+
+/// relation_memory.rs apply_prepared_update_rows_until_stable: every row of
+/// the block reads the same coordinate, then all write; repeat until nothing
+/// changes.
+fn {{ name }}(time: Scalar, y: &mut State, p: &mut Parameters) -> Result<bool, SolveError> {
+    let _ = (time, &y, &p);
+{%- if targets | length > 0 %}
+    const INDEX: [usize; {{ targets | length }}] = [{% for slot in targets %}{{ slot.index }}, {% endfor %}];
+    const IN_Y: [bool; {{ targets | length }}] = [{% for slot in targets %}{{ "true" if slot.column == "y" else "false" }}, {% endfor %}];
+    let mut changed = false;
+    for _ in 0..{{ cap }} {
+        let mut values = [0.0; {{ targets | length }}];
+        {
+            let y: &State = y;
+            let p: &Parameters = p;
+{%- for program in plan.programs %}
+            {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="values") }}
+{%- endfor %}
+            }
+{%- endfor %}
+        }
+        let mut round_changed = false;
+        for k in 0..{{ targets | length }} {
+            let slot = if IN_Y[k] { &mut y[INDEX[k]] } else { &mut p[INDEX[k]] };
+            round_changed |= ev_write(slot, values[k]);
+        }
+        if !round_changed {
+            return Ok(changed);
+        }
+        changed = true;
+    }
+    Err(SolveError)
+{%- else %}
+    Ok(false)
+{%- endif %}
+}
+{%- endmacro %}
+{{- update_rows("ev_runtime_assignments", solve.discrete.runtime_assignment_plan, ev.runtime_targets) }}
+{{- update_rows("ev_post_commit_assignments", solve.discrete.post_commit_assignment_plan, ev.post_commit_targets) }}
+
+/// The pre-binding lanes (pre_params.rs): destination, source, and whether the
+/// source is a solver coordinate.
+const PRE_LANES: [(usize, usize, bool); {{ lanes | length }}] = [{% for lane in lanes %}({{ lane.dest }}, {{ lane.source }}, {{ "true" if lane.column == "y" else "false" }}), {% endfor %}];
+/// The pre lanes an event pass advances and whose settlement ends it.
+const ITERATION_LANES: [usize; {{ ev.iteration_lanes | length }}] = [{% for lane in ev.iteration_lanes %}{{ lane }}, {% endfor %}];
+
+fn ev_pre_source(y: &State, p: &Parameters, lane: usize) -> f64 {
+    let (_, source, from_y) = PRE_LANES[lane];
+    if from_y { y[source] } else { p[source] }
+}
+
+/// pre_params.rs advance_event_iteration_pre_params: the next pass reads the
+/// previous pass's values.
+fn ev_advance_lanes(y: &State, p: &mut Parameters) -> bool {
+    let mut current = [0.0; ITERATION_LANES.len()];
+    for (k, lane) in ITERATION_LANES.iter().enumerate() {
+        current[k] = ev_pre_source(y, p, *lane);
+    }
+    let mut changed = false;
+    for (k, lane) in ITERATION_LANES.iter().enumerate() {
+        changed |= ev_write(&mut p[PRE_LANES[*lane].0], current[k]);
+    }
+    changed
+}
+
+/// pre_params.rs event_iteration_plan_settled.
+fn ev_lanes_settled(y: &State, p: &Parameters) -> bool {
+    ITERATION_LANES
+        .iter()
+        .all(|lane| p[PRE_LANES[*lane].0].to_bits() == ev_pre_source(y, p, *lane).to_bits())
+}
+
+/// The discrete settle pass, as the schedule lists its steps (ME-EVENT-006).
+/// Steps after the last settle check change the coordinate without a reader.
+#[allow(unused_assignments)]
+fn ev_discrete_settle(
+    events: &EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+    changed_any: &mut bool,
+) -> Result<(), SolveError> {
+    for _ in 0..{{ cap }} {
+        let mut pass_changed = false;
+{%- for step in schedule.settle_pass %}
+{%- if step == "DiscreteOwners" %}
+        pass_changed |= ev_discrete_owners(events, time, y, p, false)?;
+{%- elif step == "RuntimeAssignments" %}
+        pass_changed |= ev_runtime_assignments(time, y, p)?;
+{%- elif step == "SettledIfUnchanged" %}
+        if !pass_changed {
+            return Ok(());
+        }
+{%- elif step == "AlgebraicProjection" %}
+        pass_changed |= ev_projection(time, y, p)?;
+{%- else %}{{ fail("unsupported-feature:events.settle-step " ~ step) }}{% endif %}
+{%- endfor %}
+        *changed_any = true;
+    }
+    // A stalled discrete iteration needs the coupled event Newton solve, which
+    // is not rendered.
+    Err(SolveError)
+}
+
+const SURFACE_WINDOW: usize = {{ schedule.relation_surface_window }};
+const SURFACE_SLOTS: usize = {{ [schedule.relation_surface_window, 1] | max }};
+const MODE_LIMIT: usize = {{ schedule.mode_search_relations }};
+
+/// relation_memory.rs on_relation_surface history: the last passes' discrete
+/// values and coordinates.
+struct EvSurface {
+    y: [State; SURFACE_SLOTS],
+    p: [Parameters; SURFACE_SLOTS],
+    count: usize,
+    head: usize,
+}
+
+impl EvSurface {
+    const fn new() -> Self {
+        Self {
+            y: [[0.0; Y_LEN]; SURFACE_SLOTS],
+            p: [[0.0; P_LEN]; SURFACE_SLOTS],
+            count: 0,
+            head: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.count = 0;
+        self.head = 0;
+    }
+
+    /// Whether the iteration returned to the discrete values of one of its
+    /// last passes with the coordinate unchanged: a surface where its
+    /// alternating relations' expression is continuous. Records this pass.
+    fn repeats(&mut self, y: &State, p: &Parameters) -> bool {
+        if SURFACE_WINDOW == 0 {
+            return false;
+        }
+        let repeats = (0..self.count).any(|k| {
+            self.p[k].iter().zip(p).all(|(a, b)| a.to_bits() == b.to_bits())
+                && self.y[k].iter().zip(y).all(|(a, b)| !ev_value_changed(*a, *b))
+        });
+        self.y[self.head] = *y;
+        self.p[self.head] = *p;
+        self.head = (self.head + 1) % SURFACE_WINDOW;
+        if self.count < SURFACE_WINDOW {
+            self.count += 1;
+        }
+        repeats
+    }
+}
+
+{%- set nb = namespace(at=0, offsets=[], flat=[]) %}
+{%- for hood in ev.root_neighborhoods %}{% set nb.offsets = nb.offsets + [nb.flat | length] %}{% set nb.flat = nb.flat + hood %}{% endfor %}
+{%- set nb.offsets = nb.offsets + [nb.flat | length] %}
+
+/// Per root: the roots reading a coordinate it reads, itself included
+/// (`NEIGHBOR[NEIGHBOR_OFFSET[r]..NEIGHBOR_OFFSET[r + 1]]`).
+const NEIGHBOR_OFFSET: [usize; {{ nb.offsets | length }}] = [{% for offset in nb.offsets %}{{ offset }}, {% endfor %}];
+const NEIGHBOR: [usize; {{ [nb.flat | length, 1] | max }}] = [{% for root in nb.flat %}{{ root }}, {% else %}0{% endfor %}];
+
+/// relation_memory.rs search_consistent_mode candidates: the cycling relations
+/// and their neighborhoods.
+fn ev_mode_candidates(surface: &EvSurface, p: &Parameters, candidates: &mut [usize; ROOT_SLOTS]) -> usize {
+    let mut cycling = [false; ROOT_SLOTS];
+    let mut joined = [false; ROOT_SLOTS];
+    for root in 0..N_ROOTS {
+        if let Some(memory) = ROOT_MEMORY[root] {
+            cycling[root] = (0..surface.count).any(|k| surface.p[k][memory].to_bits() != p[memory].to_bits());
+        }
+    }
+    for root in 0..N_ROOTS {
+        if cycling[root] {
+            for neighbor in &NEIGHBOR[NEIGHBOR_OFFSET[root]..NEIGHBOR_OFFSET[root + 1]] {
+                joined[*neighbor] = true;
+            }
+        }
+    }
+    let mut count = 0;
+    for root in 0..N_ROOTS {
+        if joined[root] && ROOT_MEMORY[root].is_some() {
+            if count < MODE_LIMIT {
+                candidates[count] = root;
+            }
+            count += 1;
+        }
+    }
+    count
+}
+
+fn ev_mode_consistent(
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+    candidates: &[usize],
+    mode: usize,
+) -> bool {
+    let side = |k: usize| if mode >> k & 1 == 1 { 1.0 } else { 0.0 };
+    for (k, root) in candidates.iter().enumerate() {
+        if let Some(memory) = ROOT_MEMORY[*root] {
+            p[memory] = side(k);
+        }
+    }
+    if refresh_algebraics(time, y, p).is_err() {
+        return false;
+    }
+    let mut roots = [0.0; ROOT_SLOTS];
+    if ev_eval_roots(time, y, p, &mut roots).is_err() {
+        return false;
+    }
+    candidates.iter().enumerate().all(|(k, root)| {
+        let value = ev_orient_root(roots[*root], ROOT_ZERO[*root]);
+        value == 0.0 || ev_memory_value(value) == side(k)
+    })
+}
+
+/// relation_memory.rs search_consistent_mode and resolve_relation_cycle: a
+/// joint mode whose projected coordinate gives each cycling relation its
+/// assigned side, or none, which keeps the current side.
+fn ev_mode_search(
+    events: &mut EventState,
+    surface: &EvSurface,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+) -> Result<bool, SolveError> {
+    let mut candidates = [0; ROOT_SLOTS];
+    let count = ev_mode_candidates(surface, p, &mut candidates);
+    if count == 0 || count > MODE_LIMIT {
+        // The iteration cycles among more relations than the mode search
+        // covers.
+        return Err(SolveError);
+    }
+    let candidates = &candidates[..count];
+    let (base_y, base_p) = (*y, *p);
+    for mode in 0..(1usize << count) {
+        if ev_mode_consistent(time, y, p, candidates, mode) {
+            let mut kept = 0;
+            for k in 0..events.override_count {
+                if !candidates.contains(&events.override_root[k]) {
+                    events.override_root[kept] = events.override_root[k];
+                    events.override_value[kept] = events.override_value[k];
+                    kept += 1;
+                }
+            }
+            for (c, root) in candidates.iter().enumerate() {
+                events.override_root[kept] = *root;
+                events.override_value[kept] = if mode >> c & 1 == 1 { 1.0 } else { 0.0 };
+                kept += 1;
+            }
+            events.override_count = kept;
+            return Ok(true);
+        }
+        *y = base_y;
+        *p = base_p;
+    }
+    Ok(false)
+}
+
+/// The relation pass (relation_memory.rs settle_event_equations_with_fixed_pre).
+/// Its projection steps change the coordinate without a reader.
+#[allow(unused_assignments)]
+fn ev_relation_settle(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+    changed_any: &mut bool,
+) -> Result<(), SolveError> {
+    let mut surface = EvSurface::new();
+    for _ in 0..{{ cap }} {
+        #[allow(unused_mut, unused_variables)]
+        let mut step_changed = false;
+{%- for step in schedule.relation_pass %}
+{%- if step == "DiscreteSettle" %}
+        ev_discrete_settle(events, time, y, p, changed_any)?;
+{%- elif step == "SettledIfRelationsUnchanged" %}
+        if !ev_relation_refresh(events, time, y, p, false)? {
+            return Ok(());
+        }
+        *changed_any = true;
+{%- elif step == "AlgebraicProjection" %}
+        step_changed |= ev_projection(time, y, p)?;
+{%- elif step == "RuntimeAssignments" %}
+        step_changed |= ev_runtime_assignments(time, y, p)?;
+{%- else %}{{ fail("unsupported-feature:events.relation-step " ~ step) }}{% endif %}
+{%- endfor %}
+        if surface.repeats(y, p) {
+            if !ev_mode_search(events, &surface, time, y, p)? {
+                return Ok(());
+            }
+            surface.clear();
+            *changed_any = true;
+        }
+    }
+    // The event condition equations did not converge with fixed pre.
+    Err(SolveError)
+}
+
+/// One event pass, as the schedule lists its steps.
+fn ev_pass(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+    changed: &mut bool,
+) -> Result<(), SolveError> {
+    #[allow(unused_mut)]
+    let mut step = false;
+{%- for s in schedule.event_pass %}
+{%- if s == "RelationOverrides" %}
+    *changed |= ev_apply_overrides(events, p);
+{%- elif s == "RuntimeAssignments" %}
+    step |= ev_runtime_assignments(time, y, p)?;
+{%- elif s == "AlgebraicProjection" %}
+    step |= ev_projection(time, y, p)?;
+{%- elif s == "RelationRefresh" %}
+    step = ev_relation_refresh(events, time, y, p, false)?;
+    if step {
+        step |= ev_runtime_assignments(time, y, p)?;
+    }
+{%- elif s == "RelationSettle" %}
+    ev_relation_settle(events, time, y, p, changed)?;
+{%- else %}{{ fail("unsupported-feature:events.event-step " ~ s) }}{% endif %}
+    *changed |= step;
+{%- endfor %}
+    Ok(())
+}
+
+/// relation_memory.rs apply_projected_event_update and component.rs
+/// commit_event_runtime_state. Pre values are seeded from the event entry;
+/// each later pass reads the previous pass (Appendix B).
+fn ev_iterate(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+    canonicalize: bool,
+) -> Result<(), SolveError> {
+    for lane in 0..PRE_LANES.len() {
+        p[PRE_LANES[lane].0] = ev_pre_source(&events.entry_y, &events.entry_p, lane);
+    }
+    let mut settled = false;
+    let mut surface = EvSurface::new();
+    for pass in 0..{{ cap }} {
+        if settled {
+            break;
+        }
+        events.pass = pass;
+        let mut changed = pass > 0 && ev_advance_lanes(y, p);
+        ev_pass(events, time, y, p, &mut changed)?;
+        // Condition memories advance on the settled pass, before the next
+        // pass advances the pre lanes.
+        changed |= ev_discrete_owners(events, time, y, p, true)?;
+        settled = !changed && ev_lanes_settled(y, p);
+        if settled || !surface.repeats(y, p) {
+            continue;
+        }
+        if ev_mode_search(events, &surface, time, y, p)? {
+            surface.clear();
+        } else {
+            settled = true;
+        }
+    }
+    events.pass = 0;
+    if !settled {
+        // The event update iteration did not converge.
+        return Err(SolveError);
+    }
+    // pre_params.rs commit_pre_params_after_event_at.
+    let committed_p = *p;
+    let mut history = false;
+    for lane in 0..PRE_LANES.len() {
+        let value = ev_pre_source(y, &committed_p, lane);
+        history |= ev_value_changed(p[PRE_LANES[lane].0], value);
+        p[PRE_LANES[lane].0] = value;
+    }
+    if !canonicalize || !history {
+        return Ok(());
+    }
+    // component.rs canonicalize_committed_event_view.
+    for _ in 0..{{ cap }} {
+        let mut changed = ev_post_commit_assignments(time, y, p)?;
+        changed |= ev_projection(time, y, p)?;
+        let relations = ev_relation_refresh(events, time, y, p, true)?;
+        if !changed && !relations {
+            return Ok(());
+        }
+    }
+    // The post-commit event view did not converge.
+    Err(SolveError)
+}
+
+/// component.rs exit_initialization_mode_inner and discrete_rows.rs
+/// seed_condition_memory_for_initialization: relation memory from the settled
+/// state, then every condition memory with pre following the current value.
+fn ev_initialize(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+) -> Result<(), SolveError> {
+{%- if solve.solve_layout.initial_event_parameter_index is not none %}
+    p[{{ solve.solve_layout.initial_event_parameter_index }}] = 1.0;
+{%- endif %}
+    events.override_count = 0;
+    refresh_algebraics(time, y, p)?;
+    ev_relation_refresh(events, time, y, p, false)?;
+    for lane in 0..PRE_LANES.len() {
+        p[PRE_LANES[lane].0] = ev_pre_source(y, p, lane);
+    }
+    ev_discrete_owners(events, time, y, p, true)?;
+    events.entry_y = *y;
+    events.entry_p = *p;
+    events.entry_captured = true;
+    events.initial_event = true;
+    events.domain_valid = false;
+    Ok(())
+}
+
+/// runtime/schedule.rs coincident_scheduled_event: an event at a static
+/// instant is observed at its right limit.
+fn ev_observes_right_limit(time: Scalar) -> bool {
+    TIME_EVENTS.iter().any(|instant| ev_time_match(*instant, time))
+}
+
+/// Event Mode: the initial event after initialization, else the event the
+/// completed step captured. Without a captured entry (a time event), the entry
+/// is the current coordinate.
+fn ev_update(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+) -> Result<(), SolveError> {
+    let initial = events.initial_event;
+    if !events.entry_captured {
+        refresh_algebraics(time, y, p)?;
+        events.entry_y = *y;
+        events.entry_p = *p;
+        events.override_count = 0;
+    }
+    let mut status = ev_iterate(events, time, y, p, !initial);
+    // event_boundary.rs apply_event_right_limit: the right limit observes the
+    // same event, so it starts again from the event-entry discrete values.
+    if status.is_ok() && !initial && ev_observes_right_limit(time) {
+        *p = events.entry_p;
+        status = ev_iterate(events, time.next_up(), y, p, true);
+    }
+    events.entry_captured = false;
+{%- if solve.solve_layout.initial_event_parameter_index is not none %}
+    if initial && status.is_ok() {
+        p[{{ solve.solve_layout.initial_event_parameter_index }}] = 0.0;
+    }
+{%- endif %}
+    events.initial_event = false;
+    events.override_count = 0;
+    status
+}
+
+/// component.rs seed_settled_indicator_domains.
+fn ev_continuous(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &Parameters,
+) -> Result<(), SolveError> {
+    if INDICATORS == 0 {
+        return Ok(());
+    }
+    let mut z = [0.0; INDICATOR_SLOTS];
+    ev_indicators(events, time, y, p, &mut z)?;
+    for k in 0..INDICATORS {
+        events.domain[k] = z[k] > 0.0;
+    }
+    events.domain_valid = true;
+    Ok(())
+}
+{%- endif %}
+
+/// Settle the model's events at `time`, after `y` and `p` reached it. Call it
+/// once at the start time and after every accepted step, never inside a
+/// multistage step: the first call runs the initial event, later calls run the
+/// state event a root sign change reports and the time event at an instant of
+/// `TIME_EVENTS`. Returns whether an event ran.
+pub fn handle_events(
+    events: &mut EventState,
+    time: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+) -> Result<bool, SolveError> {
+{%- if ev %}
+    if !events.initialized {
+        ev_initialize(events, time, y, p)?;
+        events.initialized = true;
+        ev_update(events, time, y, p)?;
+        ev_continuous(events, time, y, p)?;
+        return Ok(true);
+    }
+    let state_event = ev_completed(events, time, y, p)?;
+    let time_event = TIME_EVENTS.iter().any(|instant| ev_time_match(*instant, time));
+    if !state_event && !time_event {
+        return Ok(false);
+    }
+    ev_update(events, time, y, p)?;
+    ev_continuous(events, time, y, p)?;
+    Ok(true)
+{%- else %}
+    let _ = (time, &y, &p);
+    events.initialized = true;
+    Ok(false)
+{%- endif %}
+}
+
+/// Explicit fixed-step integration schemes of `step`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    /// First-order forward Euler.
+    Euler,
+    /// Classical fourth-order Runge-Kutta.
+    Rk4,
+}
+
+fn advance(state: &mut State, rate: &Derivative, scale: Scalar) {
+    for (value, rate) in state.iter_mut().zip(rate) {
+        *value += scale * rate;
+    }
+}
+
+/// Advance `y` from `time` by at most `dt`, shortened to land exactly on the
+/// next instant of `TIME_EVENTS`, then settle events there. Runs the initial
+/// event first when `events` has not seen one. Returns the new time.
+pub fn step(
+    method: Method,
+    events: &mut EventState,
+    time: Scalar,
+    dt: Scalar,
+    y: &mut State,
+    p: &mut Parameters,
+) -> Result<Scalar, SolveError> {
+    if !events.initialized {
+        handle_events(events, time, y, p)?;
+    }
+    let mut end = time + dt;
+    let mut at_instant = false;
+    for instant in TIME_EVENTS {
+        if *instant > time && !ev_time_match(*instant, time) && (*instant < end || ev_time_match(*instant, end)) {
+            end = end.min(*instant);
+            at_instant = true;
+        }
+    }
+    let h = end - time;
+    // The last stage of a step that ends at a time event reads its left limit.
+    let stage_end = if at_instant { end.next_down() } else { end };
+    match method {
+        Method::Euler => {
+            let rate = derivative_rhs(time, y, p)?;
+            advance(y, &rate, h);
+        }
+        Method::Rk4 => {
+            let k1 = derivative_rhs(time, y, p)?;
+            let mut trial = *y;
+            advance(&mut trial, &k1, h / 2.0);
+            let k2 = derivative_rhs(time + h / 2.0, &trial, p)?;
+            trial = *y;
+            advance(&mut trial, &k2, h / 2.0);
+            let k3 = derivative_rhs(time + h / 2.0, &trial, p)?;
+            trial = *y;
+            advance(&mut trial, &k3, h);
+            let k4 = derivative_rhs(stage_end, &trial, p)?;
+            for index in 0..DERIVATIVE_LEN {
+                y[index] += h * (k1[index] + 2.0 * k2[index] + 2.0 * k3[index] + k4[index]) / 6.0;
+            }
+        }
+    }
+    handle_events(events, end, y, p)?;
+    Ok(end)
+}

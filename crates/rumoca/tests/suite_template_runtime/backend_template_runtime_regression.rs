@@ -1,4 +1,5 @@
 mod jax_lazy_conditionals;
+mod rust_fixed_ode_events;
 mod selected_regions;
 
 use rumoca::Compiler;

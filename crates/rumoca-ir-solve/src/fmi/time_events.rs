@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use rumoca_core::ClockPhaseAnchor;
 
-use crate::SolveModel;
+use crate::SolveProblem;
 
 /// The largest integer a double holds exactly: every numerator and the
 /// denominator of a tick stay below it, so the C division rounds the tick as
@@ -45,8 +45,7 @@ struct PeriodicClock {
     activation: usize,
 }
 
-pub(super) fn derive(model: &SolveModel) -> Result<TimeEvents, &'static str> {
-    let problem = &model.problem;
+pub(super) fn derive(problem: &SolveProblem) -> Result<TimeEvents, &'static str> {
     let schedules = &problem.clocks.periodic_event_schedules;
     let activations = &problem.clocks.activation_parameter_indices;
     if schedules.len() != activations.len() {

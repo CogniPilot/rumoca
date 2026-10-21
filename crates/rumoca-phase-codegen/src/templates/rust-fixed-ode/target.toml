@@ -21,7 +21,9 @@ external_functions = false
 external_tables = false
 random = false
 initialization = false
-events = false
+# State and time events run the scalar event profile (`handle_events`); the
+# template refuses whatever the profile or the port does not execute.
+events = true
 runtime_events = false
 clocks = false
 dynamic_ranges = false

@@ -85,6 +85,7 @@ pub use native_deployment::{
 pub use root_location::{
     RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak, SlidingModes,
 };
+pub use scalar_events::{ScalarEventProfile, scalar_event_profile};
 
 /// Configuration-Mode capability declared by the checked FMI component.
 ///

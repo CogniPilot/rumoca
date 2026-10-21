@@ -365,6 +365,7 @@ fn solve_render_context_value_with_handles(
     let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;
     let prepared_blocks =
         solve_template_blocks_value(solve_problem, artifacts, handle.inlined_pure_calls())?;
+    let solve_events = solve_events_value(solve_problem);
     let scalar_derivative_programs = prepared_blocks.scalar_derivative_programs;
     let solve_blocks = prepared_blocks.value;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(
@@ -413,6 +414,7 @@ fn solve_render_context_value_with_handles(
             ir_kind => "solve",
             model_name => name,
             solve_blocks => solve_blocks,
+            solve_events => solve_events,
             solve_derivative_nodes => derivative_nodes,
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => implicit_jacobian_rows,
@@ -429,6 +431,7 @@ fn solve_render_context_value_with_handles(
             ir => solve_value,
             ir_kind => "solve",
             solve_blocks => solve_blocks,
+            solve_events => solve_events,
             solve_derivative_nodes => derivative_nodes,
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => implicit_jacobian_rows,
@@ -440,6 +443,22 @@ fn solve_render_context_value_with_handles(
         context,
         scalar_derivative_programs,
     })
+}
+
+/// The `solve_events` render entry: the scalar event profile of a problem
+/// with events (`profile`), or the reason it has none (`refusal`). Both are
+/// none for an event-free problem.
+fn solve_events_value(problem: &solve::SolveProblem) -> Value {
+    if !solve::solve_has_events(problem) {
+        return minijinja::context! { profile => (), refusal => () };
+    }
+    match solve::fmi::scalar_event_profile(problem) {
+        Ok(profile) => minijinja::context! {
+            profile => Value::from_serialize(&profile),
+            refusal => (),
+        },
+        Err(refusal) => minijinja::context! { profile => (), refusal => refusal },
+    }
 }
 
 pub(super) fn c_renderable_derivative_nodes(
