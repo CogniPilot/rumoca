@@ -115,6 +115,43 @@ fn rust_fixed_ode_events_land_steps_on_time_events() {
     );
 }
 
+/// A `when` on a time relation reinitializes a state at its instant; the
+/// discrete rows read only `time`, and the module still compiles warning-free.
+#[test]
+fn rust_fixed_ode_events_reinit_at_a_time_event() {
+    let source = "model TimedReset Real x(start = 0, fixed = true); Real u; \
+                  equation u = if time >= 1 then 1.0 else 0.0; der(x) = u; \
+                  when time >= 2 then reinit(x, 0.0); end when; end TimedReset;";
+    run_fixed_rust_ode_harness(
+        &compiled("TimedReset", source),
+        "TimedReset",
+        r#"
+    assert_eq!(generated::TIME_EVENTS, &[1.0, 2.0]);
+    let x = generated::slot(generated::Y_SLOTS, "x").unwrap();
+    for method in [generated::Method::Euler, generated::Method::Rk4] {
+        let mut p = generated::DEFAULT_P;
+        generated::init_params(&mut p).unwrap();
+        let mut y = [0.0; generated::Y_LEN];
+        let mut events = generated::EventState::new();
+        let mut t = 0.0;
+        let mut reset = false;
+        while t < 3.0 - 1e-12 {
+            let previous = y[x];
+            t = generated::step(method, &mut events, t, (3.0 - t).min(0.3), &mut y, &mut p).unwrap();
+            if t == 2.0 {
+                reset = true;
+                assert!((previous - 0.9).abs() < 1e-12, "{method:?}: x before the reset = {previous}");
+                assert_eq!(y[x], 0.0, "{method:?} resets x at t = 2");
+            }
+        }
+        assert!(reset, "{method:?} lands on t = 2");
+        assert!((y[x] - 1.0).abs() < 1e-12, "{method:?}: x(3) = {}", y[x]);
+    }
+"#,
+        "fixed Rust ODE timed reinit harness",
+    );
+}
+
 /// An event-free model exposes the same API: no events, and `step`
 /// integrates it.
 #[test]

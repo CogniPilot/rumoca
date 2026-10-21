@@ -52,8 +52,8 @@ Unsupported input is rejected before source is written.
 - `backend_template_runtime_regression::rust_fixed_ode_refreshes_algebraics_into_named_slots`
   reads a refreshed algebraic slot by name.
 - `backend_template_runtime_regression::rust_fixed_ode_events::*` run a
-  `reinit` angle wrap, a bouncing ball, a time event and an event-free model
-  against `rumoca sim` values, and check that assertions are refused.
+  `reinit` angle wrap, a bouncing ball, a time event, a timed `reinit` and an
+  event-free model against `rumoca sim` values, and check that assertions are refused.
 - `rust_fixed_ode_builtin_target_accepts_scalarized_matmul` checks tensor
   fallback without dynamic allocation.
 - `rust_fixed_ode_builtin_target_rejects_linsolve_before_writing_source` is

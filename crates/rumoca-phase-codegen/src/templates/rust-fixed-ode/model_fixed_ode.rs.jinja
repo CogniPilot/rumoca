@@ -603,6 +603,7 @@ fn ev_discrete_owners(
     {
         let y: &State = y;
         let p: &Parameters = p;
+        let _ = (y, p);
 {%- for program in solve.discrete.rhs_plan.programs %}
         {
 {%- for op in program.ops %}
@@ -619,6 +620,7 @@ fn ev_discrete_owners(
     if !memories_only {
         let y: &State = y;
         let p: &Parameters = p;
+        let _ = (y, p);
 {%- for program in solve.discrete.guarded_assignment_plan.programs %}
         {
 {%- for op in program.ops %}
@@ -680,6 +682,7 @@ fn {{ name }}(time: Scalar, y: &mut State, p: &mut Parameters) -> Result<bool, S
         {
             let y: &State = y;
             let p: &Parameters = p;
+            let _ = (y, p);
 {%- for program in plan.programs %}
             {
 {%- for op in program.ops %}
