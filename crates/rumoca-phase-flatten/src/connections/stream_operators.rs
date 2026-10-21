@@ -575,7 +575,13 @@ fn indexed_endpoint_expression(
     matches: Vec<(VarName, StreamEndpoint)>,
     span: Span,
 ) -> Result<Expression, FlattenError> {
-    let access_indices = connector_access_indices(access);
+    let access_indices = connector_access_indices(access).ok_or_else(|| {
+        indexed_stream_error(
+            operator,
+            access,
+            "connector reference has a non-integer embedded index",
+        )
+    })?;
     let mut choices = Vec::with_capacity(matches.len());
     for (stream, endpoint) in matches {
         let candidate_indices = embedded_parent_indices(&stream).ok_or_else(|| {
@@ -635,32 +641,63 @@ fn indexed_stream_error(operator: &str, access: &StreamAccess, description: &str
     )
 }
 
-fn connector_access_indices(access: &StreamAccess) -> Vec<Subscript> {
+fn connector_access_indices(access: &StreamAccess) -> Option<Vec<Subscript>> {
     let mut result = Vec::new();
     if let Some((base, _)) = &access.field_base {
-        collect_reference_subscripts(base, &mut result);
+        collect_reference_subscripts(base, &mut result)?;
+    } else {
+        result.extend(
+            embedded_parent_indices(&access.name)?
+                .into_iter()
+                .map(|value| Subscript::Index {
+                    value,
+                    span: access.span,
+                }),
+        );
     }
-    result
+    Some(result)
 }
 
-fn collect_reference_subscripts(expression: &Expression, result: &mut Vec<Subscript>) {
+fn collect_reference_subscripts(
+    expression: &Expression,
+    result: &mut Vec<Subscript>,
+) -> Option<()> {
     match expression {
-        Expression::VarRef { subscripts, .. } => result.extend(subscripts.iter().cloned()),
+        Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => {
+            // Scalarized parent occurrences keep their indices in the reference
+            // path; the remaining array selection is still structured.
+            let path = ComponentPath::from_flat_path(name.as_str());
+            result.extend(
+                embedded_path_indices(&path)?
+                    .into_iter()
+                    .map(|value| Subscript::Index { value, span: *span }),
+            );
+            result.extend(subscripts.iter().cloned());
+        }
         Expression::Index {
             base, subscripts, ..
         } => {
-            collect_reference_subscripts(base, result);
+            collect_reference_subscripts(base, result)?;
             result.extend(subscripts.iter().cloned());
         }
-        Expression::FieldAccess { base, .. } => collect_reference_subscripts(base, result),
+        Expression::FieldAccess { base, .. } => collect_reference_subscripts(base, result)?,
         _ => {}
     }
+    Some(())
 }
 
 fn embedded_parent_indices(stream: &VarName) -> Option<Vec<i64>> {
     let parent = ComponentPath::from_flat_path(stream.as_str()).parent()?;
+    embedded_path_indices(&parent)
+}
+
+fn embedded_path_indices(path: &ComponentPath) -> Option<Vec<i64>> {
     let mut result = Vec::new();
-    for part in parent.parts() {
+    for part in path.parts() {
         let mut base = part.as_str();
         let mut groups = Vec::new();
         while let Some((next, raw)) = rumoca_core::split_trailing_subscript_suffix(base) {
