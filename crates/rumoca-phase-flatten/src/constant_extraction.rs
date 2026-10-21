@@ -1729,9 +1729,10 @@ pub(super) fn materialize_record_constant_alias_fields(
     full_name: &str,
     alias_name: &str,
 ) {
-    if !ctx.constant_values.contains_key(alias_name) {
+    let Some(value) = ctx.constant_values.get(alias_name) else {
         return;
-    }
+    };
+    let indexed_fields = crate::record_constant_arrays::record_array_field_suffixes(value);
 
     propagate_alias_fields_in_map(
         &mut ctx.parameter_values,
@@ -1739,6 +1740,7 @@ pub(super) fn materialize_record_constant_alias_fields(
         target_name,
         full_name,
         alias_name,
+        indexed_fields.as_deref(),
     );
     propagate_alias_fields_in_map(
         &mut ctx.real_parameter_values,
@@ -1746,6 +1748,7 @@ pub(super) fn materialize_record_constant_alias_fields(
         target_name,
         full_name,
         alias_name,
+        indexed_fields.as_deref(),
     );
     propagate_alias_fields_in_map(
         &mut ctx.boolean_parameter_values,
@@ -1753,6 +1756,7 @@ pub(super) fn materialize_record_constant_alias_fields(
         target_name,
         full_name,
         alias_name,
+        indexed_fields.as_deref(),
     );
     propagate_alias_fields_in_map(
         &mut ctx.enum_parameter_values,
@@ -1760,6 +1764,7 @@ pub(super) fn materialize_record_constant_alias_fields(
         target_name,
         full_name,
         alias_name,
+        indexed_fields.as_deref(),
     );
     propagate_alias_fields_in_map(
         &mut ctx.constant_values,
@@ -1767,6 +1772,7 @@ pub(super) fn materialize_record_constant_alias_fields(
         target_name,
         full_name,
         alias_name,
+        indexed_fields.as_deref(),
     );
     propagate_alias_fields_in_map(
         &mut ctx.array_dimensions,
@@ -1774,6 +1780,7 @@ pub(super) fn materialize_record_constant_alias_fields(
         target_name,
         full_name,
         alias_name,
+        indexed_fields.as_deref(),
     );
 }
 
@@ -1783,18 +1790,30 @@ pub(super) fn propagate_alias_fields_in_map<V: Clone>(
     target_name: &str,
     full_name: &str,
     alias_name: &str,
+    indexed_fields: Option<&[String]>,
 ) {
-    let alias_prefix = format!("{alias_name}.");
-    let fields: Vec<(String, V)> = map
-        .iter()
-        .filter_map(|(key, value)| {
-            let field = key.strip_prefix(&alias_prefix)?;
-            (!field.is_empty()).then(|| (field.to_string(), value.clone()))
-        })
-        .collect();
-    for (field, value) in fields {
-        let field_name = format!("{target_name}.{field}");
-        let field_full_name = format!("{full_name}.{field}");
+    let fields: Vec<(String, V)> = if let Some(suffixes) = indexed_fields {
+        // MLS 10.1: array elements retain their indices when an alias is copied.
+        // Enumerate the evaluated record fields, not every constant in the model.
+        suffixes
+            .iter()
+            .filter_map(|suffix| {
+                map.get(&format!("{alias_name}{suffix}"))
+                    .map(|value| (suffix.clone(), value.clone()))
+            })
+            .collect()
+    } else {
+        map.iter()
+            .filter_map(|(key, value)| {
+                let suffix = key.strip_prefix(alias_name)?;
+                (suffix.starts_with('.') && suffix.len() > 1)
+                    .then(|| (suffix.to_string(), value.clone()))
+            })
+            .collect()
+    };
+    for (suffix, value) in fields {
+        let field_name = format!("{target_name}{suffix}");
+        let field_full_name = format!("{full_name}{suffix}");
         insert_with_prefix(map, prefix, &field_name, &field_full_name, value);
     }
 }

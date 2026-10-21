@@ -264,3 +264,114 @@ fn named_record_constructor_extraction_preserves_target_identity() {
     );
     assert_eq!(fields.len(), 1);
 }
+
+#[test]
+fn record_array_alias_materializes_indexed_fields() {
+    let source = r#"
+        record R
+            Real molarMass;
+            Integer n;
+            Boolean enabled;
+        end R;
+        model Test
+            constant R source[2] = {R(molarMass=0.018, n=2, enabled=true), R(molarMass=0.044, n=3, enabled=false)};
+        end Test;
+    "#;
+    let parsed = rumoca_phase_parse::parse_to_ast(source, "record_array_alias.mo").unwrap();
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(ast::ClassTree::from_parsed(parsed)))
+            .unwrap();
+    let model = resolved.get_class_by_qualified_name("Test").unwrap();
+    let binding = model.components["source"].binding.as_ref().unwrap();
+    let mut ctx = Context::new();
+    let value = crate::record_constant_arrays::try_extract_record_array_constructor_constant(
+        binding, &mut ctx, "", "source",
+    )
+    .expect("record array is evaluated");
+    ctx.constant_values.insert("source".to_string(), value);
+    assert_eq!(ctx.real_parameter_values["source[1].molarMass"], 0.018);
+    crate::constant_extraction::materialize_record_constant_alias_fields(
+        &mut ctx,
+        "medium",
+        "fluidConstants",
+        "medium.fluidConstants",
+        "source",
+    );
+    assert_eq!(
+        ctx.real_parameter_values
+            .get("medium.fluidConstants[1].molarMass"),
+        Some(&0.018)
+    );
+    assert_eq!(
+        ctx.real_parameter_values
+            .get("medium.fluidConstants[2].molarMass"),
+        Some(&0.044)
+    );
+    assert_eq!(
+        ctx.parameter_values.get("medium.fluidConstants[2].n"),
+        Some(&3)
+    );
+    assert_eq!(
+        ctx.boolean_parameter_values
+            .get("medium.fluidConstants[1].enabled"),
+        Some(&true)
+    );
+    // An effective field override takes precedence over the constructor default.
+    ctx.real_parameter_values
+        .insert("source[1].molarMass".into(), 0.020);
+    crate::constant_extraction::materialize_record_constant_alias_fields(
+        &mut ctx,
+        "medium",
+        "fluidConstants",
+        "medium.fluidConstants",
+        "source",
+    );
+    assert_eq!(
+        ctx.real_parameter_values
+            .get("medium.fluidConstants[1].molarMass"),
+        Some(&0.020)
+    );
+}
+
+#[test]
+fn scalar_record_alias_keeps_scoped_fields_and_dimensions() {
+    let source = r#"
+        record R
+            Real values[2];
+        end R;
+        model Test
+            constant R source = R(values={1.0, 2.0});
+        end Test;
+    "#;
+    let parsed = rumoca_phase_parse::parse_to_ast(source, "record_alias.mo").unwrap();
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(ast::ClassTree::from_parsed(parsed)))
+            .unwrap();
+    let model = resolved.get_class_by_qualified_name("Test").unwrap();
+    let mut ctx = Context::default();
+    let value = super::try_extract_named_record_constructor_constant(
+        model.components["source"].binding.as_ref().unwrap(),
+        &mut ctx,
+        "",
+        "source",
+    )
+    .unwrap();
+    ctx.constant_values.insert("source".into(), value);
+    ctx.array_dimensions.insert("source.values".into(), vec![2]);
+    let expected = ctx.constant_values["source.values"].clone();
+    crate::constant_extraction::materialize_record_constant_alias_fields(
+        &mut ctx,
+        "medium",
+        "data",
+        "medium.data",
+        "source",
+    );
+    assert_eq!(
+        ctx.constant_values.get("medium.data.values"),
+        Some(&expected)
+    );
+    assert_eq!(
+        ctx.array_dimensions.get("medium.data.values"),
+        Some(&vec![2])
+    );
+}

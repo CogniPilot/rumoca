@@ -179,3 +179,54 @@ fn first_modification_span(comp: &ast::Component) -> Option<rumoca_core::Span> {
         .map(ast::Expression::span)
         .filter(|span| !span.is_dummy())
 }
+
+/// Field paths materialized by evaluated record-array constructors.
+/// Scalar records keep their existing scoped field lookup; arrays enumerate
+/// their own elements so unrelated model constants are never scanned.
+pub(crate) fn record_array_field_suffixes(value: &rumoca_core::Expression) -> Option<Vec<String>> {
+    if !matches!(value, rumoca_core::Expression::Array { .. }) {
+        return None;
+    }
+    let mut fields = Vec::new();
+    collect_record_field_suffixes(value, "", &mut fields);
+    Some(fields)
+}
+
+fn collect_record_field_suffixes(
+    value: &rumoca_core::Expression,
+    prefix: &str,
+    fields: &mut Vec<String>,
+) {
+    use rumoca_core::Expression;
+    match value {
+        Expression::Array { elements, .. } => {
+            for (index, element) in elements.iter().enumerate() {
+                collect_record_field_suffixes(element, &format!("{prefix}[{}]", index + 1), fields);
+            }
+        }
+        Expression::FunctionCall {
+            args,
+            is_constructor: true,
+            ..
+        } => {
+            for arg in args {
+                let Expression::FunctionCall { name, args, .. } = arg else {
+                    continue;
+                };
+                let Some(field) = name
+                    .as_str()
+                    .strip_prefix(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+                else {
+                    continue;
+                };
+                let [value] = args.as_slice() else {
+                    continue;
+                };
+                let suffix = format!("{prefix}.{field}");
+                collect_record_field_suffixes(value, &suffix, fields);
+                fields.push(suffix);
+            }
+        }
+        _ => {}
+    }
+}
