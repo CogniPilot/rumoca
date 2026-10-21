@@ -476,8 +476,12 @@ fn exact_package_function_rewrite(
     // respelled through that instance's concrete package even when the alias's
     // default also exposes the implementation.
     let instance_selects_package = package.active && !ctx.active_scope.is_root();
-    let respell_through_package = (instance_selects_package || !alias_exposes_selection)
-        && prefix_part.is_some_and(|prefix| prefix.ident == package.alias);
+    // An unqualified inherited call also needs the selected package path:
+    // identical declaration/implementation IDs do not imply identical package
+    // constants (for example, the dimensions of a medium function's inputs).
+    let respell_through_package = prefix_part.is_none()
+        || ((instance_selects_package || !alias_exposes_selection)
+            && prefix_part.is_some_and(|prefix| prefix.ident == package.alias));
     if projected == selection && !respell_through_package {
         return Ok(None);
     }

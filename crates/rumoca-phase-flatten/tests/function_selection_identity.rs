@@ -182,3 +182,62 @@ fn unique_alias_keeps_its_inherited_function_selection_identity() {
         "selection must reach the inherited algorithm body, not the empty alias shell"
     );
 }
+
+#[test]
+fn unqualified_component_calls_keep_distinct_selected_package_shapes() {
+    let source = r#"package TwoFunctionShapes
+  partial package Root
+    constant String names[:];
+    constant Integer nS = size(names, 1);
+    constant Integer n = nS;
+  end Root;
+  partial package Base
+    extends Root;
+    function f
+      input Real x[n];
+      output Real y;
+    algorithm
+      y := sum(x);
+    end f;
+    model State
+      Real x[n];
+      Real y;
+    equation
+      x = fill(1.0, n);
+      y = f(x);
+    end State;
+  end Base;
+  package Selected
+    extends Base(names={"a", "b"});
+  end Selected;
+  model Box
+    replaceable package Medium = Base;
+    Medium.State state;
+  end Box;
+  package Other
+    extends Base(names={"a", "b", "c"});
+  end Other;
+  model Top
+    Box box(redeclare package Medium = Selected);
+    Box other(redeclare package Medium = Other);
+  end Top;
+end TwoFunctionShapes;
+"#;
+    let model = Fixture::prepare(source, "<two_function_shapes>", "TwoFunctionShapes.Top")
+        .flatten()
+        .expect("selected package calls flatten");
+    let mut calls = CallReferences::default();
+    for equation in &model.equations {
+        calls.visit_expression(&equation.residual);
+    }
+    for (package, extent) in [("Selected", 2), ("Other", 3)] {
+        let name = format!("TwoFunctionShapes.{package}.f");
+        let function = model
+            .functions
+            .values()
+            .find(|function| function.name.as_str() == name)
+            .expect("call retains selected package");
+        assert_eq!(function.inputs[0].effective_type.dimensions(), &[extent]);
+        assert!(calls.references.iter().any(|call| call.as_str() == name));
+    }
+}
