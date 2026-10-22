@@ -979,6 +979,9 @@ fn symbolic_stream_index_inside_scalarized_parent_preserves_both_indices() {
         matches!(else_branch.as_ref(), rumoca_core::Expression::VarRef { name, .. }
         if name.as_str() == "cells[1].b[2].h_outflow")
     );
+}
+
+#[test]
 fn concrete_indexed_stream_reference_selects_its_own_connection_set() {
     for operator in ["inStream", "actualStream"] {
         let mut model = flat::Model::new();
