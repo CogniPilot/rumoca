@@ -187,7 +187,6 @@ pub(crate) fn record_array_field_suffixes(value: &rumoca_core::Expression) -> Op
     if !matches!(value, rumoca_core::Expression::Array { .. }) {
         return None;
     }
-
     let mut fields = Vec::new();
     collect_record_field_suffixes(value, "", &mut fields);
     Some(fields)
