@@ -70,6 +70,80 @@ fn parameter_static_gradient_certificate_rejects_y_and_time_varying_coefficients
 }
 
 #[test]
+fn parameter_static_gradient_certificate_admits_time_selected_gradient_free_branches() {
+    // `y - (offset + (if time < start then 0 else height))`: the time
+    // condition selects between branches without a solver-Y gradient, so the
+    // row's gradient is the constant of `y` whichever branch is taken.
+    let step_source = |height: LinearOp| {
+        vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            LinearOp::LoadTime { dst: 2 },
+            LinearOp::Const { dst: 3, value: 1.0 },
+            LinearOp::Compare {
+                dst: 4,
+                op: CompareOp::Lt,
+                lhs: 2,
+                rhs: 3,
+            },
+            height,
+            LinearOp::Const { dst: 6, value: 0.0 },
+            LinearOp::Select {
+                dst: 7,
+                cond: 4,
+                if_true: 6,
+                if_false: 5,
+            },
+            LinearOp::Binary {
+                dst: 8,
+                op: BinaryOp::Add,
+                lhs: 1,
+                rhs: 7,
+            },
+            LinearOp::Binary {
+                dst: 9,
+                op: BinaryOp::Sub,
+                lhs: 0,
+                rhs: 8,
+            },
+            LinearOp::StoreOutput { src: 9 },
+        ]
+    };
+    let parameter_height = step_source(LinearOp::LoadP { dst: 5, index: 1 });
+    // A branch reading solver Y keeps its gradient behind the time
+    // condition, which then switches the gradient itself.
+    let coordinate_height = step_source(LinearOp::LoadY { dst: 5, index: 1 });
+
+    assert_eq!(
+        crate::parameter_static_y_gradient_params(&parameter_height),
+        Some(vec![0, 1])
+    );
+    assert_eq!(
+        crate::parameter_static_y_gradient_params(&coordinate_height),
+        None
+    );
+    // `1 / y` reads solver Y through its divisor alone; that branch has a
+    // gradient, so the time-switched selection is not certified either.
+    let mut reciprocal_height = step_source(LinearOp::Const { dst: 5, value: 1.0 });
+    reciprocal_height.splice(
+        6..6,
+        [
+            LinearOp::LoadY { dst: 10, index: 1 },
+            LinearOp::Binary {
+                dst: 5,
+                op: BinaryOp::Div,
+                lhs: 5,
+                rhs: 10,
+            },
+        ],
+    );
+    assert_eq!(
+        crate::parameter_static_y_gradient_params(&reciprocal_height),
+        None
+    );
+}
+
+#[test]
 fn prepared_parameter_dependencies_preserve_tensor_load_ranges() {
     let block = ScalarProgramBlock::with_program_spans(
         vec![vec![

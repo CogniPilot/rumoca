@@ -42,7 +42,9 @@ use rumoca_eval_solve::{
 pub(super) type ProjectAlgebraics<'a> =
     dyn FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError> + 'a;
 
+mod block_kernels;
 mod block_residual_split;
+mod state_jacobian_memo;
 pub use block_residual_split::{
     BlockResidualSplitCounts, block_residual_split_counts, reset_block_residual_split_counts,
 };
@@ -277,6 +279,8 @@ struct ScalarExecutionInventory {
     colored_tangents: Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]>,
     /// Block residual splits aligned with the projection plan's blocks.
     block_splits: Rc<[Option<Rc<block_residual_split::BlockSplits>>]>,
+    /// Fused kernels of each affine block, aligned with the plan's blocks.
+    block_kernels: Rc<[Option<Rc<block_kernels::BlockKernels>>]>,
     /// Invariant values of the block projection call in progress.
     active_split: block_residual_split::ActiveSplitSlot,
     /// Output buffer of a single-row split evaluation.
@@ -305,6 +309,10 @@ struct ScalarExecutionInventory {
     continuous_structural: solve::ContinuousStructuralArtifacts,
     initialization_structural: solve::InitializationStructuralArtifacts,
     algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
+    /// `SolveModel::solver_variable_scales` of the runtime model, formed once.
+    solver_variable_scales: Rc<[f64]>,
+    /// The parameter-static state Jacobian products, when certified.
+    state_jacobian_memo: Option<Rc<state_jacobian_memo::StateJacobianMemo>>,
     seed_projection_cache: RefCell<SeedProjectionCache>,
     algebraic_refresh: solve::RefreshPlan,
     /// Per initialization residual row, the positions of the algebraic
@@ -1176,7 +1184,7 @@ impl ScalarExecutionView<'_> {
                 RootConditionPlanEntry::Dynamic => 0.0,
             };
         }
-        self.eval_planned_root_rows(&plan.evaluated_rows, y, params, t, out)
+        self.eval_planned_root_rows(&plan.evaluated, y, params, t, out)
     }
 
     fn write_planned_root_search_conditions(
@@ -1188,7 +1196,7 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.write_planned_root_search_defaults(plan, params, t, out)?;
-        self.eval_planned_root_rows(&plan.search_rows, y, params, t, out)
+        self.eval_planned_root_rows(&plan.search, y, params, t, out)
     }
 
     fn write_planned_root_search_defaults(
@@ -1212,22 +1220,19 @@ impl ScalarExecutionView<'_> {
 
     fn eval_planned_root_rows(
         &self,
-        output_indices: &[usize],
+        selection: &native_specialization::ProgramSelection,
         y: &[f64],
         params: &[f64],
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if output_indices.is_empty() {
-            return Ok(());
-        }
-        self.eval_selected_outputs_with_native(
+        self.eval_program_selection_with_native(
             SpecializedRows {
                 block: &self.scalar.root_condition_rows,
                 cache: &self.scalar.compiled_root_rows,
                 failed: &self.scalar.failed_root_rows,
             },
-            output_indices,
+            selection,
             RowEvalPoint { y, p: params, t },
             out,
         )

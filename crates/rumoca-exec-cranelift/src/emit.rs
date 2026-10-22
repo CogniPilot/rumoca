@@ -234,6 +234,12 @@ enum SimpleOp {
 pub(crate) struct CompiledResidualRows {
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     rows: Vec<CompiledResidualRow>,
+    /// The rows' total output count, fixed when they are compiled.
+    output_count: usize,
+    /// Whether the rows may read external tables (see
+    /// `CraneliftEmitter::reads_external_tables`); rows that cannot are called
+    /// without installing the caller's tables.
+    reads_external_tables: bool,
     jits: Vec<CompiledResidualJit>,
     selectable: bool,
     input_requirements: InputRequirements,
@@ -290,6 +296,15 @@ impl CompiledAssignmentSchedule {
 }
 
 impl CompiledResidualRows {
+    /// Run `call` with `tables` installed when these rows can read them.
+    fn with_tables<R>(&self, tables: &[ExternalTableData], call: impl FnOnce() -> R) -> R {
+        if self.reads_external_tables {
+            with_active_external_tables(tables, call)
+        } else {
+            call()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn call(
         &self,
@@ -309,7 +324,7 @@ impl CompiledResidualRows {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
+        let output_count = self.output_count;
         validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, None)?;
         let inputs = RowInputs {
@@ -321,7 +336,7 @@ impl CompiledResidualRows {
             #[cfg(test)]
             external_tables,
         };
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut staged = self.transaction_scratch.borrow_mut();
             resize_native_outputs(&mut staged, output_count)?;
             self.call_active(inputs, output_count, &mut staged)?;
@@ -433,6 +448,12 @@ fn validate_interpreted_outputs(actual: &[f64], expected: &[f64]) -> Result<(), 
 pub(crate) struct CompiledJacobianRows {
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     rows: Vec<CompiledJacobianRow>,
+    /// The rows' total output count, fixed when they are compiled.
+    output_count: usize,
+    /// Whether the rows may read external tables (see
+    /// `CraneliftEmitter::reads_external_tables`); rows that cannot are called
+    /// without installing the caller's tables.
+    reads_external_tables: bool,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
@@ -442,6 +463,15 @@ pub(crate) struct CompiledJacobianRows {
 }
 
 impl CompiledJacobianRows {
+    /// Run `call` with `tables` installed when these rows can read them.
+    fn with_tables<R>(&self, tables: &[ExternalTableData], call: impl FnOnce() -> R) -> R {
+        if self.reads_external_tables {
+            with_active_external_tables(tables, call)
+        } else {
+            call()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn program_call_count(&self) -> usize {
         self.jit_call_count.get()
@@ -468,7 +498,7 @@ impl CompiledJacobianRows {
             )));
         }
         validate_input_requirements(self.input_requirements, y, p, Some(v))?;
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut output = self.output_scratch.borrow_mut();
             output.resize(count, 0.0);
             self.call_jacobian_row(
@@ -509,10 +539,10 @@ impl CompiledJacobianRows {
         external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
+        let output_count = self.output_count;
         validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, Some(v))?;
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut regs_scratch = self.regs_scratch.borrow_mut();
             let ctx = JacobianCallContext {
                 y,
@@ -666,6 +696,11 @@ fn compile_residual_rows_attached(
     let jits = finalize_residual_jits(&emitter.module, pending)?;
     Ok(CompiledResidualRows {
         _pure_calls: pure_calls,
+        output_count: compiled_rows
+            .iter()
+            .map(|row| row.plan.output_count())
+            .sum(),
+        reads_external_tables: emitter.reads_external_tables(),
         rows: compiled_rows,
         jits,
         selectable,
@@ -948,6 +983,11 @@ fn compile_jacobian_rows_attached(
     }
     Ok(CompiledJacobianRows {
         _pure_calls: pure_calls,
+        output_count: compiled_rows
+            .iter()
+            .map(|row| row.plan.output_count())
+            .sum(),
+        reads_external_tables: emitter.reads_external_tables(),
         rows: compiled_rows,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
@@ -1178,6 +1218,13 @@ struct CraneliftEmitter {
 }
 
 impl CraneliftEmitter {
+    /// Whether a function of this module may read the caller's external
+    /// tables: it declared a table host import, or it calls a pure function,
+    /// whose separately compiled body may.
+    fn reads_external_tables(&self) -> bool {
+        !self.math.table.is_empty() || !self.pure_call_functions.is_empty()
+    }
+
     fn new(
         pure_calls: Option<&typed_program::CompiledPureCallTable>,
     ) -> Result<Self, CompileError> {

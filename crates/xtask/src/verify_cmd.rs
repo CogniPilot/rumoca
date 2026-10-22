@@ -502,7 +502,9 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         include_in_quick: true,
     },
     // MSL parity is the highest-signal gate for compiler/simulator changes, so
-    // it runs before lower-risk heavyweight surfaces.
+    // it runs before lower-risk heavyweight surfaces. It runs two stage and
+    // two simulation workers, as the CI shards do: the quality baseline's
+    // speed ratios and timing margins were measured under that contention.
     VerifyStep {
         label: "MSL parity",
         args: &[
@@ -512,9 +514,9 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
             "ci",
             "--no-remote-quality-baseline",
             "--stage-parallelism",
-            "4",
+            "2",
             "--sim-parallelism",
-            "4",
+            "2",
         ],
         include_in_full: true,
         include_in_quick: true,

@@ -916,7 +916,43 @@ impl SolveMeKernel {
         f(&mut self.solver_y_guess.borrow_mut(), settled.as_deref())
     }
 
+    /// A parameter-static state Jacobian (see `StateJacobianMemo`) forms each
+    /// product once per parameter snapshot and seed; the coordinate and time
+    /// do not enter it.
     pub(super) fn directional_derivative_at_parameters(
+        &self,
+        time: f64,
+        parameters: &[f64],
+        settle: AlgebraicSettle,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError> {
+        let memo = self.runtime.state_jacobian_memo();
+        if memo.is_some_and(|memo| memo.get(parameters, seed, sensitivity)) {
+            // Debug builds form the product at this point and require the
+            // retained one, up to the sign of an exact zero.
+            #[cfg(debug_assertions)]
+            {
+                let mut formed = vec![0.0; sensitivity.len()];
+                self.directional_derivative_formed(time, parameters, settle, seed, &mut formed)?;
+                assert!(
+                    formed
+                        .iter()
+                        .zip(sensitivity.iter())
+                        .all(|(a, b)| a == b || a.to_bits() == b.to_bits()),
+                    "a retained parameter-static state Jacobian product is the one formed here"
+                );
+            }
+            return Ok(());
+        }
+        self.directional_derivative_formed(time, parameters, settle, seed, sensitivity)?;
+        if let Some(memo) = memo {
+            memo.put(parameters, seed, sensitivity);
+        }
+        Ok(())
+    }
+
+    fn directional_derivative_formed(
         &self,
         time: f64,
         parameters: &[f64],

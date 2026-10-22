@@ -134,3 +134,15 @@ impl SolveRuntime {
 
 #[cfg(test)]
 mod tests;
+
+impl ScalarExecutionView<'_> {
+    /// [`solve::SolveModel::solver_variable_scale`] from the table formed at
+    /// construction.
+    pub(super) fn solver_variable_scale(&self, index: usize) -> f64 {
+        self.scalar
+            .solver_variable_scales
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| self.runtime.model.solver_variable_scale(index))
+    }
+}

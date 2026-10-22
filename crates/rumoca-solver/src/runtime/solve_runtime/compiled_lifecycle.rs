@@ -8,6 +8,9 @@ mod tests;
 #[derive(Clone)]
 pub(super) struct CompiledPrograms {
     programs: Box<[CompiledProgram]>,
+    /// The whole block as one compiled entry, which evaluates every program
+    /// into its output placement in one call.
+    whole: Option<Rc<dyn CompiledSolveExpression>>,
     scratch: RefCell<Vec<f64>>,
 }
 
@@ -63,6 +66,7 @@ impl CompiledPrograms {
             .collect::<Result<Box<[_]>, EvalSolveError>>()?;
         Ok(Self {
             programs,
+            whole,
             scratch: RefCell::default(),
         })
     }
@@ -162,6 +166,7 @@ impl CompiledPrograms {
         }
         Ok(Self {
             programs: programs.into_boxed_slice(),
+            whole: None,
             scratch: RefCell::default(),
         })
     }
@@ -195,6 +200,29 @@ impl CompiledPrograms {
             .call(point, tables, &mut values)
             .map_err(|error| admitted_compiled_error("lifecycle program", &[code.span], error))?;
         copy_runtime_values_into(out, &values, "compiled lifecycle output commit")
+    }
+
+    /// Every program into its output placement in `out` through the whole
+    /// entry, when the block has one; a failure names every program's span.
+    pub(super) fn call_whole(
+        &self,
+        point: RowEvalPoint<'_>,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Option<Result<(), RuntimeSolveError>> {
+        let whole = self.whole.as_ref()?;
+        Some(
+            whole
+                .call(point.y, point.p, point.t, tables, out)
+                .map_err(|error| {
+                    let spans = self
+                        .programs
+                        .iter()
+                        .map(|program| program.span)
+                        .collect::<Vec<_>>();
+                    admitted_compiled_error("lifecycle program", &spans, error)
+                }),
+        )
     }
 }
 
@@ -448,8 +476,15 @@ impl ScalarExecutionView<'_> {
                 .map_err(Into::into);
         };
         validate_runtime_output_len("lifecycle block", block.block().output_count(), out.len())?;
-        let mut values = Vec::new();
         let mut staged = zero_runtime_values(out.len(), "lifecycle block output transaction")?;
+        if let Some(called) =
+            code.call_whole(point, self.model.external_tables.as_slice(), &mut staged)
+        {
+            called?;
+            out.copy_from_slice(&staged);
+            return Ok(());
+        }
+        let mut values = Vec::new();
         let mut ordinal = 0;
         for program in 0..block.block().row_count() {
             code.call(

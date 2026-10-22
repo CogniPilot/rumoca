@@ -89,7 +89,8 @@ pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedEvaluationBlock,
     PreparedScalarProgramBlock, PreparedTargetValuePlan, PreparedTornSweep,
     TargetAssignmentOutputRequest, TargetIsolationProgram, TornSweepComposite, TornSweepRun,
-    TornSweepStatus, replaced_programs, target_assignment_shape, target_assignment_shapes,
+    TornSweepStatus, parameter_static_y_gradient_params, replaced_programs,
+    target_assignment_shape, target_assignment_shapes,
 };
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;

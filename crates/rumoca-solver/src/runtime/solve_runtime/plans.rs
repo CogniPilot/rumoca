@@ -55,8 +55,11 @@ pub(super) enum RootConditionPlanEntry {
 #[derive(Clone)]
 pub(super) struct RootConditionPlan {
     pub(super) entries: Vec<RootConditionPlanEntry>,
-    pub(super) evaluated_rows: Vec<usize>,
     pub(super) search_rows: Vec<usize>,
+    /// The evaluated (static and searched) and the searched root outputs,
+    /// grouped by owning program with the plan.
+    pub(super) evaluated: super::native_specialization::ProgramSelection,
+    pub(super) search: super::native_specialization::ProgramSelection,
 }
 
 pub(super) fn visible_value_plan(
@@ -121,13 +124,16 @@ pub(super) fn root_condition_plan(model: &solve::SolveModel) -> Option<RootCondi
     }
     let search = solve::RootSearchPlan::derive(&model.problem);
     let mut entries = Vec::with_capacity(search.len());
-    let mut evaluated_rows = Vec::new();
     let mut search_rows = Vec::new();
+    let mut evaluated = Vec::new();
+    let mut search_groups = Vec::new();
     let mut output = 0;
     for (program, row) in roots.programs().iter().enumerate() {
         let span = roots.program_span(program);
         let first = output;
         output += solve::ScalarProgramBlock::program_output_count(row);
+        let mut evaluated_group = Vec::new();
+        let mut search_group = Vec::new();
         for index in first..output {
             let role = *search.roles().get(index)?;
             entries.push(match role {
@@ -139,15 +145,22 @@ pub(super) fn root_condition_plan(model: &solve::SolveModel) -> Option<RootCondi
                     })
                 }
                 solve::RootSearchRole::Static => {
-                    evaluated_rows.push(index);
+                    evaluated_group.push((index, index - first));
                     RootConditionPlanEntry::ContinuousStatic
                 }
                 solve::RootSearchRole::Search => {
-                    evaluated_rows.push(index);
                     search_rows.push(index);
+                    evaluated_group.push((index, index - first));
+                    search_group.push((index, index - first));
                     RootConditionPlanEntry::Dynamic
                 }
             });
+        }
+        if !evaluated_group.is_empty() {
+            evaluated.push((program, evaluated_group));
+        }
+        if !search_group.is_empty() {
+            search_groups.push((program, search_group));
         }
     }
     if output != search.len() {
@@ -156,15 +169,16 @@ pub(super) fn root_condition_plan(model: &solve::SolveModel) -> Option<RootCondi
     tracing::debug!(
         target: "rumoca_solver::root_plan",
         roots = entries.len(),
-        evaluated = evaluated_rows.len(),
+        evaluated = evaluated.iter().map(|(_, group)| group.len()).sum::<usize>(),
         search = search_rows.len(),
         scheduled = model.problem.events.scheduled_root_conditions.len(),
         "root condition execution plan"
     );
     Some(RootConditionPlan {
         entries,
-        evaluated_rows,
         search_rows,
+        evaluated: super::native_specialization::ProgramSelection::from_groups(evaluated),
+        search: super::native_specialization::ProgramSelection::from_groups(search_groups),
     })
 }
 

@@ -29,6 +29,42 @@ pub(crate) struct SparseNewtonCache {
 }
 
 impl SparseNewtonCache {
+    /// The cache of one projection block. A block whose affine elimination
+    /// layout is admitted (`projection_policy::affine_elimination_capacity`)
+    /// and stated in the block's own pattern has its torn system issued here,
+    /// once, rather than admitted and compared on every solve.
+    pub(crate) fn for_block(structure: &rumoca_ir_solve::ColoredJacobianStructure) -> Self {
+        let torn = structure
+            .affine_elimination()
+            .filter(|layout| {
+                layout.pattern() == structure.pattern()
+                    && rumoca_eval_solve::projection_policy::affine_elimination_capacity(layout)
+                        .is_some()
+            })
+            .map_or_else(
+                torn::TornNewtonCache::default,
+                torn::TornNewtonCache::issued,
+            );
+        Self {
+            torn,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn has_issued_torn(&self) -> bool {
+        self.torn.is_issued()
+    }
+
+    pub(super) fn solve_torn_issued(
+        &mut self,
+        source: &super::BlockJacobian,
+        residual: &[f64],
+        scales: (&[f64], &[f64]),
+        revision: Option<u64>,
+    ) -> Option<DVector<f64>> {
+        self.torn.solve_issued(source, residual, scales, revision)
+    }
+
     pub(crate) fn take_affine_linearization(
         &mut self,
     ) -> Option<super::affine::AffineLinearization> {

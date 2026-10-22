@@ -157,7 +157,7 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
     }
 
     fn variable_scale_for_y_index(&self, y_index: usize) -> f64 {
-        self.runtime.model.solver_variable_scale(y_index)
+        self.runtime.solver_variable_scale(y_index)
     }
 }
 

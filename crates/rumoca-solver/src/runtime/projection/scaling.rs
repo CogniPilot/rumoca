@@ -297,6 +297,21 @@ pub(crate) fn scaled_newton_delta_with_tearing(
     Some(unscale_newton_delta(&delta, system.variable_scales))
 }
 
+/// [`scaled_newton_delta_with_tearing`] through the block's torn system
+/// issued at construction ([`SparseNewtonCache::for_block`]): the block's
+/// own structure, pattern, and admission were proven there.
+pub(crate) fn scaled_newton_delta_issued_torn(
+    system: ScaledNewtonSystem<'_>,
+    cache: &mut SparseNewtonCache,
+) -> Option<DVector<f64>> {
+    cache.solve_torn_issued(
+        system.jacobian,
+        system.residual,
+        (system.row_scales, system.variable_scales),
+        system.revision,
+    )
+}
+
 fn scaled_newton_rhs(residual: &[f64], row_scales: &[f64]) -> DVector<f64> {
     DVector::from_iterator(
         residual.len(),
@@ -571,6 +586,7 @@ pub(super) struct OriginRowScales<'a> {
 /// affine projection: each block unknown's y index and declared scale, and
 /// each row's fallback coordinate (its implicit target, or the unknown at the
 /// same offset) with that coordinate's declared scale.
+#[derive(Clone, Default)]
 pub(super) struct CertificateScales {
     pub(super) unknowns: Vec<(usize, f64)>,
     pub(super) fallbacks: Vec<Option<(usize, f64)>>,
@@ -608,14 +624,17 @@ pub(super) fn origin_bounded_residual_converged(
     if residual.len() != origin.scales.len() {
         return false;
     }
-    let mut variable_scales = Vec::with_capacity(scales.unknowns.len());
-    for &(index, declared) in &scales.unknowns {
-        variable_scales.push(declared_variable_scale(declared, y[index]));
-    }
-    let mut largest = 0.0_f64;
-    for &scale in &variable_scales {
-        largest = largest.max(valid_variable_scale(scale));
-    }
+    let variable_scale =
+        |&(index, declared): &(usize, f64)| declared_variable_scale(declared, y[index]);
+    let largest = scales
+        .unknowns
+        .iter()
+        .map(variable_scale)
+        .fold(0.0_f64, |largest, scale| {
+            largest.max(valid_variable_scale(scale))
+        });
+    // Only a row its origin scale does not bound forms its scale at `y`.
+    let mut variable_scales = None;
     for (row, &value) in residual.iter().enumerate() {
         // A contribution only grows from the origin, so an origin scale formed
         // from a nonzero contribution bounds the scale at `y` from below. A row
@@ -627,6 +646,13 @@ pub(super) fn origin_bounded_residual_converged(
         if bounded && value.abs() <= scaled_tolerance(tol, origin.scales[row]) {
             continue;
         }
+        let variable_scales = variable_scales.get_or_insert_with(|| {
+            scales
+                .unknowns
+                .iter()
+                .map(variable_scale)
+                .collect::<Vec<_>>()
+        });
         let fallback = match scales.fallbacks[row] {
             Some((index, declared)) => declared_variable_scale(declared, y[index]),
             None => variable_scales.get(row).copied().unwrap_or(1.0),
@@ -634,7 +660,7 @@ pub(super) fn origin_bounded_residual_converged(
         let scale = jacobian_row_scale(
             origin.jacobian,
             row,
-            &variable_scales,
+            variable_scales,
             fallback,
             origin.structure,
         );

@@ -1055,6 +1055,9 @@ pub(super) fn refill_reverse_rows(
     local_rows: &[usize],
     jacobian: &mut BlockJacobian,
 ) -> Result<bool, RuntimeSolveError> {
+    if local_rows.is_empty() {
+        return Ok(true);
+    }
     let mut reverse_gradient = vec![0.0; point.0.len()];
     for &row in local_rows {
         let residual_idx = rows[row];

@@ -1,0 +1,116 @@
+# A `pull_request` run from a fork gets a read-only token, so CI cannot post
+# the MSL quality summary on fork PRs itself. This workflow runs from the
+# default branch after CI completes, with a write token, and publishes the
+# summary that the fork's run uploaded in its `msl-compatibility-report`
+# artifact (or the stage status when no summary was produced). It never checks
+# out or executes the fork's code; the artifact is treated as untrusted
+# Markdown. Same-repository PRs are still commented on by CI directly.
+name: MSL PR comment (forks)
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: msl-pr-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish MSL PR summary
+    runs-on: ubuntu-24.04
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.conclusion != 'cancelled' &&
+          github.event.workflow_run.conclusion != 'skipped' &&
+          github.event.workflow_run.head_repository.full_name != github.repository }}
+    steps:
+      - name: Check out publisher scripts (default branch)
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # Resolve the PR from the API rather than from anything the fork run
+      # produced, and only for an open PR whose head is still this run's
+      # commit, so a late run never overwrites a newer head's summary.
+      - name: Resolve pull request
+        id: pr
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              head: `${run.head_repository.owner.login}:${run.head_branch}`,
+              per_page: 100,
+            });
+            const pr = pulls.find(p => p.head.sha === run.head_sha);
+            if (!pr) {
+              core.info(`No open PR has head ${run.head_sha}; nothing to publish.`);
+              return;
+            }
+            core.setOutput('number', String(pr.number));
+
+      - name: Download MSL summary artifact
+        if: steps.pr.outputs.number != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: msl-compatibility-report
+          path: msl-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish MSL PR summary comment
+        if: steps.pr.outputs.number != ''
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- rumoca-msl-quality-summary -->';
+            const maxBody = 60000;
+            const run = context.payload.workflow_run;
+            const issueNumber = Number(process.env.PR_NUMBER);
+            const path = 'msl-report/msl_pr_comment.md';
+
+            let body = fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : '';
+            // The summary was produced by the fork's run: it is published as text,
+            // with mentions neutralized so it cannot notify anyone through this bot.
+            body = body.replace(/@(?=[A-Za-z0-9])/g, '@\u200b');
+            if (!body.startsWith(marker) || body.length > maxBody) {
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                { ...context.repo, run_id: run.id, per_page: 100 },
+              );
+              const rows = jobs
+                .filter(j => /^(Build MSL artifacts|MSL Quality Gate)/.test(j.name))
+                .map(j => `| ${j.name} | \`${j.conclusion ?? j.status}\` |`);
+              body = [
+                marker,
+                '## MSL quality summary',
+                '',
+                `Current CI run [did not produce a complete MSL quality snapshot](${run.html_url}).`,
+                '',
+                '| Stage | Result |',
+                '|---|---|',
+                ...rows,
+                '',
+                'The statistics from an earlier commit are not current for this PR head.',
+              ].join('\n');
+            }
+
+            const upsertMslPrComment = require('./.github/scripts/upsert-msl-pr-comment.cjs');
+            await upsertMslPrComment({ github, context, body, issueNumber });

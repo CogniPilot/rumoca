@@ -2062,3 +2062,14 @@ impl PreparedComputeNode {
         }
     }
 }
+
+/// The parameter slots keying `program`'s certified parameter-static solver-Y
+/// gradient (SPEC_0043), as [`PreparedScalarProgramBlock::parameter_static_y_gradient_params`]
+/// records it per row; `None` when the gradient is not certified invariant
+/// under solver Y and time.
+#[must_use]
+pub fn parameter_static_y_gradient_params(
+    program: &[rumoca_ir_solve::LinearOp],
+) -> Option<Vec<usize>> {
+    parameter_static_y_gradient(program).then(|| row_parameter_indices(program))
+}

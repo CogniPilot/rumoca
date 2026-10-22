@@ -56,8 +56,14 @@ impl SolveRuntime {
         }
         let continuous_structural = model.artifacts.continuous.structural.clone();
         let initialization_structural = model.artifacts.initialization.structural.clone();
-        let algebraic_newton_caches = (0..continuous_structural.algebraic_projection().len())
-            .map(|_| RefCell::new(crate::runtime::projection::SparseNewtonCache::default()))
+        let algebraic_newton_caches = continuous_structural
+            .algebraic_projection()
+            .iter()
+            .map(|structure| {
+                RefCell::new(crate::runtime::projection::SparseNewtonCache::for_block(
+                    structure,
+                ))
+            })
             .collect();
         let implicit_scalar_projection =
             solve_eval::to_scalar_program_projection(&model.problem.continuous.implicit_rhs)?;
@@ -317,8 +323,35 @@ impl SolveRuntime {
             structured_discrete_rows.rows(),
         );
         let clock_partition_clocks = discrete_rows::clock_partition_clocks(&model.problem.discrete);
+        let block_kernels: Rc<[Option<Rc<block_kernels::BlockKernels>>]> =
+            block_kernels::block_kernels(
+                &block_kernels::BlockKernelSources {
+                    owners: &model.problem.continuous.refresh_owners,
+                    plan: &model.problem.continuous.algebraic_projection_plan,
+                    residual: (implicit_scalar_rhs.source(), &implicit_scalar_programs),
+                    jacobian_v: implicit_jacobian_v
+                        .is_compiled()
+                        .then(|| (implicit_jacobian_v.source(), &implicit_full_jacobian_v)),
+                },
+                execution_backend
+                    .as_deref()
+                    .filter(|_| implicit_scalar_rhs.is_compiled()),
+            )
+            .into();
         let block_splits = block_residual_split::block_residual_splits(
-            &model.problem.continuous.refresh_owners,
+            // A block with a fused residual entry evaluates its whole residual
+            // programs in one call and never reads a split.
+            |index| {
+                model
+                    .problem
+                    .continuous
+                    .refresh_owners
+                    .algebraic_projection_block_is_affine(index)
+                    && !block_kernels
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|kernels| kernels.has_residual())
+            },
             &model.problem.continuous.algebraic_projection_plan,
             &continuous_structural,
             implicit_scalar_rhs.source(),
@@ -338,6 +371,12 @@ impl SolveRuntime {
             }),
         )
         .into();
+        let state_jacobian_memo = state_jacobian_memo::StateJacobianMemo::certify(
+            &derivative_refresh.simultaneous_plan,
+            implicit_scalar_rhs.source(),
+            &derivative_scalar_rhs,
+        )
+        .map(Rc::new);
         let (compiled_assignment_schedules, interpreted_assignment_schedules) =
             interpreted_schedules::InterpretedSchedules::construct(
                 model,
@@ -441,6 +480,7 @@ impl SolveRuntime {
                 )
             },
             block_splits,
+            block_kernels,
             active_split: std::cell::Cell::new(None),
             split_row_scratch: std::cell::RefCell::new(Vec::new()),
             residual_row_batch: std::cell::RefCell::default(),
@@ -457,6 +497,8 @@ impl SolveRuntime {
             continuous_structural,
             initialization_structural,
             algebraic_newton_caches,
+            solver_variable_scales: model.solver_variable_scales().into(),
+            state_jacobian_memo,
             seed_projection_cache: RefCell::new(SeedProjectionCache::default()),
             algebraic_refresh,
             settled_read_cones,

@@ -93,9 +93,9 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
                 "ci",
                 "--no-remote-quality-baseline",
                 "--stage-parallelism",
-                "4",
+                "2",
                 "--sim-parallelism",
-                "4",
+                "2",
             ],
             vec!["verify", "corpus-pin"],
             vec!["verify", "architecture"],
@@ -124,9 +124,9 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
             "ci",
             "--no-remote-quality-baseline",
             "--stage-parallelism",
-            "4",
+            "2",
             "--sim-parallelism",
-            "4",
+            "2",
         ])
     );
     assert!(steps.contains(&vec!["verify", "architecture"]));
@@ -145,9 +145,9 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         "ci",
         "--no-remote-quality-baseline",
         "--stage-parallelism",
-        "4",
+        "2",
         "--sim-parallelism",
-        "4",
+        "2",
     ]));
 }
 

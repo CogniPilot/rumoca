@@ -510,7 +510,7 @@ impl CoupledEventSystem<'_> {
 
     fn unknown_scale(&self, unknown: CoupledEventUnknown) -> f64 {
         match unknown {
-            CoupledEventUnknown::Y(index) => self.runtime.model.solver_variable_scale(index),
+            CoupledEventUnknown::Y(index) => self.runtime.solver_variable_scale(index),
             CoupledEventUnknown::P(index) => self
                 .base_p
                 .get(index)

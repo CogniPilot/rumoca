@@ -167,8 +167,9 @@ fn bits(result: &SimResult) -> Vec<Vec<u64>> {
 }
 
 /// [`assert_trajectory_exact_under`] for native execution, which splits the
-/// compiled residual programs, and for the interpreter, which splits the
-/// prepared ones; returns the native and the interpreter counts.
+/// compiled residual programs of a block without a fused residual entry, and
+/// for the interpreter, which splits the prepared ones; returns the native
+/// and the interpreter counts.
 fn assert_trajectory_exact(
     label: &str,
     dae: &rumoca_ir_dae::Dae,
@@ -177,10 +178,7 @@ fn assert_trajectory_exact(
     rumoca_solver::BlockResidualSplitCounts,
 ) {
     let native = assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Auto);
-    assert!(
-        native.calls > 0 && native.fallbacks == 0,
-        "{label} native: {native:?}"
-    );
+    assert_eq!(native.fallbacks, 0, "{label} native: {native:?}");
     (
         native,
         assert_trajectory_exact_under(label, dae, SimExecutionPolicy::Interpreter),
@@ -215,7 +213,11 @@ fn fixture_splits_are_exact_and_evaluate_each_invariant_part_once_per_call() {
     assert!(check_splits("TangentLoops", &lower(&loops)) >= 1);
     let (native, counts) = assert_trajectory_exact("TangentChain", &chain);
     // The chain block's rows are one-output programs with no shared residual
-    // output selection, so native residual passes evaluate them in one batch.
+    // output selection, so native residual passes evaluate them through the
+    // block's fused residual entry, and the block keeps no split it would not
+    // read; residual evaluations outside the refresh projection still
+    // evaluate its rows in one batch.
+    assert_eq!(native.calls, 0, "{native:?}");
     assert!(native.batched_rows > 0, "{native:?}");
     assert!(counts.calls > 0, "the chain block splits: {counts:?}");
     assert_eq!(counts.fallbacks, 0);
@@ -309,6 +311,9 @@ fn fourbar1_splits_are_exact() {
             .all(|(_, structure)| structure.residual_output_evaluation().is_some())
     );
     let (native, counts) = assert_trajectory_exact("Fourbar1", &dae);
+    // Shared multi-output programs give its blocks no fused residual entry, so
+    // native passes keep evaluating their splits.
+    assert!(native.calls > 0, "{native:?}");
     assert_eq!(native.batched_rows, 0, "{native:?}");
     assert!(counts.calls > 0 && counts.fallbacks == 0, "{counts:?}");
 }

@@ -169,10 +169,12 @@ impl ScalarExecutionView<'_> {
         Ok(())
     }
 
-    pub(super) fn eval_selected_outputs_with_native(
+    /// The outputs `selection` names, with the event observations a root or
+    /// action condition reads, into `out`.
+    pub(super) fn eval_program_selection_with_native(
         &self,
         rows: SpecializedRows<'_>,
-        output_indices: &[usize],
+        selection: &ProgramSelection,
         point: RowEvalPoint<'_>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
@@ -183,7 +185,7 @@ impl ScalarExecutionView<'_> {
             event_observations: observations.as_ref(),
             ..self.row_eval_context()
         };
-        self.eval_selected_outputs_with_context(rows, output_indices, point, out, context)
+        self.eval_program_selection(rows, selection, point, out, context)
     }
 
     pub(super) fn eval_selected_outputs_with_context(
@@ -194,35 +196,39 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
         context: RowEvalContext<'_>,
     ) -> Result<(), RuntimeSolveError> {
+        let selection = ProgramSelection::of(rows.block, output_indices)?;
+        self.eval_program_selection(rows, &selection, point, out, context)
+    }
+
+    /// The outputs `selection` names, program by program, into `out`.
+    pub(super) fn eval_program_selection(
+        &self,
+        rows: SpecializedRows<'_>,
+        selection: &ProgramSelection,
+        point: RowEvalPoint<'_>,
+        out: &mut [f64],
+        context: RowEvalContext<'_>,
+    ) -> Result<(), RuntimeSolveError> {
         let SpecializedRows {
             block,
             cache,
             failed,
         } = rows;
-        let mut programs = BTreeMap::<usize, Vec<(usize, usize)>>::new();
-        for &output in output_indices {
-            let (program, offset) = block.row_output_position(output).ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "selected expression output {output} has no owning program"
-                ))
-            })?;
-            programs.entry(program).or_default().push((output, offset));
-        }
-        for (program, selected) in programs {
-            let mut values = Vec::new();
+        let mut values = Vec::new();
+        for (program, selected) in selection.groups.iter() {
+            let (program, selected) = (*program, &selected[..]);
             if self.eval_lifecycle_program_outputs(block, program, point, &mut values)? {
-                copy_compiled_program_outputs(&values, program, &selected, out)?;
+                copy_compiled_program_outputs(&values, program, selected, out)?;
                 continue;
             }
-            if self.try_compiled_program_outputs(cache, program, &selected, point, out)? {
+            if self.try_compiled_program_outputs(cache, program, selected, point, out)? {
                 continue;
             }
             failed.borrow_mut().remove(&program);
             self.compile_cached_row(rows, program);
-            if self.try_compiled_program_outputs(cache, program, &selected, point, out)? {
+            if self.try_compiled_program_outputs(cache, program, selected, point, out)? {
                 continue;
             }
-            let mut values = Vec::new();
             block.eval_row_outputs_unchecked_with_context(
                 program,
                 point.y,
@@ -231,7 +237,7 @@ impl ScalarExecutionView<'_> {
                 context,
                 &mut values,
             )?;
-            copy_interpreted_program_outputs(&values, program, &selected, out)?;
+            copy_interpreted_program_outputs(&values, program, selected, out)?;
             self.compile_cached_row(rows, program);
         }
         Ok(())
@@ -458,4 +464,63 @@ fn copy_compiled_program_outputs(
         *slot = value;
     }
     Ok(())
+}
+
+/// One program and its selected `(output, offset)` pairs.
+type ProgramGroup = (usize, Box<[(usize, usize)]>);
+
+/// Selected outputs of a scalar program block grouped by owning program, in
+/// ascending program order, each with its offset in the program's outputs:
+/// formed once for a fixed selection such as a root plan's.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ProgramSelection {
+    groups: Box<[ProgramGroup]>,
+}
+
+impl ProgramSelection {
+    pub(super) fn of(
+        block: &PreparedScalarProgramBlock,
+        output_indices: &[usize],
+    ) -> Result<Self, RuntimeSolveError> {
+        let mut programs = BTreeMap::<usize, Vec<(usize, usize)>>::new();
+        for &output in output_indices {
+            let (program, offset) = block.row_output_position(output).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "selected expression output {output} has no owning program"
+                ))
+            })?;
+            programs.entry(program).or_default().push((output, offset));
+        }
+        Ok(Self {
+            groups: programs
+                .into_iter()
+                .map(|(program, selected)| (program, selected.into_boxed_slice()))
+                .collect(),
+        })
+    }
+}
+
+impl ProgramSelection {
+    /// The selection of `groups`, already in ascending program order with
+    /// each output's offset in its program.
+    pub(super) fn from_groups(groups: Vec<(usize, Vec<(usize, usize)>)>) -> Self {
+        debug_assert!(groups.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        Self {
+            groups: groups
+                .into_iter()
+                .map(|(program, selected)| (program, selected.into_boxed_slice()))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl ProgramSelection {
+    /// Every selected output, in program order.
+    pub(super) fn outputs(&self) -> Vec<usize> {
+        self.groups
+            .iter()
+            .flat_map(|(_, selected)| selected.iter().map(|&(output, _)| output))
+            .collect()
+    }
 }

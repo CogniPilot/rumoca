@@ -325,7 +325,7 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
     }
 
     fn manifold_variable_scale(&self, y_index: usize) -> f64 {
-        self.runtime.model.solver_variable_scale(y_index)
+        self.runtime.solver_variable_scale(y_index)
     }
 }
 
@@ -735,23 +735,30 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         system: ScaledNewtonSystem<'_>,
     ) -> Option<DVector<f64>> {
         let block_index = self.block_indices.get(block_index).copied()?;
-        let layout = self
+        let structure = self
             .runtime
             .scalar
             .continuous_structural
             .algebraic_projection()
-            .get(block_index)?
-            .affine_elimination()?;
-        let cache = self
+            .get(block_index)?;
+        let mut cache = self
             .runtime
             .scalar
             .algebraic_newton_caches
-            .get(block_index)?;
-        let delta = crate::runtime::projection::scaled_newton_delta_with_tearing(
-            system,
-            &mut cache.borrow_mut(),
-            layout,
-        );
+            .get(block_index)?
+            .borrow_mut();
+        // The block's affine solve passes this structure's pattern, the one
+        // its issued torn system was admitted under.
+        let delta = if cache.has_issued_torn() {
+            debug_assert!(system.structure == Some(structure.pattern()));
+            crate::runtime::projection::scaled_newton_delta_issued_torn(system, &mut cache)
+        } else {
+            crate::runtime::projection::scaled_newton_delta_with_tearing(
+                system,
+                &mut cache,
+                structure.affine_elimination()?,
+            )
+        };
         if delta.is_none() {
             fallbacks::note_fallback(
                 ProjectionSite::Block(block_index),
@@ -767,6 +774,40 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     ) -> Option<&std::cell::RefCell<crate::runtime::projection::SparseNewtonCache>> {
         let index = self.block_indices.get(block_index).copied()?;
         self.runtime.scalar.algebraic_newton_caches.get(index)
+    }
+
+    fn eval_block_residual(
+        &self,
+        block_index: usize,
+        point: (&[f64], &[f64], f64),
+        out: &mut [f64],
+    ) -> bool {
+        self.block_kernels(block_index).is_some_and(|kernels| {
+            kernels.eval_residual(point, self.runtime.model.external_tables.as_slice(), out)
+        })
+    }
+
+    fn eval_block_jacobian_v(
+        &self,
+        block_index: usize,
+        point: (&[f64], &[f64], f64),
+        seed: &[f64],
+        out: &mut [f64],
+    ) -> bool {
+        // The kernels hold the rows' programs of the complete directional
+        // owner, the one a sensitivity seed projection evaluates per row.
+        matches!(
+            self.jacobian_v,
+            ProjectionJacobian::SolverYAndParameters(owner)
+                if std::ptr::eq(owner, &self.runtime.scalar.implicit_jacobian_v)
+        ) && self.block_kernels(block_index).is_some_and(|kernels| {
+            kernels.eval_jacobian_v(
+                point,
+                seed,
+                self.runtime.model.external_tables.as_slice(),
+                out,
+            )
+        })
     }
 
     fn implicit_row_static_gradient_parameters(&self, row_idx: usize) -> Option<&[usize]> {
@@ -1013,11 +1054,17 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     }
 
     fn variable_scale_for_y_index(&self, y_index: usize) -> f64 {
-        self.runtime.model.solver_variable_scale(y_index)
+        self.runtime.solver_variable_scale(y_index)
     }
 }
 
 impl RefreshProjectionModel<'_> {
+    /// The fused kernels of plan block `block_index`.
+    fn block_kernels(&self, block_index: usize) -> Option<&super::block_kernels::BlockKernels> {
+        let index = self.block_indices.get(block_index).copied()?;
+        self.runtime.scalar.block_kernels.get(index)?.as_deref()
+    }
+
     /// Debug-only strict-refinement guard: replay the sweep through the
     /// per-row reference path from the same entry point and require the same
     /// decline decision and, on completion, bit-identical unknowns and

@@ -345,7 +345,10 @@ impl CompleteExpression {
         tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let plan = source_bulk_plan(&self.source, coordinates, out.len())?;
+        // The per-program plan serves only the program-by-program paths; a
+        // native bulk call checks every coordinate against its compiled rows.
+        validate_runtime_output_len("selected bulk outputs", coordinates.len(), out.len())?;
+        let plan = || source_bulk_plan(&self.source, coordinates, out.len());
         let mut staged = self.bulk_scratch.borrow_mut();
         resize_runtime_values(&mut staged, out.len(), 0.0, "selected bulk transaction")?;
         let completed = match &self.execution {
@@ -363,7 +366,7 @@ impl CompleteExpression {
                 true
             }
             ExpressionExecution::Composite(code) => {
-                execute_bulk(plan, &mut staged, |index, values| {
+                execute_bulk(plan()?, &mut staged, |index, values| {
                     code.call_program_outputs(index, inputs.0, inputs.1, inputs.2, tables, values)
                 })?;
                 out.copy_from_slice(&staged);
@@ -371,7 +374,7 @@ impl CompleteExpression {
             }
         };
         if !completed {
-            execute_bulk(plan, &mut staged, |index, values| {
+            execute_bulk(plan()?, &mut staged, |index, values| {
                 self.call_program_outputs(index, inputs.0, inputs.1, inputs.2, tables, values)
             })?;
         }

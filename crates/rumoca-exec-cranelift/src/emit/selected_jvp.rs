@@ -26,7 +26,7 @@ impl CompiledJacobianRows {
             Some(inputs.seed),
         )?;
         reserve_native_outputs(out, row.plan.output_count())?;
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut staged = self.output_scratch.borrow_mut();
             resize_native_outputs(&mut staged, row.plan.output_count())?;
             self.call_jacobian_row(
@@ -89,7 +89,7 @@ impl CompiledJacobianRows {
             #[cfg(test)]
             external_tables,
         };
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut output = self.output_scratch.borrow_mut();
             let mut registers = self.regs_scratch.borrow_mut();
             let mut staged = self.transaction_scratch.borrow_mut();

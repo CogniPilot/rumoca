@@ -2,13 +2,23 @@
 
 const MARKER = '<!-- rumoca-msl-quality-summary -->';
 
-module.exports = async function upsertMslPrComment({ github, context, body }) {
+// `issueNumber` defaults to the triggering pull request; a `workflow_run`
+// publisher passes the number it resolved for the completed run's head.
+module.exports = async function upsertMslPrComment({
+  github,
+  context,
+  body,
+  issueNumber = context.payload.pull_request?.number,
+}) {
   if (!body.includes(MARKER)) {
     throw new Error(`Refusing to publish MSL PR comment: missing ${MARKER}`);
   }
+  if (!Number.isInteger(issueNumber)) {
+    throw new Error('Refusing to publish MSL PR comment: no pull request number');
+  }
 
   const { owner, repo } = context.repo;
-  const issue_number = context.payload.pull_request.number;
+  const issue_number = issueNumber;
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
     repo,

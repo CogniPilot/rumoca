@@ -42,7 +42,7 @@ impl CompiledResidualRows {
             #[cfg(test)]
             external_tables,
         };
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut staged = self.output_scratch.borrow_mut();
             resize_native_outputs(&mut staged, row.plan.output_count())?;
             self.call_selected_active(program, row, inputs, &mut staged)?;
@@ -85,7 +85,7 @@ impl CompiledResidualRows {
             #[cfg(test)]
             external_tables,
         };
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut output = self.output_scratch.borrow_mut();
             output.resize(count, 0.0);
             self.call_selected_active(program, row, inputs, &mut output)?;
@@ -162,7 +162,7 @@ impl CompiledResidualRows {
             #[cfg(test)]
             external_tables,
         };
-        with_active_external_tables(external_tables, || {
+        self.with_tables(external_tables, || {
             let mut output = self.output_scratch.borrow_mut();
             let mut staged = self.transaction_scratch.borrow_mut();
             resize_native_outputs(&mut staged, coordinates.len())?;

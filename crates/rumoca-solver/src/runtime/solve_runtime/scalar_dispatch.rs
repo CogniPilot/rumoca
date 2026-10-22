@@ -448,6 +448,16 @@ impl SolveRuntime {
             .eval_state_jacobian_v_ad_with_guess_into(lin, state, seed, solver_y_guess, out)
     }
 
+    /// The parameter-static state Jacobian products of this runtime, when its
+    /// derivative refresh and derivative programs carry the certificate.
+    pub(crate) fn state_jacobian_memo(&self) -> Option<&state_jacobian_memo::StateJacobianMemo> {
+        match &self.execution {
+            RuntimeExecutionInventory::Scalar(scalar) => scalar.state_jacobian_memo.as_deref(),
+            #[cfg(feature = "native-wasm")]
+            RuntimeExecutionInventory::Native(_) => None,
+        }
+    }
+
     pub(crate) fn eval_state_jacobian_v_at_settled_solver_y_into(
         &self,
         lin: AlgebraicLinearization<'_>,

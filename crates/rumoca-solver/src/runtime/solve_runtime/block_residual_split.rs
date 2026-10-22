@@ -100,8 +100,10 @@ fn count(update: impl FnOnce(&mut BlockResidualSplitCounts)) {
 /// lazily keeps its unsplit evaluation. With an execution `backend`, each
 /// block's parts are also compiled; a block whose compilation declines keeps
 /// the unsplit compiled programs.
+/// `splits` names the blocks whose residual passes read splits: the affine
+/// blocks without a fused residual entry.
 pub(super) fn block_residual_splits(
-    owners: &solve::ContinuousRefreshOwners,
+    splits: impl Fn(usize) -> bool,
     plan: &solve::AlgebraicProjectionPlan,
     structures: &solve::ContinuousStructuralArtifacts,
     implicit: ProgramAnalysis<'_>,
@@ -115,11 +117,11 @@ pub(super) fn block_residual_splits(
         .zip(structures.algebraic_projection())
         .enumerate()
         .map(|(index, (block, structure))| {
-            if block.rows.len() < 2 || !owners.algebraic_projection_block_is_affine(index) {
+            if block.rows.len() < 2 || !splits(index) {
                 return None;
             }
-            if let Some(splits) = shared.as_ref().and_then(|shared| shared.splits_of(block)) {
-                return splits;
+            if let Some(shared) = shared.as_ref().and_then(|shared| shared.splits_of(block)) {
+                return shared;
             }
             let splits = block_splits(block, structure, implicit, canonical)?;
             Some(Rc::new(prepared_block_splits(splits, implicit, backend)))

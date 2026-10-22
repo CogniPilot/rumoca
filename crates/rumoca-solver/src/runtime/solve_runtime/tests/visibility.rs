@@ -214,7 +214,7 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
         .as_ref()
         .expect("root condition plan should build");
 
-    assert_eq!(plan.evaluated_rows, vec![0, 2, 3, 4]);
+    assert_eq!(plan.evaluated.outputs(), vec![0, 2, 3, 4]);
     assert_eq!(plan.search_rows, vec![4]);
 
     let full = runtime
@@ -292,7 +292,7 @@ fn root_condition_plan_preserves_grouped_output_ownership() {
         .as_ref()
         .expect("grouped root condition plan should build");
 
-    assert_eq!(plan.evaluated_rows, vec![0, 1, 2, 3]);
+    assert_eq!(plan.evaluated.outputs(), vec![0, 1, 2, 3]);
     assert_eq!(plan.search_rows, vec![2, 3]);
     assert_eq!(
         runtime
@@ -587,7 +587,7 @@ fn root_condition_plan_neutralizes_parameter_static_algebraic_outputs() {
         .as_ref()
         .expect("root condition plan should build");
 
-    assert_eq!(plan.evaluated_rows, vec![0]);
+    assert_eq!(plan.evaluated.outputs(), vec![0]);
     assert!(plan.search_rows.is_empty());
 
     let full = runtime
@@ -614,7 +614,7 @@ fn root_condition_plan_keeps_state_dependent_algebraic_outputs_dynamic() {
         .as_ref()
         .expect("root condition plan should build");
 
-    assert_eq!(plan.evaluated_rows, vec![0]);
+    assert_eq!(plan.evaluated.outputs(), vec![0]);
     assert_eq!(plan.search_rows, vec![0]);
 
     let mut search = vec![0.0];
