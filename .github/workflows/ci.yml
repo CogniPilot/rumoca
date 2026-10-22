@@ -419,6 +419,13 @@ jobs:
           test -f "$BASH"
           printf 'BASH=%s\n' "$(cygpath -w "$BASH")" >> "$GITHUB_ENV"
 
+      # Reached only after required setup succeeds. Optional cache failures
+      # remain tolerated through their existing continue-on-error settings.
+      - name: Mark test prerequisites ready
+        id: test-prerequisites
+        shell: bash
+        run: echo "Test prerequisites ready"
+
       - name: Run example build smoke (Linux monitored)
         if: runner.os == 'Linux'
         shell: bash
@@ -444,10 +451,10 @@ jobs:
         run: cargo xtask verify examples
 
       # `!cancelled()` keeps the test step running when the example smoke step
-      # fails, so a smoke regression cannot hide test failures (the job still
-      # fails on the smoke step).
+      # fails, but only after setup succeeds; missing tools are not test failures.
+      # The job still fails on the smoke step.
       - name: Run workspace tests (Linux monitored)
-        if: runner.os == 'Linux' && !cancelled()
+        if: runner.os == 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -470,7 +477,7 @@ jobs:
           cargo xtask verify workspace
 
       - name: Prepare GNU static-PIE test executables (Linux)
-        if: runner.os == 'Linux' && !cancelled()
+        if: runner.os == 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         timeout-minutes: 20
         shell: bash
         run: |
@@ -481,7 +488,7 @@ jobs:
             "$RUNNER_TEMP/issue422-gnu-static-pie" prepare
 
       - name: Qualify GNU static-PIE memcmp and original U4 (Linux)
-        if: runner.os == 'Linux' && !cancelled()
+        if: runner.os == 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -500,7 +507,7 @@ jobs:
           retention-days: 7
 
       - name: Run heavy Solve counterexample regressions (Linux)
-        if: runner.os == 'Linux' && !cancelled()
+        if: runner.os == 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -508,7 +515,7 @@ jobs:
             --test suite_heavy_solve -- --nocapture
 
       - name: Run workspace tests
-        if: runner.os != 'Linux' && !cancelled()
+        if: runner.os != 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         run: cargo xtask verify workspace
 
       - name: Build all binaries

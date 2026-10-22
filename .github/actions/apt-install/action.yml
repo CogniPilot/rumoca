@@ -65,6 +65,8 @@ runs:
         fi
 
         bounded_apt() {
+          local started=$SECONDS status=0
+          echo "apt stage=$1 started (wall limit ${APT_TIMEOUT_SECONDS}s)"
           sudo env DEBIAN_FRONTEND=noninteractive \
             timeout --signal=TERM --kill-after=15s "${APT_TIMEOUT_SECONDS}s" \
             apt-get \
@@ -72,7 +74,12 @@ runs:
             -o Acquire::http::Timeout=20 \
             -o Acquire::https::Timeout=20 \
             -o DPkg::Lock::Timeout=60 \
-            "$@"
+            "$@" || status=$?
+          echo "apt stage=$1 exit=$status elapsed=$((SECONDS - started))s"
+          if (( status == 124 || status == 137 )); then
+            echo "::warning::apt $1 exceeded its wall-clock limit"
+          fi
+          return "$status"
         }
 
         # A timeout that lands during dpkg's configure phase leaves dpkg
