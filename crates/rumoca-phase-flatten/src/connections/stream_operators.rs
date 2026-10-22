@@ -509,6 +509,11 @@ impl StreamOperatorRewriter {
     }
 
     fn indexed_endpoint_matches(&self, stream: &VarName) -> Vec<(VarName, StreamEndpoint)> {
+        // A scalarized reference already selects its connector occurrence.
+        // Removing its indices would also admit the other array elements.
+        if let Some(endpoint) = self.endpoints.get(stream) {
+            return vec![(stream.clone(), endpoint.clone())];
+        }
         let normalized = normalized_path(&ComponentPath::from_flat_path(stream.as_str()));
         let mut matching = self
             .endpoints

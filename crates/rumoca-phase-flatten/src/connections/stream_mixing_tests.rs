@@ -979,4 +979,29 @@ fn symbolic_stream_index_inside_scalarized_parent_preserves_both_indices() {
         matches!(else_branch.as_ref(), rumoca_core::Expression::VarRef { name, .. }
         if name.as_str() == "cells[1].b[2].h_outflow")
     );
+fn concrete_indexed_stream_reference_selects_its_own_connection_set() {
+    for operator in ["inStream", "actualStream"] {
+        let mut model = flat::Model::new();
+        for port in ["a[1]", "a[2]", "b[1]", "b[2]"] {
+            add_port(&mut model, port, 1.0);
+        }
+        add_observation_equation(&mut model, stream_call(operator, "a[1].h_outflow"));
+        process(&mut model, &elementwise_array_stream_overlay())
+            .expect("an already selected element must use its exact connection set");
+        let observed = observed_expression(&model);
+        assert!(observed.contains_subexpression(|expression| matches!(
+            expression, rumoca_core::Expression::VarRef { name, .. }
+                if name.as_str() == "b[1].h_outflow"
+        )));
+        assert!(!observed.contains_subexpression(|expression| matches!(
+            expression, rumoca_core::Expression::VarRef { name, .. }
+                if name.as_str().contains("[2]")
+        )));
+        if operator == "actualStream" {
+            assert!(observed.contains_subexpression(|expression| matches!(
+                expression, rumoca_core::Expression::VarRef { name, .. }
+                    if name.as_str() == "a[1].m_flow"
+            )));
+        }
+    }
 }
