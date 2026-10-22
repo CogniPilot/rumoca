@@ -45,8 +45,8 @@ use rumoca_compile::codegen::{
     render_dae_template_with_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, Session, SessionConfig,
-    SourceRootKind, VariableRole,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, SemanticDiagnosticsMode,
+    Session, SessionConfig, SourceRootKind, VariableRole,
 };
 use rumoca_compile::parsing::{StoredDefinition, collect_compile_unit_source_files};
 use rumoca_compile::source_roots::{
@@ -773,25 +773,19 @@ fn loaded_source_root_document_uri(
 /// Print every warning-severity diagnostic the compiled model carries.
 ///
 /// A compile that succeeds still has things the language requires a tool to
-/// say — MLS 3.7 §12.3 deprecates an external function that declares no
+/// say: MLS 3.7 §12.3 deprecates an external function that declares no
 /// purity, and MLS 3.6 §12.3 stated the report as a requirement. Those
 /// diagnostics exist in the session, but until they are printed the only
 /// consumers are the editor and the API, so a `rumoca compile` run reports
 /// nothing and the deprecation reaches nobody. Warnings never change the exit
 /// status: they are reports, not rejections.
 ///
-/// Cost, measured and not yet paid down: this asks the session for the model's
-/// diagnostics, and that query re-walks the interface, body, and model stages
-/// behind their own caches, which the compile above did not fill in the same
-/// shape. On one MSL model (`…OpAmps.OpAmpCircuits.Add`, three runs each, same
-/// binary) the report adds 0.64 s to a plain compile (11.81 → 12.45 s), 0.52 s
-/// to `--emit flat-json` (11.90 → 12.42 s), and 2.10 s to `--emit dae-json`
-/// (11.48 → 13.58 s). Paying nothing needs either a stage-limited diagnostics
-/// query or warnings carried out of the compile that already ran, both of which
-/// are new session plumbing in `rumoca-compile`; that is filed rather than
-/// hidden here.
+/// The report is the model's target-scoped (save) diagnostics: they read the
+/// strict target resolution the compile retained and the stage queries it
+/// filled, so reporting resolves nothing again and covers exactly the classes
+/// the model reaches.
 fn report_compile_warnings(session: &mut Session, model_name: &str) {
-    let diagnostics = session.compile_model_diagnostics(model_name);
+    let diagnostics = session.semantic_diagnostics_query(model_name, SemanticDiagnosticsMode::Save);
     let source_map = diagnostics.source_map;
     for diagnostic in diagnostics
         .diagnostics

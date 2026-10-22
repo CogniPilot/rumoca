@@ -37,6 +37,20 @@ impl Session {
         Some(result)
     }
 
+    /// Retain a strict compilation's target resolution as the model's save
+    /// resolution proof, so the target-scoped diagnostics of that compilation
+    /// read the resolution it compiled instead of resolving the source set
+    /// again. A target taken from the Standard resolution is not a strict proof.
+    pub(in crate::session) fn retain_strict_target_proof(
+        &mut self,
+        model_name: &str,
+        target: &StrictTargetResolution,
+    ) {
+        if target.query_mode == ResolveBuildMode::StrictCompileRecovery {
+            self.insert_save_resolution_proof(model_name, target.clone());
+        }
+    }
+
     fn insert_save_resolution_proof(&mut self, model_name: &str, proof: StrictTargetResolution) {
         let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
         self.query_state

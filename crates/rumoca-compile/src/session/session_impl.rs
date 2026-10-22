@@ -1061,6 +1061,7 @@ impl Session {
                 let requested = requested_missing_result_message(model_name, &failure.failures);
                 format_strict_failure_summary(model_name, requested, &failure.failures, 8)
             })?;
+        self.retain_strict_target_proof(model_name, &target);
         let tree = target.resolved.inner();
         match self.flat_model_query_impl(tree, target.query_mode, model_name, false) {
             FlatModelOutcome::Success(result) => Ok(result.flat),
@@ -1307,6 +1308,7 @@ impl Session {
             }
         };
 
+        self.retain_strict_target_proof(model_name, &target);
         let tree = target.resolved.inner();
         let failures = Vec::new();
         let report = if use_compile_cache {
