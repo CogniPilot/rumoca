@@ -8,7 +8,7 @@ inputs:
   timeout-seconds:
     description: Wall-clock limit for each apt invocation
     required: false
-    default: '120'
+    default: '300'
 
 runs:
   using: composite
@@ -51,6 +51,19 @@ runs:
 
         echo "Missing apt packages: ${missing[*]}"
 
+        # Installing a -dev package can upgrade the runtime library it pins
+        # (libudev-dev pins libudev1), and with it systemd and udev, whose
+        # initramfs trigger adds a slow configure step. A hosted runner never
+        # boots its initramfs, so make the hook a documented no-op for the job.
+        initramfs_conf=/etc/initramfs-tools/update-initramfs.conf
+        if [[ -f "$initramfs_conf" ]]; then
+          if grep -q '^update_initramfs=' "$initramfs_conf"; then
+            sudo sed -i 's/^update_initramfs=.*/update_initramfs=no/' "$initramfs_conf"
+          else
+            echo 'update_initramfs=no' | sudo tee -a "$initramfs_conf" > /dev/null
+          fi
+        fi
+
         bounded_apt() {
           sudo env DEBIAN_FRONTEND=noninteractive \
             timeout --signal=TERM --kill-after=15s "${APT_TIMEOUT_SECONDS}s" \
@@ -62,6 +75,15 @@ runs:
             "$@"
         }
 
+        # A timeout that lands during dpkg's configure phase leaves dpkg
+        # interrupted, and apt then refuses every later install until it is
+        # completed. Finish any interrupted configuration before each retry.
+        recover_dpkg() {
+          sudo env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=15s "${APT_TIMEOUT_SECONDS}s" \
+            dpkg --configure -a || true
+        }
+
         # Hosted runners normally retain usable indexes. Avoid contacting every
         # configured mirror when those indexes can satisfy the install directly.
         if bounded_apt install -y --no-install-recommends "${missing[@]}"; then
@@ -70,6 +92,7 @@ runs:
 
         for attempt in 1 2; do
           echo "apt refresh/install attempt $attempt of 2"
+          recover_dpkg
           if bounded_apt update &&
             bounded_apt install -y --no-install-recommends "${missing[@]}"; then
             exit 0
@@ -78,6 +101,20 @@ runs:
             sleep 10
           fi
         done
+
+        # The hosted runners' mirror list (mirror+file:/etc/apt/apt-mirrors.txt,
+        # the Azure mirror first) intermittently serves a stale index or 404s a
+        # package that exists. Retry once against the canonical archive instead.
+        echo "apt refresh/install attempt 3 of 3: canonical archive"
+        recover_dpkg
+        if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+          printf 'http://archive.ubuntu.com/ubuntu/\tpriority:1\nhttp://security.ubuntu.com/ubuntu/\tpriority:2\n' |
+            sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+        fi
+        if bounded_apt update &&
+          bounded_apt install -y --no-install-recommends "${missing[@]}"; then
+          exit 0
+        fi
 
         echo "::error::apt package installation failed after bounded retries"
         exit 1
