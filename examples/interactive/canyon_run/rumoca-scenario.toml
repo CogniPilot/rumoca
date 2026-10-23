@@ -1,0 +1,111 @@
+source_roots = ["../../../target/cmm/CMM-a642c381"]
+
+[input]
+mode = "keyboard"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[model]
+file = "CanyonRun.mo"
+name = "CanyonRun.Run"
+
+[plot]
+views = []
+
+[reset]
+on_signal = "reset"
+reset_locals = true
+reset_session = true
+
+[rumoca]
+task = "simulate"
+version = "1"
+
+[signals.viewer]
+action = "model:action"
+airspeed = "model:airspeed"
+episode = "model:episode"
+episode_return = "model:episodeReturn"
+epsilon = "model:epsilon"
+frame = "runtime:frame_num"
+last_distance = "model:lastDistance"
+last_return = "model:lastReturn"
+px = "model:position[1]"
+py = "model:position[2]"
+pz = "model:position[3]"
+q1 = "model:quat[2]"
+q2 = "model:quat[3]"
+q3 = "model:quat[4]"
+t = "model:time"
+wall_ms = "runtime:wall_ms"
+
+[signals.viewer.q0]
+default = 1
+from = "model:quat[1]"
+
+[sim]
+dt = 0.01
+mode = "as_fast_as_possible"
+solver = "rk-like"
+
+[transport.http]
+asset_dir = "../../assets"
+port = 8080
+scene = "canyon_run_scene.js"
+
+[transport.websocket]
+port = 8081
+
+[viewer]
+mode = "external_web"
+status_title = "Canyon Run"
+
+[[viewer.controls.keyboard]]
+action = "Watch in real time / train fast"
+keys = "T"
+
+[[viewer.controls.keyboard]]
+action = "Show / hide sampled paths"
+keys = "P"
+
+[[viewer.controls.keyboard]]
+action = "Restart learning"
+keys = "R"
+
+[[viewer.controls.keyboard]]
+action = "Fullscreen"
+keys = "F"
+
+[[viewer.controls.keyboard]]
+action = "Camera"
+keys = "C"
+
+[[viewer.controls.keyboard]]
+action = "Quit"
+keys = "Q"
+
+[[viewer.frame]]
+name = "body"
+position = [
+    "px",
+    "py",
+    "pz",
+]
+quaternion = [
+    "q0",
+    "q1",
+    "q2",
+    "q3",
+]
+
+[viewer.hud]
+altitude = "pz"
+frame = "body"
+mode = "flight"
+speed = ["airspeed"]
