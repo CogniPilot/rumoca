@@ -20,7 +20,7 @@
 //! `λᵀ(J v) = (Jᵀλ)ᵀ v` must hold against the forward JVP for random `v`, `λ`.
 //!
 //! Scope: scalar ops, `LinearSolveComponent` (the linear-solve VJP — adjoint
-//! `Aᵀμ = λ·e_c`), and the single-lane tensor ops of [`tensor`] (loads, dot and
+//! `Aᵀμ = λ·e_c`), and the single-lane tensor ops of the `tensor` submodule (loads, dot and
 //! matrix products, elementwise binaries, transpose, fill, identity). Table
 //! lookups, random generators, runtime-indexed loads, and the remaining tensor
 //! and region ops are still deferred and raise an explicit error here rather
