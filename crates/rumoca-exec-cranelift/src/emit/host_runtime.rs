@@ -1,3 +1,4 @@
+mod matrix;
 mod memory;
 
 #[cfg(test)]
@@ -83,6 +84,10 @@ pub(super) fn register_math_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "rumoca_host_native",
         super::typed_program::rumoca_host_native as *const u8,
+    );
+    builder.symbol(
+        "rumoca_host_matmul_f64",
+        matrix::rumoca_host_matmul_f64 as *const u8,
     );
     builder.symbol("rumoca_host_sin", rumoca_host_sin as *const u8);
     builder.symbol("rumoca_host_cos", rumoca_host_cos as *const u8);
@@ -197,6 +202,9 @@ extern "C" fn rumoca_host_sin(x: f64) -> f64 {
 thread_local! {
     static SIN_CALLS: Cell<usize> = const { Cell::new(0) };
 }
+
+#[cfg(test)]
+pub(super) use matrix::take_matmul_calls;
 
 #[cfg(test)]
 pub(super) fn take_sin_calls() -> usize {
