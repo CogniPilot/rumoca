@@ -8,7 +8,7 @@ inputs:
   timeout-seconds:
     description: Wall-clock limit for each apt invocation
     required: false
-    default: '120'
+    default: '300'
 
 runs:
   using: composite
@@ -78,6 +78,19 @@ runs:
             sleep 10
           fi
         done
+
+        # The hosted runners' mirror list (mirror+file:/etc/apt/apt-mirrors.txt,
+        # the Azure mirror first) intermittently serves a stale index or 404s a
+        # package that exists. Retry once against the canonical archive instead.
+        echo "apt refresh/install attempt 3 of 3: canonical archive"
+        if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+          printf 'http://archive.ubuntu.com/ubuntu/\tpriority:1\nhttp://security.ubuntu.com/ubuntu/\tpriority:2\n' |
+            sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+        fi
+        if bounded_apt update &&
+          bounded_apt install -y --no-install-recommends "${missing[@]}"; then
+          exit 0
+        fi
 
         echo "::error::apt package installation failed after bounded retries"
         exit 1
