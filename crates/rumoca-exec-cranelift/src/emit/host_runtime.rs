@@ -34,14 +34,8 @@ pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
         (LibCall::Memcmp, memcmp as *const u8),
     ]
     .map(|(call, address)| (libcall_names(call), address));
-    // Complete preparation pays code-generation cost for every kernel before execution.
-    // Retain speed optimizations while using the latency-oriented register allocator.
     let mut builder = JITBuilder::with_flags(
-        &[
-            ("opt_level", "speed"),
-            ("regalloc_algorithm", "single_pass"),
-            ("enable_verifier", JIT_VERIFIER),
-        ],
+        &[("opt_level", "speed"), ("enable_verifier", JIT_VERIFIER)],
         libcall_names,
     )
     .map_err(to_backend_err)?;
