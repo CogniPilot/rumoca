@@ -226,3 +226,21 @@ fn targets_sharing_shared_flags_get_their_own_single_pass_counterparts() {
         assert_eq!(isa_flag_values(&*single_pass), isa_flag_values(target));
     }
 }
+
+#[test]
+fn shared_flag_changes_replace_the_cached_target_and_equal_flags_reuse_it() {
+    let targets = ["speed", "none", "speed"].map(|level| {
+        let builder = cranelift_jit::JITBuilder::with_flags(
+            &[("opt_level", level)],
+            cranelift_module::default_libcall_names(),
+        )
+        .unwrap();
+        OwnedJitModule::new(JITModule::new(builder))
+    });
+    for module in targets {
+        let first = single_pass_for(module.isa()).unwrap();
+        let second = single_pass_for(module.isa()).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(first.flags().opt_level(), module.isa().flags().opt_level());
+    }
+}

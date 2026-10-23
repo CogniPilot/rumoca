@@ -24,7 +24,7 @@ pub(super) const SINGLE_PASS_VALUE_LIMIT: usize = 512;
 thread_local! {
     /// The single-pass counterpart of a module target, with that target's
     /// shared flags as its key.
-    static SINGLE_PASS_TARGET: RefCell<Option<(String, OwnedTargetIsa)>> =
+    static SINGLE_PASS_TARGET: RefCell<Option<(settings::Flags, OwnedTargetIsa)>> =
         const { RefCell::new(None) };
 }
 
@@ -54,30 +54,33 @@ fn single_pass_target(target: &dyn TargetIsa) -> Result<OwnedTargetIsa, String> 
         .map_err(|error| error.to_string())
 }
 
-/// The configuration a single-pass counterpart must reproduce: the target
-/// triple and every shared and ISA-specific flag.
-fn target_key(target: &dyn TargetIsa) -> String {
-    let isa_flags = target
-        .isa_flags()
-        .iter()
-        .map(|value| format!("{}={}", value.name, value.value_string()))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{}|{}|{isa_flags}", target.triple(), target.flags())
+/// Compare ISA settings without allocating a formatted string per setting.
+fn same_isa_flags(left: &dyn TargetIsa, right: &dyn TargetIsa) -> bool {
+    let left = left.isa_flags();
+    let right = right.isa_flags();
+    left.len() == right.len()
+        && left.iter().zip(&right).all(|(left, right)| {
+            left.name == right.name
+                && left.kind() == right.kind()
+                && left.as_bool() == right.as_bool()
+                && left.as_num() == right.as_num()
+                && left.as_enum() == right.as_enum()
+        })
 }
 
 /// The cached single-pass counterpart of `target`.
 fn single_pass_for(target: &dyn TargetIsa) -> Result<OwnedTargetIsa, String> {
-    let key = target_key(target);
     SINGLE_PASS_TARGET.with(|cached| {
         let mut cached = cached.borrow_mut();
-        if let Some((cached_key, isa)) = cached.as_ref()
-            && *cached_key == key
+        if let Some((flags, isa)) = cached.as_ref()
+            && flags == target.flags()
+            && isa.triple() == target.triple()
+            && same_isa_flags(&**isa, target)
         {
             return Ok(isa.clone());
         }
         let isa = single_pass_target(target)?;
-        *cached = Some((key, isa.clone()));
+        *cached = Some((target.flags().clone(), isa.clone()));
         Ok(isa)
     })
 }
