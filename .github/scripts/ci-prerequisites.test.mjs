@@ -14,10 +14,15 @@ function runApt(statuses) {
     const commands = {
       'dpkg-query': 'exit 1',
       sleep: 'exit 0',
-      sudo: `printf '%s\\n' "$*" >> "$LOG"
+      sudo: `case " $* " in
+  *" apt-get "*) ;;
+  *) exit 0 ;;
+esac
+printf '%s\\n' "$*" >> "$LOG"
 n=$(cat "$COUNT" 2>/dev/null || echo 0)
 n=$((n + 1)); echo "$n" > "$COUNT"
-exit $(sed -n "\${n}p" "$STATUSES")`,
+status=$(sed -n "\${n}p" "$STATUSES")
+exit "\${status:-99}"`,
     };
     for (const [name, body] of Object.entries(commands)) {
       writeFileSync(join(dir, name), '#!/bin/bash\n' + body + '\n', { mode: 0o755 });
@@ -48,8 +53,8 @@ test('timeout is diagnosed and a successful refresh/install recovers', () => {
   assert.equal(r.commands.trim().split('\n').length, 3);
 });
 test('persistent install failure remains fatal after bounded retries', () => {
-  const r = runApt([100, 0, 100, 0, 100]);
+  const r = runApt([100, 0, 100, 0, 100, 0, 100]);
   assert.equal(r.status, 1);
-  assert.equal(r.commands.trim().split('\n').length, 5);
+  assert.equal(r.commands.trim().split('\n').length, 7);
   assert.match(r.stdout, /installation failed after bounded retries/);
 });
