@@ -177,7 +177,7 @@ This section is the inventory, and a row moves only with the evidence it names.
 
 | Item | Status |
 |---|---|
-| `advance_event_iteration_lanes` event-history advance | Proven by one Kani harness under a declared unwind bound |
+| `advance_event_iteration_ranges` event-history advance | Proven by one Kani harness over three one-cell typed ranges under unwind bound 16 |
 | Kani driver, manifest schema, pinned verifier, CI job | Scaffolding, exercised by that single manifest entry |
 | Loop-compaction store deletion | L1: differential corpus, no witness gating |
 | Liveness alternatives join | L1 over its whole bounded domain, exit sets included; a bounded L3 harness on it did not finish symbolic execution |

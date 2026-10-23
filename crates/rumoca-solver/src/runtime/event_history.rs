@@ -33,13 +33,14 @@ pub(crate) fn advance_event_iteration_ranges(
         return Err(());
     }
     let mut changed = false;
-    for range in ranges.iter_mut().filter(|range| range.fixed_point) {
-        changed |= range
-            .current
-            .iter()
-            .zip(range.pre.iter())
-            .any(|(current, pre)| current != pre);
-        range.pre.copy_from_slice(range.current);
+    for range in ranges.iter_mut() {
+        if !range.fixed_point {
+            continue;
+        }
+        for (current, pre) in range.current.iter().zip(range.pre.iter_mut()) {
+            changed |= current != pre;
+            *pre = *current;
+        }
     }
     Ok(changed)
 }
