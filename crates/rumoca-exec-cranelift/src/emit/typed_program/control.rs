@@ -293,11 +293,13 @@ impl ProgramLowerer<'_, '_> {
         let binder_cells = u32::try_from(domain.binders.len())
             .map_err(|_| CompileError::Backend("typed map binder count overflows".into()))?;
         let input_cells = checked_cells(capture_cells, binder_cells, "typed map input")?;
-        let capture_values = create_tape(self.builder, self.pointer_type, capture_cells)?;
         let input = create_tape(self.builder, self.pointer_type, input_cells)?;
         let output_cells = body.outputs()[0].scalar_count();
         let output = create_tape(self.builder, self.pointer_type, output_cells)?;
-        self.pack_registers(captures, capture_values)?;
+        // Captures are immutable and a region's input slots are read-only by
+        // construction (`SolveSlotAccess::ReadOnly`), so they are packed into
+        // the iteration frame once; only the binders change per iteration.
+        self.pack_registers(captures, input)?;
 
         let count = domain
             .scalar_count()
@@ -326,7 +328,6 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(iteration);
         self.builder.seal_block(iteration);
-        self.copy_register_types(captures, capture_values, 0, input, 0)?;
         self.store_domain_binders(domain, &extents, &strides, ordinal, input, capture_cells)?;
         self.lower_region(body, input, output)?;
         self.copy_map_output(output, &destination, ordinal, output_cells)?;
@@ -458,40 +459,6 @@ impl ProgramLowerer<'_, '_> {
                 cell,
                 destination.value_type.scalar_count(),
                 "typed register unpacking",
-            )?;
-        }
-        Ok(())
-    }
-
-    fn copy_register_types(
-        &mut self,
-        registers: &[solve::SolveRegisterId],
-        source_pointer: Value,
-        source_start: u32,
-        destination_pointer: Value,
-        destination_start: u32,
-    ) -> Result<(), CompileError> {
-        let mut source_cell = source_start;
-        let mut destination_cell = destination_start;
-        for register in registers {
-            let value_type = self.register(*register)?.value_type.clone();
-            let source = ValueLocation {
-                base: StorageBase::Tape,
-                cell: source_cell,
-                value_type: value_type.clone(),
-            };
-            let destination = ValueLocation {
-                base: StorageBase::Tape,
-                cell: destination_cell,
-                value_type: value_type.clone(),
-            };
-            self.copy_between_bases(&source, &destination, source_pointer, destination_pointer)?;
-            source_cell =
-                checked_cells(source_cell, value_type.scalar_count(), "typed tuple source")?;
-            destination_cell = checked_cells(
-                destination_cell,
-                value_type.scalar_count(),
-                "typed tuple destination",
             )?;
         }
         Ok(())
