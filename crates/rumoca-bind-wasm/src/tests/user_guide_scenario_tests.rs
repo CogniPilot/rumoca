@@ -64,7 +64,7 @@ fn user_guide_scenarios_compile_the_authored_models_with_pinned_libraries() {
         .into_iter()
         .filter_map(|fence| fence.scenario_path())
         .collect();
-    assert_eq!(paths.len(), 16, "review new guide scenarios explicitly");
+    assert_eq!(paths.len(), 17, "review new guide scenarios explicitly");
     let configs: Vec<_> = paths
         .into_iter()
         .map(|path| {

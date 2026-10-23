@@ -13,8 +13,8 @@ function argument(name, fallback) {
 }
 const base = argument("--base-url", "http://127.0.0.1:8731");
 const roster = JSON.parse(await readFile("crates/rumoca-bind-wasm/src/tests/fixtures/user_guide/linked-scenarios.json", "utf8"));
-assert.equal(roster.length, 16);
-assert.equal(new Set(roster).size, 16);
+assert.equal(roster.length, 17);
+assert.equal(new Set(roster).size, 17);
 const browser = await launchGuideBrowser(argument("--browser-binary"));
 try {
   const page = await browser.newPage();
