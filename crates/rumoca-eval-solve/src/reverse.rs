@@ -19,10 +19,12 @@
 //! The dot-product identity
 //! `λᵀ(J v) = (Jᵀλ)ᵀ v` must hold against the forward JVP for random `v`, `λ`.
 //!
-//! Scope: scalar ops plus `LinearSolveComponent` (the linear-solve VJP — adjoint
-//! `Aᵀμ = λ·e_c`). Table lookups, random generators, and runtime-indexed loads
-//! are still deferred and raise an explicit error here rather than silently
-//! returning a wrong gradient.
+//! Scope: scalar ops, `LinearSolveComponent` (the linear-solve VJP — adjoint
+//! `Aᵀμ = λ·e_c`), and the single-lane tensor ops of [`tensor`] (loads, dot and
+//! matrix products, elementwise binaries, transpose, fill, identity). Table
+//! lookups, random generators, runtime-indexed loads, and the remaining tensor
+//! and region ops are still deferred and raise an explicit error here rather
+//! than silently returning a wrong gradient.
 //!
 //! The reverse-sweep types are `pub` only so that
 //! `rumoca_solver::runtime::solve_runtime` (the runtime state machine that owns
@@ -74,6 +76,8 @@
 //! kernel's block Jacobians at the same kinks.
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp};
+
+mod tensor;
 
 use crate::{
     EvalSolveError, RowEvalContext, RowInputRequirements, eval_binary, eval_compare, eval_unary,
@@ -190,7 +194,15 @@ pub fn reverse_scalar_row_y_gradient(
     let Some(output_source) = output_sources.next() else {
         return Ok(false);
     };
-    if output_sources.next().is_some() || row.iter().any(|op| !reverse_row_op_supported(op)) {
+    // A range stores further outputs, so the row has more than one and the
+    // single-output gradient does not apply to it.
+    let stores_a_range = row
+        .iter()
+        .any(|op| matches!(op, LinearOp::StoreOutputRange { .. }));
+    if output_sources.next().is_some()
+        || stores_a_range
+        || row.iter().any(|op| !reverse_row_op_supported(op))
+    {
         return Ok(false);
     }
 
@@ -238,7 +250,8 @@ pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
             | LinearOp::Compare { .. }
             | LinearOp::Select { .. }
             | LinearOp::StoreOutput { .. }
-    )
+            | LinearOp::StoreOutputRange { .. }
+    ) || tensor::supported(op)
 }
 
 /// Seed the row's `StoreOutput` register adjoints with the matching output
@@ -253,13 +266,29 @@ fn seed_row_output_adjoints(
     adj: &mut [f64],
 ) -> usize {
     for op in row {
-        if let LinearOp::StoreOutput { src } = *op {
-            // `ordinal` and the dense output slot are in bounds by block invariant
-            // (one `output_indices` entry per `StoreOutput`, values < output_count)
-            // and the caller's `output_cotangents` length is validated up front.
-            let dense = block.output_indices()[ordinal];
-            add_adj(adj, src, output_cotangents[dense]);
-            ordinal += 1;
+        // `ordinal` and the dense output slot are in bounds by block invariant
+        // (one `output_indices` entry per stored scalar, values < output_count)
+        // and the caller's `output_cotangents` length is validated up front.
+        match *op {
+            LinearOp::StoreOutput { src } => {
+                let dense = block.output_indices()[ordinal];
+                add_adj(adj, src, output_cotangents[dense]);
+                ordinal += 1;
+            }
+            // A range stores `count` consecutive outputs, `start + k * stride`,
+            // in the order the canonical evaluator's sink receives them.
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => {
+                for k in 0..count {
+                    let dense = block.output_indices()[ordinal];
+                    add_adj(adj, start + (k * stride) as Reg, output_cotangents[dense]);
+                    ordinal += 1;
+                }
+            }
+            _ => {}
         }
     }
     ordinal
@@ -330,7 +359,8 @@ fn forward_row_tape(
                 };
                 set(regs, dst, value);
             }
-            LinearOp::StoreOutput { .. } => {}
+            LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. } => {}
+            ref op if tensor::supported(op) => tensor::forward(op, inputs, regs)?,
             ref other => return Err(unsupported_reverse_op(other)),
         }
     }
@@ -356,7 +386,7 @@ fn reverse_row_adjoints(
     for op in row.iter().rev() {
         match *op {
             // No destination register: nothing to consume.
-            LinearOp::StoreOutput { .. } => {}
+            LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. } => {}
             // Destinations whose adjoint terminates: constants and time carry no
             // input dependence; comparisons are piecewise-constant (zero
             // derivative). Consume the adjoint without redistributing it.
@@ -442,6 +472,7 @@ fn reverse_row_adjoints(
                     },
                 )?;
             }
+            ref op if tensor::supported(op) => tensor::reverse(op, regs, adj, untaken, cot),
             ref other => return Err(unsupported_reverse_op(other)),
         }
     }

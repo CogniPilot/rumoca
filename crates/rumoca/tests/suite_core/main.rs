@@ -351,6 +351,7 @@ mod tiered_models;
 mod time_event_when_activation;
 mod top_level_package_constant_dimensions;
 mod torn_square_root_characteristic;
+mod trajectory_adjoint_tensor_test;
 mod trajectory_sensitivity_test;
 mod translation_file_reads;
 mod trial_residual_scale;

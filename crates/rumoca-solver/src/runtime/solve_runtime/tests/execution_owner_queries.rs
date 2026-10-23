@@ -239,10 +239,8 @@ fn owner_analysis_retains_exact_tensor_reads_and_assignment_shape() {
     );
     assert_eq!(facts.nonfinite_y_reads(1).unwrap().count(), 0);
     assert!(facts.nonfinite_y_reads(2).is_none());
-    let kinds = facts
-        .reverse_row_unsupported_op_kinds(0)
-        .collect::<Vec<_>>();
-    assert!(kinds.contains(&"TensorLoad"));
+    // A single-lane tensor load and an output range both have reverse rules.
+    assert!(facts.reverse_row_unsupported_op_kinds(0).next().is_none());
     assert!(facts.reverse_row_unsupported_op_kinds(1).next().is_none());
     assert!(facts.reverse_row_unsupported_op_kinds(2).next().is_none());
 }
