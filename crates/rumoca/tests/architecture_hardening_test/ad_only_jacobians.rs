@@ -20,6 +20,10 @@ use crate::architecture_hardening_support::workspace_root;
 /// each may name one. Paths are relative to the workspace root.
 const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
     (
+        "crates/rumoca-eval-solve/src/reverse/tensor/tests.rs",
+        "tensor reverse gradients against independent primal differences",
+    ),
+    (
         "crates/rumoca-eval-solve/src/typed_program/tests/aggregate_logarithms.rs",
         "aggregate logarithm JVPs against independent primal differences",
     ),
