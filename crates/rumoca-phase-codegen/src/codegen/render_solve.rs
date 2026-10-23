@@ -883,9 +883,10 @@ fn render_solve_op_typed(
             for row in 0..*rows {
                 for column in 0..*columns {
                     let output = (row * *columns + column) * *lanes;
-                    let mut primal = dialect.format_const("0.0".to_string());
-                    let mut tangents =
-                        vec![dialect.format_const("0.0".to_string()); lanes.saturating_sub(1)];
+                    // The first term is its own sum, as for DotProduct; an
+                    // empty dot is 0.0.
+                    let mut primal = None;
+                    let mut tangents = vec![None; lanes.saturating_sub(1)];
                     for term in 0..*inner {
                         let lhs = (row * *inner + term) * *lanes;
                         let rhs = (term * *columns + column) * *lanes;
@@ -903,11 +904,12 @@ fn render_solve_op_typed(
                                 "matrix-multiply rhs register",
                             )?,
                         )?;
-                        primal = dialect.render_binary(
-                            "Add",
-                            primal,
-                            dialect.render_binary("Mul", lhs_re.clone(), rhs_re.clone())?,
-                        )?;
+                        let product =
+                            dialect.render_binary("Mul", lhs_re.clone(), rhs_re.clone())?;
+                        primal = Some(match primal {
+                            Some(sum) => dialect.render_binary("Add", sum, product)?,
+                            None => product,
+                        });
                         for (lane, tangent) in tangents.iter_mut().enumerate() {
                             let lane = lane as solve::Reg + 1;
                             let lhs_du = solve_reg(
@@ -927,9 +929,14 @@ fn render_solve_op_typed(
                             let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
                             let rhs_term = dialect.render_binary("Mul", lhs_re.clone(), rhs_du)?;
                             let term = dialect.render_binary("Add", lhs_term, rhs_term)?;
-                            *tangent = dialect.render_binary("Add", tangent.clone(), term)?;
+                            *tangent = Some(match tangent.take() {
+                                Some(sum) => dialect.render_binary("Add", sum, term)?,
+                                None => term,
+                            });
                         }
                     }
+                    let zero = || dialect.format_const("0.0".to_string());
+                    let primal = primal.unwrap_or_else(zero);
                     store_solve_reg(
                         regs,
                         solve_reg_index(
@@ -939,6 +946,7 @@ fn render_solve_op_typed(
                         primal,
                     )?;
                     for (lane, tangent) in tangents.into_iter().enumerate() {
+                        let tangent = tangent.unwrap_or_else(zero);
                         store_solve_reg(
                             regs,
                             solve_reg_index(

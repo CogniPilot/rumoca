@@ -81,10 +81,38 @@ impl BodyEmitter<'_> {
         let cols = i32::try_from(columns).map_err(|_| "native matrix columns exceed i32")?;
         let width = i32::try_from(inner).map_err(|_| "native matrix inner extent exceeds i32")?;
         self.loop_start(arena.counter, count)?;
-        self.push(Instruction::F64Const(0.0.into()));
-        self.push(Instruction::LocalSet(LOCAL_BASE + 1));
-        self.loop_start(arena.inner_counter, inner)?;
+        // The first term is its own sum; an empty dot is +0.0.
+        if inner == 0 {
+            self.push(Instruction::F64Const(0.0.into()));
+            self.push(Instruction::LocalSet(LOCAL_BASE + 1));
+        } else {
+            self.push(Instruction::I32Const(0));
+            self.push(Instruction::LocalSet(arena.inner_counter));
+            self.arena_matrix_term(lhs_start, rhs_start, cols, width)?;
+            self.push(Instruction::LocalSet(LOCAL_BASE + 1));
+            self.loop_start_from(arena.inner_counter, 1, inner)?;
+            self.push(Instruction::LocalGet(LOCAL_BASE + 1));
+            self.arena_matrix_term(lhs_start, rhs_start, cols, width)?;
+            self.push(Instruction::F64Add);
+            self.push(Instruction::LocalSet(LOCAL_BASE + 1));
+            self.loop_end(arena.inner_counter);
+        }
+        self.push_arena_address(dst_start, Some(arena.counter), 1)?;
         self.push(Instruction::LocalGet(LOCAL_BASE + 1));
+        self.push(Instruction::F64Store(memarg()));
+        self.loop_end(arena.counter);
+        Ok(())
+    }
+
+    /// `lhs[row, k] · rhs[k, column]` for the arena counters' output and term.
+    fn arena_matrix_term(
+        &mut self,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        cols: i32,
+        width: i32,
+    ) -> Result<(), String> {
+        let arena = self.arena_plan()?;
         self.push(Instruction::LocalGet(arena.counter));
         self.push(Instruction::I32Const(cols));
         self.push(Instruction::I32DivU);
@@ -104,13 +132,6 @@ impl BodyEmitter<'_> {
         self.push_arena_index(rhs_start)?;
         self.push(Instruction::F64Load(memarg()));
         self.push(Instruction::F64Mul);
-        self.push(Instruction::F64Add);
-        self.push(Instruction::LocalSet(LOCAL_BASE + 1));
-        self.loop_end(arena.inner_counter);
-        self.push_arena_address(dst_start, Some(arena.counter), 1)?;
-        self.push(Instruction::LocalGet(LOCAL_BASE + 1));
-        self.push(Instruction::F64Store(memarg()));
-        self.loop_end(arena.counter);
         Ok(())
     }
 

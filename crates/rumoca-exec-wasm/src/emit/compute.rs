@@ -189,7 +189,12 @@ impl BodyEmitter<'_> {
         self.loop_start_from(counter, 0, count)
     }
 
-    fn loop_start_from(&mut self, counter: u32, start: i32, count: usize) -> Result<(), String> {
+    pub(in crate::emit) fn loop_start_from(
+        &mut self,
+        counter: u32,
+        start: i32,
+        count: usize,
+    ) -> Result<(), String> {
         let count = i32::try_from(count).map_err(|_| "WASM loop extent exceeds i32")?;
         self.push(Instruction::I32Const(start));
         self.push(Instruction::LocalSet(counter));

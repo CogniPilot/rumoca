@@ -170,3 +170,57 @@ fn native_tensor_staging_copy_operations_reuse_storage_and_leave_disjoint_destin
         );
     }
 }
+
+#[test]
+fn native_matrix_product_starts_each_output_from_its_first_term() {
+    // [-1 -1 -1] * [0; 0; 0]: every primal product is -0.0, so the dot is
+    // -0.0 as in the scalar expansion; a +0.0 term makes it +0.0.
+    let primal = [-1.0, -1.0, -1.0, 0.0, 0.0, 0.0];
+    let read = |cells: &[f64]| {
+        let cells = cells.to_vec();
+        move |reg: Reg| Ok::<_, EvalSolveError>(cells[reg as usize])
+    };
+    let matrix = |lanes: usize| LinearOp::MatrixMultiply {
+        dst_start: 0,
+        lhs_start: 0,
+        rhs_start: (3 * lanes) as Reg,
+        rows: 1,
+        inner: 3,
+        columns: 1,
+        lanes,
+    };
+    let value = value_at(&matrix(1), &mut read(&primal), 0).unwrap();
+    assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+    let mixed = [-1.0, -1.0, 1.0, 0.0, 0.0, 0.0];
+    let value = value_at(&matrix(1), &mut read(&mixed), 0).unwrap();
+    assert_eq!(value.to_bits(), 0.0f64.to_bits());
+
+    // Dual lanes `(re, du)`: with lhs (-1, -1) and rhs (0, 0) each tangent
+    // term is -0.0 + -0.0, so the tangent is -0.0 as well.
+    let dual = [
+        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ];
+    for lane in 0..2 {
+        let value = value_at(&matrix(2), &mut read(&dual), lane).unwrap();
+        assert_eq!(value.to_bits(), (-0.0f64).to_bits(), "lane {lane}");
+    }
+
+    // Checked execution reaches the same arithmetic.
+    let block = checked(&primal, matrix(1));
+    let mut regs = primal.to_vec();
+    eval(&mut regs, &mut Vec::new(), tensor_operation(&block)).unwrap();
+    assert_eq!(regs[0].to_bits(), (-0.0f64).to_bits());
+
+    // An empty dot has no first term and stays +0.0.
+    let empty = LinearOp::MatrixMultiply {
+        dst_start: 0,
+        lhs_start: 0,
+        rhs_start: 0,
+        rows: 1,
+        inner: 0,
+        columns: 1,
+        lanes: 1,
+    };
+    let value = value_at(&empty, &mut read(&[-0.0]), 0).unwrap();
+    assert_eq!(value.to_bits(), 0.0f64.to_bits());
+}

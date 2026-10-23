@@ -1,8 +1,9 @@
 //! Host kernel for dense `Real` (binary64) matrix products called from JIT code.
 //!
-//! Generated scalar code forms each output as `((0 + a[i,0]·b[0,j]) + a[i,1]·b[1,j]) + …`
-//! with separate multiplies and adds. This kernel keeps exactly that sequence
-//! per output (initialized to `+0.0`, `k` ascending, no fused multiply-add), so
+//! Generated scalar code forms each output as `(a[i,0]·b[0,j] + a[i,1]·b[1,j]) + …`
+//! with separate multiplies and adds: the first product is its own sum, so an
+//! all `-0.0` dot keeps its sign, and an empty dot is `+0.0`. This kernel keeps
+//! exactly that sequence per output (`k` ascending, no fused multiply-add), so
 //! its results are bit-identical to the generated loop. Only the loop order
 //! changes: `i`, then `k`, then a contiguous sweep over `j`, which reads both
 //! operands along rows and lets the compiler vectorize the inner sweep.
@@ -27,7 +28,22 @@ pub(super) unsafe extern "C" fn rumoca_host_matmul_f64(
 ) {
     #[cfg(test)]
     MATMUL_CALLS.with(|calls| calls.set(calls.get() + 1));
-    let (rows, inner, columns) = (rows as usize, inner as usize, columns as usize);
+    let shape = (rows as usize, inner as usize, columns as usize);
+    // SAFETY: forwarded from this function's contract.
+    unsafe { multiply_cells(dst, lhs, rhs, shape) };
+}
+
+/// The body of [`rumoca_host_matmul_f64`], shared with the transposed entry.
+///
+/// # Safety
+///
+/// As [`rumoca_host_matmul_f64`].
+unsafe fn multiply_cells(
+    dst: *mut f64,
+    lhs: *const f64,
+    rhs: *const f64,
+    (rows, inner, columns): (usize, usize, usize),
+) {
     let (lhs_len, rhs_len, dst_len) = (rows * inner, inner * columns, rows * columns);
     let overlaps = |start: *const f64, len: usize| {
         let (a, b) = (dst as usize, start as usize);
@@ -162,6 +178,8 @@ pub(super) unsafe extern "C" fn rumoca_host_matmul_t_f64(
     columns: u64,
     transposed: u64,
 ) {
+    #[cfg(test)]
+    MATMUL_CALLS.with(|calls| calls.set(calls.get() + 1));
     let (r, i, c) = (rows as usize, inner as usize, columns as usize);
     #[cfg(target_arch = "x86_64")]
     {
@@ -232,7 +250,7 @@ pub(super) unsafe extern "C" fn rumoca_host_matmul_t_f64(
         rhs
     };
     // SAFETY: both operands now address their untransposed extents.
-    unsafe { rumoca_host_matmul_f64(dst, lhs, rhs, rows, inner, columns) };
+    unsafe { multiply_cells(dst, lhs, rhs, (r, i, c)) };
 }
 
 #[cfg(test)]
@@ -240,7 +258,7 @@ thread_local! {
     static MATMUL_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Calls of the kernel on this thread since the last take: an invocation
+/// Calls of either kernel entry on this thread since the last take: an invocation
 /// witness the scalar loop cannot produce.
 #[cfg(test)]
 pub(in crate::emit) fn take_matmul_calls() -> usize {
@@ -278,24 +296,44 @@ fn multiply_portable(
             let aik = a[i * inner + k];
             let b_row = &b[k * columns..(k + 1) * columns];
             for (cij, bkj) in out.iter_mut().zip(b_row) {
-                *cij += aik * *bkj;
+                *cij = accumulate(*cij, aik * *bkj, k == 0);
             }
         }
     }
 }
 
-/// Register-tiled AVX2 form. Each output still starts at `+0.0` and adds its
-/// `k` terms in ascending order with separate multiplies and adds, so the
-/// tiling changes which outputs are formed together, never the per-output
-/// sequence: the results are bit-identical to [`multiply_portable`].
+/// `sum + product`, except that the first term is its own sum.
+#[inline(always)]
+fn accumulate(sum: f64, product: f64, first: bool) -> f64 {
+    if first { product } else { sum + product }
+}
+
+/// Register-tiled AVX2 form. Each output still starts from its first product
+/// and adds its later `k` terms in ascending order with separate multiplies
+/// and adds, so the tiling changes which outputs are formed together, never
+/// the per-output sequence: the results are bit-identical to
+/// [`multiply_portable`].
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
+    use super::accumulate;
     use std::arch::x86_64::*;
 
     /// Rows formed together in a wide tile.
     const MR: usize = 4;
     /// Columns formed together in a wide tile: two 4-lane vectors.
     const NR: usize = 8;
+
+    /// Lane-wise [`accumulate`]: `sum + product`, or `product` for the first
+    /// term. The callers' `k == 0` tests peel out of their loops.
+    #[target_feature(enable = "avx2")]
+    #[inline]
+    fn accumulate_lanes(sum: __m256d, product: __m256d, first: bool) -> __m256d {
+        if first {
+            product
+        } else {
+            _mm256_add_pd(sum, product)
+        }
+    }
 
     /// # Safety
     ///
@@ -472,8 +510,8 @@ mod avx2 {
                 let b_hi = _mm256_loadu_pd(b_row.add(4));
                 for r in 0..MR {
                     let aik = _mm256_set1_pd(*t_ptr.add(k * MR + r));
-                    lo[r] = _mm256_add_pd(lo[r], _mm256_mul_pd(aik, b_lo));
-                    hi[r] = _mm256_add_pd(hi[r], _mm256_mul_pd(aik, b_hi));
+                    lo[r] = accumulate_lanes(lo[r], _mm256_mul_pd(aik, b_lo), k == 0);
+                    hi[r] = accumulate_lanes(hi[r], _mm256_mul_pd(aik, b_hi), k == 0);
                 }
             }
             let c_ptr = c.as_mut_ptr();
@@ -509,8 +547,9 @@ mod avx2 {
     }
 
     /// Each output row of a product with few rows, as `i`, `k`, then a
-    /// vector sweep over `j`: every output still starts at `+0.0` and adds
-    /// its terms in ascending `k` with separate multiplies and adds.
+    /// vector sweep over `j`: every output still starts from its first
+    /// product and adds the later terms in ascending `k` with separate
+    /// multiplies and adds; an empty dot is `+0.0`.
     ///
     /// # Safety
     ///
@@ -538,14 +577,15 @@ mod avx2 {
                     let lanes = _mm256_set1_pd(aik);
                     let row = b.as_ptr().add(k * columns);
                     for v in 0..vectors {
-                        let sum = _mm256_add_pd(
+                        let sum = accumulate_lanes(
                             _mm256_loadu_pd(out.add(4 * v)),
                             _mm256_mul_pd(lanes, _mm256_loadu_pd(row.add(4 * v))),
+                            k == 0,
                         );
                         _mm256_storeu_pd(out.add(4 * v), sum);
                     }
                     for j in 4 * vectors..columns {
-                        *out.add(j) += aik * *row.add(j);
+                        *out.add(j) = accumulate(*out.add(j), aik * *row.add(j), k == 0);
                     }
                 }
             }
@@ -555,7 +595,8 @@ mod avx2 {
     /// A product whose left operand is stored transposed (`inner × rows`),
     /// with few columns: for each `k`, the stored row is a contiguous column
     /// of the left operand, scaled into each output column held contiguously.
-    /// Each output adds its terms from `+0.0` in ascending `k`.
+    /// Each output starts from its first product and adds the later terms in
+    /// ascending `k`.
     ///
     /// # Safety
     ///
@@ -580,14 +621,15 @@ mod avx2 {
                     let lanes = _mm256_set1_pd(bkj);
                     let out = accumulators.as_mut_ptr().add(j * rows);
                     for v in 0..vectors {
-                        let sum = _mm256_add_pd(
+                        let sum = accumulate_lanes(
                             _mm256_loadu_pd(out.add(4 * v)),
                             _mm256_mul_pd(_mm256_loadu_pd(column.add(4 * v)), lanes),
+                            k == 0,
                         );
                         _mm256_storeu_pd(out.add(4 * v), sum);
                     }
                     for i in 4 * vectors..rows {
-                        *out.add(i) += *column.add(i) * bkj;
+                        *out.add(i) = accumulate(*out.add(i), *column.add(i) * bkj, k == 0);
                     }
                 }
             }
@@ -624,7 +666,7 @@ mod avx2 {
                 let b_row = _mm256_loadu_pd(b_ptr.add(k * columns + j));
                 for (r, sum) in acc.iter_mut().enumerate() {
                     let aik = _mm256_set1_pd(*a_ptr.add((i + r) * inner + k));
-                    *sum = _mm256_add_pd(*sum, _mm256_mul_pd(aik, b_row));
+                    *sum = accumulate_lanes(*sum, _mm256_mul_pd(aik, b_row), k == 0);
                 }
             }
             let c_ptr = c.as_mut_ptr();
@@ -662,8 +704,8 @@ mod avx2 {
                 let b_hi = _mm256_loadu_pd(b_row.add(4));
                 for r in 0..R {
                     let aik = _mm256_set1_pd(*a_ptr.add((i + r) * inner + k));
-                    lo[r] = _mm256_add_pd(lo[r], _mm256_mul_pd(aik, b_lo));
-                    hi[r] = _mm256_add_pd(hi[r], _mm256_mul_pd(aik, b_hi));
+                    lo[r] = accumulate_lanes(lo[r], _mm256_mul_pd(aik, b_lo), k == 0);
+                    hi[r] = accumulate_lanes(hi[r], _mm256_mul_pd(aik, b_hi), k == 0);
                 }
             }
             let c_ptr = c.as_mut_ptr();
@@ -705,7 +747,7 @@ mod avx2 {
                             *a_ptr.add(i * inner + k),
                         );
                         let bkj = _mm256_set1_pd(*b.as_ptr().add(k * columns + j));
-                        acc = _mm256_add_pd(acc, _mm256_mul_pd(col, bkj));
+                        acc = accumulate_lanes(acc, _mm256_mul_pd(col, bkj), k == 0);
                     }
                     let mut lanes = [0.0f64; 4];
                     _mm256_storeu_pd(lanes.as_mut_ptr(), acc);
@@ -742,7 +784,7 @@ mod avx2 {
                 let term = |k: usize| unsafe {
                     *a.get_unchecked(r * inner + k) * *b.get_unchecked(k * columns + j)
                 };
-                let sum = (0..inner).fold(0.0, |sum, k| sum + term(k));
+                let sum = (0..inner).fold(0.0, |sum, k| accumulate(sum, term(k), k == 0));
                 // SAFETY: inside the block per the contract.
                 unsafe { *c.get_unchecked_mut(r * columns + j) = sum };
             }
@@ -754,12 +796,16 @@ mod avx2 {
 mod tests {
     use super::*;
 
-    /// The generated loop's order: each output from `+0.0`, `k` ascending.
+    /// The generated loop's order: each output from its first product, `k`
+    /// ascending; an empty dot is `+0.0`.
     fn reference(a: &[f64], b: &[f64], (rows, inner, columns): (usize, usize, usize)) -> Vec<f64> {
         (0..rows * columns)
             .map(|output| {
                 let (i, j) = (output / columns, output % columns);
-                (0..inner).fold(0.0, |sum, k| sum + a[i * inner + k] * b[k * columns + j])
+                (0..inner)
+                    .map(|k| a[i * inner + k] * b[k * columns + j])
+                    .reduce(|sum, term| sum + term)
+                    .unwrap_or(0.0)
             })
             .collect()
     }
@@ -1051,6 +1097,110 @@ mod tests {
                     "{shape:?} vs dispatch"
                 );
             }
+        }
+    }
+
+    /// Zeros of both signs and nonzero terms: rows `i % 3 == 0` of `a` are
+    /// all `-1.0`, and columns `j % 3 == 0` of `b` all `+0.0`, so those
+    /// outputs are all `-0.0` dots; the rest mix signed zeros and values.
+    fn signed_zero_operands(rows: usize, inner: usize, columns: usize) -> (Vec<f64>, Vec<f64>) {
+        let a = (0..rows * inner)
+            .map(|cell| match ((cell / inner.max(1)) % 3, cell % 2) {
+                (0, _) => -1.0,
+                (1, 0) => -0.0,
+                (1, _) => 0.0,
+                _ => (cell as f64 * 0.37).sin(),
+            })
+            .collect();
+        let b = (0..inner * columns)
+            .map(|cell| match ((cell % columns.max(1)) % 3, cell % 2) {
+                (0, _) => 0.0,
+                (1, _) => -0.0,
+                (_, 0) => -2.5,
+                _ => 0.0,
+            })
+            .collect();
+        (a, b)
+    }
+
+    #[test]
+    fn every_path_starts_each_output_from_its_first_product() {
+        // Every tile path, remainder, transposed entry and overlap, with
+        // `-0.0` dots, mixed signed zeros, and empty dots that stay `+0.0`.
+        for shape in [
+            (4, 64, 8),
+            (8, 16, 16),
+            (12, 7, 24),
+            (4, 3, 4),
+            (128, 64, 4),
+            (6, 9, 12),
+            (3, 64, 128),
+            (1, 64, 128),
+            (2, 5, 7),
+            (64, 128, 2),
+            (9, 5, 13),
+            (5, 7, 3),
+            (8, 9, 10),
+            (1, 1, 1),
+            (5, 0, 9),
+            (8, 0, 16),
+        ] {
+            let (rows, inner, columns) = shape;
+            let (a, b) = signed_zero_operands(rows, inner, columns);
+            let want = reference(&a, &b, shape);
+            if inner == 0 {
+                assert!(want.iter().all(|x| x.to_bits() == 0), "{shape:?}");
+            } else {
+                assert_eq!(want[0].to_bits(), (-0.0f64).to_bits(), "{shape:?}");
+            }
+            let mut c = vec![f64::NAN; rows * columns];
+            // SAFETY: each buffer holds exactly the stated extents.
+            unsafe {
+                rumoca_host_matmul_f64(
+                    c.as_mut_ptr(),
+                    a.as_ptr(),
+                    b.as_ptr(),
+                    rows as u64,
+                    inner as u64,
+                    columns as u64,
+                );
+            }
+            assert!(bits_equal(&c, &want), "{shape:?}");
+            let a_stored = transposed(&a, rows, inner);
+            let b_stored = transposed(&b, inner, columns);
+            for (flags, lhs, rhs) in [
+                (0, &a, &b),
+                (1, &a_stored, &b),
+                (2, &a, &b_stored),
+                (3, &a_stored, &b_stored),
+            ] {
+                let c = stored_product(lhs, rhs, shape, flags);
+                assert!(bits_equal(&c, &want), "{shape:?} flags {flags}");
+            }
+        }
+        // `x := A * x` and `x := transpose(M) * x`, through the copy-out path.
+        let (a, x) = signed_zero_operands(4, 4, 1);
+        for flags in [0, 1] {
+            let lhs = if flags == 1 {
+                transposed(&a, 4, 4)
+            } else {
+                a.clone()
+            };
+            let want = reference(&a, &x, (4, 4, 1));
+            let mut cells = x.clone();
+            // SAFETY: `cells` holds 4 cells for both roles; `lhs` holds 16.
+            unsafe {
+                rumoca_host_matmul_t_f64(
+                    cells.as_mut_ptr(),
+                    lhs.as_ptr(),
+                    cells.as_ptr(),
+                    4,
+                    4,
+                    1,
+                    flags,
+                )
+            };
+            assert!(bits_equal(&cells, &want), "flags {flags}");
         }
     }
 }

@@ -4531,11 +4531,21 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.fb.seal_block(outer_body);
         let row = self.fb.ins().udiv_imm(output, columns as i64);
         let column = self.fb.ins().urem_imm(output, columns as i64);
-        let zero_re = self.fb.ins().f64const(0.0);
-        let zero_du = self.fb.ins().f64const(0.0);
+        let term_shape = (inner, columns, lanes);
+        let operands = (regs_ptr, lhs_start, rhs_start);
+        // The first term is its own sum: k = 0 is formed here and the loop
+        // adds k = 1.. in order. An empty dot enters at k = 0 from +0.0.
+        let zero = self.fb.ins().f64const(0.0);
+        let (first_term, first_re, first_du) = if inner == 0 {
+            (zero_index, zero, zero)
+        } else {
+            let (re, du) = self.matrix_loop_term(operands, (row, column, zero_index), term_shape);
+            let one = self.fb.ins().iconst(types::I64, 1);
+            (one, re, du.unwrap_or(zero))
+        };
         self.fb.ins().jump(
             term_header,
-            &[zero_index.into(), zero_re.into(), zero_du.into()],
+            &[first_term.into(), first_re.into(), first_du.into()],
         );
 
         self.fb.switch_to_block(term_header);
@@ -4555,31 +4565,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(term_body);
         self.fb.seal_block(term_body);
-        let lhs_element = self.fb.ins().imul_imm(row, inner as i64);
-        let lhs_element = self.fb.ins().iadd(lhs_element, term);
-        let lhs_element = self.fb.ins().imul_imm(lhs_element, lanes as i64);
-        let rhs_element = self.fb.ins().imul_imm(term, columns as i64);
-        let rhs_element = self.fb.ins().iadd(rhs_element, column);
-        let rhs_element = self.fb.ins().imul_imm(rhs_element, lanes as i64);
-        let lhs_register = self.fb.ins().iadd_imm(lhs_element, i64::from(lhs_start));
-        let rhs_register = self.fb.ins().iadd_imm(rhs_element, i64::from(rhs_start));
-        let lhs_offset = self.fb.ins().imul_imm(lhs_register, 8);
-        let rhs_offset = self.fb.ins().imul_imm(rhs_register, 8);
-        let lhs_address = self.fb.ins().iadd(regs_ptr, lhs_offset);
-        let rhs_address = self.fb.ins().iadd(regs_ptr, rhs_offset);
-        let lhs_re = self.fb.ins().load(types::F64, self.flags, lhs_address, 0);
-        let rhs_re = self.fb.ins().load(types::F64, self.flags, rhs_address, 0);
-        let product = self.fb.ins().fmul(lhs_re, rhs_re);
+        let (product, tangent) = self.matrix_loop_term(operands, (row, column, term), term_shape);
         let next_re = self.fb.ins().fadd(accumulated_re, product);
-        let next_du = if lanes == 2 {
-            let lhs_du = self.fb.ins().load(types::F64, self.flags, lhs_address, 8);
-            let rhs_du = self.fb.ins().load(types::F64, self.flags, rhs_address, 8);
-            let lhs_term = self.fb.ins().fmul(lhs_du, rhs_re);
-            let rhs_term = self.fb.ins().fmul(lhs_re, rhs_du);
-            let tangent = self.fb.ins().fadd(lhs_term, rhs_term);
-            self.fb.ins().fadd(accumulated_du, tangent)
-        } else {
-            accumulated_du
+        let next_du = match tangent {
+            Some(tangent) => self.fb.ins().fadd(accumulated_du, tangent),
+            None => accumulated_du,
         };
         let next_term = self.fb.ins().iadd_imm(term, 1);
         self.fb.ins().jump(
@@ -4609,6 +4599,46 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.fb.switch_to_block(outer_exit);
         self.fb.seal_block(outer_exit);
         Ok(None)
+    }
+
+    /// The `(row, column, term)` product of a looped matrix product read
+    /// through `regs_ptr`, and its tangent `du_l·r + l·du_r` for two lanes.
+    fn matrix_loop_term(
+        &mut self,
+        (regs_ptr, lhs_start, rhs_start): (cranelift_codegen::ir::Value, u32, u32),
+        (row, column, term): (
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+        ),
+        (inner, columns, lanes): (usize, usize, usize),
+    ) -> (
+        cranelift_codegen::ir::Value,
+        Option<cranelift_codegen::ir::Value>,
+    ) {
+        let lhs_element = self.fb.ins().imul_imm(row, inner as i64);
+        let lhs_element = self.fb.ins().iadd(lhs_element, term);
+        let lhs_element = self.fb.ins().imul_imm(lhs_element, lanes as i64);
+        let rhs_element = self.fb.ins().imul_imm(term, columns as i64);
+        let rhs_element = self.fb.ins().iadd(rhs_element, column);
+        let rhs_element = self.fb.ins().imul_imm(rhs_element, lanes as i64);
+        let lhs_register = self.fb.ins().iadd_imm(lhs_element, i64::from(lhs_start));
+        let rhs_register = self.fb.ins().iadd_imm(rhs_element, i64::from(rhs_start));
+        let lhs_offset = self.fb.ins().imul_imm(lhs_register, 8);
+        let rhs_offset = self.fb.ins().imul_imm(rhs_register, 8);
+        let lhs_address = self.fb.ins().iadd(regs_ptr, lhs_offset);
+        let rhs_address = self.fb.ins().iadd(regs_ptr, rhs_offset);
+        let lhs_re = self.fb.ins().load(types::F64, self.flags, lhs_address, 0);
+        let rhs_re = self.fb.ins().load(types::F64, self.flags, rhs_address, 0);
+        let product = self.fb.ins().fmul(lhs_re, rhs_re);
+        let tangent = (lanes == 2).then(|| {
+            let lhs_du = self.fb.ins().load(types::F64, self.flags, lhs_address, 8);
+            let rhs_du = self.fb.ins().load(types::F64, self.flags, rhs_address, 8);
+            let lhs_term = self.fb.ins().fmul(lhs_du, rhs_re);
+            let rhs_term = self.fb.ins().fmul(lhs_re, rhs_du);
+            self.fb.ins().fadd(lhs_term, rhs_term)
+        });
+        (product, tangent)
     }
 
     fn lower_static_matrix_multiply(
@@ -4647,15 +4677,19 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             lanes,
         } = request;
         let output = (row * columns + column) * lanes;
-        let mut re = self.fb.ins().f64const(0.0);
-        let mut du = self.fb.ins().f64const(0.0);
+        // The first term is its own sum; an empty dot is +0.0.
+        let mut re = None;
+        let mut du = None;
         for term in 0..inner {
             let lhs = (row * inner + term) * lanes;
             let rhs = (term * columns + column) * lanes;
             let lhs_re = self.lookup(checked_reg_offset(lhs_start, lhs, "matrix multiply lhs")?)?;
             let rhs_re = self.lookup(checked_reg_offset(rhs_start, rhs, "matrix multiply rhs")?)?;
             let product = self.fb.ins().fmul(lhs_re, rhs_re);
-            re = self.fb.ins().fadd(re, product);
+            re = Some(match re {
+                Some(sum) => self.fb.ins().fadd(sum, product),
+                None => product,
+            });
             if lanes == 2 {
                 let lhs_du = self.lookup(checked_reg_offset(
                     lhs_start,
@@ -4670,14 +4704,25 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 let lhs_term = self.fb.ins().fmul(lhs_du, rhs_re);
                 let rhs_term = self.fb.ins().fmul(lhs_re, rhs_du);
                 let tangent = self.fb.ins().fadd(lhs_term, rhs_term);
-                du = self.fb.ins().fadd(du, tangent);
+                du = Some(match du {
+                    Some(sum) => self.fb.ins().fadd(sum, tangent),
+                    None => tangent,
+                });
             }
         }
+        let re = match re {
+            Some(re) => re,
+            None => self.fb.ins().f64const(0.0),
+        };
         self.insert(
             checked_reg_offset(dst_start, output, "matrix multiply output")?,
             re,
         )?;
         if lanes == 2 {
+            let du = match du {
+                Some(du) => du,
+                None => self.fb.ins().f64const(0.0),
+            };
             self.insert(
                 checked_reg_offset(dst_start, output + 1, "matrix multiply output tangent")?,
                 du,

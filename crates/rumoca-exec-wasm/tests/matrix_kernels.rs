@@ -255,3 +255,113 @@ fn byte_emission_and_instantiated_compile_share_exact_checks_and_execution() {
     assert!(compile_expression_compute_block_wasm_bytes(&block, &short).is_err());
     assert!(compile_expression_compute_block_wasm(&block, &short).is_err());
 }
+
+/// A `1 x inner` by `inner x 1` LinearOp product of the `2·inner` y values
+/// through the private register arena, with its eval-solve reference.
+fn arena_dot(inner: usize, lanes: usize, y: &[f64], seed: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let span = source_span_from_offsets(1, 0, 1)
+        .require_provenance("arena matrix test")
+        .unwrap();
+    let profile =
+        SolveArithmeticProfile::construct(SolveRealFormat::Binary64, SolveIntegerDomain::FULL);
+    let table = SolvePureCallTable::construct(profile, |_| Ok(())).unwrap();
+    let width = (2 * inner * lanes) as Reg;
+    let ops = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 2 * inner,
+            seed_start: (lanes == 2).then_some(0),
+            lanes,
+        },
+        LinearOp::MatrixMultiply {
+            dst_start: width,
+            lhs_start: 0,
+            rhs_start: (inner * lanes) as Reg,
+            rows: 1,
+            inner,
+            columns: 1,
+            lanes,
+        },
+        LinearOp::StoreOutputRange {
+            start: width,
+            count: lanes,
+            stride: 1,
+        },
+    ];
+    let source = ScalarProgramBlock::with_source_span(vec![ops], span).unwrap();
+    let layout = VarLayout::from_parts(Default::default(), y.len(), 0);
+    let mut expected = vec![f64::NAN; lanes];
+    PreparedScalarProgramBlock::new(source.clone())
+        .unwrap()
+        .eval_with_context(
+            y,
+            &[],
+            0.0,
+            RowEvalContext {
+                seed: (lanes == 2).then_some(seed),
+                ..Default::default()
+            },
+            &mut expected,
+        )
+        .unwrap();
+    let compiled = if lanes == 2 {
+        rumoca_exec_wasm::compile_private_directional_program_wasm(
+            &source,
+            &layout,
+            &table,
+            y.len(),
+        )
+        .unwrap()
+    } else {
+        rumoca_exec_wasm::compile_private_program_wasm(&source, &layout, &table).unwrap()
+    };
+    let mut cells = vec![19.0; compiled.scratch_bytes() as usize / 8];
+    if lanes == 2 {
+        compiled
+            .call_directional(y, &[], 0.0, seed, &mut cells)
+            .unwrap();
+    } else {
+        compiled.call(y, &[], 0.0, &mut cells).unwrap();
+    }
+    (expected, cells[..lanes].to_vec())
+}
+
+/// `[-1 … -1] · [0 … 0]`: every product (and, with seeds `(-1, 0)`, every
+/// tangent term `du_l·r + l·du_r`) is `-0.0`, so the first-term convention
+/// gives `-0.0` where a `+0.0` start would give `+0.0`. Ordered cancellations
+/// keep the reference's term order on the same paths.
+#[test]
+fn arena_matrix_products_start_each_output_from_its_first_term() {
+    let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    let mut mismatches = Vec::new();
+    // Checked LinearOp programs refuse an empty dot (inner = 0).
+    let cases = [1usize, 3, 40]
+        .into_iter()
+        .flat_map(|inner| [1usize, 2].map(|lanes| (inner, lanes)));
+    for (inner, lanes) in cases {
+        let mut y = vec![-1.0; inner];
+        y.extend(vec![0.0; inner]);
+        let (expected, arena) = arena_dot(inner, lanes, &y, &y);
+        mismatches.extend(
+            [("reference", expected), ("arena", arena)]
+                .into_iter()
+                .filter(|(_, values)| bits(values) != bits(&vec![-0.0; lanes]))
+                .map(|(name, values)| format!("{name}, inner {inner} lanes {lanes}: {values:?}")),
+        );
+        let y = (0..2 * inner)
+            .map(|i| [1e16, 1.0, -1e16, 0.5, -0.0][i % 5])
+            .collect::<Vec<_>>();
+        let seed = (0..2 * inner)
+            .map(|i| 0.25 * i as f64 - 1.0)
+            .collect::<Vec<_>>();
+        let (expected, arena) = arena_dot(inner, lanes, &y, &seed);
+        if bits(&arena) != bits(&expected) {
+            mismatches.push(format!(
+                "ordered, inner {inner} lanes {lanes}: {arena:?} vs {expected:?}"
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}

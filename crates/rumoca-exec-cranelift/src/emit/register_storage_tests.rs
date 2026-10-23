@@ -259,3 +259,103 @@ fn large_contiguous_output_ranges_compile_and_preserve_batch_offsets_and_bits() 
         }
     }
 }
+
+/// `[-1 … -1] · [0 … 0]`: every product, and every tangent term
+/// `du_l·r + l·du_r` for seeds `(-1, 0)`, is `-0.0`, so the first-term
+/// convention gives `-0.0` where a `+0.0` start would give `+0.0`.
+fn signed_zero_dot(inner: usize, lanes: usize) -> Vec<LinearOp> {
+    let width = (2 * inner * lanes) as u32;
+    vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 2 * inner,
+            seed_start: (lanes == 2).then_some(0),
+            lanes,
+        },
+        LinearOp::MatrixMultiply {
+            dst_start: width,
+            lhs_start: 0,
+            rhs_start: (inner * lanes) as u32,
+            rows: 1,
+            inner,
+            columns: 1,
+            lanes,
+        },
+        LinearOp::StoreOutputRange {
+            start: width,
+            count: lanes,
+            stride: 1,
+        },
+    ]
+}
+
+/// The interpreter's and the JIT's bits for [`signed_zero_dot`], for a static
+/// product and one looped over the register tape, primal and dual.
+/// A case label with its interpreted and native result bits.
+type SignedZeroDotResult = (String, Vec<u64>, Vec<u64>);
+
+fn signed_zero_dot_results() -> Vec<SignedZeroDotResult> {
+    let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    let mut results = Vec::new();
+    for inner in [2, 600] {
+        let mut y = vec![-1.0; inner];
+        y.extend(vec![0.0; inner]);
+        let seed = y.clone();
+        for lanes in [1, 2] {
+            let row = signed_zero_dot(inner, lanes);
+            assert_eq!(allocates_register_tape(&row), inner == 600, "inner {inner}");
+            let plan = plan_row(&row).unwrap();
+            let mut interpreted = vec![f64::NAN; lanes];
+            execute_row(
+                &plan,
+                &mut Vec::new(),
+                RowInputs {
+                    y: &y,
+                    p: &[],
+                    t: 0.0,
+                    seed: (lanes == 2).then_some(&seed[..]),
+                    external_tables: &[],
+                },
+                &mut interpreted,
+            )
+            .unwrap();
+            let mut native = vec![f64::NAN; lanes];
+            if lanes == 2 {
+                let compiled = compile_jacobian_rows(&[row]).unwrap();
+                compiled.call(&y, &[], 0.0, &seed, &mut native).unwrap();
+            } else {
+                let compiled = compile_residual_rows(&[row]).unwrap();
+                compiled.call(&y, &[], 0.0, &mut native).unwrap();
+            }
+            results.push((
+                format!("inner {inner} lanes {lanes}"),
+                bits(&interpreted),
+                bits(&native),
+            ));
+        }
+    }
+    results
+}
+
+/// Every case whose `pick`ed bits are not all `-0.0`.
+fn signed_zero_dot_mismatches(pick: fn(&SignedZeroDotResult) -> &Vec<u64>) -> Vec<String> {
+    signed_zero_dot_results()
+        .iter()
+        .filter(|result| pick(result).iter().any(|&b| b != (-0.0f64).to_bits()))
+        .map(|result| format!("{}: {:x?}", result.0, pick(result)))
+        .collect()
+}
+
+#[test]
+fn native_linear_matrix_products_start_each_output_from_its_first_term() {
+    let mismatches = signed_zero_dot_mismatches(|result| &result.2);
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+#[test]
+fn interpreted_linear_matrix_products_start_each_output_from_its_first_term() {
+    let mismatches = signed_zero_dot_mismatches(|result| &result.1);
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
+}

@@ -143,16 +143,24 @@ fn matrix_value<E>(
     let lane = offset % lanes;
     let row = element / columns;
     let column = element % columns;
-    let mut value = 0.0;
-    for term in 0..inner {
+    let mut product = |term: usize| {
         let lhs = inputs.0 + ((row * inner + term) * lanes) as Reg;
         let rhs = inputs.1 + ((term * columns + column) * lanes) as Reg;
         let (lhs_re, rhs_re) = (read(lhs)?, read(rhs)?);
-        value += if lane == 0 {
+        Ok(if lane == 0 {
             lhs_re * rhs_re
         } else {
             read(lhs + lane as Reg)? * rhs_re + lhs_re * read(rhs + lane as Reg)?
-        };
+        })
+    };
+    // An empty dot is `+0.0`. Otherwise the first term is its own sum, as in
+    // the scalar expansion, so an all `-0.0` dot keeps its sign.
+    if inner == 0 {
+        return Ok(0.0);
+    }
+    let mut value = product(0)?;
+    for term in 1..inner {
+        value += product(term)?;
     }
     Ok(value)
 }

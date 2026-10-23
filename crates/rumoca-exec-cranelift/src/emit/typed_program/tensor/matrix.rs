@@ -190,7 +190,10 @@ impl ProgramLowerer<'_, '_> {
     ) -> Result<(), CompileError> {
         let scalar = destination.value_type.element_type();
         for output in 0..rows * columns {
-            let mut sum = zero_scalar(self, scalar);
+            // The first product is its own sum, as in the scalar references:
+            // seeding with +0.0 would turn an all -0.0 dot into +0.0. An
+            // empty dot has no product and is +0.0.
+            let mut sum = None;
             for term in 0..inner {
                 let left = (output / columns) * inner + term;
                 let right = term * columns + output % columns;
@@ -200,12 +203,56 @@ impl ProgramLowerer<'_, '_> {
                 let right = self.load_scalar(rhs, right)?;
                 let product =
                     self.binary_element(solve::SolveBinaryOperator::Multiply, scalar, left, right)?;
-                sum = self.binary_element(solve::SolveBinaryOperator::Add, scalar, sum, product)?;
+                sum = Some(self.accumulate_term(sum, product, scalar)?);
             }
+            let sum = match sum {
+                Some(sum) => sum,
+                None => zero_scalar(self, scalar),
+            };
             let index = self.builder.ins().iconst(types::I64, output as i64);
             self.store_scalar(destination, index, sum)?;
         }
         Ok(())
+    }
+
+    /// `sum + product`, where a dot's first product is its own sum.
+    fn accumulate_term(
+        &mut self,
+        sum: Option<Value>,
+        product: Value,
+        scalar: solve::SolveScalarType,
+    ) -> Result<Value, CompileError> {
+        match sum {
+            Some(sum) => self.binary_element(solve::SolveBinaryOperator::Add, scalar, sum, product),
+            None => Ok(product),
+        }
+    }
+
+    /// The product `lhs[row, shared] * rhs[shared, column]` of one dot term.
+    fn matrix_product_term(
+        &mut self,
+        (lhs, rhs): (&ValueLocation, &ValueLocation),
+        (row, column, shared): (Value, Value, Value),
+        (inner, columns): (i64, i64),
+        scalar: solve::SolveScalarType,
+    ) -> Result<Value, CompileError> {
+        let (lhs_index, rhs_index) = self.matrix_multiply_indices(MatrixIndexRequest {
+            row,
+            column,
+            shared,
+            inner,
+            columns,
+            lhs_vector: lhs.value_type.dimensions().len() == 1,
+            rhs_vector: rhs.value_type.dimensions().len() == 1,
+        });
+        let lhs_value = self.load_scalar(lhs, lhs_index)?;
+        let rhs_value = self.load_scalar(rhs, rhs_index)?;
+        self.binary_element(
+            solve::SolveBinaryOperator::Multiply,
+            scalar,
+            lhs_value,
+            rhs_value,
+        )
     }
 
     fn lower_loop_matrix_multiply(
@@ -255,10 +302,23 @@ impl ProgramLowerer<'_, '_> {
             .append_block_param(inner_header, scalar_cranelift_type(scalar_type));
         self.builder
             .append_block_param(inner_exit, scalar_cranelift_type(scalar_type));
-        let zero_value = zero_scalar(self, scalar_type);
+        // The first product is its own sum, as in the scalar references:
+        // seeding with +0.0 would turn an all -0.0 dot into +0.0. An empty
+        // dot has no product and is +0.0.
+        let (first_term, first_value) = if inner == 0 {
+            (zero_index, zero_scalar(self, scalar_type))
+        } else {
+            let first = self.matrix_product_term(
+                (lhs, rhs),
+                (row, column, zero_index),
+                (inner, columns),
+                scalar_type,
+            )?;
+            (self.builder.ins().iconst(types::I64, 1), first)
+        };
         self.builder
             .ins()
-            .jump(inner_header, &[zero_index.into(), zero_value.into()]);
+            .jump(inner_header, &[first_term.into(), first_value.into()]);
 
         self.builder.switch_to_block(inner_header);
         let shared = self.builder.block_params(inner_header)[0];
@@ -277,22 +337,11 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(inner_body);
         self.builder.seal_block(inner_body);
-        let (lhs_index, rhs_index) = self.matrix_multiply_indices(MatrixIndexRequest {
-            row,
-            column,
-            shared,
-            inner,
-            columns,
-            lhs_vector: lhs.value_type.dimensions().len() == 1,
-            rhs_vector: rhs.value_type.dimensions().len() == 1,
-        });
-        let lhs_value = self.load_scalar(lhs, lhs_index)?;
-        let rhs_value = self.load_scalar(rhs, rhs_index)?;
-        let product = self.binary_element(
-            solve::SolveBinaryOperator::Multiply,
+        let product = self.matrix_product_term(
+            (lhs, rhs),
+            (row, column, shared),
+            (inner, columns),
             scalar_type,
-            lhs_value,
-            rhs_value,
         )?;
         let next_accumulator = self.binary_element(
             solve::SolveBinaryOperator::Add,

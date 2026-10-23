@@ -167,27 +167,47 @@ impl BodyEmitter<'_> {
         let width = i32::try_from(inner).map_err(|_| "dual matrix inner extent overflow")?;
         self.loop_start(arena.counter, count)?;
         for lane in 0..2 {
-            self.push(Instruction::F64Const(0.0.into()));
-            self.push(Instruction::LocalSet(LOCAL_BASE + 1));
-            self.loop_start(arena.inner_counter, inner)?;
-            self.push(Instruction::LocalGet(LOCAL_BASE + 1));
-            self.dual_matrix_read(lhs_start, lane, columns, width, true)?;
-            self.dual_matrix_read(rhs_start, 0, columns, width, false)?;
-            self.push(Instruction::F64Mul);
-            if lane == 1 {
-                self.dual_matrix_read(lhs_start, 0, columns, width, true)?;
-                self.dual_matrix_read(rhs_start, 1, columns, width, false)?;
-                self.push(Instruction::F64Mul);
+            // The first term is its own sum; an empty dot is +0.0.
+            if inner == 0 {
+                self.push(Instruction::F64Const(0.0.into()));
+                self.push(Instruction::LocalSet(LOCAL_BASE + 1));
+            } else {
+                self.push(Instruction::I32Const(0));
+                self.push(Instruction::LocalSet(arena.inner_counter));
+                self.dual_matrix_term(lhs_start, rhs_start, lane, (columns, width))?;
+                self.push(Instruction::LocalSet(LOCAL_BASE + 1));
+                self.loop_start_from(arena.inner_counter, 1, inner)?;
+                self.push(Instruction::LocalGet(LOCAL_BASE + 1));
+                self.dual_matrix_term(lhs_start, rhs_start, lane, (columns, width))?;
                 self.push(Instruction::F64Add);
+                self.push(Instruction::LocalSet(LOCAL_BASE + 1));
+                self.loop_end(arena.inner_counter);
             }
-            self.push(Instruction::F64Add);
-            self.push(Instruction::LocalSet(LOCAL_BASE + 1));
-            self.loop_end(arena.inner_counter);
             self.push_arena_address(dst_start + lane, Some(arena.counter), 2)?;
             self.push(Instruction::LocalGet(LOCAL_BASE + 1));
             self.push(Instruction::F64Store(memarg()));
         }
         self.loop_end(arena.counter);
+        Ok(())
+    }
+
+    /// Lane 0: `l·r`; lane 1: `du_l·r + l·du_r`, for the arena counters' term.
+    fn dual_matrix_term(
+        &mut self,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        lane: u32,
+        (columns, width): (i32, i32),
+    ) -> Result<(), String> {
+        self.dual_matrix_read(lhs_start, lane, columns, width, true)?;
+        self.dual_matrix_read(rhs_start, 0, columns, width, false)?;
+        self.push(Instruction::F64Mul);
+        if lane == 1 {
+            self.dual_matrix_read(lhs_start, 0, columns, width, true)?;
+            self.dual_matrix_read(rhs_start, 1, columns, width, false)?;
+            self.push(Instruction::F64Mul);
+            self.push(Instruction::F64Add);
+        }
         Ok(())
     }
 

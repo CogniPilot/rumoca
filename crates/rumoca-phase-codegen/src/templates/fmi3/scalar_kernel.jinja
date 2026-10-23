@@ -107,8 +107,9 @@
 {%- elif op.kind == "TensorLoad" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = m->{{ op.input | lower }}[{{ op.input_start }}+k];
 {%- elif op.kind == "TensorBinary" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = {{ binary(op.operator, op.lhs_start ~ "+k*" ~ op.lhs_stride, op.rhs_start ~ "+k*" ~ op.rhs_stride) }};
 {%- elif op.kind == "MatrixMultiply" and op.lanes == 1 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {
+        /* The first term is its own sum; an empty dot is +0.0. */
         double sum=0.0;
-        for (size_t k=0; k<{{ op.inner }}; ++k) sum+=r[{{ op.lhs_start }}+i*{{ op.inner }}+k]*r[{{ op.rhs_start }}+k*{{ op.columns }}+j];
+        for (size_t k=0; k<{{ op.inner }}; ++k) { double t=r[{{ op.lhs_start }}+i*{{ op.inner }}+k]*r[{{ op.rhs_start }}+k*{{ op.columns }}+j]; sum = k ? sum+t : t; }
         r[{{ op.dst }}+i*{{ op.columns }}+j]=sum;
     }
 {%- elif op.kind == "TensorTranspose" and op.lanes == 1 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) for (size_t k=0; k<{{ op.element_width }}; ++k)
@@ -135,10 +136,12 @@
 {%- endif %}
     }
 {%- elif op.kind == "MatrixMultiply" and op.lanes == 2 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {
+        /* The first term is its own sum; an empty dot is +0.0. */
         double re=0.0, du=0.0;
         for (size_t k=0; k<{{ op.inner }}; ++k) {
             size_t l={{ op.lhs_start }}+(i*{{ op.inner }}+k)*2, q={{ op.rhs_start }}+(k*{{ op.columns }}+j)*2;
-            re += r[l]*r[q]; du += r[l+1]*r[q] + r[l]*r[q+1];
+            double t=r[l]*r[q], dt=r[l+1]*r[q] + r[l]*r[q+1];
+            re = k ? re+t : t; du = k ? du+dt : dt;
         }
         r[{{ op.dst }}+(i*{{ op.columns }}+j)*2]=re; r[{{ op.dst }}+(i*{{ op.columns }}+j)*2+1]=du;
     }
@@ -179,11 +182,12 @@
         for (size_t l=0; l<{{ w }}; ++l) r[z+l] = c[l];
     }
 {%- elif op.kind == "MatrixMultiply" and op.lanes > 2 %}{% set w = op.lanes %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {
+        /* The first term is its own sum; an empty dot is +0.0. */
         double c[{{ w }}] = {0.0};
         for (size_t k=0; k<{{ op.inner }}; ++k) {
             size_t x={{ op.lhs_start }}+(i*{{ op.inner }}+k)*{{ w }}, y={{ op.rhs_start }}+(k*{{ op.columns }}+j)*{{ w }};
-            c[0] += r[x]*r[y];
-            for (size_t l=1; l<{{ w }}; ++l) c[l] += r[x+l]*r[y] + r[x]*r[y+l];
+            double t=r[x]*r[y]; c[0] = k ? c[0]+t : t;
+            for (size_t l=1; l<{{ w }}; ++l) { double dt=r[x+l]*r[y] + r[x]*r[y+l]; c[l] = k ? c[l]+dt : dt; }
         }
         for (size_t l=0; l<{{ w }}; ++l) r[{{ op.dst }}+(i*{{ op.columns }}+j)*{{ w }}+l]=c[l];
     }

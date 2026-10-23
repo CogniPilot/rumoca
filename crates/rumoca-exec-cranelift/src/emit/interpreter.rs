@@ -321,6 +321,7 @@ fn execute_general_op(
             for row in 0..rows {
                 for column in 0..columns {
                     let output = (row * columns + column) * lanes;
+                    // The first term is its own sum; an empty dot is +0.0.
                     let mut re = 0.0;
                     let mut du = 0.0;
                     for term in 0..inner {
@@ -328,10 +329,13 @@ fn execute_general_op(
                         let rhs = (term * columns + column) * lanes;
                         let lhs_re = read_reg_value(regs, lhs_start as usize + lhs);
                         let rhs_re = read_reg_value(regs, rhs_start as usize + rhs);
-                        re += lhs_re * rhs_re;
+                        let product = lhs_re * rhs_re;
+                        re = if term == 0 { product } else { re + product };
                         if lanes == 2 {
-                            du += read_reg_value(regs, lhs_start as usize + lhs + 1) * rhs_re
+                            let tangent = read_reg_value(regs, lhs_start as usize + lhs + 1)
+                                * rhs_re
                                 + lhs_re * read_reg_value(regs, rhs_start as usize + rhs + 1);
+                            du = if term == 0 { tangent } else { du + tangent };
                         }
                     }
                     set_reg_value(regs, dst_start as usize + output, re);

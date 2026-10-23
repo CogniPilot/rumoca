@@ -1040,7 +1040,10 @@ fn a_large_typed_matrix_product_runs_in_the_host_kernel_with_identical_bits() {
     let want: Vec<f64> = (0..rows * columns)
         .map(|output| {
             let (i, j) = (output / columns, output % columns);
-            (0..inner).fold(0.0, |sum, k| sum + a[i * inner + k] * b[k * columns + j])
+            (0..inner)
+                .map(|k| a[i * inner + k] * b[k * columns + j])
+                .reduce(|sum, term| sum + term)
+                .unwrap_or(0.0)
         })
         .collect();
     assert!(

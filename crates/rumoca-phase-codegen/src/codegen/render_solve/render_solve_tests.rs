@@ -600,3 +600,70 @@ fn unsupported_typed_op_error_reports_op_kind() {
     assert!(err.contains("unsupported solve LinearOp: TableNextEvent"));
     assert!(!err.contains("TableNextEvent {"));
 }
+
+#[test]
+fn rendered_matrix_products_start_each_output_from_its_first_term() {
+    // A 1x2 by 2x1 product renders exactly as the first-term DotProduct over
+    // the same registers, with no `0.0` start (which would erase a `-0.0`
+    // dot's sign), primal and tangent alike.
+    let cfg = SolveRowCConfig::from_value(&Value::from_serialize(()));
+    let constants = |values: &[f64]| {
+        values
+            .iter()
+            .enumerate()
+            .map(|(dst, value)| solve::LinearOp::Const {
+                dst: dst as solve::Reg,
+                value: *value,
+            })
+            .collect::<Vec<_>>()
+    };
+    let overrides = std::collections::HashMap::new();
+    let render = |ops: &[solve::LinearOp]| {
+        render_solve_row_typed_with_overrides(ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+            .expect("the product renders")
+    };
+    let mut product = constants(&[2.0, 3.0, 5.0, 7.0]);
+    product.extend([
+        solve::LinearOp::MatrixMultiply {
+            dst_start: 4,
+            lhs_start: 0,
+            rhs_start: 2,
+            rows: 1,
+            inner: 2,
+            columns: 1,
+            lanes: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]);
+    let mut dot = constants(&[2.0, 3.0, 5.0, 7.0]);
+    dot.extend([
+        solve::LinearOp::DotProduct {
+            dst: 4,
+            lhs_start: 0,
+            rhs_start: 2,
+            count: 2,
+            lhs_stride: 1,
+            rhs_stride: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]);
+    let primal = render(&product);
+    assert_eq!(primal, render(&dot));
+    assert!(!primal.contains("0.0"), "{primal}");
+    let mut dual = constants(&[2.0, 3.0, 5.0, 7.0, 11.0, 13.0, 17.0, 19.0]);
+    dual.extend([solve::LinearOp::MatrixMultiply {
+        dst_start: 8,
+        lhs_start: 0,
+        rhs_start: 4,
+        rows: 1,
+        inner: 2,
+        columns: 1,
+        lanes: 2,
+    }]);
+    for src in [8, 9] {
+        let mut row = dual.clone();
+        row.push(solve::LinearOp::StoreOutput { src });
+        let rendered = render(&row);
+        assert!(!rendered.contains("0.0"), "register {src}: {rendered}");
+    }
+}
