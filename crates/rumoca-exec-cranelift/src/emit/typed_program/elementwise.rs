@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 impl ProgramLowerer<'_, '_> {
     /// One loop storing `operation`'s result, with every fused operand
     /// evaluated per element in place of a load.

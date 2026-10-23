@@ -662,3 +662,160 @@ fn recomputed_two_deep_vector_chain_keeps_leaf_storage_live() {
 fn recomputed_two_deep_multi_read_producers_keep_leaf_storage_live() {
     check_fused_chain_lifetime(8, true);
 }
+
+/// One binary64 owner over `inputs` (tensor extents) whose body is `body`,
+/// storing one `output`-extent result; run natively and by the interpreter.
+fn native_and_reference(
+    inputs: &[Vec<u32>],
+    output: Vec<u32>,
+    body: impl for<'p> FnOnce(
+        &mut solve::TypedProgramBuilder<'p>,
+        &[solve::ProgramRegister<'p>],
+    ) -> Result<
+        solve::ProgramRegister<'p>,
+        solve::SolveProgramConstructionError,
+    >,
+) -> (Vec<u64>, Vec<u64>) {
+    use rumoca_eval_solve::{PureCallInvocation, TypedValue, eval_pure_call};
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let element = solve::SolveScalarType::real(arithmetic);
+    let tensor =
+        |extents: &[u32]| solve::SolveValueType::tensor(element, extents.to_vec()).unwrap();
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("native_tensor_layout.mo"),
+        1,
+        2,
+    );
+    let table = solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(904).unwrap()),
+            inputs.iter().map(|extents| tensor(extents)).collect(),
+            vec![solve::SolvePureCallOutput::result(tensor(&output))],
+            at,
+            |b, slots, outputs| {
+                let loaded = slots
+                    .iter()
+                    .map(|slot| b.load(*slot, at))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result = body(b, &loaded)?;
+                b.store(outputs[0], result, at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = &table.owners()[0];
+    let cells = inputs
+        .iter()
+        .enumerate()
+        .map(|(input, extents)| {
+            let count = extents.iter().product::<u32>() as usize;
+            (0..count)
+                .map(|i| {
+                    let magnitude = [1.0, 1e-3, 37.5, 1e5, 0.125][(i + input) % 5];
+                    let sign = if (i + 2 * input) % 3 == 0 { -1.0 } else { 1.0 };
+                    sign * magnitude * (1.0 + i as f64 / 7.0)
+                })
+                .collect::<Vec<f64>>()
+        })
+        .collect::<Vec<_>>();
+    let arguments = owner
+        .inputs()
+        .iter()
+        .zip(&cells)
+        .map(|(ty, cells)| {
+            let kinds = cells
+                .iter()
+                .map(|v| solve::SolveValueKind::Real64(v.to_bits()));
+            TypedValue::construct(ty.clone(), kinds.collect()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reference = eval_pure_call(&table, owner.id(), &arguments).unwrap()[0]
+        .elements()
+        .iter()
+        .map(|cell| match cell {
+            solve::SolveValueKind::Real64(bits) => *bits,
+            _ => panic!("expected binary64"),
+        })
+        .collect::<Vec<_>>();
+    let input = cells
+        .iter()
+        .flatten()
+        .map(|v| v.to_bits())
+        .collect::<Vec<_>>();
+    let mut native = vec![0; reference.len()];
+    CompiledPureCallTable::compile(&table)
+        .unwrap()
+        .call_cells(
+            PureCallInvocation::Primal(&owner.call_site()),
+            &input,
+            &mut native,
+        )
+        .unwrap();
+    (native, reference)
+}
+
+#[test]
+fn published_transposes_above_the_inline_size_move_through_the_host() {
+    // 35 and 24 output cells, above the 16 a transpose forms inline; the
+    // second moves two-cell trailing elements.
+    for (input, output) in [(vec![5, 7], vec![7, 5]), (vec![4, 3, 2], vec![3, 4, 2])] {
+        let (native, reference) =
+            native_and_reference(std::slice::from_ref(&input), output, |b, operands| {
+                b.transpose(
+                    operands[0],
+                    rumoca_core::Span::from_offsets(
+                        rumoca_core::SourceId::from_source_name("native_tensor_layout.mo"),
+                        1,
+                        2,
+                    ),
+                )
+            });
+        assert_eq!(native, reference, "transpose of {input:?}");
+    }
+}
+
+#[test]
+fn products_of_single_use_transposes_read_their_operands_stored_transposed() {
+    // Each transpose is read only by a host-sized binary64 product, so the
+    // product reads the transposed operand in place: left, right and both.
+    let at = || {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("native_tensor_layout.mo"),
+            1,
+            2,
+        )
+    };
+    let cases = [
+        ("left", vec![vec![9, 6], vec![9, 8]], (true, false)),
+        ("right", vec![vec![6, 9], vec![8, 9]], (false, true)),
+        ("both", vec![vec![9, 6], vec![8, 9]], (true, true)),
+        (
+            "left, narrow",
+            vec![vec![12, 8], vec![12, 2]],
+            (true, false),
+        ),
+    ];
+    for (case, inputs, (left, right)) in cases {
+        let rows = if left { inputs[0][1] } else { inputs[0][0] };
+        let columns = if right { inputs[1][0] } else { inputs[1][1] };
+        let (native, reference) =
+            native_and_reference(&inputs, vec![rows, columns], |b, operands| {
+                let lhs = if left {
+                    b.transpose(operands[0], at())?
+                } else {
+                    operands[0]
+                };
+                let rhs = if right {
+                    b.transpose(operands[1], at())?
+                } else {
+                    operands[1]
+                };
+                b.matrix_multiply(lhs, rhs, at())
+            });
+        assert_eq!(native, reference, "{case}");
+    }
+}

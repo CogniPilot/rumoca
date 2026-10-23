@@ -985,4 +985,72 @@ mod tests {
         unsafe { rumoca_host_matmul_f64(x.as_mut_ptr(), a.as_ptr(), x.as_ptr(), 4, 4, 1) };
         assert!(x.iter().zip(&want).all(|(p, q)| p.to_bits() == q.to_bits()));
     }
+
+    /// Ordinary values with every IEEE edge mixed in at fixed positions.
+    fn edge_values(n: usize, seed: f64) -> Vec<f64> {
+        let edges = [
+            0.0,
+            -0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            f64::MIN_POSITIVE / 8.0,
+            f64::MAX,
+        ];
+        let mut cells = values(n, seed);
+        for (index, cell) in cells.iter_mut().enumerate().filter(|(i, _)| i % 5 == 3) {
+            *cell = edges[index % edges.len()];
+        }
+        cells
+    }
+
+    /// Bit equality, or for `exact == false` also NaN against NaN.
+    fn same_bits(got: &[f64], want: &[f64], exact: bool) -> bool {
+        let same =
+            |x: &f64, y: &f64| x.to_bits() == y.to_bits() || (!exact && x.is_nan() && y.is_nan());
+        got.len() == want.len() && got.iter().zip(want).all(|(x, y)| same(x, y))
+    }
+
+    #[test]
+    fn the_portable_kernel_keeps_the_generated_summation_order() {
+        // The fallback for hosts without AVX2, called directly: on an AVX2
+        // host the dispatcher never selects it.
+        for shape in [
+            (1, 1, 1),
+            (3, 5, 2),
+            (4, 0, 3),
+            (0, 3, 4),
+            (7, 9, 13),
+            (17, 33, 9),
+            (64, 128, 2),
+        ] {
+            let (rows, inner, columns) = shape;
+            // Ordinary values compare bit for bit; with IEEE edges mixed in,
+            // a NaN result compares as NaN (`inf * 0` makes the default NaN,
+            // whose payload is not the summation order under test).
+            for (a, b, exact) in [
+                (
+                    values(rows * inner, 0.3),
+                    values(inner * columns, 1.7),
+                    true,
+                ),
+                (
+                    edge_values(rows * inner, 0.9),
+                    edge_values(inner * columns, 2.2),
+                    false,
+                ),
+            ] {
+                let mut portable = vec![f64::NAN; rows * columns];
+                multiply_portable(&mut portable, &a, &b, shape);
+                let want = reference(&a, &b, shape);
+                assert!(same_bits(&portable, &want, exact), "{shape:?}");
+                let mut dispatched = vec![f64::NAN; rows * columns];
+                multiply(&mut dispatched, &a, &b, shape);
+                assert!(
+                    same_bits(&portable, &dispatched, exact),
+                    "{shape:?} vs dispatch"
+                );
+            }
+        }
+    }
 }
