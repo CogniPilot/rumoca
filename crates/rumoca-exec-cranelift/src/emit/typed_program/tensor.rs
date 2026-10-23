@@ -1,7 +1,7 @@
 mod matrix;
 
 use super::super::status;
-use super::{CompileError, ProgramLowerer, scalar_cranelift_type};
+use super::{CompileError, ProgramLowerer, ValueLocation, scalar_cranelift_type};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use rumoca_ir_solve as solve;
@@ -356,6 +356,44 @@ impl ProgramLowerer<'_, '_> {
         })
     }
 
+    /// A large transpose moves cells in a host loop: the generated form
+    /// divides each output index back into its source coordinates.
+    fn lower_host_transpose(
+        &mut self,
+        destination: &ValueLocation,
+        operand: &ValueLocation,
+        (rows, columns, trailing): (u32, u32, u32),
+    ) -> Result<(), CompileError> {
+        use cranelift_codegen::ir::AbiParam;
+        use cranelift_module::{Linkage, Module};
+        let pointer = self.pointer_type;
+        let mut signature = self.module.make_signature();
+        signature
+            .params
+            .extend([pointer, pointer, types::I64, types::I64, types::I64].map(AbiParam::new));
+        let function = self
+            .module
+            .declare_function("rumoca_host_transpose_cells", Linkage::Import, &signature)
+            .map_err(crate::emit::to_backend_err)?;
+        let callee = crate::emit::owned_jit_module::declare_far_call_in_func(
+            self.module,
+            function,
+            self.builder.func,
+        );
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let destination_base = self.base(destination);
+        let destination = self.cell_address(destination_base, destination.cell, zero);
+        let operand_base = self.base(operand);
+        let operand = self.cell_address(operand_base, operand.cell, zero);
+        let rows = self.builder.ins().iconst(types::I64, i64::from(rows));
+        let columns = self.builder.ins().iconst(types::I64, i64::from(columns));
+        let trailing = self.builder.ins().iconst(types::I64, i64::from(trailing));
+        self.builder
+            .ins()
+            .call(callee, &[destination, operand, rows, columns, trailing]);
+        Ok(())
+    }
+
     pub(super) fn lower_transpose(
         &mut self,
         destination: solve::SolveRegisterId,
@@ -374,6 +412,13 @@ impl ProgramLowerer<'_, '_> {
             .ok_or_else(|| {
                 CompileError::Backend("typed transpose trailing width overflows".into())
             })?;
+        if destination.value_type.scalar_count() > 16 {
+            return self.lower_host_transpose(
+                &destination,
+                &operand,
+                (*rows, *columns, trailing_width),
+            );
+        }
         let rows = i64::from(*rows);
         let columns = i64::from(*columns);
         let trailing_width_i64 = i64::from(trailing_width);
@@ -454,10 +499,11 @@ impl ProgramLowerer<'_, '_> {
         operand: solve::SolveRegisterId,
     ) -> Result<(), CompileError> {
         let destination = self.register(destination)?.clone();
+        let operand_register = operand;
         let operand = self.register(operand)?.clone();
         let count = operand.value_type.scalar_count();
         let zero = self.builder.ins().iconst(types::I64, 0);
-        let initial = self.load_scalar(&operand, zero)?;
+        let initial = self.element_value(operand_register, zero)?;
         let header = self.builder.create_block();
         let body = self.builder.create_block();
         let exit = self.builder.create_block();
@@ -483,7 +529,7 @@ impl ProgramLowerer<'_, '_> {
             .brif(in_range, body, &[], exit, &[accumulator.into()]);
         self.builder.switch_to_block(body);
         self.builder.seal_block(body);
-        let element = self.load_scalar(&operand, index)?;
+        let element = self.element_value(operand_register, index)?;
         let next_accumulator =
             self.binary_element(reduction_binary(operator), scalar, accumulator, element)?;
         let next = self.builder.ins().iadd_imm(index, 1);

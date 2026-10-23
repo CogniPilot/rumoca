@@ -975,3 +975,79 @@ fn native_table_fault_is_reported_by_directional_native_entry() {
     );
     assert_eq!(output, [99.0]);
 }
+
+/// A typed product larger than the static unroll calls the host kernel, and
+/// its outputs keep the generated loop's summation order bit for bit.
+#[test]
+fn a_large_typed_matrix_product_runs_in_the_host_kernel_with_identical_bits() {
+    use rumoca_ir_solve as solve;
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("typed_matrix_kernel.mo"),
+        0,
+        1,
+    );
+    let domain = solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).expect("Integer domain");
+    let profile =
+        solve::SolveArithmeticProfile::construct(solve::SolveRealFormat::Binary64, domain);
+    let real = solve::SolveScalarType::real(profile);
+    let (rows, inner, columns) = (9_usize, 8_usize, 7_usize);
+    let tensor =
+        |extents: Vec<u32>| solve::SolveValueType::tensor(real, extents).expect("tensor type");
+    let (lhs_type, rhs_type) = (tensor(vec![9, 8]), tensor(vec![8, 7]));
+    let product_type = tensor(vec![9, 7]);
+    let mut owner_id = None;
+    let table = solve::SolvePureCallTable::construct(profile, |table| {
+        owner_id = Some(table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(5).expect("nonzero")),
+            vec![lhs_type.clone(), rhs_type.clone()],
+            vec![solve::SolvePureCallOutput::result(product_type.clone())],
+            span,
+            |program, inputs, outputs| {
+                let lhs = program.load(inputs[0], span)?;
+                let rhs = program.load(inputs[1], span)?;
+                let product = program.matrix_multiply(lhs, rhs, span)?;
+                program.store(outputs[0], product, span)
+            },
+        )?);
+        Ok(())
+    })
+    .expect("construct typed owner");
+    let site = table
+        .owner(owner_id.expect("owner issued"))
+        .expect("owner resolves")
+        .call_site();
+    let value = |n: usize, seed: f64| -> Vec<f64> {
+        (0..n)
+            .map(|i| ((i as f64 + seed) * 0.618_033_988_7).sin() * 10_f64.powi(i as i32 % 5 - 2))
+            .collect()
+    };
+    let (a, b) = (value(rows * inner, 0.3), value(inner * columns, 1.7));
+    let inputs: Vec<f64> = a.iter().chain(&b).copied().collect();
+    let compiled = crate::compile_pure_call_table(&table).expect("compile typed owner");
+    let mut output = vec![f64::NAN; rows * columns];
+    let (mut input_cells, mut output_cells) = (Vec::new(), Vec::new());
+    super::host_runtime::take_matmul_calls();
+    compiled
+        .call_scalar_payload(
+            rumoca_eval_solve::PureCallInvocation::Primal(&site),
+            &inputs,
+            &mut output,
+            &mut input_cells,
+            &mut output_cells,
+        )
+        .expect("execute typed owner");
+    assert_eq!(super::host_runtime::take_matmul_calls(), 1);
+    let want: Vec<f64> = (0..rows * columns)
+        .map(|output| {
+            let (i, j) = (output / columns, output % columns);
+            (0..inner).fold(0.0, |sum, k| sum + a[i * inner + k] * b[k * columns + j])
+        })
+        .collect();
+    assert!(
+        output
+            .iter()
+            .zip(&want)
+            .all(|(x, y)| x.to_bits() == y.to_bits()),
+        "{output:?} vs {want:?}"
+    );
+}

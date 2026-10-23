@@ -152,3 +152,513 @@ fn typed_native_product_directions_reuse_no_stale_values_or_seeds() {
         }
     }
 }
+
+#[test]
+fn recomputed_multi_read_chain_keeps_leaf_storage_live() {
+    use rumoca_eval_solve::{PureCallInvocation, TypedValue, eval_pure_call};
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let element = solve::SolveScalarType::real(arithmetic);
+    let scalar = solve::SolveValueType::scalar(element);
+    let vector = solve::SolveValueType::tensor(element, vec![8]).unwrap();
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fusion_leaf_lifetime.mo"),
+        0,
+        1,
+    );
+    let table = solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(957).unwrap()),
+            vec![scalar.clone(), scalar, vector.clone()],
+            vec![
+                solve::SolvePureCallOutput::result(solve::SolveValueType::scalar(element)),
+                solve::SolvePureCallOutput::result(vector),
+            ],
+            at,
+            |b, inputs, outputs| {
+                let first = b.load(inputs[0], at)?;
+                let second = b.load(inputs[1], at)?;
+                let bias = b.load(inputs[2], at)?;
+                let leaf = b.fill(first, vec![8], at)?;
+                let negated = b.unary(solve::SolveUnaryOperator::Negate, leaf, at)?;
+                let shifted = b.binary(solve::SolveBinaryOperator::Add, negated, bias, at)?;
+                let intervening = b.fill(second, vec![8], at)?;
+                let sum = b.reduce(solve::SolveReductionOperator::Sum, intervening, at)?;
+                b.store(outputs[0], sum, at)?;
+                let squared =
+                    b.binary(solve::SolveBinaryOperator::Multiply, shifted, shifted, at)?;
+                b.store(outputs[1], squared, at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = &table.owners()[0];
+    let cells = [vec![1.0_f64], vec![2.0_f64], vec![3.0_f64; 8]];
+    let arguments = owner
+        .inputs()
+        .iter()
+        .zip(&cells)
+        .map(|(ty, values)| {
+            TypedValue::construct(
+                ty.clone(),
+                values
+                    .iter()
+                    .map(|v| solve::SolveValueKind::Real64(v.to_bits()))
+                    .collect(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reference = eval_pure_call(&table, owner.id(), &arguments).unwrap();
+    let expected = reference
+        .iter()
+        .flat_map(|value| value.elements())
+        .map(|cell| match cell {
+            solve::SolveValueKind::Real64(bits) => *bits,
+            _ => panic!("expected binary64"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected,
+        [vec![16.0_f64], vec![4.0_f64; 8]]
+            .concat()
+            .into_iter()
+            .map(f64::to_bits)
+            .collect::<Vec<_>>()
+    );
+    let input = cells
+        .into_iter()
+        .flatten()
+        .map(f64::to_bits)
+        .collect::<Vec<_>>();
+    let mut output = vec![0; 9];
+    CompiledPureCallTable::compile(&table)
+        .unwrap()
+        .call_cells(
+            PureCallInvocation::Primal(&owner.call_site()),
+            &input,
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(
+        output, expected,
+        "deferred leaf must survive the intervening fill"
+    );
+}
+
+#[test]
+fn chained_recomputed_producers_keep_leaf_storage_live() {
+    use rumoca_eval_solve::{PureCallInvocation, TypedValue, eval_pure_call};
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let element = solve::SolveScalarType::real(arithmetic);
+    let scalar = solve::SolveValueType::scalar(element);
+    let vector = solve::SolveValueType::tensor(element, vec![8]).unwrap();
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fusion_leaf_lifetime.mo"),
+        0,
+        1,
+    );
+    let table = solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(958).unwrap()),
+            vec![scalar.clone(), scalar, vector.clone()],
+            vec![
+                solve::SolvePureCallOutput::result(solve::SolveValueType::scalar(element)),
+                solve::SolvePureCallOutput::result(vector),
+            ],
+            at,
+            |b, inputs, outputs| {
+                let first = b.load(inputs[0], at)?;
+                let second = b.load(inputs[1], at)?;
+                let bias = b.load(inputs[2], at)?;
+                let leaf = b.fill(first, vec![8], at)?;
+                let shifted = b.binary(solve::SolveBinaryOperator::Add, leaf, bias, at)?;
+                let squared =
+                    b.binary(solve::SolveBinaryOperator::Multiply, shifted, shifted, at)?;
+                let intervening = b.fill(second, vec![8], at)?;
+                let sum = b.reduce(solve::SolveReductionOperator::Sum, intervening, at)?;
+                b.store(outputs[0], sum, at)?;
+                let fourth =
+                    b.binary(solve::SolveBinaryOperator::Multiply, squared, squared, at)?;
+                b.store(outputs[1], fourth, at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = &table.owners()[0];
+    let cells = [vec![1.0_f64], vec![2.0_f64], vec![3.0_f64; 8]];
+    let arguments = owner
+        .inputs()
+        .iter()
+        .zip(&cells)
+        .map(|(ty, values)| {
+            TypedValue::construct(
+                ty.clone(),
+                values
+                    .iter()
+                    .map(|v| solve::SolveValueKind::Real64(v.to_bits()))
+                    .collect(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reference = eval_pure_call(&table, owner.id(), &arguments).unwrap();
+    let expected = reference
+        .iter()
+        .flat_map(|value| value.elements())
+        .map(|cell| match cell {
+            solve::SolveValueKind::Real64(bits) => *bits,
+            _ => panic!("expected binary64"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected,
+        [vec![16.0_f64], vec![256.0_f64; 8]]
+            .concat()
+            .into_iter()
+            .map(f64::to_bits)
+            .collect::<Vec<_>>()
+    );
+    let input = cells
+        .into_iter()
+        .flatten()
+        .map(f64::to_bits)
+        .collect::<Vec<_>>();
+    let mut output = vec![0; 9];
+    CompiledPureCallTable::compile(&table)
+        .unwrap()
+        .call_cells(
+            PureCallInvocation::Primal(&owner.call_site()),
+            &input,
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(
+        output, expected,
+        "a producer recomputed into a later recomputed reader keeps its leaf live"
+    );
+}
+
+#[test]
+fn recomputed_producer_below_two_fused_producers_keeps_leaf_storage_live() {
+    use rumoca_eval_solve::{PureCallInvocation, TypedValue, eval_pure_call};
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let element = solve::SolveScalarType::real(arithmetic);
+    let scalar = solve::SolveValueType::scalar(element);
+    let vector = solve::SolveValueType::tensor(element, vec![8]).unwrap();
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fusion_leaf_lifetime.mo"),
+        0,
+        1,
+    );
+    let table = solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(959).unwrap()),
+            vec![scalar.clone(), scalar, vector.clone()],
+            vec![
+                solve::SolvePureCallOutput::result(solve::SolveValueType::scalar(element)),
+                solve::SolvePureCallOutput::result(vector),
+            ],
+            at,
+            |b, inputs, outputs| {
+                let first = b.load(inputs[0], at)?;
+                let second = b.load(inputs[1], at)?;
+                let bias = b.load(inputs[2], at)?;
+                let leaf = b.fill(first, vec![8], at)?;
+                let negated = b.unary(solve::SolveUnaryOperator::Negate, leaf, at)?;
+                let magnitude = b.unary(solve::SolveUnaryOperator::Abs, negated, at)?;
+                let shifted = b.binary(solve::SolveBinaryOperator::Add, magnitude, bias, at)?;
+                let intervening = b.fill(second, vec![8], at)?;
+                let sum = b.reduce(solve::SolveReductionOperator::Sum, intervening, at)?;
+                b.store(outputs[0], sum, at)?;
+                let squared =
+                    b.binary(solve::SolveBinaryOperator::Multiply, shifted, shifted, at)?;
+                b.store(outputs[1], squared, at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = &table.owners()[0];
+    let cells = [vec![1.0_f64], vec![2.0_f64], vec![3.0_f64; 8]];
+    let arguments = owner
+        .inputs()
+        .iter()
+        .zip(&cells)
+        .map(|(ty, values)| {
+            TypedValue::construct(
+                ty.clone(),
+                values
+                    .iter()
+                    .map(|v| solve::SolveValueKind::Real64(v.to_bits()))
+                    .collect(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reference = eval_pure_call(&table, owner.id(), &arguments).unwrap();
+    let expected = reference
+        .iter()
+        .flat_map(|value| value.elements())
+        .map(|cell| match cell {
+            solve::SolveValueKind::Real64(bits) => *bits,
+            _ => panic!("expected binary64"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected,
+        [vec![16.0_f64], vec![16.0_f64; 8]]
+            .concat()
+            .into_iter()
+            .map(f64::to_bits)
+            .collect::<Vec<_>>()
+    );
+    let input = cells
+        .into_iter()
+        .flatten()
+        .map(f64::to_bits)
+        .collect::<Vec<_>>();
+    let mut output = vec![0; 9];
+    CompiledPureCallTable::compile(&table)
+        .unwrap()
+        .call_cells(
+            PureCallInvocation::Primal(&owner.call_site()),
+            &input,
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(
+        output, expected,
+        "deferred leaf must survive the intervening fill"
+    );
+}
+
+#[test]
+fn chained_recompute_below_a_fused_producer_keeps_leaf_storage_live() {
+    use rumoca_eval_solve::{PureCallInvocation, TypedValue, eval_pure_call};
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let element = solve::SolveScalarType::real(arithmetic);
+    let scalar = solve::SolveValueType::scalar(element);
+    let vector = solve::SolveValueType::tensor(element, vec![8]).unwrap();
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fusion_leaf_lifetime.mo"),
+        0,
+        1,
+    );
+    let table = solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(960).unwrap()),
+            vec![scalar.clone(), scalar, vector.clone()],
+            vec![
+                solve::SolvePureCallOutput::result(solve::SolveValueType::scalar(element)),
+                solve::SolvePureCallOutput::result(vector),
+            ],
+            at,
+            |b, inputs, outputs| {
+                let first = b.load(inputs[0], at)?;
+                let second = b.load(inputs[1], at)?;
+                let bias = b.load(inputs[2], at)?;
+                let leaf = b.fill(first, vec![8], at)?;
+                let negated = b.unary(solve::SolveUnaryOperator::Negate, leaf, at)?;
+                let shifted = b.binary(solve::SolveBinaryOperator::Add, negated, bias, at)?;
+                let squared =
+                    b.binary(solve::SolveBinaryOperator::Multiply, shifted, shifted, at)?;
+                let intervening = b.fill(second, vec![8], at)?;
+                let sum = b.reduce(solve::SolveReductionOperator::Sum, intervening, at)?;
+                b.store(outputs[0], sum, at)?;
+                let fourth =
+                    b.binary(solve::SolveBinaryOperator::Multiply, squared, squared, at)?;
+                b.store(outputs[1], fourth, at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = &table.owners()[0];
+    let cells = [vec![1.0_f64], vec![2.0_f64], vec![3.0_f64; 8]];
+    let arguments = owner
+        .inputs()
+        .iter()
+        .zip(&cells)
+        .map(|(ty, values)| {
+            TypedValue::construct(
+                ty.clone(),
+                values
+                    .iter()
+                    .map(|v| solve::SolveValueKind::Real64(v.to_bits()))
+                    .collect(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reference = eval_pure_call(&table, owner.id(), &arguments).unwrap();
+    let expected = reference
+        .iter()
+        .flat_map(|value| value.elements())
+        .map(|cell| match cell {
+            solve::SolveValueKind::Real64(bits) => *bits,
+            _ => panic!("expected binary64"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected,
+        [vec![16.0_f64], vec![16.0_f64; 8]]
+            .concat()
+            .into_iter()
+            .map(f64::to_bits)
+            .collect::<Vec<_>>()
+    );
+    let input = cells
+        .into_iter()
+        .flatten()
+        .map(f64::to_bits)
+        .collect::<Vec<_>>();
+    let mut output = vec![0; 9];
+    CompiledPureCallTable::compile(&table)
+        .unwrap()
+        .call_cells(
+            PureCallInvocation::Primal(&owner.call_site()),
+            &input,
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(
+        output, expected,
+        "a producer recomputed into a later recomputed reader keeps its leaf live"
+    );
+}
+
+fn fused_chain_lifetime_table(width: u32, cascade_multi_read: bool) -> solve::SolvePureCallTable {
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let element = solve::SolveScalarType::real(arithmetic);
+    let scalar = solve::SolveValueType::scalar(element);
+    let vector = solve::SolveValueType::tensor(element, vec![width]).unwrap();
+    let at = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fusion_two_deep_lifetime.mo"),
+        0,
+        1,
+    );
+    solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(958).unwrap()),
+            vec![scalar.clone(), scalar.clone(), vector.clone()],
+            vec![
+                solve::SolvePureCallOutput::result(scalar),
+                solve::SolvePureCallOutput::result(vector),
+            ],
+            at,
+            |b, inputs, outputs| {
+                let first = b.load(inputs[0], at)?;
+                let second = b.load(inputs[1], at)?;
+                let bias = b.load(inputs[2], at)?;
+                let leaf = b.fill(first, vec![width], at)?;
+                let shifted = if cascade_multi_read {
+                    let p = b.binary(solve::SolveBinaryOperator::Add, leaf, bias, at)?;
+                    b.binary(solve::SolveBinaryOperator::Multiply, p, p, at)?
+                } else {
+                    let negated = b.unary(solve::SolveUnaryOperator::Negate, leaf, at)?;
+                    let absolute = b.unary(solve::SolveUnaryOperator::Abs, negated, at)?;
+                    b.binary(solve::SolveBinaryOperator::Add, absolute, bias, at)?
+                };
+                let intervening = b.fill(second, vec![width], at)?;
+                let sum = b.reduce(solve::SolveReductionOperator::Sum, intervening, at)?;
+                b.store(outputs[0], sum, at)?;
+                let squared =
+                    b.binary(solve::SolveBinaryOperator::Multiply, shifted, shifted, at)?;
+                b.store(outputs[1], squared, at)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+fn check_fused_chain_lifetime(width: u32, cascade_multi_read: bool) {
+    use rumoca_eval_solve::{PureCallInvocation, TypedValue, eval_pure_call};
+    let table = fused_chain_lifetime_table(width, cascade_multi_read);
+    let owner = &table.owners()[0];
+    let values = [vec![1.0_f64], vec![2.0_f64], vec![3.0_f64; width as usize]];
+    let arguments = owner
+        .inputs()
+        .iter()
+        .zip(&values)
+        .map(|(ty, cells)| {
+            TypedValue::construct(
+                ty.clone(),
+                cells
+                    .iter()
+                    .map(|x| solve::SolveValueKind::Real64(x.to_bits()))
+                    .collect(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reference = eval_pure_call(&table, owner.id(), &arguments).unwrap();
+    let expected = reference
+        .iter()
+        .flat_map(|value| value.elements())
+        .map(|cell| match cell {
+            solve::SolveValueKind::Real64(bits) => *bits,
+            _ => panic!("expected binary64"),
+        })
+        .collect::<Vec<_>>();
+    let squared = if cascade_multi_read { 256.0 } else { 16.0 };
+    let explicit = [vec![2.0 * f64::from(width)], vec![squared; width as usize]];
+    assert_eq!(
+        expected,
+        explicit
+            .into_iter()
+            .flatten()
+            .map(f64::to_bits)
+            .collect::<Vec<_>>()
+    );
+    let inputs = values
+        .into_iter()
+        .flatten()
+        .map(f64::to_bits)
+        .collect::<Vec<_>>();
+    let mut output = vec![0; 1 + width as usize];
+    CompiledPureCallTable::compile(&table)
+        .unwrap()
+        .call_cells(
+            PureCallInvocation::Primal(&owner.call_site()),
+            &inputs,
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(
+        output, expected,
+        "width={width}: both upstream producers must preserve the leaf"
+    );
+}
+
+#[test]
+fn recomputed_two_deep_scalar_chain_keeps_leaf_storage_live() {
+    check_fused_chain_lifetime(2, false);
+}
+
+#[test]
+fn recomputed_two_deep_vector_chain_keeps_leaf_storage_live() {
+    check_fused_chain_lifetime(8, false);
+}
+
+#[test]
+fn recomputed_two_deep_multi_read_producers_keep_leaf_storage_live() {
+    check_fused_chain_lifetime(8, true);
+}

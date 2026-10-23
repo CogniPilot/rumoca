@@ -24,18 +24,161 @@ impl ProgramLowerer<'_, '_> {
         rhs: solve::SolveRegisterId,
     ) -> Result<(), CompileError> {
         let destination = self.register(destination)?.clone();
+        // A fused transpose is read in place, stored transposed, by the kernel.
+        let stored = |this: &Self, register: solve::SolveRegisterId| -> Result<_, CompileError> {
+            match this.layout.fused.get(register.index()).cloned().flatten() {
+                Some(solve::SolveOperation::Transpose { operand, .. }) => {
+                    Ok(Some(this.register(operand)?.clone()))
+                }
+                Some(_) => Err(CompileError::Backend(
+                    "fused product operand is not a transpose".into(),
+                )),
+                None => Ok(None),
+            }
+        };
+        let stored_lhs = stored(self, lhs)?;
+        let stored_rhs = stored(self, rhs)?;
         let lhs = self.register(lhs)?.clone();
         let rhs = self.register(rhs)?.clone();
         let shape = matrix_extents(lhs.value_type.dimensions(), rhs.value_type.dimensions())?;
+        if stored_lhs.is_some() || stored_rhs.is_some() {
+            let flags = u64::from(stored_lhs.is_some()) | (u64::from(stored_rhs.is_some()) << 1);
+            return self.lower_host_matrix_multiply_stored(
+                &destination,
+                stored_lhs.as_ref().unwrap_or(&lhs),
+                stored_rhs.as_ref().unwrap_or(&rhs),
+                shape,
+                flags,
+            );
+        }
         let work = shape
             .0
             .checked_mul(shape.2)
             .and_then(|outputs| outputs.checked_mul(shape.1.max(1)));
         if work.is_some_and(|work| work <= crate::emit::MAX_STATIC_MATRIX_WORK) {
             self.lower_static_matrix_multiply(&destination, &lhs, &rhs, shape)
+        } else if [&destination, &lhs, &rhs]
+            .iter()
+            .all(|location| is_binary64(location.value_type.element_type()))
+        {
+            self.lower_host_matrix_multiply(&destination, &lhs, &rhs, shape)
         } else {
             self.lower_loop_matrix_multiply(&destination, &lhs, &rhs, shape)
         }
+    }
+
+    /// Call the host kernel, which keeps the generated loop's per-output
+    /// summation order exactly and so returns the same bits, but sweeps each
+    /// output row contiguously so the inner loop vectorizes.
+    fn lower_host_matrix_multiply(
+        &mut self,
+        destination: &ValueLocation,
+        lhs: &ValueLocation,
+        rhs: &ValueLocation,
+        (rows, inner, columns): (usize, usize, usize),
+    ) -> Result<(), CompileError> {
+        use cranelift_codegen::ir::AbiParam;
+        use cranelift_module::{Linkage, Module};
+        let extent = |value: usize| {
+            i64::try_from(value)
+                .map_err(|_| CompileError::Backend("typed matrix extent exceeds i64".into()))
+        };
+        let (rows, inner, columns) = (extent(rows)?, extent(inner)?, extent(columns)?);
+        let pointer = self.pointer_type;
+        let mut signature = self.module.make_signature();
+        signature.params.extend(
+            [
+                pointer,
+                pointer,
+                pointer,
+                types::I64,
+                types::I64,
+                types::I64,
+            ]
+            .map(AbiParam::new),
+        );
+        let function = self
+            .module
+            .declare_function("rumoca_host_matmul_f64", Linkage::Import, &signature)
+            .map_err(crate::emit::to_backend_err)?;
+        let callee = crate::emit::owned_jit_module::declare_far_call_in_func(
+            self.module,
+            function,
+            self.builder.func,
+        );
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let address = |lowerer: &mut Self, location: &ValueLocation| {
+            let base = lowerer.base(location);
+            lowerer.cell_address(base, location.cell, zero)
+        };
+        let destination = address(self, destination);
+        let lhs = address(self, lhs);
+        let rhs = address(self, rhs);
+        let rows = self.builder.ins().iconst(types::I64, rows);
+        let inner = self.builder.ins().iconst(types::I64, inner);
+        let columns = self.builder.ins().iconst(types::I64, columns);
+        self.builder
+            .ins()
+            .call(callee, &[destination, lhs, rhs, rows, inner, columns]);
+        Ok(())
+    }
+
+    /// The host kernel on operands of which some are stored transposed.
+    fn lower_host_matrix_multiply_stored(
+        &mut self,
+        destination: &ValueLocation,
+        lhs: &ValueLocation,
+        rhs: &ValueLocation,
+        (rows, inner, columns): (usize, usize, usize),
+        transposed: u64,
+    ) -> Result<(), CompileError> {
+        use cranelift_codegen::ir::AbiParam;
+        use cranelift_module::{Linkage, Module};
+        let extent = |value: usize| {
+            i64::try_from(value)
+                .map_err(|_| CompileError::Backend("typed matrix extent exceeds i64".into()))
+        };
+        let (rows, inner, columns) = (extent(rows)?, extent(inner)?, extent(columns)?);
+        let pointer = self.pointer_type;
+        let mut signature = self.module.make_signature();
+        signature.params.extend(
+            [
+                pointer,
+                pointer,
+                pointer,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+            ]
+            .map(AbiParam::new),
+        );
+        let function = self
+            .module
+            .declare_function("rumoca_host_matmul_t_f64", Linkage::Import, &signature)
+            .map_err(crate::emit::to_backend_err)?;
+        let callee = crate::emit::owned_jit_module::declare_far_call_in_func(
+            self.module,
+            function,
+            self.builder.func,
+        );
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let address = |lowerer: &mut Self, location: &ValueLocation| {
+            let base = lowerer.base(location);
+            lowerer.cell_address(base, location.cell, zero)
+        };
+        let destination = address(self, destination);
+        let lhs = address(self, lhs);
+        let rhs = address(self, rhs);
+        let rows = self.builder.ins().iconst(types::I64, rows);
+        let inner = self.builder.ins().iconst(types::I64, inner);
+        let columns = self.builder.ins().iconst(types::I64, columns);
+        let transposed = self.builder.ins().iconst(types::I64, transposed as i64);
+        self.builder.ins().call(
+            callee,
+            &[destination, lhs, rhs, rows, inner, columns, transposed],
+        );
+        Ok(())
     }
 
     fn lower_static_matrix_multiply(
@@ -191,6 +334,16 @@ impl ProgramLowerer<'_, '_> {
         };
         (lhs, rhs)
     }
+}
+
+fn is_binary64(scalar: solve::SolveScalarType) -> bool {
+    matches!(
+        scalar,
+        solve::SolveScalarType::Real {
+            format: solve::SolveRealFormat::Binary64,
+            ..
+        }
+    )
 }
 
 fn matrix_extents(lhs: &[u32], rhs: &[u32]) -> Result<(usize, usize, usize), CompileError> {

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use super::{CompileError, StorageBase, ValueLocation, checked_cells};
+use rumoca_ir_solve as solve;
 
 struct RegisterStorageGroup {
     original_cell: u32,
@@ -134,4 +135,49 @@ fn release_tape_range(
     }
     *free = merged;
     Ok(())
+}
+
+/// A fold whose entry value of a carried target dies at the fold leaves its
+/// result in that value's cells: the in-place fold then runs on those cells
+/// and neither packs the entry value nor unpacks the result.
+pub(super) fn alias_consumed_fold_carries(
+    program: &solve::TypedProgram,
+    last_uses: &[Option<usize>],
+    registers: &mut [ValueLocation],
+) {
+    for (index, operation) in program.operations().iter().enumerate() {
+        let solve::SolveOperation::Fold {
+            initial,
+            captures,
+            destinations,
+            ..
+        } = operation.operation()
+        else {
+            continue;
+        };
+        for (entry, destination) in initial.iter().zip(destinations) {
+            let read_once = initial
+                .iter()
+                .chain(captures)
+                .filter(|register| *register == entry)
+                .count()
+                == 1;
+            if !read_once || last_uses.get(entry.index()) != Some(&Some(index)) {
+                continue;
+            }
+            let (Some(source), Some(target)) = (
+                registers.get(entry.index()).cloned(),
+                registers.get(destination.index()),
+            ) else {
+                continue;
+            };
+            if source.base != StorageBase::Tape
+                || target.base != StorageBase::Tape
+                || source.value_type != target.value_type
+            {
+                continue;
+            }
+            registers[destination.index()] = source;
+        }
+    }
 }

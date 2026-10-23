@@ -9,6 +9,12 @@ mod assigned_state;
 #[cfg(test)]
 mod assigned_state_tests;
 mod control;
+mod elementwise;
+mod flat_map;
+#[cfg(test)]
+mod fold_comparison_tests;
+mod fusion;
+mod inline_call;
 mod input_results;
 #[cfg(test)]
 mod input_reuse_tests;
@@ -19,6 +25,7 @@ mod linear_solve;
 mod native;
 mod observation;
 mod operators;
+mod placement;
 pub(super) use native::rumoca_host_native;
 #[cfg(test)]
 mod local_store_tests;
@@ -58,6 +65,7 @@ use storage::compact_register_tape;
 pub use support::{NativeFormDecline, NativeFormSupport, NativeOwnerSupport};
 
 const CELL_BYTES: usize = std::mem::size_of::<u64>();
+
 static NEXT_TABLE_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// One typed pure-call body and the native function it is compiled into.
@@ -78,6 +86,8 @@ struct TypedProgramCompilation<'a> {
     recursion: Option<solve::SolveRecursiveGroup>,
     /// Whether this unit is the assertion-observation form of its owner.
     observation: bool,
+    /// The table a call may inline its callee from (primal forms only).
+    table: Option<&'a solve::SolvePureCallTable>,
 }
 
 /// Member-to-member calls inside one SOLVE-C62 group body: each passes the
@@ -442,7 +452,7 @@ impl TableCompiler {
     ) -> Result<(), CompileError> {
         match table.recursive_group(owner.id()) {
             Some(group) => self.compile_recursive_owner(owner, *group),
-            None => self.compile_owner(owner),
+            None => self.compile_owner(table, owner),
         }
     }
 
@@ -484,12 +494,17 @@ impl TableCompiler {
                 coordinate: owner.input_coordinate(),
                 recursion: None,
                 observation: true,
+                table: None,
             },
             &functions,
         )
     }
 
-    fn compile_owner(&mut self, owner: &solve::SolvePureCallOwner) -> Result<(), CompileError> {
+    fn compile_owner(
+        &mut self,
+        table: &solve::SolvePureCallTable,
+        owner: &solve::SolvePureCallOwner,
+    ) -> Result<(), CompileError> {
         let function = self
             .functions
             .get(owner.id().index() as usize)
@@ -506,6 +521,7 @@ impl TableCompiler {
                 coordinate: owner.input_coordinate(),
                 recursion: None,
                 observation: false,
+                table: Some(table),
             },
             &functions,
         )
@@ -534,6 +550,7 @@ impl TableCompiler {
                 coordinate: owner.input_coordinate(),
                 recursion: Some(group),
                 observation: false,
+                table: None,
             },
             &functions,
         )?;
@@ -625,6 +642,7 @@ impl TableCompiler {
                 coordinate: directional.input_coordinate(),
                 recursion: None,
                 observation: false,
+                table: None,
             },
             &functions,
         )
@@ -643,6 +661,7 @@ impl TableCompiler {
             coordinate,
             recursion,
             observation,
+            table,
         } = unit;
         let config = self.module.target_config();
         let pointer_type = config.pointer_type();
@@ -702,6 +721,13 @@ impl TableCompiler {
                     cells,
                     root: true,
                 }),
+                input_placement: None,
+                output_placement: None,
+                // Admission probes compile each owner without inlining, so a
+                // declined callee declines its callers by name; the defined
+                // forms of admitted owners then only inline admitted callees.
+                table: table.filter(|_| !observation && self.emission == Emission::Define),
+                inline_depth: 0,
             };
             lowerer.initialize_observation()?;
             lowerer.lower(program)?;
@@ -839,6 +865,11 @@ struct ProgramLayout {
     assigned_inputs: Box<[assigned_state::AssignedLocation]>,
     assigned_outputs: Box<[assigned_state::AssignedLocation]>,
     tape_cells: u32,
+    /// The operation each fused register defers (see [`fusion`]); such a
+    /// register is never stored.
+    fused: Box<[Option<solve::SolveOperation>]>,
+    /// Last reading operation of each register, extended over fusion.
+    last_uses: Box<[Option<usize>]>,
 }
 
 impl ProgramLayout {
@@ -897,7 +928,8 @@ impl ProgramLayout {
                 value_type: value_type.clone(),
             });
         }
-        let (last_uses, definitions) = register_flow(program, registers.len())?;
+        let (mut last_uses, definitions) = register_flow(program, registers.len())?;
+        let fused = fusion::plan(program, &mut last_uses)?;
         alias_read_only_loads(program, &slots, &mut registers)?;
         alias_final_output_stores(
             program,
@@ -906,6 +938,7 @@ impl ProgramLayout {
             &mut registers,
         )?;
         alias_consumed_functional_updates(program, &last_uses, &mut registers)?;
+        storage::alias_consumed_fold_carries(program, &last_uses, &mut registers);
         tape_cell = compact_register_tape(register_base, &last_uses, &definitions, &mut registers)?;
         let assigned_states = assigned_state::layout(
             program.assigned_state_types(),
@@ -929,6 +962,8 @@ impl ProgramLayout {
             assigned_inputs,
             assigned_outputs,
             tape_cells: tape_cell,
+            fused: fused.into_boxed_slice(),
+            last_uses: last_uses.into_boxed_slice(),
         })
     }
 }
@@ -1113,6 +1148,14 @@ fn alias_consumed_functional_updates(
     Ok(())
 }
 
+fn reads_fused(fused: &[Option<solve::SolveOperation>], operation: &solve::SolveOperation) -> bool {
+    let mut reads = false;
+    operation.visit_input_registers(|register| {
+        reads |= fused.get(register.index()).is_some_and(Option::is_some);
+    });
+    reads
+}
+
 fn checked_cells(start: u32, count: u32, context: &str) -> Result<u32, CompileError> {
     start
         .checked_add(count)
@@ -1170,6 +1213,15 @@ struct ProgramLowerer<'a, 'b> {
     /// Present when lowering the assertion-observation form of an owner.
     observation: Option<ObservationLowering>,
     operation: *const solve::SolveSpannedOperation,
+    /// The table whose owners a call may be lowered inline from.
+    table: Option<&'a solve::SolvePureCallTable>,
+    /// Calls lowered inline around this program.
+    inline_depth: u32,
+    /// Input slots placed on enclosing cells instead of `input` (see
+    /// [`placement`]).
+    input_placement: Option<Vec<placement::PlacedSlot>>,
+    /// Output slots placed on enclosing cells instead of `output`.
+    output_placement: Option<Vec<placement::PlacedSlot>>,
 }
 
 impl ProgramLowerer<'_, '_> {
@@ -1185,6 +1237,29 @@ impl ProgramLowerer<'_, '_> {
     // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::too_many_lines)]
     fn lower_operation(&mut self, operation: &solve::SolveOperation) -> Result<(), CompileError> {
+        let mut destination = None;
+        operation.visit_output_registers(|register| destination = Some(register));
+        if let Some(destination) = destination
+            && self
+                .layout
+                .fused
+                .get(destination.index())
+                .is_some_and(Option::is_some)
+        {
+            // Evaluated per element by the operation that reads it.
+            return Ok(());
+        }
+        if let Some(destination) = destination
+            && !matches!(
+                operation,
+                solve::SolveOperation::Reduce { .. } | solve::SolveOperation::MatrixMultiply { .. }
+            )
+            && (reads_fused(&self.layout.fused, operation)
+                || (self.register(destination)?.value_type.scalar_count() >= 4
+                    && self.vectorizes(operation)?))
+        {
+            return self.lower_fused(operation, destination);
+        }
         match operation {
             solve::SolveOperation::AssignedState { operation } => {
                 self.lower_assigned_state(operation)
@@ -1414,11 +1489,14 @@ impl ProgramLowerer<'_, '_> {
     }
 
     fn base(&self, location: &ValueLocation) -> Value {
-        match location.base {
-            StorageBase::Input => self.input,
-            StorageBase::Output => self.output,
-            StorageBase::Tape => self.tape,
-        }
+        let (placed, base) = match location.base {
+            StorageBase::Input => (self.input_placement.as_deref(), self.input),
+            StorageBase::Output => (self.output_placement.as_deref(), self.output),
+            StorageBase::Tape => return self.tape,
+        };
+        placed
+            .and_then(|slots| placement::placed_slot(slots, location.cell))
+            .map_or(base, |slot| slot.adjusted)
     }
 
     fn lower_constant(
@@ -1558,6 +1636,15 @@ impl ProgramLowerer<'_, '_> {
         destinations: &[solve::SolveRegisterId],
         forwarding: &[solve::SolveAssertionForwarding],
     ) -> Result<(), CompileError> {
+        if let Some(table) = self.table
+            && self.observation.is_none()
+            && forwarding.is_empty()
+            && self.inline_depth < 3
+            && self.recursive_calls.is_none()
+            && let Some(callee) = inline_call::inline_callee(table, owner, arguments, destinations)
+        {
+            return self.lower_inline_call(callee, arguments, destinations);
+        }
         let output_cells = self.register_cell_count(destinations, "nested typed output")?;
         let output = create_tape(self.builder, self.pointer_type, output_cells)?;
         if self.observation.is_some() {
@@ -1644,6 +1731,13 @@ impl ProgramLowerer<'_, '_> {
         source: &ValueLocation,
         destination: &ValueLocation,
     ) -> Result<(), CompileError> {
+        // A placed region can hold a source and its destination on the same
+        // cells under different bases; copying them onto themselves is a no-op.
+        if source.value_type == destination.value_type
+            && self.physical(source) == self.physical(destination)
+        {
+            return Ok(());
+        }
         self.copy_between_bases(
             source,
             destination,
@@ -1668,6 +1762,22 @@ impl ProgramLowerer<'_, '_> {
             && source.cell == destination.cell
             && source_base == destination_base
         {
+            return Ok(());
+        }
+        let count = source.value_type.scalar_count();
+        if count > 16 {
+            // Cells are 64-bit whatever the element type, so a value is one
+            // contiguous byte range; a block move beats the scalar loop.
+            let source_address = cell_pointer(self.builder, source_base, source.cell, "copy")?;
+            let destination_address =
+                cell_pointer(self.builder, destination_base, destination.cell, "copy")?;
+            let bytes = self
+                .builder
+                .ins()
+                .iconst(self.pointer_type, i64::from(count) * CELL_BYTES as i64);
+            let config = self.module.target_config();
+            self.builder
+                .call_memmove(config, destination_address, source_address, bytes);
             return Ok(());
         }
         self.for_each_element(source.value_type.scalar_count(), |this, index| {
@@ -1761,149 +1871,16 @@ impl ProgramLowerer<'_, '_> {
         let bytes = self.builder.ins().imul_imm(index, CELL_BYTES as i64);
         self.builder.ins().iadd(base, bytes)
     }
+}
 
-    fn unary_element(
-        &mut self,
-        operator: solve::SolveUnaryOperator,
-        scalar: solve::SolveScalarType,
-        value: Value,
-    ) -> Result<Value, CompileError> {
-        match scalar {
-            solve::SolveScalarType::Real { format, .. } => {
-                let promoted = promote_real(self.builder, format, value);
-                let result = emit_unary_op(
-                    self.builder,
-                    self.module,
-                    self.math,
-                    map_unary(operator),
-                    promoted,
-                )?;
-                Ok(demote_real(self.builder, format, result))
-            }
-            solve::SolveScalarType::Integer(domain) => self.integer_unary(operator, domain, value),
-            solve::SolveScalarType::Boolean => match operator {
-                solve::SolveUnaryOperator::Not => {
-                    let condition = self.builder.ins().icmp_imm(IntCC::Equal, value, 0);
-                    Ok(self.builder.ins().uextend(types::I64, condition))
-                }
-                _ => Err(CompileError::Backend(
-                    "invalid typed Boolean unary operator".into(),
-                )),
-            },
+fn is_binary64(scalar: solve::SolveScalarType) -> bool {
+    matches!(
+        scalar,
+        solve::SolveScalarType::Real {
+            format: solve::SolveRealFormat::Binary64,
+            ..
         }
-    }
-
-    fn binary_element(
-        &mut self,
-        operator: solve::SolveBinaryOperator,
-        scalar: solve::SolveScalarType,
-        lhs: Value,
-        rhs: Value,
-    ) -> Result<Value, CompileError> {
-        match scalar {
-            solve::SolveScalarType::Real { format, .. } => {
-                let lhs = promote_real(self.builder, format, lhs);
-                let rhs = promote_real(self.builder, format, rhs);
-                let result = emit_binary_op(
-                    self.builder,
-                    self.module,
-                    self.math,
-                    map_binary(operator).ok_or_else(|| {
-                        CompileError::Backend("invalid typed Real binary operator".into())
-                    })?,
-                    lhs,
-                    rhs,
-                )?;
-                Ok(demote_real(self.builder, format, result))
-            }
-            solve::SolveScalarType::Integer(domain) => {
-                self.integer_binary(operator, domain, lhs, rhs)
-            }
-            solve::SolveScalarType::Boolean => Ok(match operator {
-                // MLS §10.3.4 orders `false < true`: the least of two Booleans
-                // is their conjunction and the greatest their disjunction.
-                solve::SolveBinaryOperator::And | solve::SolveBinaryOperator::Min => {
-                    self.builder.ins().band(lhs, rhs)
-                }
-                solve::SolveBinaryOperator::Or | solve::SolveBinaryOperator::Max => {
-                    self.builder.ins().bor(lhs, rhs)
-                }
-                _ => {
-                    return Err(CompileError::Backend(
-                        "invalid typed Boolean binary operator".into(),
-                    ));
-                }
-            }),
-        }
-    }
-
-    fn compare_element(
-        &mut self,
-        operator: solve::SolveCompareOperator,
-        scalar: solve::SolveScalarType,
-        lhs: Value,
-        rhs: Value,
-    ) -> Value {
-        match scalar {
-            solve::SolveScalarType::Real { format, .. } => {
-                let lhs = promote_real(self.builder, format, lhs);
-                let rhs = promote_real(self.builder, format, rhs);
-                self.builder
-                    .ins()
-                    .fcmp(map_float_compare(operator), lhs, rhs)
-            }
-            solve::SolveScalarType::Integer(_) => {
-                self.builder.ins().icmp(map_int_compare(operator), lhs, rhs)
-            }
-            solve::SolveScalarType::Boolean => {
-                let code = if operator == solve::SolveCompareOperator::Equal {
-                    IntCC::Equal
-                } else {
-                    IntCC::NotEqual
-                };
-                self.builder.ins().icmp(code, lhs, rhs)
-            }
-        }
-    }
-
-    fn convert_element(
-        &mut self,
-        operator: solve::SolveConversionOperator,
-        source: solve::SolveScalarType,
-        destination: &solve::SolveValueType,
-        value: Value,
-    ) -> Result<Value, CompileError> {
-        Ok(match operator {
-            solve::SolveConversionOperator::IntegerToReal => {
-                let value = self.builder.ins().fcvt_from_sint(types::F64, value);
-                match destination.element_type() {
-                    solve::SolveScalarType::Real { format, .. } => {
-                        demote_real(self.builder, format, value)
-                    }
-                    _ => {
-                        return Err(CompileError::Backend(
-                            "invalid Integer-to-Real destination".into(),
-                        ));
-                    }
-                }
-            }
-            solve::SolveConversionOperator::RealToIntegerTowardZero => {
-                let source = promote_conversion_source(self.builder, source, value)?;
-                self.builder.ins().fcvt_to_sint(types::I64, source)
-            }
-            solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity => {
-                let source = promote_conversion_source(self.builder, source, value)?;
-                let floored = emit_unary_op(
-                    self.builder,
-                    self.module,
-                    self.math,
-                    rumoca_ir_solve::UnaryOp::Floor,
-                    source,
-                )?;
-                self.builder.ins().fcvt_to_sint(types::I64, floored)
-            }
-        })
-    }
+    )
 }
 
 fn scalar_cranelift_type(scalar: solve::SolveScalarType) -> Type {
