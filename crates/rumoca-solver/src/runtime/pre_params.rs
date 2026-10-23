@@ -1,8 +1,8 @@
+mod history_ranges;
+
 use rumoca_ir_solve as solve;
 
-use super::event_history::{
-    EventIterationLane, advance_event_iteration_lanes, event_iteration_value_is_valid,
-};
+use super::event_history::event_iteration_value_is_valid;
 use crate::RuntimeSolveError;
 
 pub fn write_pre_params_from_sources(
@@ -37,56 +37,7 @@ pub fn advance_event_iteration_pre_params(
     source_p: &[f64],
     params: &mut [f64],
 ) -> Result<bool, RuntimeSolveError> {
-    let plan = &model.problem.discrete.event_iteration_plan;
-    let mut lanes = Vec::new();
-    for (run_index, run) in plan.runs.iter().enumerate() {
-        let storage = &model.problem.solve_layout.variable_storage_runs[run.variable];
-        let value_kind = storage
-            .event_iteration_kind()
-            .expect("validated event plan references a typed discrete variable");
-        let fixed_point = event_iteration_run_clock(model, run)?.is_none();
-        for binding_offset in 0..storage.scalar_count {
-            let binding_index = run.pre_binding_start + binding_offset;
-            let binding = model
-                .problem
-                .solve_layout
-                .pre_param_bindings
-                .get(binding_index)
-                .ok_or_else(|| {
-                    RuntimeSolveError::solve_ir(format!(
-                        "event-iteration run {run_index} binding {binding_index} is out of bounds"
-                    ))
-                })?;
-            let value = pre_binding_source_value(binding, source_y, source_p).ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "event-iteration run {run_index} current source is out of bounds"
-                ))
-            })?;
-            validate_event_iteration_value(value_kind, value, run_index, "current")?;
-            let pre = params.get(binding.dest_p_index).copied().ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "event-iteration run {run_index} pre parameter {} is outside {} parameters",
-                    binding.dest_p_index,
-                    params.len()
-                ))
-            })?;
-            validate_event_iteration_value(value_kind, pre, run_index, "pre")?;
-            lanes.push(EventIterationLane {
-                dest_p_index: binding.dest_p_index,
-                current: value,
-                pre,
-                value_kind,
-                fixed_point,
-            });
-        }
-    }
-    let changed = advance_event_iteration_lanes(&mut lanes).map_err(|()| {
-        RuntimeSolveError::solve_ir("event-iteration plan contains an invalid typed value")
-    })?;
-    for lane in lanes.into_iter().filter(|lane| lane.fixed_point) {
-        params[lane.dest_p_index] = lane.pre;
-    }
-    Ok(changed)
+    history_ranges::advance(model, source_y, source_p, params)
 }
 
 /// Seed ordinary `pre` lanes from the exact event-entry snapshots.
@@ -100,7 +51,6 @@ pub fn seed_event_entry_pre_params(
     event_pre_p: &[f64],
     params: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
-    let mut writes = Vec::new();
     for (binding_index, binding) in model
         .problem
         .solve_layout
@@ -109,22 +59,27 @@ pub fn seed_event_entry_pre_params(
         .enumerate()
         .filter(|(_, binding)| binding.clock_schedule.is_none())
     {
-        let value =
-            pre_binding_source_value(binding, event_pre_y, event_pre_p).ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "event-entry pre binding {binding_index} source is out of bounds"
-                ))
-            })?;
+        pre_binding_source_value(binding, event_pre_y, event_pre_p).ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "event-entry pre binding {binding_index} source is out of bounds"
+            ))
+        })?;
         if binding.dest_p_index >= params.len() {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "event-entry pre binding {binding_index} destination {} is out of bounds",
                 binding.dest_p_index
             )));
         }
-        writes.push((binding.dest_p_index, value));
     }
-    for (destination, value) in writes {
-        params[destination] = value;
+    for binding in model
+        .problem
+        .solve_layout
+        .pre_param_bindings
+        .iter()
+        .filter(|binding| binding.clock_schedule.is_none())
+    {
+        params[binding.dest_p_index] = pre_binding_source_value(binding, event_pre_y, event_pre_p)
+            .expect("event-entry source bounds were checked before publication");
     }
     Ok(())
 }

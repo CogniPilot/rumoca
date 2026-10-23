@@ -129,6 +129,80 @@ fn scalar_integer_payload_native_row_refuses_inexact_inputs_and_outputs() {
 }
 
 #[test]
+fn large_real_payload_ranges_keep_mixed_integer_offsets_and_refusals() {
+    let count = 270_347;
+    let profile =
+        SolveArithmeticProfile::construct(SolveRealFormat::Binary64, SolveIntegerDomain::FULL);
+    let integer = SolveValueType::scalar(SolveScalarType::integer(profile));
+    let real = SolveValueType::tensor(SolveScalarType::real(profile), vec![count as u32]).unwrap();
+    let span = fixture_span();
+    let table = SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
+            vec![integer.clone(), real.clone()],
+            vec![
+                SolvePureCallOutput::result(real),
+                SolvePureCallOutput::result(integer),
+            ],
+            span,
+            |program, inputs, outputs| {
+                let integer = program.load(inputs[0], span)?;
+                let real = program.load(inputs[1], span)?;
+                program.store(outputs[0], real, span)?;
+                program.store(outputs[1], integer, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let source = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::TensorLoad {
+                dst_start: 1,
+                input: rumoca_ir_solve::TensorInputKind::P,
+                input_start: 1,
+                count,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::PureCall {
+                dst_start: count as u32 + 1,
+                input_starts: vec![0, 1].into_boxed_slice(),
+                site: table.owners()[0].call_site(),
+            },
+            LinearOp::StoreOutputRange {
+                start: count as u32 + 1,
+                count: count + 1,
+                stride: 1,
+            },
+        ]],
+        span.require_provenance("large typed range").unwrap(),
+    )
+    .unwrap();
+    let calls = compile_pure_call_table(&table).unwrap();
+    let compiled =
+        compile_expression_scalar_program_block_with_pure_calls(&source, &calls).unwrap();
+    for value in [-0.0_f64, 1.25] {
+        let mut parameters = vec![value; count + 1];
+        parameters[0] = 7.0;
+        let mut output = vec![f64::NAN; count + 1];
+        compiled.call(&[], &parameters, 0.0, &mut output).unwrap();
+        assert!(
+            output[..count]
+                .iter()
+                .all(|actual| actual.to_bits() == value.to_bits())
+        );
+        assert_eq!(output[count], 7.0);
+        parameters[0] = 0.5;
+        let error = compiled
+            .call(&[], &parameters, 0.0, &mut output)
+            .unwrap_err();
+        assert!(error.to_string().contains("scalar ABI"));
+    }
+}
+
+#[test]
 fn scalar_integer_payload_native_row_enforces_the_declared_integer_domain() {
     let table = owner(SolveIntegerDomain::construct(-10, 10).unwrap(), false);
     let site = table.owners()[0].call_site();

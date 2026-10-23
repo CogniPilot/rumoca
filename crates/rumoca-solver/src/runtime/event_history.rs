@@ -1,10 +1,12 @@
+#[cfg(test)]
+mod tests;
+
 use rumoca_ir_solve as solve;
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct EventIterationLane {
-    pub(crate) dest_p_index: usize,
-    pub(crate) current: f64,
-    pub(crate) pre: f64,
+#[derive(Debug)]
+pub(crate) struct EventIterationRange<'a> {
+    pub(crate) current: &'a [f64],
+    pub(crate) pre: &'a mut [f64],
     pub(crate) value_kind: solve::EventIterationValueKind,
     pub(crate) fixed_point: bool,
 }
@@ -14,17 +16,30 @@ pub(crate) struct EventIterationLane {
 /// Validation completes before the first write. Fixed-point lanes advance to
 /// their current value; clock-owned first-pass and excluded continuous lanes
 /// remain unchanged.
-pub(crate) fn advance_event_iteration_lanes(lanes: &mut [EventIterationLane]) -> Result<bool, ()> {
-    if lanes.iter().any(|lane| {
-        !event_iteration_value_is_valid(lane.value_kind, lane.current)
-            || !event_iteration_value_is_valid(lane.value_kind, lane.pre)
+pub(crate) fn advance_event_iteration_ranges(
+    ranges: &mut [EventIterationRange<'_>],
+) -> Result<bool, ()> {
+    if ranges.iter().any(|range| {
+        range.current.len() != range.pre.len()
+            || range
+                .current
+                .iter()
+                .zip(range.pre.iter())
+                .any(|(&current, &pre)| {
+                    !event_iteration_value_is_valid(range.value_kind, current)
+                        || !event_iteration_value_is_valid(range.value_kind, pre)
+                })
     }) {
         return Err(());
     }
     let mut changed = false;
-    for lane in lanes.iter_mut().filter(|lane| lane.fixed_point) {
-        changed |= lane.current != lane.pre;
-        lane.pre = lane.current;
+    for range in ranges.iter_mut().filter(|range| range.fixed_point) {
+        changed |= range
+            .current
+            .iter()
+            .zip(range.pre.iter())
+            .any(|(current, pre)| current != pre);
+        range.pre.copy_from_slice(range.current);
     }
     Ok(changed)
 }

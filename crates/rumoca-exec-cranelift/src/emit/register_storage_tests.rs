@@ -217,3 +217,45 @@ fn full_width_tapes_execute_assignments_residual_batches_and_jvp_on_default_stac
         assert_eq!(direction.map(f64::to_bits), expected);
     }
 }
+
+#[test]
+fn large_contiguous_output_ranges_compile_and_preserve_batch_offsets_and_bits() {
+    let count = 270_347;
+    let row = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::P,
+            input_start: 0,
+            count,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput {
+            src: count as u32 - 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 1,
+            count: count - 2,
+            stride: 1,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let compiled = compile_residual_rows(&[row.clone(), row]).unwrap();
+    for scale in [-0.0_f64, 1.25, -7.0] {
+        let mut parameters = vec![scale; count];
+        parameters[0] = -scale;
+        parameters[count - 1] = scale * 2.0;
+        let mut expected = parameters.clone();
+        expected.swap(0, count - 1);
+        let mut output = vec![f64::NAN; 2 * count];
+        compiled.call(&[], &parameters, 0.0, &mut output).unwrap();
+        for batch in output.chunks_exact(count) {
+            assert!(
+                batch
+                    .iter()
+                    .zip(&expected)
+                    .all(|(actual, expected)| { actual.to_bits() == expected.to_bits() })
+            );
+        }
+    }
+}

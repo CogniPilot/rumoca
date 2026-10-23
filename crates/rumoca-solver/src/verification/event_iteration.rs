@@ -3,7 +3,7 @@
 
 use rumoca_ir_solve::EventIterationValueKind;
 
-use crate::runtime::event_history::{EventIterationLane, advance_event_iteration_lanes};
+use crate::runtime::event_history::{EventIterationRange, advance_event_iteration_ranges};
 
 const LANE_COUNT: usize = 3;
 
@@ -39,42 +39,43 @@ fn property_atomic_fixed_point_pre_advance(
     flags: [bool; LANE_COUNT * 3],
     inject_invalid: bool,
 ) {
-    let mut lanes: [EventIterationLane; LANE_COUNT] = std::array::from_fn(|index| {
-        let kind = kind_from_index(kinds[index]);
-        EventIterationLane {
-            dest_p_index: index,
-            current: typed_value(kind, numerics[index], flags[index]),
-            pre: typed_value(
-                kind,
-                numerics[LANE_COUNT + index],
-                flags[LANE_COUNT + index],
-            ),
-            value_kind: kind,
-            fixed_point: flags[LANE_COUNT * 2 + index],
-        }
+    let mut current: [f64; LANE_COUNT] = std::array::from_fn(|index| {
+        typed_value(kind_from_index(kinds[index]), numerics[index], flags[index])
+    });
+    let mut pre: [f64; LANE_COUNT] = std::array::from_fn(|index| {
+        typed_value(
+            kind_from_index(kinds[index]),
+            numerics[LANE_COUNT + index],
+            flags[LANE_COUNT + index],
+        )
     });
     if inject_invalid {
-        lanes[LANE_COUNT - 1].current = f64::NAN;
+        current[LANE_COUNT - 1] = f64::NAN;
     }
-    let before = lanes;
-    let result = advance_event_iteration_lanes(&mut lanes);
+    let before = pre;
+    let mut ranges = pre
+        .iter_mut()
+        .enumerate()
+        .map(|(index, pre)| EventIterationRange {
+            current: &current[index..index + 1],
+            pre: std::slice::from_mut(pre),
+            value_kind: kind_from_index(kinds[index]),
+            fixed_point: flags[LANE_COUNT * 2 + index],
+        })
+        .collect::<Vec<_>>();
+    let result = advance_event_iteration_ranges(&mut ranges);
+    drop(ranges);
     #[cfg(kani)]
     kani::cover!(inject_invalid, "typed input rejection is reachable");
     if inject_invalid {
-        assert!(result.is_err(), "an invalid typed lane must reject");
-        for (actual, expected) in lanes.iter().zip(before) {
-            assert_eq!(actual.current.to_bits(), expected.current.to_bits());
-            assert_eq!(actual.pre.to_bits(), expected.pre.to_bits());
-            assert_eq!(actual.dest_p_index, expected.dest_p_index);
-            assert_eq!(actual.value_kind, expected.value_kind);
-            assert_eq!(actual.fixed_point, expected.fixed_point);
+        assert!(result.is_err(), "an invalid typed range must reject");
+        for (actual, expected) in pre.iter().zip(before) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
         }
         return;
     }
-
-    let expected_changed = before
-        .iter()
-        .any(|lane| lane.fixed_point && lane.current != lane.pre);
+    let expected_changed = (0..LANE_COUNT)
+        .any(|index| flags[LANE_COUNT * 2 + index] && current[index] != before[index]);
     #[cfg(kani)]
     kani::cover!(
         expected_changed,
@@ -86,16 +87,13 @@ fn property_atomic_fixed_point_pre_advance(
         "a successful already-settled advance is reachable"
     );
     assert_eq!(result, Ok(expected_changed));
-    for (actual, expected) in lanes.iter().zip(before) {
-        assert_eq!(actual.current.to_bits(), expected.current.to_bits());
-        assert_eq!(actual.dest_p_index, expected.dest_p_index);
-        assert_eq!(actual.value_kind, expected.value_kind);
-        assert_eq!(actual.fixed_point, expected.fixed_point);
-        if actual.fixed_point {
-            assert_eq!(actual.current, actual.pre);
+    for index in 0..LANE_COUNT {
+        let expected = if flags[LANE_COUNT * 2 + index] {
+            current[index]
         } else {
-            assert_eq!(actual.pre.to_bits(), expected.pre.to_bits());
-        }
+            before[index]
+        };
+        assert_eq!(pre[index].to_bits(), expected.to_bits());
     }
 }
 

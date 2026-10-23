@@ -99,6 +99,8 @@ Solve keeps compact Map and AffineStencil tensor nodes; scalar rows are derived 
 | Solve tensor scalar-view generation | `rumoca-eval-solve` | Shared fallback boundary |
 | Instance family/connection scalar views | `rumoca-eval-ast` | AST IR stays data-only |
 | Native tensor rendering | backend/codegen target | Target-local optimization |
+| A memory-backed contiguous output range, including a Binary64 pure-call payload whose encoding is the identity, is transferred by a bounded emitted loop; its extent does not issue one native store instruction per cell. Other typed payloads retain their exact conversion and refusal rules | Native scalar-program output and call boundaries | Compact source ranges must not become functions whose code size grows with array width |
+| Event-history execution may borrow the checked event-iteration owner's contiguous current/pre ranges. It validates the complete typed input before publication, preserves the issued clock policy and numeric equality, and creates no temporary per-cell history inventory | Shared event-history kernel and its runtime adapter | Array-sized data transfers do not require array-sized transient metadata |
 
 Name resolution, parameter-bound evaluation, zero-size handling, and ordering
 normalization are phase/evaluation behavior, not IR-crate behavior.
