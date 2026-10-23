@@ -32,6 +32,7 @@ pub(crate) mod observation_carrier;
 mod owned_jit_module;
 mod projection_batch;
 pub(crate) mod projection_jacobian;
+mod register_allocation;
 mod register_constants;
 mod register_storage;
 #[cfg(test)]
@@ -1423,8 +1424,7 @@ impl CraneliftEmitter {
             drop(lower);
             fb.finalize();
         }
-        self.module
-            .define_function(function, &mut context)
+        register_allocation::define_function(&mut *self.module, function, &mut context)
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(function)
@@ -1527,8 +1527,7 @@ impl CraneliftEmitter {
             drop(lower);
             fb.finalize();
         }
-        self.module
-            .define_function(function, &mut context)
+        register_allocation::define_function(&mut *self.module, function, &mut context)
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(function)
@@ -1640,8 +1639,7 @@ impl CraneliftEmitter {
             fb.finalize();
         }
 
-        self.module
-            .define_function(func_id, &mut context)
+        register_allocation::define_function(&mut *self.module, func_id, &mut context)
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
@@ -1763,8 +1761,7 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        self.module
-            .define_function(func_id, &mut context)
+        register_allocation::define_function(&mut *self.module, func_id, &mut context)
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
@@ -1837,8 +1834,7 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        self.module
-            .define_function(func_id, &mut context)
+        register_allocation::define_function(&mut *self.module, func_id, &mut context)
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
@@ -1932,8 +1928,7 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        self.module
-            .define_function(func_id, &mut context)
+        register_allocation::define_function(&mut *self.module, func_id, &mut context)
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
