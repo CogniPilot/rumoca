@@ -35,7 +35,14 @@ pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
     ]
     .map(|(call, address)| (libcall_names(call), address));
     let mut builder = JITBuilder::with_flags(
-        &[("opt_level", "speed"), ("enable_verifier", JIT_VERIFIER)],
+        &[
+            ("opt_level", "speed"),
+            ("enable_verifier", JIT_VERIFIER),
+            // Probe every frame larger than the guard page, so a large frame
+            // cannot step past it whichever register allocator formed it.
+            ("enable_probestack", "true"),
+            ("probestack_strategy", "inline"),
+        ],
         libcall_names,
     )
     .map_err(to_backend_err)?;
