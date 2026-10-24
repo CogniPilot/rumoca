@@ -1173,19 +1173,28 @@ fn lower_algorithm_when<'dae>(
             )?;
         }
     }
-    for (block, guard) in guarded_blocks {
+    for (block, guard) in &guarded_blocks {
         let mut branch_values = values.clone();
         lower_algorithm_statements(
             construction,
             discrete_values,
             environment,
             AlgorithmOwner {
-                parent: Some(guard),
+                parent: Some(*guard),
                 span,
                 ..owner
             },
             &mut branch_values,
             &block.stmts,
+        )?;
+    }
+    if let Some(owner) = owner.discrete_owner {
+        discrete_values.retain_when_branches(
+            owner,
+            &guarded_blocks
+                .iter()
+                .map(|(_, guard)| *guard)
+                .collect::<Vec<_>>(),
         )?;
     }
     Ok(())

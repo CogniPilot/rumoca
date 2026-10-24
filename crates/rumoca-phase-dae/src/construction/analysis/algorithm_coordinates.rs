@@ -2,59 +2,84 @@
 use std::borrow::Cow;
 
 use super::*;
-use rumoca_core::{ComponentReference, ExpressionRewriter, StatementRewriter};
+use rumoca_core::{ComponentReference, FallibleExpressionRewriter, FallibleStatementRewriter};
+
+/// The Flat model every analysis and the construction read: carrying
+/// algorithm loops unrolled and structural selections applied (SPEC_0040
+/// DAE-C22), both from one model-scope shape analysis, with algorithm targets
+/// resolved to declared storage coordinates. Borrowed when no change is needed.
+pub(in crate::construction) fn prepared_flat(
+    flat: &flat::Model,
+) -> Result<std::borrow::Cow<'_, flat::Model>, ToDaeError> {
+    let carrying = model_algorithm_loops::has_carrying_loops(flat);
+    if !carrying && !has_decidable_conditionals(flat) {
+        return resolve_algorithm_coordinates(std::borrow::Cow::Borrowed(flat));
+    }
+    let constants = constant_context(flat)?;
+    let evaluable = evaluable_parameters(flat);
+    let shapes = FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
+    let unrolled =
+        model_algorithm_loops::unroll_carrying_algorithm_loops(flat, shapes.model_values())?;
+    resolve_algorithm_coordinates(select_structural_branches(unrolled, shapes.model_values()))
+}
 
 /// All algorithm consumers must see the same storage coordinate. A literal
 /// index in a declared component path is part of its identity, not an element
 /// update on the declared variable (MLS 11.1.2, 10.5).
-pub(super) fn resolve_algorithm_coordinates(
+fn resolve_algorithm_coordinates(
     mut flat: Cow<'_, flat::Model>,
-) -> Cow<'_, flat::Model> {
+) -> Result<Cow<'_, flat::Model>, ToDaeError> {
     let mut resolver = Coordinates { flat: &flat };
-    let updates = flat
-        .algorithms
-        .iter()
-        .enumerate()
-        .filter_map(|(index, algorithm)| {
-            let statements = resolver.rewrite_statements(&algorithm.statements);
-            (statements != algorithm.statements).then_some((index, statements))
-        })
-        .collect::<Vec<_>>();
+    let mut updates = Vec::new();
+    for (index, algorithm) in flat.algorithms.iter().enumerate() {
+        let statements = resolver.rewrite_statements(&algorithm.statements)?;
+        if statements != algorithm.statements {
+            updates.push((index, statements));
+        }
+    }
     for (index, statements) in updates {
         let algorithm = &mut flat.to_mut().algorithms[index];
         algorithm.outputs = rumoca_core::extract_algorithm_outputs(&statements);
         algorithm.statements = statements;
     }
-    flat
+    Ok(flat)
 }
 
 struct Coordinates<'a> {
     flat: &'a flat::Model,
 }
 
-impl ExpressionRewriter for Coordinates<'_> {
-    fn rewrite_expression(&mut self, expression: &Expression) -> Expression {
-        expression.clone()
+impl FallibleExpressionRewriter for Coordinates<'_> {
+    type Error = ToDaeError;
+
+    fn rewrite_expression(&mut self, expression: &Expression) -> Result<Expression, Self::Error> {
+        Ok(expression.clone())
     }
 }
 
-impl StatementRewriter for Coordinates<'_> {
-    fn rewrite_statement(&mut self, statement: &rumoca_core::Statement) -> rumoca_core::Statement {
+impl FallibleStatementRewriter for Coordinates<'_> {
+    fn rewrite_statement(
+        &mut self,
+        statement: &rumoca_core::Statement,
+    ) -> Result<rumoca_core::Statement, Self::Error> {
         if matches!(statement, rumoca_core::Statement::Reinit { .. }) {
-            statement.clone()
+            Ok(statement.clone())
         } else {
             self.walk_statement(statement)
         }
     }
 
-    fn rewrite_reference(&mut self, reference: &rumoca_core::Reference) -> rumoca_core::Reference {
-        reference.clone()
+    fn rewrite_reference(
+        &mut self,
+        reference: &rumoca_core::Reference,
+    ) -> Result<rumoca_core::Reference, Self::Error> {
+        Ok(reference.clone())
     }
 
     fn rewrite_component_reference(
         &mut self,
         reference: &ComponentReference,
-    ) -> ComponentReference {
+    ) -> Result<ComponentReference, Self::Error> {
         let mut parts = reference.parts().to_vec();
         // Probe declared storage names with progressively materialized prefixes.
         // Only the matching prefix is consumed; later subscripts still index
@@ -78,9 +103,7 @@ impl StatementRewriter for Coordinates<'_> {
             parts[index].ident.push('[');
             parts[index].ident.push_str(&indices.join(","));
             parts[index].ident.push(']');
-            let candidate =
-                ComponentReference::construct(reference.local(), reference.span(), parts.clone())
-                    .expect("materializing indices preserves reference identities");
+            let candidate = replace_parts(reference, parts.clone())?;
             let name = candidate.to_var_name();
             if self.flat.variables.contains_key(&name)
                 || self.flat.record_instances.contains_key(&name)
@@ -89,13 +112,12 @@ impl StatementRewriter for Coordinates<'_> {
             }
         }
         let Some((last, mut parts)) = selected else {
-            return reference.clone();
+            return Ok(reference.clone());
         };
         for (part, original) in parts.iter_mut().zip(reference.parts()).skip(last + 1) {
             part.subs.clone_from(&original.subs);
         }
-        ComponentReference::construct(reference.local(), reference.span(), parts)
-            .expect("materializing indices preserves reference identities")
+        replace_parts(reference, parts)
     }
 }
 
@@ -111,4 +133,20 @@ fn literal_index(subscript: &Subscript) -> Option<String> {
         },
         Subscript::Colon { .. } => None,
     }
+}
+
+fn replace_parts(
+    reference: &ComponentReference,
+    parts: Vec<rumoca_core::ComponentRefPart>,
+) -> Result<ComponentReference, ToDaeError> {
+    reference
+        .with_replaced_parts(parts)
+        .map_err(|error| ToDaeError::UnsupportedAlgorithm {
+            section: "model".to_owned(),
+            origin: format!(
+                "invalid algorithm target {}: {error}",
+                reference.to_var_name()
+            ),
+            span: reference.span(),
+        })
 }

@@ -111,3 +111,84 @@ end CallAlgorithm;
     let wire = serde_json::to_string(&compiled.dae).unwrap();
     let _: rumoca_compile::compile::Dae = serde_json::from_str(&wire).unwrap();
 }
+
+const CONDITIONAL_HOLD: &str = r#"
+package ConditionalHold
+  model Cell
+    parameter Integer marker;
+    Integer x = if time < 1 then marker else marker+1;
+    Integer y(start=-1, fixed=true);
+    discrete Real deadline;
+  algorithm
+    when {initial(), change(x) and not initial()} then
+      deadline := if initial() then 1 else time+2;
+      if x < 0 then
+        y := x;
+      end if;
+    elsewhen time >= deadline then
+      y := x;
+    end when;
+  end Cell;
+  model Top
+    Cell cells[3](marker={10,20,30});
+  end Top;
+end ConditionalHold;
+"#;
+
+/// MLS 11.2.7: an active earlier when branch wins even when its nested if
+/// retains a target. Distinct cell inputs also check the actual RHS mapping.
+#[test]
+fn a_conditional_hold_blocks_a_simultaneous_elsewhen_per_cell() {
+    check_conditional_hold(CONDITIONAL_HOLD);
+}
+
+#[test]
+fn a_nested_elsewhen_cannot_overtake_an_earlier_conditional_hold() {
+    let source = CONDITIONAL_HOLD.replace(
+        "elsewhen time >= deadline then\n      y := x;",
+        "elsewhen time >= deadline then\n      if x > 0 then\n        y := x;\n      end if;",
+    );
+    check_conditional_hold(&source);
+}
+
+#[test]
+fn an_earlier_branch_without_a_target_write_still_blocks_elsewhen() {
+    let source =
+        CONDITIONAL_HOLD.replace("      if x < 0 then\n        y := x;\n      end if;\n", "");
+    check_conditional_hold(&source);
+}
+
+fn check_conditional_hold(source: &str) {
+    let compiled = Compiler::new()
+        .model("ConditionalHold.Top")
+        .compile_str(source, "ConditionalHold.mo")
+        .expect("the cell-local conditional holds compile");
+    let result = rumoca_sim::simulate_dae(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 4.0,
+            ..rumoca_sim::SimOptions::default()
+        },
+    )
+    .expect("the conditional hold model simulates");
+    for cell in 1..=3 {
+        let name = format!("cells[{cell}].y");
+        let column = result
+            .names
+            .iter()
+            .position(|value| value == &name)
+            .unwrap();
+        let mut checked_hold = false;
+        let mut checked_update = false;
+        for (time, actual) in result.times.iter().zip(&result.data[column]) {
+            if *time > 1.0 + 1e-6 && *time < 3.0 - 1e-6 {
+                assert_eq!(*actual, -1.0, "{name} must retain its value at {time}");
+                checked_hold = true;
+            } else if *time > 3.0 + 1e-6 {
+                assert_eq!(*actual, f64::from(cell * 10 + 1), "{name} at {time}");
+                checked_update = true;
+            }
+        }
+        assert!(checked_hold && checked_update, "both intervals are sampled");
+    }
+}
