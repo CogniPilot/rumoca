@@ -1652,7 +1652,7 @@ fn lower_guarded_targets<'dae>(
     // guarded-owner construction, not caller-supplied metadata. Keeping the
     // proof at this single boundary prevents a new DAE owner route from
     // silently constructing a hold-only program with the default plan fields.
-    plan_guarded_targets(view, targets);
+    plan_guarded_targets(view, targets)?;
     // SOLVE-C58 / MLS §8.5: the equations of one event instant are simultaneous, so a
     // producer is issued before every target that reads its current value, and
     // the runtime evaluates the issued programs in that order.
@@ -1823,7 +1823,10 @@ fn apply_permutation<T>(items: &mut [T], order: &[usize]) {
     }
 }
 
-fn plan_guarded_targets<'dae>(view: dae::DaeView<'dae>, targets: &mut [GuardedTarget<'dae>]) {
+fn plan_guarded_targets<'dae>(
+    view: dae::DaeView<'dae>,
+    targets: &mut [GuardedTarget<'dae>],
+) -> Result<(), LowerError> {
     for target in targets {
         let unconditional = target.clock.and_then(|(owner_clock, _)| {
             target.branches.iter().position(|&(_, guard, ..)| {
@@ -1838,9 +1841,27 @@ fn plan_guarded_targets<'dae>(view: dae::DaeView<'dae>, targets: &mut [GuardedTa
                 }
             })
         });
+        // A definition unconditional in its activation (the clock fallback, or
+        // a guard equal to its trigger) hides every later definition under the
+        // same trigger, which first-wins would never evaluate. DAE
+        // construction issues one definition per target and activation
+        // (MLS §11.1.2); anything else is refused rather than silently lost.
+        let hidden = target.branches.iter().enumerate().any(|(index, earlier)| {
+            (Some(index) == unconditional || earlier.1 == earlier.0)
+                && target.branches[index + 1..]
+                    .iter()
+                    .any(|later| later.0 == earlier.0)
+        });
+        if hidden {
+            return Err(LowerError::contract(
+                "an event target has a later definition in the same activation that would never be evaluated",
+                target.span,
+            ));
+        }
         target.dynamic_branch_count = unconditional.unwrap_or(target.branches.len());
         target.fallback_branch = unconditional;
     }
+    Ok(())
 }
 
 fn lower_time_events<'dae>(
