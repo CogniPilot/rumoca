@@ -111,3 +111,35 @@ fn a_direct_bench_uses_the_experiment_window() {
     assert_eq!(report["t_end"], 2.5, "{report}");
     assert_eq!(report["last_final_time"], 2.5, "{report}");
 }
+
+const SOLVER_SOURCE: &str = "model SolverFixture
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = -x;
+  annotation(experiment(StopTime = 0.5, Solver = \"rk-like\"));
+end SolverFixture;
+";
+
+/// The solver a direct bench reports, with any extra arguments.
+fn bench_solver(extra: &[&str]) -> serde_json::Value {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("SolverFixture.mo");
+    std::fs::write(&file, SOLVER_SOURCE).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .args(["sim", "bench"])
+        .arg(&file)
+        .args(["--model", "SolverFixture", "--iterations", "1", "--json"])
+        .args(extra)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    report["solver"].clone()
+}
+
+#[test]
+fn a_direct_bench_uses_the_experiment_solver() {
+    // As `rumoca sim` does: the annotation decides unless `--solver` is given.
+    assert_eq!(bench_solver(&[]), "rk-like");
+    assert_eq!(bench_solver(&["--solver", "bdf"]), "bdf");
+}

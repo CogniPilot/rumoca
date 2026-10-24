@@ -64,6 +64,7 @@ where
     }
     fn state_and_augmented_eqn_mut(&mut self) -> Option<(StateRefMut<'_, Eqn::V>, &mut AugEqn)> {
         self.is_state_modified = true;
+        self.accepted_extension = None;
         let state = self.state.as_mut();
         let augmented_eqn = self.s_op.as_mut().map(|op| &mut op.eqn)?;
         Some((state, augmented_eqn))
@@ -155,8 +156,26 @@ pub struct Bdf<
     tstop: Option<Eqn::T>,
     root_finder: Option<RootFinder<Eqn::V>>,
     is_state_modified: bool,
+    accepted_extension: Option<AcceptedExtension<M, Eqn::T>>,
     jacobian_update: JacobianUpdate<Eqn::T>,
     config: BdfConfig<Eqn::T>,
+}
+
+/// The continuous extension of the most recently accepted step.
+///
+/// After accepting a step, `step` rescales the difference table for the next
+/// step, and a nearby hard stop can shrink it by orders of magnitude.
+/// Evaluating the previous accepted point from that table extrapolates far
+/// outside its nodes, which amplifies rounding error by roughly
+/// `(h_old / h_new)^order`. Interpolation within the accepted step is therefore
+/// served from this copy, taken immediately after the accepted difference
+/// update, while the state is still at that step.
+#[derive(Clone)]
+struct AcceptedExtension<M, T> {
+    diff: M,
+    t: T,
+    h: T,
+    order: usize,
 }
 
 impl<M, Eqn, Nls, AugmentedEqn> Clone for Bdf<'_, Eqn, Nls, M, AugmentedEqn>
@@ -209,6 +228,7 @@ where
             tstop: self.tstop,
             root_finder: self.root_finder.clone(),
             is_state_modified: self.is_state_modified,
+            accepted_extension: self.accepted_extension.clone(),
             jacobian_update: self.jacobian_update.clone(),
             config: self.config.clone(),
         }
@@ -363,6 +383,7 @@ where
             tstop: None,
             root_finder,
             is_state_modified,
+            accepted_extension: None,
             jacobian_update: JacobianUpdate::new(&problem.ode_options),
             config,
         })
@@ -751,6 +772,42 @@ where
         self.u = Self::_compute_r(1, Eqn::T::one(), self.problem().eqn.context().clone());
 
         self.is_state_modified = false;
+        self.accepted_extension = None;
+    }
+
+    /// Keep the accepted step's own interpolant before the order and step size
+    /// are chosen for the next step.
+    fn retain_accepted_extension(&mut self) {
+        let state = &self.state;
+        if let Some(extension) = self.accepted_extension.as_mut() {
+            if extension.diff.nrows() == state.diff.nrows()
+                && extension.diff.ncols() == state.diff.ncols()
+            {
+                extension.diff.copy_from(&state.diff);
+                extension.t = state.t;
+                extension.h = state.h;
+                extension.order = state.order;
+                return;
+            }
+        }
+        self.accepted_extension = Some(AcceptedExtension {
+            diff: state.diff.clone(),
+            t: state.t,
+            h: state.h,
+            order: state.order,
+        });
+    }
+
+    /// The difference table, anchor time, step size and order that describe
+    /// the solution over the current accepted step.
+    fn current_extension(&self) -> (&M, Eqn::T, Eqn::T, usize) {
+        let state = &self.state;
+        match self.accepted_extension.as_ref() {
+            Some(extension) if extension.t == state.t => {
+                (&extension.diff, extension.t, extension.h, extension.order)
+            }
+            _ => (&state.diff, state.t, state.h, state.order),
+        }
     }
 
     //interpolate solution at time values t* where t-h < t* < t
@@ -1036,6 +1093,7 @@ where
         );
         let old_order = self.state.order;
         self.state = state;
+        self.accepted_extension = None;
 
         if let Some(op) = self.op.as_mut() {
             op.set_c(self.state.h, self.alpha[self.state.order]);
@@ -1081,7 +1139,8 @@ where
         if (is_forward && t > state.t) || (!is_forward && t < state.t) {
             return Err(ode_solver_error!(InterpolationTimeAfterCurrentTime));
         }
-        Self::interpolate_from_diff(t, &state.diff, state.t, state.h, state.order, y);
+        let (diff, t1, h, order) = self.current_extension();
+        Self::interpolate_from_diff(t, diff, t1, h, order, y);
         Ok(())
     }
 
@@ -1107,7 +1166,8 @@ where
         if (is_forward && t > state.t) || (!is_forward && t < state.t) {
             return Err(ode_solver_error!(InterpolationTimeAfterCurrentTime));
         }
-        Self::interpolate_derivative_from_diff(t, &state.diff, state.t, state.h, state.order, dy);
+        let (diff, t1, h, order) = self.current_extension();
+        Self::interpolate_derivative_from_diff(t, diff, t1, h, order, dy);
         Ok(())
     }
 
@@ -1196,12 +1256,14 @@ where
     }
 
     fn into_state(mut self) -> BdfState<Eqn::V, M> {
+        self.accepted_extension = None;
         let ctx = self.problem().eqn.context().clone();
         std::mem::replace(&mut self.state, BdfState::new_empty(ctx))
     }
 
     fn state_mut(&mut self) -> StateRefMut<'_, Eqn::V> {
         self.is_state_modified = true;
+        self.accepted_extension = None;
         self.state.as_mut()
     }
 
@@ -1238,6 +1300,7 @@ where
         }
         state.t = t;
         self.is_state_modified = true;
+        self.accepted_extension = None;
         Ok(())
     }
 
@@ -1460,6 +1523,7 @@ where
             state.dy.copy_from_view(&state.diff.column(1));
             state.dy *= scale(Eqn::T::one() / state.h);
         }
+        self.retain_accepted_extension();
 
         // update statistics
         if let Some(op) = self.op.as_ref() {

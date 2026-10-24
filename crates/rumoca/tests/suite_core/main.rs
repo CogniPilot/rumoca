@@ -52,6 +52,7 @@ mod array_subscript_test;
 mod assertion_warning_level;
 mod backend_executor_differential;
 mod balance_diagnostic;
+mod bdf_episode_reset_intervals;
 mod bilinear_function_constraint;
 mod call_actual_faults;
 mod call_owner_refresh_units;
