@@ -61,7 +61,8 @@ pub struct SimBenchArgs {
     pub(crate) rtol: Option<f64>,
 
     /// Solver mode. Hot benchmarking uses the prepared BDF/diffsol path or the
-    /// reusable rk-like session, depending on this selection.
+    /// reusable rk-like session, depending on this selection. Direct runs
+    /// default to the model's `experiment(Solver)`, as `rumoca sim` does.
     #[arg(long, value_enum)]
     pub(crate) solver: Option<BenchSolverMode>,
 
@@ -100,8 +101,7 @@ struct BenchInput {
     dt: Option<f64>,
     atol: Option<f64>,
     rtol: Option<f64>,
-    solver_mode: SimSolverMode,
-    solver_label: String,
+    solver: BenchSolver,
 }
 
 /// How a bench run finds its time window.
@@ -111,6 +111,31 @@ enum BenchWindow {
     Experiment { t_end: Option<f64> },
     /// A scenario run: its configured end, starting at 0.
     Configured { t_end: f64 },
+}
+
+/// How a bench run chooses its solver.
+enum BenchSolver {
+    /// A direct run: `--solver` if given, otherwise the model's
+    /// `experiment(Solver)`, resolved after compilation exactly as `rumoca sim`
+    /// resolves it.
+    Experiment(Option<SimulateSolverMode>),
+    /// A scenario run: its configured solver.
+    Configured { mode: SimSolverMode, label: String },
+}
+
+impl BenchSolver {
+    fn resolve(&self, result: &crate::DaeCompilationResult) -> Result<(SimSolverMode, String)> {
+        match self {
+            Self::Experiment(solver) => {
+                let solver = crate::cli::simulate_solver_or_auto(
+                    *solver,
+                    result.experiment_solver.as_deref(),
+                )?;
+                Ok((solver.into(), solver.as_label().to_string()))
+            }
+            Self::Configured { mode, label } => Ok((*mode, label.clone())),
+        }
+    }
 }
 
 impl BenchWindow {
@@ -183,11 +208,12 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     let compile_elapsed = compile_start.elapsed();
 
     let (t_start, t_end) = bench.window.resolve(&result);
+    let (solver_mode, solver_label) = bench.solver.resolve(&result)?;
     let mut opts = SimOptions {
         t_start,
         t_end,
         dt: bench.dt,
-        solver_mode: bench.solver_mode,
+        solver_mode,
         ..SimOptions::default()
     };
     if let Some(atol) = bench.atol {
@@ -231,7 +257,7 @@ pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
     let sim_span = (opts.t_end - opts.t_start).abs();
     let report = SimBenchReport {
         model,
-        solver: bench.solver_label,
+        solver: solver_label,
         t_end: opts.t_end,
         dt: opts.dt,
         iterations: args.iterations,
@@ -337,7 +363,6 @@ fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
         return resolve_config_bench_input(args, config_path);
     }
 
-    let solver: SimulateSolverMode = args.solver.map_or(SimulateSolverMode::Auto, Into::into);
     let model_file = args
         .model_file
         .clone()
@@ -351,8 +376,7 @@ fn resolve_bench_input(args: &SimBenchArgs) -> Result<BenchInput> {
         dt: args.dt,
         atol: args.atol,
         rtol: args.rtol,
-        solver_mode: solver.into(),
-        solver_label: solver.as_label().to_string(),
+        solver: BenchSolver::Experiment(args.solver.map(Into::into)),
     })
 }
 
@@ -413,8 +437,10 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
         dt: args.dt.or(Some(config.sim.dt)),
         atol: args.atol.or(config.sim.atol),
         rtol: args.rtol.or(config.sim.rtol),
-        solver_mode: SimSolverMode::from_external_name(&solver_label),
-        solver_label,
+        solver: BenchSolver::Configured {
+            mode: SimSolverMode::from_external_name(&solver_label),
+            label: solver_label,
+        },
     })
 }
 

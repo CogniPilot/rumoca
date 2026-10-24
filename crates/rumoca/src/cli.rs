@@ -1509,7 +1509,7 @@ fn inspect_at_spec(at: Option<&str>) -> &str {
 /// explicit / artificial-compressibility schemes the implicit auto path cannot
 /// step, and silently ignoring a misspelling of that would run them on the
 /// solver they specifically asked not to use.
-fn simulate_solver_or_auto(
+pub(crate) fn simulate_solver_or_auto(
     solver: Option<SimulateSolverMode>,
     experiment_solver: Option<&str>,
 ) -> Result<SimulateSolverMode> {

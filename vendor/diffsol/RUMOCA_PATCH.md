@@ -81,6 +81,38 @@ with persistent failures. Upstream commit
 `crates/diffsol/src/ode_solver/bdf.rs`. A per-step convergence-failure budget is
 also the documented [CVODE recovery contract](https://sundials.readthedocs.io/en/v7.5.0/cvode/Usage/).
 
+The fifth correction keeps the continuous extension of the accepted step.
+After accepting a step, `step` may change the order and rescales the backward
+differences to the next step size, and its closing `handle_tstop` rescales them
+again so that the next step lands on a nearby hard stop. `interpolate` evaluated
+that next-step table. In exact arithmetic every rescale re-represents the same
+polynomial, but evaluating the previous accepted point from a table rescaled to a
+much smaller step is an extrapolation far outside its nodes: at order k the
+interpolation weights grow like (h_old / h_new)^k / k!, which amplifies the
+table's rounding error. A stage-instrumented run of `CanyonRun.Run` under BDF
+showed the accepted update, the order change and the
+step-size rescale all exact to 1e-8; only the closing stop clamp, which shrank
+the step from about 0.015 to 5.93e-6 at order 5 (about 1e14 amplification),
+moved the previous-point value, by 2.0e-4 on a state of 63.6. The Rumoca host
+requires both endpoints of every accepted interval to agree with the accepted
+states, so the run failed its left-endpoint check at t = 20.085 with a relative
+disagreement of about 3e-6 against a bound of 1e-6. The patch copies the
+differences, step size and order immediately after the accepted difference
+update. While the state remains at that step, `interpolate` and
+`interpolate_dy` use the copy, which reproduces the previous accepted point
+exactly (`D0 - D1` is the previous column zero, and every higher term vanishes
+there). Any state change or replacement discards the copy. Output and
+sensitivity interpolation, and `state_mut_back`, are unchanged.
+
+The direct dependency regression is
+`rumoca-solver-diffsol/src/me_integrator/tests.rs::native_bdf_previous_point_matches_its_continuous_extension`.
+It requires at least one order change, and also checks the previous point after
+a hard stop just beyond the accepted time shrinks the step at order four or
+more. The source-level regressions are
+`rumoca/tests/suite_core/bdf_episode_reset_intervals.rs`: periodic episode
+resets under a sampled controller, and the same run split into differently
+sized advance calls.
+
 The workspace patch makes local, CI, native, and Wasm builds use the same
 corrected source. A registry-published Rumoca crate cannot rely on a workspace
 `[patch]`: registry publication still requires an upstream release containing
