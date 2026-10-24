@@ -244,7 +244,7 @@ try {
   }
   assert.equal(failures.length, 0, failures.join("\n"));
   assert.equal(receipts.filter((cell) => cell.kind === "codegen").length, 2);
-  assert.equal(receipts.filter((cell) => cell.kind !== "codegen").length, 14);
+  assert.equal(receipts.filter((cell) => cell.kind !== "codegen").length, 15);
   await verifyArtifact();
   await browserFailures.check();
 } finally {
