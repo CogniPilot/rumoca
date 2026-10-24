@@ -530,6 +530,7 @@ fn lower_model_owners<'dae>(
                 tensor_loops: None,
                 function_calls: None,
                 transaction_steps: None,
+                deferred_reals: None,
             },
             plans: &analysis.model_algorithm_plans,
             topology: &analysis.discrete_value_topology,

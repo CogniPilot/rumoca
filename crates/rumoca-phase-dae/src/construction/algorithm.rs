@@ -7,6 +7,9 @@ pub(super) struct AlgorithmStatementContext<'scope, 'shape, 'dae> {
     pub(super) values: &'scope HashMap<VarName, dae::ExprId<'dae>>,
     pub(super) parent: Option<EventGuard<'dae>>,
     pub(super) owner_span: Span,
+    /// Inside a `when` block, the discrete `Real` targets whose definition is
+    /// issued once at the end of the block, from their final value.
+    pub(super) deferred_reals: Option<&'scope RefCell<Vec<(VarName, dae::DaeProvenance)>>>,
 }
 
 pub(super) struct AlgorithmFunctionCall<'source> {
@@ -23,6 +26,55 @@ struct AlgorithmCallTarget<'scope, 'shape, 'dae> {
     value: dae::ExprId<'dae>,
     provenance: dae::DaeProvenance,
     projection: &'scope [usize],
+}
+
+/// One assignment's target, activation, value and source.
+struct AlgorithmDefinition<'scope, 'dae> {
+    target: &'scope VarName,
+    guard: EventGuard<'dae>,
+    value: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+}
+
+/// Issue the definition of one algorithm assignment.
+///
+/// MLS §11.1.2: the statements of an algorithm execute in order, so the last
+/// assignment to a variable wins. A discrete `Real` is defined by guarded
+/// equations, and several guarded definitions of one target are read as a
+/// `when`/`elsewhen` priority list, where the first active one wins. Inside a
+/// `when` block the definition is therefore deferred: the block issues it once,
+/// from the target's final value, which already carries every assignment and
+/// `if` of the block in order.
+fn lower_algorithm_definition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    discrete_owner: Option<DiscreteValueOwnerHandle>,
+    context: AlgorithmStatementContext<'_, '_, 'dae>,
+    definition: AlgorithmDefinition<'_, 'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let AlgorithmDefinition {
+        target,
+        guard,
+        value,
+        provenance,
+    } = definition;
+    let coordinate = context.coordinates[target];
+    if let (Coordinate::DiscreteReal(_), Some(deferred)) = (coordinate, context.deferred_reals) {
+        let mut deferred = deferred.borrow_mut();
+        if !deferred.iter().any(|(name, _)| name == target) {
+            deferred.push((target.clone(), provenance));
+        }
+        return Ok(());
+    }
+    lower_when_assignment(
+        construction,
+        discrete_values,
+        discrete_owner,
+        coordinate,
+        guard,
+        value,
+        provenance,
+    )
 }
 
 fn statement_guard<'dae>(
@@ -151,14 +203,17 @@ pub(super) fn lower_algorithm_assignment<'dae>(
                 provenance,
             )?
         };
-        lower_when_assignment(
+        lower_algorithm_definition(
             construction,
             discrete_values,
             discrete_owner,
-            target_coordinate,
-            guard,
-            value,
-            provenance,
+            context,
+            AlgorithmDefinition {
+                target: &target,
+                guard,
+                value,
+                provenance,
+            },
         )?;
         return Ok(vec![(target, value)]);
     }
@@ -180,14 +235,17 @@ pub(super) fn lower_algorithm_assignment<'dae>(
             value_span,
         )?;
         updates.push((target_leaf.clone(), source));
-        lower_when_assignment(
+        lower_algorithm_definition(
             construction,
             discrete_values,
             discrete_owner,
-            context.coordinates[&target_leaf],
-            guard,
-            source,
-            provenance,
+            context,
+            AlgorithmDefinition {
+                target: &target_leaf,
+                guard,
+                value: source,
+                provenance,
+            },
         )?;
     }
     Ok(updates)
@@ -298,14 +356,17 @@ fn lower_algorithm_call_target<'dae>(
         value = construction
             .expressions(|expressions| expressions.at(target.provenance).field(value, *ordinal))?;
     }
-    lower_when_assignment(
+    lower_algorithm_definition(
         construction,
         discrete_values,
         discrete_owner,
-        target.context.coordinates[target.target],
-        target.guard,
-        value,
-        target.provenance,
+        target.context,
+        AlgorithmDefinition {
+            target: target.target,
+            guard: target.guard,
+            value,
+            provenance: target.provenance,
+        },
     )?;
     updates.push((target.target.clone(), value));
     Ok(())
@@ -362,14 +423,17 @@ pub(super) fn lower_algorithm_tensor_loop<'dae>(
         let tensor = construction.expressions(|expressions| {
             expressions.at(value_provenance).comprehension(domain, body)
         })?;
-        lower_when_assignment(
+        lower_algorithm_definition(
             construction,
             discrete_values,
             discrete_owner,
-            context.coordinates[target],
-            guard,
-            tensor,
-            dae::DaeProvenance::source(*assignment_span)?,
+            context,
+            AlgorithmDefinition {
+                target,
+                guard,
+                value: tensor,
+                provenance: dae::DaeProvenance::source(*assignment_span)?,
+            },
         )?;
         loop_values.insert(target.clone(), tensor);
         updates.push((target.clone(), tensor));

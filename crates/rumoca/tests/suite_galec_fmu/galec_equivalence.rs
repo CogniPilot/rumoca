@@ -4220,18 +4220,59 @@ fn embedded_c_hoisting_a_staging_guard_keeps_the_per_tick_signal_word() {
     // staging nest, and the nest tests a Boolean. If the hoist stopped firing
     // every number above would still pass, so this is what pins the rewrite.
     let source = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    assert_staged_guard_is_bound_once_ahead_of_the_nest(&source);
+}
+
+/// The hoisted staging guard in `source`: one comparison, bound to a Boolean
+/// once ahead of the staging loop and tested inside it. The Boolean's
+/// generated name carries an allocation counter that unrelated lowering changes
+/// shift, so it is read from the binding rather than spelled out; its
+/// declaration, binding and test must then agree, in that order, with the
+/// staging loop between the binding and the test.
+fn assert_staged_guard_is_bound_once_ahead_of_the_nest(source: &str) {
     assert_eq!(
         source.matches(STAGED_GUARD_COMPARISON).count(),
         1,
         "the staged conditional's comparison must be emitted exactly once:\n{source}"
     );
+    let binding_at = source
+        .find(&format!(" = {STAGED_GUARD_COMPARISON};"))
+        .unwrap_or_else(|| {
+            panic!("the comparison must be bound to a Boolean ahead of the nest:\n{source}")
+        });
+    let line_start = source[..binding_at]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let guard = source[line_start..binding_at].trim();
     assert!(
-        source.contains(&format!("guard_4 = {STAGED_GUARD_COMPARISON};")),
-        "the comparison must be bound to a Boolean ahead of the nest:\n{source}"
+        guard.strip_prefix("rumoca_clocked0_guard_").is_some_and(
+            |counter| !counter.is_empty() && counter.bytes().all(|b| b.is_ascii_digit())
+        ),
+        "the comparison must be bound to a generated guard Boolean, not `{guard}`:\n{source}"
     );
+    let declaration = format!("bool {guard};");
+    let test = format!("if ({guard}) {{");
+    assert_eq!(
+        source.matches(&declaration).count(),
+        1,
+        "`{guard}` must be declared exactly once:\n{source}"
+    );
+    assert_eq!(
+        source.matches(&test).count(),
+        1,
+        "the staging nest must test the bound Boolean `{guard}`:\n{source}"
+    );
+    let declared_at = source
+        .find(&declaration)
+        .expect("declaration counted above");
+    let tested_at = source.find(&test).expect("test counted above");
+    let nest_at = source[binding_at..]
+        .find("for (")
+        .map(|offset| binding_at + offset)
+        .unwrap_or_else(|| panic!("a staging loop must follow the bound guard:\n{source}"));
     assert!(
-        source.contains("if (rumoca_clocked0_guard_4) {"),
-        "the staging nest must test the bound Boolean:\n{source}"
+        declared_at < binding_at && binding_at < nest_at && nest_at < tested_at,
+        "`{guard}` must be declared, bound, then tested inside the staging loop, in that order:\n{source}"
     );
 }
 

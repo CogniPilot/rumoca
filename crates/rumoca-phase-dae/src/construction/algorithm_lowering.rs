@@ -8,6 +8,8 @@ pub(super) struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
     pub(super) tensor_loops: Option<&'scope HashMap<Span, ModelEventTensorLoopPlan>>,
     pub(super) function_calls: Option<&'scope HashMap<Span, ModelEventFunctionCallPlan>>,
     pub(super) transaction_steps: Option<&'scope RefCell<Vec<dae::ModelEventStep<'dae>>>>,
+    /// See [`AlgorithmStatementContext::deferred_reals`].
+    pub(super) deferred_reals: Option<&'scope RefCell<Vec<(VarName, dae::DaeProvenance)>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -630,6 +632,7 @@ fn algorithm_statement_context<'scope, 'shape, 'dae>(
         values,
         parent: Some(owner.activation()),
         owner_span: owner.span,
+        deferred_reals: environment.deferred_reals,
     }
 }
 
@@ -1173,9 +1176,9 @@ fn lower_algorithm_when<'dae>(
             )?;
         }
     }
-    for (block, guard) in &guarded_blocks {
-        let mut branch_values = values.clone();
-        lower_algorithm_statements(
+    let holds = chain_holds(environment.coordinates, blocks, span)?.into_iter();
+    for ((block, guard), held) in guarded_blocks.iter().zip(holds) {
+        lower_algorithm_when_block(
             construction,
             discrete_values,
             environment,
@@ -1184,17 +1187,198 @@ fn lower_algorithm_when<'dae>(
                 span,
                 ..owner
             },
-            &mut branch_values,
+            values.clone(),
             &block.stmts,
+            &held,
         )?;
     }
-    if let Some(owner) = owner.discrete_owner {
-        discrete_values.retain_when_branches(
-            owner,
-            &guarded_blocks
+    retain_chain_values(discrete_values, owner.discrete_owner, &guarded_blocks)?;
+    Ok(())
+}
+
+/// Discrete-value targets of one `when`/`elsewhen` chain: every block retains
+/// every target, so an active earlier block wins even where it assigns nothing
+/// (MLS 3.7 §§11.1.2, 11.2.7). Discrete `Real` targets are held per block by
+/// [`lower_algorithm_when_block`].
+fn retain_chain_values<'dae>(
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    owner: Option<DiscreteValueOwnerHandle>,
+    guarded_blocks: &[(&rumoca_core::StatementBlock, EventGuard<'dae>)],
+) -> Result<(), dae::DaeConstructionError> {
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    let guards = guarded_blocks
+        .iter()
+        .map(|(_, guard)| *guard)
+        .collect::<Vec<_>>();
+    discrete_values.retain_when_branches(owner, &guards)
+}
+
+/// The targets each block of one algorithm `when`/`elsewhen` chain must hold
+/// (see [`later_block_targets`]), resolved to model coordinates.
+///
+/// An event action in a later block is refused: an earlier block becoming
+/// active at the same instant must suppress it (MLS §8.3.5), and a guard cannot
+/// yet name another block's rising edge.
+fn chain_holds(
+    coordinates: &HashMap<VarName, Coordinate<'_>>,
+    blocks: &[rumoca_core::StatementBlock],
+    span: Span,
+) -> Result<Vec<Vec<VarName>>, dae::DaeConstructionError> {
+    if let Some(span) = blocks
+        .iter()
+        .skip(1)
+        .find_map(|block| later_block_action(&block.stmts))
+    {
+        return Err(dae::DaeConstructionError::UnsupportedLaterWhenAction { span });
+    }
+    later_block_targets(blocks)
+        .into_iter()
+        .map(|names| resolve_held_targets(coordinates, names, span))
+        .collect()
+}
+
+/// The first event action (not an assignment) in a block's statements.
+fn later_block_action(statements: &[rumoca_core::Statement]) -> Option<Span> {
+    statements.iter().find_map(|statement| match statement {
+        rumoca_core::Statement::Reinit { span, .. }
+        | rumoca_core::Statement::Assert { span, .. } => Some(*span),
+        rumoca_core::Statement::FunctionCall { outputs, span, .. }
+            if outputs.iter().all(Option::is_none) =>
+        {
+            Some(*span)
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => cond_blocks
+            .iter()
+            .find_map(|block| later_block_action(&block.stmts))
+            .or_else(|| else_block.as_deref().and_then(later_block_action)),
+        rumoca_core::Statement::For { equations, .. } => later_block_action(equations),
+        rumoca_core::Statement::While { block, .. } => later_block_action(&block.stmts),
+        _ => None,
+    })
+}
+
+/// Resolve written base names to the model coordinates they write: the name
+/// itself, or every coordinate it overlaps (a record's fields).
+fn resolve_held_targets(
+    coordinates: &HashMap<VarName, Coordinate<'_>>,
+    names: Vec<VarName>,
+    span: Span,
+) -> Result<Vec<VarName>, dae::DaeConstructionError> {
+    let mut resolved = Vec::with_capacity(names.len());
+    for name in names {
+        if coordinates.contains_key(&name) {
+            resolved.push(name);
+            continue;
+        }
+        let mut leaves = coordinates
+            .keys()
+            .filter(|key| names_overlap(&name, key))
+            .cloned()
+            .collect::<Vec<_>>();
+        if leaves.is_empty() {
+            return Err(dae::DaeConstructionError::UnresolvedAlgorithmHoldTarget {
+                target: name,
+                span,
+            });
+        }
+        leaves.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+        resolved.extend(leaves);
+    }
+    resolved.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+    resolved.dedup();
+    Ok(resolved)
+}
+
+/// For each block of one `when`/`elsewhen` chain, the targets a LATER block writes.
+///
+/// MLS §8.3.5: when several blocks of the chain become active at one instant,
+/// only the first runs. Definitions resolve that per target in textual order,
+/// which is exact only if the earlier block defines the target too: an
+/// equation chain always does, an algorithm block need not. Each block
+/// therefore holds every later-written target it does not otherwise change.
+fn later_block_targets(blocks: &[rumoca_core::StatementBlock]) -> Vec<Vec<VarName>> {
+    let writes = blocks
+        .iter()
+        .map(|block| {
+            let mut written = HashSet::new();
+            collect_algorithm_writes(&block.stmts, &mut written);
+            written
+        })
+        .collect::<Vec<_>>();
+    (0..blocks.len())
+        .map(|index| {
+            let mut later = writes[index + 1..]
                 .iter()
-                .map(|(_, guard)| *guard)
-                .collect::<Vec<_>>(),
+                .flatten()
+                .cloned()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            later.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+            later
+        })
+        .collect()
+}
+
+/// Lower one `when`/`elsewhen` block, then issue one definition per discrete
+/// `Real` it writes, from its value after the block's last statement
+/// (MLS §11.1.2).
+///
+/// `held` are the targets a later block of the chain writes. The block holds
+/// each discrete `Real` among them at its entry value (`pre`) unless it writes
+/// it, so that when this block is active a later block's definition cannot win.
+/// Discrete-value targets get the same guarantee from the chain's
+/// `retain_when_branches`, so they are not held here.
+fn lower_algorithm_when_block<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    mut branch_values: HashMap<VarName, dae::ExprId<'dae>>,
+    statements: &[rumoca_core::Statement],
+    held: &[VarName],
+) -> Result<(), dae::DaeConstructionError> {
+    let deferred = RefCell::new(Vec::new());
+    let activation = owner.activation();
+    for target in held {
+        if let Some(Coordinate::DiscreteReal(_)) = environment.coordinates.get(target) {
+            deferred
+                .borrow_mut()
+                .push((target.clone(), activation.branch_provenance));
+        }
+    }
+    lower_algorithm_statements(
+        construction,
+        discrete_values,
+        AlgorithmEnvironment {
+            deferred_reals: Some(&deferred),
+            ..environment
+        },
+        owner,
+        &mut branch_values,
+        statements,
+    )?;
+    for (target, provenance) in deferred.into_inner() {
+        let value = *branch_values.get(&target).ok_or_else(|| {
+            dae::DaeConstructionError::MissingAlgorithmBlockValue {
+                target: target.clone(),
+                span: provenance.span(),
+            }
+        })?;
+        lower_when_assignment(
+            construction,
+            discrete_values,
+            owner.discrete_owner,
+            environment.coordinates[&target],
+            owner.activation(),
+            value,
+            provenance,
         )?;
     }
     Ok(())

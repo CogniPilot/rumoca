@@ -42,6 +42,7 @@ mod algebraic_observation_accuracy;
 mod algorithm_carried_loops;
 mod algorithm_component_indices;
 mod algorithm_parameter_range;
+mod algorithm_real_reassignment;
 mod algorithm_relation_events;
 mod algorithm_when_statements;
 mod alias_quotient;

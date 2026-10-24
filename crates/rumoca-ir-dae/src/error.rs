@@ -259,6 +259,16 @@ pub enum DaeConstructionError {
     UndeclaredModelEventTarget { target: u32, span: Span },
     #[error("model-event transaction does not define every declared target")]
     IncompleteModelEventTransaction { span: Span },
+    #[error("algorithm target `{target}` has no value at the end of its `when` block")]
+    MissingAlgorithmBlockValue { target: VarName, span: Span },
+    #[error(
+        "algorithm target `{target}` written in a later `elsewhen` block has no model coordinate"
+    )]
+    UnresolvedAlgorithmHoldTarget { target: VarName, span: Span },
+    #[error(
+        "an event action (reinit, assert, terminate, print or a procedure call) in a later `elsewhen` block of an algorithm is not supported: suppressing it when an earlier block becomes active at the same instant (MLS §8.3.5) is not yet representable"
+    )]
+    UnsupportedLaterWhenAction { span: Span },
     #[error("an unconditional B.1c owner must contain exactly one `always` branch")]
     InvalidDiscreteBranchSet { span: Span },
     #[error("an observed B.1c owner must be unstructured and contain exactly one `always` branch")]
@@ -406,6 +416,9 @@ impl DaeConstructionError {
             | Self::EmptyModelEventTransaction { span }
             | Self::UndeclaredModelEventTarget { span, .. }
             | Self::IncompleteModelEventTransaction { span }
+            | Self::MissingAlgorithmBlockValue { span, .. }
+            | Self::UnresolvedAlgorithmHoldTarget { span, .. }
+            | Self::UnsupportedLaterWhenAction { span }
             | Self::InvalidDiscreteBranchSet { span }
             | Self::InvalidObservedDiscreteOwner { span }
             | Self::UnorderedSimultaneousStatements { span }
