@@ -205,36 +205,42 @@ fn native_bdf_previous_point_survives_a_close_hard_stop() {
     for extra_steps in 0..5 {
         let mut method = problem.bdf::<FaerLU<f64>>().unwrap();
         let mut reached = None;
+        let mut clamp_point = None;
         for _ in 0..400 {
             let previous = (method.state().t, method.state().y.as_slice().to_vec());
             method.step().unwrap();
-            if method.order() >= 4 {
-                let seen = reached.get_or_insert(0);
-                if *seen == extra_steps {
-                    let (previous_time, previous_states) = previous;
-                    let (time, step) = (method.state().t, method.state().h);
-                    method.set_stop_time(time + 1e-4 * step).unwrap();
-                    let sampled = method.interpolate(previous_time).unwrap();
-                    for (index, (expected, actual)) in
-                        previous_states.iter().zip(sampled.as_slice()).enumerate()
-                    {
-                        assert!(
-                            (expected - actual).abs() <= 1e-9 * expected.abs().max(1.0),
-                            "state {index} at the previous point {previous_time} after a stop \
-                             clamp at order {}: accepted={expected}, interpolated={actual}",
-                            method.order()
-                        );
-                    }
-                    break;
-                }
-                *seen += 1;
+            if method.order() < 4 {
+                continue;
             }
+            let seen = reached.get_or_insert(0);
+            if *seen == extra_steps {
+                clamp_point = Some(previous);
+                break;
+            }
+            *seen += 1;
         }
         assert_eq!(
             reached,
             Some(extra_steps),
             "the run must reach order four and clamp after {extra_steps} more steps"
         );
+        // The step loop stopped right after the chosen accepted step, so the
+        // clamp below sees exactly the state it would have seen inside it.
+        let (previous_time, previous_states) = clamp_point
+            .unwrap_or_else(|| panic!("the run must clamp after {extra_steps} more steps"));
+        let (time, step) = (method.state().t, method.state().h);
+        method.set_stop_time(time + 1e-4 * step).unwrap();
+        let sampled = method.interpolate(previous_time).unwrap();
+        for (index, (expected, actual)) in
+            previous_states.iter().zip(sampled.as_slice()).enumerate()
+        {
+            assert!(
+                (expected - actual).abs() <= 1e-9 * expected.abs().max(1.0),
+                "state {index} at the previous point {previous_time} after a stop \
+                 clamp at order {}: accepted={expected}, interpolated={actual}",
+                method.order()
+            );
+        }
     }
 }
 
