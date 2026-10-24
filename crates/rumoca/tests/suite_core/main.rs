@@ -40,6 +40,7 @@ mod algebraic_family_compaction;
 mod algebraic_family_paths;
 mod algebraic_observation_accuracy;
 mod algorithm_carried_loops;
+mod algorithm_component_indices;
 mod algorithm_parameter_range;
 mod algorithm_relation_events;
 mod algorithm_when_statements;

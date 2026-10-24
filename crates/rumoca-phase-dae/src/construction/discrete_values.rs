@@ -374,6 +374,44 @@ impl<'dae> DiscreteValueStaging<'dae> {
         Ok(())
     }
 
+    /// A selected when branch owns its retained values even when none of its
+    /// conditional assignments executes (MLS 3.7 §§11.1.2, 11.2.7).
+    pub(super) fn retain_when_branches(
+        &mut self,
+        handle: DiscreteValueOwnerHandle,
+        guards: &[EventGuard<'dae>],
+    ) -> Result<(), dae::DaeConstructionError> {
+        for owner in &mut self.owners[handle.first..handle.end] {
+            if !owner.branches.iter().any(|branch| {
+                guards
+                    .iter()
+                    .any(|guard| guard_matches_branch(guard, branch))
+            }) {
+                continue;
+            }
+            for guard in guards {
+                retain_when_branch(owner, *guard)?;
+            }
+            // Missing branches were just appended. Restore this chain's source
+            // order before the final priority sort groups each trigger's subtree.
+            let mut chain = owner
+                .branches
+                .extract_if(.., |branch| {
+                    guards
+                        .iter()
+                        .any(|guard| guard_matches_branch(guard, branch))
+                })
+                .collect::<Vec<_>>();
+            chain.sort_by_key(|branch| {
+                guards
+                    .iter()
+                    .position(|guard| guard_matches_branch(guard, branch))
+            });
+            owner.branches.extend(chain);
+        }
+        Ok(())
+    }
+
     pub(super) fn add_holds(
         &mut self,
         construction: &mut dae::DaeConstruction<'dae>,
@@ -442,6 +480,59 @@ impl<'dae> DiscreteValueStaging<'dae> {
         }
         Ok(())
     }
+}
+
+fn guard_matches_branch<'dae>(guard: &EventGuard<'dae>, branch: &StagedBranch<'dae>) -> bool {
+    branch.statement == guard.statement && branch_trigger(branch.activation) == Some(guard.trigger)
+}
+
+fn branch_trigger(activation: BranchActivation<'_>) -> Option<dae::ConditionId<'_>> {
+    match activation {
+        BranchActivation::Always => None,
+        BranchActivation::When { trigger, .. } => Some(trigger),
+    }
+}
+
+fn retain_when_branch<'dae>(
+    owner: &mut StagedOwner<'dae>,
+    guard: EventGuard<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let activation = BranchActivation::When {
+        trigger: guard.trigger,
+        guard: guard.condition,
+    };
+    let parent = guard.parent_activation.map(|parent| match parent {
+        ParentActivation::Section => BranchActivation::Always,
+        ParentActivation::When { trigger, guard } => BranchActivation::When { trigger, guard },
+    });
+    let Some(target) = owner.targets.first() else {
+        return Err(dae::DaeConstructionError::EmptyDiscreteValueOwner {
+            span: guard.branch_provenance.span(),
+        });
+    };
+    register_branch_parent(
+        &mut owner.parents,
+        activation,
+        parent,
+        target.index(),
+        guard.branch_provenance,
+    )?;
+    if !owner
+        .branches
+        .iter()
+        .any(|branch| branch.activation == activation)
+    {
+        let values =
+            inherited_values(owner, activation).unwrap_or_else(|| vec![None; owner.targets.len()]);
+        owner.branches.push(StagedBranch {
+            activation,
+            values,
+            written: vec![false; owner.targets.len()],
+            statement: guard.statement,
+            provenance: guard.branch_provenance,
+        });
+    }
+    Ok(())
 }
 
 fn register_owner_targets<T, Order>(
@@ -612,11 +703,19 @@ fn order_owner_branches(owner: &mut StagedOwner<'_>) -> Result<(), dae::DaeConst
             }
         }
     }
+    let triggers = owner
+        .branches
+        .iter()
+        .map(|branch| (branch.statement, branch_trigger(branch.activation)))
+        .collect::<Vec<_>>();
     let parents = &owner.parents;
     owner.branches.sort_by_key(|branch| {
         (
-            std::cmp::Reverse(branch_depth(parents, branch.activation)),
             std::cmp::Reverse(rank(branch.statement)),
+            triggers.iter().position(|trigger| {
+                *trigger == (branch.statement, branch_trigger(branch.activation))
+            }),
+            std::cmp::Reverse(branch_depth(parents, branch.activation)),
         )
     });
     Ok(())
