@@ -4219,11 +4219,17 @@ fn embedded_c_hoisting_a_staging_guard_keeps_the_per_tick_signal_word() {
     // The shape the saving rests on: the guard is bound once ahead of the
     // staging nest, and the nest tests a Boolean. If the hoist stopped firing
     // every number above would still pass, so this is what pins the rewrite.
-    // The Boolean's generated name carries an allocation counter that unrelated
-    // lowering changes shift, so it is read from the binding rather than spelled
-    // out; its declaration, binding and test must then agree, in that order,
-    // with the staging loop between the binding and the test.
     let source = fs::read_to_string(out_dir.join(format!("{model}.c"))).expect("read emitted C");
+    assert_staged_guard_is_bound_once_ahead_of_the_nest(&source);
+}
+
+/// The hoisted staging guard in `source`: one comparison, bound to a Boolean
+/// once ahead of the staging loop and tested inside it. The Boolean's
+/// generated name carries an allocation counter that unrelated lowering changes
+/// shift, so it is read from the binding rather than spelled out; its
+/// declaration, binding and test must then agree, in that order, with the
+/// staging loop between the binding and the test.
+fn assert_staged_guard_is_bound_once_ahead_of_the_nest(source: &str) {
     assert_eq!(
         source.matches(STAGED_GUARD_COMPARISON).count(),
         1,
