@@ -103,12 +103,12 @@ pub(super) fn guide_fences() -> Vec<GuideFence> {
 #[test]
 fn user_guide_fence_inventory_preserves_every_embedded_source() {
     let fences = guide_fences();
-    assert_eq!(fences.len(), 45, "review new embedded examples explicitly");
+    assert_eq!(fences.len(), 48, "review new embedded examples explicitly");
     assert_eq!(
         fences.iter().filter(|f| f.model_name().is_some()).count(),
         17
     );
-    assert_eq!(fences.iter().filter(|f| f.has_flag("fragment")).count(), 8);
+    assert_eq!(fences.iter().filter(|f| f.has_flag("fragment")).count(), 10);
     let contexts: std::collections::BTreeSet<_> = fences
         .iter()
         .filter(|fence| fence.has_flag("fragment"))
@@ -116,14 +116,14 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
         .collect();
     assert_eq!(
         contexts.len(),
-        8,
+        10,
         "each exact fragment needs its own context"
     );
     let scenarios: Vec<_> = fences
         .iter()
         .filter_map(GuideFence::scenario_path)
         .collect();
-    assert_eq!(scenarios.len(), 21);
+    assert_eq!(scenarios.len(), 22);
     let issued: Vec<PathBuf> =
         serde_json::from_str(
             &std::fs::read_to_string(repository_root().join(
@@ -133,7 +133,7 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
         )
         .expect("scenario path array");
     let actual: std::collections::BTreeSet<_> = scenarios.iter().cloned().collect();
-    assert_eq!(actual.len(), 16);
+    assert_eq!(actual.len(), 17);
     assert_eq!(issued.len(), actual.len(), "no duplicate scenario cells");
     assert_eq!(
         issued
@@ -161,6 +161,8 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
                         | "state"
                         | "experiment"
                         | "tanks"
+                        | "canyon-forward"
+                        | "canyon-agent"
                 )
             )
         } else {

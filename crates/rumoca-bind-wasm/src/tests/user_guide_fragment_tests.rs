@@ -253,6 +253,19 @@ fn user_guide_predator_width_313_uses_the_full_authored_source() {
     clear_source_root_cache().unwrap();
 }
 
+/// The canyon-run excerpts are exact, in order, lines of the shipped example;
+/// the example itself compiles through the scenario test.
+#[test]
+fn user_guide_canyon_run_fragments_are_lines_of_the_shipped_example() {
+    let source = std::fs::read_to_string(
+        repository_root().join("examples/interactive/canyon_run/CanyonRun.mo"),
+    )
+    .unwrap();
+    for context in ["canyon-forward", "canyon-agent"] {
+        assert_excerpt_in_order(&fragment(context).source, &source);
+    }
+}
+
 fn assert_predator_parameter_cardinality(source: &str) {
     crate::with_singleton_session(|session| {
         session.update_document("input.mo", source);

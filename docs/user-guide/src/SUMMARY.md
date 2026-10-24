@@ -33,6 +33,7 @@
 - [Interactive Simulation](./simulation/interactive.md)
 - [Driving a Session over stdio](./simulation/stdio-session.md)
 - [Reusable Booster Autonomous Landing](./simulation/reusable-booster-landing.md)
+- [Canyon Run: Learning to Fly a Box Canyon](./simulation/canyon-run.md)
 - [Inspecting and Debugging Models](./simulation/inspect.md)
 
 # Code Generation

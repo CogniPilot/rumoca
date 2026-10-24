@@ -1,5 +1,6 @@
 [
   "examples/codegen/rumoca-scenario.galec_counter_production.toml",
+  "examples/interactive/canyon_run/rumoca-scenario.toml",
   "examples/interactive/fixedwing/rumoca-scenario.toml",
   "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
   "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
