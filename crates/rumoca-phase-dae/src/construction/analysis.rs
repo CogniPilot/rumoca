@@ -1,3 +1,4 @@
+mod algorithm_coordinates;
 mod assignment_conditionals;
 mod branch_snapshots;
 mod clocks;
@@ -687,21 +688,25 @@ pub(super) enum RecordEquationFieldValue {
 
 /// The Flat model every analysis and the construction read: carrying
 /// algorithm loops unrolled and structural selections applied (SPEC_0040
-/// DAE-C22), both from one model-scope shape analysis, and borrowed unchanged
-/// when neither applies.
+/// DAE-C22), both from one model-scope shape analysis, with algorithm targets
+/// resolved to declared storage coordinates. Borrowed when no change is needed.
 pub(super) fn prepared_flat(
     flat: &flat::Model,
 ) -> Result<std::borrow::Cow<'_, flat::Model>, ToDaeError> {
     let carrying = model_algorithm_loops::has_carrying_loops(flat);
     if !carrying && !has_decidable_conditionals(flat) {
-        return Ok(std::borrow::Cow::Borrowed(flat));
+        return Ok(algorithm_coordinates::resolve_algorithm_coordinates(
+            std::borrow::Cow::Borrowed(flat),
+        ));
     }
     let constants = constant_context(flat)?;
     let evaluable = evaluable_parameters(flat);
     let shapes = FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
     let unrolled =
         model_algorithm_loops::unroll_carrying_algorithm_loops(flat, shapes.model_values())?;
-    Ok(select_structural_branches(unrolled, shapes.model_values()))
+    Ok(algorithm_coordinates::resolve_algorithm_coordinates(
+        select_structural_branches(unrolled, shapes.model_values()),
+    ))
 }
 
 // SPEC_0021: Exception - ToDAE analysis entry point assembling every Analysis field
