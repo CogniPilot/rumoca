@@ -113,19 +113,19 @@ package InactiveWhen
     y := 2*table[i];
   end plain;
   model DirectHolds "a direct call whose own assert holds"
-    Integer i = if time >= 0 then 2 else 1 "runtime value, so the call is not folded";
+    Integer i(start = 2) = if time >= 0 then 2 else 1 "runtime value, so the call is not folded; its start equals that value";
     Real y = entry(i);
   end DirectHolds;
   model DirectOwnMessage "a direct call whose own assert fails before its later index"
-    Integer i = if time >= 0 then 4 else 1 "runtime value, so the call is not folded";
+    Integer i(start = 4) = if time >= 0 then 4 else 1 "runtime value, so the call is not folded; its start equals that value";
     Real y = entry(i);
   end DirectOwnMessage;
   model DirectEarlyFault "the index BEFORE the assert still faults first"
-    Integer i = if time >= 0 then 4 else 1 "runtime value, so the call is not folded";
+    Integer i(start = 4) = if time >= 0 then 4 else 1 "runtime value, so the call is not folded; its start equals that value";
     Real y = early(i);
   end DirectEarlyFault;
   model NoAssertCall "control for byte identity of an assert-free function"
-    Integer i = if time >= 0 then 3 else 1 "runtime value, so the call is not folded";
+    Integer i(start = 3) = if time >= 0 then 3 else 1 "runtime value, so the call is not folded; its start equals that value";
     Real y = plain(i);
   end NoAssertCall;
   function positive "its own assert reads table[i]"
