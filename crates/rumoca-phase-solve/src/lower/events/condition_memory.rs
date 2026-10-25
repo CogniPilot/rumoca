@@ -9,6 +9,7 @@ pub(super) fn lower_condition_memory<'dae>(
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     let edge_conditions = unowned_edge_conditions(view, &rows.ordinary_trigger_edges);
+    let unread = unread_assertion_conditions(view, &edge_conditions);
     let mut internal_constants = BTreeMap::new();
     for (condition, condition_view) in view.conditions() {
         // A clock-owned condition is the activation of its partition and needs
@@ -28,6 +29,14 @@ pub(super) fn lower_condition_memory<'dae>(
         // `when true then` is a real `when` and keeps its buffer, so §8.3.5.1
         // starts that buffer true and it never has an edge to run on.
         if matches!(condition_view.operation(), dae::ConditionOperation::Always) {
+            continue;
+        }
+        // A `when`-body assertion's guard and its failure test are not event
+        // generating expressions: no trigger reads their buffers, and refreshing
+        // one would evaluate the failure test at every event pass, outside the
+        // activation it may only be valid under (MLS §8.5, §11.2.7). Their slots
+        // stay zero, like an `Always` buffer's.
+        if unread.contains(&condition) {
             continue;
         }
         // A negated internal Always is false at every instant. Its zeroed
@@ -201,6 +210,69 @@ fn unowned_edge_conditions<'dae>(
         }
     }
     elements
+}
+
+/// The guard of each `when`-body assertion (`activation and failure`) and every
+/// condition of its failure conjunct, less any condition a trigger, an element
+/// edge, an activation conjunct or another action's guard reaches, since those
+/// buffers are read.
+fn unread_assertion_conditions<'dae>(
+    view: dae::DaeView<'dae>,
+    edges: &BTreeSet<dae::ConditionId<'dae>>,
+) -> BTreeSet<dae::ConditionId<'dae>> {
+    let mut candidates = Vec::new();
+    let mut read_roots: Vec<_> = edges.iter().copied().collect();
+    for (_, action) in view.event_actions() {
+        read_roots.push(action.trigger());
+        let guard = action.guard();
+        let operation = view
+            .condition(guard)
+            .expect("checked condition identity resolves")
+            .operation();
+        match (action.operation(), operation) {
+            (
+                dae::EventActionOperation::Assert { .. },
+                dae::ConditionOperation::And(activation, failure),
+            ) => {
+                read_roots.push(activation);
+                candidates.push(guard);
+                candidates.extend(condition_subtree(view, [failure]));
+            }
+            _ => read_roots.push(guard),
+        }
+    }
+    let read = condition_subtree(view, read_roots);
+    candidates
+        .into_iter()
+        .filter(|condition| !read.contains(condition))
+        .collect()
+}
+
+/// Every condition reachable from `roots` through `not`, `and`, `or` and
+/// element-rise nodes, the roots included.
+fn condition_subtree<'dae>(
+    view: dae::DaeView<'dae>,
+    roots: impl IntoIterator<Item = dae::ConditionId<'dae>>,
+) -> BTreeSet<dae::ConditionId<'dae>> {
+    let mut reached = BTreeSet::new();
+    let mut pending: Vec<_> = roots.into_iter().collect();
+    while let Some(condition) = pending.pop() {
+        if !reached.insert(condition) {
+            continue;
+        }
+        match view
+            .condition(condition)
+            .expect("checked condition identity resolves")
+            .operation()
+        {
+            dae::ConditionOperation::Not(operand) => pending.push(operand),
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => pending.extend([lhs, rhs]),
+            _ => {}
+        }
+    }
+    reached
 }
 
 /// The role of the edge buffer of `condition`.
