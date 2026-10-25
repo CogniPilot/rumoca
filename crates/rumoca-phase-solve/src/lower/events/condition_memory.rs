@@ -225,11 +225,10 @@ fn unread_assertion_conditions<'dae>(
     for (_, action) in view.event_actions() {
         read_roots.push(action.trigger());
         let guard = action.guard();
-        let operation = view
-            .condition(guard)
-            .expect("checked condition identity resolves")
-            .operation();
-        match (action.operation(), operation) {
+        match (
+            action.operation(),
+            checked_condition(view, guard).operation(),
+        ) {
             (
                 dae::EventActionOperation::Assert { .. },
                 dae::ConditionOperation::And(activation, failure),
@@ -260,11 +259,7 @@ fn condition_subtree<'dae>(
         if !reached.insert(condition) {
             continue;
         }
-        match view
-            .condition(condition)
-            .expect("checked condition identity resolves")
-            .operation()
-        {
+        match checked_condition(view, condition).operation() {
             dae::ConditionOperation::Not(operand) => pending.push(operand),
             dae::ConditionOperation::And(lhs, rhs)
             | dae::ConditionOperation::Or(lhs, rhs)
@@ -273,6 +268,18 @@ fn condition_subtree<'dae>(
         }
     }
     reached
+}
+
+/// The condition `condition` names. Every identity reaching the two walks above
+/// comes from the checked DAE itself, an event action's trigger or guard or an
+/// operand of a checked condition, and a checked DAE resolves all of them. That
+/// one invariant is asserted here, with the message the rest of this module uses.
+fn checked_condition<'dae>(
+    view: dae::DaeView<'dae>,
+    condition: dae::ConditionId<'dae>,
+) -> dae::ConditionView<'dae> {
+    view.condition(condition)
+        .expect("checked condition identity resolves")
 }
 
 /// The role of the edge buffer of `condition`.
