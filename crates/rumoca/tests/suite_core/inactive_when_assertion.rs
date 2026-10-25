@@ -128,6 +128,58 @@ package InactiveWhen
     Integer i = if time >= 0 then 3 else 1 "runtime value, so the call is not folded";
     Real y = plain(i);
   end NoAssertCall;
+  function positive "its own assert reads table[i]"
+    input Integer i;
+    output Boolean ok;
+  algorithm
+    assert(table[i] > 0, "table entry " + String(i) + " is positive");
+    ok := true;
+  end positive;
+  model CallAssertIndex "a called function's own assert reads the index; inactive at k = -1"
+    extends Counter;
+  algorithm
+    when sample(0.5*dt, dt) then
+      assert(positive(k + 1), "the called check for this step holds");
+      checked := pre(checked) + 1;
+    end when;
+  end CallAssertIndex;
+  function scaledEntry "u*table[i], with an assert that reads table[i]"
+    input Real u;
+    input Integer i;
+    output Real y;
+  algorithm
+    assert(table[i] > 0, "scaled entry " + String(i) + " is positive");
+    y := u*table[i];
+  end scaledEntry;
+  function scaledOuter "calls scaledEntry, so its assert sits one call deeper"
+    input Real u;
+    input Integer i;
+    output Real y;
+  algorithm
+    y := scaledEntry(u, i);
+  end scaledOuter;
+  model ExpandedCallAssertIndex "a state argument, so the call expands in place"
+    extends Counter;
+    Real x(start = 1, fixed = true);
+  equation
+    der(x) = 0;
+  algorithm
+    when sample(0.5*dt, dt) then
+      assert(scaledEntry(x, k + 1) > 0, "the scaled entry for this step is positive");
+      checked := pre(checked) + 1;
+    end when;
+  end ExpandedCallAssertIndex;
+  model NestedCallAssertIndex "the indexing assert is in a function called by the called function"
+    extends Counter;
+    Real x(start = 1, fixed = true);
+  equation
+    der(x) = 0;
+  algorithm
+    when sample(0.5*dt, dt) then
+      assert(scaledOuter(x, k + 1) > 0, "the nested scaled entry for this step is positive");
+      checked := pre(checked) + 1;
+    end when;
+  end NestedCallAssertIndex;
   model Read "control: the same index in a when-assigned discrete Real"
     extends Counter;
     discrete Real value(start = 0, fixed = true);
@@ -265,4 +317,25 @@ fn an_index_before_a_called_functions_assert_still_faults_first() {
 fn an_assert_free_function_call_is_unchanged() {
     let result = simulate("InactiveWhen.NoAssertCall").expect("plain(3) is in range");
     assert_eq!(final_value(&result, "y"), 60.0);
+}
+
+#[test]
+fn an_inactive_called_functions_indexing_assert_does_not_evaluate() {
+    let result = simulate("InactiveWhen.CallAssertIndex")
+        .expect("positive(0) is never called while inactive");
+    assert_eq!(final_value(&result, "checked"), 3.0);
+}
+
+#[test]
+fn an_inactive_expanded_call_does_not_evaluate_its_indexing_assert() {
+    let result = simulate("InactiveWhen.ExpandedCallAssertIndex")
+        .expect("scaledEntry(x, 0) is never evaluated while inactive");
+    assert_eq!(final_value(&result, "checked"), 3.0);
+}
+
+#[test]
+fn an_inactive_nested_call_does_not_evaluate_its_indexing_assert() {
+    let result = simulate("InactiveWhen.NestedCallAssertIndex")
+        .expect("scaledOuter(x, 0) is never evaluated while inactive");
+    assert_eq!(final_value(&result, "checked"), 3.0);
 }
