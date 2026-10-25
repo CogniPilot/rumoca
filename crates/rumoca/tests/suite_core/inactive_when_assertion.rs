@@ -183,10 +183,10 @@ package InactiveWhen
   model TriggerGuard "control: a compound when trigger keeps its edge buffer"
     extends Counter;
     discrete Real value(start = 0, fixed = true);
-  algorithm
+  equation
     when sample(0.5*dt, dt) and k >= 0 then
-      value := table[k + 1];
-      checked := pre(checked) + 1;
+      value = table[k + 1];
+      checked = pre(checked) + 1;
     end when;
   end TriggerGuard;
   model Read "control: the same index in a when-assigned discrete Real"
