@@ -329,6 +329,10 @@ The workspace pins `parol` and `parol_runtime` to exact patch versions in
 `Cargo.toml`. Do not loosen those pins with a grammar change; update the pin
 intentionally and review the generated diff in the same change.
 
+### Build output and cleanup
+
+Build output may be deleted by the shared-machine prune when a checkout has been idle for a few days. The directories it may remove are listed in `.prune-paths` at the repository root. That includes `target/`, so results that commands write there (for example `--results-dir target/msl/sweep` or `target/verification/kani-summary.json`) are not kept. Copy any result you need into durable storage, or commit it. Add each new build-output directory to `.prune-paths` in the same change that creates it.
+
 ## Process
 
 For compiler-affecting changes, follow:

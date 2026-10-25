@@ -1,0 +1,21 @@
+# rumoca build outputs the janitor may delete (drive-cleanup r5 section 6 format).
+# Each line is a directory relative to the repo root; every entry must be gitignored with no tracked files.
+# vendor and node_modules are listed per package because packages/rumoca/vendor, packages/rumoca/node_modules
+# and packages/vscode/vendor are not gitignored on main, so a packages/*/ glob would make the whole file invalid.
+
+target
+.venv
+docs/dev-guide/book
+docs/user-guide/book
+packages/playground/dist
+packages/playground/vendor
+packages/playground/node_modules
+packages/rumoca-web/dist
+packages/rumoca-web/vendor
+packages/rumoca-web/node_modules
+packages/rumoca/dist
+packages/vscode/dist
+packages/vscode/node_modules
+packages/vscode/out
+packages/vscode/media/vendor
+infra/fuzz/target
