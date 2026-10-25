@@ -180,6 +180,15 @@ package InactiveWhen
       checked := pre(checked) + 1;
     end when;
   end NestedCallAssertIndex;
+  model TriggerGuard "control: a compound when trigger keeps its edge buffer"
+    extends Counter;
+    discrete Real value(start = 0, fixed = true);
+  algorithm
+    when sample(0.5*dt, dt) and k >= 0 then
+      value := table[k + 1];
+      checked := pre(checked) + 1;
+    end when;
+  end TriggerGuard;
   model Read "control: the same index in a when-assigned discrete Real"
     extends Counter;
     discrete Real value(start = 0, fixed = true);
@@ -338,4 +347,12 @@ fn an_inactive_nested_call_does_not_evaluate_its_indexing_assert() {
     let result = simulate("InactiveWhen.NestedCallAssertIndex")
         .expect("scaledOuter(x, 0) is never evaluated while inactive");
     assert_eq!(final_value(&result, "checked"), 3.0);
+}
+
+#[test]
+fn a_compound_when_trigger_keeps_its_edge_buffer() {
+    let result = simulate("InactiveWhen.TriggerGuard").expect("the trigger reads its own buffer");
+    // A lost buffer would make the edge the level and fire on every pass.
+    assert_eq!(final_value(&result, "checked"), 3.0);
+    assert_eq!(final_value(&result, "value"), 30.0);
 }
