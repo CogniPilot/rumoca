@@ -4498,6 +4498,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// authored messages, so a callee holding assertions always expands: the row
     /// computes values only. A call that reads the solver state, or a parameter
     /// without a directional relation to carry its seed, expands as well.
+    /// The exception is a callee holding an error-level assertion where the
+    /// call can be retained: an expansion would evaluate the statements after
+    /// a failed assert, which the typed owner gates (MLS 3.7 §8.3.7). A call
+    /// without a Real input carries no seed, so its derivative needs no
+    /// directional relation.
     fn expandable_call_expands(
         &self,
         function: dae::FunctionId<'dae>,
@@ -4505,12 +4510,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         input_starts: &[solve::Reg],
         span: Span,
     ) -> Result<bool, LowerError> {
-        if !registered.callee.assertions.is_empty()
-            || !self.typed_call_inputs_are_y_independent(input_starts, &registered.site)
-        {
+        if !self.typed_call_inputs_are_y_independent(input_starts, &registered.site) {
             return Ok(true);
         }
-        if registered.site.directional().is_some() || !self.reads_parameters() {
+        let retainable = registered.site.directional().is_some() || !self.reads_parameters();
+        if !registered.callee.assertions.is_empty() {
+            let gated = registered
+                .callee
+                .assertions
+                .iter()
+                .any(|assertion| assertion.level == dae::AssertionLevel::Error);
+            let seedless = registered.site.inputs().iter().all(|value_type| {
+                !matches!(
+                    value_type.element_type(),
+                    solve::SolveScalarType::Real { .. }
+                )
+            });
+            return Ok(!(gated && (retainable || seedless)));
+        }
+        if retainable {
             return Ok(false);
         }
         crate::lower::typed_functions::is_scalar_expandable(self.view, function)

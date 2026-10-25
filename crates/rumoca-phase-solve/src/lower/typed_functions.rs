@@ -455,6 +455,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         &mut self,
         statements: dae::FunctionStatements<'dae>,
     ) -> Result<(), solve::SolveProgramConstructionError> {
+        // MLS 3.7 §8.3.7: a failed error-level assertion aborts the call, so an
+        // assignment after one is evaluated only while every earlier
+        // error-level predicate in this statement list holds. A body without
+        // such an assertion never sets the gate and lowers exactly as before.
+        let mut gate: Option<solve::ProgramRegister<'program>> = None;
         for statement in statements {
             match statement {
                 dae::FunctionStatementView::RequireAssigned {
@@ -474,19 +479,24 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     self.scoped_conditional(conditional)?;
                 }
                 dae::FunctionStatementView::Assignment { definition } => {
-                    self.function_definition_value(definition)?;
+                    self.gated_function_definition_value(definition, gate)?;
                 }
                 dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
                     for definition in definitions.iter() {
-                        self.function_definition_value(definition)?;
+                        self.gated_function_definition_value(definition, gate)?;
                     }
                 }
                 dae::FunctionStatementView::Assertion {
                     condition,
+                    level,
                     provenance,
                     ..
                 } => {
+                    let index = self.next_direct_assertion;
                     self.assertion_statement(condition, provenance.span())?;
+                    if level == dae::AssertionLevel::Error {
+                        gate = Some(self.extend_assertion_gate(gate, index, provenance.span())?);
+                    }
                 }
                 dae::FunctionStatementView::For {
                     fold, provenance, ..
