@@ -18,7 +18,7 @@ use std::{
 
 use crate::runtime::delay::{DelayRuntime, DelayRuntimeSnapshot};
 use crate::runtime::pre_params::{
-    advance_event_iteration_pre_params, event_iteration_plan_settled, seed_event_entry_pre_params,
+    PreBindingPlan, advance_event_iteration_pre_params, event_iteration_plan_settled,
 };
 use crate::runtime::projection::{
     ImplicitProjectionModel, ManifoldProjectionModel, project_algebraic_seed_with_plan,
@@ -263,6 +263,8 @@ pub struct SolveRuntime {
     /// Warning-level assertion sites reported so far (MLS §8.3.7).
     warning_log: RefCell<warnings::WarningLog>,
     clock_activation_cache: RefCell<ClockActivationCache>,
+    /// The model's `pre()` bindings as copy runs, built once at construction.
+    pre_bindings: PreBindingPlan,
     execution: RuntimeExecutionInventory,
 }
 
@@ -415,6 +417,31 @@ impl SolveRuntime {
     /// The immutable source owner whose execution was prepared by construction.
     pub fn model(&self) -> &SolveRuntimeModel {
         &self.model
+    }
+
+    /// `pre_params::commit_pre_params_after_event_at` over
+    /// the binding runs prepared at construction.
+    pub fn commit_pre_params_after_event_at(
+        &self,
+        y: &[f64],
+        params: &mut [f64],
+        event_time: Option<f64>,
+        tol: f64,
+    ) -> bool {
+        self.pre_bindings
+            .commit_after_event_at(&self.model, y, params, event_time, tol)
+    }
+
+    /// `pre_params::seed_event_entry_pre_params` over the
+    /// binding runs prepared at construction.
+    pub(crate) fn seed_event_entry_pre_params(
+        &self,
+        event_pre_y: &[f64],
+        event_pre_p: &[f64],
+        params: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.pre_bindings
+            .seed_event_entry(event_pre_y, event_pre_p, params)
     }
 
     /// Number of continuous states in the prepared source layout.

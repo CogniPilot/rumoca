@@ -30,9 +30,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{MeIndicatorCrossing, MeOutputSeries};
-use crate::runtime::pre_params::{
-    clear_scheduled_root_relation_memory, commit_pre_params_after_event_at,
-};
+use crate::runtime::pre_params::clear_scheduled_root_relation_memory;
 use crate::runtime::schedule::{RuntimeEventStop, ScheduledEventConsumption, SolveStopSchedule};
 #[cfg(test)]
 use crate::runtime::solve_ops::root_crossings_with_relation_memory;

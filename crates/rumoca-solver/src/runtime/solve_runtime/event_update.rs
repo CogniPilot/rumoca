@@ -1,4 +1,7 @@
+use rumoca_ir_solve as solve;
+
 use crate::EventPreMode;
+use crate::runtime::solve_events::event_eval_params_with_relation_overrides;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventUpdateRowFilter {
@@ -72,6 +75,40 @@ pub(super) struct EventEvalParamCache {
     pub(super) outputs: Vec<f64>,
     pub(super) guarded_program: Option<usize>,
     pub(super) guarded_outputs: Vec<f64>,
+    pub(super) overridden: Option<OverriddenParams>,
+}
+
+/// `P` with one snapshot's root-relation overrides applied, and the base it was
+/// built from (its address and length).
+pub(super) struct OverriddenParams {
+    base: (usize, usize),
+    values: Vec<f64>,
+}
+
+/// The `P` one event row evaluates under `overrides`.
+///
+/// Without overrides this is `base_p` itself. With them, every row of one pass
+/// reads the same overridden copy of the pass-entry `P`, so the copy is built
+/// once per cache instead of once per row; a different base rebuilds it.
+pub(super) fn overridden_event_params<'a>(
+    overridden: &'a mut Option<OverriddenParams>,
+    targets: &[Option<solve::ScalarSlot>],
+    overrides: &[(usize, f64)],
+    base_p: &'a [f64],
+) -> Result<&'a [f64], crate::RuntimeSolveError> {
+    if overrides.is_empty() {
+        return Ok(base_p);
+    }
+    let base = (base_p.as_ptr().addr(), base_p.len());
+    if overridden.as_ref().is_none_or(|cached| cached.base != base) {
+        *overridden = Some(OverriddenParams {
+            base,
+            values: event_eval_params_with_relation_overrides(targets, overrides, base_p)?,
+        });
+    }
+    Ok(overridden
+        .as_ref()
+        .map_or(base_p, |cached| cached.values.as_slice()))
 }
 
 impl EventEvalParamCache {
@@ -86,6 +123,47 @@ impl EventEvalParamCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_overrides_are_applied_once_per_base() {
+        let targets = [
+            Some(solve::ScalarSlot::P {
+                index: 1,
+                byte_offset: 8,
+            }),
+            None,
+        ];
+        let base = [10.0, 11.0, 12.0];
+        let mut overridden = None;
+        let plain = overridden_event_params(&mut overridden, &targets, &[], &base).unwrap();
+        assert_eq!(
+            plain.as_ptr(),
+            base.as_ptr(),
+            "no overrides reads the base itself"
+        );
+        assert!(overridden.is_none());
+        let overrides = [(0, 1.0), (1, 5.0)];
+        let first = overridden_event_params(&mut overridden, &targets, &overrides, &base)
+            .unwrap()
+            .to_vec();
+        assert_eq!(first, [10.0, 1.0, 12.0]);
+        let built = overridden.as_ref().unwrap().values.as_ptr();
+        let again = overridden_event_params(&mut overridden, &targets, &overrides, &base).unwrap();
+        assert_eq!(
+            again.as_ptr(),
+            built,
+            "a second row of the pass reuses the copy"
+        );
+        let other = [20.0, 21.0, 22.0];
+        let rebuilt = overridden_event_params(&mut overridden, &targets, &overrides, &other)
+            .unwrap()
+            .to_vec();
+        assert_eq!(
+            rebuilt,
+            [20.0, 1.0, 22.0],
+            "a different base is never served stale"
+        );
+    }
 
     #[test]
     fn initialization_defers_clock_owned_rows_until_the_first_tick() {

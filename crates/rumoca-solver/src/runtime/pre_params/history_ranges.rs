@@ -4,7 +4,7 @@
 mod tests;
 
 use super::*;
-use crate::runtime::event_history::{EventIterationRange, advance_event_iteration_ranges};
+use crate::runtime::event_history::{EventIterationRange, copy_validated_event_iteration_ranges};
 
 struct HistoryRange<'a> {
     current: &'a [f64],
@@ -52,9 +52,9 @@ pub(super) fn advance(
             fixed_point: owner.fixed_point,
         });
     }
-    advance_event_iteration_ranges(&mut ranges).map_err(|()| {
-        RuntimeSolveError::solve_ir("event-iteration plan contains an invalid typed value")
-    })
+    // history_range validated every current and pre value of every run, with
+    // equal extents, before any write; validating again would only repeat it.
+    Ok(copy_validated_event_iteration_ranges(&mut ranges))
 }
 
 fn history_range<'a>(

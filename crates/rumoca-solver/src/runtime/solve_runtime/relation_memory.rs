@@ -250,7 +250,8 @@ impl ScalarExecutionView<'_> {
             row_filter,
             root_relation_overrides,
         } = input;
-        seed_event_entry_pre_params(&self.model, event_pre_y, event_pre_p, p)?;
+        self.runtime
+            .seed_event_entry_pre_params(event_pre_y, event_pre_p, p)?;
         // Clock leaves and clock-owned rows share the same event-pass authority.
         // An ordinary sample row has no partition owner, so its clock leaf must
         // also remain cleared while initialization settles unowned rows.

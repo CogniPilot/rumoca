@@ -8,7 +8,7 @@ use crate::{RuntimeSolveError, discrete_row_active_at, row_reads_solver_or_time}
 use super::ProjectAlgebraics;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
-    EventUpdateRowFilter,
+    EventUpdateRowFilter, overridden_event_params,
 };
 use super::native_specialization::{RowEvalPoint, SpecializedRows};
 use super::support::{
@@ -318,18 +318,13 @@ impl ScalarExecutionView<'_> {
         {
             return Ok(None);
         }
-        let row_p = eval_p_cache.params(eval_p);
-        let row_p_with_root_overrides;
-        let row_p = if snapshot.root_relation_overrides.is_empty() {
-            row_p
-        } else {
-            row_p_with_root_overrides = event_eval_params_with_relation_overrides(
-                &self.model.problem.events.root_relation_memory_targets,
-                snapshot.root_relation_overrides,
-                row_p,
-            )?;
-            &row_p_with_root_overrides
-        };
+        let base_p = eval_p_cache.params(eval_p);
+        let row_p = overridden_event_params(
+            &mut eval_p_cache.overridden,
+            &self.model.problem.events.root_relation_memory_targets,
+            snapshot.root_relation_overrides,
+            base_p,
+        )?;
         self.eval_lifecycle_row(
             &self.scalar.structured_discrete_rows.rhs,
             row.source_row,
@@ -1667,18 +1662,6 @@ impl ScalarExecutionView<'_> {
         if !snapshot.row_filter.accepts(row_pre_mode, clock_owned) {
             return Ok(None);
         }
-        let row_p = eval_p_cache.params(eval_p);
-        let row_p_with_root_overrides;
-        let row_p = if snapshot.root_relation_overrides.is_empty() {
-            row_p
-        } else {
-            row_p_with_root_overrides = event_eval_params_with_relation_overrides(
-                &self.model.problem.events.root_relation_memory_targets,
-                snapshot.root_relation_overrides,
-                row_p,
-            )?;
-            &row_p_with_root_overrides
-        };
         let (program, output) = self
             .scalar
             .discrete_rhs
@@ -1689,6 +1672,13 @@ impl ScalarExecutionView<'_> {
                 ))
             })?;
         if eval_p_cache.program != Some(program) {
+            let base_p = eval_p_cache.params(eval_p);
+            let row_p = overridden_event_params(
+                &mut eval_p_cache.overridden,
+                &self.model.problem.events.root_relation_memory_targets,
+                snapshot.root_relation_overrides,
+                base_p,
+            )?;
             self.eval_discrete_program_outputs(
                 program,
                 eval_y,

@@ -1502,8 +1502,7 @@ impl SolveMeKernel {
         mut solver_y: Vec<f64>,
         root_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<(), MeError> {
-        commit_pre_params_after_event_at(
-            self.runtime.model(),
+        self.runtime.commit_pre_params_after_event_at(
             &solver_y,
             &mut self.params,
             Some(event_time),

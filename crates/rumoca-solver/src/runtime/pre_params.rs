@@ -1,4 +1,7 @@
+mod binding_runs;
 mod history_ranges;
+
+pub(crate) use binding_runs::PreBindingPlan;
 
 use rumoca_ir_solve as solve;
 
