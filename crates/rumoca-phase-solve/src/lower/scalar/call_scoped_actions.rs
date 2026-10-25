@@ -558,6 +558,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         condition: dae::ExprId<'dae>,
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        if self.under_unclocked_when_activation() {
+            return self.activated_assertion_action_program(condition, span);
+        }
         let mut compiler = self.fork_for_call_action();
         let activation = compiler.activation(span)?;
         let condition = compiler.expression(condition, 0)?;
@@ -566,6 +569,43 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.emit(solve::LinearOp::StoreOutput {
             src: active_failure,
         })?;
+        compiler.finish_operations()
+    }
+
+    /// Under a `when` activation the callee's condition is evaluated only in a
+    /// region entered on that activation, so a condition such as
+    /// `table[i] > 0` that is valid only once the body runs cannot fault while
+    /// the body is inactive (MLS 3.7 §8.5, §11.2.7), as for a retained call.
+    fn activated_assertion_action_program(
+        &self,
+        condition: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let mut active = self.fork_for_call_action();
+        let condition = active.expression(condition, 0)?;
+        let failed = active.unary(dae::UnaryOperator::Not, condition, span)?;
+        active.emit(solve::LinearOp::StoreOutput { src: failed })?;
+        let active = active.finish_operations()?;
+        let mut compiler = self.fork_for_call_action();
+        let activation = compiler.activation(span)?;
+        let gate = vec![
+            solve::LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let fallback = vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let program =
+            solve::FunctionConditionalProgram::checked(1, vec![1], [(gate, active)], fallback)
+                .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        let start = compiler.register_range(1, span)?;
+        compiler.emit(solve::LinearOp::FunctionConditional {
+            dst_start: start,
+            capture_start: activation,
+            program: std::sync::Arc::new(program),
+        })?;
+        compiler.emit(solve::LinearOp::StoreOutput { src: start })?;
         compiler.finish_operations()
     }
 
@@ -1141,12 +1181,17 @@ impl ScalarCompiler<'_, '_> {
         self.layout.assertion_roots == crate::layout::AssertionRoots::Event
             && level == dae::AssertionLevel::Error
             && self.active_clock.is_none()
-            && !self.activation_path.iter().any(|guard| {
-                matches!(
-                    guard.condition,
-                    ActivationCondition::GuardedAssignment { clock: None, .. }
-                )
-            })
+            && !self.under_unclocked_when_activation()
+    }
+
+    /// Whether this compiler lowers under an unclocked `when` activation.
+    fn under_unclocked_when_activation(&self) -> bool {
+        self.activation_path.iter().any(|guard| {
+            matches!(
+                guard.condition,
+                ActivationCondition::GuardedAssignment { clock: None, .. }
+            )
+        })
     }
 }
 

@@ -209,6 +209,37 @@ fn call_assertions_survive_stage_evaluation_and_ad() {
 }
 
 #[test]
+fn a_failed_assert_keeps_valid_later_accesses_and_reports_doomed_ones() {
+    // After `assert(u > 0)` fails, `t[i]` is still read where `i` is in range
+    // (value and direction intact), and where it is out of range the
+    // assertion is reported instead of an index fault (MLS 3.7 §8.3.7).
+    let source = compile(
+        "function pick input Real u; output Real y; protected Real t[3]; Integer i; algorithm assert(u>0, \"positive\"); t:={10, 20, 30}; i:=if u>-5 then 2 else 4; y:=u*t[i]; end pick; model Function Real x; equation der(x)=pick(x); end Function;",
+        "Function",
+    );
+    let formal = construct_formal_derivatives(&source).unwrap();
+    formal.inspect(|formal| {
+        let kernels = lower_formal_derivative_stages(formal).unwrap();
+        // (x, residual 5 - pick(x), direction 3 - pick'(x), assertion holds)
+        for (x, residual, direction, holds) in [
+            (2., 5. - 40., 3. - 20., true),
+            (-2., 5. + 40., 3. - 20., false),
+            (-8., 5., 3., false),
+        ] {
+            let (residuals, directions, assertions) =
+                evaluate(&kernels, |source, _| match source {
+                    Some(("x", 0)) => (x, 1.),
+                    Some(("x", 1)) => (5., 3.),
+                    other => panic!("{other:?}"),
+                });
+            assert_eq!(residuals, [residual], "x = {x}");
+            assert_eq!(directions, [direction], "x = {x}");
+            assert_eq!(assertions, [holds], "x = {x}");
+        }
+    });
+}
+
+#[test]
 fn rotation_stage_kernels_lower_every_coupled_equation() {
     let source = compile(
         include_str!("../fixtures/index_reduction/RateCancellation.mo"),
