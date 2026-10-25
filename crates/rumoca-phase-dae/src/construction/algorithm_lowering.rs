@@ -716,13 +716,34 @@ fn lower_algorithm_assertion<'dae>(
         })?;
         return Ok(());
     }
-    let (condition, _) = lower_condition(
-        construction,
-        environment.coordinates,
-        environment.functions,
-        environment.sample_lattices,
-        condition,
-    )?;
+    // MLS 3.7 §11.2.7 and §8.6: a when body runs only on its activation, so a
+    // relation in an assertion there is evaluated only at that event and is not
+    // a crossing function. As the when-equation body does
+    // (`lower_body_condition`), it lowers to a discrete value with no relation
+    // roots; only an unconditional algorithm assertion keeps them.
+    let condition = if activation.always {
+        lower_condition(
+            construction,
+            environment.coordinates,
+            environment.functions,
+            environment.sample_lattices,
+            condition,
+        )?
+        .0
+    } else {
+        let value = lower_expression(
+            construction,
+            environment.coordinates,
+            environment.functions,
+            condition,
+            None,
+        )?;
+        let lowered = construction.conditions(|conditions| conditions.reserve(provenance))?;
+        construction.conditions(|conditions| {
+            conditions.define(lowered, dae::ConditionInput::Discrete(value), provenance)
+        })?;
+        lowered
+    };
     let failed = negate_condition(construction, condition, span)?;
     // An unconditional activation contributes nothing to conjoin: the failure
     // condition alone is the action guard.

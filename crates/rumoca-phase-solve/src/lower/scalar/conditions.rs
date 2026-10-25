@@ -38,8 +38,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let edge = self.trigger_edge(trigger, trigger_memory, span)?;
-        let guard = self.condition(guard)?;
-        let output = self.binary(dae::BinaryOperator::And, edge, guard, span)?;
+        let output =
+            self.activated_action_guard(edge, guard, Some((trigger, trigger_memory)), span)?;
         self.emit(solve::LinearOp::StoreOutput { src: output })?;
         self.finish_operations()
     }
@@ -94,9 +94,133 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         holds: dae::ExprId<'dae>,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let holds = self.expression(holds, 0)?;
-        let violated = self.unary(dae::UnaryOperator::Not, holds, span)?;
-        self.binary(dae::BinaryOperator::And, active, violated, span)
+        let mut selected = self.selected_arm_region(&[], span)?;
+        let holds = selected.expression(holds, 0)?;
+        let violated = selected.unary(dae::UnaryOperator::Not, holds, span)?;
+        selected
+            .ops
+            .push(solve::LinearOp::StoreOutput { src: violated });
+        self.emit_activated_action_region(active, selected.ops, span)
+    }
+
+    /// `prefix and guard` for an event action. A `when` body's `assert` has
+    /// the guard `activation and failure` (algorithm and when-equation
+    /// lowering in phase-dae put the activation first). MLS 3.7 §11.2.7 runs a
+    /// when body only on its activation and §8.6 not during initialization, so
+    /// the failure conjunct, which may index or divide by values that are only
+    /// valid once the body is active, is evaluated in a region entered only
+    /// when `prefix` and the activation hold. Any other guard lowers as before.
+    /// An unclocked `trigger` (with its edge memory) is the region's outer
+    /// activation, so the call-scoped programs of a call compiled in the region
+    /// run only on that activation and own no root.
+    fn activated_action_guard(
+        &mut self,
+        prefix: solve::Reg,
+        guard: dae::ConditionId<'dae>,
+        trigger: Option<(dae::ConditionId<'dae>, usize)>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let node = self
+            .view
+            .condition(guard)
+            .expect("checked condition identity resolves");
+        let dae::ConditionOperation::And(activation_condition, failure) = node.operation() else {
+            let guard = self.condition(guard)?;
+            return self.binary(dae::BinaryOperator::And, prefix, guard, span);
+        };
+        let activation = self.condition(activation_condition)?;
+        let active = self.binary(dae::BinaryOperator::And, prefix, activation, span)?;
+        let mut selected = self.selected_arm_region(&[], span)?;
+        if let Some((trigger, trigger_memory)) = trigger {
+            // Materialized only where a fork reads it: the region itself runs
+            // only when it holds.
+            selected.activation_path.push(ActivationGuard {
+                condition: ActivationCondition::GuardedAssignment {
+                    clock: None,
+                    periodic: false,
+                    trigger,
+                    guard: activation_condition,
+                    trigger_memory,
+                },
+                register: None,
+                expected: true,
+            });
+            selected.fold_guard_base = selected.activation_path.len();
+        }
+        let failed = selected.condition(failure)?;
+        let failed = selected.unless_a_called_assertion_failed(failed, span)?;
+        selected
+            .ops
+            .push(solve::LinearOp::StoreOutput { src: failed });
+        self.emit_activated_action_region(active, selected.ops, span)
+    }
+
+    /// `failed` and every error-level predicate of the typed calls this
+    /// region invoked. A failed error-level assert aborts its function call
+    /// (MLS 3.7 §8.3.7), so the call's own action reports it and the assertion
+    /// reading the aborted call's value does not. The region's call cache
+    /// holds exactly the calls compiled here; predicates are combined in
+    /// register order.
+    fn unless_a_called_assertion_failed(
+        &mut self,
+        failed: solve::Reg,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let mut predicates = Vec::new();
+        for (start, registered) in self.typed_pure_call_cache.values() {
+            predicates.extend(error_predicate_registers(*start, registered, span)?);
+        }
+        predicates.sort_unstable();
+        predicates.into_iter().try_fold(failed, |failed, holds| {
+            self.binary(dae::BinaryOperator::And, failed, holds, span)
+        })
+    }
+
+    /// A one-output conditional: `selected` when `active`, otherwise false.
+    /// `active` is a capture after the selected-arm region's own domain-point
+    /// captures, so the region never reads the outer register file.
+    fn emit_activated_action_region(
+        &mut self,
+        active: solve::Reg,
+        selected: Vec<solve::LinearOp>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let mut captures: Vec<solve::Reg> = self
+            .symbolic_domain_points
+            .iter()
+            .flat_map(|(_, registers)| registers.iter().copied())
+            .collect();
+        let active_index = captures.len();
+        captures.push(active);
+        let mut condition = self.selected_arm_region(&[], span)?;
+        let gate = condition.register(span)?;
+        condition
+            .ops
+            .push(solve::LinearOp::LoadFunctionConditionalCapture {
+                dst: gate,
+                index: active_index,
+            });
+        condition
+            .ops
+            .push(solve::LinearOp::StoreOutput { src: gate });
+        let mut fallback = self.selected_arm_region(&[], span)?;
+        let inactive = fallback.constant(0.0, span)?;
+        fallback
+            .ops
+            .push(solve::LinearOp::StoreOutput { src: inactive });
+        let program = solve::FunctionConditionalProgram::checked(
+            captures.len(),
+            vec![1],
+            vec![(condition.ops, selected)],
+            fallback.ops,
+        )
+        .map_err(|error| {
+            LowerError::contract(
+                format!("event-action activation proof failed: {error}"),
+                span,
+            )
+        })?;
+        self.emit_conditional_program(captures, program, span)
     }
 
     pub(in crate::lower) fn clocked_action_condition_program(
@@ -106,7 +230,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         self.active_clock = Some(clock);
-        let guard = self.condition(guard)?;
         let activation = self
             .layout
             .clock_activations
@@ -116,7 +239,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 LowerError::contract("clocked action has no activation parameter", span)
             })?;
         let activation = self.load_slot(solve::scalar_slot_p(activation), span)?;
-        let output = self.binary(dae::BinaryOperator::And, activation, guard, span)?;
+        let output = self.activated_action_guard(activation, guard, None, span)?;
         self.emit(solve::LinearOp::StoreOutput { src: output })?;
         self.finish_operations()
     }
@@ -634,4 +757,38 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ConditionOperation::Always => self.constant(1.0, span),
         }
     }
+}
+
+/// The registers of a typed call's error-level predicates, whose results start
+/// at `start` in the call site's output order.
+fn error_predicate_registers(
+    start: solve::Reg,
+    registered: &crate::lower::typed_functions::RegisteredCall<'_>,
+    span: Span,
+) -> Result<Vec<solve::Reg>, LowerError> {
+    let outputs = registered.site.outputs();
+    registered
+        .callee
+        .assertions
+        .iter()
+        .filter(|assertion| assertion.level == dae::AssertionLevel::Error)
+        .map(|assertion| {
+            let offset = outputs
+                .get(..assertion.predicate_output)
+                .ok_or_else(|| LowerError::contract("typed call lost its issued predicate", span))?
+                .iter()
+                .try_fold(0usize, |offset, output| {
+                    offset.checked_add(output.value_type().scalar_count() as usize)
+                })
+                .ok_or_else(|| {
+                    LowerError::contract("typed call predicate offset overflows", span)
+                })?;
+            super::functions::function_conditional_reg_offset(
+                start,
+                offset,
+                span,
+                "typed pure-call predicate",
+            )
+        })
+        .collect()
 }

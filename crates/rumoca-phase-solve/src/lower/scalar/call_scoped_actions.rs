@@ -1134,10 +1134,19 @@ impl ScalarCompiler<'_, '_> {
     /// behavior of the model", so evaluating it never triggers an event
     /// (MLS §8.3.7): it owns no root anywhere. The stateless native product has
     /// no solver to localize a crossing, so its assertions own no root either.
+    /// Nor does an assertion reached under an unclocked `when` activation: a
+    /// `when` body runs only at its event (MLS 3.7 §8.5, §11.2.7), so its
+    /// relations are not crossing functions.
     fn event_root_owned(&self, level: dae::AssertionLevel) -> bool {
         self.layout.assertion_roots == crate::layout::AssertionRoots::Event
             && level == dae::AssertionLevel::Error
             && self.active_clock.is_none()
+            && !self.activation_path.iter().any(|guard| {
+                matches!(
+                    guard.condition,
+                    ActivationCondition::GuardedAssignment { clock: None, .. }
+                )
+            })
     }
 }
 
