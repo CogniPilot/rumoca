@@ -1,0 +1,654 @@
+{
+  "schema_version": 1,
+  "branch": "fix/array-and-record-shapes",
+  "base_commit": "d4918832b7406792277957b805b07dba4c412125",
+  "implementation_commit": "a456f5d571d73fffb0960870b16e0dbeaecdee49",
+  "extracted_from": {
+    "branch": "rumoca-bitcode-v1-follow-main",
+    "commit": "e0cf92c111e6226ddeea40374ee54168120f21e3",
+    "original_commits": [
+      "f7ff9ddd283d67c5eda27daf409af7108d7fb108",
+      "da5866e5b74ca136b582bc237a472b688841f570",
+      "69b0b3dd58ab0404a9569be2c8d629cb8ad4d042"
+    ]
+  },
+  "scope": [
+    "Recompute whole-array equation cardinalities and row-major family domains after resolving component member projections.",
+    "Retain empty record declarations, zero extents, source identity and effective types without instantiating absent elements.",
+    "Use record container axes in function shape analysis and project record fields across array construction and concatenation.",
+    "Evaluate structural Integer record bindings in their owning scopes and distribute non-each array-expression modifiers per element.",
+    "Evaluate omitted trailing array subscripts as whole axes, matching checked DAE semantics."
+  ],
+  "first_divergent_owners": [
+    {
+      "failure": "Projected vector and matrix equations reported 1/4 scalar rows instead of 3/24.",
+      "owner": "rumoca-phase-flatten::postprocess::index_collapse",
+      "fix": "Rebuild the equation cardinality and authoritative array family after resolving exact occurrences."
+    },
+    {
+      "failure": "Empty record declarations were absent from instance components and could become untyped primitive placeholders.",
+      "owner": "rumoca-phase-instantiate::component_loop",
+      "fix": "Retain the typed declaration header and skip the absent record body; flatten honors the retained record owner."
+    },
+    {
+      "failure": "Record shape analysis rejected retained containers as unresolved references.",
+      "owner": "rumoca-phase-dae::construction::function_shapes",
+      "fix": "Register exact declared container dimensions, rejecting invalid negative extents."
+    },
+    {
+      "failure": "cat record arguments were inferred as Integer from the concatenation axis.",
+      "owner": "rumoca-phase-typecheck::expression_types",
+      "fix": "Infer and unify cat result types from its value operands."
+    },
+    {
+      "failure": "Record constructor counts were absent or replaced by stale defaults; array modifiers reached DAE with the wrong rank.",
+      "owner": "rumoca-eval-ast::eval_instantiate and rumoca-phase-instantiate::array_expansion",
+      "fix": "Evaluate bound record fields in scope; share modifier selection with the homogeneity gate."
+    },
+    {
+      "failure": "After compile-time fixes, row modifiers failed at runtime because omitted trailing subscripts were rejected.",
+      "owner": "rumoca-eval-dae::numeric",
+      "fix": "Treat omitted trailing axes as Whole, as proven by checked DAE construction."
+    }
+  ],
+  "specs": [
+    "SPEC_0007",
+    "SPEC_0021",
+    "SPEC_0022: MLS 7.2.5, 10.1, 10.4.4, 10.5, 10.6.1, 10.6.9, 10.7, 12.2, 12.6",
+    "SPEC_0029",
+    "SPEC_0032 section 1 / SPEC_0043 section 17",
+    "SPEC_0033 section 6a"
+  ],
+  "adaptations_to_main": [
+    "Omit function-shape value propagation and structured-template analysis already supported on main.",
+    "Update the empty redeclared-record regression to require one correctly typed zero-extent header and no elements or fields.",
+    "Port the empty-record declaration contract to the active construction catalog instead of its historical parent location."
+  ],
+  "risk_notes": {
+    "correctness": "Projection rewrites must preserve exact occurrence identity, every container and field axis, and zero-length domains. Modifier distribution must agree with the compaction decision.",
+    "maintenance": "Changes remain in existing phase and evaluator owners; added helpers are private, with no new public API, dependency, or gate exception."
+  },
+  "verification_environment": {
+    "CARGO_BUILD_JOBS": 4,
+    "RUST_TEST_THREADS": 4,
+    "RAYON_NUM_THREADS": 4
+  },
+  "tests": {
+    "baseline_regressions": [
+      {
+        "suite": "array-equation",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca",
+          "--test",
+          "suite_core",
+          "array_constructor_equation_shape"
+        ],
+        "exit_code": 101,
+        "summaries": [
+          {
+            "passed": 2,
+            "failed": 2
+          }
+        ],
+        "failed_tests": [
+          "array_constructor_equation_shape::component_array_vector_members_keep_every_axis_and_value",
+          "array_constructor_equation_shape::component_array_matrix_members_keep_initial_equation_domains"
+        ],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-array-equation.log",
+        "log_sha256": "2bf8bea481facfc78fb8c62e91f4be418a1a194405cb34d726081aadaf3863de"
+      },
+      {
+        "suite": "record-core",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca",
+          "--test",
+          "suite_core",
+          "function_record_array_test"
+        ],
+        "exit_code": 101,
+        "summaries": [
+          {
+            "passed": 4,
+            "failed": 2
+          }
+        ],
+        "failed_tests": [
+          "function_record_array_test::concatenated_record_arrays_preserve_vector_fields_and_empty_operands",
+          "function_record_array_test::record_array_modifier_selects_rows_of_array_expression"
+        ],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-record-core.log",
+        "log_sha256": "b80feb9bf95a450759717ab298cb1e5f65882a7633c6d176556b9728d028e559"
+      },
+      {
+        "suite": "function-shape",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca",
+          "--test",
+          "suite_core",
+          "function_projection_array_shape_test"
+        ],
+        "exit_code": 0,
+        "summaries": [
+          {
+            "passed": 17,
+            "failed": 0
+          }
+        ],
+        "failed_tests": [],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-function-shape.log",
+        "log_sha256": "6a89eb3e4e169bf580071c8ec2a35275bf6a110407c732e763c3f145b9deb41f"
+      },
+      {
+        "suite": "dae-shapes",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca-phase-dae",
+          "--lib",
+          "function_shapes::tests"
+        ],
+        "exit_code": 101,
+        "summaries": [
+          {
+            "passed": 62,
+            "failed": 3
+          }
+        ],
+        "failed_tests": [
+          "construction::function_shapes::tests::record_container_shapes::record_container_cat_field_shapes_include_container_and_field_axes",
+          "construction::function_shapes::tests::record_container_shapes::record_container_shapes_preserve_scalar_array_and_empty_domains",
+          "construction::function_shapes::tests::record_container_shapes::record_container_shapes_reject_unknown_references_and_invalid_extents"
+        ],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-dae-shapes.log",
+        "log_sha256": "6837f0c1ee515bc1b666a19ca629e6726c0b97426f1979b6e338db5917293199"
+      },
+      {
+        "suite": "instantiate-records",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca-phase-instantiate",
+          "--lib",
+          "record"
+        ],
+        "exit_code": 101,
+        "summaries": [
+          {
+            "passed": 21,
+            "failed": 7
+          }
+        ],
+        "failed_tests": [
+          "array_expansion::tests::homogeneous_family_tests::zero_sized_record_arrays_keep_rank_without_instantiating_fields",
+          "array_expansion::tests::homogeneous_family_tests::zero_sized_record_arrays_retain_declarations_and_modifier_scopes",
+          "array_expansion::tests::record_bound_dimensions::positional_record_constructor_determines_dimensions",
+          "array_expansion::tests::record_bound_dimensions::record_constructor_binding_determines_component_array_dimensions",
+          "array_expansion::tests::record_bound_dimensions::record_default_binding_determines_component_array_dimensions",
+          "array_expansion::tests::record_bound_dimensions::record_constructor_defaults_use_record_scope_and_supplied_arguments",
+          "array_expansion::tests::record_bound_dimensions::record_constructor_field_modifier_does_not_use_stale_default"
+        ],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-instantiate-records.log",
+        "log_sha256": "79113d0a3868987889e34f9c253ed11eb8ec3ee529e9ad3c627903e1f627820c"
+      },
+      {
+        "suite": "typecheck-empty",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca-phase-typecheck",
+          "--lib",
+          "empty_record_array_headers"
+        ],
+        "exit_code": 101,
+        "summaries": [
+          {
+            "passed": 0,
+            "failed": 1
+          }
+        ],
+        "failed_tests": [
+          "tests::instanced_semantics_tests::empty_record_array_headers_receive_effective_types"
+        ],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-typecheck-empty.log",
+        "log_sha256": "7507953c0b89f2b73b10ec5633489c21bf063adbba96367cb6186e664df3ecd6"
+      },
+      {
+        "suite": "flatten-empty",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca-phase-flatten",
+          "--lib",
+          "empty_record_concat"
+        ],
+        "exit_code": 101,
+        "summaries": [
+          {
+            "passed": 0,
+            "failed": 1
+          }
+        ],
+        "failed_tests": [
+          "zero_sized_arrays::tests::empty_record_concat_preserves_typed_records_without_placeholders"
+        ],
+        "log": "target/verification/array-and-record-shapes-20261026/baseline-flatten-empty.log",
+        "log_sha256": "8fd2596f2c68e38cd242c5208314650e4670222693f3e8635cad75ab09861bd0"
+      }
+    ],
+    "final_checks": [
+      {
+        "suite": "phase-libs",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca-eval-ast",
+          "-p",
+          "rumoca-eval-dae",
+          "-p",
+          "rumoca-phase-instantiate",
+          "-p",
+          "rumoca-phase-typecheck",
+          "-p",
+          "rumoca-phase-flatten",
+          "-p",
+          "rumoca-phase-dae",
+          "--lib"
+        ],
+        "exit_code": 0,
+        "log": "target/verification/array-and-record-shapes-20261026/phase-libs.log",
+        "log_sha256": "8f63054b0a31cecf937602537e3fed49bb145adecc6f1e3f38310161c6ea1c8d",
+        "results": [
+          {
+            "passed": 110,
+            "failed": 0
+          },
+          {
+            "passed": 142,
+            "failed": 0
+          },
+          {
+            "passed": 501,
+            "failed": 0
+          },
+          {
+            "passed": 684,
+            "failed": 0
+          },
+          {
+            "passed": 239,
+            "failed": 0
+          },
+          {
+            "passed": 154,
+            "failed": 0
+          }
+        ]
+      },
+      {
+        "suite": "core-and-gates",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "rumoca",
+          "--test",
+          "suite_core",
+          "--test",
+          "suite_gates",
+          "--test",
+          "architecture_hardening_test"
+        ],
+        "exit_code": 0,
+        "log": "target/verification/array-and-record-shapes-20261026/core-and-gates.log",
+        "log_sha256": "de815d959261a0c80b4df72d3ea339362c83517affc7ca263d9ff52565b2da6c",
+        "results": [
+          {
+            "passed": 248,
+            "failed": 0
+          },
+          {
+            "passed": 1640,
+            "failed": 0
+          },
+          {
+            "passed": 19,
+            "failed": 0
+          }
+        ]
+      },
+      {
+        "suite": "clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "-p",
+          "rumoca-eval-ast",
+          "-p",
+          "rumoca-eval-dae",
+          "-p",
+          "rumoca-phase-instantiate",
+          "-p",
+          "rumoca-phase-typecheck",
+          "-p",
+          "rumoca-phase-flatten",
+          "-p",
+          "rumoca-phase-dae",
+          "-p",
+          "rumoca",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "log": "target/verification/array-and-record-shapes-20261026/clippy.log",
+        "log_sha256": "8c57167f47f48c83f770b8c21fa3dfd834b30694093d06bcfb58bae57cf6890c",
+        "results": []
+      },
+      {
+        "suite": "fmt",
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit_code": 0,
+        "log": "target/verification/array-and-record-shapes-20261026/fmt.log",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "results": []
+      }
+    ]
+  },
+  "not_run": [
+    {
+      "command": "cargo xtask verify gate --rev <landing-tip> --coverage",
+      "reason": "This task prepares a local topic branch. The committed-snapshot coverage gate remains required before landing."
+    },
+    {
+      "command": "cargo test --workspace; cargo clippy --workspace --all-targets --all-features -- -D warnings; cargo doc --no-deps",
+      "reason": "Validation covered six affected crate libraries, the full core suite, architecture/spec gates, and strict all-targets default-feature clippy for affected crates plus rumoca."
+    },
+    {
+      "command": "Complete Tier 2 566-model MSL/OMC sweep",
+      "reason": "This per-change review uses the fixed Tier 1 canary and does not claim full-cohort parity."
+    }
+  ],
+  "tier1_canary": {
+    "targets_file": "infra/verification/msl-canary-20.json",
+    "targets_sha256": "536004933ce502f7a8a4317e5dd6de2b700a6b176e84d2d6e7bbe0dcdf61eafa",
+    "baseline_origin": "Reused the preserved fixed-canary measurement from the same day at the exact unchanged main commit; no retry of failing models.",
+    "baseline": {
+      "commit": "d4918832b7406792277957b805b07dba4c412125",
+      "scope": "partial",
+      "omc_version": "OpenModelica 1.26.1",
+      "band_counts": {
+        "cohort_models": 20,
+        "compared_models": 15,
+        "high": 15,
+        "near": 0,
+        "deviation": 0,
+        "fallback": 0,
+        "absent": 5,
+        "absent_by_reason": {
+          "excluded": 1,
+          "sim_failed": 4
+        }
+      },
+      "stage_counts": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "compiled_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_attempted": 20,
+        "sim_ok": 16,
+        "parity_measured": true
+      },
+      "files": {
+        "msl_band_table.json": {
+          "path": "target/verification/follow-main-update-20261026/baseline/msl_band_table.json",
+          "sha256": "2d678c8e5a7e085e649903ffaa312c85597ec31bd1159558a6105be75260eee7"
+        },
+        "msl_quality_current.json": {
+          "path": "target/verification/follow-main-update-20261026/baseline/msl_quality_current.json",
+          "sha256": "1cbbab49c41a158be7e21e9ea4632999f452b61070a8ab45796359583e6c80c9"
+        },
+        "msl_results.json": {
+          "path": "target/verification/follow-main-update-20261026/baseline/msl_results.json",
+          "sha256": "36d00068d939aa2c550d8fb8fd98202d7eb3090fc388ba944d74c0efce6930a3"
+        },
+        "sim_trace_comparison.json": {
+          "path": "target/verification/follow-main-update-20261026/baseline/sim_trace_comparison.json",
+          "sha256": "7606e45114b83b32983dd88e07e3c5e391a8bbb3b783f43555734eac65c127e1"
+        }
+      }
+    },
+    "after": {
+      "commit": "a456f5d571d73fffb0960870b16e0dbeaecdee49",
+      "scope": "partial",
+      "omc_version": "OpenModelica 1.26.1",
+      "band_counts": {
+        "cohort_models": 20,
+        "compared_models": 15,
+        "high": 15,
+        "near": 0,
+        "deviation": 0,
+        "fallback": 0,
+        "absent": 5,
+        "absent_by_reason": {
+          "excluded": 1,
+          "sim_failed": 4
+        }
+      },
+      "stage_counts": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "compiled_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_attempted": 20,
+        "sim_ok": 16,
+        "parity_measured": true
+      },
+      "files": {
+        "msl_band_table.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/after-canary/msl_band_table.json",
+          "sha256": "5a8eb94fd96f45c0f0bded9cb7d7d33ccf666090ddb5af9e6ed7ebe1b77d3d80"
+        },
+        "msl_quality_current.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/after-canary/msl_quality_current.json",
+          "sha256": "91409e7d16221331b1fde6ff84bcc4bd623cf85913f9b097c70078c3ebf20bc8"
+        },
+        "msl_results.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/after-canary/msl_results.json",
+          "sha256": "9a0fe4a7a1ccdda0b9a98e8282cb1b14ca809952f7b34fb14a547597a1d5d48b"
+        },
+        "sim_trace_comparison.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/after-canary/sim_trace_comparison.json",
+          "sha256": "096a9c610cdf1a07266b35c52519ed3b5d23bf24522a7c3fe07133ee801b8701"
+        }
+      }
+    },
+    "changed_model_outcomes": {},
+    "interpretation": "No per-model outcome regression. Both runs compile and balance 20 models, simulate 16, and compare 15 at high agreement. Four simulation failures and one comparison exclusion remain visible. This is partial Tier 1 evidence, not full-cohort parity."
+  },
+  "selected_modelicatest": {
+    "source_revision": "8ae3d35c24e519cb2996cab20f3b13daf2b0c50a",
+    "targets_file": "crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json",
+    "measurement": {
+      "commit": "a456f5d571d73fffb0960870b16e0dbeaecdee49",
+      "scope": "partial",
+      "omc_version": "OpenModelica 1.26.1",
+      "band_counts": {
+        "cohort_models": 1,
+        "compared_models": 1,
+        "high": 1,
+        "near": 0,
+        "deviation": 0,
+        "fallback": 0,
+        "absent": 0,
+        "absent_by_reason": {}
+      },
+      "stage_counts": {
+        "parse_models": 1,
+        "flatten_models": 1,
+        "dae_models": 1,
+        "compiled_models": 1,
+        "solve_models": 1,
+        "balanced_models": 1,
+        "sim_attempted": 1,
+        "sim_ok": 1,
+        "parity_measured": true
+      },
+      "files": {
+        "msl_band_table.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/modelicatest/msl_band_table.json",
+          "sha256": "f5361270d9027cc9dc61c213e4e9799fe41b3d4336a0aba362ee1cb8636c9c32"
+        },
+        "msl_quality_current.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/modelicatest/msl_quality_current.json",
+          "sha256": "cdbf752ffae0a84dbc7145b1a7347462fefa65c4db89a7bb264bb6f65b506717"
+        },
+        "msl_results.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/modelicatest/msl_results.json",
+          "sha256": "52218fc83585c54cf2a147878b716d934e283d123572bdba19e450dd69dead37"
+        },
+        "sim_trace_comparison.json": {
+          "path": "target/verification/array-and-record-shapes-20261026/modelicatest/sim_trace_comparison.json",
+          "sha256": "ede48b53e04b4be37cb67ec75d6fbd06e592d90318f3628be843768c4536793f"
+        }
+      }
+    }
+  },
+  "pinned_modelica_models": {
+    "source_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
+    "Tests.All": "compile passed",
+    "Tests.LieGroupTests.SO2": "t=0 assertion simulation passed",
+    "Tests.LieGroupTests.SE2": "t=0 assertion simulation passed"
+  },
+  "corpus_commands": [
+    {
+      "suite": "canary",
+      "command": [
+        "cargo",
+        "xtask",
+        "verify",
+        "msl-parity",
+        "--no-remote-quality-baseline",
+        "--sim-targets-file",
+        "infra/verification/msl-canary-20.json",
+        "--results-dir",
+        "/home/mhcho/ws/rumoca/target/verification/array-and-record-shapes-20261026/after-canary"
+      ],
+      "exit_code": 0,
+      "log": "target/verification/array-and-record-shapes-20261026/canary.log",
+      "log_sha256": "a9bd35f0cf2970dea4964a53e6757daa03c51fac8eaaf2190133f7b8a86d6241"
+    },
+    {
+      "suite": "modelicatest",
+      "command": [
+        "cargo",
+        "xtask",
+        "verify",
+        "msl-parity",
+        "--no-remote-quality-baseline",
+        "--sim-targets-file",
+        "crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json",
+        "--include-modelica-test",
+        "--require-selected-targets-success",
+        "--sim-set",
+        "full",
+        "--results-dir",
+        "/home/mhcho/ws/rumoca/target/verification/array-and-record-shapes-20261026/modelicatest"
+      ],
+      "exit_code": 0,
+      "log": "target/verification/array-and-record-shapes-20261026/modelicatest.log",
+      "log_sha256": "29b4bd057ac7dbcec2b1aec58d4ee58017a3008594c80af7244c8958bcc75b71"
+    },
+    {
+      "suite": "profile-build",
+      "command": [
+        "cargo",
+        "build",
+        "--profile",
+        "msl-fast",
+        "-p",
+        "rumoca-test-msl",
+        "--features",
+        "msl-profile-bin",
+        "--bin",
+        "rumoca-msl-profile"
+      ],
+      "exit_code": 0,
+      "log": "target/verification/array-and-record-shapes-20261026/profile-build.log",
+      "log_sha256": "02b0674ce8a4f787259f90749839156deb9c6317de48832696c7ddb3beb4dec1"
+    },
+    {
+      "suite": "corpus-all",
+      "command": [
+        "/home/mhcho/ws/rumoca/target/msl-fast/rumoca-msl-profile",
+        "--source-root",
+        "/home/mhcho/ws/rumoca/target/modelica-models",
+        "--model",
+        "Tests.All",
+        "--mode",
+        "compile"
+      ],
+      "exit_code": 0,
+      "log": "target/verification/array-and-record-shapes-20261026/corpus-all.log",
+      "log_sha256": "86b8fa1ccdcf264f92ca8ea3a1450ef959838a68a22bb7593c4ce5e7253bfbe4"
+    },
+    {
+      "suite": "corpus-so2",
+      "command": [
+        "/home/mhcho/ws/rumoca/target/msl-fast/rumoca-msl-profile",
+        "--source-root",
+        "/home/mhcho/ws/rumoca/target/modelica-models",
+        "--model",
+        "Tests.LieGroupTests.SO2",
+        "--mode",
+        "simulate",
+        "--stop-time",
+        "0.0"
+      ],
+      "exit_code": 0,
+      "log": "target/verification/array-and-record-shapes-20261026/corpus-so2.log",
+      "log_sha256": "5ecca3fcc36b93453c8e3a292ff6d3764aa09626b1be6bb9e3410729f952f6a3"
+    },
+    {
+      "suite": "corpus-se2",
+      "command": [
+        "/home/mhcho/ws/rumoca/target/msl-fast/rumoca-msl-profile",
+        "--source-root",
+        "/home/mhcho/ws/rumoca/target/modelica-models",
+        "--model",
+        "Tests.LieGroupTests.SE2",
+        "--mode",
+        "simulate",
+        "--stop-time",
+        "0.0"
+      ],
+      "exit_code": 0,
+      "log": "target/verification/array-and-record-shapes-20261026/corpus-se2.log",
+      "log_sha256": "232c772b42bc4deeeeda8d0cd6a08edec710c537f62f2ffa4be840cfddb128bf"
+    }
+  ],
+  "commit_layout": "Implementation commit followed by a verification-only commit; source code is unchanged between them."
+}
