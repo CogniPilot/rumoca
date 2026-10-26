@@ -22,6 +22,7 @@ mod class_lookup;
 mod component_params;
 mod enum_literal;
 mod function_eval;
+mod record_integers;
 mod scoped_condition;
 
 pub use array_indices::{ArrayIndexTuples, array_index_tuples, generate_array_indices};
@@ -1344,22 +1345,16 @@ fn eval_integer_record_field_ref(
         return None;
     }
 
-    // MLS §7.2 record modification semantics: if the whole record is rebound
-    // by reference, field values must come from the bound record, not from
-    // stale defaults of the declared record type.
+    // MLS §§7.2, 12.6: a whole-record binding owns its field values, including
+    // constructor arguments. Declaration defaults cannot replace that binding.
     if root_comp.modifications.get(field_name).is_none()
-        && let Some(root_alias) = record_root_alias_from_mod_env(root_name, env.mod_env)
+        && let Some(binding) = env
+            .mod_env
+            .get(&ast::QualifiedName::from_ident(root_name))
+            .map(|value| &value.value)
+            .or(root_comp.binding.as_ref())
     {
-        let mut alias_field_ref = root_alias.clone();
-        alias_field_ref.parts.push(comp_ref.parts[1].clone());
-
-        if alias_field_ref != *comp_ref
-            && let Some(value) = eval_integer_component_ref(&alias_field_ref, env, depth + 1, None)
-        {
-            return Some(value);
-        }
-
-        return None;
+        return record_integers::eval_bound_field(binding, &comp_ref.parts[1], env, depth + 1);
     }
 
     // MLS §7.1: the record's fields include the inherited ones, so iterate its
@@ -1466,17 +1461,6 @@ fn record_extends_field_override<'a>(
     }
 
     field_expr
-}
-
-fn record_root_alias_from_mod_env<'a>(
-    root_name: &str,
-    mod_env: &'a ast::ModificationEnvironment,
-) -> Option<&'a ast::ComponentReference> {
-    let root_mod = mod_env.get(&ast::QualifiedName::from_ident(root_name))?;
-    let ast::Expression::ComponentReference(comp_ref) = &root_mod.value else {
-        return None;
-    };
-    Some(comp_ref)
 }
 
 enum RecordFieldOverride {

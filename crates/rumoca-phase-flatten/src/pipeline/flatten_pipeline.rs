@@ -1066,7 +1066,7 @@ pub(crate) fn finalize_flat_model(
         flat,
     );
 
-    collapse_index_refs_to_known_varrefs(flat);
+    collapse_index_refs_to_known_varrefs(flat)?;
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     ctx.seed_expanded_component_keys(flat);
     substitute_known_constants_in_flat(flat, ctx)?;
@@ -1097,7 +1097,7 @@ pub(crate) fn finalize_flat_model(
         )?;
         substitute_known_constants_in_flat(flat, ctx)?;
         mark_record_constructor_calls(flat, tree);
-        collapse_index_refs_to_known_varrefs(flat);
+        collapse_index_refs_to_known_varrefs(flat)?;
     }
     functions::canonicalize_collected_function_calls(flat, class_index)?;
     // Materialize source-level defaults while record inputs still have their
@@ -1111,6 +1111,9 @@ pub(crate) fn finalize_flat_model(
     // later rewrite to reintroduce source-shaped record arguments against an
     // already decomposed signature.
     functions::lower_record_function_params(flat)?;
+    // Record argument decomposition introduces field projections over arrays
+    // and cat operands. Resolve their exact occurrences before shape analysis.
+    collapse_index_refs_to_known_varrefs(flat)?;
     functions::split_branch_assigned_records(flat)?;
     expand_record_array_field_projections_in_equations(flat);
     // Recheck the decomposed ABI and materialize defaults of any scalar calls

@@ -186,11 +186,29 @@ end Root;
             .array_component_declarations
             .contains(&holder.components["driveData"].def_id.unwrap())
     );
-    assert!(!overlay.components.values().any(|data| {
-        data.qualified_name
-            .to_flat_string()
-            .starts_with("empty.driveData")
-    }));
+    // MLS §10.7 / SPEC_0043 §17: a zero-length record array keeps exactly
+    // its declaration header, including the redeclared type, but no elements.
+    let declarations: Vec<_> = overlay
+        .components
+        .values()
+        .filter(|data| {
+            data.qualified_name
+                .to_flat_string()
+                .starts_with("empty.driveData")
+        })
+        .collect();
+    assert_eq!(declarations.len(), 1);
+    assert_eq!(
+        declarations[0].qualified_name.to_flat_string(),
+        "empty.driveData"
+    );
+    assert_eq!(declarations[0].dims, [0]);
+    assert_eq!(
+        declarations[0].type_def_id,
+        tree.get_class_by_qualified_name("AlternateDriveData")
+            .expect("redeclared record type")
+            .def_id
+    );
 }
 
 #[test]

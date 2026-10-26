@@ -1,5 +1,7 @@
 //! Unit tests for array component expansion.
 
+mod record_bound_dimensions;
+
 use super::{
     ArrayExpansionScope, array_element_binding_modification,
     distribute_component_ref_mods_for_element, distribute_mods_for_element,

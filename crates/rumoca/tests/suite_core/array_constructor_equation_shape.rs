@@ -111,3 +111,136 @@ end ArrayFunction;
         assert!((actual - expected).abs() < 1e-9, "{name} = {actual}");
     }
 }
+
+#[test]
+fn component_array_vector_members_keep_every_axis_and_value() {
+    // MLS §§10.6.1/10.6.9: four three-axis members form a [4,3] equation,
+    // not four scalar equations. A singleton parent still retains the field axis.
+    for rotors in [1, 4] {
+        let source = format!(
+            r#"
+model Source
+  parameter Real bias;
+  output Real moment[3] = {{bias + time, bias + 2*time, bias + 3*time}};
+end Source;
+model Sink
+  input Real moment[3];
+end Sink;
+model Projection
+  Source sources[{rotors}](bias={{10*i for i in 1:{rotors}}});
+  Sink sinks[{rotors}];
+equation
+  sinks.moment = sources.moment;
+end Projection;
+"#
+        );
+        let compiler = rumoca::Compiler::new().model("Projection");
+        let flat = compiler.compile_str_flat(&source, "Projection.mo").unwrap();
+        let row = flat.equations.len() - 1;
+        assert_eq!(flat.equations[row].scalar_count, rotors * 3);
+        let family = flat
+            .structured_equations
+            .iter()
+            .find(|family| family.first_equation_index == row)
+            .unwrap();
+        assert_eq!(family.domain.extents().unwrap(), vec![rotors, 3]);
+        let compiled = compiler.compile_str(&source, "Projection.mo").unwrap();
+        assert_eq!(
+            compiled.balance_detail.equations_unknowns(),
+            (rotors * 6, rotors * 6)
+        );
+        let result = simulate_dae(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                ..Default::default()
+            },
+        )
+        .expect("every projected axis simulates");
+        for rotor in 1..=rotors {
+            for axis in 1..=3 {
+                let name = format!("sinks[{rotor}].moment[{axis}]");
+                let column = result
+                    .names
+                    .iter()
+                    .position(|candidate| candidate == &name)
+                    .unwrap();
+                assert_linear_trace(
+                    &name,
+                    &result.data[column],
+                    &result.times,
+                    (10 * rotor) as f64,
+                    axis as f64,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn component_array_matrix_members_keep_initial_equation_domains() {
+    let source = r#"
+model Source
+  output Real value[2,3] = {{1,2,3},{4,5,6}};
+end Source;
+model Sink
+  Real value[2,3](each fixed=false);
+equation
+  der(value) = zeros(2,3);
+end Sink;
+model Projection
+  Source sources[4];
+  Sink sinks[4];
+initial equation
+  sinks.value = sources.value;
+end Projection;
+"#;
+    let compiler = rumoca::Compiler::new().model("Projection");
+    let flat = compiler.compile_str_flat(source, "Projection.mo").unwrap();
+    assert_eq!(flat.initial_equations[0].scalar_count, 24);
+    assert_eq!(
+        flat.initial_structured_equations[0]
+            .domain
+            .extents()
+            .unwrap(),
+        vec![4, 2, 3]
+    );
+    let compiled = compiler.compile_str(source, "Projection.mo").unwrap();
+    let result = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.01,
+            ..Default::default()
+        },
+    )
+    .expect("all matrix elements initialize from their projected source");
+    for rotor in 1..=4 {
+        for row in 1..=2 {
+            for col in 1..=3 {
+                let name = format!("sinks[{rotor}].value[{row},{col}]");
+                let column = result
+                    .names
+                    .iter()
+                    .position(|candidate| candidate == &name)
+                    .unwrap();
+                assert_linear_trace(
+                    &name,
+                    &result.data[column],
+                    &result.times,
+                    ((row - 1) * 3 + col) as f64,
+                    0.0,
+                );
+            }
+        }
+    }
+}
+
+fn assert_linear_trace(name: &str, values: &[f64], times: &[f64], offset: f64, slope: f64) {
+    for (value, time) in values.iter().zip(times) {
+        let expected = offset + slope * time;
+        assert!(
+            (value - expected).abs() < 1e-9,
+            "{name}: {value} != {expected}"
+        );
+    }
+}

@@ -529,7 +529,7 @@ fn collect_structural_integer_fields_from_sibling_reference(
         effective_components,
         resolve_class_components: resolve_effective_components_for_eval,
     };
-    source_component
+    let mut values: Vec<_> = source_component
         .modifications
         .iter()
         .filter_map(|(field_name, field_expr)| {
@@ -548,7 +548,72 @@ fn collect_structural_integer_fields_from_sibling_reference(
                 )
             })
         })
-        .collect()
+        .collect();
+    collect_bound_structural_integer_fields(
+        source_component,
+        comp_ref,
+        &eval_ctx,
+        expr.span(),
+        &mut values,
+    );
+    values
+}
+
+fn collect_bound_structural_integer_fields(
+    source_component: &ast::Component,
+    comp_ref: &ast::ComponentReference,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+    span: rumoca_core::Span,
+    values: &mut Vec<(String, ast::Expression)>,
+) {
+    // MLS §§7.2, 10.1, 12.6: settle fields in the writing scope before the
+    // record reference enters the child. Both constructor bindings and defaults
+    // can own structural dimensions even without any field modifiers.
+    if let Some(record) = source_component
+        .type_def_id
+        .and_then(|id| eval_ctx.tree.get_class_by_def_id(id))
+    {
+        for (field_name, field) in resolve_effective_components_for_eval(eval_ctx.tree, record) {
+            if values.iter().any(|(name, _)| name == &field_name) || field.def_id.is_none() {
+                continue;
+            }
+            let field_type = super::type_lookup::resolve_primitive_type_id(
+                eval_ctx.tree,
+                &field.type_name.to_string(),
+                field
+                    .type_def_id
+                    .and_then(|id| eval_ctx.tree.get_class_by_def_id(id)),
+            );
+            if field_type != eval_ctx.tree.type_table.integer()
+                || !matches!(
+                    field.variability,
+                    rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+                )
+            {
+                continue;
+            }
+            let mut reference = comp_ref.clone();
+            reference.parts.push(ast::ComponentRefPart {
+                ident: field.name_token.clone(),
+                subs: None,
+                def_id: field.def_id,
+            });
+            let expression = ast::Expression::ComponentReference(reference);
+            if let Some(value) = try_eval_integer_expr(eval_ctx, &expression) {
+                values.push((
+                    field_name,
+                    ast::Expression::Terminal {
+                        terminal_type: ast::TerminalType::UnsignedInteger,
+                        token: rumoca_core::Token {
+                            text: value.to_string().into(),
+                            ..Default::default()
+                        },
+                        span,
+                    },
+                ));
+            }
+        }
+    }
 }
 
 fn component_type_is_record(comp: &ast::Component, tree: &ast::ClassTree) -> bool {

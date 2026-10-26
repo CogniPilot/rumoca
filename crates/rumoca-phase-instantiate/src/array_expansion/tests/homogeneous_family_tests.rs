@@ -414,6 +414,118 @@ fn zero_sized_array_records_its_extents_and_no_members() {
 }
 
 #[test]
+fn zero_sized_record_arrays_retain_declarations_and_modifier_scopes() {
+    // MLS §10.7 / SPEC_0007: an empty record array still has a declared type.
+    const SOURCE: &str = r"
+        record Payload
+            Real mass = 1;
+        end Payload;
+        model Chassis
+            parameter Integer n = 2;
+            parameter Payload payloads[n];
+        end Chassis;
+        model Vehicle
+            parameter Payload payloads[0];
+            Payload populated[1];
+            Chassis chassis(n=0, payloads=payloads);
+        end Vehicle;
+    ";
+    let overlay = instantiate(SOURCE, "Vehicle", true);
+    let populated = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "populated[1]")
+        .expect("nonempty record instance");
+    for path in ["payloads", "chassis.payloads"] {
+        let record = overlay
+            .components
+            .values()
+            .find(|data| data.qualified_name.to_flat_string() == path)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing record declaration {path}: {:?}",
+                    component_paths(&overlay)
+                )
+            });
+        assert_eq!(record.dims, [0], "empty domain of {path}");
+        assert_eq!(record.type_def_id, populated.type_def_id);
+        assert!(record.type_def_id.is_some());
+        assert!(!record.is_primitive);
+        assert!(matches!(
+            record.variability,
+            rumoca_core::Variability::Parameter(_)
+        ));
+        assert!(record.component_ref.is_some());
+        assert!(record.owner_class_id.is_some());
+        assert_eq!(
+            overlay.array_parent_dims.get(&component_path(path)),
+            Some(&vec![0])
+        );
+        assert!(
+            !component_paths(&overlay)
+                .iter()
+                .any(|other| other.starts_with(&format!("{path}."))
+                    || other.starts_with(&format!("{path}[")))
+        );
+    }
+    let bound = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "chassis.payloads")
+        .unwrap();
+    assert!(bound.binding_from_modification);
+    assert!(bound.binding.is_some());
+    assert_eq!(bound.binding_source_scope, Some(ast::QualifiedName::new()));
+    assert_overlays_equivalent(&overlay, &instantiate(SOURCE, "Vehicle", false));
+}
+
+#[test]
+fn zero_sized_record_arrays_keep_rank_without_instantiating_fields() {
+    // MLS §10.7: a zero extent does not erase the remaining dimensions.
+    const SOURCE: &str = r"
+        record Part
+            Real position[3];
+        end Part;
+        record Payload
+            extends Part;
+            Real mass = 1;
+        end Payload;
+        record Row = Payload[3];
+        model EmptyInterface
+            input Payload samples[2,0,3];
+            input Row rows[0];
+            Payload disabled[0] if false;
+        end EmptyInterface;
+    ";
+    let overlay = instantiate(SOURCE, "EmptyInterface", true);
+    let paths = component_paths(&overlay);
+    assert_eq!(paths, ["samples", "rows"]);
+    let record = overlay
+        .components
+        .values()
+        .next()
+        .expect("record array header");
+    assert_eq!(record.dims, [2, 0, 3]);
+    assert!(record.type_def_id.is_some());
+    assert!(!record.is_primitive);
+    assert!(matches!(record.causality, rumoca_core::Causality::Input(_)));
+    let rows = overlay
+        .components
+        .values()
+        .nth(1)
+        .expect("record alias header");
+    assert_eq!(rows.dims, [0, 3]);
+    assert!(rows.type_def_id.is_some());
+    assert!(
+        overlay
+            .classes
+            .values()
+            .all(|class| class.qualified_name.parts.is_empty())
+    );
+    assert_overlays_equivalent(&overlay, &instantiate(SOURCE, "EmptyInterface", false));
+}
+
+#[test]
 fn zero_sized_primitive_arrays_retain_their_typed_instance_headers() {
     const SOURCE: &str = r"
         model EmptyInterface

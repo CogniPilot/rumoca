@@ -97,11 +97,20 @@ pub(super) fn instantiate_effective_components(
             && dims.contains(&0)
         {
             register_zero_sized_array_component(ctx, overlay, name, dims);
-            if !type_info.is_primitive {
+            // MLS §10.7: retain a record array's declaration even when its
+            // domain is empty, so typecheck can establish its effective type.
+            if !type_info.is_primitive
+                && !type_info
+                    .class_def
+                    .is_some_and(|class| class.class_type == rumoca_core::ClassType::Record)
+            {
                 continue;
             }
         }
-        let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
+        let should_expand = !type_info.is_primitive
+            && dims
+                .as_ref()
+                .is_some_and(|d| !d.is_empty() && !d.contains(&0));
 
         if should_expand {
             expand_array_component(
