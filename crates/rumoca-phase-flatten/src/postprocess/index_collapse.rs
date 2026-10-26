@@ -633,9 +633,16 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
             span,
         } = expr
         {
-            // Preserve the array occurrence until its selection has been
-            // resolved. Expanding the base first loses record-array slices.
-            let base = if matches!(base.as_ref(), rumoca_core::Expression::VarRef { .. }) {
+            // Keep an unresolved component-array occurrence until its element
+            // selection is resolved. Ordinary value arrays still need the
+            // normal reference rewrite, including their activation owner.
+            let pending_occurrence =
+                matches!(base.as_ref(), rumoca_core::Expression::VarRef { .. })
+                    && matches!(
+                        self.known_flat_vars.path_cursor(base),
+                        Some(occurrence_graph::PathCursor::PendingIndices { .. })
+                    );
+            let base = if pending_occurrence {
                 self.walk_expression(base)
             } else {
                 self.rewrite_expression(base)
