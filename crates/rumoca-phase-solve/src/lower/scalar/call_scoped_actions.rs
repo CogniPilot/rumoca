@@ -1202,3 +1202,6 @@ pub(in crate::lower) fn action_kind(level: dae::AssertionLevel) -> solve::SolveE
         dae::AssertionLevel::Warning => solve::SolveEventActionKind::Warning,
     }
 }
+
+#[cfg(test)]
+mod tests;
