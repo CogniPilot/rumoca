@@ -180,6 +180,41 @@ package InactiveWhen
       checked := pre(checked) + 1;
     end when;
   end NestedCallAssertIndex;
+  function relationEntryCheck "nonfold call-scoped assertion under a relation-triggered when"
+    input Integer i;
+    input Real limit;
+    output Real y;
+  algorithm
+    assert(table[i] > limit, "relation entry is above the limit");
+    y := table[i];
+  end relationEntryCheck;
+  model RelationCallHolds
+    extends Counter;
+    discrete Real value(start = 0, fixed = true);
+  algorithm
+    when time >= 0.5*dt then
+      value := relationEntryCheck(k + 1, 0);
+      checked := pre(checked) + 1;
+    end when;
+  end RelationCallHolds;
+  model RelationCallFails
+    extends Counter;
+    discrete Real value(start = 0, fixed = true);
+  algorithm
+    when time >= 0.5*dt then
+      value := relationEntryCheck(k + 1, 15);
+      checked := pre(checked) + 1;
+    end when;
+  end RelationCallFails;
+  model RelationCallIndexFails
+    extends Counter;
+    discrete Real value(start = 0, fixed = true);
+  algorithm
+    when time >= 0.5*dt then
+      value := relationEntryCheck(k + 5, 0);
+      checked := pre(checked) + 1;
+    end when;
+  end RelationCallIndexFails;
   function foldedEntryCheck "an assertion in a function-fold called from an unclocked when body"
     input Integer i;
     input Real limit;
@@ -401,4 +436,35 @@ fn a_compound_when_trigger_keeps_its_edge_buffer() {
     // A lost buffer would make the edge the level and fire on every pass.
     assert_eq!(final_value(&result, "checked"), 3.0);
     assert_eq!(final_value(&result, "value"), 30.0);
+}
+
+// MLS §11.2.7: a relation-triggered when has no periodic clock owner. These
+// nonfold calls target the guarded-assignment activation path, while retaining
+// inactive-index, active-false and active-index-fault discrimination.
+#[test]
+fn an_inactive_relation_when_skips_a_nonfold_function_assertion() {
+    let result = simulate("InactiveWhen.RelationCallHolds")
+        .expect("the out-of-range initial index must remain unevaluated before the relation rises");
+    assert_eq!(final_value(&result, "checked"), 1.0);
+    assert_eq!(final_value(&result, "value"), 10.0);
+}
+
+#[test]
+fn an_active_relation_when_reports_a_nonfold_function_assertion() {
+    let error = simulate("InactiveWhen.RelationCallFails")
+        .expect_err("the first active entry is10, below15");
+    assert!(
+        error.contains("relation entry is above the limit"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_active_relation_when_keeps_a_nonfold_index_fault() {
+    let error = simulate("InactiveWhen.RelationCallIndexFails")
+        .expect_err("the active function reads table5");
+    assert!(
+        error.contains("index 5") && error.contains("is outside 1..=3"),
+        "{error}"
+    );
 }
