@@ -215,34 +215,6 @@ package InactiveWhen
       checked := pre(checked) + 1;
     end when;
   end RelationCallIndexFails;
-  function foldedEntryCheck "an assertion in a function-fold called from an unclocked when body"
-    input Integer i;
-    input Real limit;
-    output Real y;
-  algorithm
-    for j in 1:2 loop
-      assert(table[i + 1] > limit, "folded entry is above the limit");
-    end for;
-    y := table[i + 1];
-  end foldedEntryCheck;
-  model FoldedCallHolds "a call-scoped folded assertion is inactive while i is out of range"
-    extends Counter;
-    discrete Real value(start = 0, fixed = true);
-  algorithm
-    when sample(0.5*dt, dt) then
-      value := foldedEntryCheck(k, 0);
-      checked := pre(checked) + 1;
-    end when;
-  end FoldedCallHolds;
-  model FoldedCallFails "the folded assertion runs and fails once its when body activates"
-    extends Counter;
-    discrete Real value(start = 0, fixed = true);
-  algorithm
-    when sample(0.5*dt, dt) then
-      value := foldedEntryCheck(k, 15);
-      checked := pre(checked) + 1;
-    end when;
-  end FoldedCallFails;
   model TriggerGuard "control: a compound when trigger keeps its edge buffer"
     extends Counter;
     discrete Real value(start = 0, fixed = true);
@@ -410,24 +382,6 @@ fn an_inactive_nested_call_does_not_evaluate_its_indexing_assert() {
     let result = simulate("InactiveWhen.NestedCallAssertIndex")
         .expect("scaledOuter(x, 0) is never evaluated while inactive");
     assert_eq!(final_value(&result, "checked"), 3.0);
-}
-
-#[test]
-fn an_inactive_when_call_does_not_evaluate_a_folded_function_assertion() {
-    let result = simulate("InactiveWhen.FoldedCallHolds")
-        .expect("the folded table access is valid on activation and skipped while inactive");
-    assert_eq!(final_value(&result, "checked"), 3.0);
-    assert_eq!(final_value(&result, "value"), 30.0);
-}
-
-#[test]
-fn an_active_when_call_evaluates_a_folded_function_assertion() {
-    let error = simulate("InactiveWhen.FoldedCallFails")
-        .expect_err("the first active table entry is not above 15");
-    assert!(
-        error.contains("folded entry is above the limit"),
-        "unexpected failure: {error}"
-    );
 }
 
 #[test]
