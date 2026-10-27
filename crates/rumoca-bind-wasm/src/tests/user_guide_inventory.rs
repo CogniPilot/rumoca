@@ -10,6 +10,11 @@ fn profile_owner(profile: &Value, language: &str, page: &str) -> Result<&'static
         .ok_or("missing classification")?;
     let owner = profile["owner"].as_str().ok_or("missing owner")?;
     let allowed = match (language, class) {
+        ("bash", "executable-rl-command") | ("python", "executable-rl-context")
+            if matches!(page, "simulation/canyon-run.md" | "simulation/cartpole.md") =>
+        {
+            "python-rl-guide"
+        }
         ("bash", "project-template" | "executable-command" | "executable-tool") => "cli-context",
         ("bash", "executable-benchmark") => "neural-benchmark",
         ("bash", "environment-setup") => "package-install",
@@ -155,6 +160,17 @@ fn require_execution_owner(owner: &str) {
             );
             require_source(".github/workflows/ci.yml", "cargo xtask verify workspace");
         }
+        "python-rl-guide" => {
+            require_source(
+                "crates/rumoca-bind-python/tests/guide_rl_test.py",
+                "def test_rl_guide_fences(",
+            );
+            require_source(
+                "crates/rumoca-bind-python/tests/wheel_test.py",
+                "tests.append(\"guide_rl_test.py\")",
+            );
+            require_source(".github/workflows/ci.yml", "export_args=(--require-guide)");
+        }
         "python-guide" => {
             require_source(
                 "crates/rumoca-bind-python/tests/guide_scenario_test.py",
@@ -231,7 +247,7 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
         .into_iter()
         .filter(|fence| fence.language != "modelica")
         .collect();
-    assert_eq!(fences.len(), 121, "review newly added guide contexts");
+    assert_eq!(fences.len(), 127, "review newly added guide contexts");
     assert_eq!(
         entries.len(),
         fences.len(),
@@ -268,6 +284,13 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
 
 #[test]
 fn user_guide_inventory_rejects_unknown_or_missing_execution_owners() {
+    let rl = serde_json::json!({"classification":"executable-rl-context", "owner":"python-rl-guide", "scope":"exact displayed source and safe function contexts; no native training"});
+    assert_eq!(
+        profile_owner(&rl, "python", "simulation/canyon-run.md"),
+        Ok("python-rl-guide")
+    );
+    assert!(profile_owner(&rl, "python", "tools/python.md").is_err());
+    assert!(profile_owner(&rl, "bash", "simulation/cartpole.md").is_err());
     let notebook = serde_json::json!({"classification":"executable-notebook", "owner":"python-guide", "scope":"actual IPython cell"});
     assert_eq!(
         profile_owner(&notebook, "text", "tools/python.md"),

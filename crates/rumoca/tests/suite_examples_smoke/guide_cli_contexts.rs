@@ -56,6 +56,7 @@ fn reviewed(entry: &Entry) -> bool {
             "codegen/targets.md"
                 | "getting-started/first-model.md"
                 | "simulation/canyon-run.md"
+                | "simulation/cartpole.md"
                 | "simulation/interactive.md"
                 | "simulation/reusable-booster-landing.md"
                 | "simulation/running.md"
@@ -75,15 +76,18 @@ fn reviewed(entry: &Entry) -> bool {
             "tools/fmt-lint.md",
             "project-template-bash" | "executable-tool-bash"
         ) | (
-            "getting-started/installation.md" | "tools/python.md",
+            "getting-started/installation.md" | "tools/python.md" | "simulation/canyon-run.md",
             "environment-setup-bash"
+        ) | (
+            "simulation/canyon-run.md" | "simulation/cartpole.md",
+            "executable-rl-command-bash"
         )
     )
 }
 
 #[test]
 fn bash_sources_have_valid_syntax() {
-    assert_eq!(entries("syntax").len(), 70);
+    assert_eq!(entries("syntax").len(), 72);
 }
 
 #[test]
@@ -100,6 +104,7 @@ fn cli_commands_use_declared_teaching_contexts() {
                 | "executable-command-bash"
                 | "executable-tool-bash"
                 | "executable-benchmark-bash"
+                | "executable-rl-command-bash"
         ));
         for argv in &entry.argv {
             let result = rumoca::cli::parse_args(argv.iter().cloned());
@@ -119,10 +124,10 @@ fn cli_commands_use_declared_teaching_contexts() {
             parsed += 1;
         }
     }
-    assert_eq!(parsed, 82, "review changes to the original CLI argv roster");
+    assert_eq!(parsed, 81, "review changes to the original CLI argv roster");
     teaching_projects::execute(&entries);
     teaching_projects::first_model();
-    eprintln!("70 reviewed bash spans; {parsed} original CLI argv parsed");
+    eprintln!("72 reviewed bash spans; {parsed} original CLI argv parsed");
 }
 
 fn execution_owner(entry: &Entry) -> &'static str {
@@ -131,6 +136,12 @@ fn execution_owner(entry: &Entry) -> &'static str {
         return "actual disposable CLI teaching project";
     }
     match (entry.page.as_str(), entry.profile.as_str()) {
+        (_, "executable-rl-command-bash") => {
+            "required wheel RL guide: authored Python argv, no training"
+        }
+        ("simulation/canyon-run.md", "environment-setup-bash") => {
+            "setup syntax only; native server argv belongs to the wheel RL guide"
+        }
         ("getting-started/first-model.md", _) => {
             "actual HangingMass direct/scenario CLI and analytic trace"
         }

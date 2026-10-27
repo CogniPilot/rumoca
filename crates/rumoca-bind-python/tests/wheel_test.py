@@ -34,6 +34,7 @@ def main():
     tests = list(TESTS)
     if args.require_guide:
         tests.extend(["guide_test.py", "guide_scenario_test.py", "benchmark_test.py"])
+        tests.append("guide_rl_test.py")
     root = Path(__file__).resolve().parent
     for name in tests:
         command = [sys.executable, str(root / name)]
