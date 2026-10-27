@@ -1667,12 +1667,20 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         //   2. Modification { target: comp_name, value: ClassModification { target: TypeName, modifications: [...] } }
         //      For: extends Foo(redeclare final NewType comp(nested=val))
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
-        let Some((target_name, modifications)) =
-            extend_nested_target_modifications(extend, modification)
+        let Some((target_name, nested)) = extend_nested_target_modifications(extend, modification)
         else {
             return;
         };
         let Some(comp) = target.components.get_mut(&target_name) else {
+            return;
+        };
+        let ast::Expression::ClassModification {
+            modifications,
+            each_flags,
+            final_flags,
+            ..
+        } = nested
+        else {
             return;
         };
         if modifications.iter().any(expression_contains_redeclare)
@@ -1680,8 +1688,10 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         {
             comp.has_unapplied_redeclare = true;
         }
-        for nested_mod in modifications {
-            insert_nested_modification(comp, nested_mod);
+        for (index, nested_mod) in modifications.iter().enumerate() {
+            let each = modification.each || each_flags.get(index).copied().unwrap_or(false);
+            let final_ = modification.final_ || final_flags.get(index).copied().unwrap_or(false);
+            insert_nested_modification(comp, nested_mod, each, final_);
         }
     });
 }
@@ -1689,50 +1699,55 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
 fn extend_nested_target_modifications<'a>(
     extend: &ast::Extend,
     modification: &'a ast::ExtendModification,
-) -> Option<(String, &'a [ast::Expression])> {
+) -> Option<(String, &'a ast::Expression)> {
     match &modification.expr {
-        ast::Expression::ClassModification {
-            target,
-            modifications,
-            ..
-        } => Some((
+        ast::Expression::ClassModification { target, .. } => Some((
             extend_relative_component_target(extend, target)?,
-            modifications.as_slice(),
+            &modification.expr,
         )),
-        ast::Expression::Modification { target, value, .. } => {
-            let ast::Expression::ClassModification { modifications, .. } = value.as_ref() else {
-                return None;
-            };
-            Some((
-                extend_relative_component_target(extend, target)?,
-                modifications.as_slice(),
-            ))
+        ast::Expression::Modification { target, value, .. }
+            if matches!(value.as_ref(), ast::Expression::ClassModification { .. }) =>
+        {
+            Some((extend_relative_component_target(extend, target)?, value))
         }
         _ => None,
     }
 }
 
-/// Insert a single nested modification into a component's modifications map.
-fn insert_nested_modification(comp: &mut ast::Component, nested_mod: &ast::Expression) {
-    match nested_mod {
-        ast::Expression::Modification {
-            target: t, value, ..
-        } => {
-            if let Some(name) = t.parts.first().map(|p| p.ident.text.to_string()) {
-                comp.modifications.insert(name, value.as_ref().clone());
-            }
+/// Preserve nested modifier values and their MLS §7.2.5/7.2.6 prefixes together.
+fn insert_nested_modification(
+    comp: &mut ast::Component,
+    nested_mod: &ast::Expression,
+    each: bool,
+    final_: bool,
+) {
+    let (name, value) = match nested_mod {
+        ast::Expression::Modification { target, value, .. } => {
+            let Some(part) = target.parts.first() else {
+                return;
+            };
+            (part.ident.text.to_string(), value.as_ref())
         }
         ast::Expression::NamedArgument { name, value, .. } => {
-            comp.modifications
-                .insert(name.text.to_string(), value.as_ref().clone());
+            (name.text.to_string(), value.as_ref())
         }
         ast::Expression::ClassModification { .. } => {
-            if let Some(name) = extract_modification_target(nested_mod) {
-                comp.modifications.insert(name, nested_mod.clone());
-            }
+            let Some(name) = extract_modification_target(nested_mod) else {
+                return;
+            };
+            (name, nested_mod)
         }
-        _ => {}
+        _ => return,
+    };
+    if each {
+        comp.each_modifications.insert(name.clone());
+    } else {
+        comp.each_modifications.shift_remove(&name);
     }
+    if final_ {
+        comp.final_attributes.insert(name.clone());
+    }
+    comp.modifications.insert(name, value.clone());
 }
 
 /// Get the effective components for a class (own + inherited).

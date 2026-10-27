@@ -1,3 +1,5 @@
+mod nested_prefixes;
+
 use super::*;
 use rumoca_core::DefId;
 use std::sync::Arc;
