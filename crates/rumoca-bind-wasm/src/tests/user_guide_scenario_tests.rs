@@ -19,7 +19,7 @@ fn load_scenario_libraries(configs: &[(PathBuf, serde_json::Value)]) {
     for (scenario, config) in configs {
         for relative in config["source_roots"].as_array().into_iter().flatten() {
             let relative = relative.as_str().expect("authored source root");
-            let path = if relative == "examples/reinforcement_learning" {
+            let path = if relative.starts_with("examples/reinforcement_learning/") {
                 repository_root().join(relative)
             } else {
                 repository_root()
@@ -27,7 +27,7 @@ fn load_scenario_libraries(configs: &[(PathBuf, serde_json::Value)]) {
                     .join(relative)
             };
             assert!(
-                path.is_dir(),
+                path.is_file() || path.is_dir(),
                 "pinned guide root {} missing; run cargo xtask repo modelica-deps ensure",
                 path.display()
             );
@@ -35,7 +35,9 @@ fn load_scenario_libraries(configs: &[(PathBuf, serde_json::Value)]) {
         }
     }
     let expected: BTreeSet<_> = [
-        "examples/reinforcement_learning",
+        "examples/reinforcement_learning/NeuralNetwork.mo",
+        "examples/reinforcement_learning/cartpole/PolicySearch.mo",
+        "examples/reinforcement_learning/cartpole/CartPole.mo",
         "target/msl/ModelicaStandardLibrary-4.1.0",
         "target/cmm/CMM-a642c381",
     ]

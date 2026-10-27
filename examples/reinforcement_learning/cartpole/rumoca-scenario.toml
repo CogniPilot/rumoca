@@ -1,4 +1,8 @@
-source_roots = ["examples/reinforcement_learning"]
+source_roots = [
+  "examples/reinforcement_learning/NeuralNetwork.mo",
+  "examples/reinforcement_learning/cartpole/PolicySearch.mo",
+  "examples/reinforcement_learning/cartpole/CartPole.mo",
+]
 
 [rumoca]
 version = "1"
