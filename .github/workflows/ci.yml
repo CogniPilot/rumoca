@@ -2158,6 +2158,21 @@ jobs:
   # ============================================================================
   # Cross-platform Rust binary builds
   # ============================================================================
+  musl-setup-smoke:
+    name: Musl setup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: musl-tools pkg-config linux-libc-dev
+      - name: Build pinned static dependency with musl
+        run: bash .github/scripts/prepare-musl-libudev.sh
+
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
     env:
@@ -2214,7 +2229,7 @@ jobs:
         if: contains(matrix.target, 'musl')
         uses: ./.github/actions/apt-install
         with:
-          packages: musl-tools pkg-config
+          packages: musl-tools pkg-config linux-libc-dev
 
       - name: Configure musl build (Linux musl)
         if: contains(matrix.target, 'musl')
@@ -2229,19 +2244,7 @@ jobs:
           EOF
           echo "CC_${target_env_suffix}=musl-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_${target_env_upper}_LINKER=musl-gcc" >> $GITHUB_ENV
-          # The default gamepad feature requires musl libudev. This ISC source
-          # pin matches nixpkgs' libudev-zero 1.0.3 used by our static toolchain.
-          udev_source="$RUNNER_TEMP/libudev-zero-1.0.3"
-          udev_prefix="$RUNNER_TEMP/musl-libudev"
-          curl --fail --location --max-time 60 \
-            https://codeload.github.com/illiliti/libudev-zero/tar.gz/refs/tags/1.0.3 \
-            --output "$RUNNER_TEMP/libudev-zero.tar.gz"
-          echo "0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5  $RUNNER_TEMP/libudev-zero.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/libudev-zero.tar.gz" -C "$RUNNER_TEMP"
-          make -C "$udev_source" -j4 CC=musl-gcc PREFIX="$udev_prefix" install-static
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALL_STATIC=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_LIBDIR=$udev_prefix/lib/pkgconfig" >> $GITHUB_ENV
+          bash .github/scripts/prepare-musl-libudev.sh
 
       - name: Rust cache (release ${{ matrix.target }})
         uses: Swatinem/rust-cache@v2
@@ -2596,7 +2599,7 @@ jobs:
     # sites only when every test, gate, and build job has passed, so we never
     # publish to one site off a partially red run. A publish step failing is the
     # only thing that can leave a partial deploy.
-    needs: [detect-release-tag, fmt, lint, test, coverage-gate, kani, nix-checks, msl-merge, modelicatest-gate, modelica-models-gate, editor-msl-smoke, template-runtime-tests, docs, vscode, deploy-pages, playground, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
+    needs: [detect-release-tag, musl-setup-smoke, fmt, lint, test, coverage-gate, kani, nix-checks, msl-merge, modelicatest-gate, modelica-models-gate, editor-msl-smoke, template-runtime-tests, docs, vscode, deploy-pages, playground, build-wasm, build-rust-binaries, build-python-wheels, build-python-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
