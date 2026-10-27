@@ -24,6 +24,11 @@ struct DocsSourceRoot {
 
 const DOCS_SOURCE_ROOTS: &[DocsSourceRoot] = &[
     DocsSourceRoot {
+        key: "examples/reinforcement_learning",
+        source: "examples/reinforcement_learning",
+        matches: &["examples/reinforcement_learning", "reinforcement_learning"],
+    },
+    DocsSourceRoot {
         key: "target/msl/ModelicaStandardLibrary-4.1.0",
         source: "target/msl/ModelicaStandardLibrary-4.1.0",
         matches: &[
@@ -157,6 +162,7 @@ fn stage_user_guide_repo_examples(root: &Path) -> Result<()> {
         ("examples/simulation", "simulation"),
         ("examples/codegen", "codegen"),
         ("examples/interactive", "interactive"),
+        ("examples/reinforcement_learning", "reinforcement_learning"),
         ("examples/assets", "assets"),
     ] {
         if source == "examples/codegen" {

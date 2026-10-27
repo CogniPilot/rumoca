@@ -1,0 +1,79 @@
+source_roots = ["examples/reinforcement_learning"]
+
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "CartPoleSwingUp.mo"
+name = "CartPoleSwingUp"
+
+[sim]
+dt = 0.02
+mode = "realtime"
+solver = "rk-like"
+
+[input]
+mode = "keyboard"
+
+[input.keyboard.keys.r]
+action = "signal"
+signal = "reset"
+
+[input.keyboard.keys.q]
+action = "signal"
+signal = "quit"
+
+[locals.bump]
+default = 0.0
+type = "float"
+
+[signals.model_inputs]
+bumpRequest = "local:bump"
+
+[signals.viewer]
+t = "model:time"
+x = "model:x"
+theta = "model:theta"
+v = "model:v"
+omega = "model:omega"
+force = "model:agentForce"
+episode = "model:episode"
+steps = "model:episodeSteps"
+bestScore = "model:bestScore"
+lastScore = "model:lastScore"
+upright = "model:uprightSteps"
+railHits = "model:railHits"
+trained = "model:trained"
+bump = "model:appliedBump"
+w1 = "model:weights[1]"
+w2 = "model:weights[2]"
+w3 = "model:weights[3]"
+w4 = "model:weights[4]"
+w5 = "model:weights[5]"
+w6 = "model:weights[6]"
+w7 = "model:weights[7]"
+
+[reset]
+on_signal = "reset"
+reset_session = true
+reset_locals = true
+
+[transport.http]
+scene = "cartpole_scene.js"
+
+[viewer]
+show_armed = false
+status_title = "CartPole · Modelica policy search"
+
+[[viewer.controls.keyboard]]
+keys = "R"
+action = "Start fresh training"
+
+[[viewer.controls.keyboard]]
+keys = "T"
+action = "Realtime / fast"
+
+[[viewer.controls.keyboard]]
+keys = "Q"
+action = "Stop"
