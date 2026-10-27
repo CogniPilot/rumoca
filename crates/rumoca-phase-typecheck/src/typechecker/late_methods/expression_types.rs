@@ -278,6 +278,16 @@ impl TypeChecker {
         }
     }
 
+    /// MLS §10.4.4: cat's first argument is the axis, not an element.
+    fn infer_cat_result_type(&self, args: &[Expression], type_table: &TypeTable) -> Option<TypeId> {
+        let mut operands = args.iter().skip(1);
+        let first = self.infer_expression_type(operands.next()?, type_table)?;
+        operands.try_fold(first, |common, argument| {
+            let next = self.infer_expression_type(argument, type_table)?;
+            self.common_value_type(common, next, type_table)
+        })
+    }
+
     fn infer_builtin_result_type(
         &self,
         function: rumoca_core::BuiltinFunction,
@@ -326,6 +336,7 @@ impl TypeChecker {
             BuiltinFunction::Fill => args
                 .first()
                 .and_then(|arg| self.infer_expression_type(arg, type_table)),
+            BuiltinFunction::Cat => self.infer_cat_result_type(args, type_table),
             BuiltinFunction::Cross => {
                 let [lhs, rhs] = args else {
                     return None;
@@ -358,7 +369,6 @@ impl TypeChecker {
             | BuiltinFunction::OuterProduct
             | BuiltinFunction::Symmetric
             | BuiltinFunction::Skew
-            | BuiltinFunction::Cat
             | BuiltinFunction::Hold
             | BuiltinFunction::Previous
             | BuiltinFunction::SubSample

@@ -1386,6 +1386,7 @@ fn instantiate_component(
         tree,
         comp,
         ctx,
+        overlay,
         class_def,
         scope.effective_components,
         scope.imports.qualification,
@@ -1462,7 +1463,14 @@ fn instantiate_component(
             .insert(instance_data.qualified_name.to_component_path());
     }
     ctx.register_known_integer_instance(&instance_data);
+    let empty_array = instance_data.dims.contains(&0);
     overlay.add_component(instance_data);
+
+    // MLS §10.7 / SPEC_0032 §1: retain the declaration of an empty array,
+    // but never instantiate a scalar body or fields for its absent elements.
+    if empty_array {
+        return Ok(());
+    }
 
     instantiate_nested_component_if_needed(
         tree,
@@ -1515,20 +1523,33 @@ fn resolve_component_shape(
     tree: &ast::ClassTree,
     comp: &ast::Component,
     ctx: &InstantiateContext,
+    overlay: &ast::InstanceOverlay,
     class_def: Option<&ast::ClassDef>,
     effective_components: &IndexMap<String, ast::Component>,
     imports: &[(String, String)],
 ) -> InstantiateResult<(Vec<i64>, Vec<ast::Subscript>)> {
     let type_dims =
         resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components)?;
-    Ok(resolve_component_dimensions(
+    let (mut dims, dims_expr) = resolve_component_dimensions(
         comp,
         &type_dims,
         ctx.mod_env(),
         effective_components,
         tree,
         imports,
-    ))
+    );
+    // MLS §10.7: the component loop already established this empty domain.
+    // Preserve it even when symbolic extents are deferred for typecheck, and
+    // retain dims_expr so that typecheck still verifies the final modifiers.
+    if let Some(empty_dims) = overlay
+        .array_parent_dims
+        .get(&ctx.current_path().to_component_path())
+        .filter(|dims| dims.contains(&0))
+    {
+        dims = empty_dims.clone();
+        dims.extend_from_slice(&type_dims);
+    }
+    Ok((dims, dims_expr))
 }
 
 struct ComponentBindingInfo {

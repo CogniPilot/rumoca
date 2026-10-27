@@ -1571,6 +1571,11 @@ extents of every expanded array, compacted or not, are recorded once in
 Instance IR keeps, and the per-element entries remain the array's
 representation.
 
+An empty record array retains one typed declaration header in `components`
+with its zero extent, source identity, and modifiers (MLS §10.7). It has no
+per-element entries or instantiated record body. Both instantiation modes
+retain the same header; it records the declaration, not a compaction choice.
+
 **PROHIBITED:** recording *in Instance IR* that an array was compacted.
 Instantiation kept a `component_families` descriptor for a possible future
 reader and acquired none; while it existed a diagnostic read it and reported

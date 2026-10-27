@@ -27,6 +27,56 @@ fn add_model_components(
 }
 
 #[test]
+fn empty_record_array_headers_receive_effective_types() {
+    // MLS §10.7 / SPEC_0007: zero extents retain nominal type and array rank.
+    let tree = parsed_tree(
+        r"
+        record Payload
+            Real mass = 1;
+        end Payload;
+        model Chassis
+            parameter Integer n = 2;
+            parameter Payload payloads[n];
+        end Chassis;
+        model Test
+            parameter Payload payloads[0];
+            Chassis chassis(n=0, payloads=payloads);
+            input Payload samples[2,0,3];
+        end Test;
+        ",
+    );
+    let mut overlay = rumoca_phase_instantiate::instantiate_model(&tree, "Test")
+        .expect("empty record declarations instantiate");
+    typecheck_instanced(&tree, &mut overlay, "Test").expect("empty records have concrete types");
+    let record_def = tree
+        .get_class_by_qualified_name("Payload")
+        .unwrap()
+        .def_id
+        .unwrap();
+    for (path, dims) in [
+        ("payloads", vec![0]),
+        ("chassis.payloads", vec![0]),
+        ("samples", vec![2, 0, 3]),
+    ] {
+        let record = overlay
+            .components
+            .values()
+            .find(|data| data.qualified_name.to_flat_string() == path)
+            .expect("record declaration retained");
+        let effective = overlay
+            .effective_types
+            .get(&record.type_id)
+            .expect("effective type registered");
+        assert_eq!(record.type_def_id, Some(record_def));
+        assert_eq!(
+            effective.nominal_type(),
+            overlay.type_ids_by_def_id[&record_def]
+        );
+        assert_eq!(effective.dimensions(), dims);
+    }
+}
+
+#[test]
 fn clocked_two_argument_sample_preserves_sampled_value_type() {
     let source = r#"
         connector RealInput = input Real;

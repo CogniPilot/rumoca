@@ -309,7 +309,7 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
         },
     ));
 
-    collapse_index_refs_to_known_varrefs(&mut model);
+    collapse_index_refs_to_known_varrefs(&mut model).expect("known occurrence projection");
 
     assert!(matches!(
         &model.equations[0].residual,
@@ -338,7 +338,7 @@ fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
         },
     ));
 
-    collapse_index_refs_to_known_varrefs(&mut model);
+    collapse_index_refs_to_known_varrefs(&mut model).expect("known occurrence projection");
 
     assert!(matches!(
         &model.equations[0].residual,

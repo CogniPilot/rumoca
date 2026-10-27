@@ -1311,29 +1311,28 @@ where
         span: Span,
     ) -> Result<Vec<usize>, NumericEvaluationError> {
         let dimensions = base_node.value_type().dimensions();
-        if subscripts.len() != dimensions.len() {
+        if subscripts.len() > dimensions.len() {
             return Err(failure(
                 NumericEvaluationErrorKind::UnsupportedOperation,
-                "numeric evaluation requires one subscript per array dimension",
+                "numeric evaluation received more subscripts than array dimensions",
                 span,
             ));
         }
 
         let mut flats = vec![0usize];
         for (axis, extent) in dimensions.iter().copied().enumerate() {
-            let selected = match subscripts
-                .get(axis)
-                .expect("checked update has one subscript per selected axis")
-            {
-                dae::SubscriptView::Index {
+            // MLS §10.5: omitted trailing subscripts select the whole axes,
+            // as already certified by DAE's shared index/update constructor.
+            let selected = match subscripts.get(axis) {
+                Some(dae::SubscriptView::Index {
                     expression,
                     provenance,
-                } => self.validated_indices(expression, extent, provenance.span())?,
-                dae::SubscriptView::Whole { .. } => (0..extent as usize).collect(),
-                dae::SubscriptView::Slice {
+                }) => self.validated_indices(expression, extent, provenance.span())?,
+                Some(dae::SubscriptView::Whole { .. }) | None => (0..extent as usize).collect(),
+                Some(dae::SubscriptView::Slice {
                     expression,
                     provenance,
-                } => self.validated_indices(expression, extent, provenance.span())?,
+                }) => self.validated_indices(expression, extent, provenance.span())?,
             };
 
             flats = expand_flat_indices(flats, &selected, extent, span)?;

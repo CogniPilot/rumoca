@@ -2,6 +2,10 @@
 
 High-level release summary by `0.x` line. Patch releases are rolled up into their parent series.
 
+## 0.10.3
+
+See [release notes](docs/releases/0.10.3.md) for changes since 0.10.2 and the complete integration history.
+
 ## 0.10.x
 
 - **Changed `--emit ast-json`**: the dump is now the parser's syntax tree of the file passed, produced before any source root is loaded or any name is resolved, so it no longer fails with resolution errors when a referenced library is missing (#432). It needs no `--model`; the resolved class tree with its scope and type tables is no longer emitted.

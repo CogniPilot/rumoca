@@ -1987,7 +1987,8 @@ fn concrete_model_shapes(
     flat: &flat::Model,
     constants: &EvalContext,
 ) -> Result<ShapeEnvironment, ToDaeError> {
-    let mut values = ShapeEnvironment::with_capacity(flat.variables.len());
+    let mut values =
+        ShapeEnvironment::with_capacity(flat.variables.len() + flat.record_instances.len());
     values.bind_slice_class_scopes(flat);
     values.enumeration_type_declarations = Arc::new(
         flat.type_ids_by_def_id
@@ -2008,6 +2009,12 @@ fn concrete_model_shapes(
             }
             _ => values.insert(name.clone(), shape),
         }
+    }
+    // MLS §§10.4, 12.2: field projections read the retained record's declared
+    // container axes, including empty domains with no primitive coordinates.
+    for (name, record) in &flat.record_instances {
+        let shape = concrete_dimensions(&record.dims, record.source_span, "model record")?;
+        values.insert(name.clone(), shape);
     }
     values.insert(VarName::new("time"), Vec::new());
     // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,

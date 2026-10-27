@@ -4,6 +4,7 @@
 //! equations, asserts, bindings, and start values. This pass materializes a
 //! zero-size placeholder variable for every dangling reference so reductions
 //! lower to their identity values instead of failing as unresolved.
+//! Retained record containers already own their type and need no placeholder.
 
 use crate::{Context, FlattenError};
 use rumoca_core::ExpressionVisitor;
@@ -112,6 +113,7 @@ impl rumoca_core::ExpressionVisitor for MissingZeroSizedArrayRefCollector<'_> {
     ) {
         if subscripts.is_empty()
             && !self.flat.variables.contains_key(name.var_name())
+            && !self.flat.record_instances.contains_key(name.var_name())
             && zero_sized_array_dims_for_ref(name, self.ctx).is_some()
         {
             self.refs.push(name.clone());
@@ -161,6 +163,77 @@ mod tests {
             ),
             subscripts: Vec::new(),
             span: test_span(),
+        }
+    }
+
+    #[test]
+    fn empty_record_concat_preserves_typed_records_without_placeholders() {
+        // MLS §10.7 / SPEC_0007: an empty record keeps its declared effective type.
+        let source = r"
+            model EmptyRecordConcat
+                record Part
+                    parameter Real mass=1;
+                end Part;
+                function combine
+                    input Part parts[:];
+                    output Part result;
+                algorithm
+                    result.mass := sum(parts.mass);
+                end combine;
+                model Assembly
+                    parameter Boolean assembled=false;
+                    parameter Integer n=0;
+                    parameter Part payloads[n];
+                    parameter Part aggregate;
+                    final parameter Part properties=if assembled then
+                        combine(cat(1, {aggregate}, payloads)) else combine({aggregate});
+                    final parameter Real mass=properties.mass;
+                end Assembly;
+                parameter Integer n=0;
+                parameter Part payloads[n];
+                Assembly chassis(n=n,payloads=payloads);
+                Real x(start=0,fixed=true);
+            equation
+                der(x)=chassis.mass;
+            end EmptyRecordConcat;
+        ";
+        let file_name = "EmptyRecordConcat.mo";
+        let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("fixture parses");
+        let mut tree = rumoca_ir_ast::ClassTree::from_parsed(parsed);
+        tree.source_map.add(file_name, source);
+        let resolved = rumoca_phase_resolve::resolve(rumoca_ir_ast::ParsedTree::new(tree))
+            .expect("fixture resolves");
+        let instanced = rumoca_phase_instantiate::instantiate(resolved, "EmptyRecordConcat")
+            .expect("fixture instantiates");
+        let rumoca_ir_ast::InstancedTree { tree, mut overlay } = instanced;
+        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "EmptyRecordConcat")
+            .expect("fixture typechecks");
+
+        let flat = crate::flatten_ref(&tree, &overlay, "EmptyRecordConcat")
+            .expect("typed empty record references must not become untyped placeholders");
+
+        for path in ["payloads", "chassis.payloads"] {
+            let name = VarName::new(path);
+            let typed = overlay
+                .components
+                .values()
+                .find(|data| data.qualified_name.to_flat_string() == path)
+                .expect("typed empty record declaration");
+            let record = flat.record_instances.get(&name).expect("retained record");
+            assert_eq!(record.instance_id, typed.instance_id);
+            assert_eq!(Some(record.type_def_id), typed.type_def_id);
+            assert_eq!(record.dims, [0]);
+            assert_eq!(record.effective_type_id, typed.type_id);
+            let effective = flat
+                .effective_types
+                .get(&record.effective_type_id)
+                .expect("record effective type is registered");
+            assert_eq!(Some(effective), overlay.effective_types.get(&typed.type_id));
+            assert_eq!(effective.dimensions(), [0]);
+            assert!(
+                !flat.variables.contains_key(&name),
+                "duplicate variable {path}"
+            );
         }
     }
 

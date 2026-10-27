@@ -669,12 +669,28 @@ fn distribute_component_ref_mods_for_element(
             continue;
         }
 
-        let indexed = index_binding_for_element(tree, parent_components, expr, indices)?;
-        if !matches!(indexed, ast::Expression::ArrayIndex { .. }) {
+        if let Some(indexed) = indexed_modifier_for_element(tree, parent_components, expr, indices)?
+        {
             scalar_comp.modifications.insert(name.clone(), indexed);
         }
     }
     Ok(())
+}
+
+/// Shared with the homogeneity gate: every per-element modifier rewrite must
+/// prevent replication of a single element's value (SPEC_0032 §1).
+fn indexed_modifier_for_element(
+    tree: &ast::ClassTree,
+    parent_components: &IndexMap<String, ast::Component>,
+    expr: &ast::Expression,
+    indices: &[i64],
+) -> InstantiateResult<Option<ast::Expression>> {
+    let indexed = index_binding_for_element(tree, parent_components, expr, indices)?;
+    // MLS §7.2.5: keep the general index for proven array expressions,
+    // e.g. a matrix divided by a scalar; scalar references remain scalar.
+    let distributes = !matches!(indexed, ast::Expression::ArrayIndex { .. })
+        || index_array_expression_for_element(tree, parent_components, expr, indices)?.is_some();
+    Ok(distributes.then_some(indexed))
 }
 
 fn index_nested_modification_for_element(

@@ -455,6 +455,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         &mut self,
         statements: dae::FunctionStatements<'dae>,
     ) -> Result<(), solve::SolveProgramConstructionError> {
+        // MLS 3.7 §8.3.7: a failed error-level assertion aborts the call, so a
+        // later out-of-range subscript must not be reported in its place. Only
+        // that doomed case changes (see `gated_function_definition_value`); a
+        // body without such a subscript after an assertion lowers as before.
+        let mut gate = assertion_statements::AssertionGate::default();
         for statement in statements {
             match statement {
                 dae::FunctionStatementView::RequireAssigned {
@@ -474,19 +479,24 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     self.scoped_conditional(conditional)?;
                 }
                 dae::FunctionStatementView::Assignment { definition } => {
-                    self.function_definition_value(definition)?;
+                    self.gated_function_definition_value(definition, &mut gate)?;
                 }
                 dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
                     for definition in definitions.iter() {
-                        self.function_definition_value(definition)?;
+                        self.gated_function_definition_value(definition, &mut gate)?;
                     }
                 }
                 dae::FunctionStatementView::Assertion {
                     condition,
+                    level,
                     provenance,
                     ..
                 } => {
+                    let index = self.next_direct_assertion;
                     self.assertion_statement(condition, provenance.span())?;
+                    if level == dae::AssertionLevel::Error {
+                        self.extend_assertion_gate(&mut gate, index, provenance.span())?;
+                    }
                 }
                 dae::FunctionStatementView::For {
                     fold, provenance, ..
