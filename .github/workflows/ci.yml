@@ -6,15 +6,26 @@ on:
     tags: ['v*']
   pull_request:
     branches: ['main']
+  # One bounded recovery of the immutable release; execute this workflow on main.
+  workflow_dispatch:
+    inputs:
+      recovery_release:
+        description: Recover the immutable v0.10.3 release
+        required: true
+        type: choice
+        options: [v0.10.3]
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  # Content identity and workflow identity are deliberately different in recovery.
+  CI_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && 'd01ad41f0a01e8fe529f4f78358c5c2947d52f0d' || github.sha }}
+  CI_WORKFLOW_SHA: ${{ github.workflow_sha }}
 
 # Prevent duplicate runs
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'v0.10.3' || github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -28,7 +39,7 @@ permissions:
 jobs:
   detect-release-tag:
     name: Detect release tag on commit
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     outputs:
       is_release: ${{ steps.detect.outputs.is_release }}
@@ -36,32 +47,56 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Detect v* tag for current commit
         id: detect
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t tags < <(git tag --points-at "$GITHUB_SHA" 'v*' | sort -V)
+          if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then
+            test '${{ github.ref }}' = refs/heads/main
+            test '${{ inputs.recovery_release }}' = v0.10.3
+            test "$(git rev-parse 'refs/tags/v0.10.3^{commit}')" = "$CI_SOURCE_SHA"
+            test "$(git rev-parse HEAD^{tree})" = 44e7f5a097b4215b03c6213b1014db8d3dc53028
+          fi
+          mapfile -t tags < <(git tag --points-at "$CI_SOURCE_SHA" 'v*' | sort -V)
           if [ "${#tags[@]}" -eq 0 ]; then
             echo "is_release=false" >> "$GITHUB_OUTPUT"
             echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "No v* tag detected on $GITHUB_SHA"
+            echo "No v* tag detected on $CI_SOURCE_SHA"
             exit 0
           fi
 
           tag="${tags[$((${#tags[@]} - 1))]}"
+          if [[ '${{ github.event_name }}' == workflow_dispatch ]]; then tag=v0.10.3; fi
           if [ "${#tags[@]}" -gt 1 ]; then
-            echo "::warning::Multiple v* tags point at $GITHUB_SHA: ${tags[*]}. Using $tag."
+            echo "::warning::Multiple v* tags point at $CI_SOURCE_SHA: ${tags[*]}. Using $tag."
           fi
 
           echo "is_release=true" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Detected release tag: $tag"
+          printf 'source=%s\nworkflow=%s\ntag=%s\ntree=%s\n' \
+            "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$tag" "$(git rev-parse HEAD^{tree})" \
+            > "$RUNNER_TEMP/release-provenance.txt"
+
+      - name: Retain release source and workflow identities
+        if: steps.detect.outputs.is_release == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-provenance
+          path: ${{ runner.temp }}/release-provenance.txt
 
   # ============================================================================
   # Rust Testing
@@ -72,8 +107,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install rustfmt
         run: |
@@ -115,9 +157,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -133,7 +182,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: lint
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
       - name: Run lint gate
         run: cargo xtask verify lint
@@ -184,8 +233,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -231,8 +287,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -272,9 +335,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -331,7 +401,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: native-test
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
           # Linux keeps the dependency target dir here (warm third-party deps);
           # all OSes additionally run sccache (next steps) to cache the workspace
           # crate compilations rust-cache drops. Windows/macOS keep rust-cache to
@@ -572,8 +642,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -590,7 +667,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: template-runtime
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
           cache-targets: false
 
       - name: Reclaim runner disk before template runtimes
@@ -774,8 +851,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Rust nightly with rust-src
         run: |
@@ -829,7 +913,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: editor-msl
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
       # The VS Code runtime smoke downloads a full VS Code build via
       # @vscode/test-electron; the xtask resolves its cache to the source
@@ -916,9 +1000,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -937,7 +1028,7 @@ jobs:
         with:
           shared-key: coverage-llvmcov
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-llvm-cov
         # Prebuilt binary via taiki-e (like nextest) instead of `cargo install
@@ -1038,8 +1129,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -1089,7 +1187,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: target/nix-cache/msl-artifacts-closure.nar.zst
-          key: msl-artifacts-closure-v1-${{ runner.os }}-${{ github.sha }}
+          key: msl-artifacts-closure-v1-${{ runner.os }}-${{ env.CI_SOURCE_SHA }}
           restore-keys: |
             msl-artifacts-closure-v1-${{ runner.os }}-
 
@@ -1180,8 +1278,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -1199,7 +1304,7 @@ jobs:
           shared-key: msl-gate
           cache-on-failure: true
           cache-targets: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
         uses: actions/cache@v5
@@ -1303,8 +1408,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -1322,7 +1434,7 @@ jobs:
           shared-key: msl-gate
           cache-on-failure: true
           cache-targets: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
       - name: Download shard results
         uses: actions/download-artifact@v8
@@ -1609,8 +1721,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: false
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Replace stale MSL statistics with the current failure status
         uses: actions/github-script@v8
@@ -1643,8 +1762,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -1662,7 +1788,7 @@ jobs:
           shared-key: msl-gate
           cache-on-failure: true
           cache-targets: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
       - name: Cache MSL
         uses: actions/cache@v5
@@ -1775,7 +1901,7 @@ jobs:
       # (`--require-selected-targets-success` is deliberately absent) and only
       # runs on main, where wall time is not on the PR critical path.
       - name: Survey ModelicaTest coverage (report only)
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: bash
         run: |
@@ -1824,8 +1950,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       # Keep this corpus fixed so compiler changes are compared against the
       # same source. Updating the revision is an explicit compatibility-ratchet
@@ -1893,8 +2026,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -1910,7 +2050,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: docs
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
           cache-targets: false
 
       - name: Install mdBook
@@ -1935,8 +2075,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -1957,7 +2104,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: vscode
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
           cache-targets: false
 
       - name: Run VS Code extension CI gate
@@ -1975,8 +2122,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -2023,7 +2177,7 @@ jobs:
           EOF
 
       - name: Prepare GitHub Pages content
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
         run: |
           # Use the docs shell: it carries the wasm toolchain this step relies on
           # (binaryen, node, wasm-pack) plus mdbook, which the plain wasm shell
@@ -2091,7 +2245,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Pages artifact
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
         uses: actions/upload-pages-artifact@v3
         with:
           path: gh-pages/
@@ -2101,7 +2255,7 @@ jobs:
     # Publish the docs/WASM site only on a release. Gated to the tag-push event
     # (not the co-pushed main branch ref) so a `git push origin main vX.Y.Z`
     # deploys exactly once instead of racing a duplicate from the branch push.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
+    if: ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && needs.detect-release-tag.outputs.is_release == 'true'
     needs: [detect-release-tag, build-wasm]
     runs-on: ubuntu-24.04
     environment:
@@ -2120,13 +2274,20 @@ jobs:
     # Relocated out of build-wasm so PRs keep the playground/WASM contract test
     # without the heavy release build. Self-contained: builds the FullWeb wasm
     # bundle and runs the native + Node smoke harnesses with pinned guide libraries (no browser/GPU).
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'pull_request' || (((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')))
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -2167,11 +2328,36 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CI_SOURCE_SHA }}
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
       - uses: ./.github/actions/apt-install
         with:
           packages: musl-tools pkg-config linux-libc-dev
+      - name: Check out fixed packaging helpers
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CI_WORKFLOW_SHA }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Stage fixed packaging helpers
+        shell: bash
+        run: |
+          test "$(git -C .release-workflow rev-parse HEAD)" = "$CI_WORKFLOW_SHA"
+          mkdir "$RUNNER_TEMP/fixed-packaging"
+          cp .release-workflow/.github/scripts/prepare-{linux-uapi,musl-libudev}.sh "$RUNNER_TEMP/fixed-packaging/"
+          sha256sum "$RUNNER_TEMP/fixed-packaging/"*.sh
+          # Keep main's tree out of the tagged source used by the build.
+          rm -rf -- .release-workflow
+
       - name: Build pinned static dependency with musl
-        run: bash .github/scripts/prepare-musl-libudev.sh
+        run: bash "$RUNNER_TEMP/fixed-packaging/prepare-musl-libudev.sh"
 
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
@@ -2183,7 +2369,7 @@ jobs:
     # tag-time deploy job, so they are deferred off PRs (native build/test
     # coverage on PRs comes from the `test` job). A PR that breaks a cross
     # target is caught at tag time.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -2213,8 +2399,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Rust
         run: |
@@ -2231,6 +2424,25 @@ jobs:
         with:
           packages: musl-tools pkg-config linux-libc-dev
 
+      - name: Check out fixed packaging helpers
+        if: contains(matrix.target, 'musl')
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.CI_WORKFLOW_SHA }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Stage fixed packaging helpers
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          test "$(git -C .release-workflow rev-parse HEAD)" = "$CI_WORKFLOW_SHA"
+          mkdir "$RUNNER_TEMP/fixed-packaging"
+          cp .release-workflow/.github/scripts/prepare-{linux-uapi,musl-libudev}.sh "$RUNNER_TEMP/fixed-packaging/"
+          sha256sum "$RUNNER_TEMP/fixed-packaging/"*.sh
+          # Keep main's tree out of the tagged source used by the build.
+          rm -rf -- .release-workflow
+
       - name: Configure musl build (Linux musl)
         if: contains(matrix.target, 'musl')
         run: |
@@ -2244,7 +2456,7 @@ jobs:
           EOF
           echo "CC_${target_env_suffix}=musl-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_${target_env_upper}_LINKER=musl-gcc" >> $GITHUB_ENV
-          bash .github/scripts/prepare-musl-libudev.sh
+          bash "$RUNNER_TEMP/fixed-packaging/prepare-musl-libudev.sh"
 
       - name: Rust cache (release ${{ matrix.target }})
         uses: Swatinem/rust-cache@v2
@@ -2410,8 +2622,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Ensure Rosetta for the x86_64 wheel on Apple Silicon
         # GitHub no longer offers Intel macOS runners with a supported Nix
@@ -2556,8 +2775,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -2590,11 +2816,10 @@ jobs:
   # ============================================================================
   deploy:
     name: Deploy
-    # Gated to the tag-push event only. A release pushes main and the v* tag
-    # together, which fires two CI runs (branch + tag); deploying on both made
-    # the second run fail on "Release.tag_name already exists". Tag-only means
-    # the release/publish path runs exactly once.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.detect-release-tag.outputs.is_release == 'true'
+    # Publish from a tag push, or the explicitly pinned v0.10.3 recovery on main.
+    # Ordinary main pushes never publish. Recovery keeps content and workflow
+    # identities separate and reuses the full gate set below.
+    if: ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && needs.detect-release-tag.outputs.is_release == 'true'
     # Gate every publish on a fully green build: the release deploys to all
     # sites only when every test, gate, and build job has passed, so we never
     # publish to one site off a partially red run. A publish step failing is the
@@ -2604,23 +2829,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
           fetch-depth: 0
 
+      - name: Verify source checkout identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+          printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
+
       - name: Verify tag is on main
         run: |
           tag='${{ needs.detect-release-tag.outputs.tag }}'
-          if ! git tag --points-at "${{ github.sha }}" | grep -Fx "$tag" >/dev/null; then
-            echo "::error::Release tag '$tag' does not point at built commit ${{ github.sha }}"
+          if ! git tag --points-at "${{ env.CI_SOURCE_SHA }}" | grep -Fx "$tag" >/dev/null; then
+            echo "::error::Release tag '$tag' does not point at built commit ${{ env.CI_SOURCE_SHA }}"
             exit 1
           fi
           git fetch --no-tags --depth=2147483647 origin main
-          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
-            echo "::error::Release tag '$tag' commit ${{ github.sha }} is not on origin/main; refusing to release"
+          if ! git merge-base --is-ancestor "${{ env.CI_SOURCE_SHA }}" origin/main; then
+            echo "::error::Release tag '$tag' commit ${{ env.CI_SOURCE_SHA }} is not on origin/main; refusing to release"
             exit 1
           fi
-          echo "Release tag '$tag' points to commit ${{ github.sha }} on origin/main"
+          echo "Release tag '$tag' points to commit ${{ env.CI_SOURCE_SHA }} on origin/main"
 
       - name: Get tag name
         id: tag
@@ -2741,9 +2973,7 @@ jobs:
           echo "=== Release assets ==="
           ls -la release-assets/
 
-      # Create GitHub Release. Deploy is gated to the tag-push event (see the
-      # job `if:` above), so this runs exactly once per release and a fresh tag
-      # never collides with an existing release.
+      # Recovery reuses the existing immutable release; it never moves the tag.
       - name: Create GitHub Release
         run: |
           if gh release view ${{ steps.tag.outputs.name }} >/dev/null 2>&1; then

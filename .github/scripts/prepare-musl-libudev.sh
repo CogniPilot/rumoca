@@ -12,7 +12,7 @@ curl --fail --location --max-time 60 \
 echo "0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5  $RUNNER_TEMP/libudev-zero.tar.gz" | sha256sum --check
 tar -xzf "$RUNNER_TEMP/libudev-zero.tar.gz" -C "$RUNNER_TEMP"
 uapi="$RUNNER_TEMP/musl-linux-uapi"
-bash .github/scripts/prepare-linux-uapi.sh "$uapi"
+bash "$(dirname "${BASH_SOURCE[0]}")/prepare-linux-uapi.sh" "$uapi"
 # Include only kernel UAPI; /usr/include would mix glibc with musl.
 printf '#include <linux/netlink.h>\n#include <linux/input.h>\n' |
   musl-gcc -isystem "$uapi" -x c -fsyntax-only -
