@@ -18,23 +18,38 @@ fn load_scenario_libraries(configs: &[(PathBuf, serde_json::Value)]) {
     let mut paths = BTreeSet::new();
     for (scenario, config) in configs {
         for relative in config["source_roots"].as_array().into_iter().flatten() {
-            let path = repository_root()
-                .join(scenario.parent().unwrap())
-                .join(relative.as_str().expect("authored source root"));
+            let relative = relative.as_str().expect("authored source root");
+            let path = if relative.starts_with("examples/reinforcement_learning/") {
+                repository_root().join(relative)
+            } else {
+                repository_root()
+                    .join(scenario.parent().unwrap())
+                    .join(relative)
+            };
             assert!(
-                path.is_dir(),
+                path.is_file() || path.is_dir(),
                 "pinned guide root {} missing; run cargo xtask repo modelica-deps ensure",
                 path.display()
             );
             paths.insert(path.canonicalize().unwrap());
         }
     }
+    let expected: BTreeSet<_> = [
+        "examples/reinforcement_learning/NeuralNetwork.mo",
+        "examples/reinforcement_learning/cartpole/PolicySearch.mo",
+        "examples/reinforcement_learning/cartpole/CartPole.mo",
+        "target/msl/ModelicaStandardLibrary-4.1.0",
+        "target/cmm/CMM-a642c381",
+    ]
+    .into_iter()
+    .map(|path| repository_root().join(path).canonicalize().unwrap())
+    .collect();
+    assert_eq!(paths, expected, "exact authored scenario libraries");
     let roots: Vec<_> = paths
         .into_iter()
         .enumerate()
         .map(|(index, path)| PortableSourceRoot::new(format!("guide-{index}"), path).unwrap())
         .collect();
-    assert_eq!(roots.len(), 2, "review changes to the guide library roster");
     let cache_dir = unique_test_cache_root();
     std::fs::create_dir_all(&cache_dir).unwrap();
     let output = cache_dir.join("guide-libraries.bin.gz");

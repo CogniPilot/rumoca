@@ -33,8 +33,13 @@
 - [Interactive Simulation](./simulation/interactive.md)
 - [Driving a Session over stdio](./simulation/stdio-session.md)
 - [Reusable Booster Autonomous Landing](./simulation/reusable-booster-landing.md)
-- [Canyon Run: Learning to Fly a Box Canyon](./simulation/canyon-run.md)
 - [Inspecting and Debugging Models](./simulation/inspect.md)
+
+# Reinforcement Learning
+
+- [Neural Network Functions](./simulation/neural-network.md)
+- [CartPole: Swing-Up and Balance](./simulation/cartpole.md)
+- [Canyon Run: Continuous Control](./simulation/canyon-run.md)
 
 # Code Generation
 

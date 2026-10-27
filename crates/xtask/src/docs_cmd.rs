@@ -22,7 +22,23 @@ struct DocsSourceRoot {
     matches: &'static [&'static str],
 }
 
+// Cache dependencies only; scenario/editor models are supplied as workspace input.
 const DOCS_SOURCE_ROOTS: &[DocsSourceRoot] = &[
+    DocsSourceRoot {
+        key: "examples/reinforcement_learning/NeuralNetwork.mo",
+        source: "examples/reinforcement_learning/NeuralNetwork.mo",
+        matches: &["examples/reinforcement_learning/NeuralNetwork.mo"],
+    },
+    DocsSourceRoot {
+        key: "examples/reinforcement_learning/cartpole/PolicySearch.mo",
+        source: "examples/reinforcement_learning/cartpole/PolicySearch.mo",
+        matches: &["examples/reinforcement_learning/cartpole/PolicySearch.mo"],
+    },
+    DocsSourceRoot {
+        key: "examples/reinforcement_learning/cartpole/CartPole.mo",
+        source: "examples/reinforcement_learning/cartpole/CartPole.mo",
+        matches: &["examples/reinforcement_learning/cartpole/CartPole.mo"],
+    },
     DocsSourceRoot {
         key: "target/msl/ModelicaStandardLibrary-4.1.0",
         source: "target/msl/ModelicaStandardLibrary-4.1.0",
@@ -157,6 +173,7 @@ fn stage_user_guide_repo_examples(root: &Path) -> Result<()> {
         ("examples/simulation", "simulation"),
         ("examples/codegen", "codegen"),
         ("examples/interactive", "interactive"),
+        ("examples/reinforcement_learning", "reinforcement_learning"),
         ("examples/assets", "assets"),
     ] {
         if source == "examples/codegen" {

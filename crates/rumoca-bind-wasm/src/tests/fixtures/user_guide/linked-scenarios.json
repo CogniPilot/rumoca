@@ -1,11 +1,11 @@
 [
   "examples/codegen/rumoca-scenario.galec_counter_production.toml",
-  "examples/interactive/canyon_run/rumoca-scenario.toml",
   "examples/interactive/fixedwing/rumoca-scenario.toml",
   "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
   "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
   "examples/interactive/reusable_booster/rumoca-scenario.toml",
   "examples/interactive/rover/rumoca-scenario.toml",
+  "examples/reinforcement_learning/cartpole/rumoca-scenario.toml",
   "examples/simulation/rumoca-scenario.ball.toml",
   "examples/simulation/rumoca-scenario.kalman_filter_step_test.toml",
   "examples/simulation/rumoca-scenario.neural_latent_oscillator.toml",

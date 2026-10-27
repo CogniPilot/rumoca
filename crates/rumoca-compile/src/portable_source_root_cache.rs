@@ -171,6 +171,19 @@ fn collect_modelica_sources(
     source_root_key: &str,
     files: &mut Vec<PortableModelicaFile>,
 ) -> Result<()> {
+    if dir.is_file() {
+        ensure!(
+            dir.extension() == Some(OsStr::new("mo")),
+            "source root file must be Modelica: {}",
+            dir.display()
+        );
+        let name = dir.file_name().context("source root file lacks a name")?;
+        files.push(PortableModelicaFile {
+            source_path: dir.to_path_buf(),
+            uri: format!("{source_root_key}/{}", name.to_string_lossy()),
+        });
+        return Ok(());
+    }
     for entry in sorted_dir_entries(dir)? {
         let path = entry.path();
         let file_type = entry
@@ -370,6 +383,43 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["msl/Modelica/A.mo", "msl/Modelica/B.mo"]
         );
+    }
+
+    #[test]
+    fn file_root_does_not_include_neighboring_models() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let library = temp.path().join("Library.mo");
+        fs::write(&library, "package Library end Library;").unwrap();
+        fs::write(temp.path().join("Main.mo"), "model Main end Main;").unwrap();
+        let output = temp.path().join("cache.bin.gz");
+        let root = PortableSourceRoot::new("dependency", &library).unwrap();
+        let report = write_portable_source_root_cache(&output, &[root]).unwrap();
+        assert!(report.issues.is_empty());
+        assert_eq!(report.definition_count, 1);
+        let mut bytes = Vec::new();
+        GzDecoder::new(fs::File::open(output).unwrap())
+            .read_to_end(&mut bytes)
+            .unwrap();
+        let documents = decode_source_root_snapshot(&bytes).unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].uri(), "dependency/Library.mo");
+        assert_eq!(
+            bytes,
+            encode_source_root_snapshot(&[(
+                "dependency/Library.mo".to_string(),
+                "package Library end Library;".to_string()
+            )])
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn file_root_refuses_non_modelica_input() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("Library.txt");
+        fs::write(&file, "package Library end Library;").unwrap();
+        let root = PortableSourceRoot::new("dependency", file).unwrap();
+        assert!(write_portable_source_root_cache(&temp.path().join("cache.gz"), &[root]).is_err());
     }
 
     #[test]

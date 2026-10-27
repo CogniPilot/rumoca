@@ -1467,4 +1467,150 @@ package CanyonRun "Fixed-wing canyon flight learned with Q-learning written in M
     extends Run;
     annotation(experiment(StopTime = 20, Interval = 0.01, Solver = "rk-like"));
   end Smoke;
+package ContinuousControl "Continuous-rate CanyonRun development environment"
+
+  model RateControl "FLU body-rate PI and forward propeller thrust"
+    parameter Real mass = 1.5 "Aircraft mass [kg]";
+    parameter Real maxThrust = 12 "Forward propeller thrust at full throttle [N]";
+    parameter Real pMax = 4 "Roll-rate limit [rad/s]";
+    parameter Real qMax = 2.5 "Body pitch-rate limit [rad/s], FLU sign";
+    parameter Real rMax = 1 "Yaw-rate limit [rad/s]";
+    input Real thrustAcceleration "Forward propeller thrust / mass [m/s^2]";
+    input Real bodyRates[3] "FLU angular-rate demands [rad/s]";
+    input Real gyro[3] "Measured FLU angular rates [rad/s]";
+    output Real appliedThrustAcceleration;
+    output Real appliedBodyRates[3];
+    output Real ail;
+    output Real elev;
+    output Real rud;
+    output Real thr;
+  protected
+    Real ep, eq, er;
+    Real ip(start = 0, fixed = true);
+    Real iq(start = 0, fixed = true);
+    Real ir(start = 0, fixed = true);
+  equation
+    appliedThrustAcceleration = min(maxThrust/mass, max(0, thrustAcceleration));
+    appliedBodyRates = {min(pMax, max(-pMax, bodyRates[1])),
+      min(qMax, max(-qMax, bodyRates[2])), min(rMax, max(-rMax, bodyRates[3]))};
+    ep = appliedBodyRates[1] - gyro[1];
+    // Base's elevator PI uses nose-up rate = -FLU gyro[2]. Our public q is
+    // FLU gyro[2], so convert the error once at this actuator boundary.
+    eq = gyro[2] - appliedBodyRates[2];
+    er = appliedBodyRates[3] - gyro[3];
+    der(ip) = if ip > 1 then min(0, ep) else if ip < -1 then max(0, ep) else ep;
+    der(iq) = if iq > 1 then min(0, eq) else if iq < -1 then max(0, eq) else eq;
+    der(ir) = if ir > 0.6 then min(0, er) else if ir < -0.6 then max(0, er) else er;
+    ail = min(1, max(-1, 0.45*ep + 0.30*min(1, max(-1, ip))));
+    elev = min(1, max(-1, 0.55*eq + 0.40*min(1, max(-1, iq))));
+    rud = min(1, max(-1, 0.40*er + 0.10*min(0.6, max(-0.6, ir))));
+    thr = appliedThrustAcceleration*mass/maxThrust;
+  end RateControl;
+
+  function features "State encoding: relative position, velocity, rotation matrix and body rates"
+    input Real p[3];
+    input Real v[3];
+    input Real q[4] "Body-to-world unit quaternion, internal representation only";
+    input Real gyro[3];
+    output Real f[18];
+  algorithm
+    f := {p[1]/Course.length,
+      (p[2] - Course.centreLine(p[1]))/Course.halfWidth(p[1]),
+      (p[3] - 0.5*Course.rimHeight)/(0.5*Course.rimHeight),
+      v[1]/Course.startSpeed, v[2]/Course.startSpeed, v[3]/Course.startSpeed,
+      1 - 2*(q[3]^2 + q[4]^2), 2*(q[2]*q[3] - q[1]*q[4]), 2*(q[2]*q[4] + q[1]*q[3]),
+      2*(q[2]*q[3] + q[1]*q[4]), 1 - 2*(q[2]^2 + q[4]^2), 2*(q[3]*q[4] - q[1]*q[2]),
+      2*(q[2]*q[4] - q[1]*q[3]), 2*(q[3]*q[4] + q[1]*q[2]), 1 - 2*(q[2]^2 + q[3]^2),
+      gyro[1]/4, gyro[2]/2.5, gyro[3]};
+  end features;
+
+  model Run "Four simultaneous continuous inputs; external learner owns episode resets"
+    parameter Real dt = 0.05 "Policy observation period [s]";
+    parameter Integer nRows = 8 annotation(Evaluate = true);
+    parameter Integer nCols = 8 annotation(Evaluate = true);
+    input Real thrustAcceleration = 2 "Forward propeller thrust / mass [m/s^2]";
+    input Real pRateDemand = 0 "FLU roll-rate demand [rad/s]";
+    input Real qRateDemand = 0 "FLU pitch-rate demand [rad/s]";
+    input Real rRateDemand = 0 "FLU yaw-rate demand [rad/s]";
+    output Real position[3];
+    output Real velocity[3];
+    output Real quat[4];
+    output Real gyro[3];
+    output Real airspeed;
+    output Real appliedControl[4] "Thrust acceleration, p, q, r after physical bounds";
+    output Real actuators[4] "Aileron, elevator, rudder, throttle";
+    output Real observation[18 + nRows*nCols + 4](each start = 0, each fixed = true);
+    output Boolean crashed(start = false, fixed = true);
+    output Boolean finished(start = false, fixed = true);
+    output Boolean done(start = false, fixed = true);
+    Aircraft.FixedWingPlant vehicle(
+      p_start = {Course.startX, Course.centreLine(Course.startX), Course.startHeight},
+      v_b_start = {Course.startSpeed, 0, 0}, q_start = Course.startAttitude());
+    RateControl controller(mass = vehicle.vehicle_mass, maxThrust = vehicle.thr_max);
+  equation
+    controller.thrustAcceleration = thrustAcceleration;
+    controller.bodyRates = {pRateDemand, qRateDemand, rRateDemand};
+    controller.gyro = vehicle.gyro;
+    vehicle.ail = controller.ail;
+    vehicle.elev = controller.elev;
+    vehicle.rud = controller.rud;
+    vehicle.thr = controller.thr;
+    position = vehicle.position;
+    velocity = vehicle.velocity;
+    quat = vehicle.quat;
+    gyro = vehicle.gyro;
+    airspeed = vehicle.airspeed;
+    appliedControl = cat(1, {controller.appliedThrustAcceleration}, controller.appliedBodyRates);
+    actuators = {controller.ail, controller.elev, controller.rud, controller.thr};
+    when sample(0, dt) then
+      crashed = not Course.inFreeAir(position[1], position[2], position[3])
+        or position[3] > Course.rimHeight or airspeed < 4;
+      finished = not crashed and position[1] >= Course.length;
+      done = crashed or finished;
+      observation = cat(1, features(position, velocity, quat, gyro),
+        Course.occupancy(position, quat, nRows, nCols),
+        {appliedControl[1]/8, appliedControl[2]/4, appliedControl[3]/2.5, appliedControl[4]});
+    end when;
+    annotation(experiment(StopTime = 60, Interval = 0.05, Solver = "rk-like"));
+  end Run;
+model CanyonFly "Frozen continuous Canyon policy, evaluated entirely in Modelica"
+  parameter Real dt = 0.05 "Policy sample period [s]";
+  output Real command[4](start={-0.5,0,0,0}, each fixed=true)
+    "Tanh policy outputs; first becomes thrust, others body rates";
+  output Real observation[86](each start=0, each fixed=true);
+  output Real position[3];
+  output Real quat[4];
+  output Boolean finished;
+  output Boolean crashed;
+  CanyonRun.ContinuousControl.Run plant(
+    thrustAcceleration=4*(command[1]+1),
+    pRateDemand=4*command[2], qRateDemand=2.5*command[3],
+    rRateDemand=command[4]);
+protected
+  Real raw[4](each start=0, each fixed=true);
+equation
+  position=plant.position;
+  quat=plant.quat;
+  finished=plant.finished;
+  crashed=plant.crashed;
+algorithm
+  when sample(0,dt) then
+    // State and occupancy describe now; previous commands describe the interval
+    // that just ended. This avoids feeding the new action back into its input.
+    observation := NeuralNetwork.clip(cat(1,
+      CanyonRun.ContinuousControl.features(plant.position,plant.velocity,plant.quat,plant.gyro),
+      CanyonRun.Course.occupancy(plant.position,plant.quat,8,8),
+      {(pre(command[1])+1)/2,pre(command[2]),pre(command[3]),pre(command[4])}),5);
+    // Only learned data lives in TrainedCanyonPolicy; inference is shared.
+    raw := NeuralNetwork.forward(
+      TrainedCanyonPolicy.W1,TrainedCanyonPolicy.b1,
+      TrainedCanyonPolicy.W2,TrainedCanyonPolicy.b2,
+      TrainedCanyonPolicy.W3,TrainedCanyonPolicy.b3,observation);
+    command := NeuralNetwork.activate(raw);
+  end when;
+  annotation(experiment(StopTime=35,Interval=0.05,Solver="rk-like"));
+end CanyonFly;
+
+end ContinuousControl;
+
 end CanyonRun;
