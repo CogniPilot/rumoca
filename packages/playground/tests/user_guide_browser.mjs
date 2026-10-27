@@ -47,7 +47,11 @@ await run("cargo", ["xtask", "repo", "modelica-deps", "ensure"]);
 await run("cargo", ["xtask", "docs", "build", "--book", "user"]);
 const roots = JSON.parse(await readFile(path.join(root,
   "docs/user-guide/book/repo-examples/source-roots/manifest.json"), "utf8"));
-assert.equal(roots.roots.length, 2, "the actual pinned MSL and CMM must be staged");
+assert.deepEqual(roots.roots.map(root => root.key).sort(), [
+  "examples/reinforcement_learning",
+  "target/cmm/CMM-a642c381",
+  "target/msl/ModelicaStandardLibrary-4.1.0",
+], "the guide must stage the RL examples and both pinned libraries");
 assert.ok(roots.cache, "the checked binary source-root cache must be staged");
 
 // The canonical server supplies the isolation headers used by the live book.
