@@ -1,3 +1,4 @@
+mod jax_compact_stencils;
 mod jax_lazy_conditionals;
 mod selected_regions;
 

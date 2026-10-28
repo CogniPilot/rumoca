@@ -459,6 +459,7 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     Ok(minijinja::context! {
         nodes => nodes,
         scalar_plan => scalar_plan,
+        jax_plan => render_solve::jax_plan_value(std::sync::Arc::new(block.clone())),
         scalar_programs => scalar_programs,
         fallback_programs => fallback_programs,
         native_families => native_families,
@@ -806,6 +807,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function(
         "render_solve_native_family_mlir",
         render_solve::render_solve_native_family_mlir_function,
+    );
+    env.add_function(
+        "render_solve_native_family_jax",
+        render_solve::render_solve_native_family_jax_function,
     );
     env.add_function(
         "render_solve_native_family_output_index_wgsl",
