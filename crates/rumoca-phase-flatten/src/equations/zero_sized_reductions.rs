@@ -218,7 +218,7 @@ pub(super) fn expand_reduction_over_array_ref(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
 ) -> Result<Option<ast::Expression>, FlattenError> {
-    let Some((neutral, op)) = scalar_reduction_neutral_and_op(comp, span) else {
+    let Some(neutral) = scalar_reduction_neutral(comp, span) else {
         return Ok(None);
     };
     let [ast::Expression::ComponentReference(arg_ref)] = args else {
@@ -249,21 +249,31 @@ pub(super) fn expand_reduction_over_array_ref(
         };
         terms.push(ast::Expression::ComponentReference(indexed_ref));
     }
-    Ok(Some(
-        fold_reduction_terms(terms, op, span).unwrap_or(neutral),
-    ))
+    // Retain the builtin reduction and ordered scalar leaves. A left-deep
+    // binary chain makes every later recursive visitor/drop depend on N stack
+    // frames; a flat array keeps depth bounded without reassociating a sum.
+    Ok(Some(ast::Expression::FunctionCall {
+        comp: comp.clone(),
+        args: vec![ast::Expression::Array {
+            elements: terms,
+            kind: rumoca_core::ArrayConstructor::Array,
+            span,
+        }],
+        is_partial_application: false,
+        span,
+    }))
 }
 
-fn scalar_reduction_neutral_and_op(
+fn scalar_reduction_neutral(
     comp: &ast::ComponentReference,
     span: rumoca_core::Span,
-) -> Option<(ast::Expression, OpBinary)> {
+) -> Option<ast::Expression> {
     if comp.local || comp.parts.len() != 1 {
         return None;
     }
     match comp.parts[0].ident.text.as_ref() {
-        "sum" => Some((real_literal_expr(0.0, span), OpBinary::Add)),
-        "product" => Some((real_literal_expr(1.0, span), OpBinary::Mul)),
+        "sum" => Some(real_literal_expr(0.0, span)),
+        "product" => Some(real_literal_expr(1.0, span)),
         _ => None,
     }
 }
@@ -291,24 +301,6 @@ fn integer_literal_expr(value: i64, span: rumoca_core::Span) -> ast::Expression 
         },
         span,
     }
-}
-
-fn fold_reduction_terms(
-    mut terms: Vec<ast::Expression>,
-    op: OpBinary,
-    span: rumoca_core::Span,
-) -> Option<ast::Expression> {
-    let first = terms.drain(..1).next()?;
-    Some(
-        terms
-            .into_iter()
-            .fold(first, |lhs, rhs| ast::Expression::Binary {
-                op: op.clone(),
-                lhs: Arc::new(lhs),
-                rhs: Arc::new(rhs),
-                span,
-            }),
-    )
 }
 
 #[cfg(test)]
@@ -428,11 +420,15 @@ mod tests {
         .expect("reduction expansion should succeed")
         .expect("reduction should expand");
 
-        let ast::Expression::Binary { lhs, rhs, .. } = expanded else {
-            panic!("expected binary sum");
+        let ast::Expression::FunctionCall { args, .. } = expanded else {
+            panic!("expected retained sum reduction");
         };
-        assert_eq!(first_subscript_integer(&lhs), Some("1"));
-        assert_eq!(first_subscript_integer(&rhs), Some("2"));
+        let ast::Expression::Array { elements, .. } = &args[0] else {
+            panic!("expected ordered scalar leaves");
+        };
+        assert_eq!(elements.len(), 2);
+        assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
+        assert_eq!(first_subscript_integer(&elements[1]), Some("2"));
     }
 
     #[test]
@@ -458,13 +454,16 @@ mod tests {
         .expect("reduction expansion should succeed")
         .expect("reduction should expand");
 
-        assert!(matches!(
-            expanded,
-            ast::Expression::Binary {
-                op: rumoca_core::OpBinary::Mul,
-                ..
-            }
-        ));
+        let ast::Expression::FunctionCall { comp, args, .. } = expanded else {
+            panic!("expected retained product reduction");
+        };
+        assert_eq!(comp.parts[0].ident.text.as_ref(), "product");
+        let ast::Expression::Array { elements, .. } = &args[0] else {
+            panic!("expected scalar product leaves");
+        };
+        assert_eq!(elements.len(), 2);
+        assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
+        assert_eq!(first_subscript_integer(&elements[1]), Some("2"));
     }
 
     #[test]
@@ -491,5 +490,144 @@ mod tests {
             simplify_zero_sized_reductions(&ctx, &expr, &ast::QualifiedName::from_dotted("tank"));
 
         assert_eq!(literal_text(&simplified), Some("1"));
+    }
+    #[test]
+    fn large_component_array_reductions_have_bounded_expression_depth() {
+        for function in ["sum", "product"] {
+            let mut ctx = Context::new();
+            ctx.array_dimensions
+                .insert("tank.topPorts".to_string(), vec![20_000]);
+            let expr = call(function, vec![var_ref(&["topPorts", "m_flow"])]);
+            let ast::Expression::FunctionCall {
+                comp, args, span, ..
+            } = expr
+            else {
+                panic!("expected reduction call");
+            };
+            let expanded = expand_reduction_over_array_ref(
+                &ctx,
+                &comp,
+                &args,
+                &ast::QualifiedName::from_dotted("tank"),
+                span,
+            )
+            .unwrap()
+            .unwrap();
+            let ast::Expression::FunctionCall { comp, args, .. } = expanded else {
+                panic!("no linear-depth binary expansion");
+            };
+            assert_eq!(comp.parts[0].ident.text.as_ref(), function);
+            let [ast::Expression::Array { elements, .. }] = args.as_slice() else {
+                panic!("one bounded-depth array argument");
+            };
+            assert_eq!(elements.len(), 20_000);
+            for (index, element) in elements.iter().enumerate() {
+                assert_eq!(
+                    first_subscript_integer(element),
+                    Some((index + 1).to_string().as_str())
+                );
+            }
+            assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
+            assert_eq!(first_subscript_integer(&elements[19_999]), Some("20000"));
+            assert!(
+                elements
+                    .iter()
+                    .all(|e| matches!(e, ast::Expression::ComponentReference(_)))
+            );
+        }
+    }
+    #[test]
+    fn reported_simple_array_reduction_uses_bounded_depth_expansion() {
+        let mut ctx = Context::new();
+        ctx.array_dimensions.insert("S10000.u".into(), vec![10_000]);
+        let expr = call("sum", vec![var_ref(&["u"])]);
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
+            panic!("call");
+        };
+        let result = expand_reduction_over_array_ref(
+            &ctx,
+            &comp,
+            &args,
+            &ast::QualifiedName::from_dotted("S10000"),
+            span,
+        )
+        .unwrap()
+        .unwrap();
+        let ast::Expression::FunctionCall { args, .. } = result else {
+            panic!("builtin reduction retained");
+        };
+        let [ast::Expression::Array { elements, .. }] = args.as_slice() else {
+            panic!("flat array argument");
+        };
+        assert_eq!(elements.len(), 10_000);
+        assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
+        assert_eq!(first_subscript_integer(&elements[9_999]), Some("10000"));
+        assert!(elements.iter().all(|element| matches!(element, ast::Expression::ComponentReference(reference) if reference.parts.len() == 1 && reference.parts[0].ident.text.as_ref() == "u")));
+    }
+
+    fn expand_component_array_reduction(function: &str, count: i64) -> ast::Expression {
+        let mut ctx = Context::new();
+        ctx.array_dimensions
+            .insert("tank.topPorts".into(), vec![count]);
+        let expr = call(function, vec![var_ref(&["topPorts", "m_flow"])]);
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
+            panic!("call");
+        };
+        expand_reduction_over_array_ref(
+            &ctx,
+            &comp,
+            &args,
+            &ast::QualifiedName::from_dotted("tank"),
+            span,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn reduction_expansion_preserves_empty_and_single_element_cases() {
+        for function in ["sum", "product"] {
+            assert_eq!(
+                literal_text(&expand_component_array_reduction(function, 0)),
+                Some(if function == "sum" { "0" } else { "1" })
+            );
+            let ast::Expression::FunctionCall { args, .. } =
+                expand_component_array_reduction(function, 1)
+            else {
+                panic!("reduction retained");
+            };
+            let [ast::Expression::Array { elements, .. }] = args.as_slice() else {
+                panic!("array");
+            };
+            assert_eq!(elements.len(), 1);
+            assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
+        }
+    }
+
+    #[test]
+    fn qualified_and_local_sum_calls_are_not_expanded_as_builtins() {
+        let mut ctx = Context::new();
+        ctx.array_dimensions.insert("tank.topPorts".into(), vec![2]);
+        let mut local = component_ref(&["sum"]);
+        local.local = true;
+        for comp in [component_ref(&["Pkg", "sum"]), local] {
+            assert!(
+                expand_reduction_over_array_ref(
+                    &ctx,
+                    &comp,
+                    &[var_ref(&["topPorts", "m_flow"])],
+                    &ast::QualifiedName::from_dotted("tank"),
+                    rumoca_core::Span::DUMMY
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
     }
 }

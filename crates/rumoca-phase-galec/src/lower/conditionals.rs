@@ -20,7 +20,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             self.conditional_depth -= 1;
             return result;
         }
-        self.lower_conditional_branches(operands, indices, scalar_type, span)
+        self.inline_conditional_depth += 1;
+        let result = self.lower_conditional_branches(operands, indices, scalar_type, span);
+        self.inline_conditional_depth -= 1;
+        result
     }
 
     fn lower_materialized_conditional(

@@ -1738,3 +1738,5 @@ end Child;
         "rebuilt navigation tree must not reuse the sentinel cache entry"
     );
 }
+
+mod large_reductions;

@@ -434,6 +434,14 @@ fn render_statement(statement: &gast::Statement, indent: usize, out: &mut Vec<St
             }
             out.push(format!("{pad}end if;"));
         }
+        gast::Statement::Signal(signals) => out.push(format!(
+            "{pad}signal {};",
+            signals
+                .iter()
+                .map(gast::Identifier::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
         other => panic!("fixture rendering does not cover {other:?}"),
     }
 }
@@ -698,4 +706,92 @@ fn the_block_name_option_overrides_the_model_name() {
     .expect("fixture projects");
 
     assert_eq!(package.block().name.lexeme(), "Renamed");
+}
+
+/// `assert(sum(values) >= -1.0e9, "bounded")` over 100 literals, checked on
+/// every tick of `Clock(1)`.
+fn large_assertion_guard_model() -> dae::Dae {
+    let text = "Clock c = Clock(1); assert(sum(values) >= -1.0e9, \"bounded\");";
+    let mut sources = SourceMap::new();
+    let source = sources.add("LargeAssertion.mo", text);
+    let clock_at = at(source, text, "Clock c = Clock(1)");
+    let assert_at = at(source, text, "assert(sum(values) >= -1.0e9, \"bounded\")");
+    let guard_at = at(source, text, "sum(values) >= -1.0e9");
+    let message_at = at(source, text, "\"bounded\"");
+    dae::Dae::construct(sources, |dae| {
+        dae.clocks(|clocks| {
+            clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                clock_at,
+            )?;
+            Ok(())
+        })?;
+        let (trigger, guard) = dae.conditions(|conditions| {
+            Ok((
+                conditions.reserve(assert_at)?,
+                conditions.reserve(guard_at)?,
+            ))
+        })?;
+        let (violated, message) = dae.expressions(|expressions| {
+            let values = (0..100)
+                .map(|value| {
+                    expressions
+                        .at(guard_at)
+                        .literal(dae::DaeLiteral::Real(f64::from(value)))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let values = expressions.at(guard_at).array(values)?;
+            let total = expressions
+                .at(guard_at)
+                .builtin(dae::PureBuiltin::Sum, [values])?;
+            let bound = expressions
+                .at(guard_at)
+                .literal(dae::DaeLiteral::Real(-1.0e9))?;
+            let violated =
+                expressions
+                    .at(guard_at)
+                    .binary(dae::BinaryOperator::Less, total, bound)?;
+            let message = expressions
+                .at(message_at)
+                .literal(dae::DaeLiteral::String("bounded".to_owned()))?;
+            Ok((violated, message))
+        })?;
+        dae.conditions(|conditions| {
+            conditions.define(trigger, dae::ConditionInput::Always, assert_at)?;
+            conditions.define(guard, dae::ConditionInput::Discrete(violated), guard_at)
+        })?;
+        dae.events(|events| {
+            events.assert(trigger, guard, message, assert_at)?;
+            Ok(())
+        })
+    })
+    .expect("checked large-assertion fixture constructs")
+}
+
+#[test]
+fn assertion_guard_reduction_checkpoints_are_declared_do_step_locals() {
+    // The event-action lowerer is separate from the DoStep owner's lowerer,
+    // so the scalar checkpoints of a long reduction in an assertion guard must
+    // be handed back and declared, under a namespace of their own.
+    let package = project(&large_assertion_guard_model(), "LargeAssertion");
+    let do_step = &package.block().do_step;
+    let declared: Vec<&str> = do_step
+        .locals
+        .iter()
+        .map(|local| local.name.lexeme())
+        .collect();
+    assert!(
+        declared.iter().any(|name| name.starts_with("rumoca_event")),
+        "a 100-term guard reduction checkpoints into event locals: {declared:?}"
+    );
+    for line in do_step_lines(&package) {
+        for word in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if word.starts_with("rumoca_") {
+                assert!(
+                    declared.contains(&word),
+                    "`{word}` is referenced but not declared in DoStep: {line}"
+                );
+            }
+        }
+    }
 }
