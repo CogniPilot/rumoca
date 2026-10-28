@@ -200,3 +200,85 @@ fn invalid_scalar_fallback_propagates_error_on_demand() {
         );
     }
 }
+
+#[test]
+fn compact_jax_plan_and_emitter_do_not_materialize_legacy_scalar_projection() {
+    let mut sizes = Vec::new();
+    for count in [20_000, 1_000_000] {
+        let problem = image_family(count);
+        let block = super::solve_lazy::compute_block_value(std::sync::Arc::new(
+            problem.continuous.derivative_rhs,
+        ))
+        .unwrap();
+        let legacy = block.get_attr("scalar_programs").unwrap();
+        let projection = legacy
+            .downcast_object_ref::<super::lazy_scalar_projection::LazyScalarProjection>()
+            .unwrap();
+        assert!(!projection.initialized());
+        let steps = block
+            .get_attr("jax_plan")
+            .unwrap()
+            .get_attr("steps")
+            .unwrap();
+        assert_eq!(steps.len(), Some(1));
+        let step = steps.get_item(&minijinja::Value::from(0)).unwrap();
+        assert_eq!(
+            step.get_attr("native").unwrap(),
+            minijinja::Value::from(true)
+        );
+        let family = step
+            .get_attr("families")
+            .unwrap()
+            .get_item(&minijinja::Value::from(0))
+            .unwrap();
+        let emitted = super::render_solve::render_solve_native_family_jax_function(
+            family,
+            "probe".to_owned(),
+            "x".to_owned(),
+        )
+        .unwrap();
+        assert!(emitted.contains(&format!("jnp.arange({count},")));
+        assert!(
+            !projection.initialized(),
+            "compact JAX consumed legacy scalar fallback"
+        );
+        sizes.push(emitted.len());
+    }
+    assert!(
+        sizes[1] < 2 * sizes[0],
+        "50x cells must not replicate kernel operations"
+    );
+}
+
+#[test]
+fn compact_jax_typed_singleton_emitter_keeps_vector_scatter() {
+    let problem = image_family(1);
+    let block = super::solve_lazy::compute_block_value(std::sync::Arc::new(
+        problem.continuous.derivative_rhs,
+    ))
+    .unwrap();
+    let step = block
+        .get_attr("jax_plan")
+        .unwrap()
+        .get_attr("steps")
+        .unwrap()
+        .get_item(&minijinja::Value::from(0))
+        .unwrap();
+    assert_eq!(
+        step.get_attr("native").unwrap(),
+        minijinja::Value::from(true)
+    );
+    let family = step
+        .get_attr("families")
+        .unwrap()
+        .get_item(&minijinja::Value::from(0))
+        .unwrap();
+    let emitted = super::render_solve::render_solve_native_family_jax_function(
+        family,
+        "singleton".to_owned(),
+        "x".to_owned(),
+    )
+    .unwrap();
+    assert!(emitted.contains("out.at[jnp.broadcast_to(0, (1,))]"));
+    assert!(emitted.contains(".set(jnp.broadcast_to(singleton_r6, (1,)))"));
+}

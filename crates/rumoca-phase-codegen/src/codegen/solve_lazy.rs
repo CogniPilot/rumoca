@@ -499,10 +499,12 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
     let output_count = block.len()?;
     let uses_linear_solve = block.uses_linear_solve_component();
     let nodes = nodes_value(block.clone())?;
+    let jax_plan = super::render_solve::jax_plan_value(block.clone());
     Ok(lazy_map(
         &[
             "nodes",
             "scalar_plan",
+            "jax_plan",
             "scalar_programs",
             "output_count",
             "tensor_node_count",
@@ -511,6 +513,7 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
         move |k| match k {
             "nodes" => Some(nodes.clone()),
             "scalar_plan" => Some(scalar_plan.clone()),
+            "jax_plan" => Some(jax_plan.clone()),
             "scalar_programs" => Some(scalar_programs.clone()),
             "output_count" => Some(Value::from(output_count)),
             "tensor_node_count" => Some(Value::from(block.tensor_node_count())),

@@ -5,6 +5,8 @@
 //! renderers into separate modules behind this facade.
 
 mod dense_solve_render;
+mod jax_family;
+mod jax_plan;
 mod mlir_family;
 #[cfg(test)]
 mod render_solve_tests;
@@ -32,6 +34,8 @@ pub(super) use dense_solve_render::{
     render_solve_row_output_wgsl_function, render_solve_row_wgsl_function, required_bool_field,
     required_string_field, required_usize_field,
 };
+pub(super) use jax_family::render_solve_native_family_jax_function;
+pub(super) use jax_plan::jax_plan_value;
 pub(super) use mlir_family::render_solve_native_family_mlir_function;
 pub(super) use template_partition::{
     RenderNativeAffineFamily, SolveNativeDenseNodesValue, SolveNativeFamiliesValue, SolveRowsValue,
