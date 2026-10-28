@@ -508,6 +508,7 @@ scheduled_executor_items! {
 /// would be contraband anywhere in `rumoca-solver-diffsol`.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native_policy_tests {
+    mod heat_seed_work;
     use std::cell::Cell;
     use std::rc::Rc;
 

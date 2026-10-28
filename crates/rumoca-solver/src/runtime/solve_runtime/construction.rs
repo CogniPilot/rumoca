@@ -382,6 +382,10 @@ impl SolveRuntime {
                 model,
                 execution_backend.as_deref(),
             )?;
+        let causal_seed_schedules = causal_seed_schedules::CausalSeedSchedules::construct(
+            model,
+            execution_backend.as_ref(),
+        )?;
         let derivative_jacobian_v = EvaluationDirectional::prepare(
             "derivative_jacobian_v",
             model.artifacts.continuous.full_jacobian_v.clone(),
@@ -586,6 +590,7 @@ impl SolveRuntime {
             failed_visible_rows: RefCell::new(BTreeSet::new()),
             compiled_event_action_rows: RefCell::new(FxHashMap::default()),
             failed_event_action_rows: RefCell::new(BTreeSet::new()),
+            causal_seed_schedules,
             compiled_assignment_schedules,
             interpreted_assignment_schedules,
             native_projection_assignments: Default::default(),

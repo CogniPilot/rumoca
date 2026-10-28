@@ -75,6 +75,7 @@ mod event_update;
 mod execution_inventory;
 use execution_inventory::RuntimeExecutionInventory;
 pub use execution_inventory::ScalarExecutionView;
+mod causal_seed_schedules;
 mod guarded_assignments;
 mod initial_continuation;
 mod initial_event;
@@ -400,6 +401,7 @@ struct ScalarExecutionInventory {
     failed_visible_rows: RefCell<BTreeSet<usize>>,
     compiled_event_action_rows: RefCell<FxHashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
     failed_event_action_rows: RefCell<BTreeSet<usize>>,
+    causal_seed_schedules: causal_seed_schedules::CausalSeedSchedules,
     compiled_assignment_schedules: interpreted_schedules::CompiledSchedules,
     interpreted_assignment_schedules: interpreted_schedules::InterpretedSchedules,
     native_projection_assignments: native_projection_assignments::NativeProjectionAssignments,
