@@ -475,6 +475,26 @@ fn issue_425_original_38_preserves_quiescent_states_and_native_receipts() {
     }
 }
 
+fn assert_input_time_crossing_sample(
+    time: f64,
+    value: f64,
+    expression: &str,
+    policy: SimExecutionPolicy,
+) {
+    assert!(time.is_finite() && value.is_finite());
+    if time < 0.55 - 1e-8 {
+        assert_eq!(
+            value, 1.0,
+            "before crossing: {expression}, {policy:?}, t={time}"
+        );
+    } else if time > 0.55 + 1e-8 {
+        assert_eq!(
+            value, 0.0,
+            "after crossing: {expression}, {policy:?}, t={time}"
+        );
+    }
+}
+
 /// Issue #476: an input/time relation must switch even with no input writes.
 /// Checking a crossing inside the horizon discriminates stale input-only
 /// scheduling from correct time-driven behavior. Algebraic rewrites are
@@ -518,18 +538,7 @@ fn issue_476_input_time_crossing_switches_without_input_writes() {
             assert!(result.times.first().is_some_and(|t| *t < 0.55));
             assert!(result.times.last().is_some_and(|t| *t > 0.55));
             for (&time, &value) in result.times.iter().zip(z) {
-                assert!(time.is_finite() && value.is_finite());
-                if time < 0.55 - 1e-8 {
-                    assert_eq!(
-                        value, 1.0,
-                        "before crossing: {expression}, {policy:?}, t={time}"
-                    );
-                } else if time > 0.55 + 1e-8 {
-                    assert_eq!(
-                        value, 0.0,
-                        "after crossing: {expression}, {policy:?}, t={time}"
-                    );
-                }
+                assert_input_time_crossing_sample(time, value, expression, policy);
             }
             if event_expected {
                 assert!(
