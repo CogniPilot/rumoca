@@ -28,12 +28,8 @@ fn compile(source: &str) -> std::sync::Arc<dae::Dae> {
         .dae
 }
 
-/// Inspect RHS reads, preserving explicit array element order; never execute the model.
-fn definitions(model: &dae::Dae) -> Vec<(String, Vec<String>)> {
-    model.inspect(definitions_view)
-}
-
-fn definitions_view<'dae>(view: dae::DaeView<'dae>) -> Vec<(String, Vec<String>)> {
+/// Collect definitions and prove that every target is internal.
+fn definition_values<'dae>(view: dae::DaeView<'dae>) -> Vec<(String, dae::ExprId<'dae>)> {
     let mut definitions = Vec::new();
     for index in 0..view.discrete_value_owner_count() {
         let owner = view
@@ -47,34 +43,75 @@ fn definitions_view<'dae>(view: dae::DaeView<'dae>) -> Vec<(String, Vec<String>)
                     dae::VariableRole::Input,
                     "inputs are read-only"
                 );
-                let mut reads = Vec::new();
-                if let dae::ExpressionOperation::Array(elements) =
-                    view.expression(value).unwrap().operation()
-                {
-                    for element in elements.iter() {
-                        let source = view
-                            .expression(element)
-                            .unwrap()
-                            .variable_coordinate()
-                            .expect("each array element is a direct producer read");
-                        reads.push(view.variable(source).unwrap().name().to_string());
-                    }
-                } else {
-                    dae::for_each_expression(
-                        view,
-                        value,
-                        &mut |_, expression: dae::ExpressionView<'dae>| {
-                            if let Some(source) = expression.variable_coordinate() {
-                                reads.push(view.variable(source).unwrap().name().to_string());
-                            }
-                        },
-                    );
-                }
-                definitions.push((target.name().to_string(), reads));
+                definitions.push((target.name().to_string(), value));
             }
         }
     }
     definitions
+}
+
+/// Preserve explicit array order; the general DAG walker does not promise it.
+fn definition_reads<'dae>(view: dae::DaeView<'dae>, value: dae::ExprId<'dae>) -> Vec<String> {
+    let mut reads = Vec::new();
+    if let dae::ExpressionOperation::Array(elements) = view.expression(value).unwrap().operation() {
+        for element in elements.iter() {
+            let source = view
+                .expression(element)
+                .unwrap()
+                .variable_coordinate()
+                .expect("each array element is a direct producer read");
+            reads.push(view.variable(source).unwrap().name().to_string());
+        }
+    } else {
+        dae::for_each_expression(
+            view,
+            value,
+            &mut |_, expression: dae::ExpressionView<'dae>| {
+                if let Some(source) = expression.variable_coordinate() {
+                    reads.push(view.variable(source).unwrap().name().to_string());
+                }
+            },
+        );
+    }
+    reads
+}
+
+/// Inspect typed definitions without executing the model.
+fn definitions(model: &dae::Dae) -> Vec<(String, Vec<String>)> {
+    model.inspect(|view| {
+        definition_values(view)
+            .into_iter()
+            .map(|(target, value)| (target, definition_reads(view, value)))
+            .collect()
+    })
+}
+
+fn input_selections<'dae>(view: dae::DaeView<'dae>, value: dae::ExprId<'dae>) -> Vec<i64> {
+    let dae::ExpressionOperation::Index { base, subscripts } =
+        view.expression(value).unwrap().operation()
+    else {
+        return Vec::new();
+    };
+    let source = view
+        .expression(base)
+        .unwrap()
+        .variable_coordinate()
+        .unwrap();
+    assert_eq!(view.variable(source).unwrap().name().as_str(), "u");
+    subscripts
+        .iter()
+        .map(|subscript| {
+            let dae::SubscriptView::Index { expression, .. } = subscript else {
+                panic!("literal element selection");
+            };
+            let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(element)) =
+                view.expression(expression).unwrap().operation()
+            else {
+                panic!("literal element index");
+            };
+            *element
+        })
+        .collect()
 }
 
 fn assert_input_copy(source: &str) {
@@ -175,37 +212,9 @@ fn external_array_input_keeps_the_selected_element() {
     let model = compile(&source);
     let mut selections = Vec::new();
     model.inspect(|view| {
-        for index in 0..view.discrete_value_owner_count() {
-            let owner = view
-                .discrete_value_owner(view.discrete_value_owner_id(index).unwrap())
-                .unwrap();
-            for branch in owner.branches().iter() {
-                for (target, (value, _)) in owner.targets().iter().zip(branch.values().iter()) {
-                    let target = view.variable(target.variable().into()).unwrap();
-                    assert_ne!(target.role(), dae::VariableRole::Input);
-                    let dae::ExpressionOperation::Index { base, subscripts } =
-                        view.expression(value).unwrap().operation()
-                    else {
-                        continue;
-                    };
-                    let source = view
-                        .expression(base)
-                        .unwrap()
-                        .variable_coordinate()
-                        .unwrap();
-                    assert_eq!(view.variable(source).unwrap().name().as_str(), "u");
-                    for subscript in subscripts.iter() {
-                        let dae::SubscriptView::Index { expression, .. } = subscript else {
-                            panic!("literal element selection");
-                        };
-                        let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(element)) =
-                            view.expression(expression).unwrap().operation()
-                        else {
-                            panic!("literal element index");
-                        };
-                        selections.push((target.name().to_string(), *element));
-                    }
-                }
+        for (target, value) in definition_values(view) {
+            for element in input_selections(view, value) {
+                selections.push((target.clone(), element));
             }
         }
     });
