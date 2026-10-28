@@ -94,7 +94,12 @@ pub(super) fn lower_clocked_assignments_for_domain<'dae>(
     )?;
     locals.extend(lowerer.take_temporary_locals());
     called_user_functions.extend(lowerer.take_called_user_functions());
-    lower_event_actions(lowering, clock, include_unclocked_actions, &mut pending)?;
+    locals.extend(lower_event_actions(
+        lowering,
+        clock,
+        include_unclocked_actions,
+        &mut pending,
+    )?);
     for assignment in &mut pending {
         assignment.reads = causal.expand(std::mem::take(&mut assignment.reads));
     }
@@ -786,12 +791,14 @@ fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
     clock_owners_of_kind(view, dae::ClockedVariableKind::DiscreteReal)
 }
 
+/// Lower the event actions of one clock domain into `pending`, returning the
+/// scalar locals their prefix statements assign.
 fn lower_event_actions<'dae>(
     lowering: BlockLowering<'_, 'dae>,
     clock: dae::ClockId<'dae>,
     include_unclocked: bool,
     pending: &mut Vec<ClockedAssignment>,
-) -> Result<(), GalecTargetError> {
+) -> Result<Vec<gast::VariableDeclaration>, GalecTargetError> {
     let BlockLowering {
         view,
         definitions,
@@ -801,6 +808,7 @@ fn lower_event_actions<'dae>(
     } = lowering;
     let mut lowerer = ExpressionLowerer::with_assertions(view, definitions, by_id, pre_names)
         .with_causal_inlining()
+        .with_temporary_namespace(format!("event{}", clock.index()))
         .with_emission(emission);
     for (_, action) in view.event_actions() {
         let span = action.provenance().span();
@@ -877,7 +885,7 @@ fn lower_event_actions<'dae>(
             requires_preamble: false,
         });
     }
-    Ok(())
+    Ok(lowerer.take_temporary_locals())
 }
 
 fn condition_clocks<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId<'dae>) -> HashSet<u32> {

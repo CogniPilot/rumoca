@@ -21,6 +21,24 @@ fn scalar_value(expression: &gast::Expression, locals: &HashMap<String, f64>) ->
     }
 }
 
+/// Evaluate scalar checkpoint assignments in order, as DoStep would.
+fn checkpoint_values(prefixes: Vec<gast::Spanned<gast::Statement>>) -> HashMap<String, f64> {
+    let mut locals = HashMap::new();
+    for statement in prefixes {
+        let gast::Statement::Assignment {
+            target: gast::Reference::Local(part),
+            value,
+        } = statement.node
+        else {
+            panic!("scalar reduction assignment");
+        };
+        assert!(part.subscripts.is_empty());
+        let value = scalar_value(&value, &locals);
+        locals.insert(part.name.lexeme().to_owned(), value);
+    }
+    locals
+}
+
 fn check_ordered_reduction(values: &[f64], builtin: dae::PureBuiltin, expected: f64) {
     let mut sources = SourceMap::new();
     let source = sources.add("ordered-reduction.mo", "sum(values)");
@@ -66,19 +84,7 @@ fn check_ordered_reduction(values: &[f64], builtin: dae::PureBuiltin, expected: 
                 !prefixes.is_empty(),
                 "must cross a materialization boundary"
             );
-            let mut locals = HashMap::new();
-            for statement in prefixes {
-                let gast::Statement::Assignment {
-                    target: gast::Reference::Local(part),
-                    value,
-                } = statement.node
-                else {
-                    panic!("scalar reduction assignment");
-                };
-                assert!(part.subscripts.is_empty());
-                let value = scalar_value(&value, &locals);
-                locals.insert(part.name.lexeme().to_owned(), value);
-            }
+            let locals = checkpoint_values(prefixes);
             assert_eq!(
                 scalar_value(&result.expression, &locals).to_bits(),
                 expected.to_bits()
@@ -185,69 +191,79 @@ fn non_materializing_lowerers_emit_no_unguarded_reduction_checkpoints() {
     });
 }
 
+fn small_reduction_model(
+    scalar: dae::ScalarType,
+    builtin: dae::PureBuiltin,
+    count: usize,
+) -> dae::Dae {
+    let mut sources = SourceMap::new();
+    let text = "sum(values)";
+    let source = sources.add("small-reduction.mo", text);
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+    let value = match scalar {
+        dae::ScalarType::Integer => dae::DaeLiteral::Integer(7),
+        _ => dae::DaeLiteral::Real(7.0),
+    };
+    dae::Dae::construct(sources, |dae| {
+        let empty_type =
+            dae.types(|types| types.derived(dae::ValueType::array(scalar, [0]), at))?;
+        dae.expressions(|expressions| {
+            let array = if count == 0 {
+                expressions.at(at).empty_array(empty_type)?
+            } else {
+                let value = expressions.at(at).literal(value)?;
+                expressions.at(at).array([value])?
+            };
+            expressions.at(at).builtin(builtin, [array])?;
+            Ok(())
+        })
+    })
+    .unwrap()
+}
+
+fn check_small_reduction(scalar: dae::ScalarType, builtin: dae::PureBuiltin, count: usize) {
+    let model = small_reduction_model(scalar, builtin, count);
+    model.inspect(|view| {
+        let reduction = (0..view.expression_count())
+            .filter_map(|i| view.expression_id(i))
+            .find(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    dae::ExpressionOperation::Builtin { .. }
+                )
+            })
+            .unwrap();
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
+        let result = lowerer.lower(reduction).unwrap();
+        let value = if count == 1 {
+            7
+        } else {
+            i64::from(builtin == dae::PureBuiltin::Product)
+        };
+        match scalar {
+            dae::ScalarType::Integer => {
+                assert_eq!(result.scalar_type, gast::ScalarType::Integer);
+                assert_eq!(result.expression, gast::Expression::Integer(value));
+            }
+            _ => {
+                assert_eq!(result.scalar_type, gast::ScalarType::Real);
+                assert_eq!(result.expression, gast::Expression::Real(value as f64));
+            }
+        }
+        assert!(lowerer.take_prefix_statements().is_empty());
+        assert!(lowerer.take_temporary_locals().is_empty());
+    });
+}
+
 #[test]
 fn empty_and_singleton_reductions_keep_numeric_type_without_temporaries() {
     for scalar in [dae::ScalarType::Real, dae::ScalarType::Integer] {
         for builtin in [dae::PureBuiltin::Sum, dae::PureBuiltin::Product] {
             for count in [0, 1] {
-                let mut sources = SourceMap::new();
-                let text = "sum(values)";
-                let source = sources.add("small-reduction.mo", text);
-                let at =
-                    dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
-                let model = dae::Dae::construct(sources, |dae| {
-                    let empty_type =
-                        dae.types(|types| types.derived(dae::ValueType::array(scalar, [0]), at))?;
-                    dae.expressions(|expressions| {
-                        let array = if count == 0 {
-                            expressions.at(at).empty_array(empty_type)?
-                        } else {
-                            let value = match scalar {
-                                dae::ScalarType::Integer => dae::DaeLiteral::Integer(7),
-                                _ => dae::DaeLiteral::Real(7.0),
-                            };
-                            let value = expressions.at(at).literal(value)?;
-                            expressions.at(at).array([value])?
-                        };
-                        expressions.at(at).builtin(builtin, [array])?;
-                        Ok(())
-                    })
-                })
-                .unwrap();
-                model.inspect(|view| {
-                    let reduction = (0..view.expression_count())
-                        .filter_map(|i| view.expression_id(i))
-                        .find(|id| {
-                            matches!(
-                                view.expression(*id).unwrap().operation(),
-                                dae::ExpressionOperation::Builtin { .. }
-                            )
-                        })
-                        .unwrap();
-                    let variables = HashMap::new();
-                    let previous = HashMap::new();
-                    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-                    let mut lowerer =
-                        ExpressionLowerer::new(view, &definitions, &variables, &previous);
-                    let result = lowerer.lower(reduction).unwrap();
-                    let value = if count == 1 {
-                        7
-                    } else {
-                        i64::from(builtin == dae::PureBuiltin::Product)
-                    };
-                    match scalar {
-                        dae::ScalarType::Integer => {
-                            assert_eq!(result.scalar_type, gast::ScalarType::Integer);
-                            assert_eq!(result.expression, gast::Expression::Integer(value));
-                        }
-                        _ => {
-                            assert_eq!(result.scalar_type, gast::ScalarType::Real);
-                            assert_eq!(result.expression, gast::Expression::Real(value as f64));
-                        }
-                    }
-                    assert!(lowerer.take_prefix_statements().is_empty());
-                    assert!(lowerer.take_temporary_locals().is_empty());
-                });
+                check_small_reduction(scalar, builtin, count);
             }
         }
     }

@@ -568,45 +568,45 @@ mod tests {
         assert!(elements.iter().all(|element| matches!(element, ast::Expression::ComponentReference(reference) if reference.parts.len() == 1 && reference.parts[0].ident.text.as_ref() == "u")));
     }
 
+    fn expand_component_array_reduction(function: &str, count: i64) -> ast::Expression {
+        let mut ctx = Context::new();
+        ctx.array_dimensions
+            .insert("tank.topPorts".into(), vec![count]);
+        let expr = call(function, vec![var_ref(&["topPorts", "m_flow"])]);
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
+            panic!("call");
+        };
+        expand_reduction_over_array_ref(
+            &ctx,
+            &comp,
+            &args,
+            &ast::QualifiedName::from_dotted("tank"),
+            span,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
     #[test]
     fn reduction_expansion_preserves_empty_and_single_element_cases() {
         for function in ["sum", "product"] {
-            for count in [0, 1] {
-                let mut ctx = Context::new();
-                ctx.array_dimensions
-                    .insert("tank.topPorts".into(), vec![count]);
-                let expr = call(function, vec![var_ref(&["topPorts", "m_flow"])]);
-                let ast::Expression::FunctionCall {
-                    comp, args, span, ..
-                } = expr
-                else {
-                    panic!("call");
-                };
-                let result = expand_reduction_over_array_ref(
-                    &ctx,
-                    &comp,
-                    &args,
-                    &ast::QualifiedName::from_dotted("tank"),
-                    span,
-                )
-                .unwrap()
-                .unwrap();
-                if count == 0 {
-                    assert_eq!(
-                        literal_text(&result),
-                        Some(if function == "sum" { "0" } else { "1" })
-                    );
-                } else {
-                    let ast::Expression::FunctionCall { args, .. } = result else {
-                        panic!("reduction retained");
-                    };
-                    let [ast::Expression::Array { elements, .. }] = args.as_slice() else {
-                        panic!("array");
-                    };
-                    assert_eq!(elements.len(), 1);
-                    assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
-                }
-            }
+            assert_eq!(
+                literal_text(&expand_component_array_reduction(function, 0)),
+                Some(if function == "sum" { "0" } else { "1" })
+            );
+            let ast::Expression::FunctionCall { args, .. } =
+                expand_component_array_reduction(function, 1)
+            else {
+                panic!("reduction retained");
+            };
+            let [ast::Expression::Array { elements, .. }] = args.as_slice() else {
+                panic!("array");
+            };
+            assert_eq!(elements.len(), 1);
+            assert_eq!(first_subscript_integer(&elements[0]), Some("1"));
         }
     }
 
