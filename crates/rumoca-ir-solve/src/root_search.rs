@@ -138,7 +138,7 @@ fn classify_block(
             return None;
         }
         let role = if output_count == 1
-            && let Some((param_index, sign)) = direct_time_root(row)
+            && let Some((param_index, sign)) = direct_time_root(row, inputs)
         {
             RootSearchRole::AnnouncedTime { param_index, sign }
         } else if static_root(row, static_y, inputs) {
@@ -151,7 +151,7 @@ fn classify_block(
     (roles.len() == roots.output_count()).then_some(roles)
 }
 
-fn direct_time_root(row: &[LinearOp]) -> Option<(usize, TimeRootSign)> {
+fn direct_time_root(row: &[LinearOp], inputs: &Range<usize>) -> Option<(usize, TimeRootSign)> {
     let [
         first_load,
         second_load,
@@ -170,6 +170,12 @@ fn direct_time_root(row: &[LinearOp]) -> Option<(usize, TimeRootSign)> {
         return None;
     }
     let (time_reg, param_reg, param_index) = time_and_param_loads(first_load, second_load)?;
+    // External inputs occupy P slots too, but their crossings are not a
+    // parameter-owned announced deadline. Keep their time relations in the
+    // continuous search set even when no importer input write occurs.
+    if inputs.contains(&param_index) {
+        return None;
+    }
     if *lhs == param_reg && *rhs == time_reg {
         return Some((param_index, TimeRootSign::ParamMinusTime));
     }
@@ -389,6 +395,68 @@ mod tests {
                 !static_root(&load(input), &IndexIntervals::default(), &INPUTS),
                 "{input}"
             );
+        }
+    }
+    fn assert_input_time_root_slot(index: usize, reverse: bool) {
+        let row = vec![
+            LinearOp::LoadP { dst: 0, index },
+            LinearOp::LoadTime { dst: 1 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Sub,
+                lhs: if reverse { 1 } else { 0 },
+                rhs: if reverse { 0 } else { 1 },
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ];
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("input_time_root.mo"),
+            1,
+            2,
+        )
+        .require_provenance("input-time root regression")
+        .unwrap();
+        let block = ScalarProgramBlock::with_source_span(vec![row.clone()], span)
+            .expect("checked scalar root block");
+        let roles = classify_block(&block, &IndexIntervals::default(), &INPUTS)
+            .expect("contiguous root outputs classified");
+        let result = direct_time_root(&row, &INPUTS);
+        if INPUTS.contains(&index) {
+            assert_eq!(result, None, "external input slot {index}");
+            assert_eq!(roles, vec![RootSearchRole::Search]);
+            assert!(!static_root(&row, &IndexIntervals::default(), &INPUTS));
+        } else {
+            assert_eq!(
+                roles,
+                vec![RootSearchRole::AnnouncedTime {
+                    param_index: index,
+                    sign: if reverse {
+                        TimeRootSign::TimeMinusParam
+                    } else {
+                        TimeRootSign::ParamMinusTime
+                    },
+                }]
+            );
+            assert_eq!(
+                result,
+                Some((
+                    index,
+                    if reverse {
+                        TimeRootSign::TimeMinusParam
+                    } else {
+                        TimeRootSign::ParamMinusTime
+                    }
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn input_time_roots_remain_searched_while_parameter_deadlines_are_announced() {
+        for index in 0..4 {
+            for reverse in [false, true] {
+                assert_input_time_root_slot(index, reverse);
+            }
         }
     }
 }
