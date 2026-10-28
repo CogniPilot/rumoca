@@ -54,43 +54,36 @@ fn check_ordered_reduction(values: &[f64], builtin: dae::PureBuiltin, expected: 
         let variables = HashMap::new();
         let previous = HashMap::new();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        // A non-materializing lowerer owns no branch prefixes, so it must not
-        // checkpoint; its inline left fold still has to be exact.
-        let mut inline = ExpressionLowerer::new(view, &definitions, &variables, &previous);
-        let inline_result = inline.lower(reduction).unwrap();
-        assert!(
-            inline.take_prefix_statements().is_empty(),
-            "non-materializing lowerer emits no reduction checkpoints"
-        );
-        assert_eq!(
-            scalar_value(&inline_result.expression, &HashMap::new()).to_bits(),
-            expected.to_bits()
-        );
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        let result = lowerer.lower(reduction).unwrap();
-        let prefixes = lowerer.take_prefix_statements();
-        assert!(
-            !prefixes.is_empty(),
-            "must cross a materialization boundary"
-        );
-        let mut locals = HashMap::new();
-        for statement in prefixes {
-            let gast::Statement::Assignment {
-                target: gast::Reference::Local(part),
-                value,
-            } = statement.node
-            else {
-                panic!("scalar reduction assignment");
-            };
-            assert!(part.subscripts.is_empty());
-            let value = scalar_value(&value, &locals);
-            locals.insert(part.name.lexeme().to_owned(), value);
+        // Outside an inline `if` branch every lowerer checkpoints, and the
+        // checkpointed left fold has to stay bit-exact either way.
+        for mut lowerer in [
+            ExpressionLowerer::new(view, &definitions, &variables, &previous),
+            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous),
+        ] {
+            let result = lowerer.lower(reduction).unwrap();
+            let prefixes = lowerer.take_prefix_statements();
+            assert!(
+                !prefixes.is_empty(),
+                "must cross a materialization boundary"
+            );
+            let mut locals = HashMap::new();
+            for statement in prefixes {
+                let gast::Statement::Assignment {
+                    target: gast::Reference::Local(part),
+                    value,
+                } = statement.node
+                else {
+                    panic!("scalar reduction assignment");
+                };
+                assert!(part.subscripts.is_empty());
+                let value = scalar_value(&value, &locals);
+                locals.insert(part.name.lexeme().to_owned(), value);
+            }
+            assert_eq!(
+                scalar_value(&result.expression, &locals).to_bits(),
+                expected.to_bits()
+            );
         }
-        assert_eq!(
-            scalar_value(&result.expression, &locals).to_bits(),
-            expected.to_bits()
-        );
     });
 }
 
@@ -99,7 +92,7 @@ fn chunked_reductions_preserve_rounding_sensitive_left_to_right_results() {
     let sum: Vec<_> = [1e16, -1e16, 1.0].into_iter().cycle().take(201).collect();
     let expected_sum = sum.iter().copied().reduce(|a, b| a + b).unwrap();
     assert_eq!(expected_sum, 1.0);
-    // Summing independently reduced triplets would incorrectly produce67.
+    // Summing independently reduced triplets would incorrectly produce 67.
     check_ordered_reduction(&sum, dae::PureBuiltin::Sum, expected_sum);
     let product: Vec<_> = [1e200, 1e-200, 1e-200, 1e200]
         .into_iter()
@@ -173,8 +166,8 @@ fn reduction_checkpoints_stay_inside_their_conditional_branch() {
 #[test]
 fn non_materializing_lowerers_emit_no_unguarded_reduction_checkpoints() {
     // `new` and `with_assertions` lower `if` inline without capturing branch
-    // prefixes, so a checkpoint here would execute even when the branch is not
-    // taken. The reduction must stay inline instead.
+    // prefixes, so a checkpoint inside the branch would execute even when the
+    // branch is not taken. The reduction must stay inline there instead.
     let model = guarded_reduction_model();
     model.inspect(|view| {
         let conditional = guarded_conditional(view);

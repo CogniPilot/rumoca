@@ -996,10 +996,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             // Keep the original left-to-right grouping (GAL trap T6), but
             // checkpoint it into scalar locals before recursive AST consumers
             // inherit a stack frame per array element. Small trees stay exact.
-            // Only a materializing lowerer owns prefix statements per
-            // conditional branch (as in `bound_expression`); elsewhere a
-            // checkpoint would run unguarded ahead of an enclosing `if`.
-            if self.materialize_function_values && (index + 1) % 64 == 0 {
+            // A materializing lowerer keeps prefix statements inside their
+            // conditional branch; an inline `if` branch has nowhere to put
+            // them, so a checkpoint there would run even when the branch is
+            // not taken. Outside such branches every lowerer checkpoints.
+            if (self.materialize_function_values || self.inline_conditional_depth == 0)
+                && (index + 1) % 64 == 0
+            {
                 expression = self.materialize_aggregate_function_argument(
                     expression,
                     &[],

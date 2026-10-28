@@ -1151,6 +1151,10 @@ struct ExpressionLowerer<'a, 'dae> {
     /// byte-identical to a build that has no dial at all.
     emission: EmissionFacts<'a>,
     conditional_depth: usize,
+    /// Branches of an `if` expression lowered inline (without per-branch
+    /// prefix capture) that enclose the current expression. A prefix
+    /// statement emitted here would run whether or not its branch is taken.
+    inline_conditional_depth: usize,
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
     materialized_shared_record_fields: HashMap<(u32, usize), gast::Expression>,
@@ -1358,6 +1362,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             inline_causal_locals: false,
             emission: EmissionFacts::structured(),
             conditional_depth: 0,
+            inline_conditional_depth: 0,
             materialized_function_values: HashMap::new(),
             materialized_function_calls: HashMap::new(),
             materialized_shared_record_fields: HashMap::new(),
