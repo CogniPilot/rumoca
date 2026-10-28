@@ -916,7 +916,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.direct_whole_aggregate_reference(field)
     }
 
-    fn materialize_aggregate_function_argument(
+    pub(super) fn materialize_aggregate_function_argument(
         &mut self,
         value: gast::Expression,
         dimensions: &[u32],

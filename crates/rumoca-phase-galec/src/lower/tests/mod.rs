@@ -2,6 +2,7 @@ use rumoca_core::{SourceMap, Span, VarName};
 
 use super::*;
 
+mod bounded_reductions;
 mod conditional_records;
 mod correlated_guards;
 mod dynamic_index_bounds;
@@ -1676,6 +1677,68 @@ fn sum_reduction_projects_the_tensor_in_row_major_order() {
             gast::Expression::Real(3.0),
         );
         assert_eq!(lowerer.lower(sum).unwrap().expression, expected);
+    });
+}
+
+#[test]
+fn large_sum_reduction_materializes_bounded_depth_chunks() {
+    let mut sources = SourceMap::new();
+    let text = "sum({1.0, 2.0, 3.0})";
+    let source = sources.add("sum.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let provenance = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        dae.expressions(|expressions| {
+            let values = (0..20_000)
+                .map(f64::from)
+                .map(|value| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Real(value))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let array = expressions.at(provenance).array(values)?;
+            expressions
+                .at(provenance)
+                .builtin(dae::PureBuiltin::Sum, [array])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    model.inspect(|view| {
+        let sum = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .find(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    dae::ExpressionOperation::Builtin {
+                        builtin: dae::PureBuiltin::Sum,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
+        let expression = lowerer.lower(sum).unwrap().expression;
+        let prefixes = lowerer.take_prefix_statements();
+        assert!(!lowerer.take_temporary_locals().is_empty());
+        let mut roots = vec![&expression];
+        for statement in &prefixes {
+            if let gast::Statement::Assignment { value, .. } = &statement.node {
+                roots.push(value);
+            }
+        }
+        let mut pending: Vec<_> = roots.into_iter().map(|value| (value, 1)).collect();
+        while let Some((value, depth)) = pending.pop() {
+            assert!(depth <= 66, "reduction expression depth {depth}");
+            if let gast::Expression::Binary { lhs, rhs, .. } = value {
+                pending.push((lhs, depth + 1));
+                pending.push((rhs, depth + 1));
+            }
+        }
     });
 }
 

@@ -1666,7 +1666,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
                 if matches!(builtin, dae::PureBuiltin::Sum | dae::PureBuiltin::Product) {
-                    return self.lower_reduction(builtin, arguments, scalar_type);
+                    return self.lower_reduction(
+                        builtin,
+                        arguments,
+                        scalar_type,
+                        node.provenance().span(),
+                    );
                 }
                 if !indices.is_empty() {
                     return self.lower_elementwise_builtin(

@@ -965,6 +965,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
         scalar_type: gast::ScalarType,
+        span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
         let operand = arguments.get(0).expect("checked reduction operand");
         let dimensions = self
@@ -986,10 +987,27 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .collect::<Vec<_>>();
             values.push(self.lower_at(operand, &indices)?.expression);
         }
-        let expression = values
-            .into_iter()
-            .reduce(|lhs, rhs| gast::Expression::binary(operator, lhs, rhs))
+        let mut values = values.into_iter();
+        let mut expression = values
+            .next()
             .unwrap_or_else(|| reduction_identity(builtin, scalar_type));
+        for (index, value) in values.enumerate() {
+            expression = gast::Expression::binary(operator, expression, value);
+            // Keep the original left-to-right grouping (GAL trap T6), but
+            // checkpoint it into scalar locals before recursive AST consumers
+            // inherit a stack frame per array element. Small trees stay exact.
+            // Only a materializing lowerer owns prefix statements per
+            // conditional branch (as in `bound_expression`); elsewhere a
+            // checkpoint would run unguarded ahead of an enclosing `if`.
+            if self.materialize_function_values && (index + 1) % 64 == 0 {
+                expression = self.materialize_aggregate_function_argument(
+                    expression,
+                    &[],
+                    scalar_type,
+                    span,
+                )?;
+            }
+        }
         Ok(TypedExpression {
             expression,
             scalar_type,
