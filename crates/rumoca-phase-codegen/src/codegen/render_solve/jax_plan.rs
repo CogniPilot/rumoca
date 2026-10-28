@@ -102,22 +102,27 @@ fn scalar_step(
     ))
 }
 
-fn native_family(
-    node: &solve::ComputeNode,
-) -> Result<Option<RenderNativeAffineFamily>, CodegenError> {
+/// The selected node representation; scalar emission preserves lazy semantics
+/// for nodes outside the supported native family contract.
+enum NodeEmission {
+    Native(Box<RenderNativeAffineFamily>),
+    Scalar,
+}
+
+fn node_emission(node: &solve::ComputeNode) -> Result<NodeEmission, CodegenError> {
     if !matches!(
         node,
         solve::ComputeNode::Map { .. } | solve::ComputeNode::AffineStencil { .. }
     ) {
-        return Ok(None);
+        return Ok(NodeEmission::Scalar);
     }
     let mut partition = native_family_template_partition(&solve::ComputeBlock {
         nodes: vec![node.clone()],
     })?;
     if partition.families.len() != 1 || !jax_family::supports(&partition.families[0]) {
-        return Ok(None);
+        return Ok(NodeEmission::Scalar);
     }
-    Ok(Some(partition.families.remove(0)))
+    Ok(NodeEmission::Native(Box::new(partition.families.remove(0))))
 }
 
 fn execution_steps(block: &solve::ComputeBlock) -> Result<Vec<Value>, CodegenError> {
@@ -125,14 +130,14 @@ fn execution_steps(block: &solve::ComputeBlock) -> Result<Vec<Value>, CodegenErr
     let mut cursor = 0usize;
     let mut coverage = Vec::new();
     for node in &block.nodes {
-        if let Some(family) = native_family(node)? {
+        if let NodeEmission::Native(family) = node_emission(node)? {
             if family.count == 0 {
                 continue;
             }
             cursor = cursor.max(native_coverage(&family, &mut coverage)?);
             steps.push(minijinja::context! {
                 native => true,
-                families => Value::from_object(SolveNativeFamiliesValue::new(vec![family])),
+                families => Value::from_object(SolveNativeFamiliesValue::new(vec![*family])),
             });
             continue;
         }
