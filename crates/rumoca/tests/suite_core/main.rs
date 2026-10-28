@@ -56,6 +56,7 @@ mod backend_executor_differential;
 mod balance_diagnostic;
 mod bdf_episode_reset_intervals;
 mod bilinear_function_constraint;
+mod boolean_connections;
 mod call_actual_faults;
 mod call_owner_refresh_units;
 mod captured_assertion_directional;

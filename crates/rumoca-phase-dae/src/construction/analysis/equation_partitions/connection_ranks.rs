@@ -219,7 +219,8 @@ fn selected_elements(flat: &flat::Model, name: &VarName, subscripts: &[Subscript
 /// An `output` connector may either produce a value or merely forward one to
 /// an enclosing connector. Causality therefore cannot orient output-to-output
 /// edges by itself. The source owners are the exact evidence: bindings,
-/// ordinary equations, algorithms, and when chains define producers, while
+/// ordinary equations, algorithms, and when chains define producers, as do
+/// external discrete inputs supplied by the enclosing environment, while
 /// connection equations do not. A multi-source graph walk then assigns every
 /// pass-through element its minimum distance from a proven producer, so a
 /// chain is oriented outward without rendered-name or model-specific rules.
@@ -233,7 +234,8 @@ pub(in crate::construction) fn discrete_connection_ranks(
         .variables
         .iter()
         .filter(|(name, variable)| {
-            variable.binding.is_some() && matches!(roles[*name], PlannedRole::DiscreteValue)
+            (variable.binding.is_some() && matches!(roles[*name], PlannedRole::DiscreteValue))
+                || is_discrete_connection_input(flat, name, roles)
         })
         .map(|(name, _)| name.clone())
         .collect::<HashSet<_>>();
@@ -313,7 +315,7 @@ fn element_neighbors(
             continue;
         };
         for side in [lhs.as_ref(), rhs.as_ref()] {
-            if let Some((name, subscripts)) = discrete_value_base_reference(side, roles)
+            if let Some((name, subscripts)) = discrete_connection_reference(flat, side, roles)
                 && flat
                     .variables
                     .get(name)
@@ -325,10 +327,10 @@ fn element_neighbors(
                     .or_insert_with(|| side.clone());
             }
         }
-        let Some((lhs, lhs_subscripts)) = discrete_value_base_reference(lhs, roles) else {
+        let Some((lhs, lhs_subscripts)) = discrete_connection_reference(flat, lhs, roles) else {
             continue;
         };
-        let Some((rhs, rhs_subscripts)) = discrete_value_base_reference(rhs, roles) else {
+        let Some((rhs, rhs_subscripts)) = discrete_connection_reference(flat, rhs, roles) else {
             continue;
         };
         let lhs_elements = selected_elements(flat, lhs, lhs_subscripts);

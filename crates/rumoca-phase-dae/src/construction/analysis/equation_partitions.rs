@@ -281,8 +281,8 @@ fn oriented_discrete_connection<'flat>(
     else {
         return None;
     };
-    let (lhs_name, lhs_subscripts) = discrete_value_base_reference(lhs, roles)?;
-    let (rhs_name, rhs_subscripts) = discrete_value_base_reference(rhs, roles)?;
+    let (lhs_name, lhs_subscripts) = discrete_connection_reference(flat, lhs, roles)?;
+    let (rhs_name, rhs_subscripts) = discrete_connection_reference(flat, rhs, roles)?;
     let lhs_variable = flat.variables.get(lhs_name)?;
     let rhs_variable = flat.variables.get(rhs_name)?;
     let orientation = connection_ranks
@@ -297,7 +297,11 @@ fn oriented_discrete_connection<'flat>(
             _ => return None,
         },
     };
-    Some((target, target_subscripts, value))
+    matches!(roles.get(target), Some(PlannedRole::DiscreteValue)).then_some((
+        target,
+        target_subscripts,
+        value,
+    ))
 }
 
 /// The value an oriented connection gives its target. An element
@@ -310,7 +314,7 @@ fn element_connection_value<'flat>(
     target_subscripts: &[Subscript],
     value: &'flat Expression,
 ) -> Cow<'flat, Expression> {
-    discrete_value_base_reference(value, roles)
+    discrete_connection_reference(flat, value, roles)
         .filter(|(_, subscripts)| !subscripts.is_empty() || !target_subscripts.is_empty())
         .and_then(|(name, subscripts)| connection_ranks.producer_reference(flat, name, subscripts))
         .map_or(Cow::Borrowed(value), |producer| {
@@ -668,6 +672,44 @@ fn selection_denotes_whole_aggregate(target: &flat::Variable, subscripts: &[Subs
             .all(|(subscript, extent)| {
                 *extent == 1 && matches!(subscript, Subscript::Index { value: 1, .. })
             })
+}
+
+/// MLS §9.2: an external discrete input is a connection source, not a target.
+fn is_discrete_connection_input(
+    flat: &flat::Model,
+    name: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    matches!(roles.get(name), Some(PlannedRole::Input))
+        && flat.variables.get(name).is_some_and(|variable| {
+            matches!(
+                effective_variable_scalar_type(flat, variable),
+                Some(
+                    dae::ScalarType::Boolean
+                        | dae::ScalarType::Integer
+                        | dae::ScalarType::Enumeration
+                        | dae::ScalarType::String
+                )
+            )
+        })
+}
+
+fn discrete_connection_reference<'flat>(
+    flat: &flat::Model,
+    expression: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<(&'flat VarName, &'flat [Subscript])> {
+    if let Some(reference) = discrete_value_base_reference(expression, roles) {
+        return Some(reference);
+    }
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+    else {
+        return None;
+    };
+    is_discrete_connection_input(flat, name.var_name(), roles)
+        .then_some((name.var_name(), subscripts.as_slice()))
 }
 
 fn discrete_value_base_reference<'flat>(
