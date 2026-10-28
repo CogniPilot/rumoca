@@ -432,7 +432,20 @@ impl ScalarExecutionView<'_> {
         solver_y: &[f64],
         seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        self.seed_refresh_with_plan(&self.scalar.derivative_refresh, lin, solver_y, seed)
+        // The sole caller has already settled the primal derivative dependencies.
+        // Generic seed projection below also accepts arbitrary coordinates and
+        // must keep its residual-linearization contract.
+        let plan = &self.scalar.derivative_refresh;
+        if self.scalar.causal_seed_schedules.apply(
+            plan,
+            lin,
+            solver_y,
+            seed,
+            self.row_eval_context(),
+        )? {
+            return Ok(());
+        }
+        self.seed_refresh_with_plan(plan, lin, solver_y, seed)
     }
 
     /// Plan-parameterized forward-sensitivity refresh shared by the
