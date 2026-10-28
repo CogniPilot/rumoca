@@ -244,3 +244,5 @@ pub(super) fn counted(model: &solve::SolveModel) -> (Rc<dyn SolveExecutionBacken
         calls,
     )
 }
+
+mod forwarding_tests;
