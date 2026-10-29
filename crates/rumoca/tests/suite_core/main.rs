@@ -27,6 +27,7 @@
 mod discrete_array_history_ranges;
 mod history_operator_checked;
 mod inactive_when_assertion;
+mod nested_function_receiver;
 mod initial_boolean_parameter;
 mod initialization_parameter_conditionals;
 mod periodic_clock_session;

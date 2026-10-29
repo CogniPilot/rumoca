@@ -126,7 +126,12 @@ fn exact_receiver_scope_for_function_modifier(
     if ctx.class_index.get(prefix.def_id).is_some() {
         return ctx.active_scope.clone();
     }
-    ComponentPath::from_parts(prefix_parts.iter().map(|part| part.ident.as_str()))
+    // MLS §5.4 / §7.3: modifier actuals belong to the selected receiver
+    // instance, not the same-spelled relative receiver in its class.
+    ctx.selected_component_receiver_scope(current_ref)
+        .unwrap_or_else(|| {
+            ComponentPath::from_parts(prefix_parts.iter().map(|part| part.ident.as_str()))
+        })
 }
 
 fn qualify_redeclare_function_arg(
