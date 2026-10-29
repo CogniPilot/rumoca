@@ -341,6 +341,206 @@ fn checked_relation_root_and_reinitialization_execute_end_to_end() {
     );
 }
 
+fn final_state_after_reinit(value: &str) -> f64 {
+    let source = format!(
+        concat!(
+            "model ReinitSelfReference\n",
+            "  Real v(start=1, fixed=true);\n",
+            "  Real a;\n",
+            "equation\n",
+            "  der(v) = 1;\n",
+            "  a = 2 * v;\n",
+            "  when time >= 0.35 then\n",
+            "    reinit(v, {});\n",
+            "  end when;\n",
+            "end ReinitSelfReference;\n",
+        ),
+        value
+    );
+    let dae = compile(&source, "ReinitSelfReference");
+    let options = SimOptions {
+        t_end: 0.5,
+        dt: Some(0.05),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options)
+        .unwrap_or_else(|error| panic!("reinit(v, {value}) must execute: {error}"));
+    let v = result
+        .names
+        .iter()
+        .position(|name| name == "v")
+        .expect("state result column");
+    result.data[v].last().copied().expect("final state value")
+}
+
+#[test]
+fn reinitialization_value_reads_the_state_before_the_event() {
+    // MLS 8.3.6: reinit(v, expr) assigns v its new value from expr evaluated at
+    // the event instant, before the reinitialization takes effect. It is not an
+    // equation in the reinitialized value: v = 1.35 just before t = 0.35, so the
+    // new value is expr(1.35), and v then grows by 0.15 until t = 0.5.
+    for (value, expected) in [("2 * v", 2.85), ("v + 1", 2.5), ("2 * pre(v)", 2.85)] {
+        let final_v = final_state_after_reinit(value);
+        assert!(
+            (final_v - expected).abs() <= 2.0e-3,
+            "reinit(v, {value}) should leave v = {expected} at t = 0.5, found {final_v}"
+        );
+    }
+}
+
+fn final_states_after(source: &str, model: &str, names: &[&str]) -> Vec<f64> {
+    let dae = compile(source, model);
+    let options = SimOptions {
+        t_end: 0.5,
+        dt: Some(0.05),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options)
+        .unwrap_or_else(|error| panic!("{model} must execute: {error}"));
+    names
+        .iter()
+        .map(|name| {
+            let column = result
+                .names
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or_else(|| panic!("{model} has no result column {name}"));
+            result.data[column]
+                .last()
+                .copied()
+                .expect("final state value")
+        })
+        .collect()
+}
+
+#[test]
+fn reinitializations_of_one_pass_read_its_values_before_any_copy() {
+    // MLS 8.3.6: every reinit of an event-iteration step evaluates its value
+    // with the other equations of that step, and the copies happen together at
+    // the end of it, so two reinits reading each other's state swap them.
+    let finals = final_states_after(
+        concat!(
+            "model ReinitSwap\n",
+            "  Real x(start=1, fixed=true);\n",
+            "  Real y(start=5, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  der(y) = 0;\n",
+            "  when time >= 0.35 then\n",
+            "    reinit(x, y);\n",
+            "    reinit(y, x);\n",
+            "  end when;\n",
+            "end ReinitSwap;\n",
+        ),
+        "ReinitSwap",
+        &["x", "y"],
+    );
+    assert!(
+        (finals[0] - 5.0).abs() <= 1.0e-9 && (finals[1] - 1.0).abs() <= 1.0e-9,
+        "reinit(x, y); reinit(y, x) should swap to x = 5, y = 1, found {finals:?}"
+    );
+}
+
+#[test]
+fn reinitialization_triggers_a_later_step_of_the_same_event() {
+    // The copy at the end of one event-iteration step is visible to the next
+    // step of the same event: resetting v to 10 makes `v > 5` true at the same
+    // instant, and the reinit that edge fires reads the reset value (10), not
+    // v's left limit (1.35).
+    let finals = final_states_after(
+        concat!(
+            "model ReinitCascade\n",
+            "  Real v(start=1, fixed=true);\n",
+            "  Real w(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(v) = 1;\n",
+            "  der(w) = 0;\n",
+            "  when time >= 0.35 then\n",
+            "    reinit(v, 10);\n",
+            "  end when;\n",
+            "  when v > 5 then\n",
+            "    reinit(w, v);\n",
+            "  end when;\n",
+            "end ReinitCascade;\n",
+        ),
+        "ReinitCascade",
+        &["v", "w"],
+    );
+    assert!(
+        (finals[0] - 10.15).abs() <= 2.0e-3 && (finals[1] - 10.0).abs() <= 1.0e-9,
+        "the reset-triggered reinit should leave v = 10.15, w = 10 at t = 0.5, found {finals:?}"
+    );
+}
+
+#[test]
+fn one_reinitialization_program_fires_again_in_a_later_step_of_the_same_event() {
+    // Both branches of one when/elsewhen reinitialize v, so they share one
+    // program. The first branch sets v to 10 in the first step of the event;
+    // that makes `v > 5` rise in the next step, where the elsewhen branch must
+    // still apply and reset v to 0, so v grows from 0 to 0.15 by t = 0.5.
+    let finals = final_states_after(
+        concat!(
+            "model ReinitElsewhenCascade\n",
+            "  Real v(start=1, fixed=true);\n",
+            "equation\n",
+            "  der(v) = 1;\n",
+            "  when time >= 0.35 then\n",
+            "    reinit(v, 10);\n",
+            "  elsewhen v > 5 then\n",
+            "    reinit(v, 0);\n",
+            "  end when;\n",
+            "end ReinitElsewhenCascade;\n",
+        ),
+        "ReinitElsewhenCascade",
+        &["v"],
+    );
+    assert!(
+        (finals[0] - 0.15).abs() <= 2.0e-3,
+        "the elsewhen reinit fired by the first reset should leave v = 0.15 at t = 0.5, found {}",
+        finals[0]
+    );
+}
+
+#[test]
+fn reinitialization_through_an_algebraic_alias_reads_the_left_limit() {
+    // reinit(v, a) with `a = 2 * v`: the value reaches the state through an
+    // algebraic, which the event step solves with v still at its left limit
+    // (1.35), so v becomes 2.7 and grows by 0.15 until t = 0.5.
+    let final_v = final_state_after_reinit("a");
+    assert!(
+        (final_v - 2.85).abs() <= 2.0e-3,
+        "reinit(v, a) with a = 2 * v should leave v = 2.85 at t = 0.5, found {final_v}"
+    );
+}
+
+#[test]
+fn a_reinitialization_that_keeps_its_value_still_reads_the_event_entry_values() {
+    // x = y = 1: reinit(x, y) leaves x unchanged while reinit(y, 2) moves y.
+    // Both values come from the event's entry, so x stays 1 however often the
+    // event's when bodies are evaluated at the instant.
+    let finals = final_states_after(
+        concat!(
+            "model ReinitNoOp\n",
+            "  Real x(start=1, fixed=true);\n",
+            "  Real y(start=1, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  der(y) = 0;\n",
+            "  when time >= 0.35 then\n",
+            "    reinit(x, y);\n",
+            "    reinit(y, 2);\n",
+            "  end when;\n",
+            "end ReinitNoOp;\n",
+        ),
+        "ReinitNoOp",
+        &["x", "y"],
+    );
+    assert!(
+        (finals[0] - 1.0).abs() <= 1.0e-9 && (finals[1] - 2.0).abs() <= 1.0e-9,
+        "reinit(x, y); reinit(y, 2) from x = y = 1 should give x = 1, y = 2, found {finals:?}"
+    );
+}
+
 #[test]
 fn checked_termination_action_preserves_message_and_event_time() {
     let dae = compile(

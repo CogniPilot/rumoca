@@ -227,7 +227,10 @@ impl ScalarExecutionView<'_> {
             .iter()
             .enumerate()
         {
+            // A reinitialization is an assignment at the end of the pass, not
+            // an equation in the state it reinitializes (MLS §8.3.6).
             if self.scalar.event_transaction_coverage.guarded_assignments[program_index]
+                || super::discrete_rows::reinitializes_between_passes(owner)
                 || !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)?
             {
                 continue;

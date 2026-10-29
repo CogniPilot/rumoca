@@ -93,6 +93,21 @@ impl SolveMeKernel {
         right_time: f64,
         event: RuntimeEventStop,
     ) -> Result<(), MeError> {
+        // The right limit observes the same event from its entry: the
+        // event-entry discrete values below, and the event-entry states here.
+        // Only `reinit` moves a state at an event, so this undoes exactly the
+        // event-time pass's reinitializations, and the right limit applies them
+        // again from the same inputs (MLS 8.3.6): a reinit runs once per event,
+        // whether its edge is first seen at the event time or at the right limit.
+        if let Some(event_pre_y) = &self.boundary_event_pre_y {
+            let entry_states =
+                event_pre_y
+                    .get(..self.state_count)
+                    .ok_or_else(|| MeError::Contract {
+                        reason: "event-entry coordinate is shorter than the state vector".into(),
+                    })?;
+            self.states.copy_from_slice(entry_states);
+        }
         if self.advance_state_to_event_right_limit || self.state_time_coincidence.is_some() {
             let event_time = self.time;
             let settle = self.numerics_settle();

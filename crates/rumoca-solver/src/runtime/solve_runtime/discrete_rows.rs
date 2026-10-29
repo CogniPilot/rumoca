@@ -349,6 +349,17 @@ fn advances_between_passes(
     role == solve::DiscreteRowRole::ConditionMemory && clock_owner.is_none()
 }
 
+/// Whether a guarded program is an unclocked `reinit`, which copies its value
+/// into the state at the end of an event pass
+/// ([`ScalarExecutionView::advance_condition_memory`]) rather than settling
+/// inside one. MLS §8.3.6 evaluates the value with the other equations of the
+/// pass and copies it at the end of that event-iteration step, so inside the
+/// pass the state keeps its value and the assignment is never an equation in
+/// the reinitialized state.
+pub(super) fn reinitializes_between_passes(owner: &solve::GuardedAssignmentProgram) -> bool {
+    owner.role() == solve::DiscreteRowRole::EventAction && owner.clock_owner().is_none()
+}
+
 #[derive(Clone, Copy)]
 struct DiscreteRowEvalScope {
     skip_solver_or_time_rows: bool,
@@ -1137,8 +1148,11 @@ impl ScalarExecutionView<'_> {
     /// `pre(b)`: it holds while the pass settles, so a body active at the
     /// instant keeps running until the values it reads have settled with it,
     /// and it advances only here, at the end of each pass and before the
-    /// ordinary `pre` lanes advance. Returns whether any buffer changed, which
-    /// keeps the event iteration going.
+    /// ordinary `pre` lanes advance. Every `reinit` active in the pass copies
+    /// its value into its state here as well, at the end of the event-iteration
+    /// step (MLS §8.3.6), evaluated before the buffers advance so the edge that
+    /// activated it is still visible. Returns whether any buffer or state
+    /// changed, which keeps the event iteration going.
     pub(super) fn advance_condition_memory(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,
@@ -1191,11 +1205,62 @@ impl ScalarExecutionView<'_> {
                 writes.push((row.target, value));
             }
         }
+        let reinitializations = self.eval_pass_reinitializations(snapshot, &eval_y, &eval_p, t)?;
         let mut changed = false;
         for (target, value) in writes {
             changed |= solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
         }
+        for (program_index, values) in reinitializations {
+            changed |= self.apply_guarded_assignment_outputs(
+                program_index,
+                &values,
+                snapshot.root_relation_overrides,
+                y,
+                p,
+            )?;
+        }
         Ok(changed)
+    }
+
+    /// Evaluate every `reinit` active in the pass on the coordinate the pass
+    /// settled, under the same buffers the pass ran with: the edge that
+    /// activates a reinitialization is read before its buffer advances.
+    fn eval_pass_reinitializations(
+        &self,
+        snapshot: &DiscretePreSnapshot<'_>,
+        eval_y: &[f64],
+        eval_p: &[f64],
+        t: f64,
+    ) -> Result<Vec<GuardedRowValues>, RuntimeSolveError> {
+        let mut reinitializations = Vec::new();
+        for (program_index, owner) in self
+            .model
+            .problem
+            .discrete
+            .guarded_assignments
+            .iter()
+            .enumerate()
+        {
+            if self.scalar.event_transaction_coverage.guarded_assignments[program_index]
+                || !reinitializes_between_passes(owner)
+                || !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)?
+            {
+                continue;
+            }
+            let row_p = if snapshot.root_relation_overrides.is_empty() {
+                std::borrow::Cow::Borrowed(eval_p)
+            } else {
+                std::borrow::Cow::Owned(event_eval_params_with_relation_overrides(
+                    &self.model.problem.events.root_relation_memory_targets,
+                    snapshot.root_relation_overrides,
+                    eval_p,
+                )?)
+            };
+            let mut values = Vec::new();
+            self.eval_guarded_assignment_outputs(program_index, eval_y, &row_p, t, &mut values)?;
+            reinitializations.push((program_index, values));
+        }
+        Ok(reinitializations)
     }
 
     /// Leave every pulse condition buffer at the value the next instant reads
@@ -1534,6 +1599,9 @@ impl ScalarExecutionView<'_> {
                 continue;
             }
             if input.scope.observation_only && !owner.observation_refresh() {
+                continue;
+            }
+            if !input.scope.observation_only && reinitializes_between_passes(owner) {
                 continue;
             }
             if input.scope.initialization_equations_only
