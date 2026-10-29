@@ -93,12 +93,36 @@ impl SolveMeKernel {
         right_time: f64,
         event: RuntimeEventStop,
     ) -> Result<(), MeError> {
+        // The probe reads one side of the event: the committed post-event
+        // states and parameters, a coherent coordinate.
+        let event_time = self.time;
+        let probe_derivatives =
+            if self.advance_state_to_event_right_limit || self.state_time_coincidence.is_some() {
+                let settle = self.numerics_settle();
+                Some(event_right_limit_state_derivatives(
+                    &self.runtime,
+                    &self.solver_y_guess.borrow(),
+                    event_time,
+                    &self.states,
+                    &self.params,
+                    settle,
+                )?)
+            } else {
+                None
+            };
+        if let Some(derivatives) = &probe_derivatives {
+            advance_states_to_event_probe(&mut self.states, derivatives, event_time, right_time);
+        }
+        self.time = right_time;
+        let mut iteration_y = self.current_solver_y()?;
         // The right limit observes the same event from its entry: the
         // event-entry discrete values below, and the event-entry states here.
         // Only `reinit` moves a state at an event, so this undoes exactly the
         // event-time pass's reinitializations, and the right limit applies them
         // again from the same inputs (MLS 8.3.6): a reinit runs once per event,
-        // whether its edge is first seen at the event time or at the right limit.
+        // whether its edge is first seen at the event time or at the right
+        // limit. The entry states advance by the same probe as the post-event
+        // ones, so without a reinit both coordinates are unchanged.
         if let Some(event_pre_y) = &self.boundary_event_pre_y {
             let entry_states =
                 event_pre_y
@@ -107,22 +131,21 @@ impl SolveMeKernel {
                         reason: "event-entry coordinate is shorter than the state vector".into(),
                     })?;
             self.states.copy_from_slice(entry_states);
+            if let Some(derivatives) = &probe_derivatives {
+                advance_states_to_event_probe(
+                    &mut self.states,
+                    derivatives,
+                    event_time,
+                    right_time,
+                );
+            }
+            iteration_y
+                .get_mut(..self.state_count)
+                .ok_or_else(|| MeError::Contract {
+                    reason: "right-limit coordinate is shorter than the state vector".into(),
+                })?
+                .copy_from_slice(&self.states);
         }
-        if self.advance_state_to_event_right_limit || self.state_time_coincidence.is_some() {
-            let event_time = self.time;
-            let settle = self.numerics_settle();
-            let derivatives = event_right_limit_state_derivatives(
-                &self.runtime,
-                &self.solver_y_guess.borrow(),
-                event_time,
-                &self.states,
-                &self.params,
-                settle,
-            )?;
-            advance_states_to_event_probe(&mut self.states, &derivatives, event_time, right_time);
-        }
-        self.time = right_time;
-        let iteration_y = self.current_solver_y()?;
         let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
             event_pre_y
         } else {

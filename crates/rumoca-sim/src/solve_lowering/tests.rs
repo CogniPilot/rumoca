@@ -542,6 +542,34 @@ fn a_reinitialization_that_keeps_its_value_still_reads_the_event_entry_values() 
 }
 
 #[test]
+fn the_right_limit_probe_reads_one_side_of_the_event() {
+    // Before the event x = 0 with `active` false; after it x = 1 with `active`
+    // true. der(x) is defined on both sides, but sqrt(x - 1) has no value at
+    // the mixed point x = 0 with `active` true, so the right-limit probe must
+    // evaluate the derivative on one side of the event, never across them.
+    let finals = final_states_after(
+        concat!(
+            "model ReinitProbeSide\n",
+            "  Real x(start=0, fixed=true);\n",
+            "  discrete Boolean active(start=false, fixed=true);\n",
+            "equation\n",
+            "  der(x) = if active then sqrt(x - 1) else 0;\n",
+            "  when time >= 0.35 then\n",
+            "    active = true;\n",
+            "    reinit(x, x + 1);\n",
+            "  end when;\n",
+            "end ReinitProbeSide;\n",
+        ),
+        "ReinitProbeSide",
+        &["x"],
+    );
+    assert!(
+        (finals[0] - 1.0).abs() <= 1.0e-9,
+        "reinit(x, x + 1) from x = 0 should leave x = 1, found {finals:?}"
+    );
+}
+
+#[test]
 fn checked_termination_action_preserves_message_and_event_time() {
     let dae = compile(
         concat!(
