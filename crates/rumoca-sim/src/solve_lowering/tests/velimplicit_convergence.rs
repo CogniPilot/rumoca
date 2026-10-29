@@ -13,7 +13,7 @@
 //! exactly zero, so x(1) is exact to roundoff; a pair of errors both at
 //! roundoff level is accepted as exact rather than given a ratio.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use rumoca_solver::{
     SimExecutionPolicy,
@@ -73,6 +73,7 @@ struct SampleRecorder<'a> {
     inner: Box<dyn MeIntegratorBackend>,
     interval: RefCell<(f64, f64)>,
     samples: &'a RefCell<Vec<(f64, f64, f64)>>,
+    truncations: &'a Cell<usize>,
 }
 
 impl MeIntegratorBackend for SampleRecorder<'_> {
@@ -104,6 +105,7 @@ impl MeIntegratorBackend for SampleRecorder<'_> {
     }
 
     fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
+        self.truncations.set(self.truncations.get() + 1);
         self.inner.truncate_reset(point)
     }
 }
@@ -111,14 +113,50 @@ impl MeIntegratorBackend for SampleRecorder<'_> {
 /// `x` at [`TIMES`] with a fixed step `h` and Jacobian reuse `reuse`, plus
 /// the recorded samples.
 fn run(case: &Case, h: f64, reuse: u32) -> (Vec<f64>, Vec<(f64, f64, f64)>) {
+    let truncations = Cell::new(0);
+    let (result, samples) = run_recorded(
+        case.source,
+        case.name,
+        (1.0, 1.0 / 3.0),
+        (h, reuse),
+        &truncations,
+    );
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state is recorded");
+    let values = TIMES
+        .iter()
+        .map(|&time| {
+            let row = result
+                .times
+                .iter()
+                .rposition(|recorded| (recorded - time).abs() < 1.0e-12)
+                .expect("output time is recorded");
+            result.data[x][row]
+        })
+        .collect();
+    (values, samples)
+}
+
+/// One batch run of `source` through the recording wrapper, with stop time
+/// and output interval `(t_end, dt)` and step and reuse `(h, reuse)`.
+fn run_recorded(
+    source: &str,
+    name: &str,
+    (t_end, dt): (f64, f64),
+    (h, reuse): (f64, u32),
+    truncations: &Cell<usize>,
+) -> (rumoca_solver::SimResult, Vec<(f64, f64, f64)>) {
     let opts = SimOptions {
         execution_policy: SimExecutionPolicy::Interpreter,
         solver_mode: SimSolverMode::VelImplicit,
-        t_end: 1.0,
-        dt: Some(1.0 / 3.0),
+        t_end,
+        dt: Some(dt),
         ..SimOptions::default()
     };
-    let dae = compile(case.source, case.name);
+    let dae = compile(source, name);
     let (artifact, backend) = super::super::lower_runtime_fmi_artifact(&dae, &opts).unwrap();
     let backend =
         rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, backend).unwrap();
@@ -143,27 +181,36 @@ fn run(case: &Case, h: f64, reuse: u32) -> (Vec<f64>, Vec<(f64, f64, f64)>) {
         ),
         interval: RefCell::new((0.0, 0.0)),
         samples: &samples,
+        truncations,
     };
+    // The wrapper declares the plugin's own continuous-extension order.
+    assert_eq!(plugin.continuous_extension_order(), Some(1));
     let mut session = host.into_session(Some(Box::new(plugin))).unwrap();
     session.run_to_stop(&mut cursor).unwrap();
-    let result = session.finish();
-    let x = result
-        .names
-        .iter()
-        .position(|name| name == "x")
-        .expect("state is recorded");
-    let values = TIMES
-        .iter()
-        .map(|&time| {
-            let row = result
-                .times
-                .iter()
-                .rposition(|recorded| (recorded - time).abs() < 1.0e-12)
-                .expect("output time is recorded");
-            result.data[x][row]
-        })
-        .collect();
-    (values, samples.into_inner())
+    (session.finish(), samples.into_inner())
+}
+
+/// A located state event reaches the plugin as a truncate/reset through the
+/// wrapper (the bouncing ball of `velimplicit_batch`).
+#[test]
+fn a_state_event_truncates_the_recorded_plugin() {
+    let source = "model Ball
+                    Real h(start = 1, fixed = true);
+                    Real v(start = 0, fixed = true);
+                  equation
+                    der(h) = v;
+                    der(v) = -9.81;
+                    when h < 0 then
+                      reinit(v, -0.8 * pre(v));
+                    end when;
+                  end Ball;";
+    let truncations = Cell::new(0);
+    let (result, _) = run_recorded(source, "Ball", (0.6, 0.1), (1.0e-3, 200), &truncations);
+    assert!(
+        truncations.get() >= 1,
+        "no truncate/reset reached the plugin"
+    );
+    assert!((result.times[result.times.len() - 1] - 0.6).abs() < 1.0e-12);
 }
 
 /// Errors at or below this are roundoff, not discretization error.

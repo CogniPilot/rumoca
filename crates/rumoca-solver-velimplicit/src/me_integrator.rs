@@ -433,6 +433,20 @@ mod tests {
     }
 
     #[test]
+    fn the_continuous_extension_is_declared_first_order() {
+        assert_eq!(integrator(2).continuous_extension_order(), Some(1));
+    }
+
+    #[test]
+    fn a_jacobian_before_initialize_reports_the_missing_derivative_capability() {
+        let mut backend = integrator(1);
+        let error = backend
+            .refresh_jacobian(0.0, &[1.0])
+            .expect_err("no derivative capability before initialize");
+        assert_eq!(error.to_string(), missing_handle().to_string());
+    }
+
+    #[test]
     fn a_step_that_cannot_advance_the_coordinate_is_refused() {
         // At t = 1e6 a 2.5e-11 s step rounds back to t.
         assert_eq!(representable_step(1.0e6, 2.0e6, None, 2.5e-11), None);
