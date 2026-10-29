@@ -50,9 +50,8 @@ use rumoca_compile::compile::{
 };
 use rumoca_compile::parsing::{StoredDefinition, collect_compile_unit_source_files};
 use rumoca_compile::source_roots::{
-    PackageLayoutError, canonical_path_key, parse_source_root_with_cache, plan_source_root_loads,
-    referenced_unloaded_source_root_paths, render_source_root_status_message,
-    resolve_source_root_cache_dir, source_root_source_set_key,
+    PackageLayoutError, canonical_path_key, parse_source_root_with_cache,
+    render_source_root_status_message, resolve_source_root_cache_dir, source_root_source_set_key,
 };
 use rumoca_core::DiagnosticSeverity;
 use rumoca_phase_resolve::ResolvedTree;
@@ -396,42 +395,27 @@ impl Compiler {
         session: &mut Session,
         source: &str,
     ) -> Result<(), CompilerError> {
-        let loaded_source_root_path_keys = HashSet::new();
-        let referenced_source_root_paths = referenced_unloaded_source_root_paths(
-            source,
-            &self.source_root_paths,
-            &loaded_source_root_path_keys,
-        );
-        let referenced_path_keys = referenced_source_root_paths
-            .iter()
-            .map(|path| canonical_path_key(path))
-            .collect::<HashSet<_>>();
-        for source_root_path in &self.source_root_paths {
-            let path_key = canonical_path_key(source_root_path);
-            if referenced_path_keys.contains(&path_key) {
-                continue;
+        let mut completed = HashSet::new();
+        loop {
+            let load_plan =
+                session.required_source_root_load_plan(source, &self.source_root_paths, &completed);
+            for skipped in &load_plan.duplicate_root_skips {
+                self.log_verbose(format!(
+                    "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
+                    skipped.source_root_path, skipped.root_name, skipped.provider_path
+                ));
             }
-            self.log_verbose(format!(
-                "[rumoca] Skipping unused source root: {}",
-                source_root_path
-            ));
-        }
-
-        let load_plan =
-            plan_source_root_loads(&referenced_source_root_paths, &loaded_source_root_path_keys);
-        for skipped in &load_plan.duplicate_root_skips {
-            self.log_verbose(format!(
-                "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
-                skipped.source_root_path, skipped.root_name, skipped.provider_path
-            ));
-        }
-
-        for source_root_path in &load_plan.load_paths {
-            self.log_verbose(format!(
-                "[rumoca] Loading source root: {}",
-                source_root_path
-            ));
-            self.load_source_root_into_session(session, source_root_path)?;
+            if load_plan.load_paths.is_empty() {
+                break;
+            }
+            for source_root_path in &load_plan.load_paths {
+                self.log_verbose(format!(
+                    "[rumoca] Loading source root: {}",
+                    source_root_path
+                ));
+                self.load_source_root_into_session(session, source_root_path)?;
+                completed.insert(canonical_path_key(source_root_path));
+            }
         }
 
         Ok(())
@@ -1875,3 +1859,7 @@ mod tests {
         assert!(msg.contains("shared"), "actual message: {msg}");
     }
 }
+
+#[cfg(test)]
+#[path = "compiler/source_root_tests.rs"]
+mod source_root_tests;

@@ -27,8 +27,7 @@ use rumoca_compile::parsing::{
 };
 use rumoca_compile::scenario::{EffectiveSimulationConfig, ScenarioConfig, ScenarioTask};
 use rumoca_compile::source_roots::{
-    canonical_path_key, merge_source_root_paths, plan_source_root_loads,
-    referenced_unloaded_source_root_paths, source_root_source_set_key,
+    canonical_path_key, merge_source_root_paths, source_root_source_set_key,
 };
 use rumoca_compile::workspace::WorkspaceConfig;
 use rumoca_tool_fmt::FormatOptions;
@@ -350,21 +349,27 @@ fn ensure_required_source_roots_loaded(
     source: &str,
     source_root_paths: &[String],
 ) -> Result<(), PyRuntimeStringError> {
-    let loaded = session.loaded_source_root_path_keys();
-    let referenced = referenced_unloaded_source_root_paths(source, source_root_paths, &loaded);
-    let plan = plan_source_root_loads(&referenced, &loaded);
-    for source_root_path in plan.load_paths {
-        let source_root_key = source_root_source_set_key(&source_root_path);
-        let report = session.load_source_root_tolerant(
-            &source_root_key,
-            SourceRootKind::External,
-            Path::new(&source_root_path),
-            None,
-        );
-        if !report.diagnostics.is_empty() {
-            return Err(PyRuntimeStringError(report.diagnostics.join("\n")));
+    let mut completed = std::collections::HashSet::new();
+    loop {
+        let plan = session.required_source_root_load_plan(source, source_root_paths, &completed);
+        if plan.load_paths.is_empty() {
+            break;
+        }
+        for source_root_path in plan.load_paths {
+            let source_root_key = source_root_source_set_key(&source_root_path);
+            let report = session.load_source_root_tolerant(
+                &source_root_key,
+                SourceRootKind::External,
+                Path::new(&source_root_path),
+                None,
+            );
+            if !report.diagnostics.is_empty() {
+                return Err(PyRuntimeStringError(report.diagnostics.join("\n")));
+            }
+            completed.insert(canonical_path_key(&source_root_path));
         }
     }
+
     Ok(())
 }
 
