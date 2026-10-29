@@ -9,18 +9,35 @@ pub(super) struct Guard {
 }
 
 impl Coordinates {
+    /// Restrict the relation to `lower <= form <= upper`, keeping the guards
+    /// canonical: one guard per affine form (bounds intersected) in a fixed
+    /// order. Equal coordinate sets then have equal representations, so
+    /// relations composed through different call paths deduplicate instead of
+    /// multiplying.
     pub(in super::super) fn restricted(mut self, form: AffineForm, lower: i64, upper: i64) -> Self {
-        let guard = Guard { form, lower, upper };
         let constant = self.output_rank.checked_add(self.free_dimensions.len())
-            == Some(guard.form.coeffs.len())
-            && guard.form.coeffs.iter().all(|&c| c == 0);
-        if !(self.guards.contains(&guard)
-            || constant && (lower..=upper).contains(&guard.form.constant))
-        {
-            let mut guards = self.guards.into_vec();
-            guards.push(guard);
-            self.guards = guards.into();
+            == Some(form.coeffs.len())
+            && form.coeffs.iter().all(|&c| c == 0);
+        if constant && (lower..=upper).contains(&form.constant) {
+            return self;
         }
+        let mut guards = self.guards.into_vec();
+        match guards.iter_mut().find(|existing| existing.form == form) {
+            Some(existing) => {
+                existing.lower = existing.lower.max(lower);
+                existing.upper = existing.upper.min(upper);
+            }
+            None => guards.push(Guard { form, lower, upper }),
+        }
+        guards.sort_by(|a, b| {
+            (&a.form.coeffs, a.form.constant, a.lower, a.upper).cmp(&(
+                &b.form.coeffs,
+                b.form.constant,
+                b.lower,
+                b.upper,
+            ))
+        });
+        self.guards = guards.into();
         self
     }
 

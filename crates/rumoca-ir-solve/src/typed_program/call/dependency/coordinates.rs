@@ -146,22 +146,91 @@ impl Coordinates {
                 .all(|guard| guard.form.coeffs.len() == count)
     }
 
+    /// Drop free axes that no subscript reads. An axis named only by its own
+    /// one-axis guards is existential: it decides whether the relation holds,
+    /// not which input coordinate it reaches, so it is projected out exactly
+    /// (or the relation is empty). Composed call paths otherwise each keep a
+    /// private copy of such axes and equal relations never deduplicate.
     fn without_unused_axes(mut self) -> Self {
         for axis in (0..self.free_dimensions.len()).rev() {
             let coefficient = self.output_rank + axis;
             if self
                 .subscripts
                 .iter()
-                .all(|subscript| subscript.coeffs[coefficient] == 0)
-                && self
-                    .guards
-                    .iter()
-                    .all(|guard| guard.form.coeffs[coefficient] == 0)
+                .any(|subscript| subscript.coeffs[coefficient] != 0)
             {
-                self = self.without_free_axis(axis);
+                continue;
             }
+            let mentions = |guard: &Guard| guard.form.coeffs[coefficient] != 0;
+            if !self.guards.iter().any(mentions) {
+                self = self.without_free_axis(axis);
+                continue;
+            }
+            let Some(feasible) = self.existential_axis_feasible(axis) else {
+                continue;
+            };
+            if !feasible {
+                return self.empty();
+            }
+            let mut guards = self.guards.into_vec();
+            guards.retain(|guard| !mentions(guard));
+            self.guards = guards.into();
+            self = self.without_free_axis(axis);
         }
         self
+    }
+
+    /// `None` when a guard on `axis` also reads another axis, so projection
+    /// would not be exact; otherwise whether some value in the axis box
+    /// satisfies every one-axis guard on it.
+    fn existential_axis_feasible(&self, axis: usize) -> Option<bool> {
+        let coefficient = self.output_rank + axis;
+        let mut low = 0i128;
+        let mut high = i128::from(*self.free_dimensions.get(axis)?) - 1;
+        for guard in &self.guards {
+            let c = i128::from(guard.form.coeffs[coefficient]);
+            if c == 0 {
+                continue;
+            }
+            if guard
+                .form
+                .coeffs
+                .iter()
+                .enumerate()
+                .any(|(index, &other)| index != coefficient && other != 0)
+            {
+                return None;
+            }
+            let k = i128::from(guard.form.constant);
+            let (lower, upper) = (i128::from(guard.lower), i128::from(guard.upper));
+            // c * x + k in [lower, upper], solved for integer x.
+            let (from, to, divisor) = if c > 0 {
+                (lower - k, upper - k, c)
+            } else {
+                (k - upper, k - lower, -c)
+            };
+            low = low.max(-(-from).div_euclid(divisor));
+            high = high.min(to.div_euclid(divisor));
+        }
+        Some(low <= high)
+    }
+
+    fn empty(self) -> Self {
+        let rank = self.output_rank;
+        Self {
+            output_rank: rank,
+            free_dimensions: Box::default(),
+            subscripts: self
+                .subscripts
+                .iter()
+                .map(|_| AffineForm::constant(0, rank))
+                .collect(),
+            guards: Box::new([Guard {
+                form: AffineForm::constant(0, rank),
+                lower: 1,
+                upper: 0,
+            }]),
+        }
     }
 
     fn without_free_axis(mut self, axis: usize) -> Self {
@@ -319,6 +388,80 @@ mod tests {
             }],
         );
         assert_eq!(prefix.complete_domain(&[2, 2], &[u32::MAX]), None);
+    }
+
+    fn form(constant: i64, coeffs: &[i64]) -> AffineForm {
+        AffineForm {
+            constant,
+            coeffs: coeffs.to_vec(),
+        }
+    }
+
+    /// The kite trace shape: an input coordinate reached under guards on
+    /// free axes that no subscript reads.
+    fn existential(guard_constant: i64) -> Coordinates {
+        Coordinates::access(1, &[19, 3, 3], vec![form(3, &[0, 0, 0, 1])])
+            .restricted(form(guard_constant, &[0, 0, 1, 0]), 0, 0)
+            .restricted(form(0, &[0, 1, 0, 0]), 0, 5)
+    }
+
+    #[test]
+    fn existential_axes_project_out_with_identical_scalar_mapping() {
+        for guard_constant in [0, -1, -2] {
+            let raw = existential(guard_constant);
+            let projected = raw.clone().without_unused_axes();
+            assert_eq!(
+                projected,
+                Coordinates::access(1, &[3], vec![form(3, &[0, 1])])
+            );
+            // Dependencies are sets: the raw form repeats each input once per
+            // value of the existential axis, which is the multiplicity the
+            // projection removes.
+            for element in 0..4 {
+                let mut expected = raw.input_elements(&[4], element, &[8]).unwrap();
+                expected.sort_unstable();
+                expected.dedup();
+                assert_eq!(
+                    projected.input_elements(&[4], element, &[8]),
+                    Some(expected)
+                );
+            }
+        }
+        assert_eq!(
+            existential(0).without_unused_axes(),
+            existential(-1).without_unused_axes()
+        );
+    }
+
+    #[test]
+    fn infeasible_existential_axis_empties_the_relation() {
+        let raw = existential(-3);
+        assert_eq!(raw.input_elements(&[4], 0, &[8]), Some(vec![]));
+        assert!(raw.without_unused_axes().is_empty());
+        let negative = Coordinates::access(1, &[3], vec![form(2, &[0, 0])]).restricted(
+            form(1, &[0, -2]),
+            -4,
+            -2,
+        );
+        assert_eq!(
+            negative.clone().without_unused_axes(),
+            Coordinates::access(1, &[], vec![form(2, &[0])])
+        );
+        let none =
+            Coordinates::access(1, &[3], vec![form(2, &[0, 0])]).restricted(form(0, &[0, 2]), 1, 1);
+        assert!(none.without_unused_axes().is_empty());
+    }
+
+    #[test]
+    fn coupled_existential_axis_is_retained() {
+        let coupled = Coordinates::access(1, &[3], vec![form(2, &[0, 0])]).restricted(
+            form(0, &[1, -1]),
+            0,
+            0,
+        );
+        assert_eq!(coupled.clone().without_unused_axes(), coupled);
+        assert_eq!(coupled.input_elements(&[4], 3, &[8]), Some(vec![]));
+        assert_eq!(coupled.input_elements(&[4], 1, &[8]), Some(vec![2]));
     }
 
     #[test]
