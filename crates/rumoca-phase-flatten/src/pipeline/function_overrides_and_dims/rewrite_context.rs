@@ -90,6 +90,33 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
         (None, relative)
     }
 
+    /// Resolve the receiver occurrence even when it has no function redeclaration.
+    /// An outer occurrence remains an occurrence here: the existing MLS §5.4
+    /// redirect later maps its qualified modifier reads onto the selected inner.
+    /// Contexts without instance membership retain the source receiver fallback.
+    pub(super) fn selected_component_receiver_scope(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> Option<ComponentPath> {
+        if self.component_overrides.is_some() {
+            let (selected, path) = self.function_override_scope(reference);
+            if selected.is_some() {
+                return Some(path);
+            }
+        }
+        let members = self.component_members?;
+        let relative = ComponentPath::from_reference(reference).parent()?;
+        let mut enclosing = Some(self.active_scope.clone());
+        while let Some(scope) = enclosing {
+            let path = scope.join(&relative);
+            if members.contains_component_path(&path) {
+                return Some(path);
+            }
+            enclosing = scope.parent();
+        }
+        None
+    }
+
     pub(crate) fn with_component_member_scope(
         mut self,
         component_members: &'a component_member_scope::ComponentMemberScopes,
