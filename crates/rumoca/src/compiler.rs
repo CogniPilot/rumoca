@@ -1861,5 +1861,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "compiler/source_root_tests.rs"]
 mod source_root_tests;
