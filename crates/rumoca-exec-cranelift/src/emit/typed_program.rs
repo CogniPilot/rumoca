@@ -59,7 +59,6 @@ use observation::{
 };
 use operators::{map_binary, map_float_compare, map_int_compare, map_unary};
 use rumoca_ir_solve as solve;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use storage::compact_register_tape;
 pub use support::{NativeFormDecline, NativeFormSupport, NativeOwnerSupport};
@@ -194,10 +193,28 @@ impl CompiledPureCallTable {
         }
     }
 
-    pub(super) fn declare_imports(
+    /// Whether the table issued any native helper. A module that may call
+    /// one may read the caller's external tables.
+    pub(super) fn has_symbols(&self) -> bool {
+        self.symbols.iter().any(Option::is_some)
+    }
+
+    /// Declares the native helpers of `owner` in `module`. Emitters declare
+    /// only the owners their bodies call: declaring the whole table in every
+    /// module dominated model preparation.
+    pub(super) fn declare_import(
         &self,
         module: &mut JITModule,
-    ) -> Result<HashMap<solve::SolvePureCallOwnerId, PureCallImport>, CompileError> {
+        owner: solve::SolvePureCallOwnerId,
+    ) -> Result<Option<PureCallImport>, CompileError> {
+        let Some(symbol) = self
+            .symbols
+            .get(owner.index() as usize)
+            .and_then(Option::as_ref)
+            .filter(|symbol| symbol.owner == owner)
+        else {
+            return Ok(None);
+        };
         #[cfg(test)]
         IMPORT_DECLARATIONS.with(|count| count.set(count.get() + 1));
         let pointer_type = module.target_config().pointer_type();
@@ -206,30 +223,23 @@ impl CompiledPureCallTable {
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
-        let mut imports = HashMap::with_capacity(self.symbols.len());
-        for symbol in self.symbols.iter().flatten() {
-            let function = module
-                .declare_function(&symbol.name, Linkage::Import, &signature)
-                .map_err(to_backend_err)?;
-            let directional = declare_directional_import(
-                module,
-                &signature,
-                self.directional_symbols
-                    .get(symbol.owner.index() as usize)
-                    .and_then(Option::as_ref),
-            )?;
-            imports.insert(
-                symbol.owner,
-                PureCallImport {
-                    function,
-                    observation: self.declare_observation_import(module, &signature, symbol)?,
-                    inputs: symbol.inputs.clone(),
-                    outputs: symbol.outputs.clone(),
-                    directional,
-                },
-            );
-        }
-        Ok(imports)
+        let function = module
+            .declare_function(&symbol.name, Linkage::Import, &signature)
+            .map_err(to_backend_err)?;
+        let directional = declare_directional_import(
+            module,
+            &signature,
+            self.directional_symbols
+                .get(owner.index() as usize)
+                .and_then(Option::as_ref),
+        )?;
+        Ok(Some(PureCallImport {
+            function,
+            observation: self.declare_observation_import(module, &signature, symbol)?,
+            inputs: symbol.inputs.clone(),
+            outputs: symbol.outputs.clone(),
+            directional,
+        }))
     }
 
     pub(crate) fn call_cells(

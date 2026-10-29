@@ -685,7 +685,7 @@ fn compile_residual_rows_attached(
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     selectable: bool,
 ) -> Result<CompiledResidualRows, CompileError> {
-    let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
+    let mut emitter = CraneliftEmitter::new(pure_calls.clone())?;
     let plans = plan_rows(rows)?;
     for row in rows {
         validate_row_supported_by_jit(row, RowKind::Residual)?;
@@ -925,7 +925,7 @@ fn compile_assignment_schedule_slices(
         .copied()
         .max()
         .map_or(0, |index| index.saturating_add(1));
-    let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
+    let mut emitter = CraneliftEmitter::new(pure_calls.clone())?;
     let func_id = emitter.compile_assignment_schedule(rows, target_y_indices)?;
     finalize_jit_module(&mut emitter.module)?;
     let jit = finalized_assignment_schedule_fn(&emitter.module, func_id)?;
@@ -958,7 +958,7 @@ fn compile_jacobian_rows_attached(
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     projection: Option<usize>,
 ) -> Result<CompiledJacobianRows, CompileError> {
-    let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
+    let mut emitter = CraneliftEmitter::new(pure_calls.clone())?;
     let plans = plan_rows(rows)?;
     let mut func_ids = checked_vec_with_capacity(rows.len(), "Jacobian row function ids")?;
     for (index, row) in rows.iter().enumerate() {
@@ -1193,6 +1193,34 @@ fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), 
     Ok(())
 }
 
+/// The pure-call owner `operation` calls, if any. Nested fold and
+/// conditional regions are queued on `pending` instead.
+fn called_pure_call_owner<'a>(
+    operation: &'a LinearOp,
+    pending: &mut Vec<&'a [LinearOp]>,
+) -> Option<rumoca_ir_solve::SolvePureCallOwnerId> {
+    match operation {
+        LinearOp::PureCall { site, .. } => Some(site.owner()),
+        LinearOp::PureCallDirectional { site, .. } => Some(site.owner()),
+        LinearOp::PureCallObservation { site, .. } => Some(site.value_site().owner()),
+        LinearOp::FunctionFold { program, .. }
+        | LinearOp::GuardedFunctionFold { program, .. }
+        | LinearOp::StoreOutputFunctionFold { program, .. } => {
+            pending.extend(program.regions());
+            None
+        }
+        LinearOp::FunctionConditional { program, .. } => {
+            for arm in &program.arms {
+                pending.push(&arm.condition);
+                pending.push(&arm.result);
+            }
+            pending.push(&program.fallback);
+            None
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
     row.iter().any(|operation| {
@@ -1215,8 +1243,10 @@ struct CraneliftEmitter {
     /// local to one scalar-program block, so a module that compiles programs
     /// of several blocks names each block's conditional helpers apart.
     conditional_scope: Option<usize>,
+    /// Helpers declared so far: only the owners this module's bodies call.
     pure_call_functions:
         HashMap<rumoca_ir_solve::SolvePureCallOwnerId, typed_program::PureCallImport>,
+    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
 }
 
 impl CraneliftEmitter {
@@ -1224,22 +1254,22 @@ impl CraneliftEmitter {
     /// tables: it declared a table host import, or it calls a pure function,
     /// whose separately compiled body may.
     fn reads_external_tables(&self) -> bool {
-        !self.math.table.is_empty() || !self.pure_call_functions.is_empty()
+        !self.math.table.is_empty()
+            || self
+                .pure_calls
+                .as_ref()
+                .is_some_and(|pure_calls| pure_calls.has_symbols())
     }
 
     fn new(
-        pure_calls: Option<&typed_program::CompiledPureCallTable>,
+        pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     ) -> Result<Self, CompileError> {
         let mut builder = host_jit_builder()?;
         register_math_symbols(&mut builder);
-        if let Some(pure_calls) = pure_calls {
+        if let Some(pure_calls) = &pure_calls {
             pure_calls.register_symbols(&mut builder);
         }
-        let mut module = OwnedJitModule::new(JITModule::new(builder));
-        let pure_call_functions = pure_calls
-            .map(|pure_calls| pure_calls.declare_imports(&mut module))
-            .transpose()?
-            .unwrap_or_default();
+        let module = OwnedJitModule::new(JITModule::new(builder));
         Ok(Self {
             module,
             math: MathImports::default(),
@@ -1247,8 +1277,34 @@ impl CraneliftEmitter {
             canonical_fold_functions: Vec::new(),
             conditional_functions: HashMap::new(),
             conditional_scope: None,
-            pure_call_functions,
+            pure_call_functions: HashMap::new(),
+            pure_calls,
         })
+    }
+
+    /// Declares the pure-call helpers `operations` call, including those of
+    /// nested fold and conditional regions. Every emitted body passes through
+    /// `ensure_fold_programs` first.
+    fn ensure_pure_call_imports(&mut self, operations: &[LinearOp]) -> Result<(), CompileError> {
+        let Some(pure_calls) = self.pure_calls.clone() else {
+            return Ok(());
+        };
+        let mut pending = vec![operations];
+        let mut owners = Vec::new();
+        while let Some(operations) = pending.pop() {
+            for operation in operations {
+                owners.extend(called_pure_call_owner(operation, &mut pending));
+            }
+        }
+        for owner in owners {
+            if self.pure_call_functions.contains_key(&owner) {
+                continue;
+            }
+            if let Some(import) = pure_calls.declare_import(&mut self.module, owner)? {
+                self.pure_call_functions.insert(owner, import);
+            }
+        }
+        Ok(())
     }
 
     fn ensure_fold_programs(
@@ -1256,6 +1312,7 @@ impl CraneliftEmitter {
         operations: &[LinearOp],
         kind: RowKind,
     ) -> Result<(), CompileError> {
+        self.ensure_pure_call_imports(operations)?;
         let mut programs = Vec::new();
         for operation in operations {
             match operation {
