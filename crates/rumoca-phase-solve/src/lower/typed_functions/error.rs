@@ -59,3 +59,30 @@ impl std::fmt::Display for CallLoweringError {
 }
 
 impl std::error::Error for CallLoweringError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::SourceMap;
+
+    #[test]
+    fn source_span_preserves_foreign_and_construction_provenance() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("foreign_call.mo", "y = f(time);");
+        let provenance = Span::from_offsets(source, 4, 11);
+        let foreign = CallLoweringError::UnsupportedExternal {
+            language: "C".into(),
+            function: "f".into(),
+            symbol: "sin".into(),
+            provenance,
+        };
+        assert_eq!(foreign.source_span(), Some(provenance));
+        let construction = CallLoweringError::from(
+            solve::SolveProgramConstructionError::UnknownCallOwner { provenance },
+        );
+        assert_eq!(construction.source_span(), Some(provenance));
+        let source_free =
+            CallLoweringError::from(solve::SolveProgramConstructionError::MissingProvenance);
+        assert_eq!(source_free.source_span(), None);
+    }
+}
