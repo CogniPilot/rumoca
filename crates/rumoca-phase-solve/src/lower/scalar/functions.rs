@@ -4263,7 +4263,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .pure_calls
             .borrow_mut()
             .register_root(self.view, call)
-            .map_err(|error| LowerError::contract(error.to_string(), span))?;
+            .map_err(|error| error.into_lower_error(span))?;
         let scheduled = self.active_clock.is_none() && !registered.callee.assertions.is_empty();
         if scheduled {
             self.schedule_typed_pure_call_assertions(
@@ -4411,7 +4411,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .pure_calls
             .borrow_mut()
             .register_root(self.view, call)
-            .map_err(|error| LowerError::contract(error.to_string(), span))?;
+            .map_err(|error| error.into_lower_error(span))?;
         let expands_in_place =
             self.call_site_expands_in_place(function, arguments, &registered, span)?;
         if expands_in_place && self.derivative_seeds.is_some() {
@@ -4716,7 +4716,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .pure_calls
             .borrow_mut()
             .register_exact_expression(self.view, &form)
-            .map_err(|error| LowerError::contract(error.to_string(), span))?
+            .map_err(|error| error.into_lower_error(span))?
             .site;
         let inputs = form
             .input_readers()

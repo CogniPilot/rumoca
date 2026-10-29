@@ -1575,11 +1575,12 @@ fn lower_continuous_row<'dae>(
                     affine_derivatives.expect("continuous context owns affine systems"),
                 )
                 .program(expression, scalar)
-                .map_err(|error| {
-                    LowerError::non_computable(
+                .map_err(|error| match error {
+                    LowerError::Unsupported { .. } => error,
+                    error => LowerError::non_computable(
                         format!("continuous algebraic row {row} cannot resolve its derivative reads: {error}"),
                         span,
-                    )
+                    ),
                 })?;
             output.residual.push(program, span, row);
         }

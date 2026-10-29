@@ -240,7 +240,7 @@ impl<'dae> PureCallRegistry<'dae> {
         &mut self,
         view: dae::DaeView<'dae>,
         form: &ExactExpressionForm<'dae>,
-    ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
+    ) -> Result<RegisteredCall<'dae>, CallLoweringError> {
         if let Some(registered) = self.identities.expressions.get(&form.expression) {
             return Ok(registered.call.clone());
         }

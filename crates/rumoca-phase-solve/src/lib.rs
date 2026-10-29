@@ -20,11 +20,11 @@ pub mod fmi;
 
 pub use error::LowerError;
 pub use layout::build_var_layout;
-pub use lower::typed_functions::FunctionAssertionMessage;
 pub use lower::typed_functions::formal_stages::{
     FormalDerivativePrograms, FormalResidualAssertion, FormalResidualProgram, FormalStageProgram,
     lower_formal_derivative_stages,
 };
+pub use lower::typed_functions::{CallLoweringError, FunctionAssertionMessage};
 pub use model_values::{
     LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage, lower_solve_model,
     lower_solve_model_for_profile, lower_solve_model_with_input_policy,

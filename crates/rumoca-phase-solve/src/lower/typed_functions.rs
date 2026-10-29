@@ -8,6 +8,8 @@ mod assertions;
 mod captures;
 mod constant_aggregates;
 mod eager_scope;
+mod error;
+pub use error::CallLoweringError;
 mod expression_owner;
 use eager_scope::EagerScope;
 mod family_owner;
@@ -86,7 +88,7 @@ impl<'dae> PureCallRegistry<'dae> {
         &mut self,
         view: dae::DaeView<'dae>,
         call: dae::ExprId<'dae>,
-    ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
+    ) -> Result<RegisteredCall<'dae>, CallLoweringError> {
         register_call(
             &mut self.table,
             view,
@@ -116,7 +118,7 @@ pub(super) fn lower_exact_call<'dae>(
     view: dae::DaeView<'dae>,
     call: dae::ExprId<'dae>,
     identity: solve::SolvePureCallIdentity,
-) -> Result<solve::SolvePureCallTable, solve::SolveProgramConstructionError> {
+) -> Result<solve::SolvePureCallTable, CallLoweringError> {
     let arithmetic = arithmetic_profile();
     let mut table = solve::SolvePureCallTable::builder(arithmetic);
     let mut identities = CallRegistration::new(Some(identity));
