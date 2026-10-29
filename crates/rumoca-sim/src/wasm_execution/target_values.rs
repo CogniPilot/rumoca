@@ -3,12 +3,14 @@ use super::profile;
 use rumoca_eval_solve::{PreparedTargetValuePlan, RowEvalContext};
 use rumoca_exec_wasm::CompiledPrivateProgramWasm;
 use rumoca_ir_solve::{SolvePureCallTable, VarLayout};
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 pub(super) struct WasmTargetValues {
     compiled: CompiledPrivateProgramWasm,
     layout: VarLayout,
-    calls: SolvePureCallTable,
+    // Shared, never copied: only its owner lineage is checked per call, and a
+    // deep copy per value family dominated WASM session start-up.
+    calls: Rc<SolvePureCallTable>,
     scratch: RefCell<Vec<f64>>,
 }
 
@@ -16,7 +18,7 @@ impl WasmTargetValues {
     pub(super) fn compile(
         plan: &PreparedTargetValuePlan,
         layout: &VarLayout,
-        calls: &SolvePureCallTable,
+        calls: &Rc<SolvePureCallTable>,
         context: RowEvalContext<'_>,
     ) -> Result<Self, String> {
         validate_context(context)?;
@@ -38,7 +40,7 @@ impl WasmTargetValues {
         Ok(Self {
             compiled,
             layout: layout.clone(),
-            calls: calls.clone(),
+            calls: Rc::clone(calls),
             scratch: RefCell::new(scratch),
         })
     }

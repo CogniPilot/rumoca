@@ -35,7 +35,7 @@ fn portable_backend_prepares_the_authored_book_models_completely() {
             crate::lower_correlated_for_simulation_with_overrides(&compiled.dae, &options).unwrap();
         let backend = Rc::new(WasmExecutionBackend {
             layout: lowered.model().problem.layout.clone(),
-            calls: lowered.model().pure_calls.clone(),
+            calls: Rc::new(lowered.model().pure_calls.clone()),
         });
         if let Err(error) =
             rumoca_solver::SolveRuntime::new_with_execution_backend(lowered.model(), Some(backend))
