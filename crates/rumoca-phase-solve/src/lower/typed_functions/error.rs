@@ -77,9 +77,10 @@ mod tests {
             provenance,
         };
         assert_eq!(foreign.source_span(), Some(provenance));
-        let construction = CallLoweringError::from(
-            solve::SolveProgramConstructionError::UnknownCallOwner { provenance },
-        );
+        let construction =
+            CallLoweringError::from(solve::SolveProgramConstructionError::UnknownCallOwner {
+                provenance,
+            });
         assert_eq!(construction.source_span(), Some(provenance));
         let source_free =
             CallLoweringError::from(solve::SolveProgramConstructionError::MissingProvenance);
