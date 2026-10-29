@@ -784,19 +784,9 @@ impl ProgramBuilder<'_, '_> {
         if let Some(run) = self.builder.segment.values.get(&key).copied() {
             return self.reuse(dst, run);
         }
-        let mut load = op.clone();
-        if let LinearOp::TensorLoad { dst_start, .. } = &mut load {
-            *dst_start = self.base + dst;
-        }
-        self.segment().ops.push(load);
+        self.load_slot_runs(op, dst, first, count);
         for (offset, &term) in terms.iter().enumerate() {
             let register = self.base + dst + offset as Reg;
-            if let Some(&stored) = self.builder.segment.stored.get(&(first + offset)) {
-                self.segment().ops.push(LinearOp::Move {
-                    dst: register,
-                    src: stored,
-                });
-            }
             self.segment().terms.insert(register, term);
             self.map.insert(dst + offset as Reg, register);
         }
@@ -805,6 +795,43 @@ impl ProgramBuilder<'_, '_> {
             count,
         };
         self.segment().values.insert(key, run);
+    }
+
+    /// Fill a contiguous destination once: committed cells are moves, while
+    /// only maximal runs of unknown cells load from solver storage. Loading
+    /// the whole tensor and then patching it would violate the AD SSA contract.
+    fn load_slot_runs(&mut self, op: &LinearOp, dst: Reg, first: usize, count: usize) {
+        let mut offset = 0;
+        while offset < count {
+            let register = self.base + dst + offset as Reg;
+            if let Some(&stored) = self.builder.segment.stored.get(&(first + offset)) {
+                self.segment().ops.push(LinearOp::Move {
+                    dst: register,
+                    src: stored,
+                });
+                offset += 1;
+                continue;
+            }
+            let begin = offset;
+            offset += 1;
+            while offset < count && !self.builder.segment.stored.contains_key(&(first + offset)) {
+                offset += 1;
+            }
+            let mut load = op.clone();
+            let LinearOp::TensorLoad {
+                dst_start,
+                input_start,
+                count,
+                ..
+            } = &mut load
+            else {
+                return self.violate();
+            };
+            *dst_start = register;
+            *input_start = first + begin;
+            *count = offset - begin;
+            self.segment().ops.push(load);
+        }
     }
 
     fn value(&mut self, op: &LinearOp, shape: &ValueShape, dst: Reg, count: usize) {

@@ -445,6 +445,17 @@ impl ScalarExecutionView<'_> {
         )? {
             return Ok(());
         }
+        if self.scalar.causal_seed_schedules.apply_mixed(
+            lin,
+            solver_y,
+            seed,
+            self.row_eval_context(),
+            |projection, block_index, seed| {
+                self.seed_refresh_blocks((projection, &[block_index]), lin, solver_y, seed)
+            },
+        )? {
+            return Ok(());
+        }
         self.seed_refresh_with_plan(plan, lin, solver_y, seed)
     }
 

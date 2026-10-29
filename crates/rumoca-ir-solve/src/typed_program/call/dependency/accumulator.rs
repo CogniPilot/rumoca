@@ -40,6 +40,13 @@ impl ExactGroup {
 
 impl Dependencies {
     pub(super) fn insert(&mut self, dependency: SolveCallDependency) {
+        if dependency
+            .coordinates
+            .as_ref()
+            .is_some_and(Coordinates::is_empty)
+        {
+            return;
+        }
         let inputs = dependency.inputs();
         match dependency.coordinates {
             None => self.insert_whole(inputs.start, inputs.end),

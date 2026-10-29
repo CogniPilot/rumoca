@@ -169,3 +169,71 @@ fn an_uncertified_plan_declines_without_touching_seed_storage() {
     );
     assert_eq!(seed.map(f64::to_bits), before);
 }
+
+#[test]
+fn mixed_projection_failure_restores_the_entire_incoming_seed() {
+    let mut schedules = executor(false);
+    schedules.mixed_steps = vec![
+        mixed::Step::Assignment(Default::default()),
+        mixed::Step::Projection {
+            block_index: 0,
+            plan: Default::default(),
+        },
+    ]
+    .into();
+    let original = [2.0, 9.0, 8.0, 3.0];
+    let mut seed = original;
+    let result = schedules.apply_mixed(
+        AlgebraicLinearization {
+            t: 0.0,
+            params: &[3.0],
+            settle: AlgebraicSettle {
+                tol: 1e-10,
+                max_iters: 4,
+            },
+        },
+        &[2.0, 6.0, 8.0],
+        &mut seed,
+        RowEvalContext::default(),
+        |_, _, seed| {
+            seed[2] = 42.0;
+            Err(RuntimeSolveError::solve_ir("directed projection refusal"))
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(seed, original);
+}
+
+#[test]
+fn missing_mixed_assignment_declines_before_any_projection_or_seed_mutation() {
+    let mut schedules = executor(false);
+    schedules.mixed_steps = vec![
+        mixed::Step::Projection {
+            block_index: 0,
+            plan: Default::default(),
+        },
+        mixed::Step::Assignment(Default::default()),
+    ]
+    .into();
+    schedules.schedules.clear();
+    let original = [1.0, 2.0, 3.0, 4.0];
+    let mut seed = original;
+    let accepted = schedules
+        .apply_mixed(
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[3.0],
+                settle: AlgebraicSettle {
+                    tol: 1e-10,
+                    max_iters: 4,
+                },
+            },
+            &[2.0, 6.0, 8.0],
+            &mut seed,
+            RowEvalContext::default(),
+            |_, _, _| panic!("unprepared sweep executed a projection"),
+        )
+        .unwrap();
+    assert!(!accepted);
+    assert_eq!(seed, original);
+}

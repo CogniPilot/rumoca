@@ -3,11 +3,16 @@
 use rumoca_core::AffineForm;
 use serde::{Deserialize, Serialize};
 
+mod guards;
+mod projection;
+use guards::Guard;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(super) struct Coordinates {
     output_rank: usize,
     free_dimensions: Box<[u32]>,
     subscripts: Box<[AffineForm]>,
+    guards: Box<[Guard]>,
 }
 
 impl Coordinates {
@@ -38,6 +43,7 @@ impl Coordinates {
             .chain(&self.free_dimensions)
             .copied()
             .collect();
+        self.check_guard_domain(&dimensions)?;
         for (form, &extent) in self.subscripts.iter().zip(input_dimensions) {
             if form.coeffs.len() != dimensions.len() {
                 return None;
@@ -73,12 +79,16 @@ impl Coordinates {
             output_rank,
             free_dimensions: free_dimensions.into(),
             subscripts: subscripts.into(),
+            guards: Box::default(),
         }
     }
 
     /// Substitute an operand access into a dependency on that operand.
     pub(super) fn compose(&self, access: &Self) -> Option<Self> {
-        if self.output_rank != access.subscripts.len() {
+        if self.output_rank != access.subscripts.len()
+            || !self.valid_arity()
+            || !access.valid_arity()
+        {
             return None;
         }
         let free_dimensions: Box<[_]> = access
@@ -88,30 +98,52 @@ impl Coordinates {
             .copied()
             .collect();
         let count = access.output_rank.checked_add(free_dimensions.len())?;
+        let substitute = |source: &AffineForm| {
+            let mut result = AffineForm::constant(source.constant, count);
+            for (coefficient, substitution) in source
+                .coeffs
+                .iter()
+                .take(self.output_rank)
+                .zip(&access.subscripts)
+            {
+                let mut extended = substitution.clone();
+                extended.coeffs.resize(count, 0);
+                result = result.checked_add(&extended.checked_scale(*coefficient)?)?;
+            }
+            let free_start = access.output_rank + access.free_dimensions.len();
+            for (index, coefficient) in source.coeffs.iter().skip(self.output_rank).enumerate() {
+                *result.coeffs.get_mut(free_start + index)? = *coefficient;
+            }
+            Some(result)
+        };
         let subscripts = self
             .subscripts
             .iter()
-            .map(|source| {
-                let mut result = AffineForm::constant(source.constant, count);
-                for (coefficient, substitution) in source
-                    .coeffs
-                    .iter()
-                    .take(self.output_rank)
-                    .zip(&access.subscripts)
-                {
-                    let mut extended = substitution.clone();
-                    extended.coeffs.resize(count, 0);
-                    result = result.checked_add(&extended.checked_scale(*coefficient)?)?;
-                }
-                let free_start = access.output_rank + access.free_dimensions.len();
-                for (index, coefficient) in source.coeffs.iter().skip(self.output_rank).enumerate()
-                {
-                    result.coeffs[free_start + index] = *coefficient;
-                }
-                Some(result)
-            })
+            .map(&substitute)
             .collect::<Option<Vec<_>>>()?;
-        Some(Self::access(access.output_rank, &free_dimensions, subscripts).without_unused_axes())
+        let mut result = Self::access(access.output_rank, &free_dimensions, subscripts);
+        for guard in &access.guards {
+            let mut form = guard.form.clone();
+            form.coeffs.resize(count, 0);
+            result = result.restricted(form, guard.lower, guard.upper);
+        }
+        for guard in &self.guards {
+            result = result.restricted(substitute(&guard.form)?, guard.lower, guard.upper);
+        }
+        Some(result.without_unused_axes())
+    }
+
+    fn valid_arity(&self) -> bool {
+        let Some(count) = self.output_rank.checked_add(self.free_dimensions.len()) else {
+            return false;
+        };
+        self.subscripts
+            .iter()
+            .all(|form| form.coeffs.len() == count)
+            && self
+                .guards
+                .iter()
+                .all(|guard| guard.form.coeffs.len() == count)
     }
 
     fn without_unused_axes(mut self) -> Self {
@@ -121,6 +153,10 @@ impl Coordinates {
                 .subscripts
                 .iter()
                 .all(|subscript| subscript.coeffs[coefficient] == 0)
+                && self
+                    .guards
+                    .iter()
+                    .all(|guard| guard.form.coeffs[coefficient] == 0)
             {
                 self = self.without_free_axis(axis);
             }
@@ -134,6 +170,9 @@ impl Coordinates {
         self.free_dimensions = dimensions.into();
         for subscript in &mut self.subscripts {
             subscript.coeffs.remove(self.output_rank + axis);
+        }
+        for guard in &mut self.guards {
+            guard.form.coeffs.remove(self.output_rank + axis);
         }
         self
     }
@@ -150,18 +189,31 @@ impl Coordinates {
         {
             return None;
         }
+        if !self.guards.is_empty() {
+            return self.guarded_input_elements(
+                output_dimensions,
+                output_element,
+                input_dimensions,
+            );
+        }
         let output = coordinates(output_dimensions, output_element)?;
         let free_count = self
             .free_dimensions
             .iter()
             .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))?;
-        (0..free_count)
-            .map(|index| {
-                let mut point = output.clone();
-                point.extend(coordinates(&self.free_dimensions, index)?);
-                flatten_subscripts(&self.subscripts, &point, input_dimensions)
-            })
-            .collect()
+        let mut elements = Vec::new();
+        for index in 0..free_count {
+            let mut point = output.clone();
+            point.extend(coordinates(&self.free_dimensions, index)?);
+            if self.guards_match(&point)? {
+                elements.push(flatten_subscripts(
+                    &self.subscripts,
+                    &point,
+                    input_dimensions,
+                )?);
+            }
+        }
+        Some(elements)
     }
 }
 
