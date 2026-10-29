@@ -9,8 +9,8 @@ use rumoca_phase_structural::{FormalDerivativeStage, FormalDerivativeView, Forma
 
 use super::model_coordinates::collect_model_coordinate_types;
 use super::{
-    AssertionSlot, EagerScope, ExpressionLowerer, FunctionAssertionMessage, LoweredValue,
-    PureCallRegistry, arithmetic_profile, lower_primitive_type,
+    AssertionSlot, CallLoweringError, EagerScope, ExpressionLowerer, FunctionAssertionMessage,
+    LoweredValue, PureCallRegistry, arithmetic_profile, lower_primitive_type,
 };
 
 /// Analysis kernels retain their issuing formal root. They are not a prepared
@@ -107,23 +107,20 @@ impl<'formal> FormalResidualAssertion<'formal> {
 /// This evaluates residuals at supplied points; it does not select or certify a basis.
 pub fn lower_formal_derivative_stages<'map, 'source, 'formal>(
     formal: FormalDerivativeView<'map, 'source, 'formal>,
-) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, solve::SolveProgramConstructionError>
-{
+) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, CallLoweringError> {
     lower_stages(formal, true)
 }
 
 pub(crate) fn lower_state_selection_stages<'map, 'source, 'formal>(
     formal: FormalDerivativeView<'map, 'source, 'formal>,
-) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, solve::SolveProgramConstructionError>
-{
+) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, CallLoweringError> {
     lower_stages(formal, false)
 }
 
 fn lower_stages<'map, 'source, 'formal>(
     formal: FormalDerivativeView<'map, 'source, 'formal>,
     include_highest: bool,
-) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, solve::SolveProgramConstructionError>
-{
+) -> Result<FormalDerivativePrograms<'map, 'source, 'formal>, CallLoweringError> {
     let mut registry = PureCallRegistry::new();
     let stages = formal
         .stages()
@@ -135,7 +132,7 @@ fn lower_stages<'map, 'source, 'formal>(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(FormalStageProgram { stage, equations })
         })
-        .collect::<Result<Vec<_>, solve::SolveProgramConstructionError>>()?;
+        .collect::<Result<Vec<_>, CallLoweringError>>()?;
     let guesses = if include_highest {
         Vec::new()
     } else {
@@ -164,7 +161,7 @@ fn lower_guesses<'formal>(
     view: dae::DaeView<'formal>,
     stages: &[FormalStageProgram<'_, '_, 'formal>],
     registry: &mut PureCallRegistry<'formal>,
-) -> Result<Vec<FormalCausalGuess<'formal>>, solve::SolveProgramConstructionError> {
+) -> Result<Vec<FormalCausalGuess<'formal>>, CallLoweringError> {
     let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
     let mut needed = std::collections::BTreeSet::new();
     for equation in stages.iter().flat_map(|stage| stage.equations()) {
@@ -306,7 +303,7 @@ impl<'formal> PureCallRegistry<'formal> {
         &mut self,
         view: dae::DaeView<'formal>,
         equation: FormalStageEquation<'source, 'formal>,
-    ) -> Result<FormalResidualProgram<'source, 'formal>, solve::SolveProgramConstructionError> {
+    ) -> Result<FormalResidualProgram<'source, 'formal>, CallLoweringError> {
         let (bodies, domain, at) = owner_bodies(view, equation.value())?;
         let bodies = bodies
             .into_iter()
@@ -330,7 +327,7 @@ impl<'formal> PureCallRegistry<'formal> {
         bodies: Vec<FormalExpressionBody<'formal>>,
         domain: Option<ResidualBodyDomain<'formal>>,
         at: Span,
-    ) -> Result<FormalExpressionProgram<'formal>, solve::SolveProgramConstructionError> {
+    ) -> Result<FormalExpressionProgram<'formal>, CallLoweringError> {
         let coordinates =
             collect_model_coordinate_types(view, bodies.iter().map(|body| body.value), [], at)?;
         let (callees, predicate_ranges, assertions, assertion_slots) =

@@ -17,7 +17,7 @@ pub(super) fn register_group_of<'dae>(
     arithmetic: solve::SolveArithmeticProfile,
     identities: &mut CallRegistration<'dae>,
     active: &mut Vec<dae::FunctionId<'dae>>,
-) -> Result<(), solve::SolveProgramConstructionError> {
+) -> Result<(), CallLoweringError> {
     if !identities.examined_functions.insert(function) {
         return Ok(());
     }
@@ -164,7 +164,7 @@ impl<'dae> GroupPlan<'dae> {
         arithmetic: solve::SolveArithmeticProfile,
         identities: &mut CallRegistration<'dae>,
         active: &mut Vec<dae::FunctionId<'dae>>,
-    ) -> Result<Self, solve::SolveProgramConstructionError> {
+    ) -> Result<Self, CallLoweringError> {
         let mut plan = Self {
             functions: HashMap::new(),
             sites: Vec::new(),
@@ -180,7 +180,8 @@ impl<'dae> GroupPlan<'dae> {
             if let Some(assertion) = inventory.assertions.first() {
                 return Err(solve::SolveProgramConstructionError::RecursiveAssertion {
                     provenance: assertion.provenance.span(),
-                });
+                }
+                .into());
             }
             bodies.push((
                 member,
@@ -205,7 +206,8 @@ impl<'dae> GroupPlan<'dae> {
             if !registered.callee.assertion_slots.is_empty() {
                 return Err(solve::SolveProgramConstructionError::RecursiveAssertion {
                     provenance: call_span(view, call)?,
-                });
+                }
+                .into());
             }
         }
         for (member, function, calls, inventory) in bodies {
@@ -269,7 +271,7 @@ fn register_group<'dae>(
     arithmetic: solve::SolveArithmeticProfile,
     identities: &mut CallRegistration<'dae>,
     active: &mut Vec<dae::FunctionId<'dae>>,
-) -> Result<(), solve::SolveProgramConstructionError> {
+) -> Result<(), CallLoweringError> {
     let plan = GroupPlan::issue(table, view, members, arithmetic, identities, active)?;
     let mut group_members = Vec::with_capacity(plan.sites.len());
     for &(call, target) in &plan.sites {

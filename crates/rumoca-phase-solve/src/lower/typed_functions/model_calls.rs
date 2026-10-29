@@ -1,6 +1,8 @@
 //! Shared registration of nested calls and their assertion ownership.
 
-use super::{AssertionSlot, CalleeInterface, PureCallRegistry, RegisteredAssertion};
+use super::{
+    AssertionSlot, CallLoweringError, CalleeInterface, PureCallRegistry, RegisteredAssertion,
+};
 use crate::lower::call_scoped_actions::CallAssertionProjection;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -45,7 +47,7 @@ impl<'dae> PureCallRegistry<'dae> {
         &mut self,
         view: dae::DaeView<'dae>,
         expressions: impl IntoIterator<Item = (dae::ExprId<'dae>, Scope)>,
-    ) -> Result<RegisteredExpressionCalls<'dae, Scope>, solve::SolveProgramConstructionError> {
+    ) -> Result<RegisteredExpressionCalls<'dae, Scope>, CallLoweringError> {
         let mut roots = Vec::new();
         let mut seen = HashMap::new();
         let mut conflicts = HashSet::new();
@@ -78,7 +80,7 @@ impl<'dae> PureCallRegistry<'dae> {
                 .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
                 .operation()
             else {
-                return Err(solve::SolveProgramConstructionError::WireMismatch);
+                return Err(solve::SolveProgramConstructionError::WireMismatch.into());
             };
             if conflicts.contains(&owner) || seen.get(&owner) != Some(scope) {
                 return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
@@ -87,7 +89,8 @@ impl<'dae> PureCallRegistry<'dae> {
                         .expect("checked call projection resolves")
                         .provenance()
                         .span(),
-                });
+                }
+                .into());
             }
         }
         let mut callees = HashMap::new();

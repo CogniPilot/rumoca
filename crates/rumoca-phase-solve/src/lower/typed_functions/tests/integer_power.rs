@@ -118,7 +118,9 @@ fn typed_matrix_power_computes_a_matrix_product_or_refuses() {
     });
     let table = match lowered {
         Ok(table) => table,
-        Err(solve::SolveProgramConstructionError::InvalidTensorAlgebra { .. }) => return,
+        Err(super::super::CallLoweringError::Construction(
+            solve::SolveProgramConstructionError::InvalidTensorAlgebra { .. },
+        )) => return,
         Err(error) => panic!("matrix power must give its explicit typed refusal: {error}"),
     };
     let [owner] = table.owners() else {

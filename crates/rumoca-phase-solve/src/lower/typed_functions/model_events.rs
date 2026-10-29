@@ -6,8 +6,9 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    AssertionSlot, EagerScope, ExpressionLowerer, LoweredValue, PureCallRegistry,
-    RegisteredAssertion, arithmetic_profile, lower_primitive_type, lower_value_type_leaves,
+    AssertionSlot, CallLoweringError, EagerScope, ExpressionLowerer, LoweredValue,
+    PureCallRegistry, RegisteredAssertion, arithmetic_profile, lower_primitive_type,
+    lower_value_type_leaves,
     model_calls::RegisteredExpressionAssertion,
     model_coordinates::{ModelCoordinateKey, collect_model_coordinate_types},
     regions::{RegionOutput, RegionValues, lower_region_values},
@@ -168,7 +169,7 @@ impl<'dae> PureCallRegistry<'dae> {
             solve::SolvePureCallSite,
             Vec<RegisteredExpressionAssertion<'dae, dae::ClockId<'dae>>>,
         ),
-        solve::SolveProgramConstructionError,
+        CallLoweringError,
     > {
         let definitions = &transaction.definitions;
         let (callees, predicate_ranges, assertions, assertion_slots) = self
@@ -507,7 +508,7 @@ pub(in crate::lower) fn lower_model_event_transactions<'dae>(
             .collect::<Result<Vec<_>, _>>()?;
         let (site, assertions) = registry
             .add_event_transaction_owner(view, &eligible, &coordinate_types, provenance)
-            .map_err(|error| LowerError::contract(error.to_string(), provenance))?;
+            .map_err(|error| error.into_lower_error(provenance))?;
         let assertions = assertions
             .into_iter()
             .map(|registered| {

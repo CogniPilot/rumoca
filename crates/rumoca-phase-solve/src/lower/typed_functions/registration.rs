@@ -11,7 +11,7 @@ pub(super) fn register_call<'dae>(
     arithmetic: solve::SolveArithmeticProfile,
     identities: &mut CallRegistration<'dae>,
     active: &mut Vec<dae::FunctionId<'dae>>,
-) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
+) -> Result<RegisteredCall<'dae>, CallLoweringError> {
     let node = view
         .expression(call)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
@@ -21,7 +21,8 @@ pub(super) fn register_call<'dae>(
     else {
         return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
             provenance: node.provenance().span(),
-        });
+        }
+        .into());
     };
     if let Some(registered) = identities.calls.get(&owner) {
         return Ok(registered.clone());
@@ -32,7 +33,8 @@ pub(super) fn register_call<'dae>(
     if active.contains(&function) {
         return Err(solve::SolveProgramConstructionError::RecursiveCall {
             provenance: node.provenance().span(),
-        });
+        }
+        .into());
     }
     recursive_groups::register_group_of(table, view, function, arithmetic, identities, active)?;
     if let Some(registered) = identities.calls.get(&owner) {
@@ -59,14 +61,15 @@ fn register_call_body<'dae>(
     arithmetic: solve::SolveArithmeticProfile,
     identities: &mut CallRegistration<'dae>,
     active: &mut Vec<dae::FunctionId<'dae>>,
-) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
+) -> Result<RegisteredCall<'dae>, CallLoweringError> {
     let call_node = view
         .expression(call)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
     let dae::ExpressionOperation::Call { function, .. } = call_node.operation() else {
         return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
             provenance: call_node.provenance().span(),
-        });
+        }
+        .into());
     };
     let function_id = function;
     let function = view
@@ -76,12 +79,19 @@ fn register_call_body<'dae>(
     if let Some(external) = function.external() {
         // SPEC_0040 DAE-C30: only a proven native body gives a foreign body
         // an executable meaning; every other external interface is refused.
-        let binding = external
-            .native_body()
-            .ok_or(solve::SolveProgramConstructionError::InvalidCallInterface { provenance })?;
+        let binding =
+            external
+                .native_body()
+                .ok_or_else(|| CallLoweringError::UnsupportedExternal {
+                    language: external.language().as_str().to_owned(),
+                    function: function.name().to_string(),
+                    symbol: external.symbol().to_string(),
+                    provenance,
+                })?;
         return native::register_native_call(
             table, view, function, binding, identity, arithmetic, provenance,
-        );
+        )
+        .map_err(CallLoweringError::from);
     }
     let facts = FunctionFacts::of(view, function_id, arithmetic, identities)?;
     let (assertions, nested_call_ids) = (&facts.assertions.assertions, &facts.nested_calls);

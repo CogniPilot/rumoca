@@ -50,7 +50,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .borrow_mut()
             .register_exact_expression(self.view, &form)
             .map_err(|error| {
-                LowerError::contract(error.to_string(), error.source_span().unwrap_or(span))
+                let provenance = error.source_span().unwrap_or(span);
+                error.into_lower_error(provenance)
             })?;
         let inputs = form
             .input_readers()

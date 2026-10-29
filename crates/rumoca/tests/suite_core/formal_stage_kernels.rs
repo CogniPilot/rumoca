@@ -303,9 +303,9 @@ fn map_scoped_assertions_are_refused_instead_of_discarded() {
     );
     let formal = construct_formal_derivatives(&source).unwrap();
     formal.inspect(|formal| {
-        let Err(rumoca_ir_solve::SolveProgramConstructionError::InvalidCallInterface {
-            provenance,
-        }) = lower_formal_derivative_stages(formal)
+        let Err(rumoca_phase_solve::CallLoweringError::Construction(
+            rumoca_ir_solve::SolveProgramConstructionError::InvalidCallInterface { provenance },
+        )) = lower_formal_derivative_stages(formal)
         else {
             panic!("map assertion execution needs a checked region owner");
         };
