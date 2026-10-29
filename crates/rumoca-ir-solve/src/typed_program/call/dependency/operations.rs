@@ -9,10 +9,12 @@ pub(super) fn derive(
 ) -> Result<(), SolveProgramConstructionError> {
     let mut outputs = Vec::new();
     operation.visit_output_registers(|output| outputs.push(output));
-    if matches!(operation_access(operation), OperationAccess::Whole) {
-        let Some((&last, preceding)) = outputs.split_last() else {
-            return Ok(());
-        };
+    // The fallback for regions with mutable state deliberately retains the
+    // prior whole-leaf policy. Pure regions are handled by regions.rs.
+    if matches!(
+        operation,
+        SolveOperation::Conditional { .. } | SolveOperation::Fold { .. }
+    ) {
         let mut dependencies = Dependencies::default();
         operation.visit_input_registers(|input| {
             for source in &registers[input.index()] {
@@ -20,10 +22,9 @@ pub(super) fn derive(
             }
         });
         let dependencies = dependencies.finish();
-        for output in preceding {
+        for output in outputs {
             registers[output.index()] = dependencies.clone();
         }
-        registers[last.index()] = dependencies;
         return Ok(());
     }
     for output in outputs {
@@ -137,7 +138,8 @@ pub(super) fn access(
         )),
         // The closed operand visitor supplies a conservative whole-input rule
         // for reductions, assembly, dynamic indexing, updates, and regions.
-        OperationAccess::Whole | OperationAccess::Matrix { .. } => None,
+        OperationAccess::Whole => Some(whole_access(rank, input_dimensions)),
+        OperationAccess::Matrix { .. } => None,
     }
 }
 
@@ -167,4 +169,16 @@ fn matrix_accesses(lhs: &[u32], rhs: &[u32]) -> [Coordinates; 2] {
                 .collect(),
         )
     })
+}
+
+/// Consume every coordinate of an intermediate value without broadening the
+/// original input coordinates from which that intermediate was constructed.
+pub(super) fn whole_access(output_rank: usize, input: &[u32]) -> Coordinates {
+    Coordinates::access(
+        output_rank,
+        input,
+        (0..input.len())
+            .map(|axis| AffineForm::unit_binder(output_rank + axis, output_rank + input.len()))
+            .collect(),
+    )
 }
