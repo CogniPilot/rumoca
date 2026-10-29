@@ -189,7 +189,7 @@ pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
 /// a surface that still offered one would be advertising a method the tree
 /// cannot deliver, and the caller would have no way to tell the difference
 /// until the run silently used another one.
-pub const SOLVER_NAMES: [&str; 3] = ["auto", "bdf", "rk-like"];
+pub const SOLVER_NAMES: [&str; 4] = ["auto", "bdf", "rk-like", "velimplicit"];
 
 /// A solver name that is not one this tree can run.
 ///
@@ -250,6 +250,8 @@ mod solver_name_tests {
             ("rk-like", "rk-like"),
             ("RK_Like", "rk-like"),
             ("rk like", "rk-like"),
+            ("velimplicit", "velimplicit"),
+            ("Vel_Implicit", "velimplicit"),
         ] {
             assert_eq!(canonical_solver_name(raw), Ok(canonical));
         }

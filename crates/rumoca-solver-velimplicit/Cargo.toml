@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-solver-velimplicit"
+description = "Fixed-step linearly implicit Euler simulation backend with Jacobian reuse for Rumoca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# Like rumoca-solver-rk45, this crate implements only the FMI 3 ME
+# numerical-plugin interface (SPEC_0038 §Internal Solver Boundary).
+rumoca-solver = { workspace = true }
+
+[lints]
+workspace = true

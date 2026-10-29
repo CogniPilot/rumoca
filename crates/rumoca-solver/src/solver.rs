@@ -7,6 +7,9 @@ pub enum SimSolverMode {
     Auto,
     Bdf,
     RkLike,
+    /// Opt-in fixed-step linearly implicit Euler with a reused Jacobian
+    /// (MuJoCo-style; `rumoca-solver-velimplicit`, 1 ms step, Jacobian reuse 200).
+    VelImplicit,
 }
 
 impl SimSolverMode {
@@ -20,6 +23,9 @@ impl SimSolverMode {
         }
 
         let normalized = lower.replace(['-', '_', ' '], "");
+        if normalized == "velimplicit" {
+            return Self::VelImplicit;
+        }
         // The ESDIRK34 / TR-BDF2 names are *implicit* tableaus, not the explicit
         // rk45 backend, so they land in `Bdf` here rather than `RkLike`.
         // `DiffsolMethod::from_external_name` reports that they are temporarily

@@ -705,6 +705,9 @@ pub enum SimulateSolverMode {
     Bdf,
     #[value(name = "rk-like")]
     RkLike,
+    /// Opt-in MuJoCo-style fixed-step implicit solver.
+    #[value(name = "velimplicit")]
+    VelImplicit,
 }
 
 impl From<SimulateSolverMode> for SimSolverMode {
@@ -713,6 +716,7 @@ impl From<SimulateSolverMode> for SimSolverMode {
             SimulateSolverMode::Auto => SimSolverMode::Auto,
             SimulateSolverMode::Bdf => SimSolverMode::Bdf,
             SimulateSolverMode::RkLike => SimSolverMode::RkLike,
+            SimulateSolverMode::VelImplicit => SimSolverMode::VelImplicit,
         }
     }
 }
@@ -723,6 +727,7 @@ impl SimulateSolverMode {
             SimulateSolverMode::Auto => "auto",
             SimulateSolverMode::Bdf => "bdf",
             SimulateSolverMode::RkLike => "rk-like",
+            SimulateSolverMode::VelImplicit => "velimplicit",
         }
     }
 }
@@ -1522,6 +1527,7 @@ pub(crate) fn simulate_solver_or_auto(
     };
     Ok(match rumoca_core::canonical_solver_name(name)? {
         "rk-like" => SimulateSolverMode::RkLike,
+        "velimplicit" => SimulateSolverMode::VelImplicit,
         "bdf" => SimulateSolverMode::Bdf,
         _ => SimulateSolverMode::Auto,
     })
