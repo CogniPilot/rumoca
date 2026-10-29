@@ -214,18 +214,41 @@ pub fn referenced_unloaded_source_root_paths(
     source_root_paths: &[String],
     loaded_source_root_path_keys: &HashSet<String>,
 ) -> Vec<String> {
+    referenced_unloaded_source_root_paths_in_sources(
+        std::iter::once(source),
+        source_root_paths,
+        loaded_source_root_path_keys,
+    )
+}
+
+/// Source-root discovery is a lexical overapproximation before Resolve; it
+/// never establishes semantic declaration identity. Include loaded library
+/// sources so a library may introduce a dependency absent from the user file.
+pub(crate) fn referenced_unloaded_source_root_paths_in_sources<'a>(
+    sources: impl IntoIterator<Item = &'a str>,
+    source_root_paths: &[String],
+    loaded_source_root_path_keys: &HashSet<String>,
+) -> Vec<String> {
+    let sources: Vec<_> = sources.into_iter().collect();
     let mut seen_source_root_paths = HashSet::new();
     let mut referenced_paths = Vec::new();
     for source_root_path in source_root_paths {
         let path_key = canonical_path_key(source_root_path);
-        if !seen_source_root_paths.insert(path_key.clone()) {
+        if !seen_source_root_paths.insert(path_key.clone())
+            || loaded_source_root_path_keys.contains(&path_key)
+        {
             continue;
         }
-        if loaded_source_root_path_keys.contains(&path_key) {
-            continue;
-        }
-        let should_load =
-            should_load_source_root_for_source(source, Path::new(source_root_path)).unwrap_or(true);
+        let roots = infer_source_root_names(Path::new(source_root_path));
+        let should_load = roots.is_err()
+            || roots.as_ref().is_ok_and(|roots| {
+                roots.is_empty()
+                    || sources.iter().any(|source| {
+                        roots
+                            .iter()
+                            .any(|name| source_contains_identifier(source, name))
+                    })
+            });
         if should_load {
             referenced_paths.push(source_root_path.clone());
         }

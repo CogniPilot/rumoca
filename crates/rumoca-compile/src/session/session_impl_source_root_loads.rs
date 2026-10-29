@@ -1,6 +1,38 @@
 use super::*;
 
 impl Session {
+    /// Plan the next dependency-loading wave from the user source and the
+    /// canonical sources already in this session. Call again after loading
+    /// the returned paths until the load list is empty. Loaded roots and
+    /// duplicate providers are excluded by the shared source-root planner.
+    pub fn required_source_root_load_plan(
+        &self,
+        source: &str,
+        source_root_paths: &[String],
+        completed_path_keys: &HashSet<String>,
+    ) -> crate::source_root_discovery::SourceRootLoadPlan {
+        let mut loaded = self.loaded_source_root_path_keys();
+        loaded.extend(completed_path_keys.iter().cloned());
+        if source_root_paths
+            .iter()
+            .all(|path| loaded.contains(&crate::source_root_discovery::canonical_path_key(path)))
+        {
+            return crate::source_root_discovery::SourceRootLoadPlan::default();
+        }
+        let sources: Vec<_> = self
+            .documents
+            .keys()
+            .filter_map(|uri| self.document_source_text(uri))
+            .collect();
+        let referenced =
+            crate::source_root_discovery::referenced_unloaded_source_root_paths_in_sources(
+                std::iter::once(source).chain(sources.iter().map(|source| source.as_ref())),
+                source_root_paths,
+                &loaded,
+            );
+        crate::source_root_discovery::plan_source_root_loads(&referenced, &loaded)
+    }
+
     /// Replace a parsed source-set in one operation.
     ///
     /// Existing parsed docs in this source-set are removed first. Documents with
