@@ -83,6 +83,8 @@ pub(crate) enum BenchSolverMode {
     Bdf,
     #[value(name = "rk-like")]
     RkLike,
+    #[value(name = "velimplicit")]
+    VelImplicit,
 }
 
 impl From<BenchSolverMode> for SimulateSolverMode {
@@ -91,6 +93,7 @@ impl From<BenchSolverMode> for SimulateSolverMode {
             BenchSolverMode::Auto => SimulateSolverMode::Auto,
             BenchSolverMode::Bdf => SimulateSolverMode::Bdf,
             BenchSolverMode::RkLike => SimulateSolverMode::RkLike,
+            BenchSolverMode::VelImplicit => SimulateSolverMode::VelImplicit,
         }
     }
 }
@@ -295,7 +298,7 @@ impl PreparedHotBench {
         opts: &SimOptions,
     ) -> Result<(Self, BuildSimulationTimings)> {
         match opts.solver_mode {
-            SimSolverMode::RkLike => {
+            SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
                 let (bench, timings) = RkLikeHotBench::build(dae, opts)?;
                 Ok((Self::RkLike(Box::new(bench)), timings))
             }

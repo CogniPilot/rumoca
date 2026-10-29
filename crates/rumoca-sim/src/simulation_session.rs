@@ -38,7 +38,9 @@ impl SimulationSession {
         match opts.solver_mode {
             SimSolverMode::Auto => new_auto_session(dae_model, opts),
             SimSolverMode::Bdf => new_bdf_session(dae_model, opts),
-            SimSolverMode::RkLike => new_rk_like_session(dae_model, opts),
+            SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
+                new_rk_like_session(dae_model, opts)
+            }
         }
     }
 

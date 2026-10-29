@@ -9,7 +9,7 @@ homepage.workspace = true
 
 [features]
 default = ["native-solvers"]
-native-solvers = ["solver-diffsol", "solver-rk45"]
+native-solvers = ["solver-diffsol", "solver-rk45", "solver-velimplicit"]
 fmi = []
 native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
 native-fmi-ls-build = ["native-fmi-ls", "rumoca-exec-wasm/fixed-native-guest-build", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
@@ -17,6 +17,7 @@ tracing = ["rumoca-phase-solve/tracing"]
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
+solver-velimplicit = ["solver-rk45", "dep:rumoca-solver-velimplicit"]
 # HTML simulation report renderer. Pure-Rust deps (web + compile);
 # cross-compiles cleanly. Independent of scheduled loop execution so
 # non-lockstep CLIs can still emit HTML reports from `simulate`.
@@ -56,6 +57,7 @@ rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 rumoca-solver = { workspace = true }
 rumoca-solver-diffsol = { workspace = true, optional = true }
 rumoca-solver-rk45 = { workspace = true, optional = true }
+rumoca-solver-velimplicit = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 thiserror = { workspace = true }

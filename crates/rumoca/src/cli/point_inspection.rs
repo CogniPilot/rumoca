@@ -134,9 +134,12 @@ pub(super) fn run_sim_inspection(
 fn require_trajectory_plugin(solver: Option<SimulateSolverMode>) -> Result<()> {
     match solver {
         None | Some(SimulateSolverMode::Auto | SimulateSolverMode::RkLike) => Ok(()),
-        Some(SimulateSolverMode::Bdf) => anyhow::bail!(
-            "trajectory sensitivities are advanced by the explicit `rk-like` (Dormand-Prince) \
-             plugin; `--solver bdf` is not supported for them"
-        ),
+        Some(solver @ (SimulateSolverMode::Bdf | SimulateSolverMode::VelImplicit)) => {
+            anyhow::bail!(
+                "trajectory sensitivities are advanced by the explicit `rk-like` (Dormand-Prince) \
+             plugin; `--solver {}` is not supported for them",
+                solver.as_label()
+            )
+        }
     }
 }

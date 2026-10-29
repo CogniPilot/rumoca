@@ -52,6 +52,7 @@ members = [
     "crates/rumoca-opt",
     "crates/rumoca-solver-diffsol",
     "crates/rumoca-solver-rk45",
+    "crates/rumoca-solver-velimplicit",
     "crates/rumoca-phase-typecheck",
     # GALEC / eFMI export
     "crates/rumoca-ir-galec",
@@ -133,6 +134,7 @@ rumoca-sim = { path = "crates/rumoca-sim", default-features = false }
 rumoca-opt = { path = "crates/rumoca-opt" }
 rumoca-solver-diffsol = { path = "crates/rumoca-solver-diffsol" }
 rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
+rumoca-solver-velimplicit = { path = "crates/rumoca-solver-velimplicit" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }

@@ -35,6 +35,28 @@ pub(crate) fn integrator_factory() -> crate::me_backend::IntegratorFactory {
     RK45_INTEGRATOR
 }
 
+#[cfg(feature = "solver-velimplicit")]
+const VELIMPLICIT_INSTANCE_NAME: &str = "velimplicit";
+
+#[cfg(feature = "solver-velimplicit")]
+const VELIMPLICIT_INTEGRATOR: crate::me_backend::IntegratorFactory =
+    crate::me_backend::IntegratorFactory {
+        method: "velimplicit",
+        build: velimplicit_integrator,
+    };
+
+/// The opt-in MuJoCo-style solver at its default configuration (1 ms fixed
+/// step, Jacobian reused for 200 steps).
+#[cfg(feature = "solver-velimplicit")]
+fn velimplicit_integrator(
+    setup: rumoca_solver::fmi_me::MeNumericalSetup,
+) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static> {
+    rumoca_solver_velimplicit::model_exchange_integrator(
+        setup,
+        rumoca_solver_velimplicit::VelImplicitConfig::default(),
+    )
+}
+
 pub use simulate as simulate_dae;
 
 pub fn simulate_with_diagnostics(
@@ -51,13 +73,13 @@ pub(crate) fn simulate_artifact(
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    require_rk_mode(opts.solver_mode)?;
+    let (instance_name, integrator) = integrator_for(opts.solver_mode)?;
     crate::me_backend::simulate_artifact(
         artifact,
         opts,
         execution_backend,
-        INSTANCE_NAME,
-        RK45_INTEGRATOR,
+        instance_name,
+        integrator,
     )
 }
 
@@ -117,13 +139,13 @@ impl SimulationSession {
         let backend_build_start = Instant::now();
         let (artifact, execution_backend) =
             finish_runtime_fmi_artifact(lowered, &opts).map_err(diagnostic_sim_error)?;
-        require_rk_mode(opts.solver_mode)?;
+        let (instance_name, integrator) = integrator_for(opts.solver_mode)?;
         let inner = BackendSimulationSession::new(
             artifact,
             &opts,
             execution_backend,
-            INSTANCE_NAME,
-            RK45_INTEGRATOR,
+            instance_name,
+            integrator,
         )?;
         let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
         Ok((
@@ -152,14 +174,14 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimulationDiagnosticError> {
-        require_rk_mode(opts.solver_mode)
+        let (instance_name, integrator) = integrator_for(opts.solver_mode)
             .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         let inner = BackendSimulationSession::new(
             artifact,
             &opts,
             execution_backend,
-            INSTANCE_NAME,
-            RK45_INTEGRATOR,
+            instance_name,
+            integrator,
         )
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })
@@ -226,9 +248,19 @@ impl SimulationSession {
     }
 }
 
-fn require_rk_mode(requested: rumoca_solver::SimSolverMode) -> Result<(), SimError> {
+/// The fixed-step plugins this session hosts: rk45 for `rk-like` (and `auto`
+/// routed here) and, when compiled in, the opt-in `velimplicit` solver.
+fn integrator_for(
+    requested: rumoca_solver::SimSolverMode,
+) -> Result<(&'static str, crate::me_backend::IntegratorFactory), SimError> {
     match requested {
-        rumoca_solver::SimSolverMode::Auto | rumoca_solver::SimSolverMode::RkLike => Ok(()),
+        rumoca_solver::SimSolverMode::Auto | rumoca_solver::SimSolverMode::RkLike => {
+            Ok((INSTANCE_NAME, RK45_INTEGRATOR))
+        }
+        #[cfg(feature = "solver-velimplicit")]
+        rumoca_solver::SimSolverMode::VelImplicit => {
+            Ok((VELIMPLICIT_INSTANCE_NAME, VELIMPLICIT_INTEGRATOR))
+        }
         requested => Err(SimError::UnsupportedSolverMode {
             backend: INSTANCE_NAME,
             requested,

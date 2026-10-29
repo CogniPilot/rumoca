@@ -177,7 +177,9 @@ pub fn simulate_with_diagnostics(
 ) -> Result<SimResult, SimulationDiagnosticError> {
     match opts.solver_mode {
         SimSolverMode::Auto => simulate_with_auto_diagnostics(dae_model, opts),
-        SimSolverMode::RkLike => simulate_with_rk45_diagnostics(dae_model, opts),
+        SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
+            simulate_with_rk45_diagnostics(dae_model, opts)
+        }
         SimSolverMode::Bdf => simulate_with_diffsol_diagnostics(dae_model, opts),
     }
 }
@@ -205,7 +207,9 @@ pub fn simulate_fmi_component(
         rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);
     match opts.solver_mode {
         SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend),
-        SimSolverMode::RkLike => simulate_artifact_rk45(artifact, opts, execution_backend),
+        SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
+            simulate_artifact_rk45(artifact, opts, execution_backend)
+        }
         SimSolverMode::Bdf => simulate_artifact_diffsol(artifact, opts, execution_backend),
     }
 }
