@@ -474,3 +474,109 @@ fn issue_425_original_38_preserves_quiescent_states_and_native_receipts() {
         );
     }
 }
+
+fn assert_input_time_crossing_sample(
+    time: f64,
+    value: f64,
+    expression: &str,
+    policy: SimExecutionPolicy,
+) {
+    assert!(time.is_finite() && value.is_finite());
+    if time < 0.55 - 1e-8 {
+        assert_eq!(
+            value, 1.0,
+            "before crossing: {expression}, {policy:?}, t={time}"
+        );
+    } else if time > 0.55 + 1e-8 {
+        assert_eq!(
+            value, 0.0,
+            "after crossing: {expression}, {policy:?}, t={time}"
+        );
+    }
+}
+
+/// Issue #476: an input/time relation must switch even with no input writes.
+/// Checking a crossing inside the horizon discriminates stale input-only
+/// scheduling from correct time-driven behavior. Algebraic rewrites are
+/// controls, not substitutes for the original source form.
+#[test]
+fn issue_476_input_time_crossing_switches_without_input_writes() {
+    for (declaration, expression, event_expected) in [
+        ("input Real u = 0.55;", "if u > time then 1 else 0", true),
+        ("input Real u = 0.55;", "if time < u then 1 else 0", true),
+        ("input Real u = 0.55;", "if time >= u then 0 else 1", true),
+        (
+            "input Real u = 0.55;",
+            "if u - time > 0 then 1 else 0",
+            true,
+        ),
+        (
+            "input Real u = 0.55; Real v = u;",
+            "if v > time then 1 else 0",
+            true,
+        ),
+        (
+            "parameter Real u = 0.55;",
+            "if u > time then 1 else 0",
+            true,
+        ),
+        (
+            "input Real u = 0.55;",
+            "if noEvent(u > time) then 1 else 0",
+            false,
+        ),
+    ] {
+        let source = format!(
+            "model Crossing\n{declaration}\noutput Real z;\nequation\nz = {expression};\nend Crossing;\n"
+        );
+        let compiled = compile(&source, "Crossing");
+        for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+            let result = simulate_dae(&compiled.dae, &options(policy))
+                .unwrap_or_else(|error| panic!("{expression}, {policy:?}: {error:?}"));
+            let z = series(&result, "z");
+            assert_eq!(result.times.len(), z.len());
+            assert!(result.times.first().is_some_and(|t| *t < 0.55));
+            assert!(result.times.last().is_some_and(|t| *t > 0.55));
+            for (&time, &value) in result.times.iter().zip(z) {
+                assert_input_time_crossing_sample(time, value, expression, policy);
+            }
+            if event_expected {
+                assert!(
+                    result.times.iter().any(|t| (*t - 0.55).abs() < 1e-7),
+                    "missing crossing event: {expression}, {policy:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn issue_476_input_time_crossing_is_retained_in_fmi_indicator_inventory() {
+    use rumoca_ir_solve::fmi::FmiEventIndicatorInventory;
+    for expression in [
+        "if u > time then 1 else 0",
+        "if time < u then 1 else 0",
+        "if time >= u then 0 else 1",
+    ] {
+        for (declaration, expected) in
+            [("input Real u = 0.55;", 1), ("parameter Real u = 0.55;", 0)]
+        {
+            let source = format!(
+                "model Crossing\n{declaration}\noutput Real z;\nequation\nz = {expression};\nend Crossing;\n"
+            );
+            let compiled = compile(&source, "Crossing");
+            let lowered = rumoca_sim::lower_dae_for_simulation(
+                &compiled.dae,
+                &options(SimExecutionPolicy::Interpreter),
+            )
+            .expect("crossing lowers");
+            let indicators = FmiEventIndicatorInventory::derive(&lowered)
+                .expect("crossing has a checked FMI indicator inventory");
+            assert_eq!(
+                indicators.sources().len(),
+                expected,
+                "{declaration} {expression}"
+            );
+        }
+    }
+}
