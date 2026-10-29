@@ -245,6 +245,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .get(selected)
             .expect("checked flattened function output resolves")
             .clone();
+        if indices.is_empty()
+            && selected_scalar_type == gast::ScalarType::Integer
+            && let Some(bounds) = integer_call_bounds::derive(self.view, call)
+        {
+            self.local_integer_bounds
+                .insert(name.lexeme().to_owned(), bounds);
+        }
         Ok(TypedExpression {
             expression: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
                 name,

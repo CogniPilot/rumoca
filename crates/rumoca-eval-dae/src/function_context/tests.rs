@@ -346,6 +346,11 @@ fn functions_with_assertions_cannot_be_substituted_away() {
                 .call_result(view, call)
                 .is_none()
         );
+        assert!(
+            FunctionCallContext::default()
+                .straight_line_call_result(view, call)
+                .is_none()
+        );
     });
 }
 
@@ -374,4 +379,67 @@ fn assert_selected_and_source_reads<'dae>(
     let mut source = Vec::new();
     dae::for_each_expression(view, expression, |id, _| source.push(id.index()));
     assert!(source.contains(&yes) && source.contains(&no));
+}
+
+#[test]
+fn assignment_range_context_keeps_actual_call_identity_without_expanding_substitution() {
+    let (sources, at) = source();
+    let mut cases = Vec::new();
+    let model = dae::Dae::construct(sources, |dae| {
+        let integer =
+            dae.types(|t| t.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
+        let (function, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("last"), [integer], [integer], at),
+            |dae, reservation| {
+                let input =
+                    dae.functions(|f| f.parameter(&reservation, VarName::new("u"), 0, at))?;
+                let output = dae.functions(|f| f.output(&reservation, VarName::new("y"), 0, at))?;
+                let (zero, value) = dae.expressions(|e| {
+                    Ok((
+                        e.at(at).literal(dae::DaeLiteral::Integer(0))?,
+                        e.at(at).function_parameter(input)?,
+                    ))
+                })?;
+                let mut body = dae.functions(|f| f.begin(reservation, at))?;
+                dae.functions(|f| {
+                    f.assign(&mut body, output, zero, at)?;
+                    f.assign(&mut body, output, value, at)
+                })?;
+                dae.functions(|f| f.define(body, at))
+            },
+        )?;
+        for value in [3, 8] {
+            let (call, argument) = dae.expressions(|e| {
+                let argument = e.at(at).literal(dae::DaeLiteral::Integer(value))?;
+                Ok((e.at(at).call(function, 0, [argument])?, argument))
+            })?;
+            cases.push((call.index(), argument.index()));
+        }
+        Ok(())
+    })
+    .unwrap();
+    model.inspect(|view| {
+        for (call, argument) in cases {
+            let call = view.expression_id(call as usize).unwrap();
+            assert!(
+                FunctionCallContext::default()
+                    .call_result(view, call)
+                    .is_none()
+            );
+            let (result, context) = FunctionCallContext::default()
+                .straight_line_call_result(view, call)
+                .unwrap();
+            let dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                parameter,
+            )) = view.expression(result).unwrap().operation()
+            else {
+                panic!("final result must retain its exact parameter source")
+            };
+            assert_eq!(
+                context.parameter_argument(parameter).unwrap().index(),
+                argument
+            );
+            assert_eq!(context.call_path().collect::<Vec<_>>(), vec![call]);
+        }
+    });
 }
