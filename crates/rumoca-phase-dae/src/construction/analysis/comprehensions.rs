@@ -123,6 +123,10 @@ pub(super) fn analyze_model_comprehensions(
         plans: ComprehensionPlans::default(),
     };
     analyzer.visit_equation_owners(flat, templates)?;
+    // Assertion, algorithm and `when` owners lower their comprehensions
+    // through these same model-scope plans, so they are folded here too.
+    analyzer.visit_assertion_and_algorithm_owners(flat)?;
+    analyzer.visit_when_owners(flat)?;
     DeclarationCollector(&mut analyzer.plans.source_declarations)
         .visit_model_owners(flat, templates)?;
     Ok(analyzer.plans)
