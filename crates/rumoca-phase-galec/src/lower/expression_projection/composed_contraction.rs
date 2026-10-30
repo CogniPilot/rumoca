@@ -24,6 +24,65 @@ pub(super) struct ComposedContraction<'dae> {
     pub(super) contraction: TensorContraction,
     pub(super) scalar_type: gast::ScalarType,
     pub(super) span: Span,
+    pub(super) offset: Option<ContractionOffset<'dae>>,
+}
+
+/// A passive matrix offset applied after the inner product, at the exact
+/// intermediate coordinate. Operand order is retained for subtraction.
+pub(super) struct ContractionOffset<'dae> {
+    pub(super) expression: dae::ExprId<'dae>,
+    pub(super) operator: dae::BinaryOperator,
+    pub(super) product_first: bool,
+    pub(super) indices: [gast::Expression; 2],
+}
+
+/// Accept only a coordinate offset around an immediate matrix product. Calls,
+/// conditional values and other producers retain their existing lowering path.
+fn inner_product_and_offset<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    indices: &[gast::Expression; 2],
+) -> Option<(dae::ExprId<'dae>, Option<ContractionOffset<'dae>>)> {
+    let node = view.expression(expression)?;
+    let dae::ExpressionOperation::Binary { operator, lhs, rhs } = node.operation() else {
+        return None;
+    };
+    if operator == dae::BinaryOperator::Multiply {
+        return Some((expression, None));
+    }
+    if !matches!(
+        operator,
+        dae::BinaryOperator::Add | dae::BinaryOperator::Subtract
+    ) {
+        return None;
+    }
+    for (product, offset, product_first) in [(lhs, rhs, true), (rhs, lhs, false)] {
+        let product_node = view.expression(product)?;
+        let offset_node = view.expression(offset)?;
+        if matches!(
+            product_node.operation(),
+            dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Multiply,
+                ..
+            }
+        ) && matches!(
+            offset_node.operation(),
+            dae::ExpressionOperation::Coordinate(_)
+        ) && product_node.value_type() == node.value_type()
+            && offset_node.value_type() == node.value_type()
+        {
+            return Some((
+                product,
+                Some(ContractionOffset {
+                    expression: offset,
+                    operator,
+                    product_first,
+                    indices: indices.clone(),
+                }),
+            ));
+        }
+    }
+    None
 }
 
 /// Where a materialized contraction accumulates.
@@ -152,7 +211,7 @@ fn mentions_in_reference(reference: &gast::Reference, name: &gast::Name) -> bool
 ///   value is reused rather than consumed once;
 /// * the left operand is a matrix, so projecting it names a row of a matrix
 ///   rather than an element of a vector;
-/// * the left operand's own operation is `*`; and
+/// * the left operand is a product, optionally with a passive coordinate offset; and
 /// * its operand shapes make that `*` a contraction at this node's own
 ///   contracted index.
 pub(super) fn composed_left_contraction<'dae>(
@@ -164,7 +223,9 @@ pub(super) fn composed_left_contraction<'dae>(
     if contraction.rhs_outer.is_empty() || !contraction.lhs_matrix {
         return None;
     }
-    let node = view.expression(lhs)?;
+    let indices = [contraction.lhs_outer.first()?.clone(), contracted.clone()];
+    let (product, offset) = inner_product_and_offset(view, lhs, &indices)?;
+    let node = view.expression(product)?;
     let dae::ExpressionOperation::Binary {
         operator: dae::BinaryOperator::Multiply,
         lhs: inner_lhs,
@@ -173,7 +234,6 @@ pub(super) fn composed_left_contraction<'dae>(
     else {
         return None;
     };
-    let indices = [contraction.lhs_outer.first()?.clone(), contracted.clone()];
     let inner = tensor_contraction(
         view.expression(inner_lhs)?.value_type().dimensions(),
         view.expression(inner_rhs)?.value_type().dimensions(),
@@ -187,6 +247,7 @@ pub(super) fn composed_left_contraction<'dae>(
         contraction: inner,
         scalar_type,
         span,
+        offset,
     })
 }
 

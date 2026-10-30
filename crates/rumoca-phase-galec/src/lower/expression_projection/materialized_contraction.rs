@@ -342,6 +342,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             contraction,
             scalar_type,
             span,
+            offset,
         } = composed;
         let name = self.declare_contraction_intermediate(scalar_type, extent, span);
         let element = IntermediateElement {
@@ -350,6 +351,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             name,
             count: extent,
         };
+        let reference = element.reference.clone();
         let start = self.pending_prefix_statements.len();
         let lowered = self.lower_materialized_contraction_into(
             ContractionAccumulator::Element(Box::new(element)),
@@ -359,6 +361,32 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             scalar_type,
             span,
         );
+        let lowered = lowered.and_then(|mut lowered| {
+            let Some(offset) = offset else {
+                return Ok(lowered);
+            };
+            let value = self.lower_at(offset.expression, &offset.indices)?;
+            let (lhs, rhs) = if offset.product_first {
+                (lowered.value, value)
+            } else {
+                (value, lowered.value)
+            };
+            let value = lower_binary(offset.operator, lhs, rhs, scalar_type, span)?;
+            self.pending_prefix_statements.push(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: reference.clone(),
+                    value,
+                },
+                span,
+            ));
+            // The adjusted row is no longer a plain matrix product.
+            lowered.row = None;
+            lowered.value = TypedExpression {
+                expression: gast::Expression::Ref(reference),
+                scalar_type,
+            };
+            Ok(lowered)
+        });
         let statements = self.pending_prefix_statements.split_off(start);
         let (row, value) = match lowered {
             Ok(lowered) => (lowered.row, Ok(lowered.value)),

@@ -2,6 +2,7 @@ use rumoca_core::{SourceMap, Span, VarName};
 
 use super::*;
 
+mod affine_contraction;
 mod bounded_reductions;
 mod conditional_records;
 mod correlated_guards;
