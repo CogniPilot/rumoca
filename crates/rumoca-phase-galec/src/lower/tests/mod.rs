@@ -7,7 +7,10 @@ mod bounded_reductions;
 mod conditional_records;
 mod correlated_guards;
 mod dynamic_index_bounds;
+mod finite_counter_bounds;
 mod indexed_updates;
+mod integer_call_bounds;
+mod integer_division_domain;
 mod scoped_function_branches;
 
 #[test]

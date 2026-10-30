@@ -5,6 +5,7 @@
 
 use super::*;
 
+pub(super) mod finite_counter_bounds;
 mod indexed_update;
 mod tensor_loops;
 mod update_aliasing;
@@ -532,30 +533,14 @@ fn lower_function_statement<'a, 'dae>(
             statements: body,
             provenance,
         } => {
-            // The ranges a reader finds inside the body are the union of what
-            // held before the loop with what one iteration can leave behind, so
-            // the entry ranges are solved as a fixpoint over speculative passes.
-            let span = provenance.span();
-            let assigned = assigned_local_names(view, body.clone());
-            let speculative_body = body.clone();
-            let carried = LoopIntegerBounds::enter(
+            finite_counter_bounds::lower_loop(
+                view,
+                fold,
+                body,
+                provenance.span(),
                 lowerer,
-                assigned,
-                function_loop_runs_body(view, fold),
-                |speculative| {
-                    let mut discarded = Vec::new();
-                    lower_function_for(
-                        view,
-                        fold,
-                        speculative_body.clone(),
-                        span,
-                        speculative,
-                        &mut discarded,
-                    )
-                },
-            );
-            lower_function_for(view, fold, body, span, lowerer, statements)?;
-            carried.commit(lowerer, span)?;
+                statements,
+            )?;
             lowerer.finish_statement_group();
         }
     }
@@ -690,7 +675,13 @@ fn lower_function_assignment<'a, 'dae>(
         definition.provenance().span(),
         lowerer,
         statements,
-    )
+    )?;
+    if let Some(bounds) = lowerer.finite_counter_bounds.range(definition.id()) {
+        lowerer
+            .local_integer_bounds
+            .insert(value_name(target)?.lexeme().to_owned(), bounds);
+    }
+    Ok(())
 }
 
 fn lower_function_value_assignment<'a, 'dae>(

@@ -87,6 +87,29 @@ impl<'dae> FunctionCallContext<'dae> {
         view: dae::DaeView<'dae>,
         expression: dae::ExprId<'dae>,
     ) -> Option<(dae::ExprId<'dae>, Self)> {
+        self.enter_result(view, expression, single_assignment_result)
+    }
+
+    /// Borrow a result for a value-range proof when the complete body is only
+    /// ordered assignments. The caller must retain the actual call and every
+    /// evaluation/fault obligation; this issues no authority to elide execution.
+    /// Statement conditionals, loops, assertions and external bodies decline.
+    /// Exact checked FunctionValue definitions retain the order and identity
+    /// of each read.
+    pub fn straight_line_call_result(
+        &self,
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> Option<(dae::ExprId<'dae>, Self)> {
+        self.enter_result(view, expression, assignments_only_result)
+    }
+
+    fn enter_result(
+        &self,
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+        selected: fn(dae::DaeView<'dae>, dae::FunctionId<'dae>, u32) -> Option<dae::ExprId<'dae>>,
+    ) -> Option<(dae::ExprId<'dae>, Self)> {
         let node = view.expression(expression)?;
         let dae::ExpressionOperation::Call {
             function,
@@ -100,7 +123,7 @@ impl<'dae> FunctionCallContext<'dae> {
         if self.frames.iter().any(|frame| frame.function == function) {
             return None;
         }
-        let result = single_assignment_result(view, function, output)?;
+        let result = selected(view, function, output)?;
         let mut nested = self.clone();
         nested.frames.push(FunctionCallFrame {
             function,
@@ -163,4 +186,24 @@ fn single_assignment_result<'dae>(
         return None;
     }
     Some(result.rhs())
+}
+
+fn assignments_only_result<'dae>(
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionId<'dae>,
+    output: u32,
+) -> Option<dae::ExprId<'dae>> {
+    let function = view.function(function)?;
+    if function.is_external() {
+        return None;
+    }
+    let result = function.result_values().get(output as usize)?;
+    let mut found = false;
+    for statement in function.statements() {
+        let dae::FunctionStatementView::Assignment { definition } = statement else {
+            return None;
+        };
+        found |= definition.id() == result.id();
+    }
+    found.then_some(result.rhs())
 }

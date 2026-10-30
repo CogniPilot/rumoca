@@ -18,8 +18,11 @@ mod expression_function_folds;
 mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
+mod function_assertions;
 mod guard_binding;
+use function_assertions::first_function_assertion;
 mod inline_policy;
+mod integer_call_bounds;
 use inline_policy::EmissionFacts;
 mod local_integer_bounds;
 mod pre_references;
@@ -1173,6 +1176,7 @@ struct ExpressionLowerer<'a, 'dae> {
     /// bounds every value a reader can observe, and a local read before its
     /// assignment simply has no entry and is refused.
     local_integer_bounds: LocalIntegerBounds,
+    finite_counter_bounds: user_functions::finite_counter_bounds::FiniteCounterBounds<'dae>,
     /// Primitive expression values already committed to a function local
     /// ([`AssignedPrimitives`]).
     assigned_primitive_expressions: AssignedPrimitives,
@@ -1368,6 +1372,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             materialized_shared_record_fields: HashMap::new(),
             array_update_index_locals: HashMap::new(),
             local_integer_bounds: LocalIntegerBounds::new(),
+            finite_counter_bounds: Default::default(),
             assigned_primitive_expressions: AssignedPrimitives::default(),
             called_user_functions: HashSet::new(),
             function_scope: None,
@@ -1957,42 +1962,6 @@ fn conditional_activation_operands(operands: dae::ExpressionOperands<'_>) -> Vec
                 .index()
         })
         .collect()
-}
-
-fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<Span> {
-    for statement in statements {
-        match statement {
-            // A warning-level assertion has no influence on behavior and no
-            // GALEC representation (MLS §8.3.7).
-            dae::FunctionStatementView::Assertion {
-                level: dae::AssertionLevel::Warning,
-                ..
-            } => {}
-            dae::FunctionStatementView::Assertion { provenance, .. } => {
-                return Some(provenance.span());
-            }
-            dae::FunctionStatementView::For { statements, .. } => {
-                if let Some(span) = first_function_assertion(statements) {
-                    return Some(span);
-                }
-            }
-            dae::FunctionStatementView::Conditional { conditional } => {
-                let found = conditional
-                    .branches()
-                    .chain(std::iter::once(conditional.fallback()))
-                    .find_map(|branch| first_function_assertion(branch.statements()));
-                if let Some(span) = found {
-                    return Some(span);
-                }
-            }
-            dae::FunctionStatementView::RequireAssigned { provenance, .. } => {
-                return Some(provenance.span());
-            }
-            dae::FunctionStatementView::Assignment { .. }
-            | dae::FunctionStatementView::AssignmentGroup { .. } => {}
-        }
-    }
-    None
 }
 
 #[cfg(test)]
