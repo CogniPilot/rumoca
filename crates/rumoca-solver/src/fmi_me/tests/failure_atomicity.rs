@@ -11,6 +11,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+mod deferred_yields;
 mod input_batches;
 
 use rumoca_ir_solve as solve;

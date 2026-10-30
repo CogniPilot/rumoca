@@ -414,10 +414,43 @@ impl MeComponentHost<'_> {
             owned_component: self.owned_component,
             backend,
             scan_workspace: RefCell::new(RootScanWorkspace::default()),
+            deferred: None,
+            snapped_yield: None,
             lease: PhantomData,
         };
         session.start_plugin()?;
         Ok(session)
+    }
+}
+
+/// Live yields never bound a deferring session's step (issue #513); this fixed
+/// horizon does, together with stop, events and the maximum step duration.
+const LIVE_OBSERVATION_HORIZON_S: f64 = 1.0e6;
+
+/// One natural step accepted and scanned but not yet committed, holding the
+/// live yield it serves from its continuous extension (issue #513).
+struct DeferredCrossing {
+    step: MeAcceptedStep,
+    located: Option<MeRootApplication>,
+    observed_time: f64,
+    observed_states: Vec<f64>,
+}
+
+impl DeferredCrossing {
+    /// Whether `time` lies strictly inside this step and before any located
+    /// root, so it can be served without committing anything. A yield within
+    /// roundoff of the step end coincides with it, as in the master loop: the
+    /// step is committed (with any event there) and the yield is snapped.
+    fn serves(&self, time: f64) -> bool {
+        let start = self.step.previous().time();
+        let end = self.step.accepted().time();
+        let roundoff = accepted_step_roundoff(end, end - start);
+        time - start > -roundoff
+            && end - time > roundoff
+            && self
+                .located
+                .as_ref()
+                .is_none_or(|root| root.application().time() - time > roundoff)
     }
 }
 
@@ -427,6 +460,12 @@ pub struct MeSimulationSession<'lease, 'plugin> {
     owned_component: Option<MeRetainedComponent>,
     backend: Box<dyn MeIntegratorBackend + 'plugin>,
     scan_workspace: RefCell<RootScanWorkspace>,
+    /// A live yield served from inside a natural step that is not yet committed
+    /// (issue #513): observation cadence must not change the trajectory.
+    deferred: Option<DeferredCrossing>,
+    /// The exact yield a deferring session reported when its committed point
+    /// ended within roundoff of it (issue #513): the caller sees its own time.
+    snapped_yield: Option<f64>,
     lease: PhantomData<&'lease ()>,
 }
 
@@ -437,9 +476,15 @@ impl MeSimulationSession<'_, '_> {
     }
     // -- public incremental surface ----------------------------------------
 
+    /// The session's coordinate as its caller sees it: a deferred live yield
+    /// (issue #513) stands before the accepted point of the step that holds it.
     #[must_use]
     pub fn time(&self) -> f64 {
-        self.host.time
+        match (&self.deferred, self.snapped_yield) {
+            (Some(deferred), _) => deferred.observed_time,
+            (None, Some(snapped)) => snapped,
+            (None, None) => self.host.time,
+        }
     }
 
     /// The horizon held by this actual driver, rather than a caller's copy.
@@ -450,6 +495,13 @@ impl MeSimulationSession<'_, '_> {
 
     pub fn terminate(&mut self) -> Result<(), MeSessionError> {
         self.require_live()?;
+        // Terminate where the caller stands: a deferred live yield (issue #513)
+        // becomes the accepted point first, exactly as for an input change.
+        self.truncate_deferred_at_observation()?;
+        self.snapped_yield = None;
+        if self.host.terminated {
+            return Ok(());
+        }
         self.host.terminate_component(None)
     }
 
@@ -503,7 +555,13 @@ impl MeSimulationSession<'_, '_> {
     /// Batched `fmi3GetFloat64` over every output at the current coordinate.
     pub fn output_values(&self) -> Result<Vec<f64>, MeSessionError> {
         self.require_live()?;
-        Ok(self.host.observe_current()?)
+        match (&self.deferred, self.snapped_yield) {
+            (Some(deferred), _) => self
+                .host
+                .observe_off_point(deferred.observed_time, &deferred.observed_states),
+            (None, Some(snapped)) => self.host.observe_off_point(snapped, &self.host.states),
+            (None, None) => Ok(self.host.observe_current()?),
+        }
     }
 
     /// Current visible values keyed by name, including host-applied inputs.
@@ -555,6 +613,8 @@ impl MeSimulationSession<'_, '_> {
         // leaves an ordinary live session; everything after it does move the
         // component and the host caches together.
         let options = self.host.options.restarted_at(start_time)?;
+        self.deferred = None;
+        self.snapped_yield = None;
         let restarted = self.restart_session(options);
         self.host.guard_mutation(MeSessionLoss::Restart, restarted)
     }
@@ -615,29 +675,156 @@ impl MeSimulationSession<'_, '_> {
                 reason: format!("advance_to requires a finite yield boundary, got {yield_time}"),
             });
         }
-        let roundoff = accepted_step_roundoff(self.host.time, 0.0);
-        if yield_time - self.host.time < -roundoff {
+        let now = self.time();
+        let roundoff = accepted_step_roundoff(now, 0.0);
+        if yield_time - now < -roundoff {
             return Err(MeSessionError::Contract {
                 reason: format!(
-                    "advance_to({yield_time}) would move the session backward from t={}",
-                    self.host.time
+                    "advance_to({yield_time}) would move the session backward from t={now}"
                 ),
             });
         }
+        self.snapped_yield = None;
+        if let Some(outcome) = self.serve_deferred(yield_time, cursor)? {
+            return Ok(outcome);
+        }
+        let defer = self.defers_yields(cursor);
         loop {
             if self.host.terminated {
                 return Ok(MeAdvanceOutcome::Terminated);
             }
             self.host.budget.check()?;
             let resolved = self.resolve_without_advance(yield_time, cursor)?;
-            match resolved {
-                LoopStep::Finished(outcome) => return Ok(outcome),
-                LoopStep::Continue => {}
-                LoopStep::Advance => {
-                    self.advance_one_accepted_step(yield_time, cursor)?;
-                }
+            if let LoopStep::Finished(outcome) = resolved {
+                self.snap_to_yield(defer, outcome, yield_time);
+                return Ok(outcome);
+            }
+            let deferred = matches!(resolved, LoopStep::Advance)
+                && self.advance_one_accepted_step(yield_time, cursor)?;
+            if deferred {
+                return Ok(MeAdvanceOutcome::Yielded);
             }
         }
+    }
+
+    /// A deferring session's natural step can end within roundoff of the
+    /// yield; the caller still stands exactly on the yield it asked for.
+    fn snap_to_yield(&mut self, defer: bool, outcome: MeAdvanceOutcome, yield_time: f64) {
+        if defer
+            && matches!(outcome, MeAdvanceOutcome::Yielded)
+            && self.host.time.to_bits() != yield_time.to_bits()
+        {
+            self.snapped_yield = Some(yield_time);
+        }
+    }
+
+    /// A live session with nothing scheduled (no stop time, no output cursor)
+    /// treats a yield as an observation, not a step boundary (issue #513).
+    /// A native component's typed value references read and write the
+    /// component's own coordinate, so it keeps every yield a step boundary.
+    fn defers_yields(&self, cursor: &MeOutputCursor) -> bool {
+        self.host.options.stop_time().is_none()
+            && cursor.peek().is_none()
+            && self
+                .host
+                .kernel
+                .borrow()
+                .is_ok_and(|kernel| !kernel.has_native_resource())
+    }
+
+    /// Serve `yield_time` from a deferred natural step when it lies inside it
+    /// (before its end and before any located root); otherwise commit that step
+    /// exactly as an undeferred one and let the master loop continue.
+    ///
+    /// Serving is an advance like any other, so the wall budget is checked
+    /// first. Soft observations a newly supplied cursor requests up to the
+    /// yield are materialized from the same retained extension, so adding an
+    /// output schedule never cuts the natural step; an observation behind the
+    /// caller's coordinate is refused before anything moves.
+    fn serve_deferred(
+        &mut self,
+        yield_time: f64,
+        cursor: &mut MeOutputCursor,
+    ) -> Result<Option<MeAdvanceOutcome>, MeSessionError> {
+        let Some(observed_time) = self.deferred.as_ref().map(|d| d.observed_time) else {
+            return Ok(None);
+        };
+        self.host.budget.check()?;
+        let roundoff = accepted_step_roundoff(observed_time, 0.0);
+        if let Some(observation) = cursor.peek()
+            && observation - observed_time < -roundoff
+        {
+            return Err(MeSessionError::Contract {
+                reason: format!(
+                    "the output schedule requests t={observation} behind t={observed_time}"
+                ),
+            });
+        }
+        let serves = self
+            .deferred
+            .as_ref()
+            .is_some_and(|deferred| deferred.serves(yield_time));
+        if serves {
+            self.materialize_nominals_before(yield_time, cursor)?;
+            let mut states = try_filled(self.host.state_count, 0.0, "deferred live observation")?;
+            self.sample_states(yield_time, &mut states)?;
+            if cursor
+                .peek()
+                .is_some_and(|observation| observation - yield_time <= roundoff)
+            {
+                self.host
+                    .record_off_point(TraceObservationRole::Nominal, yield_time, &states)?;
+                cursor.advance();
+            }
+            let deferred = self.deferred.as_mut().expect("checked above");
+            deferred.observed_time = yield_time;
+            deferred.observed_states = states;
+            return Ok(Some(MeAdvanceOutcome::Yielded));
+        }
+        let deferred = self.deferred.take().expect("checked above");
+        let finished = self.finish_accepted_step(&deferred.step, deferred.located, cursor);
+        self.host
+            .guard_mutation(MeSessionLoss::NumericalStep, finished)?;
+        Ok(None)
+    }
+
+    pub(super) fn clear_snapped_yield(&mut self) {
+        self.snapped_yield = None;
+    }
+
+    /// An input change at a deferred observation is a real discontinuity:
+    /// truncate the natural step there, exactly as a located root is applied.
+    pub(super) fn truncate_deferred_at_observation(&mut self) -> Result<(), MeSessionError> {
+        let Some(deferred) = self.deferred.take() else {
+            return Ok(());
+        };
+        let truncated = self.truncate_at(deferred.observed_time, &deferred.observed_states);
+        self.host
+            .guard_mutation(MeSessionLoss::NumericalStep, truncated)
+    }
+
+    fn truncate_at(&mut self, time: f64, states: &[f64]) -> Result<(), MeSessionError> {
+        self.host.adopt_projected_point(time, states)?;
+        let point = self.host.checked_point()?;
+        self.run_with_derivatives(|backend| backend.truncate_reset(&point))?;
+        self.host.retained_interval = None;
+        let completed = self.host.completed_integrator_step()?;
+        self.host.refresh_retained_indicators()?;
+        if completed.terminate_simulation {
+            self.host.terminate_at_current_point(
+                "the component requested termination at a truncated live observation",
+            )?;
+            return Ok(());
+        }
+        if completed.enter_event_mode {
+            let cause = if completed.basis_change {
+                MeEventCause::BasisChange
+            } else {
+                MeEventCause::StateEvent
+            };
+            self.process_event_boundary(cause, time)?;
+        }
+        Ok(())
     }
 
     /// Drive the whole defined experiment through the same incremental session.
@@ -863,9 +1050,17 @@ impl MeSimulationSession<'_, '_> {
         &mut self,
         yield_time: f64,
         cursor: &mut MeOutputCursor,
-    ) -> Result<(), MeSessionError> {
-        let request = self.build_advance_request(yield_time, cursor)?;
-        let stepped = self.take_one_numerical_step(request, cursor);
+    ) -> Result<bool, MeSessionError> {
+        let defer = self.defers_yields(cursor);
+        // A deferring session bounds the step by its own fixed horizon, never by
+        // the caller's yield, so the step sequence is independent of cadence.
+        let bound = if defer {
+            self.host.time + LIVE_OBSERVATION_HORIZON_S
+        } else {
+            yield_time
+        };
+        let request = self.build_advance_request(bound, cursor)?;
+        let stepped = self.take_one_numerical_step(request, defer.then_some(yield_time), cursor);
         self.host
             .guard_mutation(MeSessionLoss::NumericalStep, stepped)
     }
@@ -885,13 +1080,36 @@ impl MeSimulationSession<'_, '_> {
     fn take_one_numerical_step(
         &mut self,
         request: MeAdvanceRequest,
+        deferred_yield: Option<f64>,
         cursor: &mut MeOutputCursor,
-    ) -> Result<(), MeSessionError> {
+    ) -> Result<bool, MeSessionError> {
         let event_boundary = self.host.next_event_time;
         let candidate =
             self.run_with_derivatives_until(event_boundary, |backend| backend.advance(&request))?;
         let proposal = MeStepProposal::bind(request, candidate, self.host.state_count)?;
-        self.consume_accepted_step(proposal, cursor)
+        let (step, located) = self.accept_and_scan(proposal)?;
+        if let Some(yield_time) = deferred_yield {
+            let crossing = DeferredCrossing {
+                observed_time: yield_time,
+                observed_states: Vec::new(),
+                step,
+                located,
+            };
+            if crossing.serves(yield_time) {
+                let mut states =
+                    try_filled(self.host.state_count, 0.0, "deferred live observation")?;
+                self.sample_states(yield_time, &mut states)?;
+                self.deferred = Some(DeferredCrossing {
+                    observed_states: states,
+                    ..crossing
+                });
+                return Ok(true);
+            }
+            self.finish_accepted_step(&crossing.step, crossing.located, cursor)?;
+            return Ok(false);
+        }
+        self.finish_accepted_step(&step, located, cursor)?;
+        Ok(false)
     }
 
     /// Prove every coordinate of one request before anything moves.
@@ -934,11 +1152,10 @@ impl MeSimulationSession<'_, '_> {
     /// Endpoint validation is unconditional: a model with no event indicators
     /// still owes the accepted-step sampler contract,
     /// and only the validated [`MeSampledStep`] can be scanned at all
-    fn consume_accepted_step(
+    fn accept_and_scan(
         &mut self,
         proposal: MeStepProposal,
-        cursor: &mut MeOutputCursor,
-    ) -> Result<(), MeSessionError> {
+    ) -> Result<(MeAcceptedStep, Option<MeRootApplication>), MeSessionError> {
         let step = self.accept_proposal(proposal)?;
         crate::runtime::hotpath_stats::inc_solver_step();
         self.host.sliding.begin_interval();
@@ -954,13 +1171,24 @@ impl MeSimulationSession<'_, '_> {
         let retained = std::mem::take(&mut self.host.retained_indicators);
         let located = self.scan_with_retained(&step, &retained);
         self.host.retained_indicators = retained;
-        match located? {
-            Some(application) if !self.coincides_with_time_event(&step, &application)? => {
+        Ok((step, located?))
+    }
+
+    /// Commit one accepted, scanned interval: apply its located root, or
+    /// complete its endpoint.
+    fn finish_accepted_step(
+        &mut self,
+        step: &MeAcceptedStep,
+        located: Option<MeRootApplication>,
+        cursor: &mut MeOutputCursor,
+    ) -> Result<(), MeSessionError> {
+        match located {
+            Some(application) if !self.coincides_with_time_event(step, &application)? => {
                 crate::runtime::hotpath_stats::inc_root_hit();
                 self.record_sliding_modes(&application)?;
-                self.apply_located_root(&step, &application, cursor)
+                self.apply_located_root(step, &application, cursor)
             }
-            _ => self.commit_accepted_endpoint(&step, cursor),
+            _ => self.commit_accepted_endpoint(step, cursor),
         }
     }
 
@@ -1460,6 +1688,12 @@ impl MeSimulationSession<'_, '_> {
             .verification_observable_state()
             .0
             == super::lifecycle::MeState::Terminated
+    }
+
+    /// Expire the wall budget now without sleeping: a zero-length deadline is
+    /// already reached at every later check.
+    pub(super) fn verification_expire_budget(&mut self) {
+        self.host.budget = TimeoutBudget::new(Some(f64::MIN_POSITIVE));
     }
 
     /// Whether the retained derivative capability is currently reachable.
