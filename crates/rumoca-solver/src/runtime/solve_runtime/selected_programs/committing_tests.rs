@@ -20,6 +20,11 @@ impl CompiledSolveJacobianExpression for RefusingJacobian {
         Err(RuntimeSolveError::solve_ir("block inputs refused"))
     }
 
+    /// Coverage exemption: a compiled block evaluates its selected programs
+    /// through their per-program codes, never through the whole entry's
+    /// `call`, so no test of the committing entry reaches it; the trait
+    /// requires it.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn call(
         &self,
         _y: &[f64],
@@ -33,33 +38,19 @@ impl CompiledSolveJacobianExpression for RefusingJacobian {
     }
 }
 
-struct RefusingBackend {
-    committing_calls: Rc<Cell<usize>>,
-}
-
-impl SolveExecutionBackend for RefusingBackend {
-    fn compile_expression(
-        &self,
-        source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        super::super::test_kernels::expression(source)
-    }
-    fn compile_jacobian_expression(
-        &self,
-        _source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        Ok(Rc::new(RefusingJacobian {
-            committing_calls: Rc::clone(&self.committing_calls),
-        }))
-    }
-    fn compile_assignment_schedule(
-        &self,
-        source: &solve::ComputeBlock,
-        owners: &solve::ContinuousRefreshOwners,
-        schedule: &solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        super::super::test_kernels::assignment(source, owners, schedule)
-    }
+/// The three-program block whose whole entry is `RefusingJacobian`; its
+/// per-program codes are the reference kernels.
+fn refusing_block(committing_calls: &Rc<Cell<usize>>) -> Rc<CompleteJacobian> {
+    let whole = Rc::new(RefusingJacobian {
+        committing_calls: Rc::clone(committing_calls),
+    });
+    jacobian_from_whole(
+        &super::super::test_kernels::ReferenceBackend,
+        "committing",
+        &three_programs(),
+        whole,
+    )
+    .unwrap()
 }
 
 fn span(start: usize) -> rumoca_core::Span {
@@ -90,10 +81,7 @@ fn three_programs() -> solve::ScalarProgramBlock {
 #[test]
 fn an_empty_end_range_declines_before_the_native_entry() {
     let committing_calls = Rc::new(Cell::new(0));
-    let backend = RefusingBackend {
-        committing_calls: Rc::clone(&committing_calls),
-    };
-    let code = jacobian(&backend, "committing", &three_programs()).unwrap();
+    let code = refusing_block(&committing_calls);
     let declined = code
         .call_programs_committing(3..3, (&[], &[], 0.0), &mut [], &[], &mut |_, _, _| {
             panic!("an empty range commits nothing")
@@ -108,10 +96,7 @@ fn an_empty_end_range_declines_before_the_native_entry() {
 #[test]
 fn a_refusal_before_any_commit_reports_the_first_program() {
     let committing_calls = Rc::new(Cell::new(0));
-    let backend = RefusingBackend {
-        committing_calls: Rc::clone(&committing_calls),
-    };
-    let code = jacobian(&backend, "committing", &three_programs()).unwrap();
+    let code = refusing_block(&committing_calls);
     let error = code
         .call_programs_committing(0..3, (&[], &[], 0.0), &mut [0.0; 3], &[], &mut |_, _, _| {
             panic!("a refused block commits nothing")
