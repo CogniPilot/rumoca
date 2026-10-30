@@ -167,7 +167,7 @@ fn selection_upper_bound(condition: &gast::Expression) -> Option<(String, i64)> 
 
 /// Split `<loop index>`, `<loop index> + k`, or `<loop index> - k` into the
 /// iterator name and the literal offset applied to it.
-fn linear_index_term(expression: &gast::Expression) -> Option<(String, i64)> {
+pub(super) fn linear_index_term(expression: &gast::Expression) -> Option<(String, i64)> {
     match expression {
         gast::Expression::Paren(inner) => linear_index_term(inner),
         gast::Expression::Ref(gast::Reference::Local(part)) if part.subscripts.is_empty() => {

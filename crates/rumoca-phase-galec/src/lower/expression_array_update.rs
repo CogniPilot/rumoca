@@ -9,7 +9,11 @@
 use super::expression_projection::{SelectionBranch, SelectionValue};
 use super::*;
 
-type ArrayUpdateSelection = (Vec<gast::Expression>, Vec<gast::Expression>);
+struct ArrayUpdateSelection {
+    value_indices: Vec<gast::Expression>,
+    conditions: Vec<gast::Expression>,
+    bounds: Vec<LoopIndexBound>,
+}
 
 enum ArrayUpdateAxis {
     UpdatedIndex,
@@ -18,6 +22,7 @@ enum ArrayUpdateAxis {
     ConditionalValue {
         index: gast::Expression,
         condition: gast::Expression,
+        bound: Option<LoopIndexBound>,
     },
     Historical,
 }
@@ -48,7 +53,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         for (index, &extent) in indices.iter().zip(base_dimensions) {
             self.prove_dynamic_index(index, extent, span)?;
         }
-        let Some((value_indices, dynamic_conditions)) =
+        let Some(selection) =
             self.array_update_value_indices(subscripts, indices, base_dimensions, span)?
         else {
             return Ok(TypedExpression {
@@ -64,7 +69,22 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 branch: 0,
             });
         let updated_start = self.pending_prefix_statements.len();
-        let updated = self.lower_at(value, &value_indices);
+        // The selected RHS runs only where every slice guard is true. Carry
+        // those constructor-derived intervals while projecting that branch,
+        // then restore the surrounding loop before projecting the base.
+        let surrounding_bounds = self.loop_index_bounds.clone();
+        for bound in selection.bounds {
+            if let Some(current) = self
+                .loop_index_bounds
+                .iter_mut()
+                .rev()
+                .find(|current| current.name == bound.name)
+            {
+                *current = bound;
+            }
+        }
+        let updated = self.lower_at(value, &selection.value_indices);
+        self.loop_index_bounds = surrounding_bounds;
         self.conditional_activation_path.pop();
         // MLS §10.6.13: an Integer slice assigned into a Real array
         // retains the array's Real element type on both selection paths.
@@ -72,7 +92,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             expression: coerce(updated?, scalar_type, span)?,
             scalar_type,
         };
-        let Some(condition) = dynamic_conditions
+        let Some(condition) = selection
+            .conditions
             .into_iter()
             .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
         else {
@@ -117,6 +138,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     ) -> Result<Option<ArrayUpdateSelection>, GalecTargetError> {
         let mut value_indices = Vec::new();
         let mut dynamic_conditions = Vec::new();
+        let mut bounds = Vec::new();
         for (axis, (coordinate, &extent)) in projected.iter().zip(base_dimensions).enumerate() {
             match self.array_update_axis(subscripts.get(axis), coordinate, extent, span)? {
                 ArrayUpdateAxis::UpdatedIndex => {}
@@ -128,14 +150,23 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                     ));
                 }
                 ArrayUpdateAxis::UpdatedValue(index) => value_indices.push(index),
-                ArrayUpdateAxis::ConditionalValue { index, condition } => {
+                ArrayUpdateAxis::ConditionalValue {
+                    index,
+                    condition,
+                    bound,
+                } => {
                     value_indices.push(index);
                     dynamic_conditions.push(condition);
+                    bounds.extend(bound);
                 }
                 ArrayUpdateAxis::Historical => return Ok(None),
             }
         }
-        Ok(Some((value_indices, dynamic_conditions)))
+        Ok(Some(ArrayUpdateSelection {
+            value_indices,
+            conditions: dynamic_conditions,
+            bounds,
+        }))
     }
 
     fn array_update_axis(
@@ -285,6 +316,38 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         Ok(ArrayUpdateAxis::ConditionalValue {
             index: offset,
             condition: gast::Expression::binary(gast::BinaryOp::And, lower_bound, upper_bound),
+            bound: self.slice_coordinate_bound(coordinate, lower, upper, extent),
+        })
+    }
+
+    /// Intersect the enclosing iterator's interval with the checked slice.
+    /// The projection may shift that iterator, so translate the slice bounds
+    /// back to its atom with checked arithmetic. Unknown or empty intervals
+    /// provide no proof; ordinary strict index validation remains responsible.
+    fn slice_coordinate_bound(
+        &self,
+        coordinate: &gast::Expression,
+        lower: i64,
+        upper: i64,
+        extent: u32,
+    ) -> Option<LoopIndexBound> {
+        // A clipped intersection cannot stand in for a valid assignment
+        // target: every coordinate the slice names must belong to the base.
+        if lower < 1 || upper > i64::from(extent) {
+            return None;
+        }
+        let (name, offset) = expression_projection::linear_index_term(coordinate)?;
+        let enclosing = self
+            .loop_index_bounds
+            .iter()
+            .rev()
+            .find(|bound| bound.name.lexeme() == name)?;
+        let minimum = enclosing.minimum.max(lower.checked_sub(offset)?);
+        let maximum = enclosing.maximum.min(upper.checked_sub(offset)?);
+        (minimum <= maximum).then(|| LoopIndexBound {
+            name: enclosing.name.clone(),
+            minimum,
+            maximum,
         })
     }
 
@@ -350,7 +413,11 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             branches,
             gast::Expression::Integer(1),
         ));
-        Ok(ArrayUpdateAxis::ConditionalValue { index, condition })
+        Ok(ArrayUpdateAxis::ConditionalValue {
+            index,
+            condition,
+            bound: None,
+        })
     }
 
     /// Bind one index-list entry to a name that every coordinate of the same
