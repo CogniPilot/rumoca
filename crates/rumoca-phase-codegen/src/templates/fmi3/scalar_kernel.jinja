@@ -853,9 +853,13 @@ static inline bool rmc_linear_solve_component(const double* matrix, const double
      the importer defines none.
    - The next substep is h * min(max({{ plan.safety }} * err^({{ plan.exponent }}), {{ plan.min_factor }}), {{ plan.max_factor }})
      (Hairer, Norsett and Wanner, Solving ODEs I, section II.4).
+   - A trial stage whose evaluation leaves a non-finite value (for example a
+     sqrt whose argument the trial overshoots below zero) rejects its substep
+     like an error estimate above 1, so the step retries at a smaller h.
    - A communication step whose substep underflows or which attempts more
-     than {{ plan.max_substeps }} substeps returns Discard; a failed derivative
-     evaluation returns Error. The caller rolls the state back either way.
+     than {{ plan.max_substeps }} substeps returns Discard; any other failed
+     evaluation, such as an assertion, returns Error. Each logs its reason, and
+     the caller rolls the state back either way.
    Accuracy therefore follows the tolerance, not the importer's communication
    step size: a stiff mode takes as many substeps as its stability needs. */
 static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double start, double step) {
@@ -884,10 +888,11 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
         for (size_t i = 0; i < n; ++i) y0[i] = m->y[i];
         if (!start_derivative) {
             m->time = t;
-            if (evaluate_derivatives(m) != {{ prefix }}OK) return {{ prefix }}Error;
+            if (evaluate_derivatives(m) != {{ prefix }}OK) { RMC_LOG(m, "Co-Simulation derivative evaluation failed at an accepted substep start"); return {{ prefix }}Error; }
             for (size_t i = 0; i < n; ++i) k[0][i] = m->derivative[i];
             start_derivative = true;
         }
+        bool stage_rejected = false;
         for (size_t s = 0; s < 6; ++s) {
             for (size_t i = 0; i < n; ++i) {
                 double sum = 0.0;
@@ -895,8 +900,19 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
                 m->y[i] = y0[i] + h * sum;
             }
             m->time = s >= 4 && last ? end : t + c[s] * h;
-            if (evaluate_derivatives(m) != {{ prefix }}OK) return {{ prefix }}Error;
+            m->rmc_nonfinite = false;
+            if (evaluate_derivatives(m) != {{ prefix }}OK) {
+                if (!m->rmc_nonfinite || m->assertion_failed) { RMC_LOG(m, "Co-Simulation stage evaluation failed"); return {{ prefix }}Error; }
+                stage_rejected = true;
+                break;
+            }
             for (size_t i = 0; i < n; ++i) k[s + 1][i] = m->derivative[i];
+        }
+        if (stage_rejected) {
+            for (size_t i = 0; i < n; ++i) m->y[i] = y0[i];
+            m->time = t;
+            h *= {{ plan.min_factor }};
+            continue;
         }
         double error = 0.0;
         for (size_t i = 0; i < n; ++i) {
@@ -921,7 +937,9 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
         h *= factor;
     }
     m->time = end;
-    return settle_assertion_event(m);
+    const {{ prefix }}Status settled = settle_assertion_event(m);
+    if (settled == {{ prefix }}Error) RMC_LOG(m, "Co-Simulation step failed to settle its end point");
+    return settled;
 }
 {%- endmacro %}
 

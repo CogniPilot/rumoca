@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod co_simulation_nonfinite_stage;
 mod initial_relations;
 mod pulse_lifecycle;
 

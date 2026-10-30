@@ -1325,6 +1325,7 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
     return {{ prefix }}OK;
 {%- if assigns %}
 failure:
+    m->rmc_nonfinite = true;
 {%- if blocks %}
     if (complete) {
         rmc_fb_note(m, failed_site); m->rmc_fb_active[RMC_FB_PLAN] = false;

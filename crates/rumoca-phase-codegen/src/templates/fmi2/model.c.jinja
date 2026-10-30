@@ -61,7 +61,7 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
     }
     if (status != fmi2OK) return status;
     for (size_t i = 0, n = {{ solve.solve_layout.state_scalar_count }}; i < n; ++i) {
-        if (!isfinite(m->derivative[i])) return fmi2Error;
+        if (!isfinite(m->derivative[i])) { m->rmc_nonfinite = true; return fmi2Error; }
     }
     return fmi2OK;
 }
@@ -80,7 +80,7 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
     }
 {%- endfor %}
     for (size_t i = 0, n = {{ solve.solve_layout.state_scalar_count }}; i < n; ++i) {
-        if (!isfinite(m->derivative[i])) return fmi2Error;
+        if (!isfinite(m->derivative[i])) { m->rmc_nonfinite = true; return fmi2Error; }
     }
     return fmi2OK;
 }
