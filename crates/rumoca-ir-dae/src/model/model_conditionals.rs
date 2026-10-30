@@ -437,6 +437,21 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
             marker: PhantomData,
         }))
     }
+    /// Whether a value may be referenced from the current construction scope.
+    pub fn model_arm_visible(
+        &self,
+        expression: ExprId<'dae>,
+        at: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        match self
+            .storage
+            .expect_model_arm_visible(expression.index(), at)
+        {
+            Ok(()) => Ok(true),
+            Err(DaeConstructionError::InvalidModelActivationScope { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
     /// The exact current arm is part of a scoped reconstruction cache key.
     pub fn model_arm_context(&self) -> Option<ModelArm<'dae>> {
         self.storage.active_model_arm.map(|index| ModelArm {
