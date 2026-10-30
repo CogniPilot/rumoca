@@ -90,7 +90,7 @@
   "contexts": {
     "stdio-plant": {
       "page": "simulation/stdio-session.md",
-      "line": 122,
+      "line": 124,
       "source_line_count": 6,
       "language": "modelica",
       "source_sha256": "41189b0bca2ad03befe01f7eb08cc948a328a3d4b830dccc186c78548a272a3d"
@@ -204,8 +204,8 @@
     {"page": "simulation/scenario-tomls.md", "line": 197, "language": "toml", "source_sha256": "d2a78144487b30e62a7da09affba6d18e0715ec32454f6a0d764469f553e7d0b", "profile": "configuration-context-toml", "source_line_count": 3},
     {"page": "simulation/stdio-session.md", "line": 12, "language": "bash", "source_sha256": "67d27cbe7b838e8db3f0cb8f2112115d5efc64d2293e416b5dd686db66b05d1c", "profile": "executable-command-bash", "source_line_count": 1},
     {"page": "simulation/stdio-session.md", "line": 33, "language": "json", "source_sha256": "f96d4c53d2df140df303e1660182f24029fbbdf99d9ec2a1f876168858791d62", "profile": "explanatory-output-json", "source_line_count": 1},
-    {"page": "simulation/stdio-session.md", "line": 107, "language": "text", "source_sha256": "34c336731158a782456e4b19e0b5f0c787af32a5d9a6293376451bbfae443b89", "profile": "explanatory-output-text", "source_line_count": 8},
-    {"page": "simulation/stdio-session.md", "line": 135, "language": "python", "source_sha256": "96d32a8fb5580ef813d8f049aece15f82c39a314d54313055c887e85107b597d", "profile": "executable-stdio-python", "source_line_count": 20},
+    {"page": "simulation/stdio-session.md", "line": 109, "language": "text", "source_sha256": "34c336731158a782456e4b19e0b5f0c787af32a5d9a6293376451bbfae443b89", "profile": "explanatory-output-text", "source_line_count": 8},
+    {"page": "simulation/stdio-session.md", "line": 137, "language": "python", "source_sha256": "96d32a8fb5580ef813d8f049aece15f82c39a314d54313055c887e85107b597d", "profile": "executable-stdio-python", "source_line_count": 20},
     {"page": "tools/cli.md", "line": 7, "language": "text", "source_sha256": "f39f5d6301ae4395854d50478f18b6a66c05268070424360083333c3fe0aa88a", "profile": "explanatory-output-text", "source_line_count": 10},
     {"page": "tools/cli.md", "line": 27, "language": "bash", "source_sha256": "98d4bc5032e46e0adf0b3beb355fd951b80c9cb9160fcc4922bba42aa6dadfe9", "profile": "project-template-bash", "source_line_count": 1},
     {"page": "tools/cli.md", "line": 33, "language": "bash", "source_sha256": "620a0f5d0573993e5d37311acdcb31a1f9f03c4e0924c3831b52924a968e0d0a", "profile": "project-template-bash", "source_line_count": 1},

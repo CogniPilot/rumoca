@@ -52,6 +52,7 @@ the receipt is read.
 | `advance_to` | `time` (absolute seconds, finite) | `ok` |
 | `get` | `name` | `value` |
 | `state` | none | `state` |
+| `values` | `names`: `["name", ...]` | `values` |
 | `reset` | `time` (optional, default `0`) | `ok` |
 | `input_names` | none | `input_names` |
 | `variable_names` | none | `variable_names` |
@@ -71,6 +72,7 @@ integrator at all.
 | `ok` | `time`: the session time after the command |
 | `value` | `name`, `time`, `value` (`null` when `name` is not a variable) |
 | `state` | `time`, `values`: every variable by name |
+| `values` | `time`, `values`: the requested variables in request order (`null` for a name that is not a variable) |
 | `input_names`, `variable_names` | `names` |
 | `closed` | `time` |
 | `error` | `code`, `message` |

@@ -59,6 +59,9 @@ pub enum SessionCommand {
     Get { name: String },
     /// Read every variable.
     State,
+    /// Read several variables at one point, in the order given; cheaper than
+    /// `State` when a controller needs a few of many variables.
+    Values { names: Vec<String> },
     /// Restart initialization at an absolute time (default `0`).
     Reset {
         #[serde(default)]
@@ -97,6 +100,9 @@ pub enum SessionEvent {
         time: f64,
         values: IndexMap<String, f64>,
     },
+    /// The requested variables at `time`, in request order; `null` for a name
+    /// that is not a variable.
+    Values { time: f64, values: Vec<Option<f64>> },
     /// Declared input names.
     InputNames { names: Vec<String> },
     /// Solver variable names.
@@ -205,6 +211,16 @@ impl SimulationSession {
                 Ok(SessionEvent::State {
                     time: state.time,
                     values: state.values,
+                })
+            }
+            SessionCommand::Values { names } => {
+                let state = self.state().map_err(fault)?;
+                Ok(SessionEvent::Values {
+                    time: state.time,
+                    values: names
+                        .iter()
+                        .map(|name| state.values.get(name).copied())
+                        .collect(),
                 })
             }
             SessionCommand::Reset { time } => {
