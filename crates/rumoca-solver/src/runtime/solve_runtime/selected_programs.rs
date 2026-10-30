@@ -505,8 +505,8 @@ impl CompleteJacobian {
     /// [`CompiledSolveJacobianExpression::call_programs_committing`]). Each
     /// program's output count and native error span are those of
     /// [`Self::call_program_outputs`]. `false` declines before any program
-    /// executes: a composite block, a range outside the compiled programs, or
-    /// a backend without the entry.
+    /// executes: an empty range, a composite block, a range outside the
+    /// compiled programs, or a backend without the entry.
     pub(super) fn call_programs_committing(
         &self,
         programs: std::ops::Range<usize>,
@@ -522,7 +522,8 @@ impl CompleteJacobian {
             }
             JacobianExecution::Composite(_) => return Ok(false),
         };
-        if codes.get(programs.clone()).is_none()
+        if programs.is_empty()
+            || codes.get(programs.clone()).is_none()
             || programs
                 .clone()
                 .any(|index| source_program_outputs(&self.source, index).is_err())
@@ -549,11 +550,17 @@ impl CompleteJacobian {
             },
         );
         match result {
-            Err(error) if !commit_failed => Err(admitted_compiled_error(
-                "selected directional program",
-                &[codes[next].span],
-                error,
-            )),
+            Err(error) if !commit_failed => {
+                let spans: &[rumoca_core::Span] = match codes.get(next) {
+                    Some(code) => std::slice::from_ref(&code.span),
+                    None => &[],
+                };
+                Err(admitted_compiled_error(
+                    "selected directional program",
+                    spans,
+                    error,
+                ))
+            }
             result => result,
         }
     }
@@ -697,3 +704,6 @@ impl CompleteJacobian {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod committing_tests;
