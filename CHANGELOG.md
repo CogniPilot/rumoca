@@ -2,6 +2,10 @@
 
 High-level release summary by `0.x` line. Patch releases are rolled up into their parent series.
 
+## 0.10.4
+
+See [release notes](docs/releases/0.10.4.md) for changes since 0.10.3, including external-call diagnostics, the optional `velimplicit` solver, compiler fixes and batched stdio values.
+
 ## 0.10.3
 
 See [release notes](docs/releases/0.10.3.md) for changes since 0.10.2 and the complete integration history.
