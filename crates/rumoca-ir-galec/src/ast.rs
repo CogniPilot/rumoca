@@ -867,13 +867,20 @@ impl Expression {
 
     /// Negate a Real-typed expression without ever producing unary minus
     /// over a non-reference (trap T4): references become [`Expression::Neg`],
-    /// literals fold, anything else becomes `0.0 - (expr)` per GAL-019.
+    /// literals fold, anything else becomes `(-1.0) * (expr)` per GAL-019.
+    ///
+    /// The product is the sign-exact rewrite: it maps `+0.0` to `-0.0` as
+    /// negation does, while `0.0 - (+0.0)` is `+0.0`.
     #[must_use]
     pub fn negated_real(expr: Self) -> Self {
         match expr {
             Self::Ref(reference) => Self::Neg(reference),
             Self::Real(value) => Self::Real(-value),
-            other => Self::binary(BinaryOp::Sub, Self::Real(0.0), Self::Paren(Box::new(other))),
+            other => Self::binary(
+                BinaryOp::Mul,
+                Self::Real(-1.0),
+                Self::Paren(Box::new(other)),
+            ),
         }
     }
 
@@ -1123,6 +1130,37 @@ pub enum Statement {
     /// re-raises closures. Whole-block construction requires at least one
     /// identifier.
     Signal(Vec<Identifier>),
+}
+
+#[cfg(test)]
+mod negation_tests {
+    use super::*;
+
+    #[test]
+    fn real_negation_of_an_expression_is_the_sign_exact_product() {
+        let operand = Expression::binary(
+            BinaryOp::Add,
+            Expression::Ref(Reference::local(Name::ident("a"))),
+            Expression::Real(1.0),
+        );
+        assert_eq!(
+            Expression::negated_real(operand.clone()),
+            Expression::binary(
+                BinaryOp::Mul,
+                Expression::Real(-1.0),
+                Expression::Paren(Box::new(operand)),
+            )
+        );
+        let reference = Reference::local(Name::ident("a"));
+        assert_eq!(
+            Expression::negated_real(Expression::Ref(reference.clone())),
+            Expression::Neg(reference)
+        );
+        let Expression::Real(folded) = Expression::negated_real(Expression::Real(0.0)) else {
+            panic!("a literal negation folds");
+        };
+        assert_eq!(folded.to_bits(), (-0.0_f64).to_bits());
+    }
 }
 
 #[cfg(test)]
