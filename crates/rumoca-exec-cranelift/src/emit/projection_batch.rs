@@ -68,7 +68,7 @@ impl ProjectionModule {
             state: RefCell::new(ProjectionModuleState {
                 scopes: Vec::new(),
                 applications: 0,
-                emitter: CraneliftEmitter::new(pure_calls.map(Rc::as_ref))?,
+                emitter: CraneliftEmitter::new(pure_calls.cloned())?,
             }),
         })
     }
