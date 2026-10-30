@@ -10,6 +10,7 @@ mod backend_capabilities;
 mod compact_owner_preparation;
 mod execution_owner_queries;
 mod lifecycle_preparation;
+mod mixed_seed_schedules;
 mod native_manifold;
 mod native_projection_residual;
 mod reverse_preparation;

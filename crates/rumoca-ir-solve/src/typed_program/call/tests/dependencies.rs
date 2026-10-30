@@ -1,3 +1,6 @@
+mod coordinate_precision;
+mod regions;
+
 use super::*;
 use crate::SolveBinaryOperator;
 use std::collections::BTreeSet;

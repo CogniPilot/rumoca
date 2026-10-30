@@ -1,7 +1,10 @@
 //! Differentiate the issued exact assignment segments, preserving their commits.
-//! A complete causal certificate permits this sweep; coupled plans retain the
-//! residual projection. No seed-dependent evaluation result is reused across invocations.
+//! A complete causal certificate permits a pure assignment sweep; certified
+//! mixed schedules retain their coupled residual projections. No seed-dependent
+//! evaluation result is reused across invocations.
 use super::*;
+
+mod mixed;
 
 struct SeedSchedule {
     program: DirectionalProgram,
@@ -11,6 +14,7 @@ struct SeedSchedule {
 #[derive(Default)]
 pub(super) struct CausalSeedSchedules {
     schedules: FxHashMap<solve::RefreshSequenceId, Rc<SeedSchedule>>,
+    mixed_steps: Rc<[mixed::Step]>,
     outputs: RefCell<Vec<f64>>,
     incoming: RefCell<Vec<f64>>,
 }
@@ -19,6 +23,7 @@ impl Clone for CausalSeedSchedules {
     fn clone(&self) -> Self {
         Self {
             schedules: self.schedules.clone(),
+            mixed_steps: Rc::clone(&self.mixed_steps),
             outputs: RefCell::default(),
             incoming: RefCell::default(),
         }
@@ -36,16 +41,18 @@ impl CausalSeedSchedules {
         let blocks = model.artifacts.continuous.structural.algebraic_projection();
         // The existing source-bound certificate covers primal and full Y+P
         // directional operations, including discarded effects and nested regions.
-        if !plan.causal_solution_certified
-            || !plan.simultaneous_block_indices.iter().all(|&index| {
-                blocks
-                    .get(index)
-                    .is_some_and(|block| block.linearization_is_repeatable())
-            })
-        {
+        if !plan.simultaneous_block_indices.iter().all(|&index| {
+            blocks
+                .get(index)
+                .is_some_and(|block| block.linearization_is_repeatable())
+        }) {
             return Ok(Self::default());
         }
-        let sequences = BTreeSet::from([plan.static_causal_sequence, plan.dynamic_causal_sequence]);
+        let Some((sequences, mixed_steps)) =
+            mixed::select(owners, plan, &model.artifacts.continuous.structural)
+        else {
+            return Ok(Self::default());
+        };
         let mut schedules = FxHashMap::default();
         for schedule in owners.exact_assignment_schedules() {
             if !sequences.contains(&schedule.sequence_id()) {
@@ -85,6 +92,7 @@ impl CausalSeedSchedules {
         }
         Ok(Self {
             schedules,
+            mixed_steps: mixed_steps.into(),
             ..Self::default()
         })
     }

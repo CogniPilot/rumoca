@@ -2,11 +2,13 @@
 
 mod accumulator;
 pub(in crate::typed_program) mod affinity;
+mod assembly;
 mod coordinates;
 mod map_access;
 #[cfg(test)]
 mod operation_tests;
 mod operations;
+mod regions;
 pub(in crate::typed_program) mod value_projection;
 
 use super::{SolveOperation, SolveProgramConstructionError, SolvePureCallTableView, TypedProgram};
@@ -170,19 +172,31 @@ pub(in crate::typed_program) fn derive(
     output_count: usize,
     available: SolvePureCallTableView<'_>,
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
-    let mut slots = vec![Vec::new(); body.slots().len()];
-    for (index, slot) in slots.iter_mut().take(input_count).enumerate() {
-        slot.push(SolveCallDependency::exact(
-            index,
-            Coordinates::identity(body.slots()[index].value_type().dimensions().len()),
-        ));
-    }
+    let mut slots = input_dependencies(body, input_count);
     let mut registers = vec![Vec::new(); body.register_types().len()];
     let mut assigned = vec![Vec::new(); body.assigned_state_types().len()];
     let mut integers = map_access::IntegerValues::new(body.register_types().len());
     for (index, spanned) in body.operations().iter().enumerate() {
         let operation = spanned.operation();
         integers.track(operation);
+        if regions::derive(
+            regions::Context {
+                body,
+                available,
+                provenance: spanned.provenance(),
+            },
+            operation,
+            &mut registers,
+        )? || assembly::derive(
+            body,
+            operation,
+            &integers,
+            &mut registers,
+            spanned.provenance(),
+        )? {
+            retire_registers(body, operation, index, &mut registers);
+            continue;
+        }
         match operation {
             SolveOperation::AssignedState { operation } => {
                 derive_assigned_dependencies(operation, &mut registers, &mut assigned);
@@ -254,12 +268,56 @@ pub(in crate::typed_program) fn derive(
         }
         retire_registers(body, operation, index, &mut registers);
     }
-    Ok(slots
+    Ok(output_summaries(body, input_count, output_count, slots))
+}
+
+fn output_summaries(
+    body: &TypedProgram,
+    input_count: usize,
+    output_count: usize,
+    slots: Vec<Vec<SolveCallDependency>>,
+) -> Box<[Box<[SolveCallDependency]>]> {
+    slots
         .into_iter()
         .skip(input_count)
         .take(output_count)
-        .map(Vec::into_boxed_slice)
-        .collect())
+        .enumerate()
+        .map(|(output, dependencies)| canonical_summary(body, input_count + output, dependencies))
+        .collect()
+}
+
+fn input_dependencies(body: &TypedProgram, input_count: usize) -> Vec<Vec<SolveCallDependency>> {
+    let mut slots = vec![Vec::new(); body.slots().len()];
+    for (index, slot) in slots.iter_mut().take(input_count).enumerate() {
+        slot.push(SolveCallDependency::exact(
+            index,
+            Coordinates::identity(body.slots()[index].value_type().dimensions().len()),
+        ));
+    }
+    slots
+}
+
+fn canonical_summary(
+    body: &TypedProgram,
+    output: usize,
+    dependencies: Vec<SolveCallDependency>,
+) -> Box<[SolveCallDependency]> {
+    let rank = body.slots()[output].value_type().dimensions().len();
+    let mut canonical = Dependencies::default();
+    for dependency in dependencies {
+        let complete = dependency.coordinates.as_ref().is_some_and(|coordinates| {
+            dependency.inputs().all(|leaf| {
+                *coordinates
+                    == operations::whole_access(rank, body.slots()[leaf].value_type().dimensions())
+            })
+        });
+        canonical.insert(if complete {
+            dependency.widened()
+        } else {
+            dependency
+        });
+    }
+    canonical.finish().into_boxed_slice()
 }
 
 /// Dependency summaries follow the checked program's value lifetimes. Retire
@@ -308,20 +366,25 @@ fn substitute_call(
     provenance: Span,
 ) -> Result<(), SolveProgramConstructionError> {
     let error = || SolveProgramConstructionError::InvalidCallInterface { provenance };
-    let summaries = available
-        .get(owner.index() as usize)
-        .map(|interface| interface.dependencies)
-        .filter(|summaries| summaries.len() == destinations.len())
-        .ok_or_else(error)?;
-    for (destination, inputs) in destinations.iter().zip(summaries) {
+    let interface = available.get(owner.index() as usize).ok_or_else(error)?;
+    let summaries = interface.dependencies;
+    if summaries.len() != destinations.len() {
+        return Err(error());
+    }
+    for (output_index, (destination, inputs)) in destinations.iter().zip(summaries).enumerate() {
         let mut dependencies = Dependencies::default();
         for input in inputs {
             for leaf in input.inputs() {
                 let argument = arguments.get(leaf).ok_or_else(error)?;
+                let projected = projected_argument(
+                    input,
+                    interface.outputs[output_index].value_type(),
+                    &interface.inputs[leaf],
+                );
                 substitute_argument(
                     &mut dependencies,
                     &registers[argument.index()],
-                    input,
+                    &projected,
                     provenance,
                 )?;
             }
@@ -329,6 +392,21 @@ fn substitute_call(
         registers[destination.index()] = dependencies.finish();
     }
     Ok(())
+}
+
+fn projected_argument(
+    input: &SolveCallDependency,
+    output_type: &SolveValueType,
+    input_type: &SolveValueType,
+) -> SolveCallDependency {
+    let mut projected = input.clone();
+    if projected.coordinates.is_none() {
+        projected.coordinates = Some(operations::whole_access(
+            output_type.dimensions().len(),
+            input_type.dimensions(),
+        ));
+    }
+    projected
 }
 
 fn substitute_argument(
