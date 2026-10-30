@@ -4244,7 +4244,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -4304,7 +4304,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-allocator"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "libc",
  "libmimalloc-sys",
@@ -4313,7 +4313,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-bind-python"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4330,7 +4330,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-bind-wasm"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-bind-wasm-diffsol"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
@@ -4381,7 +4381,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-bind-wasm-galec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "console_error_panic_hook",
  "lsp-types",
@@ -4398,7 +4398,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-codec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "rumoca-codec-flatbuffers",
@@ -4407,7 +4407,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-codec-flatbuffers"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "rumoca-signal-frame",
@@ -4416,7 +4416,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-compile"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4448,7 +4448,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-contracts"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-compile",
@@ -4462,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-core"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "bincode",
  "indexmap 2.14.0",
@@ -4474,7 +4474,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-ast"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rumoca-ir-ast",
@@ -4483,7 +4483,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-dae"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rumoca-ir-dae",
@@ -4493,7 +4493,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-flat"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "flate2",
  "indexmap 2.14.0",
@@ -4506,7 +4506,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-galec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rumoca-ir-galec",
@@ -4515,7 +4515,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-eval-solve"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "faer",
  "indexmap 2.14.0",
@@ -4529,7 +4529,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-exec-cranelift"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -4543,7 +4543,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-exec-mlir"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "libloading",
@@ -4558,7 +4558,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-exec-wasm"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "blake3",
  "indexmap 2.14.0",
@@ -4584,7 +4584,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-input"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "rumoca-signal-frame",
@@ -4595,7 +4595,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-input-gamepad"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "gilrs",
@@ -4604,7 +4604,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-input-keyboard"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "crossterm",
  "rumoca-input",
@@ -4612,7 +4612,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-ast"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
@@ -4622,7 +4622,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-dae"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "bincode",
  "proptest",
@@ -4635,7 +4635,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-flat"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
@@ -4646,7 +4646,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-galec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rustc-hash 2.1.3",
@@ -4656,7 +4656,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-ir-solve"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "bincode",
  "indexmap 2.14.0",
@@ -4669,7 +4669,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-opt"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca",
@@ -4683,7 +4683,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-autodiff"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rumoca-ir-ast",
@@ -4692,7 +4692,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-codegen"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "miette",
@@ -4714,7 +4714,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-dae"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "miette",
  "rumoca-core",
@@ -4727,7 +4727,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-flatten"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "miette",
@@ -4749,7 +4749,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-galec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rumoca-eval-dae",
@@ -4762,7 +4762,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-instantiate"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "miette",
@@ -4778,7 +4778,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-parse"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "indexmap 2.14.0",
@@ -4794,7 +4794,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-parse-galec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "parol",
@@ -4809,7 +4809,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-resolve"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "miette",
@@ -4822,7 +4822,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-solve"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
@@ -4840,7 +4840,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-structural"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
@@ -4854,7 +4854,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-phase-typecheck"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
@@ -4868,7 +4868,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-reference"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "proptest",
  "rumoca-compile",
@@ -4877,7 +4877,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-runtime-fmi-ls"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-compile",
  "rumoca-exec-wasm",
@@ -4891,14 +4891,14 @@ dependencies = [
 
 [[package]]
 name = "rumoca-signal-frame"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "indexmap 2.14.0",
 ]
 
 [[package]]
 name = "rumoca-sim"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "indexmap 2.14.0",
@@ -4939,7 +4939,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-solver"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "faer",
  "indexmap 2.14.0",
@@ -4960,7 +4960,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-solver-diffsol"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "diffsol",
  "rumoca-solver",
@@ -4969,21 +4969,21 @@ dependencies = [
 
 [[package]]
 name = "rumoca-solver-rk45"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-solver",
 ]
 
 [[package]]
 name = "rumoca-solver-velimplicit"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-solver",
 ]
 
 [[package]]
 name = "rumoca-test-msl"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5020,11 +5020,11 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-build-info"
-version = "0.10.3"
+version = "0.10.4"
 
 [[package]]
 name = "rumoca-tool-fmt"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-compile",
  "rumoca-core",
@@ -5035,7 +5035,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-lint"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "rumoca-compile",
  "rumoca-core",
@@ -5046,7 +5046,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-lsp"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5073,7 +5073,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-tool-lsp-galec"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "clap",
  "futures-util",
@@ -5086,7 +5086,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-transport-udp"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "serde",
@@ -5094,7 +5094,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-transport-websocket"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -5104,7 +5104,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-transport-zenoh"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "serde",
@@ -5114,7 +5114,7 @@ dependencies = [
 
 [[package]]
 name = "rumoca-worker"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "clap",
  "core_affinity",
@@ -7659,7 +7659,7 @@ checksum = "3a74a847d8392999f89e9668c4dd46283b91fd6fc1f34aa5ecf4ceaf8fa3258e"
 
 [[package]]
 name = "xtask"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "blake3",
