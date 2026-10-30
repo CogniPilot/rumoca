@@ -83,9 +83,9 @@ fn transposed_dual_product(rows: usize) -> Vec<LinearOp> {
 
 #[test]
 fn small_tensor_rows_avoid_a_tape_and_preserve_ordered_dual_arithmetic() {
-    for rows in [3, 11] {
+    for rows in [3, 22] {
         let row = transposed_dual_product(rows);
-        assert_eq!(allocates_register_tape(&row), rows == 11);
+        assert_eq!(allocates_register_tape(&row), rows == 22);
         let plan = plan_row(&row).unwrap();
         let compiled = compile_jacobian_rows(&[row]).unwrap();
         let mut y = [1e16, 1.0, -1e16].repeat(rows);
