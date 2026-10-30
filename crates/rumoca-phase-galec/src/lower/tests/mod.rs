@@ -12,6 +12,7 @@ mod indexed_updates;
 mod integer_call_bounds;
 mod integer_division_domain;
 mod scoped_function_branches;
+mod slice_value_bounds;
 
 #[test]
 fn identity_element_is_integer_and_diagonal_by_index_equality() {
