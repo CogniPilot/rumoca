@@ -1,7 +1,5 @@
 //! Backend-neutral simulation contracts and runtime helpers for Rumoca.
 
-#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-
 #[cfg(all(not(kani), not(feature = "sparse-linalg")))]
 compile_error!("rumoca-solver production builds require the `sparse-linalg` feature");
 
