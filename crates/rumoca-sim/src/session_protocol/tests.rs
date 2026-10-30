@@ -105,6 +105,16 @@ fn every_command_has_one_outcome() {
         assert_eq!(values["u"], 1.0);
         assert!((values["y"] - expected).abs() < 1e-6);
         assert_eq!(
+            s.apply(SessionCommand::Values {
+                names: vec!["y".into(), "missing".into(), "u".into()]
+            }),
+            SessionEvent::Values {
+                time: 1.0,
+                values: vec![Some(values["y"]), None, Some(1.0)]
+            },
+            "{mode:?}: the batched read equals the state at the same point"
+        );
+        assert_eq!(
             s.apply(SessionCommand::Get {
                 name: "missing".into()
             }),
@@ -379,6 +389,22 @@ fn wire_forms_are_stable() {
         })
         .unwrap(),
         r#"{"event":"value","name":"y","time":1.0,"value":null}"#
+    );
+    let command: SessionCommand =
+        serde_json::from_str(r#"{"command":"values","names":["y","u"]}"#).unwrap();
+    assert_eq!(
+        command,
+        SessionCommand::Values {
+            names: vec!["y".into(), "u".into()]
+        }
+    );
+    assert_eq!(
+        serde_json::to_string(&SessionEvent::Values {
+            time: 1.0,
+            values: vec![Some(0.5), None]
+        })
+        .unwrap(),
+        r#"{"event":"values","time":1.0,"values":[0.5,null]}"#
     );
 }
 
