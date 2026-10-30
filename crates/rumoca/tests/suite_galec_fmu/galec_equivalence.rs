@@ -4250,7 +4250,7 @@ fn assert_staged_guard_is_bound_once_ahead_of_the_nest(source: &str) {
         ),
         "the comparison must be bound to a generated guard Boolean, not `{guard}`:\n{source}"
     );
-    let declaration = format!("bool {guard};");
+    let declaration = format!("bool {guard} = false;");
     let test = format!("if ({guard}) {{");
     assert_eq!(
         source.matches(&declaration).count(),

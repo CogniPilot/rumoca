@@ -333,11 +333,12 @@ fn galec_c_symbols_never_take_a_generated_prefix_spelling() {
         "the array copy must still emit its own loop counter: {source}"
     );
     assert!(
-        !source.contains(&format!("float {GENERATED_COPY_ITERATOR};")),
+        !source.contains(&format!("float {GENERATED_COPY_ITERATOR};"))
+            && !source.contains(&format!("float {GENERATED_COPY_ITERATOR} = ")),
         "a user local spelled like the emitted loop counter must be renamed, \
          otherwise the loop index silently replaces it inside the copy: {source}"
     );
-    assert!(source.contains("float copy_0;"), "{source}");
+    assert!(source.contains("float copy_0 = 0.0f;"), "{source}");
     assert!(
         source.contains(&format!(
             "self->target[{GENERATED_COPY_ITERATOR}] = \
@@ -1530,7 +1531,9 @@ fn galec_c_artifacts_resolve_every_symbol_through_the_shared_policy() {
         &substitute,
     );
     assert!(
-        source.contains("float copy_0_2;") && !source.contains("float copy_0;"),
+        source.contains("float copy_0_2 = 0.0f;")
+            && !source.contains("float copy_0;")
+            && !source.contains("float copy_0 = "),
         "the renamed local must also come from the shared policy: {source}"
     );
     assert!(
