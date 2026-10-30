@@ -422,3 +422,165 @@ fn an_active_relation_when_keeps_a_nonfold_index_fault() {
         "{error}"
     );
 }
+
+/// Change only the selected model's start; do not mask another model's binding.
+fn runtime_index_source(model: &str, binding: i32, start: Option<i32>) -> String {
+    let name = model.strip_prefix("InactiveWhen.").expect("fixture model");
+    let opening = format!("  model {name} ");
+    let closing = format!("  end {name};");
+    assert_eq!(SOURCE.matches(&opening).count(), 1);
+    let (prefix, rest) = SOURCE.split_once(&opening).unwrap();
+    let (body, suffix) = rest.split_once(&closing).expect("fixture model end");
+    let needle = format!("Integer i(start = {binding}) =");
+    assert_eq!(
+        body.matches(&needle).count(),
+        1,
+        "exact selected index seed"
+    );
+    let replacement = start.map_or_else(
+        || "Integer i =".to_owned(),
+        |value| format!("Integer i(start = {value}) ="),
+    );
+    let body = body.replacen(&needle, &replacement, 1);
+    format!("{prefix}{opening}{body}{closing}{suffix}")
+}
+
+fn simulate_runtime_index_source(model: &str, source: &str) -> Result<SimResult, String> {
+    let compiled = Compiler::new()
+        .model(model)
+        .compile_str(source, "issue468_runtime_integer.mo")
+        .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
+    simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.02,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::RkLike,
+            ..SimOptions::default()
+        },
+    )
+    .map_err(|error| format!("{error} | {error:?}"))
+}
+
+/// Issue #468: bindings must win over default, matching and conflicting seeds.
+#[test]
+fn runtime_integer_function_indices_use_bindings_not_declaration_seeds() {
+    for (model, expected, binding, conflicting) in [
+        ("InactiveWhen.NoAssertCall", 60.0, 3, 1),
+        ("InactiveWhen.DirectHolds", 20.0, 2, 3),
+    ] {
+        for start in [None, Some(binding), Some(conflicting)] {
+            let source = runtime_index_source(model, binding, start);
+            let result = simulate_runtime_index_source(model, &source)
+                .unwrap_or_else(|error| panic!("{model}/{start:?}: {error}"));
+            for (name, expected) in [("i", f64::from(binding)), ("y", expected)] {
+                let column = result
+                    .names
+                    .iter()
+                    .position(|candidate| candidate == name)
+                    .unwrap_or_else(|| panic!("{name} is recorded"));
+                assert!(!result.data[column].is_empty());
+                assert!(
+                    result.data[column].iter().all(|&value| value == expected),
+                    "{model}/{start:?}/{name}: {:?}",
+                    result.data[column]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn runtime_integer_index_faults_report_bound_value_and_statement_order() {
+    for (model, message) in [
+        (
+            "InactiveWhen.DirectOwnMessage",
+            "entry index 4 is outside the table",
+        ),
+        ("InactiveWhen.DirectEarlyFault", "is outside 1..=3"),
+    ] {
+        for start in [None, Some(4), Some(1)] {
+            let source = runtime_index_source(model, 4, start);
+            let error = simulate_runtime_index_source(model, &source)
+                .expect_err("the actual bound index 4 is invalid");
+            assert!(
+                error.contains("index 4") && error.contains(message),
+                "{model}/{start:?}: {error}"
+            );
+            assert!(!error.contains("index 0"), "seed must not win: {error}");
+            if model.ends_with("DirectEarlyFault") {
+                assert!(
+                    !error.contains("early index 4"),
+                    "the indexed statement before the assertion must fail first: {error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn runtime_integer_index_is_valid_after_initial_state_projection() {
+    let source = SOURCE.replace(
+        "end InactiveWhen;",
+        r#"  model ProjectedIndex
+    Real x(start = 0, fixed = false);
+    Integer i = integer(x);
+    Real y = entry(i);
+  initial equation
+    x = 2;
+  equation
+    der(x) = 0;
+  end ProjectedIndex;
+end InactiveWhen;"#,
+    );
+    let result = simulate_runtime_index_source("InactiveWhen.ProjectedIndex", &source)
+        .expect("the index is valid at the solved initial state, not its seed");
+    for (name, expected) in [("x", 2.0), ("i", 2.0), ("y", 20.0)] {
+        let column = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is recorded"));
+        assert!(!result.data[column].is_empty());
+        assert!(
+            result.data[column].iter().all(|&value| value == expected),
+            "{name}: {:?}",
+            result.data[column]
+        );
+    }
+}
+
+/// Issue #468's R3 callback regressed this stateless Boolean/event network.
+/// Keep the actual MSL class in the normal suite, not only the external canary.
+#[test]
+fn initialization_bindings_preserve_msl_boolean_network_convergence() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/msl/ModelicaStandardLibrary-4.1.0");
+    assert!(root.is_dir(), "the pinned MSL source root is required");
+    let model = "Modelica.Blocks.Examples.BooleanNetwork1";
+    let compiled = Compiler::new()
+        .model(model)
+        .source_root(root.to_string_lossy().as_ref())
+        .compile_str(
+            "package BooleanProbe import Modelica; end BooleanProbe;",
+            "boolean_probe.mo",
+        )
+        .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.02,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::RkLike,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("{model} initialization converges: {error:?}"));
+    assert!(!result.data.is_empty(), "the model records its outputs");
+    assert!(
+        result
+            .data
+            .iter()
+            .all(|column| { !column.is_empty() && column.iter().all(|value| value.is_finite()) })
+    );
+}

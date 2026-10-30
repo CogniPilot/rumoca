@@ -1320,6 +1320,16 @@ impl SolveMeKernel {
             self.retain_settled_initialization(solver_y);
             return Ok(());
         }
+        // MLS §8.6: ordinary discrete definitions hold while initialization
+        // evaluates its algebraics (#468). The initial event then reapplies
+        // them from their start values, so an edge such as a Boolean clock's
+        // first tick still fires there.
+        let binding_starts: Vec<_> = self
+            .runtime
+            .initial_binding_parameter_slots()?
+            .into_iter()
+            .map(|index| (index, self.params[index]))
+            .collect();
         let policy = self.algebraic_projection_policy();
         let settle = policy.settle;
         self.runtime.settle_initialization_system(
@@ -1344,6 +1354,9 @@ impl SolveMeKernel {
             self.tolerance,
             settle.max_iters,
         )?;
+        for (index, start) in binding_starts {
+            self.params[index] = start;
+        }
         self.retain_settled_initialization(solver_y);
         Ok(())
     }

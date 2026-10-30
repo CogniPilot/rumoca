@@ -320,6 +320,12 @@ impl SolveRuntime {
             .apply_initialization_updates(y, p, t, _tol, max_iters)
     }
 
+    /// The parameter slots initialization binds from ordinary definitions
+    /// (#468); the initial event reapplies those definitions itself.
+    pub fn initial_binding_parameter_slots(&self) -> Result<Vec<usize>, RuntimeSolveError> {
+        Ok(self.scalar_execution()?.initial_binding_parameter_slots())
+    }
+
     pub fn apply_runtime_assignments_until_stable(
         &self,
         y: &mut [f64],

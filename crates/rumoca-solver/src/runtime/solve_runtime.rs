@@ -77,6 +77,7 @@ use execution_inventory::RuntimeExecutionInventory;
 pub use execution_inventory::ScalarExecutionView;
 mod causal_seed_schedules;
 mod guarded_assignments;
+mod initial_binding_ownership;
 mod initial_continuation;
 mod initial_event;
 mod initial_projection;
@@ -362,6 +363,8 @@ struct ScalarExecutionInventory {
     initialization_update_rhs: PreparedScalarProgramBlock,
     dynamic_time_event_rhs: PreparedScalarProgramBlock,
     runtime_assignment_rhs: PreparedScalarProgramBlock,
+    /// Runtime assignment rows that initialization binds itself (#468).
+    initial_binding_rows: Vec<usize>,
     post_commit_assignment_rhs: PreparedScalarProgramBlock,
     update_values_scratch: RefCell<Vec<f64>>,
     structured_discrete_rows: PreparedStructuredDiscreteRows,

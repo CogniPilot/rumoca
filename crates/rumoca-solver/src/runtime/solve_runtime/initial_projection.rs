@@ -904,6 +904,13 @@ impl ScalarExecutionView<'_> {
             .initial_continuation
             .as_ref()
             .is_some_and(InitialContinuationCoverage::drives_algebraic_refresh);
+        let plan = self.model.problem.initialization.projection_plan();
+        let homotopy_parameter_index = self
+            .scalar
+            .initial_continuation
+            .as_ref()
+            .and_then(InitialContinuationCoverage::sweep_parameter_index);
+        let bindings_only = homotopy_parameter_index.is_none() && !plan.iterates_discretes;
         project_initial_variables_with_homotopy(
             InitialHomotopySystem {
                 model: &InitialProjectionModel {
@@ -913,18 +920,21 @@ impl ScalarExecutionView<'_> {
                     refreshes_algebraic_reads: self.initial_rows_read_settled_view(),
                 },
                 t,
-                plan: self.model.problem.initialization.projection_plan(),
-                homotopy_parameter_index: self
-                    .scalar
-                    .initial_continuation
-                    .as_ref()
-                    .and_then(InitialContinuationCoverage::sweep_parameter_index),
+                plan,
+                homotopy_parameter_index,
                 tol,
                 max_iters,
             },
             y,
             p,
             |y, p| {
+                if bindings_only {
+                    // The uniterated path must bind discrete values before an
+                    // algebraic reads them. Relation memory belongs to the
+                    // outer initialization settle after projection (#468).
+                    self.apply_initial_bindings_until_stable(y, p, t, max_iters)?;
+                    return Ok(());
+                }
                 if drives_algebraic_refresh {
                     self.refresh_algebraic_and_output_slots_certified(t, y, p, tol, max_iters)?;
                 } else {

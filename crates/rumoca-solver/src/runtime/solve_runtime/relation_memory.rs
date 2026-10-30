@@ -174,6 +174,62 @@ impl ScalarExecutionView<'_> {
         )
     }
 
+    pub(super) fn initial_binding_parameter_slots(&self) -> Vec<usize> {
+        let targets = &self.model.problem.discrete.runtime_assignment_targets;
+        self.scalar
+            .initial_binding_rows
+            .iter()
+            .filter_map(|&row| match targets[row] {
+                solve::ScalarSlot::P { index, .. } => Some(index),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Apply the runtime bindings that initialization does not own elsewhere
+    /// (MLS §8.6). Event updates and relation memory stay in the outer
+    /// initialization fixed point.
+    pub(super) fn apply_initial_bindings_until_stable(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        let rows = &self.scalar.initial_binding_rows;
+        let block = &self.scalar.runtime_assignment_rhs;
+        let targets = &self.model.problem.discrete.runtime_assignment_targets;
+        let mut values = self.scalar.update_values_scratch.borrow_mut();
+        values.resize(rows.len(), 0.0);
+        for _ in 0..max_iters {
+            for (&row, value) in rows.iter().zip(values.iter_mut()) {
+                *value = self.eval_initial_binding(block, row, RowEvalPoint { y, p, t })?;
+            }
+            let mut changed = false;
+            for (&row, &value) in rows.iter().zip(values.iter()) {
+                changed |= solve_eval::apply_scalar_slot_value_exact(targets[row], value, y, p)?;
+            }
+            if !changed {
+                return Ok(());
+            }
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "initial bindings did not converge at t={t} after {max_iters} iterations"
+        )))
+    }
+
+    fn eval_initial_binding(
+        &self,
+        block: &solve_eval::PreparedScalarProgramBlock,
+        row: usize,
+        point: RowEvalPoint<'_>,
+    ) -> Result<f64, RuntimeSolveError> {
+        let (program, output) = block.row_output_position(row).ok_or_else(|| {
+            RuntimeSolveError::solve_ir("initial binding has no producing program")
+        })?;
+        self.eval_lifecycle_row_output(block, program, output, point)
+    }
+
     pub fn apply_post_commit_assignments_until_stable(
         &self,
         y: &mut [f64],
