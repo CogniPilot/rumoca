@@ -7,6 +7,12 @@ use rumoca_ir_solve as solve;
 
 use super::CompiledSolveProjectionJacobian;
 
+/// Receives one program's local outputs after it succeeds and may write the
+/// seed later programs read; see
+/// [`CompiledSolveJacobianExpression::call_programs_committing`].
+pub type ProgramOutputCommit<'a> =
+    dyn FnMut(usize, &[f64], &mut [f64]) -> Result<(), crate::RuntimeSolveError> + 'a;
+
 /// Backend-neutral callable produced from one checked Solve-IR expression
 /// block. Native execution adapters implement this contract; a compiled runtime
 /// requires its whole-block implementation before construction succeeds.
@@ -98,6 +104,22 @@ pub trait CompiledSolveJacobianExpression {
         _inputs: solve_eval::JacobianEvalInputs<'_>,
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut Vec<f64>,
+    ) -> Result<bool, crate::RuntimeSolveError> {
+        Ok(false)
+    }
+
+    /// Run `programs` in order at one point, passing each program's local
+    /// outputs to `commit` (which may write `seed`, read by later programs)
+    /// only after that program succeeds. `false` declines before any program
+    /// executes; an execution or commit error stops at that program, with the
+    /// earlier programs' commits standing.
+    fn call_programs_committing(
+        &self,
+        _programs: std::ops::Range<usize>,
+        _inputs: (&[f64], &[f64], f64),
+        _seed: &mut [f64],
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _commit: &mut ProgramOutputCommit<'_>,
     ) -> Result<bool, crate::RuntimeSolveError> {
         Ok(false)
     }

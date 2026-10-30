@@ -63,7 +63,9 @@ use execution_owners::{
 #[cfg(test)]
 pub(crate) mod test_kernels;
 use chart_sharing::BlockReuse;
-pub use compiled_expressions::{CompiledSolveExpression, CompiledSolveJacobianExpression};
+pub use compiled_expressions::{
+    CompiledSolveExpression, CompiledSolveJacobianExpression, ProgramOutputCommit,
+};
 use compiled_inventory::{CompiledExpressions, PreparedExpressions, require_prepared};
 use compiled_lifecycle::CompiledLifecycle;
 mod coupled_event;

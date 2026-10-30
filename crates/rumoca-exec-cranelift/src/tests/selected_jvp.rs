@@ -283,3 +283,162 @@ fn native_jvp_outputs_at_coordinates_match_one_call_each_and_prevalidate() {
     );
     assert_eq!(untouched, [7.0; 2]);
 }
+
+/// `2 seed[0]`, then `y[0] seed[1]`, then a lookup in table 0.
+fn committed_chain() -> ScalarProgramBlock {
+    ScalarProgramBlock::with_output_indices(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::LoadSeed { dst: 1, index: 0 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ],
+            vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::LoadSeed { dst: 1, index: 1 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::Const { dst: 1, value: 1.0 },
+                LinearOp::TableLookup {
+                    dst: 2,
+                    table_id: 0,
+                    column: 1,
+                    input: 0,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        vec![fixture_span(); 3],
+        vec![0, 1, 2],
+    )
+    .unwrap()
+}
+
+/// Commit each program's single output into seed slot `program + 1`.
+fn commit_next(program: usize, outputs: &[f64], seed: &mut [f64]) -> Result<(), CompileError> {
+    seed[program + 1] = outputs[0];
+    Ok(())
+}
+
+#[test]
+fn committed_programs_read_earlier_commits_like_one_program_at_a_time() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let (y, p) = ([3.0], [0.0]);
+    let mut committed = [0.5, 0.0, 0.0, 0.0];
+    compiled
+        .call_programs_committing(0..2, (&y, &p, 0.0), &mut committed, &[], &mut commit_next)
+        .unwrap();
+    let mut stepwise = [0.5, 0.0, 0.0, 0.0];
+    let mut out = Vec::new();
+    for program in 0..2 {
+        let inputs = rumoca_eval_solve::JacobianEvalInputs {
+            y: &y,
+            p: &p,
+            t: 0.0,
+            seed: &stepwise,
+        };
+        compiled
+            .call_program_outputs(program, inputs, &[], &mut out)
+            .unwrap();
+        commit_next(program, &out, &mut stepwise).unwrap();
+    }
+    assert_eq!(committed.map(f64::to_bits), stepwise.map(f64::to_bits));
+    assert_eq!(committed, [0.5, 1.0, 3.0, 0.0]);
+}
+
+#[test]
+fn a_failing_program_commits_nothing_and_keeps_earlier_commits() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let (y, p) = ([3.0], [0.0]);
+    let mut seed = [0.5, 0.0, 0.0, -5.0];
+    let error = compiled
+        .call_programs_committing(0..3, (&y, &p, 0.0), &mut seed, &[], &mut commit_next)
+        .unwrap_err();
+    assert_eq!(seed, [0.5, 1.0, 3.0, -5.0]);
+    let mut out = Vec::new();
+    let inputs = rumoca_eval_solve::JacobianEvalInputs {
+        y: &y,
+        p: &p,
+        t: 0.0,
+        seed: &seed,
+    };
+    let alone = compiled
+        .call_program_outputs(2, inputs, &[], &mut out)
+        .unwrap_err();
+    assert_eq!(error.to_string(), alone.to_string());
+}
+
+#[test]
+fn a_failing_commit_stops_before_the_next_program() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let mut seed = [0.5, 0.0, 0.0, 0.0];
+    let calls = compiled.jit.program_call_count();
+    let error = compiled
+        .call_programs_committing(
+            0..3,
+            (&[3.0], &[0.0], 0.0),
+            &mut seed,
+            &[],
+            &mut |program, _, _| {
+                if program == 0 {
+                    Err(CompileError::Input("refused commit".to_string()))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("refused commit"));
+    assert_eq!(seed, [0.5, 0.0, 0.0, 0.0]);
+    assert_eq!(compiled.jit.program_call_count(), calls + 1);
+}
+
+#[test]
+fn committed_programs_check_extents_before_any_program_runs() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let calls = compiled.jit.program_call_count();
+    let mut committed = 0;
+    let mut count = |_: usize, _: &[f64], _: &mut [f64]| -> Result<(), CompileError> {
+        committed += 1;
+        Ok(())
+    };
+    let mut short_seed = [0.5];
+    assert!(
+        compiled
+            .call_programs_committing(
+                0..2,
+                (&[3.0], &[0.0], 0.0),
+                &mut short_seed,
+                &[],
+                &mut count
+            )
+            .is_err()
+    );
+    let mut seed = [0.5, 0.0, 0.0];
+    assert!(
+        compiled
+            .call_programs_committing(0..2, (&[], &[0.0], 0.0), &mut seed, &[], &mut count)
+            .is_err()
+    );
+    assert!(
+        compiled
+            .call_programs_committing(2..4, (&[3.0], &[0.0], 0.0), &mut seed, &[], &mut count)
+            .is_err()
+    );
+    assert_eq!(compiled.jit.program_call_count(), calls);
+    assert_eq!(committed, 0);
+}

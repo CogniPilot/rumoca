@@ -500,6 +500,64 @@ impl CompleteJacobian {
         }
     }
 
+    /// Run `programs` in order through the whole native entry, committing each
+    /// program's outputs before the next runs (see
+    /// [`CompiledSolveJacobianExpression::call_programs_committing`]). Each
+    /// program's output count and native error span are those of
+    /// [`Self::call_program_outputs`]. `false` declines before any program
+    /// executes: a composite block, a range outside the compiled programs, or
+    /// a backend without the entry.
+    pub(super) fn call_programs_committing(
+        &self,
+        programs: std::ops::Range<usize>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        tables: &[rumoca_core::ExternalTableData],
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        let (whole, codes) = match &self.execution {
+            JacobianExecution::Native { whole, programs } => (whole, programs),
+            JacobianExecution::Shared(code) => {
+                return code.call_programs_committing(programs, inputs, seed, tables, commit);
+            }
+            JacobianExecution::Composite(_) => return Ok(false),
+        };
+        if codes.get(programs.clone()).is_none()
+            || programs
+                .clone()
+                .any(|index| source_program_outputs(&self.source, index).is_err())
+        {
+            return Ok(false);
+        }
+        let mut next = programs.start;
+        let mut commit_failed = false;
+        let result = whole.call_programs_committing(
+            programs,
+            inputs,
+            seed,
+            tables,
+            &mut |program, outputs, seed| {
+                let committed = validate_runtime_output_len(
+                    "selected directional outputs",
+                    codes[program].outputs,
+                    outputs.len(),
+                )
+                .and_then(|()| commit(program, outputs, seed));
+                commit_failed = committed.is_err();
+                next = program + 1;
+                committed
+            },
+        );
+        match result {
+            Err(error) if !commit_failed => Err(admitted_compiled_error(
+                "selected directional program",
+                &[codes[next].span],
+                error,
+            )),
+            result => result,
+        }
+    }
+
     pub(super) fn call_program_outputs(
         &self,
         index: usize,

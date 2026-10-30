@@ -3,6 +3,16 @@ mod tests;
 
 use std::rc::Rc;
 
+/// A runtime error carried through a native call that also reports compile
+/// errors, so each keeps its own mapping.
+struct SolveFailure(rumoca_solver::RuntimeSolveError);
+
+impl From<rumoca_exec_cranelift::CompileError> for SolveFailure {
+    fn from(error: rumoca_exec_cranelift::CompileError) -> Self {
+        Self(compiled_execution_error(error))
+    }
+}
+
 fn compiled_execution_error(
     error: rumoca_exec_cranelift::CompileError,
 ) -> rumoca_solver::RuntimeSolveError {
@@ -213,6 +223,25 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftComputeJacobian
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
+    fn call_programs_committing(
+        &self,
+        programs: std::ops::Range<usize>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[rumoca_core::ExternalTableData],
+        commit: &mut rumoca_solver::ProgramOutputCommit<'_>,
+    ) -> Result<bool, rumoca_solver::RuntimeSolveError> {
+        self.0
+            .call_programs_committing(
+                programs,
+                inputs,
+                seed,
+                external_tables,
+                &mut |program, outputs, seed| commit(program, outputs, seed).map_err(SolveFailure),
+            )
+            .map(|()| true)
+            .map_err(|SolveFailure(error)| error)
+    }
     fn bind_program(
         &self,
         source: &rumoca_ir_solve::ScalarProgramBlock,
