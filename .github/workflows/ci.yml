@@ -254,6 +254,19 @@ jobs:
           use-flakehub: false
           diagnostic-endpoint: ''
 
+      # Pull requests read the public cache like the other jobs and need no
+      # credentials. A push to main also logs in, so the publish step below can
+      # put rumoca in the cache for downstream flakes (kite, slam_web, the
+      # humanoid demo) instead of each first build compiling it for 20-40
+      # minutes. skipPush: nothing is published automatically; only the two
+      # store paths named in the publish step, with their closures, are pushed.
+      - name: CogniPilot Nix cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: cognipilot
+          authToken: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.CACHIX_AUTH_TOKEN || '' }}
+          skipPush: true
+
       - name: Nix build the package and required MLIR CPU checks
         # Build only the reproducible package and focused MLIR CPU checks.
         # Format and clippy are owned by the standalone Format/Lint jobs, and
@@ -275,6 +288,30 @@ jobs:
           nix build --print-build-logs \
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu
+
+      - name: Publish rumoca and its dependency build to the CogniPilot cache
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        # A cache upload problem is reported, not allowed to turn main red.
+        continue-on-error: true
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CACHIX_AUTH_TOKEN}" ]; then
+            echo "::warning::CACHIX_AUTH_TOKEN is not set, so rumoca was not published to the cognipilot cache"
+            exit 0
+          fi
+          ulimit -s 1048576
+          # checks.rumoca above is the same derivation as packages.rumoca, so
+          # nothing is rebuilt here. The dependency build (crane's
+          # buildDepsOnly) is a direct input of it; take it from there rather
+          # than by searching the store.
+          rumoca=$(nix path-info .#rumoca)
+          deps_drv=$(nix-store --query --references "$(nix path-info --derivation .#rumoca)" | grep -E -- '-deps-[^/]+\.drv$')
+          test "$(printf '%s\n' "$deps_drv" | wc -l)" -eq 1
+          deps=$(nix-store --query --outputs "$deps_drv")
+          printf 'Publishing %s\n' "$rumoca" "$deps"
+          cachix push cognipilot "$rumoca" "$deps"
 
   kani:
     name: Kani symbolic event-history contract
