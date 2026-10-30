@@ -79,13 +79,13 @@ pub use runtime::solve_ops::{
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, BlockResidualSplitCounts,
     CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
-    CompiledSolveExpression, CompiledSolveJacobianExpression, CompiledSolveProjectionJacobian,
-    CompiledSolveTargetValues, EventTransactionExecution, EventUpdateRowFilter,
-    InitialEventObservation, PrecompiledSolveBackend, PrecompiledSolveBackendBuilder,
-    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    ProjectedPostInitialEventInput, ReferenceReverseExecution, ScalarExecutionView,
-    SolveExecutionBackend, SolveRuntime, SolveRuntimeModel, block_residual_split_counts,
-    reset_block_residual_split_counts,
+    CompiledSolveExpression, CompiledSolveExpressionFamily, CompiledSolveJacobianExpression,
+    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, EventTransactionExecution,
+    EventUpdateRowFilter, InitialEventObservation, PrecompiledSolveBackend,
+    PrecompiledSolveBackendBuilder, ProjectedEventUpdateInput, ProjectedInitialEventInput,
+    ProjectedInitialEventOutcome, ProjectedPostInitialEventInput, ReferenceReverseExecution,
+    ScalarExecutionView, SolveExecutionBackend, SolveFamilyCompileError, SolveRuntime,
+    SolveRuntimeModel, block_residual_split_counts, reset_block_residual_split_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{

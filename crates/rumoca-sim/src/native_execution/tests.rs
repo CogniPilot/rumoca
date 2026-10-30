@@ -894,3 +894,35 @@ end NativeMessageFault;
     }
     assert!(checked > 0);
 }
+
+#[test]
+fn native_target_expression_family_keeps_complete_entries_and_pure_calls() {
+    let table = quadratic_table();
+    let plain = solve::ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![span()],
+    )
+    .unwrap();
+    let table_block = native_table_call_row(&table);
+    let backend = super::backend(&table).unwrap();
+    let mut family = backend
+        .compile_target_expression_family(&[&plain, &table_block])
+        .unwrap()
+        .unwrap();
+    let mut out = [-1.0];
+    family[0].call(&[7.0], &[], 0.0, &[], &mut out).unwrap();
+    assert_eq!(out, [7.0]);
+    assert!(
+        family[1]
+            .call(&[], &[1.0, 42.0, 1.0], 0.0, &[], &mut out)
+            .is_err()
+    );
+    assert_eq!(out, [7.0]);
+    let survivor = family.remove(0);
+    drop(family);
+    survivor.call(&[13.0], &[], 0.0, &[], &mut out).unwrap();
+    assert_eq!(out, [13.0]);
+}

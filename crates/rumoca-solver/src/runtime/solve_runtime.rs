@@ -4,7 +4,8 @@ mod execution_backend;
 
 pub use execution_backend::{
     CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
-    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, SolveExecutionBackend,
+    CompiledSolveExpressionFamily, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
+    SolveExecutionBackend, SolveFamilyCompileError,
 };
 use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;

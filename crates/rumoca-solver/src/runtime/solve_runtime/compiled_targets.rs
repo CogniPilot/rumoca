@@ -134,6 +134,8 @@ impl TargetQueries {
             ..Self::default()
         };
         let mut families = FxHashMap::default();
+        let mut plans = Vec::new();
+        let mut pending_bindings = Vec::new();
         for (row, target) in candidates {
             let (program, output) =
                 source
@@ -160,28 +162,24 @@ impl TargetQueries {
             }
             let family = (program, plan.canonical_prefix_len());
             let selected = plan.private_result_offset();
-            let (code, family) = match families.get(&family) {
-                Some((code, plan)) => (Rc::clone(code), Rc::clone(plan)),
+            let index = match families.get(&family) {
+                Some(index) => *index,
                 None => {
-                    let code =
-                        backend
-                            .compile_target_values(&plan, context)
-                            .map_err(|message| EvalSolveError::CompiledExecution {
-                                message: format!(
-                                    "required private target tuple could not be lowered: {message}"
-                                ),
-                                span: source.canonical().program_span(program),
-                            })?;
-                    let plan = Rc::new(plan);
-                    families.insert(family, (Rc::clone(&code), Rc::clone(&plan)));
-                    (code, plan)
+                    let index = plans.len();
+                    plans.push((program, Rc::new(plan)));
+                    families.insert(family, index);
+                    index
                 }
             };
+            pending_bindings.push((key, index, selected));
+        }
+        let codes = compile_families(backend, context, source.canonical(), &plans)?;
+        for (key, index, selected) in pending_bindings {
             result.bindings.insert(
                 key,
                 TargetBinding {
-                    code,
-                    family,
+                    code: Rc::clone(&codes[index]),
+                    family: Rc::clone(&plans[index].1),
                     selected,
                 },
             );
@@ -220,6 +218,82 @@ impl TargetQueries {
     }
 }
 
+fn compile_families(
+    backend: &dyn SolveExecutionBackend,
+    context: RowEvalContext<'_>,
+    source: &solve::ScalarProgramBlock,
+    plans: &[(usize, Rc<solve_eval::PreparedTargetValuePlan>)],
+) -> Result<Vec<Rc<dyn CompiledSolveTargetValues>>, EvalSolveError> {
+    for (_, plan) in plans {
+        validate_plan(plan, context).map_err(|message| EvalSolveError::CompiledExecution {
+            message,
+            span: source.first_source_span(),
+        })?;
+    }
+    let blocks = plans
+        .iter()
+        .map(|(_, plan)| plan.program())
+        .collect::<Vec<_>>();
+    let compiled = if plans.is_empty() {
+        None
+    } else {
+        backend
+            .compile_target_expression_family(&blocks)
+            .map_err(|(entry, message)| family_compile_error(source, plans, entry, message))?
+    };
+    if compiled
+        .as_ref()
+        .is_some_and(|entries| entries.len() != plans.len())
+    {
+        return Err(EvalSolveError::CompiledExecution {
+            message: "target family entry count differs from issued plans".into(),
+            span: source.first_source_span(),
+        });
+    }
+    let mut entries = compiled.map(Vec::into_iter);
+    let mut codes = Vec::with_capacity(plans.len());
+    for (program, plan) in plans {
+        let code = match &mut entries {
+            Some(entries) => {
+                bind_expression(plan, context, entries.next().expect("checked family size"))
+            }
+            None => backend.compile_target_values(plan, context),
+        }
+        .map_err(|message| EvalSolveError::CompiledExecution {
+            message: format!("required private target tuple could not be lowered: {message}"),
+            span: source.program_span(*program),
+        })?;
+        codes.push(code);
+    }
+    Ok(codes)
+}
+
+fn family_compile_error(
+    source: &solve::ScalarProgramBlock,
+    plans: &[(usize, Rc<solve_eval::PreparedTargetValuePlan>)],
+    entry: Option<usize>,
+    message: String,
+) -> EvalSolveError {
+    match entry {
+        Some(entry) => match plans.get(entry) {
+            Some((program, _)) => EvalSolveError::CompiledExecution {
+                message,
+                span: source.program_span(*program),
+            },
+            None => EvalSolveError::CompiledExecution {
+                message: format!(
+                    "backend returned invalid family failure entry {entry}: {message}"
+                ),
+                span: None,
+            },
+        },
+        None => EvalSolveError::CompiledExecution {
+            message,
+            span: None,
+        },
+    }
+}
+
 impl TargetBinding {
     fn matches(&self, plan: &solve_eval::PreparedTargetValuePlan) -> bool {
         self.selected == plan.private_result_offset()
@@ -246,6 +320,31 @@ pub(super) fn compile(
     plan: &solve_eval::PreparedTargetValuePlan,
     context: RowEvalContext<'_>,
 ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
+    validate_plan(plan, context)?;
+    bind_expression(plan, context, backend.compile_expression(plan.program())?)
+}
+
+fn bind_expression(
+    plan: &solve_eval::PreparedTargetValuePlan,
+    context: RowEvalContext<'_>,
+    code: Rc<dyn CompiledSolveExpression>,
+) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
+    validate_plan(plan, context)?;
+    let source = plan.program();
+    Ok(Rc::new(TargetValues {
+        code,
+        output_count: source.output_count(),
+        spans: source.program_spans().into(),
+        scratch: RefCell::default(),
+        row: plan.row(),
+        coefficient_outputs: plan.coefficient_outputs().into(),
+    }))
+}
+
+fn validate_plan(
+    plan: &solve_eval::PreparedTargetValuePlan,
+    context: RowEvalContext<'_>,
+) -> Result<(), String> {
     if context.seed.is_some() {
         return Err("a primal target tuple cannot capture a directional seed".into());
     }
@@ -253,14 +352,7 @@ pub(super) fn compile(
     if plan.private_result_offset() >= source.output_count() {
         return Err("private target tuple projection exceeds its source outputs".into());
     }
-    Ok(Rc::new(TargetValues {
-        code: backend.compile_expression(source)?,
-        output_count: source.output_count(),
-        spans: source.program_spans().into(),
-        scratch: RefCell::default(),
-        row: plan.row(),
-        coefficient_outputs: plan.coefficient_outputs().into(),
-    }))
+    Ok(())
 }
 
 impl CompiledSolveTargetValues for TargetValues {

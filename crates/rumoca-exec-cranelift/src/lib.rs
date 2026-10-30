@@ -553,6 +553,27 @@ pub fn compile_expression_scalar_program_block_with_pure_calls(
     })
 }
 
+/// Compile complete independent source blocks as one native preparation family.
+pub fn compile_expression_scalar_program_family_with_pure_calls(
+    blocks: &[&ScalarProgramBlock],
+    pure_calls: &CompiledPureCallTable,
+) -> Result<Vec<CompiledExpressionRows>, (Option<usize>, CompileError)> {
+    let rows = blocks
+        .iter()
+        .map(|block| block.programs())
+        .collect::<Vec<_>>();
+    let compiled = emit::compile_residual_family(&rows, Some(pure_calls.jit.clone()))?;
+    Ok(compiled
+        .into_iter()
+        .zip(blocks)
+        .map(|(jit, source)| CompiledExpressionRows {
+            jit: Rc::new(jit),
+            source: (*source).clone(),
+            output_placement: OutputPlacement::for_block(source),
+        })
+        .collect())
+}
+
 pub fn compile_jacobian_scalar_program_block_with_pure_calls(
     rows: &ScalarProgramBlock,
     pure_calls: &CompiledPureCallTable,

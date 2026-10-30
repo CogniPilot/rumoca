@@ -232,3 +232,230 @@ fn a_shared_target_family_checks_only_the_selected_coefficient() {
         assert_eq!(y, [1e30, -1e30]);
     }
 }
+
+struct FamilyPolicyBackend {
+    enabled: bool,
+    wrong_count: bool,
+    family_calls: std::cell::Cell<usize>,
+    fallback_calls: std::cell::Cell<usize>,
+}
+
+impl SolveExecutionBackend for FamilyPolicyBackend {
+    fn compile_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        super::super::test_kernels::ReferenceBackend.compile_expression(block)
+    }
+    fn compile_target_values(
+        &self,
+        _: &solve_eval::PreparedTargetValuePlan,
+        _: RowEvalContext<'_>,
+    ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
+        self.fallback_calls.set(self.fallback_calls.get() + 1);
+        Err("custom target policy refuses".into())
+    }
+    fn compile_target_expression_family(
+        &self,
+        blocks: &[&solve::ScalarProgramBlock],
+    ) -> Result<Option<CompiledSolveExpressionFamily>, SolveFamilyCompileError> {
+        self.family_calls.set(self.family_calls.get() + 1);
+        if !self.enabled {
+            return Ok(None);
+        }
+        if self.wrong_count {
+            return Ok(Some(Vec::new()));
+        }
+        blocks
+            .iter()
+            .map(|block| self.compile_expression(block))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+            .map_err(|error| (None, error))
+    }
+}
+
+#[test]
+fn target_family_opt_in_preserves_values_and_decline_preserves_custom_policy() {
+    for enabled in [false, true] {
+        let source = PreparedScalarProgramBlock::new(spanned_block(
+            vec![
+                shifted_variable_residual_row(0, 7.0),
+                shifted_variable_residual_row(1, 13.0),
+            ],
+            "target_family_policy.mo",
+        ))
+        .unwrap();
+        let backend = FamilyPolicyBackend {
+            enabled,
+            wrong_count: false,
+            family_calls: Default::default(),
+            fallback_calls: Default::default(),
+        };
+        let result = super::super::compiled_targets::TargetQueries::prepare(
+            &source,
+            [(0, 0), (1, 1)],
+            &backend,
+            RowEvalContext::default(),
+        );
+        assert_eq!(backend.family_calls.get(), 1);
+        if enabled {
+            let queries = result.unwrap();
+            assert_eq!(backend.fallback_calls.get(), 0);
+            for (row, value) in [(0, 7.0), (1, 13.0)] {
+                assert_eq!(
+                    queries
+                        .call(
+                            (row, 0, row),
+                            (&[99.0, 101.0], &[], 0.0),
+                            RowEvalContext::default()
+                        )
+                        .unwrap(),
+                    Some(value)
+                );
+            }
+        } else {
+            assert!(result.is_err());
+            assert_eq!(backend.fallback_calls.get(), 1);
+        }
+    }
+}
+
+#[test]
+fn target_family_wrong_entry_count_is_fatal_without_fallback() {
+    let source = PreparedScalarProgramBlock::new(spanned_block(
+        vec![shifted_variable_residual_row(0, 7.0)],
+        "target_family_count.mo",
+    ))
+    .unwrap();
+    let backend = FamilyPolicyBackend {
+        enabled: true,
+        wrong_count: true,
+        family_calls: Default::default(),
+        fallback_calls: Default::default(),
+    };
+    assert!(
+        super::super::compiled_targets::TargetQueries::prepare(
+            &source,
+            [(0, 0)],
+            &backend,
+            RowEvalContext::default()
+        )
+        .is_err()
+    );
+    assert_eq!(backend.family_calls.get(), 1);
+    assert_eq!(backend.fallback_calls.get(), 0);
+}
+
+#[test]
+fn target_family_rejects_directional_seed_before_backend_preparation() {
+    let source = PreparedScalarProgramBlock::new(spanned_block(
+        vec![shifted_variable_residual_row(0, 7.0)],
+        "target_family_seed.mo",
+    ))
+    .unwrap();
+    let backend = FamilyPolicyBackend {
+        enabled: true,
+        wrong_count: false,
+        family_calls: Default::default(),
+        fallback_calls: Default::default(),
+    };
+    let seed = [1.0];
+    assert!(
+        super::super::compiled_targets::TargetQueries::prepare(
+            &source,
+            [(0, 0)],
+            &backend,
+            RowEvalContext {
+                seed: Some(&seed),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(backend.family_calls.get(), 0);
+    assert_eq!(backend.fallback_calls.get(), 0);
+}
+
+struct LateFamilyFailure {
+    entry: usize,
+}
+
+impl SolveExecutionBackend for LateFamilyFailure {
+    fn compile_expression(
+        &self,
+        _: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        Err("per-entry fallback must not run after family failure".into())
+    }
+    fn compile_target_expression_family(
+        &self,
+        blocks: &[&solve::ScalarProgramBlock],
+    ) -> Result<Option<CompiledSolveExpressionFamily>, SolveFamilyCompileError> {
+        assert_eq!(blocks.len(), 2);
+        Err((Some(self.entry), "second family entry refused".into()))
+    }
+}
+
+#[test]
+fn target_family_failure_is_attributed_to_the_failing_entry_source() {
+    let spans = [
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("first_family.mo"),
+            1,
+            2,
+        ),
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("second_family.mo"),
+            3,
+            4,
+        ),
+    ];
+    let source = PreparedScalarProgramBlock::new(
+        solve::ScalarProgramBlock::with_program_spans(
+            vec![
+                shifted_variable_residual_row(0, 7.0),
+                shifted_variable_residual_row(1, 13.0),
+            ],
+            spans.to_vec(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let error = super::super::compiled_targets::TargetQueries::prepare(
+        &source,
+        [(0, 0), (1, 1)],
+        &LateFamilyFailure { entry: 1 },
+        RowEvalContext::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        matches!(error, EvalSolveError::CompiledExecution { span: Some(span), .. } if span == spans[1]),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn target_family_invalid_failure_ordinal_does_not_fabricate_a_source_owner() {
+    let source = PreparedScalarProgramBlock::new(spanned_block(
+        vec![
+            shifted_variable_residual_row(0, 7.0),
+            shifted_variable_residual_row(1, 13.0),
+        ],
+        "invalid_family_failure.mo",
+    ))
+    .unwrap();
+    let error = super::super::compiled_targets::TargetQueries::prepare(
+        &source,
+        [(0, 0), (1, 1)],
+        &LateFamilyFailure { entry: 9 },
+        RowEvalContext::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        matches!(error, EvalSolveError::CompiledExecution { ref message, span: None } if message.contains("invalid family failure entry 9")),
+        "{error:?}"
+    );
+}

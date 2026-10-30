@@ -14,7 +14,8 @@ use rumoca_ir_solve as solve;
 use crate::SimNativeDecline;
 use crate::{
     CompiledSolveAssignmentSchedule, CompiledSolveEventTransaction, CompiledSolveExpression,
-    CompiledSolveJacobianExpression, CompiledSolveTargetValues, SolveExecutionBackend,
+    CompiledSolveExpressionFamily, CompiledSolveJacobianExpression, CompiledSolveTargetValues,
+    SolveExecutionBackend, SolveFamilyCompileError,
 };
 
 /// Declined requests, shared by every clone of one backend handle.
@@ -75,6 +76,17 @@ impl SolveExecutionBackend for RecordingBackend {
             "target_values",
             self.inner.compile_target_values(plan, context),
         )
+    }
+
+    fn compile_target_expression_family(
+        &self,
+        blocks: &[&solve::ScalarProgramBlock],
+    ) -> Result<Option<CompiledSolveExpressionFamily>, SolveFamilyCompileError> {
+        let result = self.inner.compile_target_expression_family(blocks);
+        if let Err((_, message)) = &result {
+            self.log.record("target_expression_family", message);
+        }
+        result
     }
 
     fn pure_call_execution(&self) -> Option<&dyn solve_eval::PureCallExecution> {
@@ -205,5 +217,67 @@ mod tests {
                 },
             ]
         );
+    }
+
+    struct FamilyProbe {
+        mode: u8,
+        calls: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl SolveExecutionBackend for FamilyProbe {
+        fn compile_expression(
+            &self,
+            _: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+            Err("unrelated expression compilation must not be requested".into())
+        }
+
+        fn compile_target_expression_family(
+            &self,
+            blocks: &[&solve::ScalarProgramBlock],
+        ) -> Result<Option<CompiledSolveExpressionFamily>, SolveFamilyCompileError> {
+            assert!(blocks.is_empty());
+            self.calls.set(self.calls.get() + 1);
+            match self.mode {
+                0 => Ok(None),
+                1 => Ok(Some(Vec::new())),
+                _ => Err((None, "family refused".into())),
+            }
+        }
+    }
+
+    #[test]
+    fn target_family_requests_reach_the_inner_backend_and_preserve_decline_evidence() {
+        for mode in 0..3 {
+            let calls = Rc::new(std::cell::Cell::new(0));
+            let log = DeclineLog::default();
+            let backend = RecordingBackend::new(
+                Rc::new(FamilyProbe {
+                    mode,
+                    calls: calls.clone(),
+                }),
+                log.clone(),
+            );
+            let result = backend.compile_target_expression_family(&[]);
+            assert_eq!(
+                calls.get(),
+                1,
+                "family requests must cross the production wrapper"
+            );
+            match mode {
+                0 => assert!(result.unwrap().is_none()),
+                1 => assert!(result.unwrap().unwrap().is_empty()),
+                _ => assert_eq!(result.err().unwrap(), (None, "family refused".into())),
+            }
+            let declines = log.snapshot();
+            if mode == 2 {
+                assert_eq!(declines.len(), 1);
+                assert_eq!(declines[0].program, "target_expression_family");
+                assert_eq!(declines[0].reason, "family refused");
+                assert_eq!(declines[0].count, 1);
+            } else {
+                assert!(declines.is_empty());
+            }
+        }
     }
 }

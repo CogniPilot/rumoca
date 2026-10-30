@@ -403,6 +403,31 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
             .map_err(|error| error.to_string())
     }
 
+    fn compile_target_expression_family(
+        &self,
+        blocks: &[&rumoca_ir_solve::ScalarProgramBlock],
+    ) -> Result<
+        Option<rumoca_solver::CompiledSolveExpressionFamily>,
+        rumoca_solver::SolveFamilyCompileError,
+    > {
+        rumoca_exec_cranelift::compile_expression_scalar_program_family_with_pure_calls(
+            blocks,
+            &self.pure_calls,
+        )
+        .map(|entries| {
+            Some(
+                entries
+                    .into_iter()
+                    .map(|entry| {
+                        Rc::new(CraneliftExpression(entry))
+                            as Rc<dyn rumoca_solver::CompiledSolveExpression>
+                    })
+                    .collect(),
+            )
+        })
+        .map_err(|(entry, error)| (entry, error.to_string()))
+    }
+
     fn compile_selectable_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,

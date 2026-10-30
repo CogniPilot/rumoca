@@ -249,7 +249,7 @@ pub(crate) struct CompiledResidualRows {
     output_scratch: RefCell<Vec<f64>>,
     transaction_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
-    _module: OwnedJitModule,
+    _module: Rc<OwnedJitModule>,
 }
 
 pub(crate) struct CompiledAssignmentSchedule {
@@ -680,6 +680,61 @@ pub(crate) fn compile_selectable_residual_rows(
     compile_residual_rows_attached(rows, pure_calls, true)
 }
 
+#[cfg(test)]
+mod residual_family_tests;
+
+pub(crate) fn compile_residual_family(
+    blocks: &[&[Vec<LinearOp>]],
+    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+) -> Result<Vec<CompiledResidualRows>, (Option<usize>, CompileError)> {
+    let mut emitter = CraneliftEmitter::new(pure_calls.clone()).map_err(|error| (None, error))?;
+    let mut pending_blocks = Vec::with_capacity(blocks.len());
+    for (scope, rows) in blocks.iter().enumerate() {
+        let plans = plan_rows(rows).map_err(|error| (Some(scope), error))?;
+        for row in *rows {
+            validate_row_supported_by_jit(row, RowKind::Residual)
+                .map_err(|error| (Some(scope), error))?;
+        }
+        // Conditional owner IDs belong to a source block, not the arena.
+        emitter.conditional_scope = Some(scope);
+        emitter.conditional_functions.clear();
+        emitter.begin_fold_scope();
+        let pending = compile_residual_functions(&mut emitter, rows, &plans, false)
+            .map_err(|error| (Some(scope), error))?;
+        pending_blocks.push((plans, pending));
+    }
+    // Finalize once: repeated finalization revisits all previously emitted code.
+    finalize_jit_module(&mut emitter.module).map_err(|error| (None, error))?;
+    let reads_external_tables = emitter.reads_external_tables();
+    let mut prepared = Vec::with_capacity(blocks.len());
+    for (scope, (rows, (plans, pending))) in blocks.iter().zip(pending_blocks).enumerate() {
+        let requirements = input_requirements_for_plans(&plans);
+        let compiled_rows =
+            build_compiled_residual_rows(rows, plans).map_err(|error| (Some(scope), error))?;
+        let jits = finalize_residual_jits(&emitter.module, pending)
+            .map_err(|error| (Some(scope), error))?;
+        prepared.push((compiled_rows, jits, requirements));
+    }
+    let module = Rc::new(emitter.module);
+    Ok(prepared
+        .into_iter()
+        .map(|(rows, jits, input_requirements)| CompiledResidualRows {
+            _pure_calls: pure_calls.clone(),
+            output_count: rows.iter().map(|row| row.plan.output_count()).sum(),
+            reads_external_tables,
+            rows,
+            jits,
+            selectable: false,
+            input_requirements,
+            regs_scratch: RefCell::new(Vec::new()),
+            output_scratch: RefCell::new(Vec::new()),
+            transaction_scratch: RefCell::new(Vec::new()),
+            jit_call_count: Cell::new(0),
+            _module: module.clone(),
+        })
+        .collect())
+}
+
 fn compile_residual_rows_attached(
     rows: &[Vec<LinearOp>],
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
@@ -711,7 +766,7 @@ fn compile_residual_rows_attached(
         output_scratch: RefCell::new(Vec::new()),
         transaction_scratch: RefCell::new(Vec::new()),
         jit_call_count: Cell::new(0),
-        _module: emitter.module,
+        _module: Rc::new(emitter.module),
     })
 }
 
@@ -1589,6 +1644,16 @@ impl CraneliftEmitter {
             .map_err(to_backend_err)?;
         self.module.clear_context(&mut context);
         Ok(function)
+    }
+
+    /// Start a source block with the fold reuse state it would have if
+    /// compiled alone. Fold kernels are not shared across blocks: a kernel's
+    /// code depends on the structural matches made while compiling it and its
+    /// nested folds (`PartialEq` on fold programs equates `+0.0` and `-0.0`),
+    /// so only a block's own reuse reproduces its separate compilation.
+    fn begin_fold_scope(&mut self) {
+        self.fold_functions.clear();
+        self.canonical_fold_functions.clear();
     }
 
     fn existing_fold_function(

@@ -1,5 +1,11 @@
 use super::*;
 
+/// Independently callable entries of one issued native preparation family.
+pub type CompiledSolveExpressionFamily = Vec<Rc<dyn CompiledSolveExpression>>;
+
+/// Input ordinal and reason of a family failure; None denotes an arena-wide failure.
+pub type SolveFamilyCompileError = (Option<usize>, String);
+
 /// Complete application of an issued colored Jacobian at fresh coordinates.
 pub trait CompiledSolveProjectionJacobian {
     fn call(
@@ -104,6 +110,18 @@ pub trait SolveExecutionBackend {
         context: RowEvalContext<'_>,
     ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
         compiled_targets::compile(self, plan, context)
+    }
+
+    /// Opt in to complete private target tuples sharing a preparation arena.
+    /// Returning None preserves `compile_target_values`, including custom policy.
+    /// Entries must execute independently and retain their exact source ordering.
+    /// Errors name the failing input ordinal; None denotes an arena-wide failure.
+    /// A reported ordinal outside the input family is a backend contract error.
+    fn compile_target_expression_family(
+        &self,
+        _blocks: &[&solve::ScalarProgramBlock],
+    ) -> Result<Option<CompiledSolveExpressionFamily>, SolveFamilyCompileError> {
+        Ok(None)
     }
 
     fn pure_call_execution(&self) -> Option<&dyn solve_eval::PureCallExecution> {
