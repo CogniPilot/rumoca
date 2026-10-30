@@ -1,5 +1,6 @@
 mod alternative_definitions;
 mod defining_equations;
+mod demoted_derivative_scope;
 mod demotion_bounds;
 mod demotion_owners;
 mod derivative_chains;

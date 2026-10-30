@@ -411,3 +411,38 @@ fn borrowed_conditional_owner_restores_errors_and_keeps_closed_arms_closed() {
     })
     .expect("borrowed owner uses the same scope and close rules");
 }
+
+#[test]
+fn model_arm_visibility_follows_the_issued_scope_without_moving_it() {
+    let source = TestSource::new("if c then 1 else 2");
+    let at = source.source("if c then 1 else 2", 0);
+    Dae::construct(source.map, |dae| {
+        let (condition, root) = dae.expressions(|e| {
+            Ok((
+                e.at(at).literal(DaeLiteral::Boolean(true))?,
+                e.at(at).literal(DaeLiteral::Real(0.0))?,
+            ))
+        })?;
+        let owner = dae.begin_model_conditional(condition, at)?;
+        let first = dae.model_conditional_arm(&owner, true, |dae| {
+            let context = dae.expressions(|e| Ok(e.model_arm_context().map(ModelArm::index)))?;
+            assert!(dae.expressions(|e| e.model_arm_visible(root, at))?);
+            let local = dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(1.0)))?;
+            assert!(dae.expressions(|e| e.model_arm_visible(local, at))?);
+            assert_eq!(
+                dae.expressions(|e| Ok(e.model_arm_context().map(ModelArm::index)))?,
+                context
+            );
+            Ok(local)
+        })?;
+        assert!(!dae.expressions(|e| e.model_arm_visible(first, at))?);
+        let second = dae.model_conditional_arm(&owner, false, |dae| {
+            assert!(!dae.expressions(|e| e.model_arm_visible(first, at))?);
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(2.0)))
+        })?;
+        assert!(dae.expressions(|e| Ok(e.model_arm_context()))?.is_none());
+        dae.finish_model_conditional(owner, [first, second])?;
+        Ok(())
+    })
+    .expect("visibility is a query: an arm value stays invisible to its parent and sibling");
+}

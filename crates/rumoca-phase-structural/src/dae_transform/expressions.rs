@@ -237,7 +237,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             return self.rebuild_model_arm_value(source_id, source);
         }
-        if let Some(rebuilt) = self.rebuilt[index] {
+        // A value first rebuilt inside an arm stays memoized for that arm and
+        // its descendants; a use the arm cannot reach rebuilds it here.
+        let memoized = self.rebuilt[index];
+        if let Some(rebuilt) = memoized
+            && self
+                .target
+                .model_arm_visible(rebuilt, source.provenance())?
+        {
             return Ok(rebuilt);
         }
         if let Some(owner) = self.source.runtime_quotient_owner(source_id) {
@@ -270,7 +277,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.rebuild_operation(source_id, source.operation(), provenance, value_type)?
             }
         };
-        self.rebuilt[index] = Some(rebuilt);
+        if memoized.is_none() || self.target.model_arm_of(rebuilt, provenance)?.is_none() {
+            self.rebuilt[index] = Some(rebuilt);
+        }
         Ok(rebuilt)
     }
 
