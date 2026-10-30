@@ -6,13 +6,32 @@ use super::*;
 
 pub(super) fn referenced_pre_variables<'dae>(
     view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
 ) -> Result<Vec<dae::VariableId<'dae>>, Vec<GalecTargetError>> {
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
     collect_discrete_real_pre(view, &mut seen, &mut ids)?;
     collect_event_action_pre(view, &mut seen, &mut ids)?;
     collect_discrete_value_pre(view, &mut seen, &mut ids)?;
+    // Last, so a model whose pre() reads all sit in event-owned equations
+    // keeps its previous-value order and therefore its bytes.
+    collect_causal_definition_pre(view, definitions, &mut seen, &mut ids)?;
     Ok(ids)
+}
+
+/// An equation-section `pre(x)` outside any `when` (MLS 3.7.5) is part of a
+/// causal output or local definition, which DoStep lowers after the event
+/// assignments and before the previous-value commits.
+fn collect_causal_definition_pre<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    seen: &mut HashSet<u32>,
+    ids: &mut Vec<dae::VariableId<'dae>>,
+) -> Result<(), Vec<GalecTargetError>> {
+    for expression in definitions.defining_expressions() {
+        collect_pre(view, expression, seen, ids)?;
+    }
+    Ok(())
 }
 
 fn collect_discrete_real_pre<'dae>(

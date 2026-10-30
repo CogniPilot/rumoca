@@ -201,7 +201,7 @@ fn lower_view<'dae>(
         .iter()
         .map(|variable| (variable.id.index(), variable.clone()))
         .collect::<HashMap<_, _>>();
-    let referenced_pre = referenced_pre_variables(view)?;
+    let referenced_pre = referenced_pre_variables(view, definitions)?;
     let pre_names = build_pre_names(&referenced_pre, &by_id)?;
 
     // Counted once for the whole projection, not per call site: the census is a

@@ -1051,7 +1051,9 @@ fn b1b_residual_pre_reads_materialize_the_previous_state() {
     .expect("checked previous-value B.1b fixture");
 
     model.inspect(|view| {
-        let referenced = referenced_pre_variables(view).expect("B.1b previous read is supported");
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let referenced =
+            referenced_pre_variables(view, &definitions).expect("B.1b previous read is supported");
         assert_eq!(referenced.len(), 1);
         assert_eq!(referenced[0].index(), 0);
     });

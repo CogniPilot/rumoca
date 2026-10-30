@@ -145,6 +145,29 @@ impl<'dae> CausalDefinitions<'dae> {
         &self.order
     }
 
+    /// Every defining expression, scalar boundary definitions included, in
+    /// variable then scalar order: everything a consumer that lowers these
+    /// definitions can read.
+    pub fn defining_expressions(&self) -> Vec<dae::ExprId<'dae>> {
+        let mut keyed = self
+            .definitions
+            .iter()
+            .map(|(variable, expression)| ((*variable, None), *expression))
+            .chain(
+                self.scalar_definitions
+                    .iter()
+                    .map(|((variable, scalar), expression)| {
+                        ((*variable, Some(*scalar)), *expression)
+                    }),
+            )
+            .collect::<Vec<_>>();
+        keyed.sort_unstable_by_key(|(key, _)| *key);
+        keyed
+            .into_iter()
+            .map(|(_, expression)| expression)
+            .collect()
+    }
+
     pub const fn remaining_owner_count(&self) -> usize {
         self.remaining_owners
     }
