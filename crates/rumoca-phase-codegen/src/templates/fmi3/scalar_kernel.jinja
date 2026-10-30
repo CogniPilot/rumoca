@@ -880,11 +880,20 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
     double t = start;
     double h = m->rmc_cs_substep > 0.0 ? fmin(m->rmc_cs_substep, step) : step;
     bool start_derivative = false;
+    /* Whether the latest attempt was rejected for a non-finite trial stage, so
+       a step that runs out of retries says why. */
+    bool retrying_nonfinite = false;
     for (unsigned long attempt = 0; t < end; ++attempt) {
-        if (attempt >= {{ plan.max_substeps }}UL) { RMC_LOG(m, "Co-Simulation step exceeded its substep budget"); return {{ prefix }}Discard; }
+        if (attempt >= {{ plan.max_substeps }}UL) {
+            RMC_LOG(m, retrying_nonfinite ? "Co-Simulation step exceeded its substep budget retrying a non-finite trial stage" : "Co-Simulation step exceeded its substep budget");
+            return {{ prefix }}Discard;
+        }
         const bool last = h >= end - t;
         if (last) h = end - t;
-        if (!(h > 0.0) || t + h == t) { RMC_LOG(m, "Co-Simulation substep underflowed"); return {{ prefix }}Discard; }
+        if (!(h > 0.0) || t + h == t) {
+            RMC_LOG(m, retrying_nonfinite ? "Co-Simulation substep underflowed retrying a non-finite trial stage" : "Co-Simulation substep underflowed");
+            return {{ prefix }}Discard;
+        }
         for (size_t i = 0; i < n; ++i) y0[i] = m->y[i];
         if (!start_derivative) {
             m->time = t;
@@ -908,6 +917,7 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
             }
             for (size_t i = 0; i < n; ++i) k[s + 1][i] = m->derivative[i];
         }
+        retrying_nonfinite = stage_rejected;
         if (stage_rejected) {
             for (size_t i = 0; i < n; ++i) m->y[i] = y0[i];
             m->time = t;

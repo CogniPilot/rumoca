@@ -1,6 +1,8 @@
 //! Issue #498: a Co-Simulation trial stage that leaves a non-finite value
 //! rejects its substep and retries at a smaller step, while a failed
-//! assertion still ends the communication step with Error.
+//! assertion still ends the communication step with Error. Only an unrescued
+//! non-finite value marks a stage for retry, and a step that runs out of
+//! retries says it was retrying a non-finite stage.
 
 use super::pulse_lifecycle::xml_attribute;
 use super::*;
@@ -20,6 +22,22 @@ equation
   der(x) = -100 * x;
   assert(x > 0.5, "x left its guarded range");
 end GuardedDecay;
+model Cliff "every trial stage past t = 0.05 is non-finite, so the step cannot finish"
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = sqrt(0.05 - time);
+end Cliff;
+model RescuedMix "a coupled algebraic pair the refresh can rescue with the complete projection"
+  Real x(start = 1, fixed = true);
+  Real c;
+  Real a(start = 1);
+  Real b(start = 1);
+equation
+  c = sqrt(x);
+  a = c + 0.1 * b;
+  b = a * a * a - 0.5 * a;
+  der(x) = -100 * a * a;
+end RescuedMix;
 "#;
 
 #[test]
@@ -39,13 +57,69 @@ fn generated_fmi_c_retries_a_non_finite_trial_stage() {
 fn generated_fmi_c_keeps_a_failed_assertion_an_error() {
     for target in ["fmi2", "fmi3"] {
         let output = run_driver("GuardedDecay", target, 2);
+        let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success(),
-            "{target} GuardedDecay: {:?}\n{}",
+            "{target} GuardedDecay: {:?}\n{stdout}",
             output.status.code(),
-            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            stdout.contains("log: x left its guarded range") && !stdout.contains("retrying"),
+            "{target} GuardedDecay reports the assertion, not a retry:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn generated_fmi_c_names_a_non_finite_stage_when_retries_run_out() {
+    for target in ["fmi2", "fmi3"] {
+        let output = run_driver("Cliff", target, 3);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{target} Cliff: {:?}\n{stdout}",
+            output.status.code(),
+        );
+        assert!(
+            stdout.contains("retrying a non-finite trial stage"),
+            "{target} Cliff names the non-finite retry:\n{stdout}"
+        );
+    }
+}
+
+/// The refresh marks a non-finite failure only after the complete projection
+/// failed to rescue it numerically: a successful rescue returns with the mark
+/// clear, and an evaluation error during the rescue leaves without it, so a
+/// later failure in the same stage is never retried as non-finite.
+#[test]
+fn generated_fmi_c_marks_only_an_unrescued_non_finite_refresh() {
+    let work = tempfile::tempdir().unwrap();
+    let (sources, _) = render_model(work.path(), "RescuedMix", "fmi3");
+    let model = std::fs::read_to_string(sources.join("model.c")).unwrap();
+    let start = model
+        .find("rmc_refresh(ModelInstance* m,")
+        .expect("RescuedMix renders a refresh plan");
+    let body = &model[start..];
+    let body = &body[..body.find("\n}\n").expect("refresh body ends")];
+    let failure = body
+        .find("\nfailure:")
+        .unwrap_or_else(|| panic!("refresh has a failure path:\n{body}"));
+    let at = |needle: &str| {
+        body[failure..]
+            .find(needle)
+            .map(|offset| failure + offset)
+            .unwrap_or_else(|| panic!("refresh failure path lacks {needle:?}:\n{body}"))
+    };
+    let rescued = at("if (rescued == 0) return fmi3OK;");
+    let pure_call = at("if (rescued < 0) goto fail;");
+    let marked = at("m->rmc_nonfinite = true;");
+    assert_eq!(
+        body.matches("m->rmc_nonfinite = true;").count(),
+        1,
+        "{body}"
+    );
+    assert!(rescued < pure_call && pure_call < marked, "{body}");
+    assert!(!body[..failure].contains("rmc_nonfinite"), "{body}");
 }
 
 fn run_driver(model: &str, target: &str, mode: u8) -> std::process::Output {
@@ -114,6 +188,7 @@ fn render_model(work: &Path, model: &str, target: &str) -> (PathBuf, Vec<PathBuf
 
 /// Mode 1: every 0.1 s communication step from 0 to 0.5 returns OK and x
 /// follows exp(-100 t). Mode 2: the first step returns Error, not a retry.
+/// Mode 3: the first step returns Discard. Logged messages print as `log: `.
 const DRIVER: &str = r#"
 #include <math.h>
 #include <stdio.h>
@@ -130,6 +205,7 @@ int main(void) {
         const int status = do_step(c, t, 0.1);
         printf("t=%g status=%d\n", t, status);
         if (@MODE@ == 2) { CHECK(status == STATUS_ERROR); break; }
+        if (@MODE@ == 3) { CHECK(status == STATUS_DISCARD); break; }
         CHECK(status == STATUS_OK);
         double value;
         CHECK(read_real(c, x, &value));
@@ -149,8 +225,19 @@ typedef fmi2Component Instance;
 typedef fmi2ValueReference Reference;
 #define STATUS_OK fmi2OK
 #define STATUS_ERROR fmi2Error
+#define STATUS_DISCARD fmi2Discard
+#include <stdarg.h>
+static void log_message(fmi2ComponentEnvironment environment, fmi2String name, fmi2Status status, fmi2String category, fmi2String message, ...) {
+    (void)environment; (void)name; (void)status; (void)category;
+    va_list args;
+    va_start(args, message);
+    printf("log: ");
+    vprintf(message, args);
+    printf("\n");
+    va_end(args);
+}
 static Instance instantiate(const char* identity) {
-    fmi2CallbackFunctions callbacks = { NULL, calloc, free, NULL, NULL };
+    static const fmi2CallbackFunctions callbacks = { log_message, calloc, free, NULL, NULL };
     return fmi2Instantiate("decay", fmi2CoSimulation, identity, NULL, &callbacks, 0, 0);
 }
 static int initialize(Instance c) {
@@ -173,8 +260,13 @@ typedef fmi3Instance Instance;
 typedef fmi3ValueReference Reference;
 #define STATUS_OK fmi3OK
 #define STATUS_ERROR fmi3Error
+#define STATUS_DISCARD fmi3Discard
+static void log_message(fmi3InstanceEnvironment environment, fmi3Status status, fmi3String category, fmi3String message) {
+    (void)environment; (void)status; (void)category;
+    printf("log: %s\n", message);
+}
 static Instance instantiate(const char* identity) {
-    return fmi3InstantiateCoSimulation("decay", identity, NULL, 0, 0, 0, 0, NULL, 0, NULL, NULL, NULL);
+    return fmi3InstantiateCoSimulation("decay", identity, NULL, 0, 0, 0, 0, NULL, 0, NULL, log_message, NULL);
 }
 static int initialize(Instance c) {
     return fmi3EnterInitializationMode(c, 0, 0.0, 0.0, 0, 0.0) == fmi3OK &&

@@ -1325,15 +1325,21 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
     return {{ prefix }}OK;
 {%- if assigns %}
 failure:
-    m->rmc_nonfinite = true;
 {%- if blocks %}
     if (complete) {
         rmc_fb_note(m, failed_site); m->rmc_fb_active[RMC_FB_PLAN] = false;
         memcpy(m->y, incoming, sizeof(incoming));
-        if (rmc_project_complete(m, complete, ncomplete) == 0) return {{ prefix }}OK;
+        const int rescued = rmc_project_complete(m, complete, ncomplete);
+        if (rescued == 0) return {{ prefix }}OK;
         RMC_LOG(m, "complete algebraic projection did not establish coordinate convergence");
+        /* An evaluation error during the rescue (a failed pure call, or an
+           exhausted workspace) is not a non-finite trial value. */
+        if (rescued < 0) goto fail;
     }
 {%- endif %}
+    /* Only an unrescued non-finite value marks the failure, so a stage retries
+       it and no other failure that follows a successful rescue. */
+    m->rmc_nonfinite = true;
 {%- endif %}
 fail:
     memcpy(m->y, incoming, sizeof(incoming));
