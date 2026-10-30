@@ -189,7 +189,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
 
 struct WasmExecutionBackend {
     layout: VarLayout,
-    calls: rumoca_ir_solve::SolvePureCallTable,
+    calls: Rc<rumoca_ir_solve::SolvePureCallTable>,
 }
 
 impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
@@ -273,7 +273,7 @@ pub(crate) fn admitted_native_execution_backend(
     Ok(Some(rumoca_solver::fmi_me::MeExecutionBackend::new(
         Rc::new(WasmExecutionBackend {
             layout: model.problem.layout.clone(),
-            calls: model.pure_calls.clone(),
+            calls: Rc::new(model.pure_calls.clone()),
         }),
     )))
 }

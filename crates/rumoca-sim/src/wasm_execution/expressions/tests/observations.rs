@@ -43,7 +43,7 @@ end PortableWarnings;
     let model = source.model();
     let backend = WasmExecutionBackend {
         layout: model.problem.layout.clone(),
-        calls: model.pure_calls.clone(),
+        calls: Rc::new(model.pure_calls.clone()),
     };
     let mut messages = Vec::new();
     let mut compiled_count = 0;

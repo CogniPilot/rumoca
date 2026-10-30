@@ -14,7 +14,7 @@ fn wasm_backend_rejects_a_foreign_call_table_during_context_admission() {
     let model = rumoca_ir_solve::SolveModel::default();
     let backend = WasmExecutionBackend {
         layout: model.problem.layout.clone(),
-        calls: model.pure_calls.clone(),
+        calls: Rc::new(model.pure_calls.clone()),
     };
     assert!(backend.validate_model_context(&model).is_ok());
     assert!(backend.validate_model_context(&model.clone()).is_ok());
@@ -40,7 +40,7 @@ fn wasm_backend_rejects_a_changed_layout_with_the_original_call_owner() {
     let model = rumoca_ir_solve::SolveModel::default();
     let backend = WasmExecutionBackend {
         layout: model.problem.layout.clone(),
-        calls: model.pure_calls.clone(),
+        calls: Rc::new(model.pure_calls.clone()),
     };
     let mut changed = model.clone();
     changed.problem.layout = VarLayout::from_parts(Default::default(), 1, 0);
@@ -70,7 +70,7 @@ fn wasm_backend_selection_retains_the_declared_engine_for_a_supported_model() {
     );
     let backend = Rc::new(WasmExecutionBackend {
         layout: lowered.model().problem.layout.clone(),
-        calls: lowered.model().pure_calls.clone(),
+        calls: Rc::new(lowered.model().pure_calls.clone()),
     });
     rumoca_solver::SolveRuntime::new_with_execution_backend(lowered.model(), Some(backend))
         .expect("the portable backend must prepare the entire supported model");
