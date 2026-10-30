@@ -878,7 +878,7 @@ fn execute_emitted_algebraic_refresh(model_c: &str, assign_c: &str, prefix: &str
 #define Y_LEN 2
 typedef enum {{ {prefix}OK = 0, {prefix}Error = 3 }} {prefix}Status;
 #define RMC_API
-typedef struct {{ bool parameters_dirty; double time; double y[2]; double p[1]; }} ModelInstance;
+typedef struct {{ bool parameters_dirty; bool rmc_nonfinite; double time; double y[2]; double p[1]; }} ModelInstance;
 {assign}
 {refresh}
 int main(void) {{
@@ -888,8 +888,10 @@ int main(void) {{
     if (refresh_algebraics(&model) != {prefix}OK) return 1;
     if (fabs(model.y[1] - 6.0) > 1.0e-12) return 2;
     if (refresh_derivative_values(&model) != {prefix}OK || fabs(model.y[1] - 6.0) > 1.0e-12) return 4;
+    if (model.rmc_nonfinite) return 5;
     model.y[0] = NAN;
     if (refresh_algebraics(&model) != {prefix}Error) return 3;
+    if (!model.rmc_nonfinite) return 6;
     return 0;
 }}
 "#
