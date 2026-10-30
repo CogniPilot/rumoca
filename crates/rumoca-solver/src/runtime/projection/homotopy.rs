@@ -61,7 +61,15 @@ where
     } = system;
     let Some(lambda_index) = homotopy_parameter_index else {
         if !plan.iterates_discretes {
-            return project_initial_variables_with_plan(model, y, p, t, plan, tol);
+            // MLS 3.6 §8.6: ordinary runtime definitions still hold at
+            // initialization. This path has no coupled discrete iteration,
+            // but its dependents must set those definitions before projection
+            // or a later algebraic read can observe declaration seeds (#468).
+            continuation_dependents(y, p)?;
+            project_initial_variables_with_plan(model, y, p, t, plan, tol)?;
+            // A definition can read a state that projection just determined
+            // without the initial rows depending on that definition in turn.
+            return continuation_dependents(y, p);
         }
         // A planned row holds a discrete at its current value, so the
         // projection and the discrete assignments alternate to their fixed
@@ -293,6 +301,196 @@ mod tests {
             out[0] = v[0];
             Ok(())
         }
+    }
+
+    #[test]
+    fn no_homotopy_projection_applies_runtime_dependents_before_initial_rows() {
+        let model = StepLimitedModel::new();
+        model.accepted_lambda.set(3.0);
+        let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
+            blocks: vec![solve::InitializationProjectionBlock {
+                rows: vec![0],
+                unknowns: vec![solve::scalar_slot_y(0)],
+                scales: vec![solve::InitializationUnknownScale::Solver],
+            }],
+        };
+        let mut y = [0.0];
+        let mut p = [0.0];
+        let mut calls = 0;
+        project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: None,
+                tol: 1e-10,
+                max_iters: 4,
+            },
+            &mut y,
+            &mut p,
+            |_, p| {
+                calls += 1;
+                p[0] = 3.0;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(p, [3.0]);
+        assert!((y[0] - 3.0).abs() < 1e-10);
+        assert_eq!(model.attempted_lambdas.borrow()[0], 3.0);
+    }
+
+    #[test]
+    fn no_homotopy_projection_reapplies_dependents_to_projected_coordinates() {
+        let model = StepLimitedModel::new();
+        let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
+            blocks: vec![solve::InitializationProjectionBlock {
+                rows: vec![0],
+                unknowns: vec![solve::scalar_slot_y(0)],
+                scales: vec![solve::InitializationUnknownScale::Solver],
+            }],
+        };
+        let mut y = [0.0];
+        let mut p = [0.05, 0.0];
+        let mut calls = 0;
+        project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: None,
+                tol: 1e-10,
+                max_iters: 4,
+            },
+            &mut y,
+            &mut p,
+            |y, p| {
+                calls += 1;
+                p[1] = y[0];
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert!((y[0] - 0.05).abs() < 1e-10);
+        assert!((p[1] - 0.05).abs() < 1e-10);
+    }
+
+    #[test]
+    fn no_homotopy_projection_preserves_first_dependent_fault() {
+        let model = StepLimitedModel::new();
+        let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
+            blocks: vec![solve::InitializationProjectionBlock {
+                rows: vec![0],
+                unknowns: vec![solve::scalar_slot_y(0)],
+                scales: vec![solve::InitializationUnknownScale::Solver],
+            }],
+        };
+        let mut y = [-0.0_f64];
+        let mut p = [0.0];
+        let error = project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: None,
+                tol: 1e-10,
+                max_iters: 4,
+            },
+            &mut y,
+            &mut p,
+            |_, _| Err("first no-homotopy dependent fault".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &error,
+            RuntimeSolveError::CompiledExecution { .. }
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("first no-homotopy dependent fault")
+        );
+        assert!(model.attempted_lambdas.borrow().is_empty());
+        assert_eq!(y[0].to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn no_homotopy_mixed_projection_still_settles_algebraic_dependent_discretes() {
+        let model = StepLimitedModel::new();
+        let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: true,
+            blocks: vec![solve::InitializationProjectionBlock {
+                rows: vec![0],
+                unknowns: vec![solve::scalar_slot_y(0)],
+                scales: vec![solve::InitializationUnknownScale::Solver],
+            }],
+        };
+        let mut y = [0.0];
+        let mut p = [0.05, 0.0];
+        let mut calls = 0;
+        project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: None,
+                tol: 1e-10,
+                max_iters: 4,
+            },
+            &mut y,
+            &mut p,
+            |y, p| {
+                calls += 1;
+                p[1] = y[0];
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert!((y[0] - 0.05).abs() < 1e-10);
+        assert!((p[1] - 0.05).abs() < 1e-10);
+    }
+
+    #[test]
+    fn no_homotopy_mixed_projection_still_refuses_discrete_cycles() {
+        let model = StepLimitedModel::new();
+        let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: true,
+            blocks: vec![solve::InitializationProjectionBlock {
+                rows: vec![0],
+                unknowns: vec![solve::scalar_slot_y(0)],
+                scales: vec![solve::InitializationUnknownScale::Solver],
+            }],
+        };
+        let mut y = [0.0];
+        let mut p = [0.05, 0.0];
+        let error = project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: None,
+                tol: 1e-10,
+                max_iters: 4,
+            },
+            &mut y,
+            &mut p,
+            |_, p| {
+                p[1] = 1.0 - p[1];
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("discrete iteration did not converge")
+        );
     }
 
     #[test]

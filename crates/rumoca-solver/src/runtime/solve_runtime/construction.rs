@@ -461,7 +461,15 @@ impl SolveRuntime {
                 root_conditions: require_prepared("root_conditions", compiled_root_conditions)?,
             })),
         };
+        // MLS §8.6: every ordinary binding holds at initialization, with any
+        // relation it contains evaluated directly (#468).
+        let initial_binding_rows = initial_binding_ownership::select_initial_binding_rows(
+            &model.problem.discrete.runtime_assignment_targets,
+            model.problem.initialization.update_targets(),
+            &model.problem.solve_layout.relation_memory_parameter_indices,
+        );
         let mut scalar = ScalarExecutionInventory {
+            initial_binding_rows,
             coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
                 &model.artifacts.discrete,
                 execution_backend.as_ref(),
