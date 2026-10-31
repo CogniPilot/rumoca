@@ -14,12 +14,20 @@ use super::{Coordinates, SolveCallDependency};
 /// same ordered relations are emitted as one run per relation, so the
 /// relation is stored once per run. The final summary lists runs and
 /// relations by ascending first input.
+/// Free axes plus guards the exact relations of one input leaf may carry in
+/// total before the leaf is stated as a whole-input dependency, which absorbs
+/// them and only adds dependencies. Plain point relations carry no terms, so
+/// a wide union of them stays exact.
+const LEAF_TERM_BUDGET: usize = 2048;
+
 #[derive(Default)]
 pub(super) struct Dependencies {
     /// Run start to exclusive run end; never overlapping, never adjacent.
     whole: BTreeMap<usize, usize>,
     /// Exact relations on leaves that no whole-input run covers.
     exact: BTreeMap<usize, IndexSet<Coordinates>>,
+    /// Total relation terms held per exact leaf.
+    terms: BTreeMap<usize, usize>,
 }
 
 /// Consecutive leaves `start..start + count` carrying the same ordered relations.
@@ -55,12 +63,32 @@ impl Dependencies {
     }
 
     fn insert_exact(&mut self, inputs: std::ops::Range<usize>, coordinates: &Coordinates) {
-        for input in inputs.filter(|input| !Self::covered(&self.whole, *input)) {
-            self.exact
-                .entry(input)
-                .or_default()
-                .insert(coordinates.clone());
+        let uncovered: Vec<usize> = inputs
+            .filter(|input| !Self::covered(&self.whole, *input))
+            .collect();
+        let saturated: Vec<usize> = uncovered
+            .into_iter()
+            .filter(|&input| self.record_exact(input, coordinates))
+            .collect();
+        for input in saturated {
+            self.insert_whole(input, input + 1);
         }
+    }
+
+    /// Record one exact relation on `input`; whether the leaf's relations now
+    /// exceed [`LEAF_TERM_BUDGET`].
+    fn record_exact(&mut self, input: usize, coordinates: &Coordinates) -> bool {
+        if !self
+            .exact
+            .entry(input)
+            .or_default()
+            .insert(coordinates.clone())
+        {
+            return false;
+        }
+        let terms = self.terms.entry(input).or_default();
+        *terms += coordinates.terms();
+        *terms > LEAF_TERM_BUDGET
     }
 
     fn covered(whole: &BTreeMap<usize, usize>, input: usize) -> bool {
@@ -86,6 +114,7 @@ impl Dependencies {
         let absorbed: Vec<usize> = self.exact.range(start..end).map(|(&key, _)| key).collect();
         for key in absorbed {
             self.exact.remove(&key);
+            self.terms.remove(&key);
         }
         self.whole.insert(start, end);
     }

@@ -29,7 +29,7 @@ pub(super) fn fold_output(
     // iteration's capture reads. Self-coordinate-only recurrence proves that
     // later iterations cannot add another carry or another coordinate.
     for dependency in &registers[value.index()] {
-        out.insert(dependency.remap(&identity, context.provenance)?);
+        out.insert(dependency.remap_may_depend(&identity, context.provenance)?);
     }
     merge(
         &mut out,

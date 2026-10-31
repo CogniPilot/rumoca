@@ -149,9 +149,52 @@ fn remap(
     access: &Coordinates,
     provenance: Span,
 ) -> Option<Option<ValueProjection>> {
+    // An exact projection is never widened. One too large to compose within
+    // the budgets returns the outer `None`, which every caller propagates
+    // with `?`, so the whole ValueProjections certificate is declined; an
+    // output entry is never set to `None`, which would claim a constant.
+    if projection
+        .as_ref()
+        .is_some_and(|projection| projection.0.composition_exceeds_budget(access))
+    {
+        return None;
+    }
     projection
         .as_ref()
         .map(|projection| projection.0.remap(access, provenance).map(ValueProjection))
         .transpose()
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::SourceId;
+
+    fn span() -> Span {
+        Span::from_offsets(SourceId::from_source_name("projection.alg"), 0, 1)
+    }
+
+    fn projection(guards: usize) -> Option<ValueProjection> {
+        Some(ValueProjection(SolveCallDependency::exact(
+            0,
+            Coordinates::with_terms(0, 1, 1, 0, guards),
+        )))
+    }
+
+    #[test]
+    fn an_exact_projection_past_the_budget_declines_the_whole_certificate() {
+        let access = Coordinates::with_terms(0, 1, 1, 0, 0);
+        assert!(
+            matches!(remap(&projection(32), &access, span()), Some(Some(_))),
+            "within the budget the projection composes"
+        );
+        assert_eq!(
+            remap(&projection(33), &access, span()),
+            None,
+            "past it the OUTER None declines the certificate"
+        );
+        // A constant entry stays a constant: never widened, never declined.
+        assert_eq!(remap(&None, &access, span()), Some(None));
+    }
 }

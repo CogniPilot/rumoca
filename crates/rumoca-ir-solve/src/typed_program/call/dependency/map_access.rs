@@ -124,7 +124,7 @@ pub(super) fn derive(
             let access = coordinates::Coordinates::access(space.rank, &space.free, Vec::new());
             let mut scalar = Dependencies::default();
             for dependency in dependencies {
-                scalar.insert(dependency.remap(&access, provenance).ok()?);
+                scalar.insert(dependency.remap_may_depend(&access, provenance).ok()?);
             }
             Some(Symbol::Scalar(scalar.finish()))
         })
@@ -281,7 +281,7 @@ fn project(
     let access = coordinates::Coordinates::access(space.rank, &space.free, subscripts);
     let mut result = Dependencies::default();
     for dependency in dependencies {
-        result.insert(dependency.remap(&access, provenance).ok()?);
+        result.insert(dependency.remap_may_depend(&access, provenance).ok()?);
     }
     Some(Symbol::Scalar(result.finish()))
 }

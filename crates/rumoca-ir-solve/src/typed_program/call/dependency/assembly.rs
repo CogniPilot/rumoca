@@ -31,7 +31,7 @@ pub(super) fn derive(
     let mut dependencies = Dependencies::default();
     for (input, access) in accesses {
         for source in &registers[input.index()] {
-            dependencies.insert(source.remap(&access, provenance)?);
+            dependencies.insert(source.remap_may_depend(&access, provenance)?);
         }
     }
     registers[destination.index()] = dependencies.finish();
