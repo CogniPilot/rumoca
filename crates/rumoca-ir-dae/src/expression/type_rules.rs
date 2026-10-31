@@ -640,13 +640,7 @@ fn shaped_builtin_result(
         // MLS 3.7 §10.3.3: `zeros` and `ones` are Integer arrays; a Real
         // context converts them like any Integer expression.
         PureBuiltin::Zeros | PureBuiltin::Ones => (ScalarType::Integer, arguments),
-        PureBuiltin::Fill if arguments.len() >= 2 && first.is_scalar() => {
-            (first.scalar_type(), &arguments[1..])
-        }
-        PureBuiltin::Fill if arguments.len() < 2 => {
-            return Err(invalid_arity(2, arguments.len(), at));
-        }
-        PureBuiltin::Fill => return Err(DaeConstructionError::ShapeMismatch { span: at.span() }),
+        PureBuiltin::Fill => return fill_result(storage, arguments, first, at),
         PureBuiltin::Linspace => {
             expect_arity(arguments, 3, at)?;
             let endpoints = common_value_type(first, storage.expr_type(arguments[1], at)?, at)?;
@@ -689,6 +683,30 @@ fn shaped_builtin_result(
         .map(|expression| literal_array_extent(storage, expression, at))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ValueType::array(scalar, dimensions))
+}
+
+/// MLS 3.7 §10.3.3: `fill(s, n1, n2, ...)` has `s`'s element type at every
+/// position, so a record element keeps its record name and fields. Only an
+/// element value (a scalar or a record) is accepted; an array `s` stays
+/// refused.
+fn fill_result(
+    storage: &Storage,
+    arguments: &[ExprId<'_>],
+    first: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    if arguments.len() < 2 {
+        return Err(invalid_arity(2, arguments.len(), at));
+    }
+    if !first.dimensions().is_empty() {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    let dimensions = arguments[1..]
+        .iter()
+        .copied()
+        .map(|expression| literal_array_extent(storage, expression, at))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(first.with_dimensions(dimensions))
 }
 
 /// Construct the exact rank-one type MLS §10.3.2 gives `vector(A)`.

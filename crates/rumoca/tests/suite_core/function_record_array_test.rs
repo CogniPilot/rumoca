@@ -228,3 +228,73 @@ end NestedReduction;
         assert!((result.value - expected).abs() < 1e-10);
     }
 }
+
+/// MLS 3.7 §10.3.3: `fill(s, n)` repeats any element value `s`, including a
+/// record. A record-array default built by `fill` constructs and evaluates,
+/// and a record-array local starts every element at the record's defaults.
+const FILLED_RECORDS: &str = r#"
+record Item
+  Real x = 1;
+end Item;
+
+record State
+  Item items[3] = fill(Item(), 3);
+end State;
+
+function defaulted
+  input Real t;
+  output Real y;
+protected
+  State s;
+algorithm
+  s := State();
+  s.items[1].x := t;
+  y := s.items[1].x + s.items[3].x;
+end defaulted;
+
+function repeated
+  input Real t;
+  output Real y;
+protected
+  Item items[2];
+algorithm
+  items := fill(Item(x = t), 2);
+  y := items[1].x * items[2].x;
+end repeated;
+
+function partlyWritten
+  input Real t;
+  output Real y;
+protected
+  Item items[2];
+algorithm
+  items[1] := Item(t);
+  y := items[1].x + items[2].x;
+end partlyWritten;
+
+model FilledRecords
+  output Real d = defaulted(time);
+  output Real r = repeated(time);
+  output Real p = partlyWritten(time);
+end FilledRecords;
+"#;
+
+#[test]
+fn fill_repeats_a_record_element_value() {
+    let compiled = Compiler::new()
+        .model("FilledRecords")
+        .compile_str(FILLED_RECORDS, "FilledRecords.mo")
+        .expect("fill of a record element value should construct a checked DAE");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.75)
+        .expect("filled record arrays should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    for (name, expected) in [("d", 0.75 + 1.0), ("r", 0.75 * 0.75), ("p", 0.75 + 1.0)] {
+        let output = probe
+            .report
+            .solver_y
+            .iter()
+            .find(|slot| slot.name == name)
+            .expect("each output remains observable");
+        assert_eq!(output.value.to_bits(), f64::to_bits(expected), "{name}");
+    }
+}
