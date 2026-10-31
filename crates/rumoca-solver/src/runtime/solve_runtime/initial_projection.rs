@@ -3,8 +3,8 @@ mod admitted_tests;
 
 use crate::RuntimeSolveError;
 use crate::runtime::projection::{
-    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, ScaledNewtonSystem,
-    project_initial_variables_with_homotopy,
+    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, JacobianColumnSink,
+    ScaledNewtonSystem, project_initial_variables_with_homotopy, unit_jacobian_columns,
 };
 use nalgebra::DVector;
 use rumoca_core::Span;
@@ -255,6 +255,43 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         self.eval_partial_initial_jacobian_v(y, p, t, v, out)
     }
 
+    /// Every column reads the same settled view, so it is settled once for
+    /// the block instead of once per column.
+    fn eval_initial_jacobian_columns(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        seed_len: usize,
+        (rows, y_indices): (Option<&[usize]>, &[usize]),
+        column: &mut JacobianColumnSink<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        let lens = (seed_len, self.initial_residual_len());
+        if !self.refreshes_algebraic_reads || y_indices.is_empty() {
+            return unit_jacobian_columns(
+                lens,
+                y_indices,
+                |seed, out| self.eval_initial_jacobian_v(y, p, t, seed, rows, out),
+                column,
+            );
+        }
+        check_total_seed_len(y, p, seed_len)?;
+        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+        let (settled_y, settled_p) =
+            self.settled_initial_coordinates(y, p, t, blocks.as_deref())?;
+        unit_jacobian_columns(
+            lens,
+            y_indices,
+            |seed, out| {
+                self.eval_settled_tangent_jacobian_v(
+                    (&settled_y, &settled_p, t),
+                    seed,
+                    blocks.as_deref(),
+                    out,
+                )
+            },
+            column,
+        )
+    }
+
     fn eval_initial_target_value(
         &self,
         output_index: usize,
@@ -405,31 +442,31 @@ impl InitialProjectionModel<'_> {
         rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let expected = y.len().checked_add(p.len()).ok_or_else(|| {
-            RuntimeSolveError::solve_ir(
-                "initial total-sensitivity vector length exceeds host index range".to_string(),
-            )
-        })?;
-        if v.len() != expected {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "initial total-sensitivity seed has {} values, expected {expected}",
-                v.len()
-            )));
-        }
+        check_total_seed_len(y, p, v.len())?;
         let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
         let (settled_y, settled_p) =
             self.settled_initial_coordinates(y, p, t, blocks.as_deref())?;
+        self.eval_settled_tangent_jacobian_v((&settled_y, &settled_p, t), v, blocks.as_deref(), out)
+    }
+
+    /// The residual JVP along `v` at an already settled point: `v` is carried
+    /// through the settled view's tangent over `blocks`, then the residual JVP
+    /// reads that tangent there.
+    fn eval_settled_tangent_jacobian_v(
+        &self,
+        (settled_y, settled_p, t): (&[f64], &[f64], f64),
+        v: &[f64],
+        blocks: Option<&[usize]>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
         let settle = AlgebraicSettle {
             tol: self.tol,
             max_iters: self.max_iters,
         };
-        let seed = self.runtime.settled_initial_tangent(
-            (&settled_y, &settled_p, t),
-            v,
-            blocks.as_deref(),
-            settle,
-        )?;
-        self.eval_partial_initial_jacobian_v(&settled_y, &settled_p, t, &seed, out)
+        let seed =
+            self.runtime
+                .settled_initial_tangent((settled_y, settled_p, t), v, blocks, settle)?;
+        self.eval_partial_initial_jacobian_v(settled_y, settled_p, t, &seed, out)
     }
 
     /// The initialization residual's JVP in the stored coordinates.
@@ -474,6 +511,34 @@ impl ScalarExecutionView<'_> {
             refreshes_algebraic_reads: self.initial_rows_read_settled_view(),
         }
         .eval_initial_jacobian_v(y, p, t, v, None, out)
+    }
+
+    /// [`Self::eval_initial_residual_jacobian_v`] along each unit direction
+    /// `columns[k]` of `[solver-y | parameter]`, into `out[k]`, preparing the
+    /// point once for every column as the initialization projection's block
+    /// Jacobian does.
+    pub fn eval_initial_residual_jacobian_columns(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        settle: AlgebraicSettle,
+        columns: &[usize],
+        out: &mut [Vec<f64>],
+    ) -> Result<(), RuntimeSolveError> {
+        InitialProjectionModel {
+            runtime: *self,
+            tol: settle.tol,
+            max_iters: settle.max_iters,
+            refreshes_algebraic_reads: self.initial_rows_read_settled_view(),
+        }
+        .eval_initial_jacobian_columns(
+            (y, p, t),
+            y.len() + p.len(),
+            (None, columns),
+            &mut |column, jvp| {
+                out[column].copy_from_slice(jvp);
+                Ok(())
+            },
+        )
     }
 
     /// The initialization update rows' directional derivative along `v` (over
@@ -712,10 +777,13 @@ impl ScalarExecutionView<'_> {
                 )?;
                 changed = write_update_tangents(targets, &values, y.len(), &mut seed);
             }
-            self.seed_refresh_blocks(plan, lin, y, &mut seed)?;
+            // The updates left the seed exactly as the last refresh wrote it.
+            // A refresh clears its blocks' entries and solves them again from
+            // the rest of the seed, so it would write the same bits.
             if pass > 0 && !changed {
                 return Ok(seed);
             }
+            self.seed_refresh_blocks(plan, lin, y, &mut seed)?;
         }
         Err(RuntimeSolveError::solve_ir(format!(
             "initial residual tangent did not converge at t={t}"
@@ -1622,4 +1690,19 @@ mod tests {
         assert!((p[0] - 49.0).abs() <= 1.0e-7, "q={}", p[0]);
         assert!((p[1] - 49.0).abs() <= 1.0e-7, "nested_q={}", p[1]);
     }
+}
+
+/// A total-sensitivity seed spans `[solver-y | parameter]`.
+fn check_total_seed_len(y: &[f64], p: &[f64], seed_len: usize) -> Result<(), RuntimeSolveError> {
+    let expected = y.len().checked_add(p.len()).ok_or_else(|| {
+        RuntimeSolveError::solve_ir(
+            "initial total-sensitivity vector length exceeds host index range".to_string(),
+        )
+    })?;
+    if seed_len != expected {
+        return Err(RuntimeSolveError::solve_ir(format!(
+            "initial total-sensitivity seed has {seed_len} values, expected {expected}"
+        )));
+    }
+    Ok(())
 }

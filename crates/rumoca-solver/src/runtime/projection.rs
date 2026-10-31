@@ -468,6 +468,36 @@ pub(crate) enum KernelAnswer {
     TornJacobianSingular,
 }
 
+/// Receives one Jacobian column, with its position among the requested
+/// columns.
+pub(crate) type JacobianColumnSink<'a> =
+    dyn FnMut(usize, &[f64]) -> Result<(), RuntimeSolveError> + 'a;
+
+/// Evaluate `eval(seed, out)` along each unit direction `y_indices[column]` of
+/// a `seed_len`-value seed into an `out_len`-value buffer, handing each result
+/// to `column` in order.
+pub(crate) fn unit_jacobian_columns(
+    (seed_len, out_len): (usize, usize),
+    y_indices: &[usize],
+    mut eval: impl FnMut(&[f64], &mut [f64]) -> Result<(), RuntimeSolveError>,
+    column: &mut JacobianColumnSink<'_>,
+) -> Result<(), RuntimeSolveError> {
+    let mut seed = vec![0.0; seed_len];
+    let mut jvp = vec![0.0; out_len];
+    for (col, y_idx) in y_indices.iter().copied().enumerate() {
+        if y_idx >= seed.len() {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "initial projection Jacobian references y index {y_idx}, but the model has only {seed_len} variables"
+            )));
+        }
+        seed[y_idx] = 1.0;
+        eval(&seed, &mut jvp)?;
+        seed[y_idx] = 0.0;
+        column(col, &jvp)?;
+    }
+    Ok(())
+}
+
 pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
     /// The initialization residual at `(y, p, t)`. With `rows`, only those
     /// entries are exact and the others unspecified: a model evaluating its
@@ -516,6 +546,27 @@ pub(crate) trait AlgebraicProjectionModel: ImplicitProjectionModel {
         rows: Option<&[usize]>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError>;
+
+    /// The initialization residual's Jacobian columns at one point: for each
+    /// `y_indices[column]`, the directional derivative along that unit
+    /// direction of a `seed_len`-value seed, exact on `rows` (every row when
+    /// `None`), handed to `column` in order. Each column is [`Self::eval_initial_jacobian_v`]
+    /// along that direction; a model that prepares the point before
+    /// differentiating can prepare it once for every column.
+    fn eval_initial_jacobian_columns(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        seed_len: usize,
+        (rows, y_indices): (Option<&[usize]>, &[usize]),
+        column: &mut JacobianColumnSink<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        unit_jacobian_columns(
+            (seed_len, self.initial_residual_len()),
+            y_indices,
+            |seed, out| self.eval_initial_jacobian_v(y, p, t, seed, rows, out),
+            column,
+        )
+    }
 
     fn eval_initial_target_value(
         &self,
@@ -1723,6 +1774,18 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
     ) -> Result<(), RuntimeSolveError> {
         let (y, p) = self.split_values(values)?;
         self.model.eval_initial_jacobian_v(y, p, t, v, rows, out)
+    }
+
+    fn eval_initial_jacobian_columns(
+        &self,
+        (values, _p, t): (&[f64], &[f64], f64),
+        seed_len: usize,
+        selection: (Option<&[usize]>, &[usize]),
+        column: &mut JacobianColumnSink<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        let (y, p) = self.split_values(values)?;
+        self.model
+            .eval_initial_jacobian_columns((y, p, t), seed_len, selection, column)
     }
 
     fn eval_initial_target_value(
