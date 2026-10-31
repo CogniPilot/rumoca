@@ -147,6 +147,71 @@ fn projection_keeps_mixed_tensor_seed_lanes_live() {
     assert_eq!(out, [1.0, 0.0, 0.0, 1.0]);
 }
 
+/// A function conditional that is selected by a primal capture and loads seed
+/// `seed` in its selected region, writing register `dst`.
+fn seed_reading_conditional(dst: u32, capture: u32, seed: usize) -> LinearOp {
+    let condition = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let selected = vec![
+        LinearOp::LoadSeed {
+            dst: 0,
+            index: seed,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let fallback = vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let program = rumoca_ir_solve::FunctionConditionalProgram::checked(
+        1,
+        [1],
+        [(condition, selected)],
+        fallback,
+    )
+    .unwrap();
+    LinearOp::FunctionConditional {
+        dst_start: dst,
+        capture_start: capture,
+        program: std::sync::Arc::new(program),
+    }
+}
+
+/// A conditional whose region loads a seed takes a different value in every
+/// color even though everything it reads from registers is primal, so a
+/// colored projection evaluates it again for each color instead of reusing the
+/// first color's value.
+#[test]
+fn projection_recomputes_a_conditional_that_loads_a_seed_in_every_color() {
+    use LinearOp as L;
+    let row = vec![
+        L::LoadY { dst: 0, index: 0 },
+        seed_reading_conditional(1, 0, 0),
+        seed_reading_conditional(2, 0, 1),
+        L::StoreOutputRange {
+            start: 1,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("reuse_conditional.mo"),
+        0,
+        1,
+    );
+    let source =
+        ScalarProgramBlock::with_output_indices(vec![row], vec![span], vec![0, 1]).unwrap();
+    let compiled = crate::compile_jacobian_scalar_program_block(&source).unwrap();
+    let mut prepared = compiled.prepare_projection(&application(&source)).unwrap();
+    // Compare against the analytic matrix, not the per-row reference check.
+    prepared.validate = false;
+    let mut out = [99.0; 4];
+    prepared.call(&[2.0, 7.0], &[], 0.0, &[], &mut out).unwrap();
+    assert_eq!(out, [1.0, 0.0, 0.0, 1.0], "column-major identity");
+}
+
 fn reciprocal_owner(span: rumoca_core::Span) -> rumoca_ir_solve::SolvePureCallTable {
     use rumoca_ir_solve as solve;
     let arithmetic = solve::SolveArithmeticProfile::construct(
