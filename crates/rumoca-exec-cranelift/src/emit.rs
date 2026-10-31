@@ -131,6 +131,19 @@ struct CompiledJacobianRow {
     interpreter_supported: bool,
 }
 
+/// One entry of a whole-set Jacobian call: consecutive programs compiled as
+/// one function, or a single program through its own function.
+enum JacobianWholeEntry {
+    Batch {
+        jit: JacobianRowFn,
+        scratch: scratch::ScratchOwner,
+        rows: std::ops::Range<usize>,
+        output_start: usize,
+        output_count: usize,
+    },
+    Row(usize),
+}
+
 struct JacobianCallContext<'a> {
     y: &'a [f64],
     p: &'a [f64],
@@ -243,6 +256,10 @@ pub(crate) struct CompiledResidualRows {
     /// without installing the caller's tables.
     reads_external_tables: bool,
     jits: Vec<CompiledResidualJit>,
+    /// For selectable rows, the same rows compiled as residual batches for
+    /// whole-block calls, which would otherwise enter every program's own
+    /// function in turn; empty when `jits` already serve whole calls.
+    whole_jits: Vec<CompiledResidualJit>,
     selectable: bool,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
@@ -367,7 +384,12 @@ impl CompiledResidualRows {
         out: &mut [f64],
     ) -> Result<(), CompileError> {
         let mut regs_scratch = self.regs_scratch.borrow_mut();
-        for compiled in &self.jits {
+        let jits = if self.whole_jits.is_empty() {
+            &self.jits
+        } else {
+            &self.whole_jits
+        };
+        for compiled in jits {
             let output =
                 &mut out[compiled.output_start..compiled.output_start + compiled.output_count];
             let status = unsafe {
@@ -456,6 +478,9 @@ pub(crate) struct CompiledJacobianRows {
     /// `CraneliftEmitter::reads_external_tables`); rows that cannot are called
     /// without installing the caller's tables.
     reads_external_tables: bool,
+    /// The rows for a whole-set call, consecutive programs batched into one
+    /// function; per-program functions stay for `call_program_output`.
+    whole: Vec<JacobianWholeEntry>,
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     output_scratch: RefCell<Vec<f64>>,
@@ -556,15 +581,84 @@ impl CompiledJacobianRows {
             };
             let mut staged = self.transaction_scratch.borrow_mut();
             resize_native_outputs(&mut staged, output_count)?;
-            let mut base = 0;
-            for row in self.rows.iter() {
-                let k = row.plan.output_count();
-                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut staged[base..base + k])?;
-                base += k;
-            }
+            self.call_whole(&mut regs_scratch, &ctx, &mut staged)?;
             out[..output_count].copy_from_slice(&staged);
             Ok(())
         })
+    }
+
+    fn call_whole(
+        &self,
+        regs_scratch: &mut Vec<f64>,
+        ctx: &JacobianCallContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), CompileError> {
+        let mut base = 0;
+        for entry in &self.whole {
+            match entry {
+                JacobianWholeEntry::Row(index) => {
+                    let row = &self.rows[*index];
+                    let k = row.plan.output_count();
+                    self.call_jacobian_row(row, regs_scratch, ctx, &mut out[base..base + k])?;
+                    base += k;
+                }
+                JacobianWholeEntry::Batch {
+                    jit,
+                    scratch,
+                    rows: _rows,
+                    output_start,
+                    output_count,
+                } => {
+                    let output = &mut out[*output_start..*output_start + *output_count];
+                    // SAFETY: compile_row_batch declared this function with the
+                    // JacobianRowFn ABI, prevalidation bounds every y/p/seed
+                    // read, and `output` holds exactly these programs' outputs.
+                    let status = scratch.invoke(|arena| unsafe {
+                        jit(
+                            ctx.y.as_ptr(),
+                            ctx.p.as_ptr(),
+                            ctx.t,
+                            ctx.v.as_ptr(),
+                            output.as_mut_ptr(),
+                            arena,
+                        )
+                    });
+                    self.record_jit_call();
+                    status::check(status)?;
+                    #[cfg(test)]
+                    self.check_batch(regs_scratch, ctx, _rows.clone(), output)?;
+                    base = output_start + output_count;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Test builds replay a batch's programs one by one and require the same
+    /// bits.
+    #[cfg(test)]
+    fn check_batch(
+        &self,
+        regs_scratch: &mut Vec<f64>,
+        ctx: &JacobianCallContext<'_>,
+        rows: std::ops::Range<usize>,
+        output: &[f64],
+    ) -> Result<(), CompileError> {
+        let mut expected = vec![0.0; output.len()];
+        let mut base = 0;
+        for row in &self.rows[rows] {
+            let k = row.plan.output_count();
+            self.call_jacobian_row(row, regs_scratch, ctx, &mut expected[base..base + k])?;
+            base += k;
+        }
+        for (actual, expected) in output.iter().zip(&expected) {
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "a Jacobian batch must equal its programs"
+            );
+        }
+        Ok(())
     }
 
     fn call_jacobian_row(
@@ -692,10 +786,16 @@ fn compile_residual_rows_attached(
     }
     let selectable = selectable && !selected_residual::has_shared_conditional_owner(rows);
     let pending = compile_residual_functions(&mut emitter, rows, &plans, selectable)?;
+    let whole_pending = if selectable && rows.len() > 1 {
+        compile_residual_functions(&mut emitter, rows, &plans, false)?
+    } else {
+        Vec::new()
+    };
     finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let compiled_rows = build_compiled_residual_rows(rows, plans)?;
     let jits = finalize_residual_jits(&emitter.module, pending)?;
+    let whole_jits = finalize_residual_jits(&emitter.module, whole_pending)?;
     Ok(CompiledResidualRows {
         _pure_calls: pure_calls,
         output_count: compiled_rows
@@ -705,6 +805,7 @@ fn compile_residual_rows_attached(
         reads_external_tables: emitter.reads_external_tables(),
         rows: compiled_rows,
         jits,
+        whole_jits,
         selectable,
         input_requirements,
         regs_scratch: RefCell::new(Vec::new()),
@@ -728,7 +829,7 @@ fn compile_residual_functions(
     let mut output_start = 0usize;
     if selected_residual::has_shared_conditional_owner(rows) {
         let output_count = plans.iter().map(RowPlan::output_count).sum();
-        let func_id = emitter.compile_residual_batch(rows)?;
+        let func_id = emitter.compile_row_batch(rows, RowKind::Residual)?;
         pending.push((
             ResidualFuncIds::Whole(func_id),
             0,
@@ -767,7 +868,7 @@ fn compile_residual_functions(
             .iter()
             .map(RowPlan::output_count)
             .sum();
-        let func_id = emitter.compile_residual_batch(&rows[row_start..row_end])?;
+        let func_id = emitter.compile_row_batch(&rows[row_start..row_end], RowKind::Residual)?;
         pending.push((
             ResidualFuncIds::Whole(func_id),
             0,
@@ -970,6 +1071,7 @@ fn compile_jacobian_rows_attached(
         let func_id = emitter.compile_row(row, RowKind::JacobianV, &name)?;
         func_ids.push(func_id);
     }
+    let whole_ids = compile_jacobian_whole(&mut emitter, rows)?;
     finalize_jit_module(&mut emitter.module)?;
     let input_requirements = input_requirements_for_plans(&plans);
     let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
@@ -983,7 +1085,27 @@ fn compile_jacobian_rows_attached(
             interpreter_supported: !row_uses_pure_calls(_source),
         });
     }
+    let mut whole = Vec::with_capacity(whole_ids.len());
+    let mut output_start = 0usize;
+    for (rows, func_id) in whole_ids {
+        let output_count = compiled_rows[rows.clone()]
+            .iter()
+            .map(|row| row.plan.output_count())
+            .sum::<usize>();
+        whole.push(match func_id {
+            Some(func_id) => JacobianWholeEntry::Batch {
+                jit: finalized_jacobian_fn(&emitter.module, func_id)?,
+                scratch: Default::default(),
+                rows,
+                output_start,
+                output_count,
+            },
+            None => JacobianWholeEntry::Row(rows.start),
+        });
+        output_start += output_count;
+    }
     Ok(CompiledJacobianRows {
+        whole,
         _pure_calls: pure_calls,
         output_count: compiled_rows
             .iter()
@@ -998,6 +1120,43 @@ fn compile_jacobian_rows_attached(
         jit_call_count: Cell::new(0),
         _module: emitter.module,
     })
+}
+
+/// Consecutive programs of a whole-set Jacobian call, and their batch function
+/// when there is more than one.
+type JacobianWholeGroup = (std::ops::Range<usize>, Option<FuncId>);
+
+/// Group consecutive Jacobian programs for whole-set calls, as residual
+/// batches are grouped: at most `RESIDUAL_BATCH_OPS` of work each, and a
+/// program over `RESIDUAL_CHUNK_THRESHOLD` on its own. A group of one keeps
+/// its per-program function (`None`); larger groups are compiled as one.
+fn compile_jacobian_whole(
+    emitter: &mut CraneliftEmitter,
+    rows: &[Vec<LinearOp>],
+) -> Result<Vec<JacobianWholeGroup>, CompileError> {
+    let mut groups = Vec::new();
+    let mut start = 0usize;
+    while start < rows.len() {
+        let mut end = start;
+        let mut operation_count = 0usize;
+        while end < rows.len() && residual_program_cost(&rows[end]) <= RESIDUAL_CHUNK_THRESHOLD {
+            let next = operation_count.saturating_add(residual_program_cost(&rows[end]));
+            if end > start && next > RESIDUAL_BATCH_OPS {
+                break;
+            }
+            operation_count = next;
+            end += 1;
+        }
+        let end = end.max(start + 1);
+        let func_id = if end - start > 1 {
+            Some(emitter.compile_row_batch(&rows[start..end], RowKind::JacobianV)?)
+        } else {
+            None
+        };
+        groups.push((start..end, func_id));
+        start = end;
+    }
+    Ok(groups)
 }
 
 fn plan_rows<R: AsRef<[LinearOp]>>(rows: &[R]) -> Result<Vec<RowPlan>, CompileError> {
@@ -1741,10 +1900,17 @@ impl CraneliftEmitter {
         Ok(ResidualFuncIds::Chunked(ids))
     }
 
-    fn compile_residual_batch(&mut self, rows: &[Vec<LinearOp>]) -> Result<FuncId, CompileError> {
+    /// Several rows as one function writing their outputs in order: the
+    /// residual ABI, or with `RowKind::JacobianV` the Jacobian-row ABI that
+    /// also takes the direction `v` before the outputs.
+    fn compile_row_batch(
+        &mut self,
+        rows: &[Vec<LinearOp>],
+        kind: RowKind,
+    ) -> Result<FuncId, CompileError> {
         for row in rows {
-            self.ensure_fold_programs(row, RowKind::Residual)?;
-            self.ensure_conditional_programs(row, RowKind::Residual)?;
+            self.ensure_fold_programs(row, kind)?;
+            self.ensure_conditional_programs(row, kind)?;
         }
         let pointer_type = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
@@ -1752,16 +1918,20 @@ impl CraneliftEmitter {
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(types::F64));
+        if kind.has_seed() {
+            signature.params.push(AbiParam::new(pointer_type)); // v
+        }
         signature.params.push(AbiParam::new(pointer_type));
         let profile_id = NEXT_RESIDUAL_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
         signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
+        let name = if kind.has_seed() {
+            format!("rumoca_jacobian_batch_{profile_id}")
+        } else {
+            format!("rumoca_residual_batch_{profile_id}")
+        };
         let func_id = self
             .module
-            .declare_function(
-                &format!("rumoca_residual_batch_{profile_id}"),
-                Linkage::Local,
-                &signature,
-            )
+            .declare_function(&name, Linkage::Local, &signature)
             .map_err(to_backend_err)?;
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -1774,7 +1944,12 @@ impl CraneliftEmitter {
             fb.seal_block(entry);
             let params = fb.block_params(entry).to_vec();
             scratch::enter(&mut fb);
-            let (y_ptr, p_ptr, t_value, out_ptr) = (params[0], params[1], params[2], params[3]);
+            let (y_ptr, p_ptr, t_value) = (params[0], params[1], params[2]);
+            let (v_ptr, out_ptr) = if kind.has_seed() {
+                (Some(params[3]), params[4])
+            } else {
+                (None, params[3])
+            };
             let mut loaded_y = HashMap::new();
             let mut loaded_p = HashMap::new();
             let mut conditional_results = HashMap::new();
@@ -1790,7 +1965,7 @@ impl CraneliftEmitter {
                     y_ptr,
                     p_ptr,
                     t_value,
-                    v_ptr: None,
+                    v_ptr,
                     backing_regs_ptr,
                     flags: MemFlags::new(),
                     loaded_y: backing_regs_ptr.is_none().then_some(&mut loaded_y),
