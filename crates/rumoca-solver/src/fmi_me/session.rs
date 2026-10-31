@@ -12,6 +12,7 @@
 //! carries the same borrow. A second host, a reset, or a mutation behind a live
 //! session is therefore a compile error rather than a runtime hazard
 
+mod deferred_crossing;
 mod error;
 mod host_state;
 mod inputs;
@@ -434,24 +435,6 @@ struct DeferredCrossing {
     located: Option<MeRootApplication>,
     observed_time: f64,
     observed_states: Vec<f64>,
-}
-
-impl DeferredCrossing {
-    /// Whether `time` lies strictly inside this step and before any located
-    /// root, so it can be served without committing anything. A yield within
-    /// roundoff of the step end coincides with it, as in the master loop: the
-    /// step is committed (with any event there) and the yield is snapped.
-    fn serves(&self, time: f64) -> bool {
-        let start = self.step.previous().time();
-        let end = self.step.accepted().time();
-        let roundoff = accepted_step_roundoff(end, end - start);
-        time - start > -roundoff
-            && end - time > roundoff
-            && self
-                .located
-                .as_ref()
-                .is_none_or(|root| root.application().time() - time > roundoff)
-    }
 }
 
 /// The one FMI 3 ME master algorithm.
