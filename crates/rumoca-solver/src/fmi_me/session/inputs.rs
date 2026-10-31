@@ -34,6 +34,15 @@ impl MeSimulationSession<'_, '_> {
             self.record_inputs(inputs);
             return Ok(());
         }
+        // A changed input is a discontinuity at the caller's coordinate: a
+        // deferred live yield (issue #513) becomes a real step boundary first,
+        // but only for a batch the component admits; a refused one changes nothing.
+        self.host
+            .kernel
+            .borrow()?
+            .check_float64_inputs(&references, &values)?;
+        self.truncate_deferred_at_observation()?;
+        self.clear_snapped_yield();
         self.write_inputs(&references, &values)?;
         let correlated = self.correlate_inputs(inputs);
         self.host

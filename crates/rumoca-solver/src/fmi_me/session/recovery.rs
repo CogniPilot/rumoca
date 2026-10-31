@@ -117,6 +117,8 @@ impl MeSimulationSession<'_, '_> {
             backend,
             scan_workspace,
             owned_component: _,
+            deferred: _,
+            snapped_yield: _,
             lease: _,
         } = self;
         drop(backend);

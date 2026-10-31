@@ -349,3 +349,80 @@ fn undecodable_input_is_a_typed_error_and_the_session_continues() {
     assert_eq!(error["code"], "EX011");
     assert_eq!(served.call(json!({"command": "state"}))["event"], "state");
 }
+
+const LORENZ: &str = "model Lorenz
+  input Real u;
+  Real x(start = 1, fixed = true);
+  Real y(start = 1, fixed = true);
+  Real z(start = 1, fixed = true);
+equation
+  der(x) = 10 * (y - x) + u;
+  der(y) = x * (28 - z) - y;
+  der(z) = x * y - 8 / 3 * z;
+end Lorenz;
+";
+
+/// Advance a held-input session to every time in `yields`; return the exact
+/// state bits at each whole second in `report`.
+fn lorenz_bits(solver: &str, yields: &[f64], report: &[f64]) -> Vec<[u64; 3]> {
+    let mut served =
+        Served::spawn_source(LORENZ, "Lorenz", &["--solver", solver, "--input", "u=0"]);
+    let mut bits = Vec::new();
+    for &time in yields {
+        let event = served.call(json!({"command": "advance_to", "time": time}));
+        assert_eq!(event["event"], "ok", "advance_to({time}): {event}");
+        if report.iter().any(|t| t.to_bits() == time.to_bits()) {
+            let state = served.call(json!({"command": "state"}));
+            let values = &state["values"];
+            bits.push(["x", "y", "z"].map(|name| values[name].as_f64().unwrap().to_bits()));
+        }
+    }
+    bits
+}
+
+fn cadence(step: f64, offset: f64, end: f64) -> Vec<f64> {
+    // Integer arithmetic so every cadence lands exactly on the whole seconds it reports.
+    let per_second = (1.0 / step).round() as i64;
+    let mut times: Vec<f64> = (1..=(end as i64) * per_second)
+        .map(|k| k as f64 / per_second as f64 - if k % per_second == 0 { 0.0 } else { offset })
+        .collect();
+    times.dedup();
+    times
+}
+
+/// Issue #513: with every input held, how often a client calls `advance_to`
+/// must not change the trajectory. A poll is an observation, not a step
+/// boundary, exactly as an output time is in a batch run.
+#[test]
+fn issue_513_live_advance_cadence_does_not_change_the_trajectory() {
+    let report = [1.0, 2.0, 3.0, 4.0, 5.0];
+    for solver in ["rk-like", "bdf", "velimplicit"] {
+        let coarse = lorenz_bits(solver, &cadence(1.0, 0.0, 5.0), &report);
+        for (label, yields) in [
+            ("0.1 s", cadence(0.1, 0.0, 5.0)),
+            ("0.05 s", cadence(0.05, 0.0, 5.0)),
+            ("k*0.1+0.05 s", cadence(0.1, 0.05, 5.0)),
+        ] {
+            let fine = lorenz_bits(solver, &yields, &report);
+            assert_eq!(
+                coarse, fine,
+                "{solver}: 1.0 s and {label} advance cadences must give bit-identical states at t = 1..5 s"
+            );
+        }
+    }
+}
+
+/// The repeatability that already holds today and must keep holding: the same
+/// cadence twice is bit-identical.
+#[test]
+fn issue_513_same_advance_cadence_is_bit_repeatable() {
+    let report = [1.0, 2.0, 3.0, 4.0, 5.0];
+    for solver in ["rk-like", "bdf", "velimplicit"] {
+        let yields = cadence(0.1, 0.05, 5.0);
+        assert_eq!(
+            lorenz_bits(solver, &yields, &report),
+            lorenz_bits(solver, &yields, &report),
+            "{solver}: one cadence must be bit-repeatable"
+        );
+    }
+}

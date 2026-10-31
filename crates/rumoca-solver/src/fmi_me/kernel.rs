@@ -892,6 +892,24 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// The admission [`Self::set_float64`] applies, proved without writing, so
+    /// the host can refuse a batch before it moves anything (issue #513).
+    pub(crate) fn check_float64_inputs(
+        &self,
+        refs: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<(), MeError> {
+        self.require_active_lifecycle("set_float64")?;
+        if refs.len() != values.len() {
+            return Err(contract(format!(
+                "{} value references do not match {} values",
+                refs.len(),
+                values.len()
+            )));
+        }
+        self.writable_float64_inputs(refs, values).map(|_| ())
+    }
+
     /// Every reference belongs to this instance and addresses a readable native cell.
     #[cfg(feature = "native-wasm")]
     fn check_native_float64_reads(
