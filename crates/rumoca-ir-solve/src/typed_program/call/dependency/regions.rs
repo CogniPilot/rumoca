@@ -80,7 +80,7 @@ fn insert_operand(
 ) -> Result<(), SolveProgramConstructionError> {
     let access = operations::whole_access(output_rank, operand.dimensions());
     for source in sources {
-        out.insert(source.remap(&access, provenance)?);
+        out.insert(source.remap_may_depend(&access, provenance)?);
     }
     Ok(())
 }
@@ -115,7 +115,7 @@ fn capture_dependencies(
                 ),
             };
             for source in &registers[capture.index()] {
-                out.insert(source.remap(&access, context.provenance)?);
+                out.insert(source.remap_may_depend(&access, context.provenance)?);
             }
         }
     }

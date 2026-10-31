@@ -15,7 +15,35 @@ pub(super) struct Coordinates {
     guards: Box<[Guard]>,
 }
 
+/// Free axes plus guards a may-depend relation may carry. Composing an
+/// access appends both, so a chain of static element updates or nested
+/// region captures grows every relation it passes through; past this bound
+/// the dependency is stated over the whole input instead, which only adds
+/// dependencies. Exact value projections decline instead of widening.
+pub(super) const RELATION_TERM_BUDGET: usize = 32;
+
+/// Affine coefficients one composed relation may hold: every subscript and
+/// guard is a form over the output axes plus the free axes, so this bounds
+/// a relation's size relative to the ranks involved as well as its terms.
+pub(super) const RELATION_COEFFICIENT_BUDGET: usize = 4096;
+
 impl Coordinates {
+    /// The terms composition accumulates: free axes and guards.
+    pub(super) fn terms(&self) -> usize {
+        self.free_dimensions.len() + self.guards.len()
+    }
+
+    /// Whether `self.compose(access)` could exceed either budget, decided
+    /// from both operands before anything is allocated. Composition keeps
+    /// `self`'s subscripts, collects both guard lists, and forms them over
+    /// `access`'s output axes plus both operands' free axes.
+    pub(super) fn composition_exceeds_budget(&self, access: &Self) -> bool {
+        let terms = self.terms() + access.terms();
+        let forms = self.subscripts.len() + self.guards.len() + access.guards.len();
+        let width = access.output_rank + access.free_dimensions.len() + self.free_dimensions.len();
+        terms > RELATION_TERM_BUDGET || forms.saturating_mul(width) > RELATION_COEFFICIENT_BUDGET
+    }
+
     pub(super) fn is_identity(&self, dimensions: &[u32]) -> bool {
         self.free_dimensions.is_empty() && *self == Self::identity(dimensions.len())
     }
@@ -337,9 +365,104 @@ fn flatten_subscripts(
         })
 }
 
+/// A relation of `output_rank` output axes and `free` free axes (extent 2)
+/// onto `input_rank` input axes, carrying `guards` distinct guards, so that
+/// `terms()` is `free + guards`. `seed` is every subscript's constant, which
+/// keeps relations built with different seeds distinct.
+#[cfg(test)]
+impl Coordinates {
+    pub(super) fn with_terms(
+        seed: i64,
+        output_rank: usize,
+        input_rank: usize,
+        free: usize,
+        guards: usize,
+    ) -> Self {
+        let width = output_rank + free;
+        assert!(
+            width > 0 || guards == 0,
+            "a guard needs an axis to stay a guard"
+        );
+        let mut coordinates = Self::access(
+            output_rank,
+            &vec![2; free],
+            (0..input_rank)
+                .map(|_| AffineForm::constant(seed, width))
+                .collect(),
+        );
+        for guard in 0..guards {
+            let mut form = AffineForm::constant(i64::try_from(guard).unwrap(), width);
+            form.coeffs[0] = 1;
+            coordinates = coordinates.restricted(form, i64::MIN, i64::MAX);
+        }
+        assert_eq!(coordinates.terms(), free + guards);
+        coordinates
+    }
+
+    /// Affine coefficients the relation holds.
+    fn coefficients(&self) -> usize {
+        (self.subscripts.len() + self.guards.len())
+            * (self.output_rank + self.free_dimensions.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_term_budget_admits_thirty_two_terms_and_refuses_thirty_three() {
+        let access = Coordinates::with_terms(0, 1, 1, 0, 0);
+        for (guards, exceeds) in [(31, false), (32, false), (33, true)] {
+            let relation = Coordinates::with_terms(0, 1, 1, 0, guards);
+            assert_eq!(
+                relation.composition_exceeds_budget(&access),
+                exceeds,
+                "{guards} terms"
+            );
+        }
+        // Free axes count as terms, and both operands' terms add up.
+        let relation = Coordinates::with_terms(0, 1, 1, 16, 0);
+        for (guards, exceeds) in [(16, false), (17, true)] {
+            let access = Coordinates::with_terms(0, 1, 1, 0, guards);
+            assert_eq!(
+                relation.composition_exceeds_budget(&access),
+                exceeds,
+                "16 free + {guards} guards"
+            );
+        }
+    }
+
+    #[test]
+    fn the_coefficient_budget_admits_4096_and_refuses_4097() {
+        // No terms: forms (the relation's subscripts) times width (the
+        // access's output rank) alone decide.
+        for (forms, width, exceeds) in [(63, 65, false), (64, 64, false), (17, 241, true)] {
+            let relation = Coordinates::with_terms(0, 1, forms, 0, 0);
+            let access = Coordinates::with_terms(0, width, 1, 0, 0);
+            assert_eq!(
+                relation.composition_exceeds_budget(&access),
+                exceeds,
+                "{forms} forms x width {width} = {}",
+                forms * width
+            );
+        }
+    }
+
+    #[test]
+    fn an_admitted_composition_stays_within_the_bound_it_was_admitted_under() {
+        // The predicate is decided before composing; the composed relation
+        // must not hold more terms or coefficients than it predicted.
+        let relation = Coordinates::with_terms(3, 2, 3, 4, 5);
+        let access = Coordinates::with_terms(7, 6, 2, 7, 8);
+        assert!(!relation.composition_exceeds_budget(&access));
+        let composed = relation.compose(&access).expect("the ranks agree");
+        assert!(composed.terms() <= relation.terms() + access.terms());
+        let forms = relation.subscripts.len() + relation.guards.len() + access.guards.len();
+        let width =
+            access.output_rank + access.free_dimensions.len() + relation.free_dimensions.len();
+        assert!(composed.coefficients() <= forms * width);
+    }
 
     #[test]
     fn complete_identity_domain_is_compact_and_matches_scalar_mapping() {

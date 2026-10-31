@@ -197,3 +197,65 @@ fn consecutive_leaves_with_one_relation_store_it_once() {
     assert_eq!(output[1].inputs(), 60..61);
     assert_eq!(output[0].coordinates, point(0, 3).coordinates);
 }
+
+/// A relation on `input` carrying 32 terms, distinct per `seed`.
+fn heavy(start: usize, end: usize, seed: i64) -> SolveCallDependency {
+    SolveCallDependency::exact_run(start, end, Coordinates::with_terms(seed, 1, 1, 0, 32))
+}
+
+#[test]
+fn a_leaf_saturates_past_its_term_mass_without_charging_duplicates_or_its_neighbours() {
+    let mut dependencies = Dependencies::default();
+    // 64 distinct relations of 32 terms: exactly the 2048 budget, still exact.
+    for seed in 0..64 {
+        dependencies.insert(heavy(1, 2, seed));
+    }
+    // Re-inserting them adds no relation and charges no terms.
+    for seed in 0..64 {
+        dependencies.insert(heavy(1, 2, seed));
+    }
+    assert!(dependencies.whole.is_empty());
+    assert_eq!(dependencies.terms[&1], 2048);
+    assert_eq!(dependencies.exact[&1].len(), 64);
+    // One more relation over 0..3 saturates leaf 1 only: it becomes a whole
+    // run that absorbs its relations, and leaves 0 and 2 keep the relation
+    // exactly.
+    dependencies.insert(heavy(0, 3, 64));
+    assert_eq!(dependencies.whole, BTreeMap::from([(1, 2)]));
+    assert!(!dependencies.exact.contains_key(&1));
+    assert!(!dependencies.terms.contains_key(&1));
+    let relation = Coordinates::with_terms(64, 1, 1, 0, 32);
+    for leaf in [0, 2] {
+        assert_eq!(
+            dependencies.exact[&leaf].iter().collect::<Vec<_>>(),
+            vec![&relation],
+            "leaf {leaf}"
+        );
+        assert_eq!(dependencies.terms[&leaf], 32);
+    }
+    let summary = dependencies.finish();
+    assert!(
+        summary
+            .iter()
+            .any(|run| run.inputs() == (1..2) && run.is_whole_input())
+    );
+    for leaf in [0, 2] {
+        assert!(
+            summary
+                .iter()
+                .any(|run| run.inputs().contains(&leaf) && !run.is_whole_input()),
+            "leaf {leaf} stays exact: {summary:?}"
+        );
+    }
+}
+
+#[test]
+fn zero_term_points_never_charge_the_leaf_budget() {
+    let mut dependencies = Dependencies::default();
+    for coordinate in 0..5000 {
+        dependencies.insert(point(0, coordinate));
+    }
+    assert!(dependencies.whole.is_empty());
+    assert_eq!(dependencies.exact[&0].len(), 5000);
+    assert_eq!(dependencies.terms[&0], 0);
+}

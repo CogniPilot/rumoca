@@ -32,7 +32,7 @@ pub(super) fn derive(
         for (input, access) in input_accesses(body, operation, output) {
             for source in &registers[input.index()] {
                 let dependency = match &access {
-                    Some(access) => source.remap(access, provenance)?,
+                    Some(access) => source.remap_may_depend(access, provenance)?,
                     None => source.widened(),
                 };
                 dependencies.insert(dependency);

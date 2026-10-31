@@ -3,6 +3,8 @@
 mod accumulator;
 pub(in crate::typed_program) mod affinity;
 mod assembly;
+#[cfg(test)]
+mod budget_tests;
 mod coordinates;
 mod map_access;
 #[cfg(test)]
@@ -142,6 +144,33 @@ impl SolveCallDependency {
     /// Dependence on the whole of every leaf this run covers.
     fn widened(&self) -> Self {
         Self::exact_inputs(self.input, self.count, None)
+    }
+
+    /// [`Self::remap`] for may-depend summaries: a composition that would
+    /// exceed [`coordinates::RELATION_TERM_BUDGET`] or
+    /// [`coordinates::RELATION_COEFFICIENT_BUDGET`] is not built, and the
+    /// dependency covers the whole input run instead.
+    fn remap_may_depend(
+        &self,
+        access: &Coordinates,
+        provenance: Span,
+    ) -> Result<Self, SolveProgramConstructionError> {
+        if self.composition_exceeds_budget(access) {
+            return Ok(Self {
+                input: self.input,
+                count: self.count,
+                coordinates: None,
+            });
+        }
+        self.remap(access, provenance)
+    }
+
+    /// Whether composing `access` into this relation could exceed the term or
+    /// coefficient budget; decided before any composition is allocated.
+    fn composition_exceeds_budget(&self, access: &Coordinates) -> bool {
+        self.coordinates
+            .as_ref()
+            .is_some_and(|coordinates| coordinates.composition_exceeds_budget(access))
     }
 
     fn remap(
@@ -417,7 +446,7 @@ fn substitute_argument(
 ) -> Result<(), SolveProgramConstructionError> {
     for source in argument {
         let dependency = match &input.coordinates {
-            Some(access) => source.remap(access, provenance)?,
+            Some(access) => source.remap_may_depend(access, provenance)?,
             None => source.widened(),
         };
         dependencies.insert(dependency);
