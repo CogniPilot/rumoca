@@ -1054,3 +1054,76 @@ fn a_large_typed_matrix_product_runs_in_the_host_kernel_with_identical_bits() {
         "{output:?} vs {want:?}"
     );
 }
+
+/// `y[i] * seed[i]` per program when `seeded`, else `y[i] * (i + 1)`.
+fn product_rows(count: usize, seeded: bool) -> Vec<Vec<LinearOp>> {
+    (0..count)
+        .map(|index| {
+            vec![
+                LinearOp::LoadY { dst: 0, index },
+                if seeded {
+                    LinearOp::LoadSeed { dst: 1, index }
+                } else {
+                    LinearOp::Const {
+                        dst: 1,
+                        value: (index + 1) as f64,
+                    }
+                },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn selectable_residual_rows_answer_a_whole_call_with_one_batch() {
+    let compiled = compile_selectable_residual_rows(&product_rows(5, false), None).unwrap();
+    let y = [0.5, -1.25, 3.0, 1e-300, -0.0];
+    let mut whole = [f64::NAN; 5];
+    compiled.call(&y, &[], 0.0, &mut whole).unwrap();
+    assert_eq!(
+        compiled.jit_call_count(),
+        1,
+        "five small programs are one batch"
+    );
+    for (program, expected) in whole.iter().enumerate() {
+        let selected = compiled
+            .call_program_output((program, 0), &y, &[], 0.0, &[])
+            .unwrap()
+            .expect("selectable rows answer one program");
+        assert_eq!(selected.to_bits(), expected.to_bits(), "program {program}");
+    }
+    assert_eq!(
+        compiled.jit_call_count(),
+        6,
+        "a selected call still enters its program"
+    );
+}
+
+#[test]
+fn jacobian_rows_answer_a_whole_call_with_one_batch() {
+    let compiled = compile_jacobian_rows(&product_rows(5, true)).unwrap();
+    let y = [0.5, -1.25, 3.0, 1e-300, -0.0];
+    let seed = [2.0, -0.5, 0.0, 1e300, 7.0];
+    let mut whole = [f64::NAN; 5];
+    compiled.call(&y, &[], 0.0, &seed, &mut whole).unwrap();
+    // The test build also replays each batch through its programs to compare.
+    let replayed = compiled.program_call_count();
+    assert_eq!(
+        replayed,
+        1 + 5,
+        "one batch, then its five programs as the check"
+    );
+    for (program, expected) in whole.iter().enumerate() {
+        let selected = compiled
+            .call_program_output((program, 0), &y, &[], 0.0, &seed, &[])
+            .unwrap();
+        assert_eq!(selected.to_bits(), expected.to_bits(), "program {program}");
+    }
+}
