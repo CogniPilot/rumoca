@@ -45,7 +45,7 @@ governing rules.
 | # | Trap | Emitter consequence |
 |---|------|---------------------|
 | T1 | Methods are parameter-free; I/O via `self.*` | Never emit parameters on block interface methods |
-| T2 | `previous()`/`derivative()` are NOT operators — only quoted-name conventions for materialized state | `pre(x)` lowers to `'previous(x)'` state assigned at END of DoStep; `firstTick` for first-sample behavior |
+| T2 | `previous()`/`derivative()` are NOT operators — only quoted-name conventions for materialized state | `pre(x)` lowers to `'previous(x)'` state. DoStep runs the sampled actions on their entry snapshots, commits the previous values equation-section definitions read, assigns those definitions (the settled event, MLS 3.7.5), then commits the rest; `firstTick` for first-sample behavior |
 | T3 | min/max ranges saturate (implicit `limit self` at method entry/return; Startup: return only); no assertions exist | Opposite of Modelica semantics; `limit` leaves qNaN as qNaN |
 | T4 | Unary minus binds only to references: `a := -b^2` means `(-b)^2`; `-(b^2)`, `-f(x)` don't parse | Template renders the checked semantic rewrite as `0.0 - (expr)` or `(-1.0)*(expr)` |
 | T5 | No implicit Integer↔Real promotion; equal-typed operands; `/` Real-only; no `%`; `^` returns Real | Insert explicit `real()`/`integer()` casts during lowering |
@@ -62,7 +62,12 @@ governing rules.
 ### 3. Rule Rationale (SPEC_0034 GAL-016, GAL-024)
 
 **GAL-016.** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
-protected state `'previous(x)'` committed at end of DoStep; the sample period is a
+protected state `'previous(x)'`, committed once per DoStep. Sampled actions read
+the entry snapshot; an equation-section definition outside any `when` publishes
+the settled event, where event iteration has made `pre(x)` equal `x` (MLS
+3.7.5), so the previous values it reads are committed before it and the others
+after it; one reading the previous value of a variable those definitions
+assign is refused (`pre-of-causal-definition`); the sample period is a
 `constant` (seconds) named by the XSD-strict manifest `<Clock>` (§3.1.2).
 
 **GAL-024.** The manifest LogicalData mapping (every interface variable and

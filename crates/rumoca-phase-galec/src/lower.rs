@@ -203,6 +203,8 @@ fn lower_view<'dae>(
         .collect::<HashMap<_, _>>();
     let referenced_pre = referenced_pre_variables(view, definitions)?;
     let pre_names = build_pre_names(&referenced_pre, &by_id)?;
+    let commits =
+        pre_references::settled_commit_schedule(view, definitions, &referenced_pre, &by_id)?;
 
     // Counted once for the whole projection, not per call site: the census is a
     // whole-arena scan, and asking it per site would make the cost model
@@ -240,6 +242,15 @@ fn lower_view<'dae>(
     .map_err(single)?;
     parts.do_step_locals.extend(clocked.locals);
     let mut do_step = clocked.statements;
+    // The event's own sampled actions have read their entry snapshots, so the
+    // previous values the equation-section definitions read are committed
+    // first: those definitions publish the settled event, where pre(x) = x.
+    append_pre_commits(
+        &commits.before_definitions,
+        &by_id,
+        &pre_names,
+        &mut do_step,
+    )?;
     let mut called_user_functions = clocked.called_user_functions;
     called_user_functions.extend(parts.startup_called_user_functions.iter().copied());
     called_user_functions.extend(
@@ -251,7 +262,7 @@ fn lower_view<'dae>(
         )
         .map_err(single)?,
     );
-    append_pre_commits(&referenced_pre, &by_id, &pre_names, &mut do_step)?;
+    append_pre_commits(&commits.after_definitions, &by_id, &pre_names, &mut do_step)?;
     let block_name = crate::mangle::galec_variable_name(
         options.block_name.as_deref().unwrap_or(input.model_name),
     )

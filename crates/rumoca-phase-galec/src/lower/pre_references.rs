@@ -19,9 +19,79 @@ pub(super) fn referenced_pre_variables<'dae>(
     Ok(ids)
 }
 
+/// When DoStep commits each previous value.
+pub(super) struct SettledCommitSchedule<'dae> {
+    /// Read by an equation-section definition: committed after the event's
+    /// sampled actions and before the causal assignments.
+    pub(super) before_definitions: Vec<dae::VariableId<'dae>>,
+    /// Everything else, committed at the end of DoStep in collection order.
+    pub(super) after_definitions: Vec<dae::VariableId<'dae>>,
+}
+
+/// Splits the previous-value commits around the causal assignments.
+///
+/// An equation-section `pre(x)` outside any `when` is settled by event
+/// iteration (MLS 3.7.5): `sample()` is true only on the first iteration, and
+/// the iteration ends when every `pre(x)` equals `x`. So the published
+/// definition reads `x` as the event left it, while a sampled action reads the
+/// entry snapshot. Committing only the values those definitions read before
+/// them gives that settled point in one pass without running any sampled
+/// action again, and leaves models without such a read byte-identical.
+///
+/// A definition reading the previous value of a variable the causal
+/// assignments themselves define would need the iteration itself, so it is
+/// refused.
+pub(super) fn settled_commit_schedule<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    referenced: &[dae::VariableId<'dae>],
+    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
+) -> Result<SettledCommitSchedule<'dae>, Vec<GalecTargetError>> {
+    let mut read = Vec::new();
+    collect_causal_definition_pre(view, definitions, &mut HashSet::new(), &mut read)?;
+    if let Some(defined) = read
+        .iter()
+        .find(|id| defined_by_causal_assignment(definitions, **id))
+    {
+        let base = by_id
+            .get(&defined.index())
+            .expect("pre variable was resolved while collecting names");
+        return Err(vec![unsupported(
+            "pre-of-causal-definition",
+            format!(
+                "equation-section pre({}) reads a variable the settled definitions assign, \
+                 which needs event iteration",
+                base.variable.name()
+            ),
+            base.variable.declaration().span(),
+        )]);
+    }
+    let read = read.iter().map(|id| id.index()).collect::<HashSet<_>>();
+    let (before_definitions, after_definitions) = referenced
+        .iter()
+        .copied()
+        .partition(|id| read.contains(&id.index()));
+    Ok(SettledCommitSchedule {
+        before_definitions,
+        after_definitions,
+    })
+}
+
+fn defined_by_causal_assignment<'dae>(
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    id: dae::VariableId<'dae>,
+) -> bool {
+    definitions.definition_for_variable(id).is_some()
+        || definitions.fully_defines_variable(id)
+        || definitions
+            .order()
+            .iter()
+            .any(|algebraic| dae::VariableId::from(*algebraic) == id)
+}
+
 /// An equation-section `pre(x)` outside any `when` (MLS 3.7.5) is part of a
 /// causal output or local definition, which DoStep lowers after the event
-/// assignments and before the previous-value commits.
+/// assignments and after committing the previous values it reads.
 fn collect_causal_definition_pre<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
