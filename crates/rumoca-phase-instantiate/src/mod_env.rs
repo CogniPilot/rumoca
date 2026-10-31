@@ -146,17 +146,19 @@ fn insert_modifier_value_with_structural_overrides(
     insert_ctx: &ScopedInsertContext<'_>,
 ) -> InstantiateResult<()> {
     let qn = ast::QualifiedName::from_ident(target_name);
-    let (binding_source, binding_source_scope) =
-        inherited_modifier_source_metadata(target_name, value_expr, ctx.mod_env()).map_or(
-            (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
-            |(src, scope)| {
-                (
-                    src.or_else(|| Some(value_expr.clone())),
-                    scope.or_else(|| insert_ctx.source_scope.clone()),
-                )
-            },
-        );
-    let resolved_expr = resolve_modification_expr(
+    let inherited_source =
+        inherited_modifier_source_metadata(target_name, value_expr, ctx.mod_env());
+    let forwards_source_scope = inherited_source.is_some();
+    let (binding_source, binding_source_scope) = inherited_source.map_or(
+        (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
+        |(src, scope)| {
+            (
+                src.or_else(|| Some(value_expr.clone())),
+                scope.or_else(|| insert_ctx.source_scope.clone()),
+            )
+        },
+    );
+    let mut resolved_expr = resolve_modification_expr(
         value_expr,
         ModifierResolveScope {
             mod_env: ctx.mod_env(),
@@ -166,6 +168,13 @@ fn insert_modifier_value_with_structural_overrides(
         },
         options.allow_string_eval,
     )?;
+    // MLS §7.2: symbolic references belong to the occurrence that wrote them.
+    // Following another modifier may settle a value, but cannot transplant
+    // its remaining names into this modifier's source scope. Explicit same-name
+    // forwarding above carries that scope; other symbolic bindings stay local.
+    if !forwards_source_scope && symbolic_modifier_needs_source_scope(&resolved_expr, tree) {
+        resolved_expr = value_expr.clone();
+    }
     let structural_field_overrides = collect_structural_integer_fields_from_sibling_reference(
         value_expr,
         ctx.mod_env(),
@@ -200,6 +209,34 @@ fn insert_modifier_value_with_structural_overrides(
         )?;
     }
     Ok(())
+}
+
+/// A resolved enum literal is a declaration-owned value (MLS §4.8.5.1), not
+/// a read of an occurrence. Every other remaining reference needs its writer.
+fn symbolic_modifier_needs_source_scope(
+    expression: &ast::Expression,
+    tree: &ast::ClassTree,
+) -> bool {
+    ast::collect_component_refs(expression)
+        .iter()
+        .any(|reference| {
+            if reference.parts.iter().any(|part| part.def_id.is_none()) {
+                return true;
+            }
+            let Some(declaration) = reference
+                .target_def_id()
+                .and_then(|target| tree.get_class_by_def_id(target))
+            else {
+                return true;
+            };
+            let Some(literal) = reference.parts.last() else {
+                return true;
+            };
+            !declaration
+                .enum_literals
+                .iter()
+                .any(|declared| declared.ident.text == literal.ident.text)
+        })
 }
 
 fn inherited_modifier_source_metadata(
