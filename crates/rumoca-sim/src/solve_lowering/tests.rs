@@ -26,6 +26,8 @@ mod parameter_bindings;
 mod probe_jacobian;
 #[cfg(feature = "solver-rk45")]
 mod quotient_root_capture;
+#[cfg(feature = "solver-velimplicit")]
+mod refresh_validation;
 scheduled_executor_items! {
     #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
     mod session_api;

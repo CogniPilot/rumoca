@@ -408,6 +408,10 @@ struct ScalarExecutionInventory {
     failed_event_action_rows: RefCell<BTreeSet<usize>>,
     causal_seed_schedules: causal_seed_schedules::CausalSeedSchedules,
     compiled_assignment_schedules: interpreted_schedules::CompiledSchedules,
+    /// The target indices of each executed assignment schedule's refresh
+    /// rows, in row order, collected on its first refresh. A sequence id names
+    /// one exact ordered row selection, so the slice never changes.
+    refresh_target_slices: RefCell<FxHashMap<solve::RefreshSequenceId, Box<[usize]>>>,
     interpreted_assignment_schedules: interpreted_schedules::InterpretedSchedules,
     native_projection_assignments: native_projection_assignments::NativeProjectionAssignments,
     compiled_output_scratch: RefCell<Vec<f64>>,

@@ -600,6 +600,7 @@ impl SolveRuntime {
             failed_event_action_rows: RefCell::new(BTreeSet::new()),
             causal_seed_schedules,
             compiled_assignment_schedules,
+            refresh_target_slices: RefCell::new(FxHashMap::default()),
             interpreted_assignment_schedules,
             native_projection_assignments: Default::default(),
             compiled_output_scratch: RefCell::new(Vec::new()),

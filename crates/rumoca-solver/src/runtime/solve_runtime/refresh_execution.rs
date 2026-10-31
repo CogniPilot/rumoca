@@ -606,7 +606,7 @@ impl ScalarExecutionView<'_> {
         if self.try_native_assignment_refresh(sequence, t, solver_y, params)?
             || self.try_interpreted_assignment_refresh(sequence, t, solver_y, params)?
         {
-            self.validate_refresh_values(plan, solver_y, params)?;
+            self.validate_refreshed_targets(sequence, plan, solver_y, params)?;
             return Ok(());
         }
         if let Some(reference) = self.scalar.implicit_scalar_rhs.reference()
@@ -674,6 +674,29 @@ impl ScalarExecutionView<'_> {
             .compiled_assignment_schedules
             .get(&sequence)
             .cloned()
+    }
+
+    /// Validate the values one assignment schedule just wrote. Untraced, the
+    /// finite check reads the sequence's targets from one contiguous slice
+    /// instead of walking its rows; a non-finite value, or an enabled value
+    /// trace, takes the row walk, which reports the same first row.
+    fn validate_refreshed_targets(
+        &self,
+        sequence: solve::RefreshSequenceId,
+        plan: solve::RefreshRows<'_>,
+        solver_y: &[f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if !tracing::enabled!(target: "rumoca_solver::refresh_values", tracing::Level::TRACE) {
+            let mut slices = self.scalar.refresh_target_slices.borrow_mut();
+            let targets = slices
+                .entry(sequence)
+                .or_insert_with(|| plan.iter().map(|row| row.target_index()).collect());
+            if targets.iter().all(|&index| solver_y[index].is_finite()) {
+                return Ok(());
+            }
+        }
+        self.validate_refresh_values(plan, solver_y, params)
     }
 
     fn validate_refresh_values(
