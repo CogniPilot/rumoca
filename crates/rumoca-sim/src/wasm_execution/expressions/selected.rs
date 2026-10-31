@@ -8,7 +8,9 @@ use std::cell::RefMut;
 #[cfg(test)]
 mod tests;
 
-pub(super) type Program = (CompiledPrivateProgramWasm, RefCell<Vec<f64>>);
+/// A program's emitted entry and the private scratch it runs on. The scratch is
+/// shared by every program of one expression (see `WasmExpression::compile_with_seed`).
+pub(super) type Program = (CompiledPrivateProgramWasm, Rc<RefCell<Vec<f64>>>);
 
 struct BoundProgram {
     _source: ScalarProgramBlock,
