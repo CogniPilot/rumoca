@@ -777,10 +777,13 @@ impl ScalarExecutionView<'_> {
                 )?;
                 changed = write_update_tangents(targets, &values, y.len(), &mut seed);
             }
-            self.seed_refresh_blocks(plan, lin, y, &mut seed)?;
+            // The updates left the seed exactly as the last refresh wrote it.
+            // A refresh clears its blocks' entries and solves them again from
+            // the rest of the seed, so it would write the same bits.
             if pass > 0 && !changed {
                 return Ok(seed);
             }
+            self.seed_refresh_blocks(plan, lin, y, &mut seed)?;
         }
         Err(RuntimeSolveError::solve_ir(format!(
             "initial residual tangent did not converge at t={t}"
