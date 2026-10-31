@@ -205,17 +205,29 @@ fn enumeration_literal_in_when_equation_resolves_to_its_ordinal() {
         "the enumeration coordinate must be declared as an int32_t ordinal:\n{header}"
     );
 
-    let source = std::fs::read_to_string(dir.path().join("GalecEnumWhen.c"))
-        .expect("the projection emits a C translation unit");
-    assert!(
-        source.contains("self->mode = 2;"),
-        "`Mode.Armed` is the second literal, so the when body must assign ordinal 2:\n{source}"
-    );
-    assert!(
-        source.contains("self->mode = 1;"),
-        "`start = Mode.Idle` is the first literal, so startup must assign ordinal 1:\n{source}"
+    // `start = Mode.Idle` is the first literal, so Startup leaves ordinal 1;
+    // `Mode.Armed` is the second, so the when body leaves ordinal 2.
+    assert_eq!(
+        run_driver(dir.path(), "GalecEnumWhen", ENUM_IN_WHEN_DRIVER),
+        "startup 1\nstep 2\n"
     );
 }
+
+const ENUM_IN_WHEN_DRIVER: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include "GalecEnumWhen.h"
+
+int main(void) {
+    static GalecEnumWhenState state;
+    memset(&state, 0, sizeof state);
+    GalecEnumWhen_startup(&state);
+    printf("startup %d\n", (int)state.mode);
+    GalecEnumWhen_dostep(&state);
+    printf("step %d\n", (int)state.mode);
+    return 0;
+}
+"#;
 
 /// The firmware-shaped case: a package-qualified enumeration *compared* in a
 /// branch guard and *assigned* in the branch body, inside one `when`. This is
@@ -233,23 +245,69 @@ fn enumeration_mode_logic_in_a_when_equation_reaches_embedded_c() {
         "enumeration mode logic in a `when` equation must reach GALEC, got:\n{stderr}"
     );
 
-    let source = std::fs::read_to_string(dir.path().join("Flight_GalecEnumModeLogic.c"))
-        .expect("the projection emits a C translation unit");
-    // Guards compare the ordinal of the literal they name, bodies assign it.
-    assert!(
-        source.contains("self->previous_mode == 1"),
-        "the `pre(mode) == Flight.Mode.Idle` guard must compare ordinal 1:\n{source}"
+    // Guards compare the ordinal of the literal they name, bodies assign it:
+    // Idle (1) arms on command > 0.5, Armed (2) activates on command > 1.5,
+    // and Active (3) holds.
+    assert_eq!(
+        run_driver(
+            dir.path(),
+            "Flight_GalecEnumModeLogic",
+            ENUM_MODE_LOGIC_DRIVER
+        ),
+        "startup 1 0.00\n\
+         command 0.00: 1 0.00\n\
+         command 1.00: 2 0.00\n\
+         command 2.00: 3 0.25\n\
+         command 0.00: 3 0.25\n"
     );
+}
+
+const ENUM_MODE_LOGIC_DRIVER: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include "Flight_GalecEnumModeLogic.h"
+
+int main(void) {
+    static GalecEnumModeLogicState state;
+    const float commands[4] = { 0.0f, 1.0f, 2.0f, 0.0f };
+    memset(&state, 0, sizeof state);
+    GalecEnumModeLogic_startup(&state);
+    printf("startup %d %.2f\n", (int)state.mode, (double)state.throttle);
+    for (int index = 0; index < 4; ++index) {
+        state.command = commands[index];
+        GalecEnumModeLogic_dostep(&state);
+        printf("command %.2f: %d %.2f\n", (double)state.command, (int)state.mode,
+               (double)state.throttle);
+    }
+    return 0;
+}
+"#;
+
+/// Link the emitted `<stem>.c` with `driver` under the strict profile, run it,
+/// and return its stdout.
+fn run_driver(dir: &Path, stem: &str, driver: &str) -> String {
+    let driver_path = dir.join("driver.c");
+    std::fs::write(&driver_path, driver).expect("write driver");
+    let program = dir.join("driver");
+    let compile = super::cc_support::assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver_path)
+        .arg(dir.join(format!("{stem}.c")))
+        .arg(dir.join(super::cc_support::GALEC_KERNEL_LIBRARY))
+        .arg("-lm")
+        .output()
+        .expect("run cc");
     assert!(
-        source.contains("self->previous_mode == 2"),
-        "the `pre(mode) == Flight.Mode.Armed` guard must compare ordinal 2:\n{source}"
+        compile.status.success(),
+        "strict C99 rejected `{stem}`.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
     );
+    let run = Command::new(&program).output().expect("run driver");
     assert!(
-        source.contains("self->mode = 2;"),
-        "the armed branch must assign ordinal 2:\n{source}"
+        run.status.success(),
+        "`{stem}` driver exited with {:?}",
+        run.status.code()
     );
-    assert!(
-        source.contains("self->mode = 3;"),
-        "the active branch must assign ordinal 3:\n{source}"
-    );
+    String::from_utf8(run.stdout).expect("driver prints UTF-8")
 }

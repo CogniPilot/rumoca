@@ -11,6 +11,7 @@ use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod algebraic_family;
+pub(crate) mod algorithm_block;
 mod matched_projection;
 mod matching_rows;
 use matched_projection::{MatchedBlockView, MatchedProjection};

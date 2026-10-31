@@ -101,6 +101,15 @@ fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
         let source = &files["SympyDecay_jax_ode.py"];
         assert_python_defaults(source);
     }
+    if target == "galec-production" {
+        // #483: the preview refines before it renders, so its C is the
+        // Solve-printed unit (only that unit carries the fault macro).
+        let source = &files["ProductionCode/GalecCounter.c"];
+        assert!(
+            source.contains("RUMOCA_GALEC_FAULT"),
+            "the C preview must print from the Solve refinement: {source}"
+        );
+    }
     if matches!(
         target,
         "checked_dae_report" | "custom_checked_variables.jinja"

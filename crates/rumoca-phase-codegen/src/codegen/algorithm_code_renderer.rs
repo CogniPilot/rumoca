@@ -15,6 +15,9 @@ use super::{CodegenError, create_environment};
 #[derive(Debug)]
 pub struct AlgorithmCodeTemplateRenderer {
     context: Value,
+    /// Built from a refined Solve block: its C model units carry the
+    /// template's unused-marker candidates for the read pass (#483).
+    solve_c: bool,
 }
 
 impl AlgorithmCodeTemplateRenderer {
@@ -36,6 +39,27 @@ impl AlgorithmCodeTemplateRenderer {
                 algorithm_code => Value::from_serialize(view),
                 ir_kind => "algorithm_code",
             },
+            solve_c: false,
+        })
+    }
+
+    /// [`Self::new`] plus the package's refined Solve block: the context of a
+    /// target that prints its C from Solve IR (#483, DAE → GALEC → Solve IR →
+    /// C). `block` must be the refinement of `package`.
+    pub fn with_solve_block(
+        package: &AlgorithmCodePackage,
+        block: &rumoca_ir_solve::SolveAlgorithmBlock,
+        sources: &rumoca_core::SourceMap,
+    ) -> Result<Self, CodegenError> {
+        let view = crate::views::algorithm_code::AlgorithmCodeView::new(package, sources)
+            .map_err(CodegenError::template)?;
+        Ok(Self {
+            context: minijinja::context! {
+                algorithm_code => Value::from_serialize(view),
+                solve_block => super::solve_block_renderer::solve_block_value(block, sources),
+                ir_kind => "algorithm_code",
+            },
+            solve_c: true,
         })
     }
 
@@ -78,6 +102,38 @@ impl AlgorithmCodeTemplateRenderer {
         let mut env = create_environment();
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
-        Ok(tmpl.render(context)?)
+        let text = tmpl.render(context)?;
+        Ok(if self.solve_c {
+            super::solve_block_renderer::drop_needless_void_uses(&text)
+        } else {
+            text
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AlgorithmCodeTemplateRenderer;
+
+    /// The unused-marker pass belongs to the Solve C boundary only: any other
+    /// render, including a custom template that prints the candidate form
+    /// literally, is returned as the template rendered it.
+    #[test]
+    fn only_a_solve_renderer_resolves_unused_marker_candidates() {
+        let template = "void f(void) {\n    float rumoca_galec_r0[1] = {0}; (void)rumoca_galec_r0; \
+                        /*rumoca_galec_void_candidate*/\n    g(rumoca_galec_r0);\n}\n";
+        let render = |solve_c| {
+            AlgorithmCodeTemplateRenderer {
+                context: minijinja::context! {},
+                solve_c,
+            }
+            .render_context(template, minijinja::context! {})
+            .expect("renders")
+        };
+        assert_eq!(render(false), template);
+        assert_eq!(
+            render(true),
+            "void f(void) {\n    float rumoca_galec_r0[1] = {0};\n    g(rumoca_galec_r0);\n}\n"
+        );
     }
 }

@@ -28,6 +28,7 @@ rumoca-ir-solve = { workspace = true }
 sha2 = { version = "0.10", optional = true }
 rumoca-eval-ast = { workspace = true }
 rumoca-phase-galec = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, optional = true }
 rumoca-tool-lint = { workspace = true }
 # default-features = false drops the `server`+`simulation` features and keeps

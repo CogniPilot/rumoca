@@ -90,6 +90,7 @@ rumoca-ir-solve = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
@@ -246,7 +247,6 @@ rumoca-eval-galec = { workspace = true }
 # Runtime state machine + backend-neutral simulation driver (SPEC_0029 §3b);
 # the AD/sensitivity integration tests drive `SolveRuntime` directly.
 rumoca-solver = { workspace = true }
-rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 # GALEC target CI (tests only): recompute the SHA-1 checksum web and check
 # manifest.xml well-formedness / attribute order over the exact on-disk bytes.

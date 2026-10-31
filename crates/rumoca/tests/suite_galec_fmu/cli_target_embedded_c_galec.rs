@@ -50,11 +50,14 @@ const MIN_MAX_MODEL: &str = "EmbeddedGalecMinMax";
 const MIN_MAX_FIXTURE: &str = "\
 model EmbeddedGalecMinMax
   constant Real samplePeriod = 0.1;
-  input Real u;
-  discrete output Real y(start = 0.0);
+  input Real a;
+  input Real b;
+  discrete output Real lo(start = 0.0);
+  discrete output Real hi(start = 0.0);
 equation
   when sample(0.0, samplePeriod) then
-    y = min(u, max(u, 0.0));
+    lo = min(a, b);
+    hi = max(a, b);
   end when;
 end EmbeddedGalecMinMax;
 ";
@@ -78,21 +81,28 @@ end EmbeddedGalecSquare;
 
 const SQUARE_DRIVER: &str = r#"
 #include <math.h>
-#include "EmbeddedGalecSquare.c"
+#include <string.h>
+#include "EmbeddedGalecSquare.h"
 
 int main(void) {
     /* Squares that are exactly representable in binary32, so the multiply is
-       the same value however the C implementation is allowed to evaluate it.
-       The bound helper must agree with the duplicated multiply the reduction
-       emits wherever the base IS free to write twice. */
+       the same value however the C implementation is allowed to evaluate it. */
+    static EmbeddedGalecSquareState state;
     const float samples[6] = { 0.0f, 0.5f, 1.5f, 3.0f, -2.25f, 7.0f };
+    memset(&state, 0, sizeof state);
+    EmbeddedGalecSquare_startup(&state);
     for (int index = 0; index < 6; ++index) {
-        const float sample = samples[index];
-        if (rumoca_galec_square(sample) != sample * sample) {
+        const float base = samples[index] > 1.0f ? samples[index] : 1.0f;
+        state.u = samples[index];
+        EmbeddedGalecSquare_dostep(&state);
+        if (state.y != base * base) {
             return 1;
         }
     }
-    if (!isnan(rumoca_galec_square(NAN))) {
+    /* `max(NaN, 1.0)` selects 1.0 relationally. */
+    state.u = NAN;
+    EmbeddedGalecSquare_dostep(&state);
+    if (state.y != 1.0f) {
         return 2;
     }
     return 0;
@@ -130,27 +140,42 @@ int main(void) {
 
 const MIN_MAX_DRIVER: &str = r#"
 #include <math.h>
-#include "EmbeddedGalecMinMax.c"
+#include <string.h>
+#include "EmbeddedGalecMinMax.h"
+
+static EmbeddedGalecMinMaxState state;
+
+/* One DoStep of the generated block: `lo = min(a, b)`, `hi = max(a, b)`. */
+static void step(float a, float b) {
+    state.a = a;
+    state.b = b;
+    EmbeddedGalecMinMax_dostep(&state);
+}
 
 int main(void) {
     const float qnan = NAN;
 
-    if (rumoca_galec_min(2.0f, 3.0f) != 2.0f
-        || rumoca_galec_min(3.0f, 2.0f) != 2.0f
-        || rumoca_galec_max(2.0f, 3.0f) != 3.0f
-        || rumoca_galec_max(3.0f, 2.0f) != 3.0f) {
+    memset(&state, 0, sizeof state);
+    EmbeddedGalecMinMax_startup(&state);
+    step(2.0f, 3.0f);
+    if (state.lo != 2.0f || state.hi != 3.0f) {
         return 1;
     }
-    if (rumoca_galec_min(2.0f, 2.0f) != 2.0f
-        || rumoca_galec_max(2.0f, 2.0f) != 2.0f) {
+    step(3.0f, 2.0f);
+    if (state.lo != 2.0f || state.hi != 3.0f) {
+        return 1;
+    }
+    step(2.0f, 2.0f);
+    if (state.lo != 2.0f || state.hi != 2.0f) {
         return 2;
     }
-    if (rumoca_galec_min(qnan, 2.0f) != 2.0f
-        || rumoca_galec_max(qnan, 2.0f) != 2.0f) {
+    /* Relational selection: a NaN first operand loses, a NaN second wins. */
+    step(qnan, 2.0f);
+    if (state.lo != 2.0f || state.hi != 2.0f) {
         return 3;
     }
-    if (!isnan(rumoca_galec_min(2.0f, qnan))
-        || !isnan(rumoca_galec_max(2.0f, qnan))) {
+    step(2.0f, qnan);
+    if (!isnan(state.lo) || !isnan(state.hi)) {
         return 4;
     }
     return 0;
@@ -190,22 +215,15 @@ fn real_min_max_use_order_sensitive_relational_nan_semantics() {
 
     let driver = out_dir.join("min_max.c");
     fs::write(&driver, MIN_MAX_DRIVER).expect("write min/max driver");
-    let generated_source = fs::read_to_string(out_dir.join(format!("{MIN_MAX_MODEL}.c")))
-        .expect("read generated C source");
-    assert!(
-        generated_source.contains("static inline float rumoca_galec_min")
-            && generated_source.contains("static inline float rumoca_galec_max"),
-        "reachable min/max helpers were not emitted"
-    );
+    let model_source = out_dir.join(format!("{MIN_MAX_MODEL}.c"));
+    let generated_source = fs::read_to_string(&model_source).expect("read generated C source");
     let program = out_dir.join("min_max");
-    // The driver includes the model unit textually to reach its `static inline`
-    // helpers; that still makes this a link of a generated model unit, so the
-    // shared kernel library goes on the command line like everywhere else.
     let program_kernels = out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY);
     let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
         .arg(&driver)
+        .arg(&model_source)
         .arg(&program_kernels)
         .arg("-lm")
         .output()
@@ -225,10 +243,8 @@ fn real_min_max_use_order_sensitive_relational_nan_semantics() {
     );
 }
 
-/// `x ^ 2` never reaches `powf` in the emitted C. A base that is free to write
-/// twice is duplicated in place; this one is a call, so it is bound by
-/// `rumoca_galec_square` and evaluated exactly once, and the helper's result is
-/// the same multiply.
+/// `x ^ 2` never reaches `powf` in the emitted C: Solve lowers a Real square
+/// to one multiply of a base evaluated once, here a `max` call.
 #[test]
 fn a_squared_call_result_is_bound_and_multiplied_rather_than_raised() {
     let dir = tempdir().expect("tempdir");
@@ -241,12 +257,8 @@ fn a_squared_call_result_is_bound_and_multiplied_rather_than_raised() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let generated_source =
-        fs::read_to_string(out_dir.join(format!("{SQUARE_MODEL}.c"))).expect("read generated C");
-    assert!(
-        generated_source.contains("rumoca_galec_square("),
-        "a call base must be bound by the square helper: {generated_source}"
-    );
+    let model_source = out_dir.join(format!("{SQUARE_MODEL}.c"));
+    let generated_source = fs::read_to_string(&model_source).expect("read generated C");
     assert!(
         !generated_source.contains("powf"),
         "a Real square must not reach powf: {generated_source}"
@@ -255,14 +267,12 @@ fn a_squared_call_result_is_bound_and_multiplied_rather_than_raised() {
     let driver = out_dir.join("square.c");
     fs::write(&driver, SQUARE_DRIVER).expect("write square driver");
     let program = out_dir.join("square");
-    // The driver includes the model unit textually to reach its `static inline`
-    // helpers, so the shared kernel library goes on the command line as it does
-    // for every other link of a generated model unit.
     let program_kernels = out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY);
     let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
         .arg(&driver)
+        .arg(&model_source)
         .arg(&program_kernels)
         .arg("-lm")
         .output()
@@ -581,13 +591,16 @@ fn the_body_reader_selects_the_definition_not_a_neighbour() {
 
     let body = emitted_definition_body(&source, "defaultedReturn", "embedded-c-galec");
     let decoy_body = emitted_definition_body(&source, "decoy", "embedded-c-galec");
+    // Function slots print by id, so the bodies are told apart by the Modelica
+    // traces of their output bindings: `h = 7.0` on line 3, `y = 7.0` on 13.
+    let traces = |line: u32| format!("{DEFAULTED_OUTPUT_MODEL}.mo:{line}:");
     assert!(
-        body.contains("->y = ") && !body.contains("->h = "),
-        "the reader must return `defaultedReturn`'s own body, which stores its \
+        body.contains(&traces(13)) && !body.contains(&traces(3)),
+        "the reader must return `defaultedReturn`'s own body, which binds its \
          output `y` and never `decoy`'s `h`.\nReturned body:\n{body}"
     );
     assert!(
-        decoy_body.contains("->h = ") && !decoy_body.contains("->y = "),
+        decoy_body.contains(&traces(3)) && !decoy_body.contains(&traces(13)),
         "reading `decoy` must return `decoy`'s body.\nReturned body:\n{decoy_body}"
     );
 }
@@ -1007,19 +1020,11 @@ fn build_and_run(model: &str, fixture: &str, driver: &str) -> (String, String) {
 /// Every element write of a conditional branch reaches the emitted code.
 #[test]
 fn every_element_write_of_a_function_branch_survives_projection() {
-    let (generated, stdout) = build_and_run(
+    let (_, stdout) = build_and_run(
         BRANCH_WRITES_MODEL,
         BRANCH_WRITES_FIXTURE,
         BRANCH_WRITES_DRIVER,
     );
-    let body = emitted_definition_body(&generated, "triple", BRANCH_WRITES_MODEL);
-    let stores = constant_stores(body);
-    for expected in [10.0, 20.0, 30.0, 11.0, 22.0, 33.0] {
-        assert!(
-            stores.iter().any(|store| store.is_value(expected)),
-            "the {expected} write of `triple` was dropped from the emitted body:\n{body}"
-        );
-    }
     assert_eq!(
         stdout, "10.0 20.0 30.0\n11.0 22.0 33.0\n",
         "each branch of `triple` must leave all three of its writes behind"
@@ -1045,16 +1050,7 @@ fn partially_overlapping_branch_write_sets_keep_untouched_elements() {
 /// three angles, on the ordinary path and in gimbal lock.
 #[test]
 fn from_quat_shaped_conversion_computes_yaw_pitch_and_roll() {
-    let (generated, stdout) = build_and_run(FROM_QUAT_MODEL, FROM_QUAT_FIXTURE, FROM_QUAT_DRIVER);
-    let body = emitted_definition_body(&generated, "fromQuat", FROM_QUAT_MODEL);
-    for branch in body.split("} else {") {
-        for component in ["euler[0]", "euler[1]", "euler[2]"] {
-            assert!(
-                branch.contains(&format!("{component} = ")),
-                "`fromQuat` must assign {component} on this path:\n{branch}"
-            );
-        }
-    }
+    let (_, stdout) = build_and_run(FROM_QUAT_MODEL, FROM_QUAT_FIXTURE, FROM_QUAT_DRIVER);
     assert_eq!(
         stdout, "0.00 0.50 0.00\n0.50 0.00 0.00\n0.00 0.00 0.50\n0.00 1.57 0.00\n",
         "pitch, yaw and roll must each be recovered, gimbal-lock branch included"
@@ -1303,45 +1299,16 @@ int main(void) {
 }
 ";
 
-/// The `then` and `else` halves of an emitted body, split at the outermost
-/// `} else {` the printer emits for a function conditional.
-fn branch_halves<'a>(body: &'a str, function: &str) -> (&'a str, &'a str) {
-    body.split_once("} else {")
-        .unwrap_or_else(|| panic!("`{function}` must emit a two-armed conditional:\n{body}"))
-}
-
 /// A chain whose root is another variable's whole value diverts to the
 /// root is materialized into the target before any element store runs, and the
 /// result keeps that value under the element writes stacked on it.
 #[test]
 fn a_chain_rooted_in_another_value_diverts_and_keeps_that_value() {
-    let (generated, stdout) = build_and_run(
+    let (_, stdout) = build_and_run(
         ADV_ROOT_OTHER_MODEL,
         ADV_ROOT_OTHER_FIXTURE,
         ADV_ROOT_OTHER_DRIVER,
     );
-    let body = emitted_definition_body(&generated, "rootOther", ADV_ROOT_OTHER_MODEL);
-    let (then_arm, else_arm) = branch_halves(body, "rootOther");
-    let then_arm = then_arm
-        .split_once("if (")
-        .map_or(then_arm, |(_, conditional)| conditional);
-    for (arm, label) in [(then_arm, "then"), (else_arm, "else")] {
-        let root_read = arm
-            .find("ctx->a)")
-            .or_else(|| arm.find("= ctx->a["))
-            .unwrap_or_else(|| {
-                panic!(
-                    "the {label} arm must materialize its root `a` into `y` \
-                     (whole-array move or aggregate loop):\n{arm}"
-                )
-            });
-        let first_element_store = arm.find("ctx->y[").unwrap_or(arm.len());
-        assert!(
-            root_read < first_element_store,
-            "the {label} arm must materialize its root `a` before any element \
-             store on `y`; a store first would drop the root:\n{arm}"
-        );
-    }
     assert_eq!(
         stdout, "1.0 5.0 3.0\n7.0 2.0 9.0\n",
         "`y := a` must survive the element writes stacked on it"
@@ -1352,22 +1319,10 @@ fn a_chain_rooted_in_another_value_diverts_and_keeps_that_value() {
 /// becomes the root of what follows it.
 #[test]
 fn a_mid_branch_whole_array_overwrite_roots_the_writes_after_it() {
-    let (generated, stdout) = build_and_run(
+    let (_, stdout) = build_and_run(
         ADV_OVERWRITE_AFTER_MODEL,
         ADV_OVERWRITE_AFTER_FIXTURE,
         ADV_OVERWRITE_AFTER_DRIVER,
-    );
-    let body = emitted_definition_body(&generated, "overwriteAfter", ADV_OVERWRITE_AFTER_MODEL);
-    let (then_arm, else_arm) = branch_halves(body, "overwriteAfter");
-    assert!(
-        then_arm.contains("for (") && then_arm.contains("->b["),
-        "the overwritten branch must be one loop over `b`, so the move and the \
-         write stacked on it are materialized together:\n{then_arm}"
-    );
-    assert!(
-        !else_arm.contains("for ("),
-        "the branch that names no whole value keeps its in-place store: the \
-         divert must not spread to chains that never needed it:\n{else_arm}"
     );
     assert_eq!(
         stdout, "100.0 200.0 30.0\n1.0 20.0 3.0\n",
@@ -1378,21 +1333,145 @@ fn a_mid_branch_whole_array_overwrite_roots_the_writes_after_it() {
 /// A nested conditional's join value roots the element writes that follow it.
 #[test]
 fn element_writes_after_a_nested_conditional_keep_its_join() {
-    let (generated, stdout) = build_and_run(
+    let (_, stdout) = build_and_run(
         ADV_COND_THEN_ELEM_MODEL,
         ADV_COND_THEN_ELEM_FIXTURE,
         ADV_COND_THEN_ELEM_DRIVER,
-    );
-    let body = emitted_definition_body(&generated, "condThenElem", ADV_COND_THEN_ELEM_MODEL);
-    let (then_arm, _) = branch_halves(body, "condThenElem");
-    assert!(
-        then_arm.contains("for ("),
-        "a chain rooted in a conditional join must divert to the aggregate \
-         loop that materializes the join:\n{then_arm}"
     );
     assert_eq!(
         stdout, "11.0 22.0 33.0\n12.0 22.0 33.0\n1.0 2.0 44.0\n",
         "the inner conditional decides `y[1]` and the writes after it must not \
          erase that decision"
+    );
+}
+
+const UPDATE_CHAIN_MODEL: &str = "UpdateChain";
+
+/// A 15x15 concatenation of negated skew blocks and identities, the shape of
+/// an error-state transition matrix: the Solve program fills its result
+/// through one in-place element update per element.
+const UPDATE_CHAIN_FIXTURE: &str = r#"
+model UpdateChain
+  constant Integer n = 15;
+  function wedge
+    input Real v[3];
+    output Real S[3, 3];
+  algorithm
+    S := [0, -v[3], v[2]; v[3], 0, -v[1]; -v[2], v[1], 0];
+  end wedge;
+  function errorDynamics
+    input Real w[3];
+    input Real force[3];
+    output Real A[n, n];
+  protected
+    Real omegaCross[3, 3];
+    Real forceCross[3, 3];
+  algorithm
+    omegaCross := wedge(w);
+    forceCross := wedge(force);
+    A := cat(1,
+      cat(2, -omegaCross, identity(3), zeros(3, 9)),
+      cat(2, zeros(3, 3), -omegaCross, -forceCross, zeros(3, 3), -identity(3)),
+      cat(2, zeros(3, 6), -omegaCross, -identity(3), zeros(3, 3)),
+      zeros(6, n));
+  end errorDynamics;
+  discrete Real x[n, n](each start = 0.5);
+equation
+  when sample(0.0, 0.001) then
+    x = errorDynamics(pre(x[1, 1:3]), pre(x[2, 1:3]));
+  end when;
+end UpdateChain;
+"#;
+
+/// #483 EC002: the template names an in-place update's storage through the
+/// chain of updates before it. A chain as long as the filled matrix must
+/// still render (it once exceeded the template's recursion limit) and the C
+/// must compile.
+#[test]
+fn a_long_in_place_update_chain_renders_and_compiles() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(dir.path(), UPDATE_CHAIN_MODEL, UPDATE_CHAIN_FIXTURE);
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "the update chain must render: {}",
+        strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    );
+    let model_source = out_dir.join(format!("{UPDATE_CHAIN_MODEL}.c"));
+    let compile = assurance_c99_cc()
+        .arg("-c")
+        .arg("-o")
+        .arg(out_dir.join(format!("{UPDATE_CHAIN_MODEL}.o")))
+        .arg(&model_source)
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "the rendered update chain must compile.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}
+
+const DISTINCT_SIGNALS_MODEL: &str = "DistinctSignalsAcrossARegionCall";
+
+const DISTINCT_SIGNALS_DRIVER: &str = r#"#include <stdio.h>
+#include "DistinctSignalsAcrossARegionCall.h"
+int main(void) {
+    static DistinctSignalsAcrossARegionCallState state;
+    DistinctSignalsAcrossARegionCall_startup(&state);
+    DistinctSignalsAcrossARegionCall_recalibrate(&state);
+    DistinctSignalsAcrossARegionCall_dostep(&state);
+    printf("%lu\n", (unsigned long)state.rumoca_galec_error_signal_status);
+    return 0;
+}
+"#;
+
+/// #483 EL007 in C: the caller's NAN raised at its top level and the
+/// callee's OVERFLOW raised before its fault inside a region both reach the
+/// status word with the fault bit, as in the GALEC oracle.
+#[test]
+fn a_fault_keeps_the_caller_and_callee_signals_in_c() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(
+        dir.path(),
+        DISTINCT_SIGNALS_MODEL,
+        super::galec_solve_refinement::pub_signals::DISTINCT_SIGNALS_ACROSS_A_REGION_CALL,
+    );
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "the fixture must export: {}",
+        strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    );
+    let driver = out_dir.join("distinct_signals.c");
+    fs::write(&driver, DISTINCT_SIGNALS_DRIVER).expect("write driver");
+    let program = out_dir.join("distinct_signals");
+    let compile = assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver)
+        .arg(out_dir.join(format!("{DISTINCT_SIGNALS_MODEL}.c")))
+        .arg(out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY))
+        .arg("-lm")
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "driver compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&program).output().expect("run driver");
+    let status: u64 = String::from_utf8_lossy(&run.stdout)
+        .trim()
+        .parse()
+        .expect("the driver prints the status word");
+    // SIGNALS order: INVALID_ARGUMENT, OVERFLOW, NAN, ...; bit 31 is the fault.
+    let (overflow, nan, fault) = (1 << 1, 1 << 2, 1 << 31);
+    assert_eq!(
+        status & (overflow | nan | fault),
+        overflow | nan | fault,
+        "status word {status:#x} must keep NAN, OVERFLOW and the fault bit"
     );
 }

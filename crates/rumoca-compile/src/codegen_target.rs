@@ -27,6 +27,11 @@ pub enum TargetTemplateIr {
     Flat,
     Ast,
     AlgorithmCode,
+    /// The checked GALEC package together with its refined Solve block: a
+    /// target that prints C does so from Solve IR (#483, DAE → GALEC →
+    /// Solve IR → C), while its Algorithm Code artifacts still read the
+    /// package.
+    AlgorithmBlock,
 }
 
 #[derive(Debug, Deserialize)]
@@ -662,7 +667,8 @@ fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
         | TargetTemplateIr::Fmi
         | TargetTemplateIr::Flat
         | TargetTemplateIr::Ast
-        | TargetTemplateIr::AlgorithmCode => TargetFeatureSupport::Unsupported,
+        | TargetTemplateIr::AlgorithmCode
+        | TargetTemplateIr::AlgorithmBlock => TargetFeatureSupport::Unsupported,
     }
 }
 
@@ -688,6 +694,28 @@ fn feature_support(value: Option<bool>) -> TargetFeatureSupport {
         Some(true) => TargetFeatureSupport::Native,
         Some(false) => TargetFeatureSupport::Unsupported,
         None => TargetFeatureSupport::Unknown,
+    }
+}
+
+impl TargetManifest {
+    /// The arithmetic profile an `algorithm-block` target refines its GALEC
+    /// package under: binary32 Real (the embedded C ABI) and the Integer
+    /// domain the manifest declares, which it must.
+    pub fn algorithm_block_profile(&self) -> Result<rumoca_ir_solve::SolveArithmeticProfile> {
+        let target = self.name.as_deref().unwrap_or("custom");
+        let integer = self.integer.as_ref().with_context(|| {
+            format!(
+                "unsupported-feature:algorithm-block-integer-domain: target '{target}' must \
+                 declare its [integer] domain"
+            )
+        })?;
+        let domain =
+            rumoca_ir_solve::SolveIntegerDomain::construct(integer.minimum, integer.maximum)
+                .map_err(|error| anyhow::anyhow!("target '{target}' [integer] domain: {error}"))?;
+        Ok(rumoca_ir_solve::SolveArithmeticProfile::construct(
+            rumoca_ir_solve::SolveRealFormat::Binary32,
+            domain,
+        ))
     }
 }
 
@@ -1134,7 +1162,10 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
     }
     if matches!(
         manifest.ir,
-        TargetTemplateIr::Dae | TargetTemplateIr::Fmi | TargetTemplateIr::AlgorithmCode
+        TargetTemplateIr::Dae
+            | TargetTemplateIr::Fmi
+            | TargetTemplateIr::AlgorithmCode
+            | TargetTemplateIr::AlgorithmBlock
     ) && manifest.capabilities.is_none()
     {
         bail!(

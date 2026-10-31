@@ -15,7 +15,10 @@ rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-ir-solve = { workspace = true }
 rumoca-phase-parse-galec = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 rumoca-tool-lsp-galec = { workspace = true }
 lsp-types = { workspace = true }
 wasm-bindgen = { workspace = true }
