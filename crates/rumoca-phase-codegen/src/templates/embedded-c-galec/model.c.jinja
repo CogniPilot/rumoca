@@ -758,6 +758,9 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
 {%- macro c_type(kind) -%}
 {%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
 {%- endmacro -%}
+{%- macro c_zero(kind) -%}
+{%- if kind == "real" -%}0.0f{%- elif kind == "integer" -%}INT32_C(0){%- elif kind == "boolean" -%}false{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
 {#- Unlike the statement macros this one emits WHOLE lines and closes with a
     blank separator line, because a C declaration group is a paragraph: the
     reviewer reads "here is the working storage", then the algorithm. It starts
@@ -777,8 +780,15 @@ self->{{ symbol(c_state_symbols, variable.name) }}{% for index in indices %}[{{ 
     It gets its own line. It used to ride on the declaration's, which put two
     statements on one line and made `.clang-format`'s no-replacements assertion
     false — and that file is emitted beside the code and checksummed by the
-    manifest. -#}
-{{ pad(indent) }}{{ c_type(declaration.ty.value.kind) }} {{ symbol(c_symbols, name_text(declaration.name)) }}{% for dimension in declaration.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-local-array-dimension") }}{% endif %}{% endfor %};
+    manifest.
+
+    A scalar the body reads starts at zero. The writes and reads of one
+    temporary can sit in separate blocks behind recomputed guards that C
+    compilers cannot correlate, which they report as possibly uninitialized. The initializer changes no defined
+    behaviour. Definite assignment itself is checked upstream: DAE
+    construction marks a function value read on a path that may not assign it,
+    and the GALEC projection refuses that (`function-assigned-state`). -#}
+{{ pad(indent) }}{{ c_type(declaration.ty.value.kind) }} {{ symbol(c_symbols, name_text(declaration.name)) }}{% for dimension in declaration.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-local-array-dimension") }}{% endif %}{% endfor %}{% if declaration.dimensions|length == 0 and not declaration.needs_unused_marker %} = {{ c_zero(declaration.ty.value.kind) }}{% endif %};
 {% if declaration.needs_unused_marker %}{{ pad(indent) }}(void)&{{ symbol(c_symbols, name_text(declaration.name)) }};
 {% endif %}{% endfor -%}
 {%- if values|length > 0 %}
