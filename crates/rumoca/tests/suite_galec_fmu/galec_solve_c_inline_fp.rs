@@ -10,7 +10,8 @@ use std::path::Path;
 use rumoca_core::SourceMap;
 use rumoca_eval_solve::eval_algorithm_method;
 use rumoca_ir_galec::ast::{
-    BinaryOp, Block, Expression, InterfaceKind, InterfaceVariable, Name, Reference, ScalarType,
+    BinaryOp, Block, Condition, Expression, IfBranch, IfStatement, InterfaceKind,
+    InterfaceVariable, Name, Reference, ScalarType, Spanned, Statement,
 };
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 use rumoca_ir_solve::{SolveAlgorithmBlock, SolveBlockMethodKind, SolveValue};
@@ -22,8 +23,10 @@ use super::galec_solve_c_faults::{
     Spans, assign, bin, decl, profile, scalar, snapshot, sref, zero,
 };
 
-/// Inputs `a`, `b`, `c`, `d`; outputs `y = (a * b + c) - d` and
-/// `z = -a * c + (b - d)`; tunable `period`.
+/// Inputs `a`, `b`, `c`, `d`; outputs `y = (a * b + c) - d`,
+/// `z = -a * c + (b - d)`, and `w1`, `w2` from `if a > b then w1 := c;
+/// w2 := d; else w1 := c; w2 := c;` (both arms pass `c` through to `w1`, the
+/// arms disagree on `w2`); tunable `period`.
 fn block() -> Block {
     let mut spans = Spans(0);
     let mut block = Block::new(Name::ident("Inline"));
@@ -40,9 +43,11 @@ fn block() -> Block {
     block
         .interface
         .push(real(InterfaceKind::Output, "y", &mut spans));
-    block
-        .interface
-        .push(real(InterfaceKind::Output, "z", &mut spans));
+    for output in ["z", "w1", "w2"] {
+        block
+            .interface
+            .push(real(InterfaceKind::Output, output, &mut spans));
+    }
     block.interface.push(InterfaceVariable {
         kind: InterfaceKind::TunableParameter,
         decl: decl(ScalarType::Real, "period", &mut spans),
@@ -51,6 +56,8 @@ fn block() -> Block {
     block.startup.statements = vec![
         assign("y", Expression::Real(0.0), &mut spans),
         assign("z", Expression::Real(0.0), &mut spans),
+        assign("w1", Expression::Real(0.0), &mut spans),
+        assign("w2", Expression::Real(0.0), &mut spans),
     ];
     let product = bin(BinaryOp::Mul, sref("a"), sref("b"));
     let y = bin(
@@ -64,7 +71,30 @@ fn block() -> Block {
         bin(BinaryOp::Mul, negated, sref("c")),
         bin(BinaryOp::Sub, sref("b"), sref("d")),
     );
-    block.do_step.statements = vec![assign("y", y, &mut spans), assign("z", z, &mut spans)];
+    let body = vec![
+        assign("w1", sref("c"), &mut spans),
+        assign("w2", sref("d"), &mut spans),
+    ];
+    let else_body = vec![
+        assign("w1", sref("c"), &mut spans),
+        assign("w2", sref("c"), &mut spans),
+    ];
+    let branch = Spanned {
+        node: Statement::If(IfStatement {
+            branches: vec![IfBranch {
+                condition: Condition::Expression(bin(BinaryOp::Gt, sref("a"), sref("b"))),
+                body,
+                span: spans.next(),
+            }],
+            else_body: Some(else_body),
+        }),
+        span: spans.next(),
+    };
+    block.do_step.statements = vec![
+        assign("y", y, &mut spans),
+        assign("z", z, &mut spans),
+        branch,
+    ];
     block
 }
 
@@ -109,7 +139,7 @@ fn evaluator_trace(block: &SolveAlgorithmBlock, inputs: [u32; 4]) -> String {
         let value = SolveValue::real(profile, f64::from(f32::from_bits(bits)));
         *slot = Some(scalar(value));
     }
-    state[6] = Some(scalar(SolveValue::real(profile, 0.01)));
+    state[8] = Some(scalar(SolveValue::real(profile, 0.01)));
     let mut trace = String::new();
     for (method, at) in [
         (SolveBlockMethodKind::Startup, "startup"),
@@ -133,7 +163,7 @@ static float real(uint32_t word) {
 }
 
 static void dump(const InlineState *s, const char *at) {
-    const float *fields[] = {&s->a, &s->b, &s->c, &s->d, &s->y, &s->z, &s->period};
+    const float *fields[] = {&s->a, &s->b, &s->c, &s->d, &s->y, &s->z, &s->w1, &s->w2, &s->period};
     printf("%s", at);
     for (size_t i = 0; i < sizeof fields / sizeof fields[0]; ++i) {
         uint32_t word;
@@ -205,7 +235,7 @@ fn c_trace(name: &str, inputs: [u32; 4], dir: &Path) -> String {
 #[test]
 fn inlined_real_expressions_keep_the_evaluators_bits_at_fp_edges() {
     let dir = tempfile::tempdir().expect("work directory");
-    let package = AlgorithmCodePackage::construct(block(), vec![None; 7], "period").unwrap();
+    let package = AlgorithmCodePackage::construct(block(), vec![None; 9], "period").unwrap();
     let solve = lower_algorithm_block(&package, profile()).unwrap();
     let c = render(&solve, &package, dir.path());
     let differing: Vec<_> = CASES
@@ -225,4 +255,14 @@ fn inlined_real_expressions_keep_the_evaluators_bits_at_fp_edges() {
     ] {
         assert!(c.contains(folded), "the C folds each expression:\n{c}");
     }
+    // The status bits thread through every conditional unchanged, so no arm
+    // copies one register into another (pass-through outputs).
+    let copies = c
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("rumoca_galec_r") && line.contains("] = (bool)rumoca_galec_r")
+        })
+        .count();
+    assert_eq!(copies, 0, "status bits pass through each conditional:\n{c}");
 }

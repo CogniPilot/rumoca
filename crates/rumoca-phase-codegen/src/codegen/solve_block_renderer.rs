@@ -142,6 +142,7 @@ pub(super) fn solve_block_value(
     collect_traces(&json, &resolver, &mut traces);
     collect_literals(&json, &mut literals);
     mark_aliased_loads(&mut json);
+    pass_through::mark_pass_through(&mut json);
     for owner in ["/startup", "/recalibrate", "/do_step"] {
         if let Some(program) = json.pointer_mut(owner) {
             allocate_pools(program);
@@ -174,6 +175,8 @@ struct TracedView {
     /// `<kind>:<bits>`: the shortest decimal that reads back to the same bits.
     literals: BTreeMap<String, String>,
 }
+
+mod pass_through;
 
 /// Give every serialized program an `alias_of` table: register -> slot for a
 /// load the C can serve by reading the slot in place, so the register needs
