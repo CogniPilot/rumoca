@@ -17,11 +17,13 @@
 //! (`from_DCM`). Both function copies here are library-free constructions.
 
 use std::fs;
+use std::process::Command;
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, eval_dae_at};
 use tempfile::tempdir;
 
+use super::cc_support::{GALEC_KERNEL_LIBRARY, assurance_c99_cc};
 use super::cli_support::{run_compile_target_with, strip_ansi, write_fixture};
 
 /// The published minimal reproducer: three element writes to one array inside
@@ -239,9 +241,9 @@ model ShepperdRoundTrip
     )
 }
 
-/// Compile `source` to `galec-production` through the real binary and return
-/// the emitted ProductionCode C.
-fn production_c(source: &str, model: &str) -> String {
+/// Export `model` with `galec-production`, link the emitted unit with
+/// `driver` under the strict profile, run it, and return its stdout.
+fn run_production_c(source: &str, model: &str, driver: &str) -> String {
     let dir = tempdir().expect("tempdir");
     let file = write_fixture(dir.path(), model, source);
     let out_dir = dir.path().join("out");
@@ -251,93 +253,93 @@ fn production_c(source: &str, model: &str) -> String {
         "`galec-production` must compile `{model}`.\nstderr:\n{}",
         strip_ansi(&String::from_utf8_lossy(&output.stderr))
     );
-    let path = out_dir
-        .join(model)
-        .join("ProductionCode")
-        .join(format!("{model}.c"));
-    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+    let code = out_dir.join(model).join("ProductionCode");
+    let driver_path = code.join("driver.c");
+    fs::write(&driver_path, driver).expect("write driver");
+    let program = dir.path().join("driver");
+    let compile = assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver_path)
+        .arg(code.join(format!("{model}.c")))
+        .arg(code.join(GALEC_KERNEL_LIBRARY))
+        .arg("-lm")
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "strict C99 rejected `{model}`.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&program).output().expect("run driver");
+    assert!(
+        run.status.success(),
+        "`{model}` driver exited with {:?}",
+        run.status.code()
+    );
+    String::from_utf8(run.stdout).expect("driver prints UTF-8")
 }
 
-/// The inclusive end index of the balanced-brace block that opens at `open`.
-fn balanced_end(text: &str, open: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut depth = 0usize;
-    for (index, byte) in bytes.iter().enumerate().skip(open) {
-        depth = match byte {
-            b'{' => depth + 1,
-            b'}' => depth - 1,
-            _ => depth,
-        };
-        if *byte == b'}' && depth == 0 {
-            return Some(index);
-        }
-    }
-    None
-}
+const BRANCH_ELEMENT_DRIVER: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include "BranchElementDrop.h"
 
-/// The balanced-brace body of the named C function definition (not its forward
-/// declaration).
-fn definition_body<'a>(source: &'a str, name: &str) -> &'a str {
-    let needle = format!("static void {name}(");
-    let mut cursor = source;
-    loop {
-        let start = cursor
-            .find(&needle)
-            .unwrap_or_else(|| panic!("no definition of `{name}` in emitted C"));
-        let rest = &cursor[start..];
-        let open = rest.find('{');
-        let semi = rest.find(';');
-        // A forward declaration closes its signature with `;` before any body
-        // brace; skip past it and keep looking for the definition.
-        if let Some(semi) = semi
-            && open.is_none_or(|open| semi < open)
-        {
-            cursor = &rest[semi + 1..];
-            continue;
-        }
-        let open = open.unwrap_or_else(|| panic!("no body for `{name}`"));
-        let end = balanced_end(rest, open)
-            .unwrap_or_else(|| panic!("unbalanced braces in definition of `{name}`"));
-        return &rest[open..=end];
+int main(void) {
+    static BranchElementDropState state;
+    const float inputs[2] = { 0.2f, 0.8f };
+    memset(&state, 0, sizeof state);
+    BranchElementDrop_startup(&state);
+    for (int index = 0; index < 2; ++index) {
+        state.u = inputs[index];
+        BranchElementDrop_dostep(&state);
+        printf("%.4f %.4f %.4f | %.4f %.4f %.4f\n",
+               (double)state.vb[0], (double)state.vb[1], (double)state.vb[2],
+               (double)state.vs[0], (double)state.vs[1], (double)state.vs[2]);
     }
+    return 0;
 }
+"#;
 
-/// Sizes of each contiguous run of literal-indexed writes to `array` in `body`.
-///
-/// A branch's element writes are emitted as one block (each write may carry
-/// its own trace comment), so the run
-/// sizes are the per-branch write counts. Tensor-loop initializations index by
-/// an induction variable, not a literal, so they are excluded and do not join a
-/// branch run.
-fn assignment_runs(body: &str, array: &str) -> Vec<usize> {
-    let prefix = format!("ctx->{array}[");
-    let mut runs = Vec::new();
-    let mut current = 0usize;
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        // Trace comments and blank separators between consecutive writes do
-        // not end the branch block.
-        if trimmed.is_empty() || trimmed.starts_with("/*") {
-            continue;
-        }
-        let is_literal_write = trimmed.starts_with(&prefix)
-            && trimmed.contains('=')
-            && trimmed
-                .as_bytes()
-                .get(prefix.len())
-                .is_some_and(u8::is_ascii_digit);
-        if is_literal_write {
-            current += 1;
-        } else if current > 0 {
-            runs.push(current);
-            current = 0;
-        }
+/// Feeds `to_DCM(q)` for each of `ROUND_TRIP_QUATERNIONS` (one per Shepperd
+/// branch) and prints the recovered quaternion.
+const SHEPPERD_DRIVER: &str = r#"
+#include <stdio.h>
+#include <string.h>
+#include "ShepperdBranches.h"
+
+static const double quaternions[4][4] = {
+    { 0.9233805168766388, 0.10259783520851543, 0.20519567041703086, 0.3077935056255463 },
+    { 0.10327955589886444, 0.9811557810392122, 0.15491933384829667, 0.05163977794943222 },
+    { 0.10327955589886444, 0.15491933384829667, 0.9811557810392122, 0.05163977794943222 },
+    { 0.10327955589886444, 0.05163977794943222, 0.15491933384829667, 0.9811557810392122 },
+};
+
+int main(void) {
+    static ShepperdBranchesState state;
+    memset(&state, 0, sizeof state);
+    ShepperdBranches_startup(&state);
+    for (int index = 0; index < 4; ++index) {
+        const double a = quaternions[index][0];
+        const double b = quaternions[index][1];
+        const double c = quaternions[index][2];
+        const double d = quaternions[index][3];
+        state.r11 = (float)(a * a + b * b - c * c - d * d);
+        state.r12 = (float)(2.0 * (b * c - a * d));
+        state.r13 = (float)(2.0 * (b * d + a * c));
+        state.r21 = (float)(2.0 * (b * c + a * d));
+        state.r22 = (float)(a * a - b * b + c * c - d * d);
+        state.r23 = (float)(2.0 * (c * d - a * b));
+        state.r31 = (float)(2.0 * (b * d - a * c));
+        state.r32 = (float)(2.0 * (c * d + a * b));
+        state.r33 = (float)(a * a - b * b - c * c + d * d);
+        ShepperdBranches_dostep(&state);
+        printf("%.9g %.9g %.9g %.9g\n",
+               (double)state.q[0], (double)state.q[1], (double)state.q[2], (double)state.q[3]);
     }
-    if current > 0 {
-        runs.push(current);
-    }
-    runs
+    return 0;
 }
+"#;
 
 fn algebraic(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
     report
@@ -374,18 +376,13 @@ fn evaluate(source: &str, model: &str, file: &str) -> rumoca_sim::EvalAtReport {
 
 #[test]
 fn each_branch_emits_every_element_write() {
-    let generated = production_c(REPRO_GALEC, "BranchElementDrop");
-    let branch = definition_body(&generated, "branchAssign");
+    // u = 0.2 takes the s = 1 branch, u = 0.8 the s = 4 one; a dropped element
+    // write would leave that component at its previous value.
     assert_eq!(
-        assignment_runs(branch, "v"),
-        vec![3, 3],
-        "each branch of `branchAssign` must emit all three element writes:\n{branch}"
-    );
-    let straight = definition_body(&generated, "straightAssign");
-    assert_eq!(
-        assignment_runs(straight, "v").iter().sum::<usize>(),
-        3,
-        "the top-level control must emit all three element writes:\n{straight}"
+        run_production_c(REPRO_GALEC, "BranchElementDrop", BRANCH_ELEMENT_DRIVER),
+        "0.2000 0.4000 0.6000 | 1.4000 1.6000 1.8000\n\
+         3.2000 6.4000 9.6000 | 5.6000 6.4000 7.2000\n",
+        "every branch and the top-level control must keep all three element writes"
     );
 }
 
@@ -404,13 +401,23 @@ fn branch_element_values_survive_evaluation() {
 
 #[test]
 fn every_shepperd_branch_emits_four_components() {
-    let generated = production_c(&from_dcm_galec_source(), "ShepperdBranches");
-    let body = definition_body(&generated, "from_DCM");
-    assert_eq!(
-        assignment_runs(body, "q"),
-        vec![4, 4, 4, 4],
-        "each of Shepperd's four branches must emit all four quaternion components:\n{body}"
+    let stdout = run_production_c(
+        &from_dcm_galec_source(),
+        "ShepperdBranches",
+        SHEPPERD_DRIVER,
     );
+    let rows = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), ROUND_TRIP_QUATERNIONS.len(), "{stdout}");
+    for (branch, (row, expected)) in rows.iter().zip(ROUND_TRIP_QUATERNIONS).enumerate() {
+        for (component, (got, want)) in row.split(' ').zip(expected).enumerate() {
+            let got = got.parse::<f64>().expect("a printed component");
+            assert!(
+                (got - want).abs() < 1e-6,
+                "Shepperd branch {branch} must recover q[{}]: expected {want}, got {got}",
+                component + 1
+            );
+        }
+    }
 }
 
 #[test]
@@ -430,27 +437,4 @@ fn from_dcm_round_trip_recovers_every_component() {
             );
         }
     }
-}
-
-#[test]
-fn no_conditional_function_drops_indexed_writes() {
-    // Structural invariant applied to both emitted models: for every protected
-    // function that writes an array element inside a branch, the number of
-    // element writes emitted per branch is at least the number in the source.
-    // Dropping any would shorten a run below its source count.
-    let repro = production_c(REPRO_GALEC, "BranchElementDrop");
-    assert!(
-        assignment_runs(definition_body(&repro, "branchAssign"), "v")
-            .iter()
-            .all(|run| *run >= 3),
-        "a `branchAssign` branch emitted fewer than the three source writes"
-    );
-
-    let shepperd = production_c(&from_dcm_galec_source(), "ShepperdBranches");
-    assert!(
-        assignment_runs(definition_body(&shepperd, "from_DCM"), "q")
-            .iter()
-            .all(|run| *run >= 4),
-        "a `from_DCM` branch emitted fewer than the four source writes"
-    );
 }

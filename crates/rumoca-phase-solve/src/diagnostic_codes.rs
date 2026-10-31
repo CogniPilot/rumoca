@@ -8,3 +8,6 @@ pub const EL005_INVALID_SOLVE_CONTRACT: &str = "EL005";
 /// Solve lowering stopped before a compile-time resource budget (register
 /// file) was exceeded; the diagnostic names the owner and the count.
 pub const EL006_SOLVE_RESOURCE_BUDGET: &str = "EL006";
+/// A checked GALEC Algorithm Code construct is not yet refined into Solve IR,
+/// or a block variable is stored outside the methods its lifecycle allows.
+pub const EL007_UNSUPPORTED_ALGORITHM_CODE: &str = "EL007";

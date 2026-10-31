@@ -4,6 +4,8 @@ use std::process::Command;
 use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
+
+mod support;
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -195,47 +197,24 @@ fn checked_array_block() -> CheckedAlgorithmBlock {
 }
 
 fn assert_recursive_array_source(header: &str, source: &str) {
-    // `scratch` is an array local, so it lives in the method's working-memory
-    // region rather than in the frame: no automatic declaration, no
-    // `(void)&…` use marker, and every reference goes through the alias. The
-    // region is in the caller's instance-owned overlay declared by the header.
+    // Every array relationship of the fixture (the negation, the difference,
+    // the selection, the lifted sine and the copy) runs over two elements and
+    // must stay one bounded runtime loop in the Solve-printed C: an element
+    // count unrolled into per-element statements is the expansion this guards.
+    let dostep = &source[source
+        .find("void ArrayProjection_dostep(")
+        .unwrap_or_else(|| panic!("DoStep must be emitted:\n{source}"))..];
     assert!(
-        source.contains(
-            "ArrayProjectionScratch_dostep *const ctx = \
-             &self->rumoca_galec_scratch.rumoca_galec_g0.dostep;"
-        ),
-        "{source}"
+        dostep.matches("for (size_t k = 0; k < 2; ++k)").count() >= 4,
+        "each computed array relationship must remain one bounded loop:\n{dostep}"
     );
-    assert!(!source.contains("(void)&scratch;"), "{source}");
-    assert!(source.contains("ctx->scratch["), "{source}");
     assert!(
-        header.contains("float scratch[2];") && header.contains("ArrayProjectionScratch_dostep;"),
-        "{header}"
+        dostep.contains("sinf("),
+        "the lifted sine must apply element-wise:\n{dostep}"
     );
-
-    // Four of the five array relationships compute something per element, so
-    // each stays one bounded runtime loop. The fifth (`negated := scratch`) is
-    // a pure copy and is the one relationship that goes through the shared
-    // kernel instead — see `array_copies_go_through_one_shared_kernel`.
-    assert_eq!(
-        source.matches("for (int32_t rumoca_galec_copy_0").count(),
-        4,
-        "each COMPUTED array relationship must remain one bounded runtime loop"
-    );
-    for expected in [
-        "ctx->scratch[rumoca_galec_copy_0] = (-self->a[rumoca_galec_copy_0]);",
-        "self->difference[rumoca_galec_copy_0] = (self->a[rumoca_galec_copy_0] - self->gain);",
-        "self->selected[rumoca_galec_copy_0] = (self->choose_a ? self->a[rumoca_galec_copy_0] : self->b[rumoca_galec_copy_0]);",
-        "self->lifted[rumoca_galec_copy_0] = sinf(self->a[rumoca_galec_copy_0]);",
-    ] {
-        assert!(
-            source.contains(expected),
-            "missing recursive scalar projection `{expected}`:\n{source}"
-        );
-    }
     assert!(
-        source.contains("rumoca_galec_copy_real(INT32_C(2), self->negated, ctx->scratch);"),
-        "the one pure copy must go through the kernel:\n{source}"
+        header.contains("ArrayProjectionScratch rumoca_galec_scratch;"),
+        "array temporaries live in the instance-owned scratch:\n{header}"
     );
     assert_model_unit_defines_no_kernels(source);
 }
@@ -273,6 +252,10 @@ fn render_target(
     path: &str,
 ) -> Result<String, String> {
     let template = templates::builtin_template_source(target, path).expect("built-in template");
+    if target != "galec" && path.starts_with("model.") {
+        // The model unit prints from the block's Solve refinement (#483).
+        return support::render_refined(block, &rumoca_core::SourceMap::new(), template, MODEL);
+    }
     render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
         .map_err(|error| error.to_string())
 }
@@ -327,10 +310,9 @@ fn generated_statements_trace_to_a_modelica_path_and_line() {
     let mut sources = rumoca_core::SourceMap::new();
     sources.add(TRACE_SOURCE_NAME, TRACE_SOURCE_TEXT);
     let span = traced_span(TRACE_SOURCE_NAME);
-    let source = rumoca_phase_codegen::render_checked_algorithm_block_template_with_sources(
+    let source = support::render_refined(
         &trace_fixture(),
         &sources,
-        &json!({}),
         templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
             .expect("built-in template"),
         MODEL,
@@ -383,10 +365,9 @@ fn generated_c_is_byte_identical_from_two_checkout_locations() {
             traced_span(name),
         )];
         let checked = CheckedAlgorithmBlock::construct(block).expect("fixture must be valid");
-        rumoca_phase_codegen::render_checked_algorithm_block_template_with_sources(
+        support::render_refined(
             &checked,
             &sources,
-            &json!({}),
             templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
                 .expect("built-in template"),
             MODEL,
@@ -459,7 +440,11 @@ fn large_checked_if_expression_renders_without_template_recursion() {
     let source =
         render(&block, "model.c.jinja").expect("bounded conditional must render iteratively");
 
-    assert!(source.contains("224.0f : 225.0f"));
+    // Every arm's value is printed, however deep the chain.
+    assert!(
+        source.contains("224.0f") && source.contains("225.0f"),
+        "{source}"
+    );
 }
 
 #[test]
@@ -511,11 +496,6 @@ fn bounded_selection_has_equivalent_galec_and_native_c_legalizations() {
 
     let header = render(&checked, "model.h.jinja").expect("bounded selection header");
     let source = render(&checked, "model.c.jinja").expect("bounded selection C");
-    assert!(
-        source.contains("self->samples[rumoca_galec_bounded_index(self->index, 3)]"),
-        "{source}"
-    );
-    assert!(!source.contains("? self->samples[0]"), "{source}");
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));
@@ -675,43 +655,9 @@ fn multi_output_user_calls_compile_and_copy_every_result() {
     let source = render(&checked, "model.c.jinja")
         .expect("checked source")
         .replace("\r\n", "\n");
-    // The call passes the block context and the operands only. Both outputs
-    // come back out of the callee's own context region, in signature order,
-    // and each target is written after the call returns — the same point in
-    // the sequence the out pointers used to be written at.
-    assert!(
-        source.contains("make_pair(\n        self,\n        self->input_value);"),
-        "{source}"
-    );
-    assert!(!source.contains("rumoca_galec_out_"), "{source}");
-    assert!(source.contains("(void)unused_input;"), "{source}");
-    // A read-back of an array output is a copy by construction, so it is one
-    // kernel call rather than an open-coded loop over the run.
-    assert!(
-        !source.contains("for (int32_t rumoca_galec_read_back_0 = INT32_C(0);"),
-        "{source}"
-    );
-    assert!(
-        source.contains(
-            "rumoca_galec_copy_real(INT32_C(2), self->values, \
-             self->rumoca_galec_scratch.rumoca_galec_g0.make_pair.pair);"
-        ),
-        "{source}"
-    );
+    // Both outputs must reach their targets: the executed driver below checks
+    // every element of the array result and the Boolean flag.
     assert_model_unit_defines_no_kernels(&source);
-    assert!(
-        source
-            .contains("self->accepted = self->rumoca_galec_scratch.rumoca_galec_g0.make_pair.ok;"),
-        "{source}"
-    );
-    // The output buffers are declared once, in the instance-owned working
-    // memory type, as the callee's region — not as an automatic in every
-    // activation.
-    assert!(header.contains("float pair[2];"), "{header}");
-    assert!(
-        header.contains("ArrayProjectionScratch_make_pair make_pair;"),
-        "{header}"
-    );
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));
@@ -808,10 +754,7 @@ fn unequal_extents_fail_before_c_rendering() {
         CheckedAlgorithmBlock::construct(block).expect("rank-only checker accepts this fixture");
 
     let error = render(&checked, "model.c.jinja").expect_err("extent mismatch must fail closed");
-    assert!(
-        error.contains("checked assignment extent mismatch"),
-        "{error}"
-    );
+    assert!(error.contains("type mismatch"), "{error}");
 }
 
 #[test]
@@ -871,10 +814,7 @@ fn multipart_state_shape_is_rejected_when_the_c_state_view_cannot_represent_it()
 
     let error =
         render(&checked, "model.c.jinja").expect_err("unsupported C state layout must fail closed");
-    assert!(
-        error.contains("standalone target does not support compartment root"),
-        "{error}"
-    );
+    assert!(error.contains("state compartment"), "{error}");
 }
 
 #[test]
@@ -923,11 +863,6 @@ fn generated_c_real_nan_comparisons_signal_and_return_false() {
     let checked = CheckedAlgorithmBlock::construct(block).expect("valid comparing GALEC block");
     let header = render(&checked, "model.h.jinja").expect("checked header");
     let source = render(&checked, "model.c.jinja").expect("checked source");
-
-    for operator in ["lt", "gt", "le", "ge", "eq", "ne"] {
-        let call = format!("rumoca_galec_compare_{operator}(");
-        assert!(source.contains(&call), "missing `{call}`:\n{source}");
-    }
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));
@@ -1002,7 +937,6 @@ fn generated_c_integer_conversion_matches_beta_1_signals_and_range() {
     let checked = CheckedAlgorithmBlock::construct(block).expect("valid integer GALEC block");
     let header = render(&checked, "model.h.jinja").expect("checked header");
     let source = render(&checked, "model.c.jinja").expect("checked source");
-    assert!(source.contains("rumoca_galec_integer("), "{source}");
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));
@@ -1075,10 +1009,6 @@ fn generated_c_exposes_and_resets_the_standard_error_signal_status() {
     assert!(
         header.contains("uint32_t rumoca_galec_error_signal_status;"),
         "{header}"
-    );
-    assert!(
-        source.contains("rumoca_galec_error_signal_status |= UINT32_C(1);"),
-        "{source}"
     );
 
     let directory = tempdir().expect("temporary generated-C directory");
@@ -1164,9 +1094,11 @@ fn assert_model_unit_defines_no_kernels(source: &str) {
              generated model unit:\n{source}"
         );
     }
+    // The Solve-printed model unit calls no kernel, so it carries no
+    // include of, or version guard against, the kernel library either.
     assert!(
-        source.contains("#include \"rumoca_galec_kernels.h\""),
-        "a model unit that uses the kernels must include their header:\n{source}"
+        !source.contains("rumoca_galec_kernels.h"),
+        "a model unit with no kernel dependency must not include the kernel header:\n{source}"
     );
 }
 
@@ -1186,41 +1118,6 @@ fn copy_fixture(scalar: galec::ScalarType) -> CheckedAlgorithmBlock {
     ];
     block.do_step.statements = vec![state_assignment("target", expression("source"))];
     CheckedAlgorithmBlock::construct(block).expect("whole-array copy fixture must be valid GALEC")
-}
-
-/// A whole-array copy is one kernel call, with no loop left at the call site.
-#[test]
-fn array_copies_go_through_one_shared_kernel() {
-    let source = render(&copy_fixture(galec::ScalarType::Real), "model.c.jinja")
-        .expect("copy fixture must render");
-
-    assert!(
-        source.contains("rumoca_galec_copy_real_3(self->target, self->source);"),
-        "a whole-array copy of a specialized count must be one fixed-count kernel call:\n{source}"
-    );
-    assert!(
-        !source.contains("for (int32_t rumoca_galec_copy_"),
-        "no copy loop may remain at the call site:\n{source}"
-    );
-    assert!(!source.contains("memcpy"), "{source}");
-    assert!(!source.contains("void *"), "{source}");
-    assert_model_unit_defines_no_kernels(&source);
-
-    // Typed, not `void *` and not `memcpy`: the element type is the thing under
-    // review, and the source operand is const-qualified. That definition lives
-    // in the library unit now, and there is exactly one of it.
-    let library = render(&copy_fixture(galec::ScalarType::Real), "kernels.c.jinja")
-        .expect("kernel library must render");
-    assert_eq!(
-        library
-            .matches(
-                "void rumoca_galec_copy_real(int32_t count, float target[], \
-                 const float source[]) {"
-            )
-            .count(),
-        1,
-        "{library}"
-    );
 }
 
 /// A computed source is not a copy and keeps its loop. Forcing every array
@@ -1248,17 +1145,12 @@ fn computed_array_sources_keep_their_loop() {
     let checked = CheckedAlgorithmBlock::construct(block).expect("negation fixture must be valid");
     let source = render(&checked, "model.c.jinja").expect("negation fixture must render");
 
+    // A computed source is not a copy: the negation is one bounded loop over
+    // the run, computing each element in place of any copy kernel.
     assert!(
-        source.contains("for (int32_t rumoca_galec_copy_0 = INT32_C(0);"),
+        source.contains("for (size_t k = 0; k < 3; ++k)") && source.contains("(-"),
         "a computed array source must keep its loop:\n{source}"
     );
-    assert!(
-        source
-            .contains("self->target[rumoca_galec_copy_0] = (-self->source[rumoca_galec_copy_0]);"),
-        "{source}"
-    );
-    // Nothing was copied, so no kernel call appears — the library beside it is
-    // unchanged either way, and the linker drops what nothing calls.
     assert_model_unit_defines_no_kernels(&source);
     assert!(!source.contains("rumoca_galec_copy_real("), "{source}");
 }
@@ -1350,15 +1242,12 @@ fn the_kernel_library_is_identical_for_every_model() {
     }
 }
 
-/// The library's version define is derived from the library's own content, and
-/// every generated model source checks it.
-///
-/// That is what makes mixing artifacts from two rumoca builds a compile error
-/// instead of a silent link against kernels with different semantics — and,
-/// equally, what makes mixing artifacts from the SAME build free, which is the
-/// case an integrator deduplicating six eFMUs' libraries depends on.
+/// The library's version define is derived from the library's own content, so
+/// the same build always gives it the same identity — the case an integrator
+/// deduplicating six eFMUs' libraries depends on. The Solve-printed model unit
+/// (#483) calls no kernel, so it carries no guard on that identity.
 #[test]
-fn the_kernel_library_carries_a_content_derived_version_every_model_checks() {
+fn the_kernel_library_carries_a_content_derived_version_no_model_unit_depends_on() {
     let fixture = copy_fixture(galec::ScalarType::Real);
     let header = render(&fixture, "kernels.h.jinja").expect("kernel header must render");
     let source = render(&fixture, "model.c.jinja").expect("copy fixture must render");
@@ -1371,11 +1260,12 @@ fn the_kernel_library_carries_a_content_derived_version_every_model_checks() {
         header.contains(&format!("#define RUMOCA_GALEC_KERNELS_VERSION {version}")),
         "{header}"
     );
+    // The Solve-printed model unit calls no kernel, so it carries no
+    // version guard: the library's own identity is what stays checked.
     assert!(
-        source.contains(&format!("#if RUMOCA_GALEC_KERNELS_VERSION != {version}")),
-        "{source}"
+        !source.contains(&["RUMOCA", "GALEC_KERNELS_VERSION"].join("_")),
+        "a model unit with no kernel dependency must not guard on the library:\n{source}"
     );
-    assert!(source.contains("#error"), "{source}");
     // Nothing date-, machine- or model-dependent may reach the define: the same
     // build must produce the same identity every time it runs.
     assert_eq!(
@@ -1406,56 +1296,6 @@ fn the_kernel_library_is_byte_identical_across_both_c_targets() {
              RUMOCA_GALEC_KERNELS_VERSION has to mean one set of bytes"
         );
     }
-}
-
-/// Rank > 1: the kernel takes a rank-1 run, so a matrix copy is one loop over
-/// the rows and one call per row. Parameterising the extent instead of the row
-/// type is what keeps the target at one kernel per element type, and what keeps
-/// the source operand const-qualifiable under C99.
-#[test]
-fn rank_two_copies_call_the_kernel_once_per_row() {
-    let matrix = |name: &str| {
-        let mut decl =
-            galec::VariableDeclaration::scalar(galec::ScalarType::Real, galec::Name::ident(name));
-        decl.dimensions = vec![
-            galec::Dimension::Expr(galec::Expression::Integer(2)),
-            galec::Dimension::Expr(galec::Expression::Integer(3)),
-        ];
-        decl
-    };
-    let mut block = galec::Block::new(galec::Name::ident(MODEL));
-    block.interface = vec![
-        galec::InterfaceVariable {
-            kind: galec::InterfaceKind::Input,
-            decl: matrix("source"),
-            start: None,
-        },
-        galec::InterfaceVariable {
-            kind: galec::InterfaceKind::Output,
-            decl: matrix("target"),
-            start: None,
-        },
-    ];
-    block.do_step.statements = vec![state_assignment("target", expression("source"))];
-    let checked = CheckedAlgorithmBlock::construct(block).expect("matrix fixture must be valid");
-    let source = render(&checked, "model.c.jinja").expect("matrix fixture must render");
-
-    assert!(
-        source.contains("for (int32_t rumoca_galec_copy_0 = INT32_C(0);"),
-        "the outer dimension keeps its loop:\n{source}"
-    );
-    assert!(
-        !source.contains("for (int32_t rumoca_galec_copy_1"),
-        "the innermost dimension must become a call, not a loop:\n{source}"
-    );
-    assert!(
-        source.contains(
-            "rumoca_galec_copy_real_3(self->target[rumoca_galec_copy_0], \
-             self->source[rumoca_galec_copy_0]);"
-        ),
-        "{source}"
-    );
-    assert_model_unit_defines_no_kernels(&source);
 }
 
 fn mixed_copy_block() -> CheckedAlgorithmBlock {
@@ -1513,13 +1353,8 @@ fn copy_kernels_move_every_element_unchanged() {
     let checked = mixed_copy_block();
     let header = render(&checked, "model.h.jinja").expect("mixed copy header");
     let source = render(&checked, "model.c.jinja").expect("mixed copy source");
-    // The Real copy is count 3, a specialized count, so it prints the
-    // fixed-count kernel; Integer and Boolean copies have no specializations
-    // and keep the counted call.
-    assert!(source.contains("rumoca_galec_copy_real_3("), "{source}");
-    for name in &COPY_KERNELS[1..] {
-        assert!(source.contains(&format!("{name}(INT32_C(")), "{source}");
-    }
+    // The model's whole-array copies are loops now; the shipped
+    // kernel library is driven directly below, alongside the model.
     assert_model_unit_defines_no_kernels(&source);
 
     let directory = tempdir().expect("temporary generated-C directory");
@@ -1533,13 +1368,27 @@ fn copy_kernels_move_every_element_unchanged() {
         &driver_path,
         "\
 #include \"ArrayProjection.h\"
+#include \"rumoca_galec_kernels.h\"
 
 int main(void) {
     ArrayProjectionState state = {0};
     const float reals[3] = {1.5f, -2.25f, 3.0f};
     const int32_t ints[3] = {-7, 0, 11};
     const bool bools[3] = {true, false, true};
+    float real_copy[3] = {0};
+    float real_fixed[3] = {0};
+    int32_t int_copy[3] = {0};
+    bool bool_copy[3] = {false};
     int32_t i;
+    rumoca_galec_copy_real(INT32_C(3), real_copy, reals);
+    rumoca_galec_copy_real_3(real_fixed, reals);
+    rumoca_galec_copy_integer(INT32_C(3), int_copy, ints);
+    rumoca_galec_copy_boolean(INT32_C(3), bool_copy, bools);
+    for (i = 0; i < 3; ++i) {
+        if (real_copy[i] != reals[i] || real_fixed[i] != reals[i]) return 4;
+        if (int_copy[i] != ints[i]) return 5;
+        if (bool_copy[i] != bools[i]) return 6;
+    }
     for (i = 0; i < 3; ++i) {
         state.real_source[i] = reals[i];
         state.int_source[i] = ints[i];
@@ -1628,10 +1477,9 @@ fn run_span(needle: &str) -> rumoca_core::Span {
 fn render_with_run_sources(block: &CheckedAlgorithmBlock) -> String {
     let mut sources = rumoca_core::SourceMap::new();
     sources.add(RUN_SOURCE_NAME, RUN_SOURCE_TEXT);
-    rumoca_phase_codegen::render_checked_algorithm_block_template_with_sources(
+    support::render_refined(
         block,
         &sources,
-        &json!({}),
         templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
             .expect("built-in template"),
         MODEL,
@@ -1666,12 +1514,13 @@ fn scalar_run_block(spans: &[&str]) -> CheckedAlgorithmBlock {
 /// An unbroken run of one anchor is announced once, at its head.
 #[test]
 fn repeated_statement_traces_collapse_to_one_comment_per_run() {
-    let source = render_with_run_sources(&scalar_run_block(&[
+    let rendered = render_with_run_sources(&scalar_run_block(&[
         "a := 1.0;",
         "a := 1.0;",
         "a := 1.0;",
         "a := 1.0;",
     ]));
+    let source = emitted_function(&rendered, "void ArrayProjection_dostep(");
 
     assert_eq!(
         source.matches("/* Modelica trace:").count(),
@@ -1683,15 +1532,20 @@ fn repeated_statement_traces_collapse_to_one_comment_per_run() {
         "{source}"
     );
     // The run is collapsed, not thinned: every statement is still emitted.
-    assert_eq!(source.matches("self->selected = ").count(), 4, "{source}");
+    assert_eq!(
+        source.matches("(&self->selected)[0] = ").count(),
+        4,
+        "{source}"
+    );
 }
 
 /// A different anchor always re-announces — including when it returns to one
 /// already seen, which is what keeps "nearest comment above" correct.
 #[test]
 fn a_changed_trace_reopens_the_run() {
-    let source =
+    let rendered =
         render_with_run_sources(&scalar_run_block(&["a := 1.0;", "b := 2.0;", "a := 1.0;"]));
+    let source = emitted_function(&rendered, "void ArrayProjection_dostep(");
 
     assert_eq!(
         source.matches("/* Modelica trace:").count(),
@@ -1770,12 +1624,20 @@ fn each_emitted_function_starts_a_fresh_trace_run() {
     let checked =
         CheckedAlgorithmBlock::construct(block).expect("function-boundary fixture must be valid");
     let source = render_with_run_sources(&checked);
+    for function in ["static int helper(", "void ArrayProjection_dostep("] {
+        assert!(
+            emitted_function(&source, function).contains("/* Modelica trace: Runs.mo:5:3-5:11. */"),
+            "the callee and the caller must each announce their own anchor:\n{source}"
+        );
+    }
+}
 
-    assert_eq!(
-        source
-            .matches("/* Modelica trace: Runs.mo:5:3-5:11. */")
-            .count(),
-        2,
-        "the callee and the caller must each announce their own anchor:\n{source}"
-    );
+/// The text of one emitted C function, from its signature to its closing
+/// brace: trace runs are per function.
+fn emitted_function<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("no `{signature}` in:\n{source}"));
+    let rest = &source[start..];
+    &rest[..rest.find("\n}\n").map_or(rest.len(), |end| end + 2)]
 }

@@ -23,6 +23,8 @@ use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_ir_galec::signal_effect::{RepeatableSignalEffect, StatusEffect, expression_effect};
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
+
+mod support;
 use serde_json::json;
 
 const MODEL: &str = "SignalSurface";
@@ -43,6 +45,9 @@ const C_TARGETS: [&str; 2] = ["embedded-c-galec", "galec-production"];
 enum Mention {
     /// `… = UINT32_C(0);` at a method boundary.
     Reset,
+    /// The Solve-printed exit: the word assigned whole from the method's own
+    /// status bits, plus the constant fault bit on the fault exit (#483).
+    Publish,
     /// `… |= <constant>;`.
     AccumulateOr,
     /// A declaration or a parameter: names the word without touching it.
@@ -89,6 +94,11 @@ fn classify(line: &str) -> Result<Mention, String> {
     }
     if code.contains(&format!("self->{STATUS_FIELD} = UINT32_C(0);")) {
         return Ok(Mention::Reset);
+    }
+    if code == format!("self->{STATUS_FIELD} = rumoca_galec_status;")
+        || code == format!("self->{STATUS_FIELD} = rumoca_galec_status | RUMOCA_GALEC_FAULT;")
+    {
+        return Ok(Mention::Publish);
     }
     if let Some(rest) = accumulation_right_hand_side(code) {
         return constant_or_mask(rest).map(|()| Mention::AccumulateOr);
@@ -149,20 +159,21 @@ fn constant_or_mask(rest: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Scan one unit and return how many resets it contains.
+/// Scan one unit and return how many whole-word writes (resets and
+/// publishes) it contains.
 fn scan(unit: &str, label: &str) -> usize {
-    let mut resets = 0;
+    let mut writes = 0;
     for (index, line) in unit.lines().enumerate() {
         if !mentions_status(line) {
             continue;
         }
         match classify(line) {
-            Ok(Mention::Reset) => resets += 1,
+            Ok(Mention::Reset | Mention::Publish) => writes += 1,
             Ok(_) => {}
             Err(reason) => panic!("{label}:{}: {reason}", index + 1),
         }
     }
-    resets
+    writes
 }
 
 #[test]
@@ -174,12 +185,14 @@ fn every_status_write_in_the_template_is_a_reset_or_a_constant_or() {
                 // carrying its own copy of every partial.
                 continue;
             };
-            let resets = scan(source, &format!("{target}/{path}"));
-            if path == "model.c.jinja" && source.contains("_dostep(") {
+            let writes = scan(source, &format!("{target}/{path}"));
+            if path == "model.c.jinja" && source.contains("{%- macro method(") {
+                // One `method` macro serves all three methods: it publishes the
+                // word once on the normal exit and once on the fault exit.
                 assert_eq!(
-                    resets, 3,
-                    "{target}/{path}: the word must be cleared once per method \
-                     (Startup, Recalibrate, DoStep) and nowhere else"
+                    writes, 2,
+                    "{target}/{path}: the method macro must write the word on \
+                     exactly its two exits and nowhere else"
                 );
             }
         }
@@ -192,26 +205,32 @@ fn every_status_write_in_rendered_c_is_a_reset_or_a_constant_or() {
     let source = render(&block, "model.c.jinja");
     let header = render(&block, "model.h.jinja");
 
+    // Each method resets its six status bits on entry and publishes the word
+    // whole on each of its two exits: once per invocation, never read back.
     assert_eq!(
         scan(&source, "rendered model.c"),
-        3,
-        "rendered C must clear the word exactly three times:\n{source}"
+        6,
+        "rendered C must write the word exactly once per method exit:\n{source}"
     );
     assert_eq!(scan(&header, "rendered model.h"), 0);
+    assert_eq!(
+        source
+            .matches("for (size_t k = 0; k < 6u; ++k) { ctx->rumoca_galec_st[k] = false; }")
+            .count(),
+        3,
+        "every method must start from cleared status bits:\n{source}"
+    );
 
-    // The fixture is only evidence if it actually emitted the raising forms the
-    // scan is meant to police.
-    for expected in [
-        "rumoca_galec_compare_gt(&self->rumoca_galec_error_signal_status",
-        "rumoca_galec_integer(&self->rumoca_galec_error_signal_status",
-        "*status |= UINT32_C(4);",
-        "*signals |= UINT32_C(2); /* OVERFLOW */",
-    ] {
-        assert!(
-            source.contains(expected),
-            "the fixture must exercise `{expected}`:\n{source}"
-        );
-    }
+    // The fixture is only evidence if it actually raises: a NaN-checked Real
+    // comparison and `integer()` each OR into a status bit.
+    assert!(
+        source.contains("rumoca_galec_lhs != rumoca_galec_rhs"),
+        "the fixture must exercise a NaN-checked comparison:\n{source}"
+    );
+    assert!(
+        source.contains("9223372036854775808.0"),
+        "the fixture must exercise integer()'s domain test:\n{source}"
+    );
 }
 
 /// The emitted helpers and the Rust classification must agree about which
@@ -222,30 +241,46 @@ fn every_status_write_in_rendered_c_is_a_reset_or_a_constant_or() {
 /// would be minted on a false premise.
 #[test]
 fn the_classification_agrees_with_what_the_template_emits_a_raise_for() {
-    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
-        .expect("built-in template");
-
-    // A Real comparison: the template routes it through a status-taking kernel,
-    // and the classification must call it raising rather than inert.
-    assert!(source.contains("rumoca_galec_compare_{{ value.op.kind }}(&self->"));
-    let comparison = galec::Expression::binary(
-        galec::BinaryOp::Gt,
-        galec::Expression::Ref(galec::Reference::state(galec::Name::ident("a"))),
-        galec::Expression::Real(0.0),
+    // The Rust classification must agree with what the refinement the C is
+    // printed from actually raises: a raising construct adds stores to the
+    // status bits of the refined program, an inert one adds none.
+    let a = || galec::Expression::Ref(galec::Reference::state(galec::Name::ident("a")));
+    let inert = status_stores(
+        galec::Expression::binary(galec::BinaryOp::Add, a(), galec::Expression::Real(2.0)),
+        galec::ScalarType::Real,
+        Vec::new(),
     );
+
+    let comparison =
+        galec::Expression::binary(galec::BinaryOp::Gt, a(), galec::Expression::Real(0.0));
     assert_eq!(expression_effect(&comparison), StatusEffect::AccumulateOr);
     assert!(RepeatableSignalEffect::prove(&comparison).is_some());
+    assert!(
+        status_stores(
+            comparison,
+            galec::ScalarType::Boolean,
+            vec![galec::PredefinedSignal::Nan],
+        ) > inert,
+        "a Real comparison must raise in the refined program"
+    );
 
-    // `integer` likewise.
-    assert!(source.contains("rumoca_galec_integer(&self->"));
     let conversion = galec::Expression::Call(galec::FunctionCall {
         function: galec::Name::ident("integer"),
-        arguments: vec![galec::Expression::Real(1.5)],
+        arguments: vec![a()],
     });
     assert_eq!(expression_effect(&conversion), StatusEffect::AccumulateOr);
+    assert!(
+        status_stores(
+            conversion,
+            galec::ScalarType::Integer,
+            vec![
+                galec::PredefinedSignal::Overflow,
+                galec::PredefinedSignal::Nan
+            ],
+        ) > inert,
+        "integer() must raise in the refined program"
+    );
 
-    // Addition is not routed anywhere: it must stay inert, or every guard would
-    // classify as raising and the permission would say nothing.
     let sum = galec::Expression::binary(
         galec::BinaryOp::Add,
         galec::Expression::Real(1.0),
@@ -254,9 +289,61 @@ fn the_classification_agrees_with_what_the_template_emits_a_raise_for() {
     assert_eq!(expression_effect(&sum), StatusEffect::Inert);
 }
 
+/// Stores into status-bit slots in the refined DoStep of `result := value`.
+fn status_stores(
+    value: galec::Expression,
+    result: galec::ScalarType,
+    signals: Vec<galec::PredefinedSignal>,
+) -> usize {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Input,
+            decl: galec::VariableDeclaration::scalar(
+                galec::ScalarType::Real,
+                galec::Name::ident("a"),
+            ),
+            start: None,
+        },
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Output,
+            decl: galec::VariableDeclaration::scalar(result, galec::Name::ident("result")),
+            start: None,
+        },
+    ];
+    // The escape clause must equal what the statement can raise (GAL-018).
+    block.do_step.signals = signals;
+    block.do_step.statements = vec![galec::Spanned::dummy(galec::Statement::Assignment {
+        target: galec::Reference::state(galec::Name::ident("result")),
+        value,
+    })];
+    let block = CheckedAlgorithmBlock::construct(block).expect("valid status fixture");
+    let (_, refined) = support::refine(&block).expect("status fixture refines");
+    let program = serde_json::to_value(refined.do_step().program()).expect("serializable");
+    let slots = program["slots"].as_array().expect("slots");
+    program["operations"]
+        .as_array()
+        .expect("operations")
+        .iter()
+        .map(|issued| &issued["operation"])
+        .filter(|operation| {
+            operation["operation"] == "store"
+                && operation["slot"]
+                    .as_u64()
+                    .and_then(|slot| slots.get(usize::try_from(slot).ok()?))
+                    .is_some_and(|slot| slot["storage"] == "signal_status")
+        })
+        .count()
+}
+
 fn render(block: &CheckedAlgorithmBlock, path: &str) -> String {
     let template =
         templates::builtin_template_source("embedded-c-galec", path).expect("built-in template");
+    if path.starts_with("model.") {
+        // The model unit prints from the block's Solve refinement (#483).
+        return support::render_refined(block, &rumoca_core::SourceMap::new(), template, MODEL)
+            .expect("signal-surface fixture must refine and render");
+    }
     render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
         .expect("signal-surface fixture must render")
 }

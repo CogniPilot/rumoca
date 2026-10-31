@@ -34,7 +34,7 @@ use serde::Serialize;
 /// source, or a view built without a source map). Templates must therefore
 /// keep a hash-only fallback rather than assume the path is present.
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct SourceTrace {
+pub(crate) struct SourceTrace {
     /// Source path with Windows separators normalized, or `None` when unresolvable.
     path: Option<String>,
     /// 1-based line of the first byte.
@@ -141,13 +141,13 @@ impl<'a> SourceLines<'a> {
 /// the set of sources actually reached is recorded so the emitted file can
 /// carry a legend of exactly the files it traces into (and no others — a model
 /// pulls in far more library files than it traces statements from).
-pub(super) struct SourceTraceResolver<'a> {
+pub(crate) struct SourceTraceResolver<'a> {
     sources: &'a SourceMap,
     lines: RefCell<BTreeMap<u64, Option<SourceLines<'a>>>>,
 }
 
 impl<'a> SourceTraceResolver<'a> {
-    pub(super) fn new(sources: &'a SourceMap) -> Self {
+    pub(crate) fn new(sources: &'a SourceMap) -> Self {
         Self {
             sources,
             lines: RefCell::new(BTreeMap::new()),
@@ -155,7 +155,7 @@ impl<'a> SourceTraceResolver<'a> {
     }
 
     /// The anchor for `span`, or `None` when the span is the dummy span.
-    pub(super) fn trace(&self, span: &Span) -> Option<SourceTrace> {
+    pub(crate) fn trace(&self, span: &Span) -> Option<SourceTrace> {
         if span.is_dummy() {
             return None;
         }

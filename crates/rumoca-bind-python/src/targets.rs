@@ -47,6 +47,7 @@ fn ir_str(ir: TargetTemplateIr) -> &'static str {
         TargetTemplateIr::Solve => "solve",
         TargetTemplateIr::Fmi => "fmi",
         TargetTemplateIr::AlgorithmCode => "algorithm-code",
+        TargetTemplateIr::AlgorithmBlock => "algorithm-block",
     }
 }
 

@@ -58,17 +58,23 @@
 //! - `sanitize` - Replace dots with underscores: `{{ name | sanitize }}`
 //! - Standard minijinja filters (length, upper, lower, etc.)
 
+// The template tests share tests/support with the integration tests, which
+// name this crate by its external path.
+#[cfg(test)]
+extern crate self as rumoca_phase_codegen;
+
 mod codegen;
 mod errors;
 pub(crate) mod views;
 
 pub use codegen::{
-    AlgorithmCodeTemplateRenderer, CodegenInput, NativeFmiTemplateRenderer, SolveTemplateRenderer,
-    dae_template_json, explicit_algebraic_assignment_complete,
-    explicit_algebraic_assignment_complete_with_calls,
+    AlgorithmCodeTemplateRenderer, CodegenInput, NativeFmiTemplateRenderer,
+    SolveBlockTemplateRenderer, SolveTemplateRenderer, dae_template_json,
+    explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls,
     explicit_initialization_renderable_with_calls, me_refresh_admissible,
     render_algorithm_code_template_with_artifact, render_ast_template_with_name,
     render_checked_algorithm_block_template_with_artifact,
+    render_checked_algorithm_block_template_with_solve,
     render_checked_algorithm_block_template_with_sources, render_flat_template_with_name,
     render_solve_template_with_name, render_template, render_template_for_input,
     render_template_with_name, render_template_with_name_for_input,
@@ -221,17 +227,16 @@ pub mod templates {
 
     /// Content identity of the GALEC array-kernel library this build emits,
     /// printed into the generated `rumoca_galec_kernels.h` as
-    /// `RUMOCA_GALEC_KERNELS_VERSION` and checked by every generated model
-    /// source.
+    /// `RUMOCA_GALEC_KERNELS_VERSION`. The Solve-printed model units (#483)
+    /// call no kernel, so none of them checks it; it identifies the library
+    /// for an integrator who links it.
     ///
     /// It is a hash of the *templates*, not of a build timestamp or a version
     /// string someone has to remember to bump. Byte-identical kernel
     /// templates therefore always produce the same value, so two builds that
-    /// disagree on it provably emit different kernels — the direction the
-    /// `#error` in the generated sources relies on: mixing a model `.c` with
-    /// kernel sources from a build whose kernels differ fails to compile,
-    /// while a build with identical kernels — the case an integrator relies
-    /// on when deduplicating the library across several eFMUs — compiles.
+    /// disagree on it provably emit different kernels, while a build with
+    /// identical kernels — the case an integrator relies on when
+    /// deduplicating the library across several eFMUs — agrees.
     /// The converse is a 32-bit tripwire, not a certificate: agreeing values
     /// make identical kernels overwhelmingly likely but do not prove them,
     /// so certification-grade identity must content-hash the emitted files

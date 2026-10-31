@@ -21,6 +21,8 @@
 use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
+
+mod support;
 use serde_json::json;
 
 const MODEL: &str = "DefaultedOutput";
@@ -169,6 +171,11 @@ fn fixture() -> CheckedAlgorithmBlock {
 fn render(block: &CheckedAlgorithmBlock, target: &str, path: &str) -> String {
     let template = templates::builtin_template_source(target, path)
         .unwrap_or_else(|| panic!("built-in template {target}/{path}"));
+    if target != "galec" && path.starts_with("model.") {
+        // The model unit prints from the block's Solve refinement (#483).
+        return support::render_refined(block, &rumoca_core::SourceMap::new(), template, MODEL)
+            .unwrap_or_else(|error| panic!("{target}/{path} must render the fixture: {error}"));
+    }
     render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
         .unwrap_or_else(|error| panic!("{target}/{path} must render the fixture: {error}"))
 }
@@ -303,62 +310,82 @@ fn constant_stores(body: &str) -> Vec<ConstantStore> {
 /// body attached.
 #[test]
 fn a_defaulted_output_keeps_its_declaration_binding_in_the_generated_c() {
+    // The Solve-printed bodies are SSA: the declared constant is computed into
+    // a register and stored, after the definedness fill, so "the first
+    // constant store" no longer names the binding. The property is executed
+    // instead, for both C targets: where the guard is false the output keeps
+    // its declared default, and where it holds the guarded store wins. A dead
+    // zero over the live default (the 55ea493c defect) fails the first case.
     let block = fixture();
     for target in TARGETS {
+        let directory = tempfile::tempdir().expect("temporary generated-C directory");
+        let base = directory.path();
+        std::fs::write(
+            base.join(format!("{MODEL}.h")),
+            render(&block, target, "model.h.jinja"),
+        )
+        .expect("write generated header");
         let source = render(&block, target, "model.c.jinja");
+        // The declaration binding is still printed as the declared constant,
+        // and what it is stored into is read again: the binding is live, not
+        // a dead store the executed check below could never observe.
         let body = emitted_definition_body(&source, "defaultedReturn", target);
-        let constants = constant_stores(body);
-
-        // Locate the output by the value it is declared with, not by guessing
-        // how the C printer spells it.
-        let bindings = constants
-            .iter()
-            .filter(|store| store.is_value(DECLARED_DEFAULT))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            bindings.len(),
-            1,
-            "{target}: the emitted body must store the declared \
-             {DECLARED_DEFAULT} into its output exactly once; losing it means \
-             the declaration binding is no longer the live seed.\nEmitted \
-             body:\n{body}"
-        );
-        let declared = bindings[0];
-        let overwrites = constants
-            .iter()
-            .filter(|store| store.target == declared.target && !store.is_value(DECLARED_DEFAULT))
-            .map(|store| store.value.as_str())
-            .collect::<Vec<_>>();
+        let binding = constant_stores(body)
+            .into_iter()
+            .find(|store| store.is_value(DECLARED_DEFAULT))
+            .unwrap_or_else(|| {
+                panic!("{target}: the body must print the declared {DECLARED_DEFAULT}:\n{body}")
+            });
+        let written = body
+            .find(&format!("{} = ", binding.target))
+            .expect("the binding was just read out of this body");
         assert!(
-            overwrites.is_empty(),
-            "{target}: the defaulted output `{}` is stored a second constant \
-             {overwrites:?}; a dead-value store over a live §12.4.4 default is \
-             exactly the defect 55ea493c removed.\nEmitted body:\n{body}",
-            declared.target
+            body[written + binding.target.len()..].contains(&binding.target),
+            "{target}: the declared {DECLARED_DEFAULT} in `{}` must be read again:\n{body}",
+            binding.target
         );
-
-        // Ordering, stated independently of the count: the declaration binding
-        // has to reach the output before the guarded path can overwrite it, or
-        // the default is not what the non-returning path keeps.
-        let declaration_binding = body
-            .find(&format!("{} = {};", declared.target, declared.value))
-            .expect("the declaration binding was just read out of this body");
-        let first_store = body
-            .find(&format!("{} = ", declared.target))
-            .expect("the target was just read out of this body");
-        assert_eq!(
-            declaration_binding, first_store,
-            "{target}: the declaration binding must be the FIRST store into \
-             `{}`.\nEmitted body:\n{body}",
-            declared.target
-        );
-        let guarded = body
-            .rfind(&format!("{} = ", declared.target))
-            .expect("the target was just read out of this body");
+        std::fs::write(base.join(format!("{MODEL}.c")), &source).expect("write generated source");
+        std::fs::write(
+            base.join("main.c"),
+            format!(
+                "#include <string.h>\n#include \"{MODEL}.h\"\n\
+                 int main(void) {{\n\
+                 static {MODEL}State state;\n\
+                 memset(&state, 0, sizeof state);\n\
+                 {MODEL}_startup(&state);\n\
+                 state.u = -1.0f;\n\
+                 {MODEL}_dostep(&state);\n\
+                 if (state.result != {DECLARED_DEFAULT:?}f || state.shadow != {DECLARED_DEFAULT:?}f) return 1;\n\
+                 state.u = 2.5f;\n\
+                 {MODEL}_dostep(&state);\n\
+                 if (state.result != 2.5f || state.shadow != 2.5f) return 2;\n\
+                 return 0;\n\
+                 }}\n"
+            ),
+        )
+        .expect("write driver");
+        let executable = base.join("defaulted");
+        let compile = std::process::Command::new("cc")
+            .args(["-std=c99", "-Wall", "-Wextra", "-Werror", "-o"])
+            .arg(&executable)
+            .arg(base.join("main.c"))
+            .arg(base.join(format!("{MODEL}.c")))
+            .arg("-lm")
+            .output()
+            .expect("run C compiler");
         assert!(
-            guarded > declaration_binding,
-            "{target}: the guarded store must survive and follow the \
-             declaration binding.\nEmitted body:\n{body}"
+            compile.status.success(),
+            "{target}: strict compile failed:\n{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new(&executable)
+            .status()
+            .expect("run the defaulted-output driver");
+        assert_eq!(
+            run.code(),
+            Some(0),
+            "{target}: 1 = the declared default was lost on the unguarded path, \
+             2 = the guarded store did not win"
         );
     }
 }
@@ -401,24 +428,25 @@ fn the_body_reader_selects_the_definition_not_a_neighbour() {
              it cannot stand in for it.\n{source}"
         );
 
+        // Function slots print by id, so the bodies are told apart by where
+        // they sit: each must be the slice that follows its own definition's
+        // opening brace, and `decoy`'s lies wholly before `defaultedReturn`'s.
+        let offset = |part: &str| part.as_ptr() as usize - source.as_ptr() as usize;
         let body = emitted_definition_body(&source, "defaultedReturn", target);
-        assert!(
-            body.contains("ctx->y = "),
-            "{target}: the reader must return `defaultedReturn`'s own body, \
-             which stores its output `y`.\nReturned body:\n{body}"
+        assert_eq!(
+            offset(body),
+            definition + 1,
+            "{target}: the reader must return `defaultedReturn`'s own body.\nReturned body:\n{body}"
         );
-        assert!(
-            !body.contains("ctx->h = "),
-            "{target}: the reader returned a body that stores `decoy`'s output \
-             `h` — it is reading the wrong function.\nReturned body:\n{body}"
-        );
-
-        // And the reader must be able to tell the two apart in both directions.
         let decoy_body = emitted_definition_body(&source, "decoy", target);
+        assert_eq!(
+            offset(decoy_body),
+            decoy + 1,
+            "{target}: reading `decoy` must return `decoy`'s body.\nReturned body:\n{decoy_body}"
+        );
         assert!(
-            decoy_body.contains("ctx->h = ") && !decoy_body.contains("ctx->y = "),
-            "{target}: reading `decoy` must return `decoy`'s body.\nReturned \
-             body:\n{decoy_body}"
+            offset(decoy_body) + decoy_body.len() < definition,
+            "{target}: the two bodies must not overlap"
         );
     }
 }

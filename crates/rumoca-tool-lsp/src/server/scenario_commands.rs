@@ -17,6 +17,9 @@ fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::Built
     descriptors.extend(builtin_target_descriptors_for_ir(
         TargetTemplateIr::AlgorithmCode,
     ));
+    descriptors.extend(builtin_target_descriptors_for_ir(
+        TargetTemplateIr::AlgorithmBlock,
+    ));
     descriptors.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Fmi));
     descriptors
 }
@@ -564,7 +567,7 @@ fn render_manifest_target(
         TargetTemplateIr::Solve => {
             render_solve_target_files(bundle, manifest, compiled.dae.as_ref(), model)
         }
-        TargetTemplateIr::AlgorithmCode => {
+        TargetTemplateIr::AlgorithmCode | TargetTemplateIr::AlgorithmBlock => {
             render_algorithm_code_source_files(bundle, manifest, compiled, model)
         }
         TargetTemplateIr::Fmi => {
@@ -711,6 +714,19 @@ fn render_algorithm_code_source_files(
         identities: std::collections::BTreeMap::new(),
         checksums: std::collections::BTreeMap::new(),
     };
+    // No source map anchors these previews (as before): traces keep their
+    // hash-and-range form. An `algorithm-block` target prints its C from the
+    // Solve refinement (#483), refined before any file renders.
+    let sources = rumoca_core::SourceMap::new();
+    let renderer = if manifest.ir == TargetTemplateIr::AlgorithmBlock {
+        let block = crate::refine_algorithm_block(&package, manifest.algorithm_block_profile()?)
+            .map_err(|error| anyhow::anyhow!("Solve refinement refused the target: {error}"))?;
+        rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
+            &package, &block, &sources,
+        )?
+    } else {
+        rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(&package, &sources)?
+    };
     let mut rendered = Vec::new();
     for file in &manifest.files {
         let extension = Path::new(&file.path)
@@ -719,16 +735,10 @@ fn render_algorithm_code_source_files(
         if !matches!(extension, Some("alg" | "h" | "c")) {
             continue;
         }
-        let path = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package, &artifact, &file.path, &model_id,
-        )?;
+        let path = renderer.render_with_name_and_artifact(&file.path, &model_id, &artifact)?;
         let source = bundle.template_source(&file.template)?;
-        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            source.as_ref(),
-            &model_id,
-        )?;
+        let content =
+            renderer.render_with_name_and_artifact(source.as_ref(), &model_id, &artifact)?;
         rendered.push(RenderedTargetFile {
             path: path.trim().to_owned(),
             content,

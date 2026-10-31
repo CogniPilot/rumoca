@@ -175,11 +175,9 @@ fn galec_call_site_count(source: &str, function: &str) -> usize {
 }
 
 fn c_call_site_count(source: &str, function: &str) -> usize {
-    let call = format!("{function}(");
-    source
-        .lines()
-        .filter(|line| line.trim_start().starts_with(&call))
-        .count()
+    // A call passes the instance scratch first; the definition declares it.
+    let call = format!("{function}(scratch,");
+    source.matches(&call).count()
 }
 
 /// One packaged eFMU produced by a real CLI run.
@@ -722,16 +720,14 @@ fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
             "one GALEC call to {function} must remain one C call site:\n{c}"
         );
     }
-    // A whole-tensor move no longer prints a `rumoca_tensor_` loop nest at
-    // all: the projection emits the whole-array assignment directly, and the
-    // C target prints it as a call into the shared kernel library — the
-    // counted generic kernel, or the fixed-count specialization the library
-    // defines for this run length. The bounded-ness evidence is that kernel
-    // call, not a loop header — and its absence would mean the moves fell
-    // back to some new expanded form this ratchet must catch.
+    // A whole-tensor move is one counted element loop over the flat array in
+    // the Solve-printed C (#483; the kernel library stays in the build list
+    // with no semantic dependency). The bounded-ness evidence is that
+    // loop: a move unrolled into per-element statements would be the expanded
+    // form this ratchet must catch.
     assert!(
-        c.contains("rumoca_galec_copy_real(INT32_C(") || c.contains("rumoca_galec_copy_real_"),
-        "tensor moves must lower to shared-kernel calls:\n{c}"
+        c.contains("for (size_t k = 0; k < 9; ++k) {"),
+        "a 3x3 tensor move must stay one counted loop:\n{c}"
     );
     let constant_coordinate_assignments = c
         .lines()
