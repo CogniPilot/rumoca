@@ -33,7 +33,7 @@ impl WasmExpression {
         calls: &rumoca_ir_solve::SolvePureCallTable,
         seed_len: Option<usize>,
     ) -> Result<Self, String> {
-        let selected = source
+        let codes = source
             .programs()
             .iter()
             .enumerate()
@@ -43,19 +43,31 @@ impl WasmExpression {
                     .ok_or("WASM source span is absent")?;
                 let block = ScalarProgramBlock::with_program_spans(vec![ops.clone()], vec![span])
                     .map_err(|error| error.to_string())?;
-                let code = match seed_len {
+                match seed_len {
                     Some(count) => rumoca_exec_wasm::compile_private_directional_program_wasm(
                         &block, layout, calls, count,
                     ),
                     None => rumoca_exec_wasm::compile_private_program_wasm(&block, layout, calls),
                 }
-                .map_err(|error| error.to_string())?;
-                let count = usize::try_from(code.scratch_bytes())
-                    .map_err(|_| "WASM expression scratch exceeds usize")?
-                    .div_ceil(8);
-                Ok(Rc::new((code, RefCell::new(vec![0.0; count]))))
+                .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, String>>()?;
+        // A program's scratch is at least the whole Y vector wide, so one buffer
+        // per program grows with the program count (20k+ on large models). Calls
+        // run one program at a time and copy its outputs out before the next, so
+        // one buffer sized for the widest program serves all of them.
+        let mut cells = 0;
+        for code in &codes {
+            let count = usize::try_from(code.scratch_bytes())
+                .map_err(|_| "WASM expression scratch exceeds usize")?
+                .div_ceil(8);
+            cells = cells.max(count);
+        }
+        let private = Rc::new(RefCell::new(vec![0.0; cells]));
+        let selected = codes
+            .into_iter()
+            .map(|code| Rc::new((code, Rc::clone(&private))))
+            .collect();
         Ok(Self {
             layout: Rc::new(layout.clone()),
             source: source.clone(),

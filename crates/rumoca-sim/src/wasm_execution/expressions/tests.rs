@@ -3,6 +3,7 @@ mod conditional_ranges;
 mod linear_solve;
 mod observations;
 mod outer_scalar_fold;
+mod shared_scratch;
 mod tuples;
 use super::*;
 use rumoca_core::{SourceId, Span};
