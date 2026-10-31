@@ -199,7 +199,13 @@ pub(in crate::typed_program) fn derive(
         }
         match operation {
             SolveOperation::AssignedState { operation } => {
-                derive_assigned_dependencies(operation, &mut registers, &mut assigned);
+                derive_assigned_dependencies(
+                    body,
+                    operation,
+                    &mut registers,
+                    &mut assigned,
+                    spanned.provenance(),
+                )?;
             }
             SolveOperation::AssignedConditional { program } => {
                 derive_conditional_dependencies(program, &mut registers, &mut assigned);
@@ -252,10 +258,7 @@ pub(in crate::typed_program) fn derive(
                 destination,
                 body: region,
             } => {
-                let captured = captures
-                    .iter()
-                    .map(|capture| (registers[capture.index()].clone(), integers.value(*capture)))
-                    .collect::<Vec<_>>();
+                let captured = capture_dependencies(captures, &registers, &integers);
                 if let Some(dependencies) =
                     map_access::derive(domain, &captured, region, spanned.provenance())
                 {
@@ -269,6 +272,17 @@ pub(in crate::typed_program) fn derive(
         retire_registers(body, operation, index, &mut registers);
     }
     Ok(output_summaries(body, input_count, output_count, slots))
+}
+
+fn capture_dependencies(
+    captures: &[SolveRegisterId],
+    registers: &[Vec<SolveCallDependency>],
+    integers: &map_access::IntegerValues,
+) -> Vec<(Vec<SolveCallDependency>, Option<i64>)> {
+    captures
+        .iter()
+        .map(|capture| (registers[capture.index()].clone(), integers.value(*capture)))
+        .collect()
 }
 
 fn output_summaries(
@@ -434,10 +448,12 @@ fn finite_constant(value: SolveValueKind) -> bool {
 }
 
 fn derive_assigned_dependencies(
+    body: &TypedProgram,
     operation: &crate::SolveAssignedStateOperation,
     registers: &mut [Vec<SolveCallDependency>],
     states: &mut [Vec<SolveCallDependency>],
-) {
+    provenance: Span,
+) -> Result<(), SolveProgramConstructionError> {
     use crate::SolveAssignedStateOperation;
     match operation {
         SolveAssignedStateOperation::Present {
@@ -447,8 +463,17 @@ fn derive_assigned_dependencies(
         SolveAssignedStateOperation::IsPresent {
             destination,
             source,
+        } => {
+            let access = operations::whole_access(
+                0,
+                body.assigned_state_types()[source.index()].dimensions(),
+            );
+            registers[destination.index()] = states[source.index()]
+                .iter()
+                .map(|dependency| dependency.remap(&access, provenance))
+                .collect::<Result<_, _>>()?;
         }
-        | SolveAssignedStateOperation::ProjectChecked {
+        SolveAssignedStateOperation::ProjectChecked {
             destination,
             source,
             ..
@@ -469,6 +494,7 @@ fn derive_assigned_dependencies(
         | SolveAssignedStateOperation::Input { .. }
         | SolveAssignedStateOperation::Output { .. } => {}
     }
+    Ok(())
 }
 
 fn derive_conditional_dependencies(
