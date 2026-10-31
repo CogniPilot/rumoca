@@ -1614,7 +1614,15 @@ fn lower_bounded_reference_selection(
     dimensions: &[u32],
     span: Span,
 ) -> Result<gast::Expression, GalecTargetError> {
-    gast::IfExpression::bounded_selection(reference, dimensions.to_vec())
-        .map(gast::Expression::If)
-        .map_err(|error| unsupported("dynamic-array-index", error.to_string(), span))
+    let selection = gast::IfExpression::bounded_selection(reference, dimensions.to_vec())
+        .map_err(|error| unsupported("dynamic-array-index", error.to_string(), span))?;
+    // Every runtime subscript ranges over a single element (an axis of
+    // extent one), so the one candidate is the selection: it is the value a
+    // longer selection gives as its fallback, and a conditional with no
+    // branch is not Algorithm Code (EG009).
+    Ok(if selection.branches.is_empty() {
+        *selection.else_value
+    } else {
+        gast::Expression::If(selection)
+    })
 }
