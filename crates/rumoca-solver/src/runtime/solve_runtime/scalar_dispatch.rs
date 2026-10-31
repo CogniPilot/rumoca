@@ -251,6 +251,17 @@ impl SolveRuntime {
             .eval_initial_residual_jacobian_v((y, p, t), settle, v, out)
     }
 
+    pub fn eval_initial_residual_jacobian_columns(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        settle: AlgebraicSettle,
+        columns: &[usize],
+        out: &mut [Vec<f64>],
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .eval_initial_residual_jacobian_columns((y, p, t), settle, columns, out)
+    }
+
     pub fn eval_initialization_update_jacobian_v(
         &self,
         (y, p, t): (&[f64], &[f64], f64),

@@ -1362,23 +1362,21 @@ pub(super) fn initial_block_jacobian(
     y_indices: &[usize],
 ) -> Result<BlockJacobian, RuntimeSolveError> {
     let mut jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
-    let mut seed = vec![0.0; y.len()];
-    let mut jvp = vec![0.0; model.initial_residual_len()];
-    for (col, y_idx) in y_indices.iter().copied().enumerate() {
-        if y_idx >= seed.len() {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "initial projection Jacobian references y index {y_idx}, but the model has only {} variables",
-                y.len()
-            )));
-        }
-        seed[y_idx] = 1.0;
-        model.eval_initial_jacobian_v(y, p, t, &seed, Some(rows), &mut jvp)?;
-        for (row_idx, residual_idx) in rows.iter().copied().enumerate() {
-            jacobian[(row_idx, col)] =
-                initial_residual_at(&jvp, residual_idx, "initial block Jacobian-vector product")?;
-        }
-        seed[y_idx] = 0.0;
-    }
+    model.eval_initial_jacobian_columns(
+        (y, p, t),
+        y.len(),
+        (Some(rows), y_indices),
+        &mut |col, jvp| {
+            for (row_idx, residual_idx) in rows.iter().copied().enumerate() {
+                jacobian[(row_idx, col)] = initial_residual_at(
+                    jvp,
+                    residual_idx,
+                    "initial block Jacobian-vector product",
+                )?;
+            }
+            Ok(())
+        },
+    )?;
     Ok(BlockJacobian::dense(jacobian))
 }
 

@@ -54,6 +54,40 @@ end SettledInitImplicit;";
 /// initialization unknown at the settled start point, one column per unknown
 /// in plan order.
 fn settled_columns(source: &str, name: &str) -> Vec<Vec<f64>> {
+    at_settled_start(source, name, |runtime, (y, p), unknowns, rows| {
+        unknowns
+            .iter()
+            .map(|&column| {
+                let mut direction = vec![0.0; y.len() + p.len()];
+                direction[column] = 1.0;
+                let mut out = vec![0.0; rows];
+                runtime
+                    .eval_initial_residual_jacobian_v((y, p, 0.0), SETTLE, &direction, &mut out)
+                    .unwrap_or_else(|error| panic!("{name}: the settled JVP: {error:?}"));
+                out
+            })
+            .collect()
+    })
+}
+
+/// The same columns, with the view settled once for all of them.
+fn settled_columns_at_once(source: &str, name: &str) -> Vec<Vec<f64>> {
+    at_settled_start(source, name, |runtime, (y, p), unknowns, rows| {
+        let mut out = vec![vec![0.0; rows]; unknowns.len()];
+        runtime
+            .eval_initial_residual_jacobian_columns((y, p, 0.0), SETTLE, unknowns, &mut out)
+            .unwrap_or_else(|error| panic!("{name}: the settled columns: {error:?}"));
+        out
+    })
+}
+
+/// Run `columns` at the settled start point of `source`, with the
+/// initialization unknowns in plan order and the residual row count.
+fn at_settled_start(
+    source: &str,
+    name: &str,
+    columns: impl FnOnce(&SolveRuntime, (&[f64], &[f64]), &[usize], usize) -> Vec<Vec<f64>>,
+) -> Vec<Vec<f64>> {
     let dae = compile(source, name);
     let model = lower_dae_for_simulation(&dae, &SimOptions::default())
         .unwrap_or_else(|error| panic!("lower {name}: {error:?}"));
@@ -85,18 +119,7 @@ fn settled_columns(source: &str, name: &str) -> Vec<Vec<f64>> {
             other => panic!("{name}: unexpected unknown {other:?}"),
         })
         .collect::<Vec<_>>();
-    unknowns
-        .iter()
-        .map(|&column| {
-            let mut direction = vec![0.0; y.len() + p.len()];
-            direction[column] = 1.0;
-            let mut out = vec![0.0; rows];
-            runtime
-                .eval_initial_residual_jacobian_v((&y, &p, 0.0), SETTLE, &direction, &mut out)
-                .unwrap_or_else(|error| panic!("{name}: the settled JVP: {error:?}"));
-            out
-        })
-        .collect()
+    columns(&runtime, (&y, &p), &unknowns, rows)
 }
 
 fn assert_columns(name: &str, exact: &[Vec<f64>], reference: &[&[f64]]) {
@@ -143,4 +166,24 @@ fn settled_initial_jvp_matches_the_reference_values_on_an_implicit_row() {
             &[0.272_877_149_824_305_8, -0.727_122_850_182_245_3],
         ],
     );
+}
+
+/// Settling the view once for every column of a block Jacobian gives the bits
+/// settling it again for each column gives: the settled point depends only on
+/// the point, never on the direction.
+#[test]
+fn settling_once_for_all_columns_gives_the_per_column_bits() {
+    for (source, name) in [(LOOP, "SettledInitLoop"), (IMPLICIT, "SettledInitImplicit")] {
+        let bits = |columns: Vec<Vec<f64>>| {
+            columns
+                .into_iter()
+                .map(|column| column.into_iter().map(f64::to_bits).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(settled_columns_at_once(source, name)),
+            bits(settled_columns(source, name)),
+            "{name}: one settle per block must not change a bit"
+        );
+    }
 }
