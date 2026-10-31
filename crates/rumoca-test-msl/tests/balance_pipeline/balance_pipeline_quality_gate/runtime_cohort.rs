@@ -57,7 +57,8 @@ fn distribution(mut values: Vec<f64>) -> Option<MslDistributionStats> {
     values.sort_by(f64::total_cmp);
     let sample_count = values.len();
     let median = if sample_count.is_multiple_of(2) {
-        (values[sample_count / 2 - 1] + values[sample_count / 2]) / 2.0
+        values[sample_count / 2 - 1]
+            + (values[sample_count / 2] - values[sample_count / 2 - 1]) / 2.0
     } else {
         values[sample_count / 2]
     };
@@ -105,12 +106,22 @@ pub(super) fn runtime_ratio_gate_stats(
     })
 }
 
-fn push_runtime_median_reason(reasons: &mut Vec<String>, label: &str, current: f64, baseline: f64) {
-    let floor = baseline * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
+pub(super) fn push_runtime_median_reason(
+    reasons: &mut Vec<String>,
+    label: &str,
+    current: f64,
+    baseline: f64,
+) {
+    let tolerance = if label == "wall" {
+        RUNTIME_WALL_RATIO_MEDIAN_REL_TOLERANCE
+    } else {
+        RUNTIME_RATIO_MEDIAN_REL_TOLERANCE
+    };
+    let floor = baseline * (1.0 - tolerance);
     if current + SIM_RATE_GATE_EPSILON < floor {
         reasons.push(format!(
             "runtime {label} speedup median regressed: current={current:.6e} < floor={floor:.6e} (baseline={baseline:.6e}, tolerance={:.1}%)",
-            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
+            tolerance * 100.0
         ));
     }
 }
@@ -150,4 +161,95 @@ pub(super) fn push_runtime_ratio_regression_reasons(
         current.stats.wall_ratio_both_success.median,
         baseline_runtime.wall_ratio_both_success.median,
     );
+}
+
+/// Bind runtime reference metadata before a recorded aggregate defines a floor.
+/// Older snapshots without per-model ratios retain their existing aggregate path.
+pub(super) fn validate_runtime_baseline_evidence(document: &serde_json::Value) -> io::Result<()> {
+    let invalid =
+        |message: &str| io::Error::other(format!("invalid MSL runtime baseline: {message}"));
+    let Some(recorded) = document.get("runtime_model_ratios") else {
+        let modern = document
+            .get("quality_gate_version")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|version| version >= 14);
+        if modern
+            && document
+                .get("runtime_ratio_stats")
+                .is_some_and(|stats| !stats.is_null())
+        {
+            return Err(invalid("current-schema runtime_model_ratios are missing"));
+        }
+        return Ok(());
+    };
+    let ratios: IndexMap<String, MslRuntimeModelRatio> =
+        serde_json::from_value(recorded.clone())
+            .map_err(|_| invalid("runtime_model_ratios must be an object of numeric ratios"))?;
+    let cohort = document
+        .get("runtime_ratio_cohort_models")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| invalid("runtime cohort is missing"))?;
+    let names = cohort
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<IndexSet<_>>();
+    if ratios.is_empty()
+        || cohort.len() != ratios.len()
+        || names.len() != cohort.len()
+        || !ratios.keys().all(|name| names.contains(name.as_str()))
+        || !ratios.values().all(|ratio| {
+            [ratio.system, ratio.wall]
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0)
+        })
+    {
+        return Err(invalid(
+            "runtime_model_ratios do not bind the exact finite positive cohort",
+        ));
+    }
+    let recorded: MslRuntimeRatioStatsBaseline = serde_json::from_value(
+        document
+            .get("runtime_ratio_stats")
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .map_err(|_| invalid("runtime_ratio_stats are missing or malformed"))?;
+    for (stats, values) in [
+        (
+            recorded.system_ratio_both_success,
+            ratios.values().map(|ratio| ratio.system).collect(),
+        ),
+        (
+            recorded.wall_ratio_both_success,
+            ratios.values().map(|ratio| ratio.wall).collect(),
+        ),
+    ] {
+        let derived = distribution(values).ok_or_else(|| invalid("runtime cohort is empty"))?;
+        let scale = 1.0_f64.max(derived.median.abs()).max(stats.median.abs());
+        if stats.sample_count != derived.sample_count
+            || !derived.median.is_finite()
+            || !stats.median.is_finite()
+            || (stats.median - derived.median).abs() > 1.0e-9 * scale
+        {
+            return Err(invalid(
+                "runtime_model_ratios disagree with aggregate count or median",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::distribution;
+
+    #[test]
+    fn runtime_distribution_keeps_finite_huge_and_subnormal_midpoints() {
+        for value in [1.0e308, f64::from_bits(1)] {
+            let stats = distribution(vec![value, value]).expect("two positive ratios");
+            assert_eq!(stats.median, value);
+        }
+        let stats = distribution(vec![f64::from_bits(1), f64::MAX]).expect("positive ratios");
+        assert!(stats.median.is_finite());
+    }
 }

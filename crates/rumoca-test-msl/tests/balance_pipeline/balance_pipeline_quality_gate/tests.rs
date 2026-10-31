@@ -2,6 +2,7 @@ use super::*;
 
 mod gate_hole;
 mod phase_budgets;
+mod runtime_evidence;
 mod timing_margin;
 use serde_json::Value;
 use serde_json::json;

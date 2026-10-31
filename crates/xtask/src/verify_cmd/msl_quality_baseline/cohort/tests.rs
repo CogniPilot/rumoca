@@ -7,6 +7,8 @@ use std::path::Path;
 /// One side of a shared case, read as the resolver reads a baseline.
 #[derive(Deserialize)]
 struct CaseSnapshot {
+    #[serde(default)]
+    quality_gate_version: Option<u64>,
     trace_accuracy_stats: TraceAccuracyStats,
     runtime_ratio_stats: RuntimeRatioStats,
     #[serde(flatten)]
@@ -16,6 +18,7 @@ struct CaseSnapshot {
 impl CaseSnapshot {
     fn view(&self) -> CohortSnapshot<'_> {
         CohortSnapshot {
+            quality_gate_version: self.quality_gate_version,
             evidence: &self.evidence,
             trace: &self.trace_accuracy_stats,
             runtime: &self.runtime_ratio_stats,
@@ -108,4 +111,12 @@ fn resolver_and_ratchet_reach_the_shared_cohort_verdicts() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn runtime_median_keeps_finite_huge_and_positive_subnormal_midpoints() {
+    for value in [1.0e308, f64::from_bits(1)] {
+        assert_eq!(super::median(vec![value, value]), value);
+    }
+    assert!(super::median(vec![f64::from_bits(1), f64::MAX]).is_finite());
 }

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { cohortComparison } from './msl-baseline-cohort.mjs';
+import { cohortComparison, median } from './msl-baseline-cohort.mjs';
 import {
   ensurePromotableSnapshot,
   promoteBaselineIfImproved,
@@ -274,7 +274,7 @@ test('ratchet still compares every metric across a reference boundary', () => {
   for (const lower of [
     (snapshot) => { snapshot.compiled_models -= 1; },
     (snapshot) => { snapshot.trace_accuracy_stats.agreement_high -= 1; },
-    (snapshot) => { snapshot.runtime_ratio_stats.wall_ratio_both_success.median = 6.0; },
+    (snapshot) => { snapshot.runtime_ratio_stats.wall_ratio_both_success.median = 5.0; },
   ]) {
     const current = fullSnapshot(4);
     lower(current);
@@ -599,4 +599,11 @@ test('the run cohort, not the whole run, carries the runtime medians', () => {
   const regressed = decide(current, reference);
   assert.equal(regressed.promote, false);
   assert.match(regressed.reason, /runtime wall speedup median over 2 reference cohort models/);
+});
+
+// Finite positive ratios can span the entire binary64 domain.
+test('runtime medians preserve finite huge and positive-subnormal midpoints', () => {
+  assert.equal(median([1e308, 1e308]), 1e308);
+  assert.equal(median([Number.MIN_VALUE, Number.MIN_VALUE]), Number.MIN_VALUE);
+  assert.equal(Number.isFinite(median([Number.MIN_VALUE, Number.MAX_VALUE])), true);
 });
