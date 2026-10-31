@@ -172,6 +172,15 @@ impl SeedSchedule {
         context: RowEvalContext<'_>,
         outputs: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
+        if self.program.eval_programs_committing(
+            0..self.targets.len(),
+            (y, lin.params, lin.t),
+            seed,
+            context,
+            &mut |program, outputs, seed| commit_outputs(&self.targets[program], outputs, seed),
+        )? {
+            return Ok(());
+        }
         for (program, targets) in self.targets.iter().enumerate() {
             self.program.eval_program_outputs(
                 program,

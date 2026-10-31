@@ -50,6 +50,53 @@ impl CompiledJacobianRows {
 }
 
 impl CompiledJacobianRows {
+    /// Run `programs` in order at one point, passing each program's outputs to
+    /// `commit` (which may write `seed`, an input of later programs) before the
+    /// next program runs: what [`Self::call_program_outputs`] and a commit give
+    /// one program at a time, with the inputs checked, the external tables
+    /// installed and the scratch borrowed once for the whole sequence. Each
+    /// program's outputs are staged and reach `commit` only after its native
+    /// call succeeds, so a failing program exposes nothing and stops the
+    /// sequence with every earlier commit standing.
+    pub(crate) fn call_programs_committing<E: From<CompileError>>(
+        &self,
+        programs: std::ops::Range<usize>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[ExternalTableData],
+        commit: &mut crate::ProgramCommit<'_, E>,
+    ) -> Result<(), E> {
+        let (y, p, t) = inputs;
+        let rows = self.rows.get(programs.clone()).ok_or_else(|| {
+            CompileError::Input(format!(
+                "Jacobian programs {programs:?} are outside compiled rows"
+            ))
+        })?;
+        validate_input_requirements(self.input_requirements, y, p, Some(seed))?;
+        self.with_tables(external_tables, || {
+            let mut staged = self.output_scratch.borrow_mut();
+            let mut registers = self.regs_scratch.borrow_mut();
+            for (program, row) in programs.zip(rows) {
+                resize_native_outputs(&mut staged, row.plan.output_count())?;
+                self.call_jacobian_row(
+                    row,
+                    &mut registers,
+                    &JacobianCallContext {
+                        y,
+                        p,
+                        t,
+                        v: seed,
+                        #[cfg(test)]
+                        external_tables,
+                    },
+                    &mut staged,
+                )?;
+                commit(program, &staged, seed)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Output `offset` of each program at `coordinates`, in order, into
     /// `out`: the values [`Self::call_program_output`] returns one call at a
     /// time, with the inputs checked and the external tables installed once

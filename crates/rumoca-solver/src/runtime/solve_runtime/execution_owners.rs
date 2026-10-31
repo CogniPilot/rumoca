@@ -425,6 +425,30 @@ impl DirectionalProgram {
         }
     }
 
+    /// Run `programs` in order, committing each before the next; `false`
+    /// declines before any program executes (the reference interpreter, or a
+    /// compiled block without the entry), leaving the caller's
+    /// program-by-program path.
+    pub(super) fn eval_programs_committing(
+        &self,
+        programs: std::ops::Range<usize>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        context: RowEvalContext<'_>,
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        match &self.execution {
+            DirectionalExecution::Reference => Ok(false),
+            DirectionalExecution::Compiled { code, .. } => code.call_programs_committing(
+                programs,
+                inputs,
+                seed,
+                context.external_tables.unwrap_or(&[]),
+                commit,
+            ),
+        }
+    }
+
     pub(super) fn prepare_projection_entries(
         &self,
         applications: &[&solve::ProjectionJacobianApplication],

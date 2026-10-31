@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_execution::CraneliftJacobianExpression;
+use crate::native_execution::{CraneliftJacobianExpression, compiled_execution_error};
 use rumoca_solver::CompiledSolveJacobianExpression;
 
 #[test]
@@ -61,4 +61,39 @@ fn selected_native_jvp_retains_its_source_seed_contract_and_lazy_original_fault(
         .call(&[1.0], &[], 0.0, &[1.0], &[], &mut scalar)
         .unwrap();
     assert_eq!(scalar, [7.0]);
+}
+
+/// A native refusal inside the committing entry reaches the solver through
+/// `From<CompileError> for SolveFailure`, mapped exactly as every other native
+/// compile error is, and nothing is committed.
+#[test]
+fn a_native_refusal_in_the_committing_entry_keeps_the_compile_error_mapping() {
+    let program = vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+    let source =
+        solve::ScalarProgramBlock::with_program_spans(vec![program], vec![span()]).unwrap();
+    let code = CraneliftJacobianExpression(
+        rumoca_exec_cranelift::compile_jacobian_scalar_program_block(&source).unwrap(),
+    );
+    let raw = code
+        .0
+        .call_programs_committing::<rumoca_exec_cranelift::CompileError>(
+            0..1,
+            (&[], &[], 0.0),
+            &mut [],
+            &[],
+            &mut |_, _, _| panic!("a refused block commits nothing"),
+        )
+        .unwrap_err();
+    let error = code
+        .call_programs_committing(0..1, (&[], &[], 0.0), &mut [], &[], &mut |_, _, _| {
+            panic!("a refused block commits nothing")
+        })
+        .unwrap_err();
+    assert_eq!(
+        format!("{error:?}"),
+        format!("{:?}", compiled_execution_error(raw))
+    );
 }

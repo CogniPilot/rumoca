@@ -201,6 +201,10 @@ impl CompiledInputRequirements {
     }
 }
 
+/// Receives one program's staged outputs and may write the seed later
+/// programs read; see [`CompiledJacobianV::call_programs_committing`].
+pub type ProgramCommit<'a, E> = dyn FnMut(usize, &[f64], &mut [f64]) -> Result<(), E> + 'a;
+
 pub struct CompiledJacobianV {
     jit: Rc<emit::CompiledJacobianRows>,
     source: ScalarProgramBlock,
@@ -266,6 +270,20 @@ impl CompiledJacobianV {
     ) -> Result<(), CompileError> {
         self.jit
             .call_program_outputs(program, inputs, external_tables, out)
+    }
+
+    /// Run `programs` in order, committing each one's outputs before the next
+    /// runs; a failing program commits nothing and stops the sequence.
+    pub fn call_programs_committing<E: From<CompileError>>(
+        &self,
+        programs: std::ops::Range<usize>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[ExternalTableData],
+        commit: &mut ProgramCommit<'_, E>,
+    ) -> Result<(), E> {
+        self.jit
+            .call_programs_committing(programs, inputs, seed, external_tables, commit)
     }
 
     /// Output `offset` of each program at `coordinates`, in order, into `out`:
