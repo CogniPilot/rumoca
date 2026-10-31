@@ -101,6 +101,7 @@
 {%- if prog.alias_of[id] is not none -%}{{ slot_base(prog, prog.alias_of[id], mode, P, inputs, outputs) }}
 {%- elif prog.forward_to[id] is not none -%}{{ slot_base(prog, prog.forward_to[id], mode, P, inputs, outputs) }}
 {%- elif prog.same_as[id] is not none -%}{{ rn(prog, P, prog.same_as[id], mode, inputs, outputs) }}
+{%- elif prog.pass_of is defined and prog.pass_of[id] is not none -%}{{ rn(prog, P, prog.pass_of[id], mode, inputs, outputs) }}
 {%- elif prog.pool_of[id] is not none -%}ctx->rumoca_galec_p{{ prog.pool_of[id] }}
 {%- elif count(prog.register_types[id])|int == 1 -%}{{ P | replace("ctx->", "") }}r{{ id }}{%- else -%}{{ P }}r{{ id }}{%- endif -%}
 {%- endmacro -%}
@@ -151,7 +152,7 @@ if ({{ b }} == 0) { {{ fault }} }
 {%- macro program(prog, P, mode, inputs, outputs, fault, run) -%}
 {
 {% filter indent(4, true) -%}
-{% for ty in prog.register_types -%}{% if count(ty)|int == 1 and prog.unread[loop.index0] != "dead" and prog.inline_of[loop.index0] is none and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none -%}
+{% for ty in prog.register_types -%}{% if count(ty)|int == 1 and prog.unread[loop.index0] != "dead" and prog.inline_of[loop.index0] is none and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none and (prog.pass_of is not defined or prog.pass_of[loop.index0] is none) -%}
 {{ ctype(ty) }} {{ P | replace("ctx->", "") }}r{{ loop.index0 }}[1] = {0}; (void){{ P | replace("ctx->", "") }}r{{ loop.index0 }}; /*rumoca_galec_void_candidate*/
 {% endif %}{% endfor -%}
 {% for slot in prog.slots -%}{% if slot.storage == "method_local" and count(slot.value_type)|int == 1 -%}
@@ -209,6 +210,8 @@ if ({{ b }} == 0) { {{ fault }} }
 {% elif kind == "load" -%}
 {%- set ty = prog.register_types[op.destination] -%}
 {{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% elif kind == "store" and op.passthrough is defined and op.passthrough -%}
+{% elif kind == "store" and op.redundant is defined and op.redundant -%}
 {% elif kind == "store" and prog.forward_to[op.source] is not none -%}
 {% elif kind == "store" -%}
 {%- set ty = prog.register_types[op.source] -%}
