@@ -18,6 +18,8 @@ mod galec_integer_sign;
 mod galec_periodic_real;
 mod galec_signed_zero;
 mod galec_slice_value_bounds;
+mod galec_solve_c_faults;
+mod galec_solve_refinement;
 mod galec_store_order;
 
 #[cfg(feature = "fmu-packaging")]

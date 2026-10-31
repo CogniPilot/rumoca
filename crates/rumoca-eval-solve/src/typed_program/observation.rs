@@ -51,6 +51,7 @@ pub fn eval_assertion_invocation(
         InvocationCompletion::Fault {
             error,
             observations,
+            ..
         } => (None, observations, Some(error)),
     };
     let mut reports = Vec::new();

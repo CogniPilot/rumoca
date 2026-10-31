@@ -29,6 +29,9 @@ use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_sources, templates};
 use serde_json::json;
 
+#[path = "support/solve_render.rs"]
+mod support;
+
 const MODEL: &str = "FormattingFixture";
 const SOURCE_NAME: &str = "fixtures/FormattingFixture.mo";
 
@@ -140,6 +143,13 @@ fn sources() -> rumoca_core::SourceMap {
 fn render(template_path: &str) -> String {
     let template = templates::builtin_template_source("embedded-c-galec", template_path)
         .expect("built-in template");
+    if template_path.starts_with("model.") {
+        // The model unit prints from the block's Solve refinement (#483).
+        return support::render_refined(&fixture_block(), &sources(), template, MODEL)
+            .unwrap_or_else(|error| {
+                panic!("formatting fixture must render {template_path}: {error}")
+            });
+    }
     render_checked_algorithm_block_template_with_sources(
         &fixture_block(),
         &sources(),
@@ -156,6 +166,15 @@ fn opens_top_level_definition(line: &str) -> bool {
         && !line.starts_with(char::is_whitespace)
         && !line.starts_with(['#', '/', '*', '}', ')'])
         && !line.ends_with(';')
+        && !is_goto_label(line)
+}
+
+/// A function-level `label:`, which the shipped LLVM-based style keeps at
+/// column 0 (`IndentGotoLabels`); it opens nothing.
+fn is_goto_label(line: &str) -> bool {
+    line.strip_suffix(':').is_some_and(|name| {
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 fn structural_violations(text: &str) -> Vec<String> {

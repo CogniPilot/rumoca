@@ -33,3 +33,6 @@ tempfile = { workspace = true }
 # the feature here and nowhere else keeps it out of every production build of
 # this crate.
 rumoca-ir-solve = { workspace = true, features = ["pattern-fixtures"] }
+# #483: the embedded C targets print from a Solve refinement, so the C
+# template tests refine their hand-built blocks the way the CLI does.
+rumoca-phase-solve = { workspace = true }

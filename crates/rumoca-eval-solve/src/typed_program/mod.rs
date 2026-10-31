@@ -1,5 +1,7 @@
+mod algorithm_block;
 mod assertions;
 mod assigned_state;
+mod elements;
 mod linear_solve;
 mod native;
 pub(crate) mod number;
@@ -12,14 +14,21 @@ mod tests;
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
-    SolveBinaryOperator, SolveOperation, SolveProgramRegion, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveReductionOperator,
-    SolveRegisterId, SolveScalarType, SolveSlotId, SolveTensorViewAxis, SolveValue, SolveValueKind,
-    SolveValueType, TypedProgram,
+    SolveAlgorithmBlock, SolveBinaryOperator, SolveOperation, SolveProgramRegion,
+    SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat,
+    SolveReductionOperator, SolveRegisterId, SolveScalarType, SolveSlotId, SolveStorageClass,
+    SolveTensorViewAxis, SolveValue, SolveValueKind, SolveValueType, TypedProgram,
 };
 
+pub use algorithm_block::eval_algorithm_method;
 pub use assertions::TypedAssertionFailure;
 use assertions::{AssertionStop, InvocationCompletion, ObservedAssertion};
+pub(crate) use elements::element_matches_type;
+use elements::{
+    ResolvedTensorViewAxis, increment_coordinate, invalid, invalid_error, project_slice,
+    project_tensor_view, row_major_offset, scalar_boolean, scalar_element, scalar_integer,
+    select_modelica_element, tensor_view_coordinate,
+};
 use number::{
     eval_binary_element, eval_binary_typed, eval_compare_typed, eval_convert_typed,
     eval_unary_typed,
@@ -329,6 +338,7 @@ pub fn eval_pure_call(
         arguments,
         EvaluationMode::primal(AssertionPolicy::Value),
         chain,
+        None,
     )?
     .into_complete()
 }
@@ -351,6 +361,7 @@ pub fn eval_pure_call_directional(
         arguments,
         EvaluationMode::directional(AssertionPolicy::Value),
         chain,
+        None,
     )?
     .into_complete()
 }
@@ -482,6 +493,7 @@ fn eval_owner<'model>(
         arguments,
         EvaluationMode::primal(AssertionPolicy::Stop),
         chain,
+        None,
     )
 }
 
@@ -497,6 +509,7 @@ fn eval_directional_owner<'model>(
         arguments,
         EvaluationMode::directional(AssertionPolicy::Stop),
         chain,
+        None,
     )
 }
 
@@ -506,6 +519,7 @@ fn eval_owner_in_scope<'model>(
     arguments: &[TypedValue],
     mode: EvaluationMode,
     chain: RecursionChain,
+    block: Option<&'model SolveAlgorithmBlock>,
 ) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
     let (inputs, outputs, body) = match mode.direction {
         Direction::Primal => (owner.inputs(), owner.outputs(), owner.body()),
@@ -527,15 +541,19 @@ fn eval_owner_in_scope<'model>(
     validate_arguments(inputs, arguments, owner.provenance())?;
     let mut storage = FrameStorage::default();
     let mut frame = EvalFrame::new(table, body, &mut storage, mode, chain, owner.id());
+    frame.block = block;
+    frame.bound = block.is_some();
     for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
     frame.run();
     frame.retain_invocation(owner, arguments);
     if let Some(error) = frame.fault.take() {
+        let status = frame.raised_status();
         return Ok(InvocationCompletion::Fault {
             error,
             observations: frame.observations,
+            status,
         });
     }
     if let Some(stop) = frame.stopped.take() {
@@ -589,7 +607,7 @@ fn eval_region<'model>(
     storage: &mut FrameStorage,
     mode: EvaluationMode,
     chain: RecursionChain,
-    owner: SolvePureCallOwnerId,
+    (owner, block): (SolvePureCallOwnerId, Option<&'model SolveAlgorithmBlock>),
 ) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
     let completed = eval_region_assigned(
         table,
@@ -598,7 +616,7 @@ fn eval_region<'model>(
         storage,
         mode,
         chain,
-        owner,
+        (owner, block),
     )?;
     Ok(match completed {
         InvocationCompletion::Complete {
@@ -620,9 +638,11 @@ fn eval_region<'model>(
         InvocationCompletion::Fault {
             error,
             observations,
+            status,
         } => InvocationCompletion::Fault {
             error,
             observations,
+            status,
         },
     })
 }
@@ -639,7 +659,7 @@ fn eval_region_assigned<'model>(
     storage: &mut FrameStorage,
     mode: EvaluationMode,
     chain: RecursionChain,
-    owner: SolvePureCallOwnerId,
+    (owner, block): (SolvePureCallOwnerId, Option<&'model SolveAlgorithmBlock>),
 ) -> Result<InvocationCompletion<'model, AssignedRegionValues>, TypedProgramEvalError> {
     let (arguments, state_arguments) = arguments;
     if region.body().assigned_state_inputs().len() != state_arguments.len()
@@ -672,6 +692,9 @@ fn eval_region_assigned<'model>(
         });
     }
     let mut frame = EvalFrame::new(table, region.body(), storage, mode, chain, owner);
+    // A region frame hands the block to its callees but owns no status slots:
+    // a callee's payload passes through it to the bound frame.
+    frame.block = block;
     frame.storage.assigned_inputs = state_arguments;
     let output_start = arguments.len();
     for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
@@ -682,6 +705,7 @@ fn eval_region_assigned<'model>(
         return Ok(InvocationCompletion::Fault {
             error,
             observations: frame.observations,
+            status: frame.pending.take(),
         });
     }
     if let Some(stop) = frame.stopped.take() {
@@ -753,6 +777,15 @@ impl FrameStorage {
 
 struct EvalFrame<'model, 'scope> {
     owner: SolvePureCallOwnerId,
+    /// The algorithm block whose method or function this frame runs, when
+    /// its functions' status bits must survive a fault (#483 EL007).
+    block: Option<&'model SolveAlgorithmBlock>,
+    /// Whether this frame's slots are status-bound: a lifecycle method or a
+    /// bound function owner, never a region frame inside one.
+    bound: bool,
+    /// Status a faulted callee carried into this region frame, passed on
+    /// to the bound frame with this frame's own fault.
+    pending: Option<Box<[bool]>>,
     stopped: Option<AssertionStop<'model>>,
     fault: Option<TypedProgramEvalError>,
     observations: Vec<ObservedAssertion<'model>>,
@@ -777,6 +810,9 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         storage.reset(program);
         Self {
             owner,
+            block: None,
+            bound: false,
+            pending: None,
             stopped: None,
             fault: None,
             observations: Vec::new(),
@@ -1144,7 +1180,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 &mut storage,
                 self.mode,
                 self.chain,
-                self.owner,
+                (self.owner, self.block),
             )?;
             let Some(updated) = self.accept_completion_at(completed, Some(&tuple)) else {
                 return Ok(());
@@ -1189,7 +1225,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             &mut FrameStorage::default(),
             self.mode,
             self.chain,
-            self.owner,
+            (self.owner, self.block),
         )?;
         let Some(predicate) = self.accept_completion_at(completed, Some(point)) else {
             return Ok(None);
@@ -1238,7 +1274,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 &mut storage,
                 self.mode,
                 self.chain,
-                self.owner,
+                (self.owner, self.block),
             )?;
             let Some(outputs) = self.accept_completion_at(completed, Some(&tuple)) else {
                 return Ok(());
@@ -1289,7 +1325,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             &mut FrameStorage::default(),
             self.mode,
             self.chain,
-            self.owner,
+            (self.owner, self.block),
         )?;
         let Some(outputs) = self.accept_completion(completed) else {
             return Ok(());
@@ -1573,11 +1609,82 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .owner(owner)
             .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
         let chain = self.chain.enter(self.table, owner, provenance)?;
-        let completed = eval_owner_in_scope(self.table, called, &arguments, self.mode, chain)?;
+        // Status is a primal effect: directional evaluation never carries it.
+        let block = self
+            .block
+            .filter(|_| matches!(self.mode.direction, Direction::Primal));
+        let completed =
+            eval_owner_in_scope(self.table, called, &arguments, self.mode, chain, block)?;
         let Some(outputs) = self.accept_completion(completed) else {
             return Ok(());
         };
         self.transfer_call_outputs(outputs, destinations, provenance)
+    }
+
+    /// This frame's status slots, in signal order: the block's signal status
+    /// slots for a lifecycle method, its binding's slots for a function.
+    fn status_slots(&self) -> Vec<usize> {
+        let Some(block) = self.block.filter(|_| self.bound) else {
+            return Vec::new();
+        };
+        if self.owner == SolvePureCallOwnerId::LIFECYCLE_METHOD {
+            return block
+                .slots()
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.storage() == SolveStorageClass::SignalStatus)
+                .map(|(index, _)| index)
+                .collect();
+        }
+        block
+            .status_binding(self.owner)
+            .map(|binding| binding.slots().iter().map(|slot| slot.index()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The bits this frame has raised so far, when it is a bound function.
+    fn raised_status(&self) -> Option<Box<[bool]>> {
+        if self.owner == SolvePureCallOwnerId::LIFECYCLE_METHOD {
+            return None;
+        }
+        self.block?.status_binding(self.owner)?;
+        Some(
+            self.status_slots()
+                .into_iter()
+                .map(|slot| {
+                    self.storage
+                        .slots
+                        .get(slot)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|value| scalar_boolean(value, Span::DUMMY).unwrap_or(false))
+                })
+                .collect(),
+        )
+    }
+
+    /// Take a faulted callee's or region's raised bits before the fault
+    /// unwinds further: a bound frame unions them into its status slots
+    /// (earlier bits stay), a region frame keeps them for its own fault.
+    pub(super) fn absorb_status(&mut self, status: &[bool]) {
+        if !self.bound {
+            let pending = self
+                .pending
+                .get_or_insert_with(|| vec![false; status.len()].into_boxed_slice());
+            for (kept, &raised) in pending.iter_mut().zip(status) {
+                *kept |= raised;
+            }
+            return;
+        }
+        self.union_status(status);
+    }
+
+    /// Union `status` into this bound frame's status slots.
+    fn union_status(&mut self, status: &[bool]) {
+        for (&raised, slot) in status.iter().zip(self.status_slots()) {
+            if raised && let Some(value) = self.storage.slots.get_mut(slot) {
+                *value = Some(TypedValue::scalar(&SolveValue::boolean(true)));
+            }
+        }
     }
 
     fn transfer_call_outputs(
@@ -1708,210 +1815,5 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .ok_or(invalid_error("write slot", provenance))?;
         *destination = Some(value);
         Ok(())
-    }
-}
-
-pub(crate) fn element_matches_type(value: SolveValueKind, scalar: SolveScalarType) -> bool {
-    match (value, scalar) {
-        (
-            SolveValueKind::Real32(_),
-            SolveScalarType::Real {
-                format: SolveRealFormat::Binary32,
-                ..
-            },
-        )
-        | (
-            SolveValueKind::Real64(_),
-            SolveScalarType::Real {
-                format: SolveRealFormat::Binary64,
-                ..
-            },
-        )
-        | (SolveValueKind::Boolean(_), SolveScalarType::Boolean) => true,
-        (SolveValueKind::Integer(value), SolveScalarType::Integer(domain)) => {
-            domain.contains(value)
-        }
-        _ => false,
-    }
-}
-
-fn scalar_element(
-    value: &TypedValue,
-    provenance: Span,
-) -> Result<SolveValueKind, TypedProgramEvalError> {
-    if !value.value_type.dimensions().is_empty() || value.elements.len() != 1 {
-        return invalid("read scalar value", provenance);
-    }
-    Ok(value.elements[0])
-}
-
-fn scalar_boolean(value: &TypedValue, provenance: Span) -> Result<bool, TypedProgramEvalError> {
-    match scalar_element(value, provenance)? {
-        SolveValueKind::Boolean(value) => Ok(value),
-        _ => invalid("read Boolean condition", provenance),
-    }
-}
-
-fn scalar_integer(value: &TypedValue, provenance: Span) -> Result<i64, TypedProgramEvalError> {
-    match scalar_element(value, provenance)? {
-        SolveValueKind::Integer(value) => Ok(value),
-        _ => invalid("read Integer index", provenance),
-    }
-}
-
-fn row_major_offset(dimensions: &[u32], indices: &[u32]) -> Option<usize> {
-    if dimensions.len() != indices.len() {
-        return None;
-    }
-    dimensions
-        .iter()
-        .copied()
-        .zip(indices.iter().copied())
-        .try_fold(0usize, |offset, (extent, index)| {
-            if index >= extent {
-                return None;
-            }
-            offset
-                .checked_mul(extent as usize)?
-                .checked_add(index as usize)
-        })
-}
-
-fn select_modelica_element(
-    value: &TypedValue,
-    indices: &[i64],
-    provenance: Span,
-) -> Result<SolveValueKind, TypedProgramEvalError> {
-    let dimensions = value.value_type.dimensions();
-    if dimensions.len() != indices.len() {
-        return invalid("project aggregate element", provenance);
-    }
-    let mut offset = 0usize;
-    // MLS §10.5: source indices are one-based Integers within each declared axis.
-    for (axis, (&extent, &index)) in dimensions.iter().zip(indices).enumerate() {
-        if index < 1 || index > i64::from(extent) {
-            return Err(TypedProgramEvalError::TensorIndexOutOfBounds {
-                axis: axis + 1,
-                index,
-                extent,
-                provenance,
-            });
-        }
-        let coordinate = usize::try_from(index - 1)
-            .map_err(|_| invalid_error("project aggregate element", provenance))?;
-        offset = offset
-            .checked_mul(extent as usize)
-            .and_then(|offset| offset.checked_add(coordinate))
-            .ok_or(invalid_error("project aggregate element", provenance))?;
-    }
-    value
-        .elements
-        .get(offset)
-        .copied()
-        .ok_or(invalid_error("project aggregate element", provenance))
-}
-
-fn project_slice(
-    aggregate: &TypedValue,
-    origin: &[u32],
-    destination_type: &SolveValueType,
-    provenance: Span,
-) -> Result<Vec<SolveValueKind>, TypedProgramEvalError> {
-    let dimensions = destination_type.dimensions();
-    let mut coordinate = vec![0u32; dimensions.len()];
-    let mut elements = Vec::with_capacity(destination_type.scalar_count() as usize);
-    for _ in 0..destination_type.scalar_count() {
-        let source = coordinate
-            .iter()
-            .zip(origin)
-            .map(|(coordinate, origin)| coordinate.checked_add(*origin))
-            .collect::<Option<Vec<_>>>()
-            .ok_or(invalid_error("project aggregate slice", provenance))?;
-        let offset = row_major_offset(aggregate.value_type.dimensions(), &source)
-            .ok_or(invalid_error("project aggregate slice", provenance))?;
-        elements.push(
-            aggregate
-                .elements
-                .get(offset)
-                .copied()
-                .ok_or(invalid_error("project aggregate slice", provenance))?,
-        );
-        increment_coordinate(&mut coordinate, dimensions);
-    }
-    Ok(elements)
-}
-
-#[derive(Clone, Copy)]
-enum ResolvedTensorViewAxis {
-    Index(u32),
-    Span { origin: u32 },
-}
-
-fn project_tensor_view(
-    aggregate: &TypedValue,
-    axes: &[ResolvedTensorViewAxis],
-    destination_type: &SolveValueType,
-    provenance: Span,
-) -> Result<Vec<SolveValueKind>, TypedProgramEvalError> {
-    let dimensions = destination_type.dimensions();
-    let mut coordinate = vec![0u32; dimensions.len()];
-    let mut elements = Vec::with_capacity(destination_type.scalar_count() as usize);
-    for _ in 0..destination_type.scalar_count() {
-        let source = tensor_view_coordinate(axes, &coordinate, provenance)?;
-        let offset = row_major_offset(aggregate.value_type.dimensions(), &source)
-            .ok_or(invalid_error("project aggregate view", provenance))?;
-        elements.push(
-            aggregate
-                .elements
-                .get(offset)
-                .copied()
-                .ok_or(invalid_error("project aggregate view", provenance))?,
-        );
-        increment_coordinate(&mut coordinate, dimensions);
-    }
-    Ok(elements)
-}
-
-fn tensor_view_coordinate(
-    axes: &[ResolvedTensorViewAxis],
-    coordinate: &[u32],
-    provenance: Span,
-) -> Result<Vec<u32>, TypedProgramEvalError> {
-    let mut retained = coordinate.iter().copied();
-    let result = axes
-        .iter()
-        .map(|axis| match *axis {
-            ResolvedTensorViewAxis::Index(index) => Some(index),
-            ResolvedTensorViewAxis::Span { origin } => origin.checked_add(retained.next()?),
-        })
-        .collect::<Option<Vec<_>>>()
-        .ok_or(invalid_error(
-            "resolve aggregate view coordinate",
-            provenance,
-        ))?;
-    if retained.next().is_some() {
-        return invalid("resolve aggregate view coordinate", provenance);
-    }
-    Ok(result)
-}
-
-fn increment_coordinate(coordinate: &mut [u32], dimensions: &[u32]) {
-    for axis in (0..coordinate.len()).rev() {
-        coordinate[axis] += 1;
-        if coordinate[axis] < dimensions[axis] {
-            return;
-        }
-        coordinate[axis] = 0;
-    }
-}
-
-fn invalid<T>(operation: &'static str, provenance: Span) -> Result<T, TypedProgramEvalError> {
-    Err(invalid_error(operation, provenance))
-}
-
-fn invalid_error(operation: &'static str, provenance: Span) -> TypedProgramEvalError {
-    TypedProgramEvalError::InvalidCheckedProgram {
-        operation,
-        provenance,
     }
 }

@@ -58,7 +58,10 @@ impl TargetTemplateSource for TargetTemplates {
 
 fn browser_renderable_ir(ir: TargetTemplateIr) -> bool {
     match ir {
-        TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode | TargetTemplateIr::Flat => true,
+        TargetTemplateIr::Dae
+        | TargetTemplateIr::AlgorithmCode
+        | TargetTemplateIr::AlgorithmBlock
+        | TargetTemplateIr::Flat => true,
         TargetTemplateIr::Solve => SOLVE_TARGETS_AVAILABLE,
         TargetTemplateIr::Fmi | TargetTemplateIr::Ast => false,
     }
@@ -68,8 +71,10 @@ fn browser_renderable_ir(ir: TargetTemplateIr) -> bool {
 /// writer. Algorithm Code targets are exempt: the browser previews their
 /// source files only (see `render_algorithm_code_source_files`).
 fn needs_cli_packaging(manifest: &TargetManifest) -> bool {
-    manifest.ir != TargetTemplateIr::AlgorithmCode
-        && (manifest.package.is_some() || !manifest.assets.is_empty())
+    !matches!(
+        manifest.ir,
+        TargetTemplateIr::AlgorithmCode | TargetTemplateIr::AlgorithmBlock
+    ) && (manifest.package.is_some() || !manifest.assets.is_empty())
 }
 
 fn browser_renderable_manifest(manifest: &TargetManifest) -> bool {
@@ -83,6 +88,7 @@ fn browser_builtin_target_descriptors()
         TargetTemplateIr::Flat,
         TargetTemplateIr::Solve,
         TargetTemplateIr::AlgorithmCode,
+        TargetTemplateIr::AlgorithmBlock,
     ]
     .into_iter()
     .flat_map(builtin_target_descriptors_for_ir)
@@ -142,7 +148,7 @@ pub(crate) fn render_target_files(
     }
     match manifest.ir {
         TargetTemplateIr::Dae => render_dae_target_files(&templates, &manifest, dae, model_name),
-        TargetTemplateIr::AlgorithmCode => {
+        TargetTemplateIr::AlgorithmCode | TargetTemplateIr::AlgorithmBlock => {
             render_algorithm_code_source_files(&templates, &manifest, dae, model_name)
         }
         TargetTemplateIr::Solve => {
@@ -304,7 +310,18 @@ fn render_algorithm_code_source_files(
                 .join("; ")
         )
     })?;
-    let renderer = AlgorithmCodeTemplateRenderer::new(&package, dae.source_map())?;
+    // An `algorithm-block` target prints its C from the Solve refinement
+    // (#483); refining first means a refusal precedes every file.
+    let renderer = if manifest.ir == TargetTemplateIr::AlgorithmBlock {
+        let block = rumoca_phase_solve::lower_algorithm_block(
+            &package,
+            manifest.algorithm_block_profile()?,
+        )
+        .map_err(|error| anyhow::anyhow!("Solve refinement refused the target: {error}"))?;
+        AlgorithmCodeTemplateRenderer::with_solve_block(&package, &block, dae.source_map())?
+    } else {
+        AlgorithmCodeTemplateRenderer::new(&package, dae.source_map())?
+    };
     let mut files = Vec::new();
     for file in &manifest.files {
         let path = renderer.render_with_name(&file.path, &model_id)?;
@@ -496,6 +513,32 @@ mod tests {
                 "{target}: {files:?}"
             );
         }
+    }
+
+    /// #483: an `algorithm-block` target refines before it renders, so
+    /// its C is the Solve-printed unit (only that unit carries the fault
+    /// macro, and its templates cannot render without a refinement).
+    #[test]
+    fn embedded_c_galec_prints_its_c_from_the_solve_refinement() {
+        let mut session = rumoca_compile::Session::default();
+        let files = render_target_in_session(
+            &mut session,
+            include_str!("../../../examples/models/GalecCounter.mo"),
+            "GalecCounter",
+            "embedded-c-galec",
+            "",
+            "{}",
+        )
+        .unwrap_or_else(|e| panic!("embedded-c-galec renders: {e:?}"));
+        let source = files
+            .iter()
+            .find(|file| file.path == "GalecCounter.c")
+            .unwrap_or_else(|| panic!("no model unit: {files:?}"));
+        assert!(
+            source.content.contains("RUMOCA_GALEC_FAULT"),
+            "{}",
+            source.content
+        );
     }
 
     #[test]

@@ -380,16 +380,15 @@ pub fn render_target_files(
     // `packaging::render_web_files` — the same
     // topological render + hash-inject the CLI writes, minus the on-disk
     // packaging — so CI exercises the exact web the container writer will.
-    if manifest.ir == TargetTemplateIr::AlgorithmCode {
-        let package = lower_algorithm_code(
+    if matches!(
+        manifest.ir,
+        TargetTemplateIr::AlgorithmCode | TargetTemplateIr::AlgorithmBlock
+    ) {
+        let renderer = algorithm_code_renderer(
             result,
             identity.semantic_name,
-            manifest.name.as_deref(),
+            &manifest,
             EmissionPolicy::reviewable(),
-        )?;
-        let renderer = rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(
-            &package,
-            result.dae.source_map(),
         )?;
         let render = algorithm_code_web_render(&renderer, &bundle, &identity.artifact_stem);
         return crate::packaging::render_web_files(&manifest.files, render);
@@ -466,6 +465,38 @@ fn lower_algorithm_code(
         },
     )
     .map_err(|diagnostics| galec_projection_error(result, diagnostics, target.unwrap_or("custom")))
+}
+
+/// The renderer of an Algorithm Code target. An `algorithm-block` target
+/// prints its C from the package's Solve refinement (#483: DAE → GALEC →
+/// Solve IR → C), refined under the target's binary32 profile and declared
+/// Integer domain before anything renders, so a refusal ends the command
+/// before any output exists.
+fn algorithm_code_renderer(
+    result: &CompilationResult,
+    model: &str,
+    manifest: &TargetManifest,
+    emission_policy: EmissionPolicy,
+) -> Result<rumoca_phase_codegen::AlgorithmCodeTemplateRenderer> {
+    let package = lower_algorithm_code(result, model, manifest.name.as_deref(), emission_policy)?;
+    if manifest.ir != TargetTemplateIr::AlgorithmBlock {
+        return Ok(rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(
+            &package,
+            result.dae.source_map(),
+        )?);
+    }
+    let target = manifest.name.as_deref().unwrap_or("custom");
+    let profile = manifest.algorithm_block_profile()?;
+    let block = rumoca_phase_solve::lower_algorithm_block(&package, profile).map_err(|error| {
+        anyhow::anyhow!("Solve refinement refused target '{target}' before any output: {error}")
+    })?;
+    Ok(
+        rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
+            &package,
+            &block,
+            result.dae.source_map(),
+        )?,
+    )
 }
 
 fn galec_projection_error(
@@ -609,7 +640,7 @@ fn template_ir_to_cli(value: TargetTemplateIr) -> TemplateIr {
         }
         TargetTemplateIr::Flat => TemplateIr::Flat,
         TargetTemplateIr::Ast => TemplateIr::Ast,
-        TargetTemplateIr::AlgorithmCode => {
+        TargetTemplateIr::AlgorithmCode | TargetTemplateIr::AlgorithmBlock => {
             unreachable!("Algorithm Code targets use their checked phase-owned renderer")
         }
     }
@@ -796,7 +827,9 @@ fn validate_target_requirements(
     #[cfg(feature = "fmi")]
     let mut validated = validated;
     match manifest.ir {
-        TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode => {
+        TargetTemplateIr::Dae
+        | TargetTemplateIr::AlgorithmCode
+        | TargetTemplateIr::AlgorithmBlock => {
             let capabilities = declared_capabilities(manifest)?;
             validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
         }
@@ -954,16 +987,15 @@ fn resolve_manifest_renderer(
     if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-ode") {
         return Ok(ManifestRenderer::WgslSolve);
     }
-    if manifest.ir == TargetTemplateIr::AlgorithmCode {
-        let package = lower_algorithm_code(
+    if matches!(
+        manifest.ir,
+        TargetTemplateIr::AlgorithmCode | TargetTemplateIr::AlgorithmBlock
+    ) {
+        let renderer = algorithm_code_renderer(
             result,
             identity.semantic_name,
-            manifest.name.as_deref(),
+            manifest,
             admitted_emission_policy(manifest, emission_policy)?,
-        )?;
-        let renderer = rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(
-            &package,
-            result.dae.source_map(),
         )?;
         let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
         return Ok(ManifestRenderer::AlgorithmCode { renderer, artifact });

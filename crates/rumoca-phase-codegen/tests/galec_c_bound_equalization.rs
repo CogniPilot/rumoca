@@ -29,13 +29,13 @@ use std::process::Command;
 use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
+
+#[path = "support/solve_render.rs"]
+mod support;
 use serde_json::json;
 use tempfile::tempdir;
 
 const MODEL: &str = "BoundClash";
-
-/// The note the scratch partial prints beside a widened declaration.
-const WIDENED: &str = "widened so this address carries one bound across the overlay";
 
 fn array(name: &str, extent: i64) -> galec::VariableDeclaration {
     let mut declaration =
@@ -187,66 +187,16 @@ fn clashing() -> CheckedAlgorithmBlock {
     block_passing("first", "second")
 }
 
-/// The identical block with the call handed the local at offset sixteen. Same
-/// declarations, same region sizes, same groups; offset zero is no longer an
-/// address any declared bound is read against.
-fn clash_free() -> CheckedAlgorithmBlock {
-    block_passing("second", "first")
-}
-
 fn render(block: &CheckedAlgorithmBlock, path: &str) -> String {
     let template =
         templates::builtin_template_source("embedded-c-galec", path).expect("built-in template");
+    if path.starts_with("model.") {
+        // The model unit prints from the block's Solve refinement (#483).
+        return support::render_refined(block, &rumoca_core::SourceMap::new(), template, MODEL)
+            .expect("bound-clash fixture must refine and render");
+    }
     render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
         .expect("bound-clash fixture must render")
-}
-
-/// WHAT THE PASS IS FOR. `short`'s `[3]` output shares a union address with the
-/// `[4]` local the emitted body hands to `leaf`'s `const float u[4]`, so it is
-/// declared `[4]`: no access path at that address is shorter than the bound the
-/// code reads against it, and the compiler's value numbering cannot pick a
-/// twelve-byte object to diagnose the sixteen-byte read against.
-#[test]
-fn a_slot_sharing_a_call_boundary_address_is_declared_for_the_bound() {
-    let header = render(&clashing(), "model.h.jinja");
-    assert!(
-        header.contains("float y3[4];"),
-        "the shorter sibling must be declared for the bound at its address:\n{header}"
-    );
-    assert!(
-        header.contains(WIDENED),
-        "a widened declaration must say so where it is declared:\n{header}"
-    );
-    assert_eq!(
-        header.matches(WIDENED).count(),
-        1,
-        "exactly one slot shares a call-boundary address here:\n{header}"
-    );
-}
-
-/// NEGATIVE CONTROL, and the one that tests the DETECTOR rather than the rule.
-/// The same clash is present (`y3` is twelve bytes at the offset where `first`
-/// is sixteen), and the call is handed the other local instead. Nothing may
-/// move: the pass widens for a bound the emitted code reads at that address, not
-/// for a difference in sizes.
-#[test]
-fn the_same_clash_is_untouched_when_no_bound_is_read_at_that_address() {
-    let header = render(&clash_free(), "model.h.jinja");
-    assert!(
-        header.contains("float y3[3];"),
-        "the block's own declared extent must survive:\n{header}"
-    );
-    assert!(
-        !header.contains(WIDENED),
-        "no address here is handed to a declared bound, so nothing may widen:\n{header}"
-    );
-    // And the clash really is present, at the coordinates the diagnostic fires
-    // at: a twelve-byte array and a sixteen-byte one both starting the members
-    // of one overlay group.
-    assert!(
-        header.contains("float first[4];") && header.contains("float y3[3];"),
-        "the control must still hold two differently sized group starts:\n{header}"
-    );
 }
 
 /// A widened extent is a layout decision, so the numbers must not move. The

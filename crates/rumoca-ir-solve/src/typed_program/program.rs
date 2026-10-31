@@ -821,6 +821,19 @@ impl<'program> TypedProgramBuilder<'program> {
         })
     }
 
+    /// Treat `slot` as holding a value on entry: a block slot an earlier
+    /// lifecycle method defined (#483). The GALEC lifecycle requires Startup
+    /// to define every block variable, so Recalibrate and DoStep may read any.
+    pub(crate) fn assume_slot_initialized(
+        &mut self,
+        slot: ProgramSlot<'program>,
+        provenance: Span,
+    ) -> Result<(), SolveProgramConstructionError> {
+        let index = self.slot(slot, provenance)?.id.index();
+        self.slot_initialized[index] = true;
+        Ok(())
+    }
+
     pub fn constant(
         &mut self,
         value: SolveValue,
