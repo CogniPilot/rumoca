@@ -25,6 +25,7 @@ mod reported_bug_regressions;
 mod semantic_diagnostics_tests;
 mod source_root_tests;
 mod static_reduction_tests;
+mod symbolic_modifier_scope_tests;
 mod typed_model_query_tests;
 mod workspace_symbol_snapshot_tests;
 

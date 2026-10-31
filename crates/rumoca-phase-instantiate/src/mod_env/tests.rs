@@ -747,6 +747,11 @@ fn test_sibling_modifier_reference_keeps_local_source_scope() {
         Some(&make_comp_ref_expr(&["pathLengths"]))
     );
     assert_eq!(stored.source_scope, local_scope);
+    assert_eq!(
+        stored.value,
+        make_comp_ref_expr(&["pathLengths"]),
+        "a symbolic value must retain the identity owned by its stored source scope"
+    );
 }
 
 #[test]
