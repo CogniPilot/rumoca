@@ -151,7 +151,7 @@ if ({{ b }} == 0) { {{ fault }} }
 {%- macro program(prog, P, mode, inputs, outputs, fault, run) -%}
 {
 {% filter indent(4, true) -%}
-{% for ty in prog.register_types -%}{% if count(ty)|int == 1 and prog.unread[loop.index0] != "dead" and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none -%}
+{% for ty in prog.register_types -%}{% if count(ty)|int == 1 and prog.unread[loop.index0] != "dead" and prog.inline_of[loop.index0] is none and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none -%}
 {{ ctype(ty) }} {{ P | replace("ctx->", "") }}r{{ loop.index0 }}[1] = {0}; (void){{ P | replace("ctx->", "") }}r{{ loop.index0 }}; /*rumoca_galec_void_candidate*/
 {% endif %}{% endfor -%}
 {% for slot in prog.slots -%}{% if slot.storage == "method_local" and count(slot.value_type)|int == 1 -%}
@@ -171,13 +171,40 @@ if ({{ b }} == 0) { {{ fault }} }
 }
 {% endmacro -%}
 
-{%- macro operation(op, prog, child, P, mode, inputs, outputs, fault, run) -%}
-{%- set kind = op.operation -%}
-{%- if kind == "constant" and prog.unread[op.destination] == "dead" -%}
-{%- elif kind == "constant" -%}
+{#- The C value of a typed constant. -#}
+{%- macro constant_value(op) -%}
 {%- set value = op.value.kind -%}
 {%- set literal = value.kind ~ ":" ~ value.bits -%}
-{{ rn(prog, P, op.destination, mode, inputs, outputs) }}[0] = {% if literal in solve_block.literals %}{{ solve_block.literals[literal] }}{% elif value.kind == "real32" %}rumoca_galec_real32(UINT32_C({{ value.bits }})){% elif value.kind == "real64" %}rumoca_galec_real64(UINT64_C({{ value.bits }})){% elif value.kind == "integer" %}{{ int64(value.bits) }}{% elif value.kind == "boolean" %}{{ "true" if value.bits else "false" }}{% else %}{{ fail("unsupported-feature:embedded-c-solve:constant") }}{% endif %};
+{% if literal in solve_block.literals %}{{ solve_block.literals[literal] }}{% elif value.kind == "real32" %}rumoca_galec_real32(UINT32_C({{ value.bits }})){% elif value.kind == "real64" %}rumoca_galec_real64(UINT64_C({{ value.bits }})){% elif value.kind == "integer" %}{{ int64(value.bits) }}{% elif value.kind == "boolean" %}{{ "true" if value.bits else "false" }}{% else %}{{ fail("unsupported-feature:embedded-c-solve:constant") }}{% endif %}
+{%- endmacro -%}
+
+{#- An operand's C value. A register the view inlines (`inline_of`: a
+    single-use pure Real scalar, #483 size pass) is its defining
+    expression; any other is its storage. -#}
+{%- macro opnd(prog, P, id, mode, inputs, outputs, index) -%}
+{%- if prog.inline_of[id] is not none -%}{{ inline_expr(prog, prog.operations[prog.inline_of[id]].operation, P, mode, inputs, outputs) }}
+{%- else -%}{{ rn(prog, P, id, mode, inputs, outputs) }}{{ index }}{%- endif -%}
+{%- endmacro -%}
+
+{#- The defining expression of an inlined register, exactly as its own
+    statement would compute it: same operator, operand order, casts and
+    parentheses. The view bounds the depth. -#}
+{%- macro inline_expr(prog, op, P, mode, inputs, outputs) -%}
+{%- set ty = prog.register_types[op.destination] -%}
+{%- if op.operation == "binary" -%}{{ real_binary(op.operator, opnd(prog, P, op.lhs, mode, inputs, outputs, "[0]"), opnd(prog, P, op.rhs, mode, inputs, outputs, "[0]"), ty) }}
+{%- elif op.operation == "unary" -%}(({{ ctype(ty) }}){{ unary(op.operator, opnd(prog, P, op.operand, mode, inputs, outputs, "[0]"), ty) }})
+{%- elif op.operation == "constant" -%}{{ constant_value(op) }}
+{%- elif op.operation == "load" -%}(({{ ctype(ty) }}){{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}[0])
+{%- elif op.operation == "convert" -%}(({{ ctype(ty) }}){{ opnd(prog, P, op.operand, mode, inputs, outputs, "[0]") }})
+{%- else -%}{{ fail("unsupported-feature:embedded-c-solve:inline-" ~ op.operation) }}{%- endif -%}
+{%- endmacro -%}
+
+{%- macro operation(op, prog, child, P, mode, inputs, outputs, fault, run) -%}
+{%- set kind = op.operation -%}
+{%- if op.destination is defined and op.destination is not none and prog.inline_of[op.destination] is not none -%}
+{%- elif kind == "constant" and prog.unread[op.destination] == "dead" -%}
+{%- elif kind == "constant" -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}[0] = {{ constant_value(op) }};
 {% elif kind == "load" and prog.alias_of[op.destination] is not none -%}
 {% elif kind == "load" -%}
 {%- set ty = prog.register_types[op.destination] -%}
@@ -185,10 +212,10 @@ if ({{ b }} == 0) { {{ fault }} }
 {% elif kind == "store" and prog.forward_to[op.source] is not none -%}
 {% elif kind == "store" -%}
 {%- set ty = prog.register_types[op.source] -%}
-{{ each(ty) }}{{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }} = ({{ slot_ctype(prog, op.slot, mode) }}){{ rn(prog, P, op.source, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{{ each(ty) }}{{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }} = ({{ slot_ctype(prog, op.slot, mode) }}){{ opnd(prog, P, op.source, mode, inputs, outputs, ix(ty)) }};{{ done(ty) }}
 {% elif kind == "unary" -%}
 {%- set ty = prog.register_types[op.destination] -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ unary(op.operator, rn(prog, P, op.operand, mode, inputs, outputs) ~ ix(ty), ty) }};{{ done(ty) }}
+{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ unary(op.operator, opnd(prog, P, op.operand, mode, inputs, outputs, ix(ty)), ty) }};{{ done(ty) }}
 {{ domain_check(rn(prog, P, op.destination, mode, inputs, outputs), ty, fault) -}}
 {% elif kind == "binary" -%}
 {%- set ty = prog.register_types[op.destination] -%}
@@ -196,7 +223,7 @@ if ({{ b }} == 0) { {{ fault }} }
 {{ each(ty) }}{{ integer_binary(op.operator, rn(prog, P, op.destination, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.lhs, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.rhs, mode, inputs, outputs) ~ ix(ty), fault) }}{{ done(ty) }}
 {{ domain_check(rn(prog, P, op.destination, mode, inputs, outputs), ty, fault) -}}
 {%- else -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ real_binary(op.operator, rn(prog, P, op.lhs, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.rhs, mode, inputs, outputs) ~ ix(ty), ty) }};{{ done(ty) }}
+{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ real_binary(op.operator, opnd(prog, P, op.lhs, mode, inputs, outputs, ix(ty)), opnd(prog, P, op.rhs, mode, inputs, outputs, ix(ty)), ty) }};{{ done(ty) }}
 {% endif -%}
 {% elif kind == "compare" -%}
 {%- set ty = prog.register_types[op.destination] -%}
@@ -210,7 +237,7 @@ if ({{ b }} == 0) { {{ fault }} }
 {% elif kind == "convert" -%}
 {%- set ty = prog.register_types[op.destination] -%}
 {%- if op.operator == "integer_to_real" -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ rn(prog, P, op.operand, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ opnd(prog, P, op.operand, mode, inputs, outputs, ix(ty)) }};{{ done(ty) }}
 {% else -%}
 {%- set source = prog.register_types[op.operand] -%}
 {{ each(ty, true) }}{{ ctype(source) }} rumoca_galec_value = {{ f("floor" if op.operator == "real_to_integer_toward_negative_infinity" else "trunc", source) }}({{ rn(prog, P, op.operand, mode, inputs, outputs) }}{{ ix(ty) }}); if (!(rumoca_galec_value >= -9223372036854775808.0 && rumoca_galec_value < 9223372036854775808.0)) { {{ fault }} } {{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = (int64_t)rumoca_galec_value;{{ done(ty, true) }}
@@ -372,10 +399,18 @@ rumoca_galec_fault:
  * ------------------------------------------------------------------------ */
 {%- endif %}
 #include "{{ model_name }}.h"
+#include <float.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+/* Real expressions are written without intermediate temporaries; each
+   operation must round to its own type (no excess precision). Build with
+   floating-point contraction disabled (-ffp-contract=off). */
+#if !defined(FLT_EVAL_METHOD) || FLT_EVAL_METHOD != 0
+#error "generated code requires FLT_EVAL_METHOD == 0"
+#endif
 {%- if algorithm_code.traces.files|length > 0 %}
 
 /* ---------------------------------------------------------------------------

@@ -199,6 +199,9 @@ fn mark_aliased_loads(json: &mut serde_json::Value) {
                 fields.insert("unread".to_owned(), unread);
                 fields.insert("loaded_slots".to_owned(), loaded);
             }
+            if let Some(inlined) = program_inlines(fields) {
+                fields.insert("inline_of".to_owned(), inlined);
+            }
             for value in fields.values_mut() {
                 mark_aliased_loads(value);
             }
@@ -1051,6 +1054,224 @@ fn is_read(body: &str, name: &str) -> bool {
     false
 }
 
+/// The operators `operation` itself prints: none for a constant, load or store.
+fn arithmetic(operation: &serde_json::Value) -> usize {
+    usize::from(!matches!(
+        operation["operation"].as_str(),
+        Some("constant" | "load" | "store")
+    ))
+}
+
+/// The registers below `count` that `value` reads, once each, found by the
+/// same walk as [`count_uses`]; `work` counts the nodes visited.
+fn operand_registers(value: &serde_json::Value, count: usize, work: &mut usize) -> Vec<usize> {
+    fn walk(value: &serde_json::Value, count: usize, found: &mut Vec<usize>, work: &mut usize) {
+        *work += 1;
+        match value {
+            serde_json::Value::Number(number) => {
+                if let Some(id) = number
+                    .as_u64()
+                    .and_then(|id| usize::try_from(id).ok())
+                    .filter(|id| *id < count)
+                {
+                    found.push(id);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().for_each(|item| walk(item, count, found, work));
+            }
+            serde_json::Value::Object(fields) if !fields.contains_key("operations") => fields
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "destination" | "destinations" | "slot" | "owner"
+                    )
+                })
+                .for_each(|(_, field)| walk(field, count, found, work)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    walk(value, count, &mut found, work);
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+fn register_id(value: &serde_json::Value) -> Option<usize> {
+    value.as_u64().and_then(|id| usize::try_from(id).ok())
+}
+
+fn is_real_scalar(register_types: &[serde_json::Value], register: usize) -> bool {
+    register_types.get(register).is_some_and(|ty| {
+        ty["scalar"]["kind"] == "real" && ty["dimensions"].as_array().is_none_or(Vec::is_empty)
+    })
+}
+
+/// A Real `+`, `-`, `*` or negation, a constant, a load or an Integer-to-Real
+/// conversion: the operations an inlined register may be defined by, and the
+/// only ones allowed between a definition and its use.
+fn inline_pure(operation: &serde_json::Value, register_types: &[serde_json::Value]) -> bool {
+    let real = || {
+        register_id(&operation["destination"])
+            .is_some_and(|register| is_real_scalar(register_types, register))
+    };
+    match operation["operation"].as_str() {
+        Some("constant" | "load") => true,
+        Some("binary") => {
+            real()
+                && matches!(
+                    operation["operator"].as_str(),
+                    Some("add" | "subtract" | "multiply")
+                )
+        }
+        Some("unary") => real() && operation["operator"] == "negate",
+        Some("convert") => operation["operator"] == "integer_to_real",
+        _ => false,
+    }
+}
+
+/// An operation that may print an inlined operand: a Real binary, any unary,
+/// a scalar store, or an Integer-to-Real conversion.
+fn inline_consumer(operation: &serde_json::Value, register_types: &[serde_json::Value]) -> bool {
+    match operation["operation"].as_str() {
+        Some("binary") => register_id(&operation["destination"])
+            .is_some_and(|register| is_real_scalar(register_types, register)),
+        Some("unary" | "store") => true,
+        Some("convert") => operation["operator"] == "integer_to_real",
+        _ => false,
+    }
+}
+
+/// The deepest expression an inlined register may expand to: deeper
+/// definitions keep their temporary.
+const INLINE_DEPTH: usize = 3;
+
+/// The most arithmetic operators (`+`, `-`, `*`, negation, conversion) one
+/// printed statement may hold once its operands are inlined, so every line
+/// stays short enough to review; loads, constants and stores count nothing.
+const INLINE_OPERATORS: usize = 4;
+
+/// Give every serialized program an `inline_of` table: register -> the index
+/// of the operation that defines it, when the C prints that definition at its
+/// one use instead of declaring and assigning a temporary (#483 size pass:
+/// expression folding). A register qualifies only when
+/// - it is a Real scalar defined by Real `+`, `-`, `*`, negation, a
+///   constant, a load or an Integer-to-Real conversion (the cast, and so its
+///   rounding, stays in the expression);
+/// - it occurs exactly once anywhere in its program, as an operand of a Real
+///   binary, unary, scalar store or conversion in the same program;
+/// - every operation between its definition and that use is itself one of
+///   those pure kinds, so no store, call, check, raise or region moves past
+///   it, and chained inlines stay barrier-free end to end;
+/// - its definition carries the same provenance as its use, so the use's
+///   trace comment is exact;
+/// - it is not served by `alias_of`, `forward_to`, `same_as` or a pool; and
+/// - its expansion is at most [`INLINE_DEPTH`] levels deep, and its use's
+///   statement, with every operand inlined so far, holds at most
+///   [`INLINE_OPERATORS`] operators.
+fn program_inlines(
+    program: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    program_inlines_counted(program, &mut 0)
+}
+
+/// [`program_inlines`] in one indexed sweep: each
+/// operation's operands are collected once, sparsely; a single-use register's
+/// consumer is recorded during that sweep; and a prefix count of barrier
+/// operations answers "barrier-free between definition and use" in O(1).
+/// `work` counts every JSON node and operand visited.
+fn program_inlines_counted(
+    program: &serde_json::Map<String, serde_json::Value>,
+    work: &mut usize,
+) -> Option<serde_json::Value> {
+    let operations = program.get("operations")?.as_array()?;
+    let register_types = program.get("register_types")?.as_array()?;
+    let count = register_types.len();
+    let operand_lists: Vec<Vec<usize>> = operations
+        .iter()
+        .map(|issued| operand_registers(&issued["operation"], count, work))
+        .collect();
+    let mut uses = vec![0usize; count];
+    for issued in operations {
+        count_uses(&issued["operation"], &mut uses);
+    }
+    if let Some(states) = program.get("assigned_states") {
+        count_uses(states, &mut uses);
+    }
+    let mut consumer_of = vec![None; count];
+    for (index, operands) in operand_lists.iter().enumerate() {
+        for operand in operands {
+            *work += 1;
+            consumer_of[*operand] = Some(index);
+        }
+    }
+    let served = |table: &str, register: usize| {
+        program
+            .get(table)
+            .and_then(|table| table.get(register))
+            .is_some_and(|entry| !entry.is_null() && *entry != false)
+    };
+    let real_scalar = |register: usize| is_real_scalar(register_types, register);
+    let pure = |operation: &serde_json::Value| inline_pure(operation, register_types);
+    let consumer = |operation: &serde_json::Value| inline_consumer(operation, register_types);
+    let register = register_id;
+    // barriers[i]: operations before index i that are not pure.
+    let mut barriers = Vec::with_capacity(operations.len() + 1);
+    barriers.push(0usize);
+    for issued in operations {
+        let last = barriers[barriers.len() - 1];
+        barriers.push(last + usize::from(!pure(&issued["operation"])));
+    }
+    let mut inline_of = vec![serde_json::Value::Null; count];
+    let mut depth = vec![0usize; count];
+    // Per operation: its own operator plus those of the operands inlined into it.
+    let mut operators: Vec<usize> = operations
+        .iter()
+        .map(|issued| arithmetic(&issued["operation"]))
+        .collect();
+    for (index, issued) in operations.iter().enumerate() {
+        let operation = &issued["operation"];
+        let Some(defined) = register(&operation["destination"]) else {
+            continue;
+        };
+        if !real_scalar(defined)
+            || !pure(operation)
+            || uses.get(defined) != Some(&1)
+            || ["alias_of", "forward_to", "same_as", "pool_of"]
+                .iter()
+                .any(|table| served(table, defined))
+            || program["unread"].get(defined) != Some(&serde_json::Value::from(false))
+        {
+            continue;
+        }
+        // The single use is in a later operation unless it is an assigned state.
+        let Some(use_index) = consumer_of[defined].filter(|use_index| *use_index > index) else {
+            continue;
+        };
+        let used = &operations[use_index];
+        let barrier_free = barriers[use_index] == barriers[index + 1];
+        *work += operand_lists[index].len();
+        let operands_depth = operand_lists[index]
+            .iter()
+            .map(|r| depth[*r])
+            .max()
+            .unwrap_or(0);
+        if consumer(&used["operation"])
+            && barrier_free
+            && issued["provenance"] == used["provenance"]
+            && operands_depth < INLINE_DEPTH
+            && operators[use_index] + operators[index] <= INLINE_OPERATORS
+        {
+            inline_of[defined] = serde_json::Value::from(index);
+            depth[defined] = operands_depth + 1;
+            operators[use_index] += operators[index];
+        }
+    }
+    Some(serde_json::Value::Array(inline_of))
+}
+
 #[cfg(test)]
 mod void_use_tests {
     use super::{VOID_CANDIDATE, drop_needless_void_uses};
@@ -1104,5 +1325,261 @@ mod void_use_tests {
         let text = "void f(void) {\n    float rumoca_galec_r0[1] = {0}; (void)rumoca_galec_r0;\n    \
                     g(rumoca_galec_r0);\n}\n";
         assert_eq!(drop_needless_void_uses(text), text);
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    //! #483 expression folding: each eligibility rule of `program_inlines`, with a
+    //! case that fails if the rule is dropped.
+
+    use serde_json::{Value, json};
+
+    use super::{program_inlines, program_inlines_counted};
+
+    fn span(start: u64) -> Value {
+        json!({ "source": 1, "start": start, "end": start + 1 })
+    }
+
+    fn real() -> Value {
+        json!({ "scalar": { "kind": "real" }, "dimensions": [] })
+    }
+
+    /// A program over `types.len()` registers whose operations all carry
+    /// the provenance `span(1)` unless given as `(operation, start)`.
+    fn program(types: Vec<Value>, operations: Vec<(Value, u64)>) -> serde_json::Map<String, Value> {
+        let count = types.len();
+        let mut program = serde_json::Map::new();
+        program.insert("register_types".to_owned(), Value::Array(types));
+        program.insert(
+            "operations".to_owned(),
+            Value::Array(
+                operations
+                    .into_iter()
+                    .map(|(operation, start)| json!({ "operation": operation, "provenance": span(start) }))
+                    .collect(),
+            ),
+        );
+        program.insert(
+            "unread".to_owned(),
+            Value::Array(vec![Value::from(false); count]),
+        );
+        program
+    }
+
+    fn load(destination: u64, slot: u64) -> Value {
+        json!({ "operation": "load", "destination": destination, "slot": slot })
+    }
+
+    fn add(destination: u64, lhs: u64, rhs: u64) -> Value {
+        json!({ "operation": "binary", "operator": "add", "destination": destination, "lhs": lhs, "rhs": rhs })
+    }
+
+    fn store(slot: u64, source: u64) -> Value {
+        json!({ "operation": "store", "slot": slot, "source": source })
+    }
+
+    fn inlined(program: &serde_json::Map<String, Value>) -> Vec<bool> {
+        program_inlines(program)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| !entry.is_null())
+            .collect()
+    }
+
+    #[test]
+    fn a_single_use_pure_real_chain_is_inlined() {
+        let p = program(
+            vec![real(), real(), real()],
+            vec![
+                (load(0, 0), 1),
+                (load(1, 1), 1),
+                (add(2, 0, 1), 1),
+                (store(2, 2), 1),
+            ],
+        );
+        assert_eq!(inlined(&p), vec![true, true, true]);
+    }
+
+    #[test]
+    fn a_register_with_two_occurrences_keeps_its_temporary() {
+        let p = program(
+            vec![real(), real()],
+            vec![(load(0, 0), 1), (add(1, 0, 0), 1), (store(2, 1), 1)],
+        );
+        assert_eq!(inlined(&p), vec![false, true]);
+    }
+
+    #[test]
+    fn a_store_between_definition_and_use_is_a_barrier() {
+        // r0 reads slot 0; slot 0 is stored before r0's use.
+        let p = program(
+            vec![real(), real(), real()],
+            vec![
+                (load(0, 0), 1),
+                (load(1, 1), 1),
+                (store(0, 1), 1),
+                (add(2, 0, 0), 1),
+            ],
+        );
+        assert!(!inlined(&p)[0]);
+    }
+
+    #[test]
+    fn a_call_compare_or_integer_operation_between_is_a_barrier() {
+        for between in [
+            json!({ "operation": "call", "owner": 0, "arguments": [], "destinations": [] }),
+            json!({ "operation": "compare", "operator": "less", "destination": 3, "lhs": 3, "rhs": 3 }),
+            json!({ "operation": "binary", "operator": "add", "destination": 3, "lhs": 3, "rhs": 3 }),
+        ] {
+            let mut types = vec![real(), real(), real()];
+            types.push(json!({ "scalar": { "kind": "integer" }, "dimensions": [] }));
+            let p = program(
+                types,
+                vec![
+                    (load(0, 0), 1),
+                    (between, 1),
+                    (add(1, 0, 2), 1),
+                    (store(5, 1), 1),
+                ],
+            );
+            assert!(!inlined(&p)[0], "a barrier keeps r0 materialized");
+        }
+    }
+
+    #[test]
+    fn a_use_inside_a_region_keeps_the_value_materialized() {
+        let p = program(
+            vec![real(), real()],
+            vec![
+                (load(0, 0), 1),
+                (
+                    json!({ "operation": "conditional", "captures": [0], "destinations": [1] }),
+                    1,
+                ),
+            ],
+        );
+        assert!(!inlined(&p)[0]);
+    }
+
+    #[test]
+    fn a_producer_with_another_source_span_keeps_its_temporary() {
+        let p = program(
+            vec![real(), real(), real()],
+            vec![
+                (load(0, 0), 7),
+                (load(1, 1), 1),
+                (add(2, 0, 1), 1),
+                (store(2, 2), 1),
+            ],
+        );
+        assert_eq!(inlined(&p), vec![false, true, true]);
+    }
+
+    #[test]
+    fn expansion_stops_at_the_depth_bound() {
+        // r1 = r0 + r0' chains: depth 1, 2, 3, then the fourth keeps its temporary.
+        let p = program(
+            vec![real(); 6],
+            vec![
+                (load(0, 0), 1),
+                (add(1, 0, 5), 1),
+                (add(2, 1, 5), 1),
+                (add(3, 2, 5), 1),
+                (add(4, 3, 5), 1),
+                (store(9, 4), 1),
+                (load(5, 1), 1),
+            ],
+        );
+        let inlined = inlined(&p);
+        assert!(inlined[0] && inlined[1] && inlined[2]);
+        assert!(!inlined[3], "a fourth level keeps its temporary");
+    }
+
+    /// Regression for the analysis cost: two shared leaves, then `n`
+    /// independent Real adds each read once by its own store.
+    fn independent_adds(n: u64) -> (serde_json::Map<String, Value>, usize) {
+        let mut operations = vec![(load(0, 0), 1), (load(1, 1), 1)];
+        operations.extend((0..n).map(|i| (add(2 + i, 0, 1), 1)));
+        operations.extend((0..n).map(|i| (store(10 + i, 2 + i), 1)));
+        let p = program(vec![real(); 2 + n as usize], operations);
+        let mut work = 0;
+        program_inlines_counted(&p, &mut work);
+        (p, work)
+    }
+
+    #[test]
+    fn the_eligibility_pass_avoids_quadratic_work() {
+        let (small, at_16) = independent_adds(16);
+        let (large, at_128) = independent_adds(128);
+        // Every store is a barrier, so only the first add reaches its store
+        // with nothing impure in between.
+        for (p, n) in [(&small, 16), (&large, 128)] {
+            let mut expected = vec![false; 2 + n];
+            expected[2] = true;
+            assert_eq!(inlined(p), expected);
+        }
+        // 8x the operations may cost at most ~8x the work; the earlier
+        // per-definition scans grew it 64x or more.
+        assert!(
+            at_128 <= 9 * at_16,
+            "work grew from {at_16} at n=16 to {at_128} at n=128"
+        );
+    }
+
+    #[test]
+    fn expansion_stops_at_the_operator_cap() {
+        // r0, r1 are shared leaves; r4 and r7 each hold 3 operators. r4 fits
+        // r8's statement (1 + 3), r7 would make it 7 and keeps its own line,
+        // and r8's 4 then fit the store.
+        let p = program(
+            vec![real(); 9],
+            vec![
+                (load(0, 0), 1),
+                (load(1, 1), 1),
+                (add(2, 0, 1), 1),
+                (add(3, 0, 1), 1),
+                (add(4, 2, 3), 1),
+                (add(5, 0, 1), 1),
+                (add(6, 0, 1), 1),
+                (add(7, 5, 6), 1),
+                (add(8, 4, 7), 1),
+                (store(2, 8), 1),
+            ],
+        );
+        assert_eq!(
+            inlined(&p),
+            vec![false, false, true, true, true, true, true, false, true]
+        );
+    }
+
+    #[test]
+    fn served_or_integer_registers_are_never_inlined() {
+        let mut p = program(
+            vec![real(), real()],
+            vec![(load(0, 0), 1), (add(1, 0, 0), 1), (store(2, 1), 1)],
+        );
+        p.insert("forward_to".to_owned(), json!([null, 3]));
+        assert!(
+            !inlined(&p)[1],
+            "a forwarded register is computed into its slot"
+        );
+        let p = program(
+            vec![
+                json!({ "scalar": { "kind": "integer" }, "dimensions": [] }),
+                real(),
+            ],
+            vec![
+                (load(0, 0), 1),
+                (
+                    json!({ "operation": "convert", "operator": "integer_to_real", "destination": 1, "operand": 0 }),
+                    1,
+                ),
+                (store(2, 1), 1),
+            ],
+        );
+        assert_eq!(inlined(&p), vec![false, true], "only Real scalars inline");
     }
 }
