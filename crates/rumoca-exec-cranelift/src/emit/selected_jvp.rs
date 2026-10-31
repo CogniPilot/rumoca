@@ -66,17 +66,52 @@ impl CompiledJacobianRows {
         external_tables: &[ExternalTableData],
         commit: &mut crate::ProgramCommit<'_, E>,
     ) -> Result<(), E> {
-        let (y, p, t) = inputs;
         let rows = self.rows.get(programs.clone()).ok_or_else(|| {
             CompileError::Input(format!(
                 "Jacobian programs {programs:?} are outside compiled rows"
             ))
         })?;
+        self.call_rows_committing(programs.zip(rows), inputs, seed, external_tables, commit)
+    }
+
+    /// [`Self::call_programs_committing`] over an ordered subset of the
+    /// programs: each listed program runs and commits in list order, and the
+    /// unlisted ones do not execute. Every index is checked before any
+    /// program runs.
+    pub(crate) fn call_selected_programs_committing<E: From<CompileError>>(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[ExternalTableData],
+        commit: &mut crate::ProgramCommit<'_, E>,
+    ) -> Result<(), E> {
+        if let Some(program) = programs.iter().find(|&&program| program >= self.rows.len()) {
+            return Err(CompileError::Input(format!(
+                "Jacobian program {program} is outside compiled rows"
+            ))
+            .into());
+        }
+        let rows = programs
+            .iter()
+            .filter_map(|&program| self.rows.get(program).map(|row| (program, row)));
+        self.call_rows_committing(rows, inputs, seed, external_tables, commit)
+    }
+
+    fn call_rows_committing<'r, E: From<CompileError>>(
+        &self,
+        rows: impl Iterator<Item = (usize, &'r CompiledJacobianRow)>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[ExternalTableData],
+        commit: &mut crate::ProgramCommit<'_, E>,
+    ) -> Result<(), E> {
+        let (y, p, t) = inputs;
         validate_input_requirements(self.input_requirements, y, p, Some(seed))?;
         self.with_tables(external_tables, || {
             let mut staged = self.output_scratch.borrow_mut();
             let mut registers = self.regs_scratch.borrow_mut();
-            for (program, row) in programs.zip(rows) {
+            for (program, row) in rows {
                 resize_native_outputs(&mut staged, row.plan.output_count())?;
                 self.call_jacobian_row(
                     row,

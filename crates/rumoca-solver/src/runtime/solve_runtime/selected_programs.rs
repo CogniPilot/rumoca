@@ -565,6 +565,71 @@ impl CompleteJacobian {
         }
     }
 
+    /// [`Self::call_programs_committing`] over an ordered subset of the
+    /// programs (see
+    /// [`CompiledSolveJacobianExpression::call_selected_programs_committing`]).
+    /// `false` declines before any program executes: an empty list, a composite
+    /// block, an index outside the compiled programs, or a backend without the
+    /// entry.
+    pub(super) fn call_selected_programs_committing(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        tables: &[rumoca_core::ExternalTableData],
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        let (whole, codes) = match &self.execution {
+            JacobianExecution::Native { whole, programs } => (whole, programs),
+            JacobianExecution::Shared(code) => {
+                return code
+                    .call_selected_programs_committing(programs, inputs, seed, tables, commit);
+            }
+            JacobianExecution::Composite(_) => return Ok(false),
+        };
+        if programs.is_empty()
+            || programs.iter().any(|&index| {
+                codes.get(index).is_none() || source_program_outputs(&self.source, index).is_err()
+            })
+        {
+            return Ok(false);
+        }
+        let mut committed = 0;
+        let mut commit_failed = false;
+        let result = whole.call_selected_programs_committing(
+            programs,
+            inputs,
+            seed,
+            tables,
+            &mut |program, outputs, seed| {
+                let outcome = validate_runtime_output_len(
+                    "selected directional outputs",
+                    codes[program].outputs,
+                    outputs.len(),
+                )
+                .and_then(|()| commit(program, outputs, seed));
+                commit_failed = outcome.is_err();
+                committed += 1;
+                outcome
+            },
+        );
+        match result {
+            Err(error) if !commit_failed => {
+                let spans: &[rumoca_core::Span] =
+                    match programs.get(committed).and_then(|&index| codes.get(index)) {
+                        Some(code) => std::slice::from_ref(&code.span),
+                        None => &[],
+                    };
+                Err(admitted_compiled_error(
+                    "selected directional program",
+                    spans,
+                    error,
+                ))
+            }
+            result => result,
+        }
+    }
+
     pub(super) fn call_program_outputs(
         &self,
         index: usize,

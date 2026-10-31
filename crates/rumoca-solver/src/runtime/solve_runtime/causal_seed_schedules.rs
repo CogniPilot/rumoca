@@ -4,17 +4,24 @@
 //! evaluation result is reused across invocations.
 use super::*;
 
+mod cones;
 mod mixed;
+
+use cones::StateCones;
 
 struct SeedSchedule {
     program: DirectionalProgram,
     targets: Vec<Vec<usize>>,
+    /// Each program's states, from the construction-issued certificate.
+    cones: Option<StateCones>,
 }
 
 #[derive(Default)]
 pub(super) struct CausalSeedSchedules {
     schedules: FxHashMap<solve::RefreshSequenceId, Rc<SeedSchedule>>,
     mixed_steps: Rc<[mixed::Step]>,
+    state_count: usize,
+    selected: RefCell<Vec<usize>>,
     outputs: RefCell<Vec<f64>>,
     incoming: RefCell<Vec<f64>>,
 }
@@ -24,6 +31,8 @@ impl Clone for CausalSeedSchedules {
         Self {
             schedules: self.schedules.clone(),
             mixed_steps: Rc::clone(&self.mixed_steps),
+            state_count: self.state_count,
+            selected: RefCell::default(),
             outputs: RefCell::default(),
             incoming: RefCell::default(),
         }
@@ -73,7 +82,7 @@ impl CausalSeedSchedules {
                 span: error.source_span(),
             })?;
             let mut target_cursor = 0;
-            let targets = source
+            let targets: Vec<Vec<usize>> = source
                 .programs()
                 .iter()
                 .map(|ops| {
@@ -83,16 +92,32 @@ impl CausalSeedSchedules {
                     selected
                 })
                 .collect();
+            let certificate = schedule_leaves(owners, schedule);
+            let leaves = targets
+                .iter()
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .map(|target| certificate.get(target).copied().flatten())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let cones = StateCones::from_leaves(model.state_scalar_count(), &leaves);
             let program =
                 DirectionalProgram::prepare("causal_assignment_seed", directional, backend, None)?;
             schedules.insert(
                 schedule.sequence_id(),
-                Rc::new(SeedSchedule { program, targets }),
+                Rc::new(SeedSchedule {
+                    program,
+                    targets,
+                    cones,
+                }),
             );
         }
         Ok(Self {
             schedules,
             mixed_steps: mixed_steps.into(),
+            state_count: model.state_scalar_count(),
             ..Self::default()
         })
     }
@@ -155,15 +180,62 @@ impl CausalSeedSchedules {
         context: RowEvalContext<'_>,
     ) -> Result<(), RuntimeSolveError> {
         let mut outputs = self.outputs.borrow_mut();
+        let active = cones::active_states(self.state_count, seed);
+        let mut selected = self.selected.borrow_mut();
         for (_, id) in stages.iter().filter(|(empty, _)| !empty) {
             let schedule = &self.schedules[id];
-            schedule.apply(lin, y, seed, context, &mut outputs)?;
+            let (Some(active), Some(cones)) = (&active, &schedule.cones) else {
+                schedule.apply(lin, y, seed, context, &mut outputs)?;
+                continue;
+            };
+            cones.select(active, &mut selected);
+            if selected.len() == schedule.targets.len() {
+                schedule.apply(lin, y, seed, context, &mut outputs)?;
+            } else if !selected.is_empty() {
+                schedule.apply_selected(&selected, lin, y, seed, context, &mut outputs)?;
+            }
         }
         Ok(())
     }
 }
 
 impl SeedSchedule {
+    /// [`Self::apply`] restricted to `selected` programs, in order.
+    fn apply_selected(
+        &self,
+        selected: &[usize],
+        lin: AlgebraicLinearization<'_>,
+        y: &[f64],
+        seed: &mut [f64],
+        context: RowEvalContext<'_>,
+        outputs: &mut Vec<f64>,
+    ) -> Result<(), RuntimeSolveError> {
+        if self.program.eval_selected_programs_committing(
+            selected,
+            (y, lin.params, lin.t),
+            seed,
+            context,
+            &mut |program, outputs, seed| commit_outputs(&self.targets[program], outputs, seed),
+        )? {
+            return Ok(());
+        }
+        for &program in selected {
+            self.program.eval_program_outputs(
+                program,
+                solve_eval::JacobianEvalInputs {
+                    y,
+                    p: lin.params,
+                    t: lin.t,
+                    seed,
+                },
+                context,
+                outputs,
+            )?;
+            commit_outputs(&self.targets[program], outputs, seed)?;
+        }
+        Ok(())
+    }
+
     fn apply(
         &self,
         lin: AlgebraicLinearization<'_>,
@@ -197,6 +269,28 @@ impl SeedSchedule {
         }
         Ok(())
     }
+}
+
+/// Each target's construction-issued leaves over the schedule's programs. A
+/// target issued twice maps to `None`, which counts as every state.
+fn schedule_leaves<'a>(
+    owners: &'a solve::ContinuousRefreshOwners,
+    schedule: &solve::ExactRefreshAssignmentSchedule,
+) -> FxHashMap<usize, Option<&'a solve::LeafDependencies>> {
+    let mut leaves = FxHashMap::default();
+    for id in schedule.program_ids() {
+        let Some(program) = owners.exact_assignment_program(*id) else {
+            continue;
+        };
+        for (position, &target) in program.target_indices().iter().enumerate() {
+            let issued = program.assignment_leaf_dependencies(position);
+            leaves
+                .entry(target)
+                .and_modify(|existing| *existing = None)
+                .or_insert(issued);
+        }
+    }
+    leaves
 }
 
 fn commit_outputs(

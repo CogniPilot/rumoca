@@ -65,6 +65,7 @@ fn executor(fail_second: bool) -> CausalSeedSchedules {
         Rc::new(SeedSchedule {
             program,
             targets: vec![vec![1], vec![2]],
+            cones: None,
         }),
     );
     schedules

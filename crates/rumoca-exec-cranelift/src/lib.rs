@@ -286,6 +286,20 @@ impl CompiledJacobianV {
             .call_programs_committing(programs, inputs, seed, external_tables, commit)
     }
 
+    /// [`Self::call_programs_committing`] over an ordered subset of the
+    /// programs; the unlisted programs do not execute.
+    pub fn call_selected_programs_committing<E: From<CompileError>>(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[ExternalTableData],
+        commit: &mut ProgramCommit<'_, E>,
+    ) -> Result<(), E> {
+        self.jit
+            .call_selected_programs_committing(programs, inputs, seed, external_tables, commit)
+    }
+
     /// Output `offset` of each program at `coordinates`, in order, into `out`:
     /// what [`Self::call_program_output`] returns one call at a time.
     pub fn call_program_outputs_at(

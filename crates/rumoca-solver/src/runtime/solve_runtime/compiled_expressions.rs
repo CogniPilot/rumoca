@@ -124,6 +124,20 @@ pub trait CompiledSolveJacobianExpression {
         Ok(false)
     }
 
+    /// [`Self::call_programs_committing`] over an ordered subset of the
+    /// programs: only the listed programs execute, in list order. `false`
+    /// declines before any program executes.
+    fn call_selected_programs_committing(
+        &self,
+        _programs: &[usize],
+        _inputs: (&[f64], &[f64], f64),
+        _seed: &mut [f64],
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, crate::RuntimeSolveError> {
+        Ok(false)
+    }
+
     fn call(
         &self,
         y: &[f64],

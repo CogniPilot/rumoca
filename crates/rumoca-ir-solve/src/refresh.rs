@@ -7,6 +7,7 @@
 mod assignment_shape;
 mod compact_owner;
 mod dependency;
+mod leaf_dependencies;
 mod materialization;
 mod native_assignment;
 mod output_stores;
@@ -34,6 +35,7 @@ pub use assignment_shape::{
 };
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
+pub use leaf_dependencies::LeafDependencies;
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
     isolated_parts, materialize_target_assignment,
@@ -275,6 +277,8 @@ pub struct ExactRefreshAssignmentProgram {
     assignment_shapes: Box<[TargetAssignmentShape]>,
     assignment_stores: Box<[ExactAssignmentStore]>,
     assignment_y_dependencies: Box<[IndexIntervals]>,
+    /// Issued once every program exists; see [`LeafDependencies`].
+    assignment_leaf_dependencies: Box<[LeafDependencies]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -325,6 +329,12 @@ impl ExactRefreshAssignmentProgram {
     #[must_use]
     pub fn assignment_y_dependencies(&self, position: usize) -> Option<&IndexIntervals> {
         self.assignment_y_dependencies.get(position)
+    }
+
+    /// The construction-issued leaves the target at `position` depends on.
+    #[must_use]
+    pub fn assignment_leaf_dependencies(&self, position: usize) -> Option<&LeafDependencies> {
+        self.assignment_leaf_dependencies.get(position)
     }
 
     /// Materialize the scalar execution view at a final backend boundary.
@@ -873,6 +883,18 @@ impl ContinuousRefreshOwners {
             return Ok(());
         }
         self.validate_sources_against(implicit_rhs)?;
+        let leaves = leaf_dependencies::issue(&self.exact_assignment_programs);
+        if self
+            .exact_assignment_programs
+            .iter()
+            .zip(&leaves)
+            .any(|(program, leaves)| program.assignment_leaf_dependencies != *leaves)
+        {
+            return refresh_error(
+                "exact assignment leaf dependencies differ from their issued certificate"
+                    .to_string(),
+            );
+        }
         // The first exact program owning each row, with the row's position in
         // it: one pass over the inventory instead of one search per row.
         let mut owned = BTreeMap::new();
@@ -1033,6 +1055,10 @@ impl ContinuousRefreshOwners {
                 &mut inventory,
                 plan,
             )?;
+        }
+        let issued = leaf_dependencies::issue(exact_assignment_programs);
+        for (program, leaves) in exact_assignment_programs.iter_mut().zip(issued) {
+            program.assignment_leaf_dependencies = leaves;
         }
         // A remainder consumes its predecessor's settlement relation. Check
         // the complete owners from which that ordered relation is derived.
@@ -1241,6 +1267,7 @@ fn construct_exact_assignment_program<'a>(
         assignment_stores: range_assignment::construct(source_program, rows, &shapes),
         assignment_shapes: shapes.into_boxed_slice(),
         assignment_y_dependencies,
+        assignment_leaf_dependencies: Box::default(),
     })
 }
 
