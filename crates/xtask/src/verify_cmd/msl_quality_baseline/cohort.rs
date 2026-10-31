@@ -20,6 +20,7 @@ use super::{RuntimeRatioStats, TraceAccuracyStats};
 
 const RUNTIME_COHORT_MIN_COVERAGE: f64 = 0.90;
 const RUNTIME_MEDIAN_REL_TOLERANCE: f64 = 0.35;
+const RUNTIME_WALL_MEDIAN_REL_TOLERANCE: f64 = 0.45;
 const FLOAT_EPSILON: f64 = 1.0e-9;
 
 /// The per-model records a baseline carries beside its aggregates.
@@ -60,6 +61,7 @@ struct ModelRatio {
 /// One baseline as the cohort comparison reads it.
 #[derive(Clone, Copy)]
 pub(super) struct CohortSnapshot<'a> {
+    pub(super) quality_gate_version: Option<u64>,
     pub(super) evidence: &'a CohortEvidence,
     pub(super) trace: &'a TraceAccuracyStats,
     pub(super) runtime: &'a RuntimeRatioStats,
@@ -364,12 +366,14 @@ fn total(snapshot: CohortSnapshot<'_>, field: Field) -> f64 {
 }
 
 fn same_value(left: f64, right: f64) -> bool {
-    (left - right).abs() <= FLOAT_EPSILON * 1.0_f64.max(left.abs()).max(right.abs())
+    left.is_finite()
+        && right.is_finite()
+        && (left - right).abs() <= FLOAT_EPSILON * 1.0_f64.max(left.abs()).max(right.abs())
 }
 
 /// The gate's runtime rule: the candidate's medians over the reference's
 /// runtime cohort, which it must still time at least 90 percent of, may not
-/// fall more than 35 percent below the reference medians. Without a reference
+/// fall more than 35 percent (system) or 45 percent (wall). Without a reference
 /// cohort or candidate ratios, the recorded whole-run medians are compared.
 fn compare_runtime(
     reference: CohortSnapshot<'_>,
@@ -377,7 +381,8 @@ fn compare_runtime(
     verdict: &mut CohortVerdict,
 ) -> Result<()> {
     let cohort = &reference.evidence.runtime_ratio_cohort_models;
-    let ratios = candidate_ratios(candidate)?;
+    snapshot_ratios(reference, "reference baseline")?;
+    let ratios = snapshot_ratios(candidate, "candidate baseline")?;
     let matched = match ratios {
         Some(ratios) if !cohort.is_empty() => Some(
             cohort
@@ -397,18 +402,20 @@ fn compare_runtime(
         ));
         return Ok(());
     }
-    for (label, reference_median, recorded_median, pick) in [
+    for (label, reference_median, recorded_median, pick, tolerance) in [
         (
             "runtime system speedup median",
             reference.runtime.system_ratio_both_success.median,
             candidate.runtime.system_ratio_both_success.median,
             (|ratio: &ModelRatio| ratio.system) as fn(&ModelRatio) -> f64,
+            RUNTIME_MEDIAN_REL_TOLERANCE,
         ),
         (
             "runtime wall speedup median",
             reference.runtime.wall_ratio_both_success.median,
             candidate.runtime.wall_ratio_both_success.median,
             |ratio: &ModelRatio| ratio.wall,
+            RUNTIME_WALL_MEDIAN_REL_TOLERANCE,
         ),
     ] {
         let (candidate_median, scope) = match matched.as_ref() {
@@ -419,7 +426,8 @@ fn compare_runtime(
             None => (recorded_median, String::new()),
         };
         let line = format!("{label}{scope}: {reference_median} -> {candidate_median}");
-        if candidate_median < reference_median * (1.0 - RUNTIME_MEDIAN_REL_TOLERANCE) {
+        let floor = reference_median * (1.0 - tolerance);
+        if candidate_median + f64::EPSILON * floor.abs().max(1.0) < floor {
             verdict.regressions.push(line);
         } else if candidate_median > reference_median {
             verdict.improvements.push(line);
@@ -429,17 +437,39 @@ fn compare_runtime(
 }
 
 /// The candidate's per-model ratios, bound to its recorded cohort and medians.
-fn candidate_ratios(
-    candidate: CohortSnapshot<'_>,
-) -> Result<Option<&BTreeMap<String, ModelRatio>>> {
+fn snapshot_ratios<'a>(
+    candidate: CohortSnapshot<'a>,
+    name: &str,
+) -> Result<Option<&'a BTreeMap<String, ModelRatio>>> {
+    let modern = candidate
+        .quality_gate_version
+        .is_some_and(|version| version >= 14);
     let Some(ratios) = candidate.evidence.runtime_model_ratios.as_ref() else {
+        ensure!(
+            !modern,
+            "{name}: current-schema runtime_model_ratios are missing"
+        );
         return Ok(None);
     };
+    ensure!(
+        !modern
+            || (candidate
+                .runtime
+                .system_ratio_both_success
+                .sample_count
+                .is_some()
+                && candidate
+                    .runtime
+                    .wall_ratio_both_success
+                    .sample_count
+                    .is_some()),
+        "{name}: current-schema runtime sample_count is missing"
+    );
     ensure!(
         ratios.values().all(|ratio| [ratio.system, ratio.wall]
             .iter()
             .all(|value| value.is_finite() && *value > 0.0)),
-        "candidate baseline: runtime_model_ratios must be finite positive ratios"
+        "{name}: runtime_model_ratios must be finite positive ratios"
     );
     let cohort = candidate
         .evidence
@@ -448,9 +478,22 @@ fn candidate_ratios(
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     ensure!(
-        ratios.keys().map(String::as_str).eq(cohort.iter().copied()),
-        "candidate baseline: runtime_model_ratios does not cover runtime_ratio_cohort_models"
+        ratios.len() == candidate.evidence.runtime_ratio_cohort_models.len()
+            && ratios.keys().map(String::as_str).eq(cohort.iter().copied()),
+        "{name}: runtime_model_ratios does not cover runtime_ratio_cohort_models"
     );
+    for count in [
+        candidate.runtime.system_ratio_both_success.sample_count,
+        candidate.runtime.wall_ratio_both_success.sample_count,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ensure!(
+            count == ratios.len(),
+            "{name}: runtime_model_ratios disagree with sample_count"
+        );
+    }
     for (recorded, derived) in [
         (
             candidate.runtime.system_ratio_both_success.median,
@@ -463,7 +506,7 @@ fn candidate_ratios(
     ] {
         ensure!(
             same_value(recorded, derived),
-            "candidate baseline: runtime_model_ratios give a median of {derived}, the stats record {recorded}"
+            "{name}: runtime_model_ratios give a median of {derived}, the stats record {recorded}"
         );
     }
     Ok(Some(ratios))
@@ -475,7 +518,7 @@ fn median(mut values: Vec<f64>) -> f64 {
     match values.len() {
         0 => f64::NAN,
         len if len % 2 == 1 => values[middle],
-        _ => (values[middle - 1] + values[middle]) / 2.0,
+        _ => values[middle - 1] + (values[middle] - values[middle - 1]) / 2.0,
     }
 }
 

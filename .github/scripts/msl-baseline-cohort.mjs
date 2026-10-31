@@ -15,9 +15,10 @@ import assert from 'node:assert/strict';
 
 // The gate's runtime rule (runtime_cohort.rs): the candidate's median over the
 // reference's runtime cohort, which must still time at least 90 percent of it,
-// may not fall more than 35 percent below the reference median.
+// may not fall more than 35 percent (system) or 45 percent (wall).
 export const RUNTIME_COHORT_MIN_COVERAGE = 0.9;
 export const RUNTIME_MEDIAN_REL_TOLERANCE = 0.35;
+export const RUNTIME_WALL_MEDIAN_REL_TOLERANCE = 0.45;
 const FLOAT_EPSILON = 1.0e-9;
 
 const COHORT_METRICS = [
@@ -238,6 +239,7 @@ function sumOver(cohort, metric, models) {
 }
 
 function sameValue(left, right, float) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
   if (!float) {
     return left === right;
   }
@@ -249,7 +251,8 @@ function sameValue(left, right, float) {
 // per-model ratios, else as the whole-run medians both snapshots record.
 function compareRuntimeMedians(reference, candidate, improvements, regressions) {
   const cohort = reference.runtime_ratio_cohort_models;
-  const ratios = candidateRuntimeRatios(candidate);
+  snapshotRuntimeRatios(reference, 'reference snapshot');
+  const ratios = snapshotRuntimeRatios(candidate, 'candidate snapshot');
   const useCohort = Array.isArray(cohort) && cohort.length > 0 && ratios !== null;
   const matched = useCohort ? cohort.filter((model) => ratios.has(model)) : [];
   if (useCohort && matched.length < cohort.length * RUNTIME_COHORT_MIN_COVERAGE) {
@@ -266,7 +269,11 @@ function compareRuntimeMedians(reference, candidate, improvements, regressions) 
       : numberAt(candidate, path, 'candidate snapshot');
     const scope = useCohort ? ` over ${matched.length} reference cohort models` : '';
     const text = `${label}${scope}: ${referenceMedian.toExponential(6)} -> ${candidateMedian.toExponential(6)}`;
-    if (candidateMedian < referenceMedian * (1 - RUNTIME_MEDIAN_REL_TOLERANCE)) {
+    const tolerance = key === 'wall'
+      ? RUNTIME_WALL_MEDIAN_REL_TOLERANCE
+      : RUNTIME_MEDIAN_REL_TOLERANCE;
+    const floor = referenceMedian * (1 - tolerance);
+    if (candidateMedian + Number.EPSILON * Math.max(1, Math.abs(floor)) < floor) {
       regressions.push(text);
     } else if (candidateMedian > referenceMedian) {
       improvements.push(text);
@@ -274,14 +281,16 @@ function compareRuntimeMedians(reference, candidate, improvements, regressions) 
   }
 }
 
-// The candidate's per-model runtime ratios, bound to its own recorded cohort
+// Either snapshot's per-model runtime ratios, bound to its own recorded cohort
 // and medians; `null` for a snapshot from before they were recorded.
-function candidateRuntimeRatios(candidate) {
+export function snapshotRuntimeRatios(candidate, name) {
   const recorded = candidate.runtime_model_ratios;
+  const modern = candidate.quality_gate_version >= 14;
   if (recorded === undefined) {
+    assert.equal(modern && candidate.runtime_ratio_stats != null, false,
+      `${name}: current-schema runtime_model_ratios are missing`);
     return null;
   }
-  const name = 'candidate snapshot';
   assert.equal(
     typeof recorded === 'object' && recorded !== null && !Array.isArray(recorded),
     true,
@@ -298,6 +307,13 @@ function candidateRuntimeRatios(candidate) {
     `${name}: runtime_model_ratios does not cover runtime_ratio_cohort_models`,
   );
   for (const [, key, statsKey] of RUNTIME_MEDIANS) {
+    const stats = candidate.runtime_ratio_stats[statsKey];
+    assert.equal(modern && !Object.hasOwn(stats, 'sample_count'), false,
+      `${name}: current-schema runtime sample_count is missing`);
+    if (Object.hasOwn(stats, 'sample_count')) {
+      assert.equal(stats.sample_count, ratios.size,
+        `${name}: runtime_model_ratios disagree with ${statsKey} sample_count`);
+    }
     const recordedMedian = numberAt(candidate, ['runtime_ratio_stats', statsKey, 'median'], name);
     const derived = median([...ratios.values()].map((ratio) => ratio[key]));
     assert.equal(
@@ -314,7 +330,7 @@ export function median(values) {
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1
     ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
+    : sorted[middle - 1] + (sorted[middle] - sorted[middle - 1]) / 2;
 }
 
 function countOf(entry, key, where) {

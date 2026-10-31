@@ -44,8 +44,14 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
         ic_solver_fail: 15,
         sim_ok: 207,
         runtime_ratio_stats: RuntimeRatioStats {
-            system_ratio_both_success: DistributionMedian { median: 1.5 },
-            wall_ratio_both_success: DistributionMedian { median: 45.0 },
+            system_ratio_both_success: DistributionMedian {
+                median: 1.5,
+                sample_count: None,
+            },
+            wall_ratio_both_success: DistributionMedian {
+                median: 45.0,
+                sample_count: None,
+            },
         },
         trace_accuracy_stats: TraceAccuracyStats {
             models_compared: 202,
@@ -502,4 +508,49 @@ fn baseline_header_rejects_missing_or_invalid_omc_version() {
         let error = load_baseline_header(&path).expect_err("invalid context must fail");
         assert!(error.to_string().contains("omc_version"), "{error}");
     }
+}
+
+#[test]
+fn actual_header_requires_current_schema_runtime_evidence_in_both_roles() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json");
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    let good = load_baseline_header(&source).unwrap();
+    assert_eq!(good.cohort_snapshot().quality_gate_version, Some(14));
+    let root = std::env::temp_dir().join(format!("msl-header-schema-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let path = root.join("baseline.json");
+    let mut failures = Vec::new();
+    for missing in ["runtime_model_ratios", "system", "wall"] {
+        let mut bad = original.clone();
+        if missing == "runtime_model_ratios" {
+            bad.as_object_mut().unwrap().remove(missing);
+        } else {
+            let metric = format!("{missing}_ratio_both_success");
+            bad["runtime_ratio_stats"][metric]
+                .as_object_mut()
+                .unwrap()
+                .remove("sample_count");
+        }
+        fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        let bad = load_baseline_header(&path).unwrap();
+        for (side, reference, candidate) in [("reference", &bad, &good), ("candidate", &good, &bad)]
+        {
+            if super::validate_cohort_metric_integrity(reference, candidate).is_ok() {
+                failures.push(format!("{side}: missing {missing} accepted"));
+            }
+        }
+        let mut legacy = bad.clone();
+        legacy.quality_gate_version = 13;
+        for (reference, candidate) in [(&legacy, &good), (&good, &legacy)] {
+            if super::validate_cohort_metric_integrity(reference, candidate).is_err() {
+                failures.push(format!("legacy compatibility lost for {missing}"));
+            }
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        failures.is_empty(),
+        "root schema controls failed: {failures:?}"
+    );
 }

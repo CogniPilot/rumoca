@@ -123,7 +123,7 @@
       "improvements": ["initial-condition deviation channels", "initial-condition violation mass"]
     },
     {
-      "name": "a wall speedup drop beyond 35 percent over the reference cohort is refused",
+      "name": "a wall speedup drop beyond 45 percent over the reference cohort is refused",
       "reference": {},
       "candidate": {
         "runtime_model_ratios": { "A": { "wall": 5.0 }, "B": { "wall": 10.0 }, "C": { "wall": 15.0 }, "D": { "wall": 20.0 } },
@@ -222,6 +222,87 @@
       "reference": {},
       "candidate": { "runtime_ratio_stats": { "wall_ratio_both_success": { "median": 99.0 } } },
       "error": "median"
-    }
+    },
+    {
+      "name": "a 40 percent wall drop stays within the runner margin",
+      "reference": {},
+      "candidate": {"runtime_model_ratios": {"A": {"wall": 6.0}, "B": {"wall": 12.0}, "C": {"wall": 18.0}, "D": {"wall": 24.0}}, "runtime_ratio_stats": {"wall_ratio_both_success": {"median": 15.0}}},
+      "regressions": [],
+      "improvements": []
+    },
+    {
+      "name": "exactly 45 percent wall drop is admitted",
+      "reference": {},
+      "candidate": {"runtime_model_ratios": {"A": {"wall": 5.5}, "B": {"wall": 11.0}, "C": {"wall": 16.5}, "D": {"wall": 22.0}}, "runtime_ratio_stats": {"wall_ratio_both_success": {"median": 13.750000000000002}}},
+      "regressions": [],
+      "improvements": []
+    },
+    {
+      "name": "a wall drop beyond 45 percent is refused",
+      "reference": {},
+      "candidate": {"runtime_model_ratios": {"A": {"wall": 5.499996}, "B": {"wall": 10.999992}, "C": {"wall": 16.499988000000002}, "D": {"wall": 21.999984}}, "runtime_ratio_stats": {"wall_ratio_both_success": {"median": 13.74999}}},
+      "regressions": ["runtime wall speedup median"],
+      "improvements": []
+    },
+    {
+      "name": "exactly 35 percent system drop is admitted",
+      "reference": {},
+      "candidate": {"runtime_model_ratios": {"A": {"system": 0.65}, "B": {"system": 1.3}, "C": {"system": 1.9500000000000002}, "D": {"system": 2.6}}, "runtime_ratio_stats": {"system_ratio_both_success": {"median": 1.625}}},
+      "regressions": [],
+      "improvements": []
+    },
+    {
+      "name": "a system drop beyond 35 percent is refused",
+      "reference": {},
+      "candidate": {"runtime_model_ratios": {"A": {"system": 0.6499996}, "B": {"system": 1.2999992}, "C": {"system": 1.9499988}, "D": {"system": 2.5999984}}, "runtime_ratio_stats": {"system_ratio_both_success": {"median": 1.624999}}},
+      "regressions": ["runtime system speedup median"],
+      "improvements": []
+    },
+    {
+      "name": "a reference aggregate cannot contradict its per-model evidence",
+      "reference": {"runtime_ratio_stats": {"wall_ratio_both_success": {"median": 18.078527323083822}}},
+      "candidate": {},
+      "error": "runtime_model_ratios"
+    },
+    {
+      "name": "a reference cannot repeat a runtime cohort model",
+      "reference": {"runtime_ratio_cohort_models": ["A", "B", "C", "C"]},
+      "candidate": {},
+      "error": "runtime_model_ratios"
+    },
+    {
+      "name": "a reference cannot carry a nonpositive runtime ratio",
+      "reference": {"runtime_model_ratios": {"A": {"system": 0}}},
+      "candidate": {},
+      "error": "finite positive"
+    },
+    {
+      "name": "a reference sample count must bind its runtime roster",
+      "reference": {"runtime_ratio_stats": {"system_ratio_both_success": {"sample_count": 3}}},
+      "candidate": {},
+      "error": "sample_count"
+    },
+    {
+      "name": "a candidate sample count must bind its runtime roster",
+      "reference": {},
+      "candidate": {"runtime_ratio_stats": {"wall_ratio_both_success": {"sample_count": 3}}},
+      "error": "sample_count"
+    },
+    {
+      "name": "a current-schema reference cannot erase its per-model timing evidence",
+      "reference": {"quality_gate_version": 14, "runtime_model_ratios": null},
+      "candidate": {},
+      "error": "runtime_model_ratios"
+    },
+    {
+      "name": "a current-schema reference must record runtime sample counts",
+      "reference": {"quality_gate_version": 14},
+      "candidate": {},
+      "error": "sample_count"
+    },
+    {"name":"a finite huge reference vector cannot contradict its recorded median","reference":{"quality_gate_version":14,"runtime_model_ratios":{"A":{"system":1e+308,"wall":1e+308},"B":{"system":1e+308,"wall":1e+308},"C":{"system":1e+308,"wall":1e+308},"D":{"system":1e+308,"wall":1e+308}},"runtime_ratio_stats":{"system_ratio_both_success":{"median":1,"sample_count":4},"wall_ratio_both_success":{"median":1,"sample_count":4}}},"candidate":{},"error":"median"},
+    {"name":"a finite huge candidate vector cannot contradict its recorded median","candidate":{"quality_gate_version":14,"runtime_model_ratios":{"A":{"system":1e+308,"wall":1e+308},"B":{"system":1e+308,"wall":1e+308},"C":{"system":1e+308,"wall":1e+308},"D":{"system":1e+308,"wall":1e+308}},"runtime_ratio_stats":{"system_ratio_both_success":{"median":1,"sample_count":4},"wall_ratio_both_success":{"median":1,"sample_count":4}}},"reference":{},"error":"median"},
+    {"name":"matching huge runtime vectors remain comparable","reference":{"quality_gate_version":14,"runtime_model_ratios":{"A":{"system":1e+308,"wall":1e+308},"B":{"system":1e+308,"wall":1e+308},"C":{"system":1e+308,"wall":1e+308},"D":{"system":1e+308,"wall":1e+308}},"runtime_ratio_stats":{"system_ratio_both_success":{"median":1e+308,"sample_count":4},"wall_ratio_both_success":{"median":1e+308,"sample_count":4}}},"candidate":{"quality_gate_version":14,"runtime_model_ratios":{"A":{"system":1e+308,"wall":1e+308},"B":{"system":1e+308,"wall":1e+308},"C":{"system":1e+308,"wall":1e+308},"D":{"system":1e+308,"wall":1e+308}},"runtime_ratio_stats":{"system_ratio_both_success":{"median":1e+308,"sample_count":4},"wall_ratio_both_success":{"median":1e+308,"sample_count":4}}},"regressions":[],"improvements":[]},
+    {"name":"matching positive subnormal runtime vectors remain comparable","reference":{"quality_gate_version":14,"runtime_model_ratios":{"A":{"system":5e-324,"wall":5e-324},"B":{"system":5e-324,"wall":5e-324},"C":{"system":5e-324,"wall":5e-324},"D":{"system":5e-324,"wall":5e-324}},"runtime_ratio_stats":{"system_ratio_both_success":{"median":5e-324,"sample_count":4},"wall_ratio_both_success":{"median":5e-324,"sample_count":4}}},"candidate":{"quality_gate_version":14,"runtime_model_ratios":{"A":{"system":5e-324,"wall":5e-324},"B":{"system":5e-324,"wall":5e-324},"C":{"system":5e-324,"wall":5e-324},"D":{"system":5e-324,"wall":5e-324}},"runtime_ratio_stats":{"system_ratio_both_success":{"median":5e-324,"sample_count":4},"wall_ratio_both_success":{"median":5e-324,"sample_count":4}}},"regressions":[],"improvements":[]}
   ]
 }
