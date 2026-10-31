@@ -13,6 +13,7 @@ mod galec_branch_element_drop;
 mod galec_call_boundary;
 mod galec_emission_policy;
 mod galec_enumeration_status;
+mod galec_equation_pre;
 mod galec_equivalence;
 mod galec_integer_sign;
 mod galec_periodic_real;
