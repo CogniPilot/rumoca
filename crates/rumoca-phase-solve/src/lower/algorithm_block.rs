@@ -1061,12 +1061,7 @@ fn lower_statement<'p>(
         // statement, so each statement's stores are visible before a later
         // statement can fault.
         Statement::If(if_statement) if env.slots.is_some() && scope.method != Method::Function => {
-            lower_if_split(builder, scope, env, if_statement, None, span)?;
-            env.definite.extend(
-                Body::Chain(&if_statement.branches, if_statement.else_body.as_deref())
-                    .definite(scope),
-            );
-            Ok(())
+            lower_top_level_split(builder, scope, env, if_statement, span)
         }
         Statement::If(if_statement) => lower_if(
             builder,
@@ -1576,6 +1571,22 @@ fn lower_conditional<'p>(
     }
     env.definite
         .extend(definite_true.intersection(&definite_false).copied());
+    Ok(())
+}
+
+/// A top-level `if` lowered split (see [`lower_if_split`]), recording what
+/// it definitely writes.
+fn lower_top_level_split<'p>(
+    builder: &mut TypedProgramBuilder<'p>,
+    scope: &MethodScope<'_>,
+    env: &mut Env<'p>,
+    if_statement: &IfStatement,
+    span: Span,
+) -> Result<(), SolveProgramConstructionError> {
+    lower_if_split(builder, scope, env, if_statement, None, span)?;
+    env.definite.extend(
+        Body::Chain(&if_statement.branches, if_statement.else_body.as_deref()).definite(scope),
+    );
     Ok(())
 }
 

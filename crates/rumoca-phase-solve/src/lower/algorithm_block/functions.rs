@@ -211,22 +211,28 @@ pub(super) fn lower_functions(
         .collect::<Result<Vec<_>, _>>()?;
     let status_scope = function_block_scope(scope);
     let mut scopes = Vec::with_capacity(order.len());
+    let mut splits = Vec::with_capacity(order.len());
     for function in &order {
         let function_scope = function_scope(&status_scope, function)?;
         check_statements(&function_scope, &function.statements)?;
         require_defined_function(&function_scope, function)?;
-        let summary = function_summary(&function_scope, &function.statements);
+        let (summary, split) = function_summary(&function_scope, &function.statements);
         scope
             .functions
             .summaries
             .borrow_mut()
             .insert(function.name.lexeme().to_owned(), summary);
         scopes.push(function_scope);
+        splits.push(split);
     }
     let mut failure = None;
     let table = SolvePureCallTable::construct(scope.arithmetic, |table| {
-        for (index, ((function, function_scope), &provenance)) in
-            order.iter().zip(&scopes).zip(&provenances).enumerate()
+        for (index, (((function, function_scope), split), &provenance)) in order
+            .iter()
+            .zip(&scopes)
+            .zip(&splits)
+            .zip(&provenances)
+            .enumerate()
         {
             let name = function.name.lexeme();
             let signature = &scope.functions.signatures[name];
@@ -252,10 +258,10 @@ pub(super) fn lower_functions(
                     |builder, inputs, outputs| {
                         lower_function(
                             builder,
-                            inputs,
-                            outputs,
+                            (inputs, outputs),
                             function_scope,
                             function,
+                            split,
                             provenance,
                         )
                     },
@@ -408,12 +414,14 @@ fn function_scope<'a>(
 /// The body works on method-local slots (an owner stores each output
 /// exactly once and never loads one); the outputs, then the status bits, are
 /// stored at the end.
+/// `split` names the top-level `if` statements that lower split (see
+/// `function_summary`).
 fn lower_function<'p>(
     builder: &mut TypedProgramBuilder<'p>,
-    inputs: &[ProgramSlot<'p>],
-    outputs: &[ProgramSlot<'p>],
+    (inputs, outputs): (&[ProgramSlot<'p>], &[ProgramSlot<'p>]),
     scope: &MethodScope<'_>,
     function: &UserFunction,
+    split: &BTreeSet<usize>,
     span: Span,
 ) -> Result<(), SolveProgramConstructionError> {
     let local = |builder: &mut TypedProgramBuilder<'p>, variable: &Variable, at: Span| {
@@ -469,7 +477,14 @@ fn lower_function<'p>(
         .chain((function.parameters.len()..scope.locals.len()).map(VarId::Local))
         .collect::<Vec<_>>();
     zero_initialize(builder, scope, &mut env, written, span)?;
-    lower_statements(builder, scope, &mut env, &function.statements)?;
+    for (index, statement) in function.statements.iter().enumerate() {
+        match &statement.node {
+            Statement::If(if_statement) if split.contains(&index) => {
+                lower_top_level_split(builder, scope, &mut env, if_statement, statement.span)?;
+            }
+            node => lower_statement(builder, scope, &mut env, node, statement.span)?,
+        }
+    }
     results.extend(
         scope
             .scope
