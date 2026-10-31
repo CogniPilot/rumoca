@@ -17,6 +17,8 @@ rumoca-core = { workspace = true }
 rumoca-compile = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-ir-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 # `rumoca-sim` is optional behind the `simulation` feature. The bare LSP
 # (completions, hover, diagnostics) does not need solver backends, and

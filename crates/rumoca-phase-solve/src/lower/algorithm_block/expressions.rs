@@ -305,6 +305,7 @@ fn lower_lazy_arms<'p>(
 
 /// `if condition then value elseif ... else else_value` for an evaluated
 /// `condition`, each arm a region carrying the result and the status bits.
+// SPEC_0021: Exception - one lazy-select chain threads the builder, scope, env, arms and status channels together.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn lower_lazy_select<'p>(
     builder: &mut TypedProgramBuilder<'p>,
@@ -375,6 +376,7 @@ pub(super) fn lower_lazy_select<'p>(
     Ok(results[0])
 }
 
+// SPEC_0021: Exception - one region per lazy arm needs the parent scope, captures and status channels together.
 #[allow(clippy::too_many_arguments)]
 fn lower_lazy_arm<'r>(
     region: &mut TypedProgramBuilder<'r>,
@@ -515,38 +517,35 @@ fn lower_binary<'p>(
     rhs: ProgramRegister<'p>,
     span: Span,
 ) -> Result<ProgramRegister<'p>, SolveProgramConstructionError> {
-    let compare = match op {
-        BinaryOp::Lt => Some(SolveCompareOperator::Less),
-        BinaryOp::Gt => Some(SolveCompareOperator::Greater),
-        BinaryOp::Le => Some(SolveCompareOperator::LessEqual),
-        BinaryOp::Ge => Some(SolveCompareOperator::GreaterEqual),
-        BinaryOp::Eq => Some(SolveCompareOperator::Equal),
-        BinaryOp::Ne => Some(SolveCompareOperator::NotEqual),
-        _ => None,
+    let mut compare = |operator| lower_compare(builder, scope, env, operator, lhs, rhs, span);
+    // `None` is division, whose operator the operand type decides below.
+    let arithmetic = match op {
+        BinaryOp::Lt => return compare(SolveCompareOperator::Less),
+        BinaryOp::Gt => return compare(SolveCompareOperator::Greater),
+        BinaryOp::Le => return compare(SolveCompareOperator::LessEqual),
+        BinaryOp::Ge => return compare(SolveCompareOperator::GreaterEqual),
+        BinaryOp::Eq => return compare(SolveCompareOperator::Equal),
+        BinaryOp::Ne => return compare(SolveCompareOperator::NotEqual),
+        BinaryOp::Add => Some(SolveBinaryOperator::Add),
+        BinaryOp::Sub => Some(SolveBinaryOperator::Subtract),
+        BinaryOp::Mul => Some(SolveBinaryOperator::Multiply),
+        BinaryOp::Div => None,
+        BinaryOp::Pow => Some(SolveBinaryOperator::Power),
+        BinaryOp::And => Some(SolveBinaryOperator::And),
+        BinaryOp::Or => Some(SolveBinaryOperator::Or),
     };
-    if let Some(compare) = compare {
-        return lower_compare(builder, scope, env, compare, lhs, rhs, span);
-    }
     let (lhs, rhs) = broadcast_scalar(builder, lhs, rhs, span)?;
     let real = matches!(
         builder.value_type_of(lhs, span)?.element_type(),
         SolveScalarType::Real { .. }
     );
-    let operator = match op {
-        BinaryOp::Add => SolveBinaryOperator::Add,
-        BinaryOp::Sub => SolveBinaryOperator::Subtract,
-        BinaryOp::Mul => SolveBinaryOperator::Multiply,
-        BinaryOp::Div if real => SolveBinaryOperator::Divide,
-        // MLS/GALEC Integer division truncates toward zero and faults on a
-        // zero divisor or an unrepresentable quotient (SOLVE-C33).
-        BinaryOp::Div => SolveBinaryOperator::IntegerQuotient,
-        BinaryOp::Pow => SolveBinaryOperator::Power,
-        BinaryOp::And => SolveBinaryOperator::And,
-        BinaryOp::Or => SolveBinaryOperator::Or,
-        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge | BinaryOp::Eq | BinaryOp::Ne => {
-            unreachable!("comparisons are lowered above")
-        }
-    };
+    // MLS/GALEC Integer division truncates toward zero and faults on a zero
+    // divisor or an unrepresentable quotient (SOLVE-C33).
+    let operator = arithmetic.unwrap_or(if real {
+        SolveBinaryOperator::Divide
+    } else {
+        SolveBinaryOperator::IntegerQuotient
+    });
     builder.binary(operator, lhs, rhs, span)
 }
 

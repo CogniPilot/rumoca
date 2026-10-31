@@ -205,6 +205,10 @@ pub(super) fn lower_functions(
     AlgorithmBlockLowerError,
 > {
     let order = callee_first(block, &scope.functions)?;
+    let provenances = order
+        .iter()
+        .map(|function| function_provenance(function))
+        .collect::<Result<Vec<_>, _>>()?;
     let status_scope = function_block_scope(scope);
     let mut scopes = Vec::with_capacity(order.len());
     for function in &order {
@@ -221,7 +225,9 @@ pub(super) fn lower_functions(
     }
     let mut failure = None;
     let table = SolvePureCallTable::construct(scope.arithmetic, |table| {
-        for (index, (function, function_scope)) in order.iter().zip(&scopes).enumerate() {
+        for (index, ((function, function_scope), &provenance)) in
+            order.iter().zip(&scopes).zip(&provenances).enumerate()
+        {
             let name = function.name.lexeme();
             let signature = &scope.functions.signatures[name];
             let outputs = signature
@@ -242,9 +248,16 @@ pub(super) fn lower_functions(
                     identity,
                     signature.inputs.clone(),
                     outputs,
-                    function_provenance(function),
+                    provenance,
                     |builder, inputs, outputs| {
-                        lower_function(builder, inputs, outputs, function_scope, function)
+                        lower_function(
+                            builder,
+                            inputs,
+                            outputs,
+                            function_scope,
+                            function,
+                            provenance,
+                        )
                     },
                 )
                 .inspect_err(|error| failure = Some((name.to_owned(), error.clone())))?;
@@ -266,11 +279,12 @@ pub(super) fn lower_functions(
     }
     let sources = order
         .iter()
-        .map(|function| {
+        .zip(&provenances)
+        .map(|(function, &provenance)| {
             SolveAlgorithmCodeRef::construct(
                 SolveAlgorithmCodeEntityKind::Function,
                 function.name.lexeme(),
-                function_provenance(function),
+                provenance,
             )
         })
         .collect();
@@ -324,7 +338,7 @@ fn require_declared_signals(
 }
 
 /// The scope every function body shares: only the six status bits, which
-/// lower to the owner's trailing outputs.
+/// lower to the owner's trailing outputs, located at the block.
 fn function_block_scope(scope: &BlockScope) -> BlockScope {
     let block = SIGNALS
         .iter()
@@ -336,7 +350,7 @@ fn function_block_scope(scope: &BlockScope) -> BlockScope {
             lifecycle: Lifecycle::Any,
             low: None,
             high: None,
-            span: Span::DUMMY,
+            span: scope.provenance,
         })
         .collect();
     BlockScope {
@@ -345,6 +359,7 @@ fn function_block_scope(scope: &BlockScope) -> BlockScope {
         by_name: BTreeMap::new(),
         status: [0, 1, 2, 3, 4, 5],
         functions: Rc::clone(&scope.functions),
+        provenance: scope.provenance,
     }
 }
 
@@ -385,6 +400,7 @@ fn function_scope<'a>(
         locals,
         local_names,
         loops: RefCell::new(Vec::new()),
+        iterator: iterator_declaration(scope),
         raised: RefCell::new(BTreeSet::new()),
     })
 }
@@ -398,8 +414,8 @@ fn lower_function<'p>(
     outputs: &[ProgramSlot<'p>],
     scope: &MethodScope<'_>,
     function: &UserFunction,
+    span: Span,
 ) -> Result<(), SolveProgramConstructionError> {
-    let span = function_provenance(function);
     let local = |builder: &mut TypedProgramBuilder<'p>, variable: &Variable, at: Span| {
         builder.declare_slot(
             variable.value_type.clone(),
@@ -472,8 +488,9 @@ fn lower_function<'p>(
 }
 
 /// The function's own span, else the first exact span inside it: generated
-/// functions may leave the declaration span empty.
-fn function_provenance(function: &UserFunction) -> Span {
+/// functions may leave the declaration span empty. A function with no exact
+/// span at all is refused.
+fn function_provenance(function: &UserFunction) -> Result<Span, AlgorithmBlockLowerError> {
     std::iter::once(function.span)
         .chain(std::iter::once(function.name.span()))
         .chain(
@@ -483,8 +500,10 @@ fn function_provenance(function: &UserFunction) -> Span {
                 .map(|parameter| parameter.decl.span),
         )
         .chain(function.statements.iter().map(|statement| statement.span))
-        .find(|span| *span != Span::DUMMY)
-        .unwrap_or(Span::DUMMY)
+        .find(|span| !span.is_dummy())
+        .ok_or_else(|| AlgorithmBlockLowerError::MissingProvenance {
+            what: format!("function `{}`", function.name.lexeme()),
+        })
 }
 
 /// The functions in an order where every callee precedes its callers.

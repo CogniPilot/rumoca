@@ -22,7 +22,6 @@ use rumoca_phase_codegen::{
 };
 use serde_json::json;
 
-#[path = "support/solve_render.rs"]
 mod support;
 
 const MODEL: &str = "RoutingFixture";

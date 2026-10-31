@@ -22,7 +22,6 @@ use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
 
-#[path = "support/solve_render.rs"]
 mod support;
 use serde_json::json;
 

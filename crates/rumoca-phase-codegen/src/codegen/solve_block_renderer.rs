@@ -65,7 +65,7 @@ impl SolveBlockTemplateRenderer {
         Ok(Self {
             context: minijinja::context! {
                 algorithm_code => Value::from_serialize(algorithm_code),
-                solve_block => solve_block_value(block, sources),
+                solve_block => solve_block_value(block, sources)?,
                 ir_kind => "solve_algorithm_block",
             },
         })
@@ -92,7 +92,7 @@ impl SolveBlockTemplateRenderer {
 pub(super) fn solve_block_value(
     block: &SolveAlgorithmBlock,
     sources: &rumoca_core::SourceMap,
-) -> Value {
+) -> Result<Value, CodegenError> {
     let mut status_bits = 0..;
     let slots = block
         .slots()
@@ -120,10 +120,12 @@ pub(super) fn solve_block_value(
             .owners()
             .iter()
             .map(|owner| {
+                // An owner the block does not bind has no status channels.
                 block
                     .status_binding(owner.id())
-                    .map(|binding| binding.slots().iter().map(|slot| slot.index()).collect())
-                    .unwrap_or_default()
+                    .map_or_else(Vec::new, |binding| {
+                        binding.slots().iter().map(|slot| slot.index()).collect()
+                    })
             })
             .collect(),
         function_names: block
@@ -135,7 +137,8 @@ pub(super) fn solve_block_value(
     let resolver = crate::views::source_trace::SourceTraceResolver::new(sources);
     let mut traces = BTreeMap::new();
     let mut literals = BTreeMap::new();
-    let mut json = serde_json::to_value(&view).unwrap_or_default();
+    let mut json = serde_json::to_value(&view)
+        .map_err(|error| CodegenError::template(format!("Solve block view: {error}")))?;
     collect_traces(&json, &resolver, &mut traces);
     collect_literals(&json, &mut literals);
     mark_aliased_loads(&mut json);
@@ -155,11 +158,11 @@ pub(super) fn solve_block_value(
         }
     }
     assign_call_levels(&mut json);
-    Value::from_serialize(TracedView {
+    Ok(Value::from_serialize(TracedView {
         view: json,
         traces,
         literals,
-    })
+    }))
 }
 
 #[derive(Serialize)]
@@ -570,9 +573,9 @@ fn assign_call_levels(json: &mut serde_json::Value) {
         .collect();
     let edges: Vec<Vec<usize>> = (0..count)
         .map(|owner| {
+            // An owner without a body calls nothing.
             json.pointer(&format!("/functions/owners/{owner}/body"))
-                .map(callees)
-                .unwrap_or_default()
+                .map_or_else(Vec::new, callees)
         })
         .collect();
     let mut level = vec![1usize; count];
@@ -1002,8 +1005,8 @@ fn without_comments_or_literals(text: &str) -> String {
         i = end;
     }
     // Only whole multi-byte characters inside blanked spans were replaced, so
-    // the result is still UTF-8.
-    String::from_utf8(out).unwrap_or_default()
+    // the result is still UTF-8 and the lossy conversion replaces nothing.
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The end of the string or character literal opening at `start`: past its

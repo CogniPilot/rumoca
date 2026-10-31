@@ -29,7 +29,6 @@ use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_sources, templates};
 use serde_json::json;
 
-#[path = "support/solve_render.rs"]
 mod support;
 
 const MODEL: &str = "FormattingFixture";

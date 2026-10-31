@@ -56,7 +56,7 @@ impl AlgorithmCodeTemplateRenderer {
         Ok(Self {
             context: minijinja::context! {
                 algorithm_code => Value::from_serialize(view),
-                solve_block => super::solve_block_renderer::solve_block_value(block, sources),
+                solve_block => super::solve_block_renderer::solve_block_value(block, sources)?,
                 ir_kind => "algorithm_code",
             },
             solve_c: true,

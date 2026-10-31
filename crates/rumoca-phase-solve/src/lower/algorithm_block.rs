@@ -80,6 +80,9 @@ pub enum AlgorithmBlockLowerError {
         name: String,
         error: SolveProgramConstructionError,
     },
+    /// A construct with no exact source span anywhere in it, so no Solve
+    /// provenance can name it (SPEC_0008).
+    MissingProvenance { what: String },
 }
 
 impl AlgorithmBlockLowerError {
@@ -89,7 +92,7 @@ impl AlgorithmBlockLowerError {
             Self::Unsupported { .. }
             | Self::LifecycleStore { .. }
             | Self::UnrepresentableBound { .. } => EL007_UNSUPPORTED_ALGORITHM_CODE,
-            Self::Construction(_) | Self::Function { .. } => {
+            Self::Construction(_) | Self::Function { .. } | Self::MissingProvenance { .. } => {
                 crate::diagnostic_codes::EL005_INVALID_SOLVE_CONTRACT
             }
         }
@@ -119,6 +122,9 @@ impl std::fmt::Display for AlgorithmBlockLowerError {
             Self::Construction(error) => write!(f, "{}: {error}", self.code()),
             Self::Function { name, error } => {
                 write!(f, "{}: function `{name}`: {error}", self.code())
+            }
+            Self::MissingProvenance { what } => {
+                write!(f, "{}: {what} carries no source span", self.code())
             }
         }
     }
@@ -216,6 +222,9 @@ struct BlockScope {
     by_name: BTreeMap<String, usize>,
     status: [usize; 6],
     functions: Rc<Functions>,
+    /// The block's own span, else its first exact span: what derived
+    /// declarations (status bits, loop iterators) are located at.
+    provenance: Span,
 }
 
 /// One method's lowering: its locals and which method it is.
@@ -227,6 +236,8 @@ struct MethodScope<'a> {
     /// The iterators of the `for` loops being analysed or lowered, outermost
     /// first; a name resolves to the innermost loop that binds it.
     loops: RefCell<Vec<String>>,
+    /// What every loop iterator is: an unbounded Integer scalar no slot holds.
+    iterator: Variable,
     /// Indices into `SIGNALS` of the signals the lowered body may raise.
     raised: RefCell<BTreeSet<usize>>,
 }
@@ -236,7 +247,7 @@ impl MethodScope<'_> {
         match id {
             VarId::Block(index) => &self.scope.block[index],
             VarId::Local(index) => &self.locals[index],
-            VarId::Loop(_) => unreachable!("a loop iterator has no declaration"),
+            VarId::Loop(_) => &self.iterator,
         }
     }
 
@@ -265,10 +276,7 @@ impl MethodScope<'_> {
         if subscripts.is_empty() {
             Ok(id)
         } else {
-            Err(unsupported(
-                "subscripted reference",
-                reference_span(reference),
-            ))
+            Err(unsupported_reference("subscripted reference", reference))
         }
     }
 
@@ -291,9 +299,9 @@ impl MethodScope<'_> {
             }
             Reference::State(parts) => {
                 let [part] = parts.as_slice() else {
-                    return Err(unsupported(
+                    return Err(unsupported_reference(
                         "compartment member reference",
-                        reference_span(reference),
+                        reference,
                     ));
                 };
                 let id = self
@@ -380,10 +388,21 @@ fn unrepresentable_bound(
     }
 }
 
-fn reference_span(reference: &Reference) -> Span {
-    match reference {
-        Reference::Local(part) => part.span,
-        Reference::State(parts) => parts.first().map_or(Span::DUMMY, |part| part.span),
+/// `construct` is not refined, located at the reference's first part. A
+/// state reference with no part has no span to cite.
+fn unsupported_reference(
+    construct: &'static str,
+    reference: &Reference,
+) -> AlgorithmBlockLowerError {
+    let first = match reference {
+        Reference::Local(part) => Some(part),
+        Reference::State(parts) => parts.first(),
+    };
+    match first {
+        Some(part) => unsupported(construct, part.span),
+        None => AlgorithmBlockLowerError::MissingProvenance {
+            what: format!("GALEC {construct}"),
+        },
     }
 }
 
@@ -402,20 +421,17 @@ pub fn lower_algorithm_block(
     let block = package.block();
     require_supported_block(block)?;
     let scope = block_scope(block, arithmetic)?;
-    let methods = [
-        (Method::Startup, &block.startup),
-        (Method::Recalibrate, &block.recalibrate),
-        (Method::DoStep, &block.do_step),
-    ];
     // Refuse every unsupported construct before any program is built, so the
     // builder closures below meet only construction errors.
-    let mut method_scopes = Vec::with_capacity(3);
-    for (method, body) in methods {
+    let checked = |method, body: &BlockMethod| {
         let method_scope = method_scope(&scope, method, body)?;
         check_statements(&method_scope, &body.statements)?;
-        method_scopes.push(method_scope);
-    }
-    require_startup_defines_state(&method_scopes[0], &block.startup.statements)?;
+        Ok::<_, AlgorithmBlockLowerError>(method_scope)
+    };
+    let startup = checked(Method::Startup, &block.startup)?;
+    let recalibrate = checked(Method::Recalibrate, &block.recalibrate)?;
+    let do_step = checked(Method::DoStep, &block.do_step)?;
+    require_startup_defines_state(&startup, &block.startup.statements)?;
     let slots = scope
         .block
         .iter()
@@ -432,8 +448,6 @@ pub fn lower_algorithm_block(
             )
         })
         .collect::<Vec<_>>();
-    let [startup, recalibrate, do_step] = <[MethodScope<'_>; 3]>::try_from(method_scopes)
-        .unwrap_or_else(|_| unreachable!("three lifecycle methods"));
     let (functions, function_sources, status_bindings) = lower_functions(block, &scope)?;
     for (scope, body) in [
         (&startup, &block.startup),
@@ -486,12 +500,7 @@ fn declared_signals(
     let declared = body
         .signals
         .iter()
-        .map(|signal| {
-            SIGNALS
-                .iter()
-                .position(|(predefined, _)| predefined == signal)
-                .unwrap_or_else(|| unreachable!("SIGNALS lists every predefined signal"))
-        })
+        .map(|signal| usize::from(signal.bit()))
         .collect::<BTreeSet<_>>();
     if !scope.raised.borrow().is_subset(&declared) {
         return Err(unsupported(
@@ -556,7 +565,7 @@ fn block_provenance(block: &Block) -> Option<Span> {
     std::iter::once(block.span)
         .chain(declarations)
         .chain(statements)
-        .find(|span| *span != Span::DUMMY)
+        .find(|span| !span.is_dummy())
 }
 
 fn block_scope(
@@ -619,7 +628,24 @@ fn block_scope(
         by_name,
         status,
         functions: Rc::new(Functions::declare(block, arithmetic)?),
+        provenance,
     })
+}
+
+/// The declaration every `for` iterator of `scope` shares.
+fn iterator_declaration(scope: &BlockScope) -> Variable {
+    Variable {
+        name: "for-loop iterator".to_owned(),
+        value_type: SolveValueType::scalar(SolveScalarType::Integer(
+            scope.arithmetic.integer_domain(),
+        )),
+        dims: Vec::new(),
+        storage: SolveStorageClass::MethodLocal,
+        lifecycle: Lifecycle::Any,
+        low: None,
+        high: None,
+        span: scope.provenance,
+    }
 }
 
 fn method_scope<'a>(
@@ -647,6 +673,7 @@ fn method_scope<'a>(
         locals,
         local_names,
         loops: RefCell::new(Vec::new()),
+        iterator: iterator_declaration(scope),
         raised: RefCell::new(BTreeSet::new()),
     })
 }
@@ -918,12 +945,10 @@ fn lower_method<'p>(
     scope: &MethodScope<'_>,
     body: &BlockMethod,
 ) -> Result<Vec<SolveAlgorithmCodeRef>, SolveProgramConstructionError> {
-    let method_span = if body.span == Span::DUMMY {
-        scope
-            .scope
-            .block
-            .first()
-            .map_or(Span::DUMMY, |variable| variable.span)
+    // A generated method may leave its span empty; it then takes the
+    // block's provenance.
+    let method_span = if body.span.is_dummy() {
+        scope.scope.provenance
     } else {
         body.span
     };
@@ -1629,6 +1654,7 @@ fn lower_guarded_statements<'p>(
     Ok(())
 }
 
+// SPEC_0021: Exception - one branch region needs the parent scope, carried variables, captures and status channels together.
 #[allow(clippy::too_many_arguments)]
 fn lower_branch<'r>(
     region: &mut TypedProgramBuilder<'r>,

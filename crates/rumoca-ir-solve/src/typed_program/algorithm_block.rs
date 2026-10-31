@@ -39,7 +39,8 @@ pub enum SolveAlgorithmCodeEntityKind {
 }
 
 /// One checked Algorithm Code entity, named without depending on the GALEC IR.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+/// Not `Hash`: its identity is a rendered name, not an interned id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolveAlgorithmCodeRef {
     kind: SolveAlgorithmCodeEntityKind,
     qualified_name: Box<str>,
@@ -236,10 +237,13 @@ pub enum SolveAlgorithmBlockConstructionError {
         method: SolveBlockMethodKind,
         error: SolveProgramConstructionError,
     },
-    /// A function owner's status binding names an owner outside the block's
-    /// table, repeats one, or does not name one Boolean method-local slot per
-    /// signal status slot with matching trailing Boolean results.
+    /// A function owner's status binding repeats an owner, or does not name
+    /// one Boolean method-local slot per signal status slot with matching
+    /// trailing Boolean results.
     StatusBinding { provenance: Span },
+    /// A status binding names an owner outside the block's function table;
+    /// there is no owner whose provenance could locate it.
+    StatusBindingUnknownOwner { owner: u32 },
     /// A method local or a `PreviousState` slot in the block table; neither
     /// is block storage that checked Algorithm Code can produce.
     UnsupportedBlockStorage { provenance: Span },
@@ -280,6 +284,7 @@ impl SolveAlgorithmBlockConstructionError {
         match self {
             Self::Program { error, .. } => error.source_span(),
             Self::SlotPrefixMismatch { .. }
+            | Self::StatusBindingUnknownOwner { .. }
             | Self::LocalSourceCount { .. }
             | Self::FunctionTableProfile
             | Self::FunctionSources
@@ -328,6 +333,10 @@ impl std::fmt::Display for SolveAlgorithmBlockConstructionError {
             }
             Self::StatusBinding { .. } => formatter
                 .write_str("a function status binding does not match its owner's status channels"),
+            Self::StatusBindingUnknownOwner { owner } => write!(
+                formatter,
+                "a function status binding names owner {owner}, which the function table lacks"
+            ),
             Self::FunctionSources => formatter
                 .write_str("function sources do not pair one-to-one with the function owners"),
             Self::EscapeNotSignalStatus { method, slot } => write!(
@@ -713,8 +722,8 @@ fn require_status_bindings(
     let mut bound = vec![false; functions.owners().len()];
     for binding in bindings {
         let owner = functions.owner(binding.owner).ok_or(
-            SolveAlgorithmBlockConstructionError::StatusBinding {
-                provenance: Span::DUMMY,
+            SolveAlgorithmBlockConstructionError::StatusBindingUnknownOwner {
+                owner: binding.owner.index(),
             },
         )?;
         let first = !std::mem::replace(

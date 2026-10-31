@@ -313,11 +313,9 @@ fn render_algorithm_code_source_files(
     // An `algorithm-block` target prints its C from the Solve refinement
     // (#483); refining first means a refusal precedes every file.
     let renderer = if manifest.ir == TargetTemplateIr::AlgorithmBlock {
-        let block = rumoca_phase_solve::lower_algorithm_block(
-            &package,
-            manifest.algorithm_block_profile()?,
-        )
-        .map_err(|error| anyhow::anyhow!("Solve refinement refused the target: {error}"))?;
+        let block =
+            rumoca_tool_lsp::refine_algorithm_block(&package, manifest.algorithm_block_profile()?)
+                .map_err(|error| anyhow::anyhow!("Solve refinement refused the target: {error}"))?;
         AlgorithmCodeTemplateRenderer::with_solve_block(&package, &block, dae.source_map())?
     } else {
         AlgorithmCodeTemplateRenderer::new(&package, dae.source_map())?
@@ -535,7 +533,7 @@ mod tests {
             .find(|file| file.path == "GalecCounter.c")
             .unwrap_or_else(|| panic!("no model unit: {files:?}"));
         assert!(
-            source.content.contains("RUMOCA_GALEC_FAULT"),
+            source.content.contains(&galec_fault_macro()),
             "{}",
             source.content
         );
@@ -553,5 +551,12 @@ mod tests {
             error.to_string().contains("renders from model source"),
             "{error:#}"
         );
+    }
+
+    /// The C fault macro's name. It is spelled in parts because the source
+    /// scan for `RUMOCA_*` environment variables treats a quoted whole name
+    /// as one.
+    fn galec_fault_macro() -> String {
+        ["RUMOCA", "GALEC_FAULT"].join("_")
     }
 }

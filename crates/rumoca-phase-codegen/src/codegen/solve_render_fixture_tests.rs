@@ -1,12 +1,16 @@
+//! Test fixture, the unit-test copy of `tests/support/mod.rs` (integration
+//! tests cannot reach a `cfg(test)` module, and unit tests cannot reach
+//! `tests/`). Keep the two in step.
+//!
 //! Render a hand-built GALEC block the way the shipped C targets do (#483):
 //! refine it into a Solve algorithm block under the targets' binary32/signed32
 //! profile, then render with both the Algorithm Code view (header ABI, symbol
 //! policy) and the Solve view (method and function bodies).
 
+use crate::AlgorithmCodeTemplateRenderer;
 use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::{AlgorithmCodePackage, CheckedAlgorithmBlock};
 use rumoca_ir_solve::{SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat};
-use rumoca_phase_codegen::AlgorithmCodeTemplateRenderer;
 
 /// The name the package's clock reference uses when a fixture declares no
 /// tunable parameter or constant of its own.

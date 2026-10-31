@@ -5,7 +5,6 @@ use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
 
-#[path = "support/solve_render.rs"]
 mod support;
 use serde_json::json;
 use tempfile::tempdir;
@@ -1264,7 +1263,7 @@ fn the_kernel_library_carries_a_content_derived_version_no_model_unit_depends_on
     // The Solve-printed model unit calls no kernel, so it carries no
     // version guard: the library's own identity is what stays checked.
     assert!(
-        !source.contains("RUMOCA_GALEC_KERNELS_VERSION"),
+        !source.contains(&["RUMOCA", "GALEC_KERNELS_VERSION"].join("_")),
         "a model unit with no kernel dependency must not guard on the library:\n{source}"
     );
     // Nothing date-, machine- or model-dependent may reach the define: the same

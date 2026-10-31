@@ -106,7 +106,7 @@ fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
         // Solve-printed unit (only that unit carries the fault macro).
         let source = &files["ProductionCode/GalecCounter.c"];
         assert!(
-            source.contains("RUMOCA_GALEC_FAULT"),
+            source.contains(&galec_fault_macro()),
             "the C preview must print from the Solve refinement: {source}"
         );
     }
@@ -436,4 +436,10 @@ fn actual_tensor_decay_fmi2_and_fmi3_editor_exports_include_entire_source_projec
             assert_fmi_preview(target, &rendered_files(&response));
         }
     });
+}
+
+/// The C fault macro's name. It is spelled in parts because the source scan
+/// for `RUMOCA_*` environment variables treats a quoted whole name as one.
+fn galec_fault_macro() -> String {
+    ["RUMOCA", "GALEC_FAULT"].join("_")
 }

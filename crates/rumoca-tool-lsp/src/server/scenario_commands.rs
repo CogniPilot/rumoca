@@ -719,11 +719,8 @@ fn render_algorithm_code_source_files(
     // Solve refinement (#483), refined before any file renders.
     let sources = rumoca_core::SourceMap::new();
     let renderer = if manifest.ir == TargetTemplateIr::AlgorithmBlock {
-        let block = rumoca_phase_solve::lower_algorithm_block(
-            &package,
-            manifest.algorithm_block_profile()?,
-        )
-        .map_err(|error| anyhow::anyhow!("Solve refinement refused the target: {error}"))?;
+        let block = crate::refine_algorithm_block(&package, manifest.algorithm_block_profile()?)
+            .map_err(|error| anyhow::anyhow!("Solve refinement refused the target: {error}"))?;
         rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
             &package, &block, &sources,
         )?

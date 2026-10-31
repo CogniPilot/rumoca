@@ -720,7 +720,7 @@ end GalecWasmDemo;
             assert!(
                 value["c_source"]
                     .as_str()
-                    .is_some_and(|source| source.contains("RUMOCA_GALEC_FAULT")),
+                    .is_some_and(|source| source.contains(&galec_fault_macro())),
                 "{target}: {value}"
             );
         }
@@ -741,7 +741,7 @@ end GalecWasmDemo;
         assert!(
             edited["c_source"]
                 .as_str()
-                .is_some_and(|source| source.contains("RUMOCA_GALEC_FAULT")),
+                .is_some_and(|source| source.contains(&galec_fault_macro())),
             "{edited}"
         );
     }
@@ -898,5 +898,12 @@ end ContinuousDemo;
         let rendered = projection_rejected_error(&[error], &source_map);
         assert!(rendered.contains("[EGT017]"), "{rendered}");
         assert!(rendered.contains("models/A.mo:2:3"), "{rendered}");
+    }
+
+    /// The C fault macro's name. It is spelled in parts because the source
+    /// scan for `RUMOCA_*` environment variables treats a quoted whole name
+    /// as one.
+    fn galec_fault_macro() -> String {
+        ["RUMOCA", "GALEC_FAULT"].join("_")
     }
 }

@@ -487,9 +487,10 @@ fn algorithm_code_renderer(
     }
     let target = manifest.name.as_deref().unwrap_or("custom");
     let profile = manifest.algorithm_block_profile()?;
-    let block = rumoca_phase_solve::lower_algorithm_block(&package, profile).map_err(|error| {
-        anyhow::anyhow!("Solve refinement refused target '{target}' before any output: {error}")
-    })?;
+    let block =
+        rumoca_sim::algorithm_block::lower_algorithm_block(&package, profile).map_err(|error| {
+            anyhow::anyhow!("Solve refinement refused target '{target}' before any output: {error}")
+        })?;
     Ok(
         rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
             &package,

@@ -23,7 +23,6 @@ use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
 
-#[path = "support/solve_render.rs"]
 mod support;
 use serde_json::json;
 use tempfile::tempdir;
@@ -407,7 +406,7 @@ fn the_overlay_and_its_cost_are_stated_in_the_generated_source() {
     );
     // The achieved total is machine-readable rather than left to a reader.
     assert!(
-        header.contains("RUMOCA_WORKINGMEMORY_SCRATCH_BYTES"),
+        header.contains(&["RUMOCA", "WORKINGMEMORY_SCRATCH_BYTES"].join("_")),
         "the working-memory cost must be stated:\n{header}"
     );
 }

@@ -559,6 +559,24 @@ fn status_bindings_must_name_each_owners_canonical_channels() {
     };
     // Omitted owner.
     assert!(refused(block_with_one_function(|_| Vec::new())));
+    // An owner outside the table.
+    let unknown = block_with_one_function(|table| {
+        let (_, slots) = owner_slots(table);
+        vec![SolveStatusBinding::new(
+            crate::SolvePureCallOwnerId::LIFECYCLE_METHOD,
+            vec![slots[3], slots[4]],
+        )]
+    });
+    assert!(matches!(
+        unknown,
+        Err(SolveAlgorithmBlockConstructionError::StatusBindingUnknownOwner { .. })
+    ));
+    assert!(
+        unknown
+            .unwrap_err()
+            .to_string()
+            .contains("function table lacks")
+    );
     // Repeated slot, permuted channels, and another local (an output slot).
     assert!(refused(block_with_one_function(bind(|s| vec![s[3], s[3]]))));
     assert!(refused(block_with_one_function(bind(|s| vec![s[4], s[3]]))));

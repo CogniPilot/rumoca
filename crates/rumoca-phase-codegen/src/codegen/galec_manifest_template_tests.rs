@@ -150,8 +150,7 @@ fn artifact_facts() -> serde_json::Value {
     })
 }
 
-#[path = "../../tests/support/solve_render.rs"]
-mod support;
+use super::solve_render_fixture_tests as support;
 
 /// A C model template (or one extending the shared GALEC C model units)
 /// prints from the Solve view.
@@ -1060,7 +1059,8 @@ fn render_block_with_symbol_policy(
             .expect("package view");
         template.render(minijinja::context! {
             algorithm_code => minijinja::Value::from_serialize(view),
-            solve_block => super::solve_block_renderer::solve_block_value(&refined, &sources),
+            solve_block => super::solve_block_renderer::solve_block_value(&refined, &sources)
+                .expect("Solve block view"),
             artifact => minijinja::Value::from_serialize(artifact_facts()),
             ir_kind => "algorithm_code",
             model_name => "fixture",

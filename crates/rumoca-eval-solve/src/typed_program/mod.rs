@@ -196,6 +196,12 @@ pub enum TypedProgramEvalError {
     UnknownOwner {
         owner: SolvePureCallOwnerId,
     },
+    /// A block lifecycle method could not run or complete as a whole: the
+    /// caller's state does not bind the block's slots, or the method stopped
+    /// on an assertion. It concerns the block, not one source construct.
+    InvalidBlockMethod {
+        operation: &'static str,
+    },
     InvalidArgument {
         index: usize,
         provenance: Span,
@@ -238,7 +244,7 @@ impl TypedProgramEvalError {
     #[must_use]
     pub const fn source_span(&self) -> Option<Span> {
         match self {
-            Self::UnknownOwner { .. } => None,
+            Self::UnknownOwner { .. } | Self::InvalidBlockMethod { .. } => None,
             Self::AssertionFailed { failure } => Some(failure.source_span()),
             Self::InvalidArgument { provenance, .. }
             | Self::InvalidCheckedProgram { provenance, .. }
@@ -266,6 +272,9 @@ impl std::fmt::Display for TypedProgramEvalError {
             ),
             Self::UnknownOwner { owner } => {
                 write!(formatter, "unknown pure-call owner {}", owner.index())
+            }
+            Self::InvalidBlockMethod { operation } => {
+                write!(formatter, "invalid algorithm block method: {operation}")
             }
             Self::InvalidArgument { index, .. } => {
                 write!(
@@ -1623,23 +1632,24 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
 
     /// This frame's status slots, in signal order: the block's signal status
     /// slots for a lifecycle method, its binding's slots for a function.
-    fn status_slots(&self) -> Vec<usize> {
-        let Some(block) = self.block.filter(|_| self.bound) else {
-            return Vec::new();
-        };
+    /// `None` for a frame with no status channels: one outside a block, a
+    /// region frame, or a function the block does not bind.
+    fn status_slots(&self) -> Option<Vec<usize>> {
+        let block = self.block.filter(|_| self.bound)?;
         if self.owner == SolvePureCallOwnerId::LIFECYCLE_METHOD {
-            return block
-                .slots()
-                .iter()
-                .enumerate()
-                .filter(|(_, slot)| slot.storage() == SolveStorageClass::SignalStatus)
-                .map(|(index, _)| index)
-                .collect();
+            return Some(
+                block
+                    .slots()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, slot)| slot.storage() == SolveStorageClass::SignalStatus)
+                    .map(|(index, _)| index)
+                    .collect(),
+            );
         }
         block
             .status_binding(self.owner)
             .map(|binding| binding.slots().iter().map(|slot| slot.index()).collect())
-            .unwrap_or_default()
     }
 
     /// The bits this frame has raised so far, when it is a bound function.
@@ -1647,16 +1657,15 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         if self.owner == SolvePureCallOwnerId::LIFECYCLE_METHOD {
             return None;
         }
-        self.block?.status_binding(self.owner)?;
         Some(
-            self.status_slots()
+            self.status_slots()?
                 .into_iter()
                 .map(|slot| {
                     self.storage
                         .slots
                         .get(slot)
                         .and_then(Option::as_ref)
-                        .is_some_and(|value| scalar_boolean(value, Span::DUMMY).unwrap_or(false))
+                        .is_some_and(|value| value.elements() == [SolveValueKind::Boolean(true)])
                 })
                 .collect(),
         )
@@ -1680,7 +1689,10 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
 
     /// Union `status` into this bound frame's status slots.
     fn union_status(&mut self, status: &[bool]) {
-        for (&raised, slot) in status.iter().zip(self.status_slots()) {
+        let Some(slots) = self.status_slots() else {
+            return;
+        };
+        for (&raised, slot) in status.iter().zip(slots) {
             if raised && let Some(value) = self.storage.slots.get_mut(slot) {
                 *value = Some(TypedValue::scalar(&SolveValue::boolean(true)));
             }

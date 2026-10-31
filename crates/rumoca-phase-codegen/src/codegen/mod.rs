@@ -40,6 +40,8 @@ mod lazy_scalar_projection;
 mod me_projection;
 mod native_fmi_renderer;
 mod solve_block_renderer;
+#[cfg(test)]
+mod solve_render_fixture_tests;
 pub use native_fmi_renderer::NativeFmiTemplateRenderer;
 #[cfg(test)]
 mod native_range_render_tests;
@@ -656,7 +658,7 @@ pub fn render_checked_algorithm_block_template_with_solve<T: Serialize>(
     Ok(solve_block_renderer::drop_needless_void_uses(
         &tmpl.render(minijinja::context! {
             algorithm_code => Value::from_serialize(view),
-            solve_block => solve_block_renderer::solve_block_value(refined, sources),
+            solve_block => solve_block_renderer::solve_block_value(refined, sources)?,
             artifact => Value::from_serialize(artifact),
             ir_kind => "algorithm_code",
             model_name,

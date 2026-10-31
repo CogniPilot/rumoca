@@ -27,10 +27,6 @@ pub fn eval_algorithm_method(
         SolveBlockMethodKind::DoStep => block.do_step(),
     }
     .program();
-    let provenance = block
-        .slots()
-        .first()
-        .map_or(rumoca_core::Span::DUMMY, |slot| slot.source().span());
     let bound = state.len() == block.slots().len()
         && block.slots().iter().zip(state.iter()).all(|(slot, value)| {
             value
@@ -38,7 +34,9 @@ pub fn eval_algorithm_method(
                 .is_none_or(|value| value.value_type() == slot.value_type())
         });
     if !bound {
-        return invalid("bind algorithm block state", provenance);
+        return Err(TypedProgramEvalError::InvalidBlockMethod {
+            operation: "bind algorithm block state",
+        });
     }
     // The caller initializes inputs and tunables before Startup (its
     // return clamp includes them). Later methods assume every block slot
@@ -101,7 +99,9 @@ pub fn eval_algorithm_method(
         return Err(error);
     }
     if frame.stopped.is_some() {
-        return invalid("a lifecycle method stopped on an assertion", provenance);
+        return Err(TypedProgramEvalError::InvalidBlockMethod {
+            operation: "a lifecycle method stopped on an assertion",
+        });
     }
     for (value, slot) in state.iter_mut().zip(frame.storage.slots.iter()) {
         value.clone_from(slot);
