@@ -5,6 +5,91 @@ use super::*;
 use crate::SolveBinaryOperator;
 use std::collections::BTreeSet;
 
+#[test]
+fn aggregate_presence_forwarded_to_a_scalar_call_keeps_scalar_coordinates() {
+    // One complete assigned payload has one scalar Boolean presence flag.
+    // Its payload rank must not become that Boolean's dependency rank.
+    for dimensions in [vec![], vec![3], vec![3, 17]] {
+        let payload = real_shape(dimensions);
+        let boolean = SolveValueType::scalar(SolveScalarType::Boolean);
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            let child = add_passthrough_owner(table, identity(950), &boolean, span(950))?;
+            table.add_owner(
+                identity(951),
+                vec![payload.clone(), payload.clone()],
+                vec![SolvePureCallOutput::result(boolean.clone())],
+                span(951),
+                |builder, inputs, outputs| {
+                    let value = builder.load(inputs[0], span(952))?;
+                    let assigned = builder.present_assigned_state(value, span(953))?;
+                    let present = builder.assigned_state_is_present(assigned, span(954))?;
+                    let result = builder.call(child, &[present], span(955))?;
+                    builder.store(outputs[0], result[0], span(956))
+                },
+            )?;
+            Ok(())
+        })
+        .expect("a scalar presence predicate has a valid scalar call interface");
+        for checked in [
+            table.clone(),
+            serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap(),
+        ] {
+            let coordinates = output_coordinates(checked.owners()[1].call_site(), false);
+            assert_eq!(
+                coordinates,
+                vec![(0..payload.scalar_count() as usize).collect()],
+                "presence must conservatively depend on the used payload only"
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_presence_forwarded_to_a_scalar_call_keeps_only_selected_coordinates() {
+    for slice in [false, true] {
+        let table = selected_presence_table(slice);
+        for checked in [
+            table.clone(),
+            serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap(),
+        ] {
+            let expected = if slice { vec![19, 20, 21] } else { vec![19] };
+            assert_eq!(
+                output_coordinates(checked.owners()[1].call_site(), false),
+                vec![expected.into_iter().collect()],
+                "presence must not widen a selection or include the unused input"
+            );
+        }
+    }
+}
+
+fn selected_presence_table(slice: bool) -> SolvePureCallTable {
+    let payload = real_shape(vec![3, 17]);
+    let boolean = SolveValueType::scalar(SolveScalarType::Boolean);
+    SolvePureCallTable::construct(profile(), |table| {
+        let child = add_passthrough_owner(table, identity(960), &boolean, span(960))?;
+        table.add_owner(
+            identity(961),
+            vec![payload.clone(), payload],
+            vec![SolvePureCallOutput::result(boolean.clone())],
+            span(961),
+            |builder, inputs, outputs| {
+                let value = builder.load(inputs[0], span(962))?;
+                let selected = if slice {
+                    builder.project_slice(value, vec![1, 2], vec![1, 3], span(963))?
+                } else {
+                    builder.project_element(value, vec![1, 2], span(963))?
+                };
+                let assigned = builder.present_assigned_state(selected, span(964))?;
+                let present = builder.assigned_state_is_present(assigned, span(965))?;
+                let result = builder.call(child, &[present], span(966))?;
+                builder.store(outputs[0], result[0], span(967))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("selected presence has a scalar call interface")
+}
+
 fn output_coordinates(site: SolvePureCallSite, directional: bool) -> Vec<BTreeSet<usize>> {
     use crate::{LinearOp, StructuralPattern, TensorInputKind};
     let inputs = if directional {
