@@ -430,14 +430,23 @@
     literal segments verbatim, each String(...) conversion formatted as the
     linked runtime formats it. -#}
 {%- macro message_support(rows, prefix, captured=false) %}
-typedef struct { char* data; size_t len; size_t cap; bool failed; } RmcMessage;
+typedef struct { const ModelInstance* owner; char* data; size_t len; size_t cap; bool failed; } RmcMessage;
 static void rmc_message_push(RmcMessage* msg, const char* text, size_t len) {
     if (msg->failed) return;
-    if (msg->len + len + 1 > msg->cap) {
+    if (!msg->owner || msg->len == SIZE_MAX || len > SIZE_MAX - msg->len - 1) {
+        msg->failed = true; return;
+    }
+    const size_t needed = msg->len + len + 1;
+    if (needed > msg->cap) {
         size_t cap = msg->cap ? msg->cap : 64;
-        while (cap < msg->len + len + 1) cap *= 2;
-        char* data = realloc(msg->data, cap);
+        while (cap < needed) {
+            if (cap > SIZE_MAX/2) { cap = needed; break; }
+            cap *= 2;
+        }
+        char* data = rmc_instance_allocate(msg->owner, cap, sizeof(char));
         if (!data) { msg->failed = true; return; }
+        if (msg->len) memcpy(data, msg->data, msg->len);
+        rmc_instance_free(msg->owner, msg->data);
         msg->data = data; msg->cap = cap;
     }
     memcpy(msg->data + msg->len, text, len);
@@ -517,7 +526,7 @@ static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
 
 {%- macro log_message(parts, rows, prefix, sink="log_assertion") %}
         {
-        RmcMessage msg = {0};
+        RmcMessage msg = {0}; msg.owner = m;
 {%- if rows.programs|length > 0 %}
         double rows[{{ rows.programs|length }}];
         bool rows_ok = rmc_message_rows(m, rows) == {{ prefix }}OK; (void)rows_ok;
@@ -530,7 +539,7 @@ static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
 {%- endif %}
 {%- endfor %}
         {{ sink }}(m, msg.failed || !msg.data ? "assertion failed (its message could not be formatted)" : msg.data);
-        free(msg.data);
+        rmc_instance_free(msg.owner, msg.data);
         }
 {%- endmacro %}
 
@@ -567,7 +576,7 @@ int rmc_model_assertion(void* context, size_t predicate, const void* const captu
             for (RmcAssertionNotice* old=observed->notices; old; old=old->next) if (old->action=={{ action.index }}) repeated=true;
             if (!repeated) {
 {% endif -%}
-            RmcMessage msg={0};
+            RmcMessage msg={0}; msg.owner=m;
 {% for part in action.parts -%}
 {% if part.text is defined %}            rmc_message_push(&msg, {{ c_string(part.text) }}, {{ part.text|length }});
 {% else %}            if (!{{ captured_conversion(part.conversion) }}) msg.failed=true;
@@ -576,11 +585,11 @@ int rmc_model_assertion(void* context, size_t predicate, const void* const captu
 {% if action.kind == "error" -%}
             log_assertion(m, msg.failed ? "assertion failed (its message could not be formatted)" : (msg.data ? msg.data : ""));
             m->assertion_failed=true;
-            free(msg.data);
+            rmc_instance_free(msg.owner, msg.data);
 {% else -%}
-            if (msg.failed) { free(msg.data); return 1; }
-            RmcAssertionNotice* notice=calloc(1, sizeof *notice);
-            if (!notice) { free(msg.data); return 1; }
+            if (msg.failed) { rmc_instance_free(msg.owner, msg.data); return 1; }
+            RmcAssertionNotice* notice=rmc_instance_allocate(m, 1, sizeof *notice);
+            if (!notice) { rmc_instance_free(msg.owner, msg.data); return 1; }
             notice->action={{ action.index }}; notice->message=msg.data;
             RmcAssertionNotice** tail=&observed->notices;
             while (*tail) tail=&(*tail)->next;
@@ -606,7 +615,7 @@ void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int sta
             context->instance->rmc_warned[notice->action]=true;
         }
 {% endif -%}
-        free(notice->message); free(notice); notice=next;
+        rmc_instance_free(context->instance, notice->message); rmc_instance_free(context->instance, notice); notice=next;
     }
     context->notices=NULL;
 }
@@ -769,14 +778,16 @@ static const char* const rmc_text_start[{{ texts|length }}] = {
 };
 static const char* rmc_text(const ModelInstance* m, size_t index) { return m->text[index]; }
 static bool rmc_set_text(ModelInstance* m, size_t index, const char* value) {
-    size_t length = strlen(value); char* copy = malloc(length + 1);
+    size_t length = strlen(value);
+    if (length == SIZE_MAX) return false;
+    char* copy = rmc_instance_allocate(m, length + 1, sizeof(char));
     if (!copy) return false;
     memcpy(copy, value, length + 1);
-    free(m->text_owned[index]); m->text_owned[index] = copy; m->text[index] = copy;
+    rmc_instance_free(m, m->text_owned[index]); m->text_owned[index] = copy; m->text[index] = copy;
     return true;
 }
 static void rmc_release_text(ModelInstance* m) {
-    for (size_t k = 0; k < {{ texts|length }}; ++k) { free(m->text_owned[k]); m->text_owned[k] = NULL; m->text[k] = rmc_text_start[k]; }
+    for (size_t k = 0; k < {{ texts|length }}; ++k) { rmc_instance_free(m, m->text_owned[k]); m->text_owned[k] = NULL; m->text[k] = rmc_text_start[k]; }
 }
 /* After a bytewise copy of `src` into `dst`, give `dst` its own copies of the
    texts `src` owns; on a failed copy `dst` keeps only start texts. */
@@ -972,4 +983,54 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
       memcpy(&{{ target }}[{{ run.start }}], {{ prefix }}_{{ loop.index0 }}, sizeof({{ prefix }}_{{ loop.index0 }})); }
 {% endif %}
 {% endfor %}
+{%- endmacro %}
+
+{#- The one partial-pivot LU arithmetic owner, shared by primal projection
+    and total sensitivities. No ModelInstance workspace or fallback policy. -#}
+{%- macro projection_lu_kernel() %}
+/* nalgebra LU with partial pivoting on the row-major n x n matrix `a`. An
+   exactly zero multiplier or pivot-row entry contributes nothing to a finite
+   update, so those products are skipped; the arithmetic that remains is the
+   dense factorization's, in its order. */
+static void rmc_lu(double* a, size_t n, size_t* ipiv, size_t* columns) {
+    for (size_t i = 0; i < n; ++i) {
+        size_t piv = i; double best = fabs(a[i * n + i]);
+        for (size_t row = i + 1; row < n; ++row) { double value = fabs(a[row * n + i]); if (value > best) { best = value; piv = row; } }
+        ipiv[i] = i;
+        double diag = a[piv * n + i];
+        if (diag == 0.0) continue;
+        if (piv != i) {
+            ipiv[i] = piv;
+            for (size_t col = 0; col < n; ++col) { double tmp = a[i * n + col]; a[i * n + col] = a[piv * n + col]; a[piv * n + col] = tmp; }
+        }
+        double inv = 1.0 / diag; size_t count = 0; bool finite_row = true;
+        for (size_t col = i + 1; col < n; ++col) {
+            double pivot = a[i * n + col];
+            if (pivot != 0.0) columns[count++] = col;
+            if (!isfinite(pivot)) finite_row = false;
+        }
+        for (size_t row = i + 1; row < n; ++row) {
+            double multiplier = a[row * n + i] * inv;
+            a[row * n + i] = multiplier;
+            if (multiplier == 0.0 && finite_row) continue;
+            if (!finite_row || !isfinite(multiplier)) {
+                for (size_t col = i + 1; col < n; ++col) a[row * n + col] += -a[i * n + col] * multiplier;
+                continue;
+            }
+            for (size_t c = 0; c < count; ++c) { size_t col = columns[c]; a[row * n + col] += -a[i * n + col] * multiplier; }
+        }
+    }
+}
+/* nalgebra LU::solve_mut */
+static bool rmc_lu_solve(const double* lu, size_t n, const size_t* ipiv, double* b) {
+    for (size_t i = 0; i < n; ++i) if (ipiv[i] != i) { double tmp = b[i]; b[i] = b[ipiv[i]]; b[ipiv[i]] = tmp; }
+    for (size_t i = 0; i < n; ++i) { double coeff = b[i]; for (size_t row = i + 1; row < n; ++row) b[row] += -coeff * lu[row * n + i]; }
+    for (size_t i = n; i-- > 0;) {
+        double diag = lu[i * n + i];
+        if (diag == 0.0) return false;
+        double coeff = b[i] / diag; b[i] = coeff;
+        for (size_t row = 0; row < i; ++row) b[row] += -coeff * lu[row * n + i];
+    }
+    return true;
+}
 {%- endmacro %}

@@ -4,6 +4,16 @@
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events, initial_mode %}
 #include "model.h"
+/* Request/text storage belongs to the already admitted instance's allocator.
+   FMI 2 allocateMemory returns zero-initialized storage; never mix it with free. */
+static inline void* rmc_instance_allocate(const ModelInstance* m, size_t count, size_t size) {
+    if (!m || !m->callbacks.allocateMemory || !m->callbacks.freeMemory
+            || !count || !size || count > SIZE_MAX/size) return NULL;
+    return m->callbacks.allocateMemory(count, size);
+}
+static inline void rmc_instance_free(const ModelInstance* m, void* data) {
+    if (data) m->callbacks.freeMemory(data);
+}
 {{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
@@ -243,7 +253,22 @@ FMI_EXPORT fmi2Status fmi2FreeFMUstate(fmi2Component c, fmi2FMUstate* s) { (void
 FMI_EXPORT fmi2Status fmi2SerializedFMUstateSize(fmi2Component c, fmi2FMUstate s, size_t* n) { (void)c; (void)s; (void)n; return fmi2Error; }
 FMI_EXPORT fmi2Status fmi2SerializeFMUstate(fmi2Component c, fmi2FMUstate s, fmi2Byte bytes[], size_t n) { (void)c; (void)s; (void)bytes; (void)n; return fmi2Error; }
 FMI_EXPORT fmi2Status fmi2DeSerializeFMUstate(fmi2Component c, const fmi2Byte bytes[], size_t n, fmi2FMUstate* s) { (void)c; (void)bytes; (void)n; (void)s; return fmi2Error; }
-FMI_EXPORT fmi2Status fmi2GetDirectionalDerivative(fmi2Component c, const fmi2ValueReference u[], size_t nu, const fmi2ValueReference k[], size_t nk, const fmi2Real seed[], fmi2Real sensitivity[]) { (void)c; (void)u; (void)nu; (void)k; (void)nk; (void)seed; (void)sensitivity; return fmi2Error; }
+/* Derivative failures retain private numerical/output transactions while
+   ending this instance's active simulation. Recovery requires standard Reset
+   or a supported saved-state restoration; other instances are unaffected. */
+static fmi2Status rmc_tangent_error(ModelInstance* live) {
+    if (live) {
+        live->state = MODEL_ERROR;
+        RMC_LOG(live, "derivative request failed; reset or restore state before continuing");
+    }
+    return fmi2Error;
+}
+{%- if fmi_tangents.available %}
+{%- from "fmi-total-tangent.jinja" import api %}
+{{ api(fmi_tangents, fmi, "fmi2", me_refresh) }}
+{%- else %}
+FMI_EXPORT fmi2Status fmi2GetDirectionalDerivative(fmi2Component c, const fmi2ValueReference u[], size_t nu, const fmi2ValueReference k[], size_t nk, const fmi2Real seed[], fmi2Real sensitivity[]) { (void)c; (void)u; (void)nu; (void)k; (void)nk; (void)seed; (void)sensitivity; return rmc_tangent_error(c); }
+{%- endif %}
 FMI_EXPORT fmi2Status fmi2SetRealInputDerivatives(fmi2Component c, const fmi2ValueReference vr[], size_t nvr, const fmi2Integer order[], const fmi2Real value[]) { (void)c; (void)vr; (void)order; (void)value; return nvr == 0 ? fmi2OK : fmi2Error; }
 FMI_EXPORT fmi2Status fmi2GetRealOutputDerivatives(fmi2Component c, const fmi2ValueReference vr[], size_t nvr, const fmi2Integer order[], fmi2Real value[]) { (void)c; (void)vr; (void)order; (void)value; return nvr == 0 ? fmi2OK : fmi2Error; }
 FMI_EXPORT fmi2Status fmi2DoStep(fmi2Component c, fmi2Real current, fmi2Real step, fmi2Boolean noSetState) {

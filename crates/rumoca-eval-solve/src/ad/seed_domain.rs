@@ -6,7 +6,7 @@ impl SeedMode<'_> {
     pub(super) fn y_is_active(self, index: usize) -> bool {
         match self {
             Self::SolverYSubset { active } => active.binary_search(&index).is_ok(),
-            Self::SolverYOnly | Self::SolverYAndP { .. } => true,
+            Self::SolverYOnly | Self::SolverYAndP { .. } | Self::SolverYAndPAndTime { .. } => true,
         }
     }
 }

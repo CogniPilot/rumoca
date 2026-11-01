@@ -131,10 +131,39 @@ impl<'a> AdBuilder<'a> {
         Ok(dst)
     }
 
+    /// The explicit-time domain must keep every Y/P run before its distinct
+    /// time cell. Other AD domains retain their existing checked-root policy.
+    pub(super) fn check_time_seed_storage(
+        &self,
+        input: rumoca_ir_solve::TensorInputKind,
+        start: usize,
+        count: usize,
+    ) -> Result<(), SolveDerivationError> {
+        if let SeedMode::SolverYAndPAndTime {
+            p_seed_offset,
+            p_seed_count,
+            ..
+        } = self.seed_mode
+        {
+            let limit = match input {
+                rumoca_ir_solve::TensorInputKind::Y => p_seed_offset,
+                rumoca_ir_solve::TensorInputKind::P => p_seed_count,
+            };
+            if start.checked_add(count).is_none_or(|end| end > limit) {
+                return Err(ad_optional_contract_violation(
+                    format!("time-seeded {input:?} load {start}+{count} exceeds {limit}"),
+                    self.span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn p_seed_index(&self, index: usize) -> Result<usize, SolveDerivationError> {
         match self.seed_mode {
             SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. } => Ok(index),
-            SeedMode::SolverYAndP { p_seed_offset } => {
+            SeedMode::SolverYAndP { p_seed_offset }
+            | SeedMode::SolverYAndPAndTime { p_seed_offset, .. } => {
                 p_seed_offset.checked_add(index).ok_or_else(|| {
                     ad_optional_contract_violation(
                         format!(

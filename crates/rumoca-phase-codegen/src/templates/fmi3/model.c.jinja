@@ -4,6 +4,16 @@
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events, initial_mode %}
 #include "model.h"
+/* FMI 3 has no allocator callbacks; the same request/text owner uses libc. */
+static inline void* rmc_instance_allocate(const ModelInstance* m, size_t count, size_t size) {
+    (void)m;
+    if (!count || !size || count > SIZE_MAX/size) return NULL;
+    return calloc(count, size);
+}
+static inline void rmc_instance_free(const ModelInstance* m, void* data) {
+    (void)m;
+    free(data);
+}
 {{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
@@ -94,7 +104,7 @@ static fmi3Status evaluate_derivatives(ModelInstance* m) {
     the numeric storage run; String values live in the instance text table. -#}
 enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT, RMC_COLUMN_INDICATOR };
 enum RmcKind { RMC_KIND_FLOAT64, RMC_KIND_INT32, RMC_KIND_INT64, RMC_KIND_BOOLEAN, RMC_KIND_STRING };
-enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };
+enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER, RMC_ACCESS_REINIT_STATE };
 /* `literals` is the literal count of an enumeration variable, 0 for any other. */
 typedef struct { unsigned char column; unsigned char kind; unsigned char access; unsigned char marks_parameters; size_t base; size_t count; size_t literals; } RmcValueReference;
 static const RmcValueReference rmc_value_references[] = {
@@ -102,7 +112,7 @@ static const RmcValueReference rmc_value_references[] = {
 {%- set text = namespace(base=0) %}
 {%- for variable in fmi.variables %}{% if loop.index0 % 6 == 0 %}
    {% endif %} {
-{%- if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {{ rmc_kind(variable, "RMC_KIND_INT64", "RMC_KIND_INT64") }}, {% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ text.base }}{% set text.base = text.base + variable.storage.scalar_count %}{% else %}{{ variable.storage.base }}{% endif %}, {{ variable.storage.scalar_count }}, {{ variable.enumeration.literals|length if variable.enumeration else 0 }}},
+{%- if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {{ rmc_kind(variable, "RMC_KIND_INT64", "RMC_KIND_INT64") }}, {% if variable.role == "State" %}{% if fmi.state_reinitializations[loop.index0] %}RMC_ACCESS_REINIT_STATE{% else %}RMC_ACCESS_STATE{% endif %}{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ text.base }}{% set text.base = text.base + variable.storage.scalar_count %}{% else %}{{ variable.storage.base }}{% endif %}, {{ variable.storage.scalar_count }}, {{ variable.enumeration.literals|length if variable.enumeration else 0 }}},
 {%- endfor %}
 {%- set derivative = namespace(ordinal=0, base=0) %}
 {%- for variable in fmi.variables %}{% if variable.role == "State" %}{% if derivative.ordinal % 6 == 0 %}
@@ -119,6 +129,9 @@ static const RmcValueReference* rmc_reference(fmi3ValueReference vr, unsigned ch
 static fmi3Boolean rmc_can_set(const ModelInstance* m, const RmcValueReference* ref) {
     switch (ref->access) {
     case RMC_ACCESS_STATE:
+        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
+            || (m->type == INTERFACE_ME && (m->state == MODEL_EVENT || m->state == MODEL_CONTINUOUS));
+    case RMC_ACCESS_REINIT_STATE:
         return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
             || (m->type == INTERFACE_ME && m->state == MODEL_CONTINUOUS);
     case RMC_ACCESS_INPUT:
@@ -313,8 +326,23 @@ FMI_EXPORT fmi3Status fmi3FreeFMUState(fmi3Instance i, fmi3FMUState* state) {
 FMI_EXPORT fmi3Status fmi3SerializedFMUStateSize(fmi3Instance i,fmi3FMUState state,size_t* size){(void)i;(void)state;(void)size;return fmi3Error;}
 FMI_EXPORT fmi3Status fmi3SerializeFMUState(fmi3Instance i,fmi3FMUState state,fmi3Byte bytes[],size_t size){(void)i;(void)state;(void)bytes;(void)size;return fmi3Error;}
 FMI_EXPORT fmi3Status fmi3DeserializeFMUState(fmi3Instance i,const fmi3Byte bytes[],size_t size,fmi3FMUState* state){(void)i;(void)bytes;(void)size;(void)state;return fmi3Error;}
-FMI_EXPORT fmi3Status fmi3GetDirectionalDerivative(fmi3Instance i,const fmi3ValueReference unknowns[],size_t nunknowns,const fmi3ValueReference knowns[],size_t nknowns,const fmi3Float64 seed[],size_t nseed,fmi3Float64 sensitivity[],size_t nsensitivity){(void)i;(void)unknowns;(void)nunknowns;(void)knowns;(void)nknowns;(void)seed;(void)nseed;(void)sensitivity;(void)nsensitivity;return fmi3Error;}
-FMI_EXPORT fmi3Status fmi3GetAdjointDerivative(fmi3Instance i,const fmi3ValueReference unknowns[],size_t nunknowns,const fmi3ValueReference knowns[],size_t nknowns,const fmi3Float64 seed[],size_t nseed,fmi3Float64 sensitivity[],size_t nsensitivity){(void)i;(void)unknowns;(void)nunknowns;(void)knowns;(void)nknowns;(void)seed;(void)nseed;(void)sensitivity;(void)nsensitivity;return fmi3Error;}
+/* Derivative failures retain private numerical/output transactions while
+   ending this instance's active simulation. Recovery requires standard Reset
+   or a supported saved-state restoration; other instances are unaffected. */
+static fmi3Status rmc_tangent_error(ModelInstance* live) {
+    if (live) {
+        live->state = MODEL_TERMINATED;
+        RMC_LOG(live, "derivative request failed; reset or restore state before continuing");
+    }
+    return fmi3Error;
+}
+{%- if fmi_tangents.available %}
+{%- from "fmi-total-tangent.jinja" import api %}
+{{ api(fmi_tangents, fmi, "fmi3", me_refresh) }}
+{%- else %}
+FMI_EXPORT fmi3Status fmi3GetDirectionalDerivative(fmi3Instance i,const fmi3ValueReference unknowns[],size_t nunknowns,const fmi3ValueReference knowns[],size_t nknowns,const fmi3Float64 seed[],size_t nseed,fmi3Float64 sensitivity[],size_t nsensitivity){(void)i;(void)unknowns;(void)nunknowns;(void)knowns;(void)nknowns;(void)seed;(void)nseed;(void)sensitivity;(void)nsensitivity;return rmc_tangent_error(i);}
+FMI_EXPORT fmi3Status fmi3GetAdjointDerivative(fmi3Instance i,const fmi3ValueReference unknowns[],size_t nunknowns,const fmi3ValueReference knowns[],size_t nknowns,const fmi3Float64 seed[],size_t nseed,fmi3Float64 sensitivity[],size_t nsensitivity){(void)i;(void)unknowns;(void)nunknowns;(void)knowns;(void)nknowns;(void)seed;(void)nseed;(void)sensitivity;(void)nsensitivity;return rmc_tangent_error(i);}
+{%- endif %}
 FMI_EXPORT fmi3Status fmi3EnterConfigurationMode(fmi3Instance i){(void)i;return fmi3Error;}
 FMI_EXPORT fmi3Status fmi3ExitConfigurationMode(fmi3Instance i){(void)i;return fmi3Error;}
 

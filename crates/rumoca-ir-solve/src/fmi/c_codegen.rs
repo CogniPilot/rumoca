@@ -32,8 +32,12 @@ pub struct FmiCCodegenView {
     deployment: super::FmiDeploymentCapabilities,
     /// The dependency order of the parameter-binding programs.
     update_order: Vec<usize>,
+    /// Whole-program evaluation and lifecycle-specific commits share one owner.
+    binding_execution: super::binding_execution::BindingExecution,
     /// The dependency levels of the parameter bindings.
     update_levels: usize,
+    /// Per published declaration: whether a source event may reset its state.
+    state_reinitializations: Vec<bool>,
     /// The evaluation orders of the parameter-determined discrete rows.
     discrete_order: super::static_assertions::DiscreteOrder,
 }
@@ -84,12 +88,22 @@ impl FmiCCodegenView {
     ) -> Result<Self, FmiCCodegenError> {
         let (view, deployment) = deployment.into_parts();
         let (update_order, update_levels) = admit_kernel(&view.model, &view.metadata)?;
+        let binding_execution = super::binding_execution::BindingExecution::checked(
+            view.model.problem.initialization.update_rhs(),
+            view.model.problem.initialization.update_targets(),
+            &update_order,
+        )
+        .map_err(FmiCCodegenError)?;
+        let state_reinitializations =
+            super::state_event_access::derive(&view.model.problem, view.metadata.variables());
         let (profile, discrete_order) = view.profile()?;
         Ok(Self {
             profile,
             deployment,
             update_order,
+            binding_execution,
             update_levels,
+            state_reinitializations,
             discrete_order,
         })
     }
@@ -102,11 +116,21 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
             .admit(&value.metadata)
             .map_err(|error| FmiCCodegenError(error.0))?;
         let (update_order, update_levels) = admit_kernel(&value.model, &value.metadata)?;
+        let binding_execution = super::binding_execution::BindingExecution::checked(
+            value.model.problem.initialization.update_rhs(),
+            value.model.problem.initialization.update_targets(),
+            &update_order,
+        )
+        .map_err(FmiCCodegenError)?;
+        let state_reinitializations =
+            super::state_event_access::derive(&value.model.problem, value.metadata.variables());
         Ok(Self {
             profile: Profile::EventFree(value),
             deployment,
             update_order,
+            binding_execution,
             update_levels,
+            state_reinitializations,
             discrete_order: super::static_assertions::DiscreteOrder::default(),
         })
     }
@@ -296,6 +320,44 @@ impl FmiCCodegenView {
         self.metadata().variables()
     }
 
+    /// Discrete value rows recomputed by the admitted public getter.
+    /// Other profiles emit no observation refresh; root metadata alone does
+    /// not authorize differentiating a row the public getter never executes.
+    pub fn public_observation_rows(&self) -> &[bool] {
+        match &self.profile {
+            Profile::ScalarEvents(_, events) => events.public_observation_rows(),
+            _ => &[],
+        }
+    }
+
+    /// Whether initialization requires the scalar-event transaction owner.
+    pub fn requires_event_iteration(&self) -> bool {
+        matches!(self.profile, Profile::ScalarEvents(..))
+    }
+
+    /// Exact dependency order of the admitted initialization binding programs.
+    /// The shared execution projection owns lifecycle-specific output commits;
+    /// neither a backend nor a numerical consumer may split source programs.
+    pub fn parameter_binding_programs(&self) -> &[usize] {
+        &self.update_order
+    }
+
+    /// The exact source allocation retained by the admitted binding projection.
+    pub fn parameter_binding_source(&self) -> &crate::ScalarProgramBlock {
+        self.binding_execution.source()
+    }
+
+    /// Whole programs in dependency order, with constructor-issued commit rows.
+    pub fn parameter_binding_execution(&self) -> &[super::FmiBindingProgram] {
+        self.binding_execution.programs()
+    }
+
+    /// Exact parameter-determined discrete programs the C refresh executes.
+    /// These are program identities, not row ordinals or event-memory owners.
+    pub fn parameter_discrete_programs(&self) -> &[usize] {
+        &self.discrete_order.equations
+    }
+
     pub fn instantiation_values(
         &self,
         buffer: FmiInstantiationBuffer,
@@ -331,6 +393,7 @@ impl FmiCCodegenView {
         )?;
         entries.serialize_entry("enumerations", &metadata.enumerations())?;
         entries.serialize_entry("state_variable_indices", metadata.state_variable_indices())?;
+        entries.serialize_entry("state_reinitializations", &self.state_reinitializations)?;
         entries.serialize_entry(
             "derivative_value_reference_base_fmi3",
             &metadata.derivative_value_reference_base_fmi3(),
@@ -359,6 +422,7 @@ impl FmiCCodegenView {
             },
         )?;
         entries.serialize_entry("update_order", &self.update_order)?;
+        entries.serialize_entry("binding_execution", self.binding_execution.programs())?;
         entries.serialize_entry("discrete_equations", &self.discrete_order.equations)?;
         entries.serialize_entry("discrete_memories", &self.discrete_order.memories)?;
         Ok(())
@@ -367,7 +431,7 @@ impl FmiCCodegenView {
 
 impl Serialize for FmiCCodegenView {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut entries = serializer.serialize_map(Some(15))?;
+        let mut entries = serializer.serialize_map(Some(16))?;
         self.serialize_entries(&mut entries)?;
         entries.end()
     }

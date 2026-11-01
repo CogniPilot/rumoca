@@ -32,6 +32,7 @@
 //! event-free type-state or the parameter-assertion profile. Whole-inventory
 //! encoding is available only after one of those admission proofs.
 
+mod binding_execution;
 mod c_codegen;
 
 /// The constructor-reserved independent Float64 time reference in FMI 3.
@@ -53,11 +54,13 @@ mod native_deployment;
 mod parameter_updates;
 mod root_location;
 mod scalar_events;
+mod state_event_access;
 mod static_assertions;
 #[cfg(test)]
 mod tests;
 mod time_events;
 
+pub use binding_execution::FmiBindingProgram;
 pub use c_codegen::{FmiCCodegenError, FmiCCodegenView, FmiInstantiationBuffer};
 pub use co_simulation::{
     CoSimulationController, CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep,

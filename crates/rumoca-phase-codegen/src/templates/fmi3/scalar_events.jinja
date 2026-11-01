@@ -619,23 +619,27 @@ static {{ prefix }}Status rmc_discrete_settle(ModelInstance* m, bool* changed_an
    coordinate unchanged sits on a surface where its alternating relations'
    expression is continuous; every state of the cycle is a fixed point. */
 #define RMC_SURFACE_WINDOW {{ schedule.relation_surface_window }}
-typedef struct { double* data; size_t count; size_t head; } RmcSurface;
-static bool rmc_surface_open(RmcSurface* s) {
-    s->count = 0; s->head = 0;
-    s->data = RMC_SURFACE_WINDOW > 0 ? malloc((size_t)RMC_SURFACE_WINDOW * (Y_LEN + P_LEN) * sizeof(double)) : NULL;
-    return RMC_SURFACE_WINDOW == 0 || s->data != NULL;
+typedef struct { const ModelInstance* owner; double* data; size_t count; size_t head; size_t width; } RmcSurface;
+static bool rmc_surface_open(const ModelInstance* m, RmcSurface* s) {
+    s->owner = m; s->count = 0; s->head = 0; s->data = NULL;
+    if ((size_t)Y_LEN > SIZE_MAX - (size_t)P_LEN) return false;
+    s->width = (size_t)Y_LEN + (size_t)P_LEN;
+    size_t window = (size_t)RMC_SURFACE_WINDOW;
+    if (window && s->width > SIZE_MAX/window) return false;
+    s->data = window ? rmc_instance_allocate(m, window * s->width, sizeof(double)) : NULL;
+    return !window || s->data != NULL;
 }
-static void rmc_surface_close(RmcSurface* s) { free(s->data); s->data = NULL; }
+static void rmc_surface_close(RmcSurface* s) { rmc_instance_free(s->owner, s->data); s->data = NULL; }
 static bool rmc_on_surface(const ModelInstance* m, RmcSurface* s) {
     if (!s->data) return false;
     bool repeats = false;
     for (size_t k = 0; k < s->count && !repeats; ++k) {
-        const double* entry = s->data + k * (Y_LEN + P_LEN);
+        const double* entry = s->data + k * s->width;
         bool same = memcmp(entry + Y_LEN, m->p, sizeof(m->p)) == 0;
         for (size_t i = 0; same && i < Y_LEN; ++i) same = !rmc_value_changed(entry[i], m->y[i], m->tolerance);
         repeats = same;
     }
-    double* slot = s->data + s->head * (Y_LEN + P_LEN);
+    double* slot = s->data + s->head * s->width;
     memcpy(slot, m->y, sizeof(m->y));
     memcpy(slot + Y_LEN, m->p, sizeof(m->p));
     s->head = (s->head + 1) % (size_t)RMC_SURFACE_WINDOW;
@@ -658,7 +662,7 @@ static size_t rmc_mode_candidates(const ModelInstance* m, const RmcSurface* s, s
     for (size_t root = 0; root != RMC_ROOTS; ++root) {
         long memory = rmc_root_memory[root];
         for (size_t k = 0; memory >= 0 && k < s->count && !cycling[root]; ++k)
-            cycling[root] = s->data[k * (Y_LEN + P_LEN) + Y_LEN + (size_t)memory] != m->p[memory];
+            cycling[root] = s->data[k * s->width + Y_LEN + (size_t)memory] != m->p[memory];
     }
     for (size_t root = 0; root != RMC_ROOTS; ++root)
         for (size_t k = rmc_neighbor_offset[root]; cycling[root] && k < rmc_neighbor_offset[root + 1]; ++k) joined[rmc_neighbor[k]] = true;
@@ -686,7 +690,10 @@ static {{ prefix }}Status rmc_mode_search(ModelInstance* m, const RmcSurface* s,
         RMC_LOG(m, "event iteration cycles among more relations than the mode search covers");
         return {{ prefix }}Error;
     }
-    double* base = malloc((Y_LEN + P_LEN) * sizeof(double));
+    if ((size_t)Y_LEN > SIZE_MAX - (size_t)P_LEN) {
+        RMC_LOG(m, "the mode search base point size overflows"); return {{ prefix }}Error;
+    }
+    double* base = rmc_instance_allocate(m, (size_t)Y_LEN + (size_t)P_LEN, sizeof(double));
     if (!base) { RMC_LOG(m, "the mode search could not allocate its base point"); return {{ prefix }}Error; }
     memcpy(base, m->y, sizeof(m->y));
     memcpy(base + Y_LEN, m->p, sizeof(m->p));
@@ -706,7 +713,7 @@ static {{ prefix }}Status rmc_mode_search(ModelInstance* m, const RmcSurface* s,
             memcpy(m->p, base + Y_LEN, sizeof(m->p));
         }
     }
-    free(base);
+    rmc_instance_free(m, base);
     /* relation_memory.rs resolve_relation_cycle: no joint mode is consistent,
        so the current side is kept and reported as a relation-surface settle. */
     if (!*found) RMC_LOG_AT(m, "relation_surface", "an event iteration kept a relation on its coordinate surface");
@@ -716,7 +723,7 @@ static {{ prefix }}Status rmc_mode_search(ModelInstance* m, const RmcSurface* s,
 static {{ prefix }}Status rmc_relation_passes(ModelInstance* m, bool* changed_any, RmcSurface* surface);
 static {{ prefix }}Status rmc_relation_settle(ModelInstance* m, bool* changed_any) {
     RmcSurface surface;
-    if (!rmc_surface_open(&surface)) { RMC_LOG(m, "the relation surface history could not be allocated"); return {{ prefix }}Error; }
+    if (!rmc_surface_open(m, &surface)) { RMC_LOG(m, "the relation surface history could not be allocated"); return {{ prefix }}Error; }
     {{ prefix }}Status status = rmc_relation_passes(m, changed_any, &surface);
     rmc_surface_close(&surface);
     return status;
@@ -778,7 +785,7 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
     for (size_t k = 0; k < RMC_PRE_LANES; ++k) m->p[rmc_pre_dest[k]] = rmc_pre_source(m->rmc_entry_y, m->rmc_entry_p, k);
     bool settled = false;
     RmcSurface surface;
-    if (!rmc_surface_open(&surface)) { RMC_LOG(m, "the event surface history could not be allocated"); return {{ prefix }}Error; }
+    if (!rmc_surface_open(m, &surface)) { RMC_LOG(m, "the event surface history could not be allocated"); return {{ prefix }}Error; }
     for (size_t pass = 0; pass < {{ schedule.fixed_point_cap }} && !settled; ++pass) {
         m->rmc_pass = pass;
         bool changed = pass > 0 && rmc_advance_lanes(m);

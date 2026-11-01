@@ -499,3 +499,5 @@ fn a_binding_chain_the_runtime_cannot_settle_is_refused() {
         "{error}"
     );
 }
+
+mod binding_execution;

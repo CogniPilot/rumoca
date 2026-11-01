@@ -128,7 +128,7 @@ pub(super) fn validate(
     calls: &SolvePureCallTable,
 ) -> Result<(Vec<usize>, usize), &'static str> {
     let init = &problem.initialization;
-    validate_projection(problem)?;
+    validate_projection(problem, calls)?;
     let mut p = stable_parameters(problem);
     let y = vec![false; problem.layout.y_scalars()];
     // A parameter target is settled once its binding runs; a state target is a
@@ -222,7 +222,10 @@ pub(super) fn stable_parameters(problem: &SolveProblem) -> Vec<bool> {
 /// runtime does whenever a row reads a reconstructed algebraic). Rows over
 /// declaration seeds need single-row isolation and the forward-mode initial
 /// Jacobian, which the C kernel does not emit.
-fn validate_projection(problem: &SolveProblem) -> Result<(), &'static str> {
+fn validate_projection(
+    problem: &SolveProblem,
+    calls: &SolvePureCallTable,
+) -> Result<(), &'static str> {
     use crate::{InitializationCoordinateKind, InitializationRowRole};
     let init = &problem.initialization;
     if init.projection_plan().iterates_discretes {
@@ -261,7 +264,7 @@ fn validate_projection(problem: &SolveProblem) -> Result<(), &'static str> {
                 | InitializationRowRole::SurplusAlgebraicCheck
         )
     });
-    if !settled {
+    if !settled && !parameter_input_residuals(problem, calls) {
         return Err(
             "C initialization evaluates residual rows only on the settled algebraic refresh; rows over declaration seeds need row isolation and a forward initial Jacobian",
         );
@@ -270,4 +273,124 @@ fn validate_projection(problem: &SolveProblem) -> Result<(), &'static str> {
         return Err("C initialization needs the solver coordinates to fill the Y storage");
     }
     Ok(())
+}
+
+/// A scalar row reading only parameters, constants and importer inputs that
+/// the binding/discrete refresh does not write has the same value before and after
+/// settling. The existing full Y|P JVP initialization kernel therefore needs no declaration-Y isolation
+/// for these rows. Hidden pre/history lanes are not ordinary P declarations.
+/// Compact tensor/Y/time/history cases retain their existing admission rule.
+fn parameter_input_residuals(problem: &SolveProblem, calls: &SolvePureCallTable) -> bool {
+    let mut p = stable_parameters(problem);
+    for run in &problem.solve_layout.variable_storage_runs {
+        if run.role != SolveVariableStorageRole::ExternalInput {
+            continue;
+        }
+        let ScalarSlot::P { index, .. } = run.base else {
+            return false;
+        };
+        let Some(end) = index.checked_add(run.scalar_count) else {
+            return false;
+        };
+        let Some(values) = p.get_mut(index..end) else {
+            return false;
+        };
+        values.fill(true);
+    }
+    for binding in &problem.solve_layout.pre_param_bindings {
+        let Some(value) = p.get_mut(binding.dest_p_index) else {
+            return false;
+        };
+        *value = false;
+    }
+    for target in problem
+        .initialization
+        .update_targets()
+        .iter()
+        .chain(problem.discrete.update_targets.iter())
+    {
+        if let ScalarSlot::P { index, .. } = *target {
+            let Some(value) = p.get_mut(index) else {
+                return false;
+            };
+            *value = false;
+        }
+    }
+    let y = vec![false; problem.layout.y_scalars()];
+    residuals_over_stable_storage(problem.initialization.residual(), calls, &y, &p)
+}
+
+fn residuals_over_stable_storage(
+    residual: &crate::ComputeBlock,
+    calls: &SolvePureCallTable,
+    y: &[bool],
+    p: &[bool],
+) -> bool {
+    residual.nodes.iter().all(|node| {
+        let crate::ComputeNode::ScalarPrograms(block) = node else {
+            return false;
+        };
+        block.programs().iter().all(|program| {
+            super::static_assertions::scalar_dependencies::program_outputs(calls, program, y, p)
+                .is_some_and(|outputs| outputs.into_iter().all(|stable| stable))
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LinearOp, ScalarProgramBlock};
+
+    fn row(load: LinearOp) -> crate::ComputeBlock {
+        let mut sources = rumoca_core::SourceMap::new();
+        let source = sources.add(
+            "initial-parameter-admission.mo",
+            "source-owned initial residual",
+        );
+        let span = rumoca_core::Span::from_offsets(source, 0, 29);
+        crate::ComputeBlock::from_scalar_program_block(
+            ScalarProgramBlock::with_output_indices(
+                vec![vec![load, LinearOp::StoreOutput { src: 0 }]],
+                vec![span],
+                vec![0],
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn parameter_input_residual_proof_does_not_admit_y_time_or_hidden_history() {
+        let calls = SolvePureCallTable::default();
+        assert!(residuals_over_stable_storage(
+            &row(LinearOp::LoadP { dst: 0, index: 0 }),
+            &calls,
+            &[false],
+            &[true, false]
+        ));
+        assert!(!residuals_over_stable_storage(
+            &row(LinearOp::LoadY { dst: 0, index: 0 }),
+            &calls,
+            &[false],
+            &[true, false]
+        ));
+        assert!(!residuals_over_stable_storage(
+            &row(LinearOp::LoadP { dst: 0, index: 1 }),
+            &calls,
+            &[false],
+            &[true, false]
+        ));
+        assert!(!residuals_over_stable_storage(
+            &row(LinearOp::LoadP { dst: 0, index: 2 }),
+            &calls,
+            &[false],
+            &[true, false]
+        ));
+        assert!(!residuals_over_stable_storage(
+            &row(LinearOp::LoadTime { dst: 0 }),
+            &calls,
+            &[false],
+            &[true, false]
+        ));
+    }
 }

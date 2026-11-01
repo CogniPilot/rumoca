@@ -46,6 +46,9 @@ struct DualReg {
     du: Reg,
 }
 
+#[cfg(test)]
+mod time_seed_tests;
+
 type FoldAdCache = Rc<RefCell<HashMap<usize, Arc<rumoca_ir_solve::FunctionFoldProgram>>>>;
 type ConditionalAdCache =
     Rc<RefCell<HashMap<usize, Arc<rumoca_ir_solve::FunctionConditionalProgram>>>>;
@@ -505,8 +508,12 @@ fn compute_node_context_span(node: &ComputeNode) -> Option<rumoca_core::Span> {
 fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode<'_>) -> bool {
     ops.iter().any(|op| {
         matches!(op, LinearOp::LoadY { .. })
-            || matches!(seed_mode, SeedMode::SolverYAndP { .. })
-                && matches!(op, LinearOp::LoadP { .. } | LinearOp::LoadIndexedP { .. })
+            || matches!(
+                seed_mode,
+                SeedMode::SolverYAndP { .. } | SeedMode::SolverYAndPAndTime { .. }
+            ) && matches!(op, LinearOp::LoadP { .. } | LinearOp::LoadIndexedP { .. })
+            || matches!(seed_mode, SeedMode::SolverYAndPAndTime { .. })
+                && matches!(op, LinearOp::LoadTime { .. })
             || matches!(op, LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
                 if program.regions().any(|region| ops_reference_seeded_inputs(region, seed_mode)))
@@ -645,6 +652,40 @@ pub fn lower_scalar_program_block_full_jvp(
     .map_err(SolveDerivationError::from)
 }
 
+/// A source JVP with an explicit bounded time direction after `[Y | P]`.
+/// Existing Y-only and Y|P entrypoints keep time held. This optional numerical
+/// owner neither exposes a value reference nor authorizes an FMI lifecycle call.
+/// Y/P loads are bounded against these extents so none can alias the time seed.
+pub fn lower_scalar_program_block_full_time_jvp(
+    block: &rumoca_ir_solve::ScalarProgramBlock,
+    y_len: usize,
+    p_len: usize,
+) -> Result<rumoca_ir_solve::ScalarProgramBlock, SolveDerivationError> {
+    let span = first_non_dummy_span(block.program_spans());
+    let time_seed_index = y_len
+        .checked_add(p_len)
+        .filter(|index| index.checked_add(1).is_some())
+        .ok_or_else(|| {
+            ad_optional_contract_violation("time seed extent overflows".to_owned(), span)
+        })?;
+    let rows = lower_scalar_program_rows_ad(
+        block.programs(),
+        block.program_spans(),
+        SeedMode::SolverYAndPAndTime {
+            p_seed_offset: y_len,
+            p_seed_count: p_len,
+            time_seed_index,
+        },
+        "time-aware scalar program JVP row count",
+    )?;
+    rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+        rows,
+        block.program_spans().to_vec(),
+        block.output_indices().to_vec(),
+    )
+    .map_err(SolveDerivationError::from)
+}
+
 pub fn lower_scalar_program_block_full_ad_with_spans(
     primal_rows: &[Vec<LinearOp>],
     row_spans: &[rumoca_core::Span],
@@ -747,6 +788,11 @@ enum SeedMode<'a> {
     },
     SolverYAndP {
         p_seed_offset: usize,
+    },
+    SolverYAndPAndTime {
+        p_seed_offset: usize,
+        p_seed_count: usize,
+        time_seed_index: usize,
     },
 }
 
