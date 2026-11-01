@@ -1,3 +1,5 @@
+mod coverage_regressions;
+
 use super::*;
 use rumoca_core::SourceId;
 use rumoca_ir_galec::ast::{

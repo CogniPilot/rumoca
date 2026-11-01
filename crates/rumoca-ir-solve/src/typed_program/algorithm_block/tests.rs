@@ -116,13 +116,15 @@ fn block_table_rejects_method_local_and_previous_state() {
             "bad",
             3,
         ));
+        let error =
+            SolveAlgorithmBlock::construct(profile(), slots, no_locals, no_locals, no_locals)
+                .expect_err("block storage is refused at its declaration");
+        assert_eq!(error.source_span(), Some(span(3)));
         assert_eq!(
-            SolveAlgorithmBlock::construct(profile(), slots, no_locals, no_locals, no_locals),
-            Err(
-                SolveAlgorithmBlockConstructionError::UnsupportedBlockStorage {
-                    provenance: span(3)
-                }
-            )
+            error,
+            SolveAlgorithmBlockConstructionError::UnsupportedBlockStorage {
+                provenance: span(3)
+            }
         );
     }
 }

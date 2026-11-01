@@ -839,3 +839,30 @@ fn a_refused_reference_is_located_at_its_first_part_or_reported_unlocated() {
         "{unlocated}"
     );
 }
+
+#[test]
+fn a_reversed_guard_proves_only_the_selected_array_indices_safe() {
+    let guarded = |op| {
+        Spanned::dummy(Statement::If(IfStatement {
+            branches: vec![IfBranch {
+                condition: Condition::Expression(bin(op, Expression::Integer(0), lsref("i"))),
+                body: vec![
+                    plain(state("y"), r(1.0)),
+                    plain(state("y"), Expression::Ref(element_ref("a", lsref("i")))),
+                ],
+                span: Span::DUMMY,
+            }],
+            else_body: None,
+        }))
+    };
+    let reader = |op| {
+        array_reader(vec![
+            plain(local("a"), Expression::Array(vec![r(2.0), r(5.0)])),
+            over("i", 0, 2, vec![guarded(op)]),
+        ])
+    };
+    refine(reader(BinaryOp::Lt)).expect("0 < i excludes the invalid array index");
+    let error = refine(reader(BinaryOp::Le))
+        .expect_err("0 <= i allows a fault after the first region store");
+    assert!(error.to_string().contains("fault after"), "{error}");
+}

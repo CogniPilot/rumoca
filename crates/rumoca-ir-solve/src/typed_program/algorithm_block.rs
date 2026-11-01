@@ -62,11 +62,6 @@ impl SolveAlgorithmCodeRef {
     }
 
     #[must_use]
-    pub const fn kind(&self) -> SolveAlgorithmCodeEntityKind {
-        self.kind
-    }
-
-    #[must_use]
     pub fn qualified_name(&self) -> &str {
         &self.qualified_name
     }
@@ -128,11 +123,6 @@ impl SolveBlockSlotDeclaration {
     #[must_use]
     pub const fn storage(&self) -> SolveStorageClass {
         self.storage
-    }
-
-    #[must_use]
-    pub const fn access(&self) -> SolveSlotAccess {
-        self.access
     }
 
     #[must_use]
@@ -203,11 +193,6 @@ impl SolveStatusBinding {
             owner,
             slots: slots.into_boxed_slice(),
         }
-    }
-
-    #[must_use]
-    pub const fn owner(&self) -> SolvePureCallOwnerId {
-        self.owner
     }
 
     #[must_use]
