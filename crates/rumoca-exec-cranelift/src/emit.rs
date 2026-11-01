@@ -5153,8 +5153,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             let second_lhs = self.fb.ins().fmul(lhs[second + 1], rhs[first]);
             let second_rhs = self.fb.ins().fmul(lhs[second], rhs[first + 1]);
             let positive = self.fb.ins().fadd(first_lhs, first_rhs);
-            let negative = self.fb.ins().fadd(second_lhs, second_rhs);
-            let tangent = self.fb.ins().fsub(positive, negative);
+            let partial = self.fb.ins().fsub(positive, second_lhs);
+            let tangent = self.fb.ins().fsub(partial, second_rhs);
             self.store_tensor_cross_value(dst + 1, tangent)?;
         }
         Ok(())
