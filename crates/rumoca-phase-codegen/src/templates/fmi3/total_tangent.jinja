@@ -11,17 +11,11 @@
     a public sensitivity result only after the whole call succeeds. This keeps
     failed later segments from exposing partially updated seeds/results.
 -#}
-{%- from "fmi-c-kernel.jinja" import scalar_op, projection_lu_kernel %}
+{%- from "fmi-c-kernel.jinja" import projection_lu_kernel %}
+{%- from "fmi-me-projection.jinja" import program_function %}
 
 {%- macro program(name, body) %}
-static int {{ name }}(ModelInstance* m, const double* seed, double* o) {
-    double r[{{ body.temporary_count if body.temporary_count > 0 else 1 }}];
-    (void)r; (void)m; (void)seed; (void)o;
-{%- for op in body.ops %}
-{{ scalar_op(op, "o", "-1") }}
-{%- endfor %}
-    return 0;
-}
+{{ program_function(name, body, "ModelInstance* m, const double* seed, double* o", true) }}
 {%- endmacro %}
 
 {%- macro functions(tangent, stem) %}
