@@ -219,7 +219,7 @@ fn issue_424_partially_unknown_declaration_keeps_mismatched_known_axis() {
 #[test]
 fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
     // MLS §7.3.2: constraining-clause modifiers apply in the declaration and in
-    // any redeclaration, below the declaration's own modifiers (§7.2.4 merge).
+    // any redeclaration, below the declaration's own modifiers (§7.2.3 merge).
     let source = include_str!("fixtures/reported_bugs/issue_536.mo");
     for (model, expected) in [
         ("ConstrainedByMod.Holder", &[("spring.k", 3.0)][..]),
@@ -242,18 +242,41 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             "ConstrainedByMod.NestedFinalClassKept",
             &[("h.p.a", 1.0), ("h.p.b", 4.0)],
         ),
+        // A declared whole record supersedes a non-final constrained member,
+        // as on main before #536 and in OpenModelica.
+        (
+            "ConstrainedByMod.RecordKept",
+            &[("h.p.a", 5.0), ("h.p.b", 4.0)],
+        ),
+        (
+            "ConstrainedByMod.RecordClassKept",
+            &[("h.p.a", 5.0), ("h.p.b", 4.0)],
+        ),
     ] {
         for &(name, value) in expected {
             assert_eq!(binding(source, model, name), vec![value], "{model}: {name}");
         }
     }
-    // A declared whole record over a non-final constrained member merges to
-    // the written-out `p(b = 3) = R(5, 4)` (MLS 7.2.4), however that form reads.
-    for name in ["h.p.a", "h.p.b"] {
+    // Not #536, recorded so a change shows: rumoca reads the written-out
+    // `p(b = 3) = R(5, 4)` with the member modifier winning, where
+    // OpenModelica gives b = 4 (i-c888c50d).
+    assert_eq!(
+        binding(source, "ConstrainedByMod.RecordDirect", "h.p.b"),
+        vec![3.0],
+        "RecordDirect: h.p.b"
+    );
+    // Attributes are not part of the value, so they still merge below a
+    // declared binding, a final one included.
+    for (model, minimum) in [
+        ("ConstrainedByMod.AttributeKept", Some(vec![0.0])),
+        ("ConstrainedByMod.AttributeClassKept", Some(vec![0.0])),
+        ("ConstrainedByMod.AttributeFinalKept", None),
+    ] {
+        assert_eq!(binding(source, model, "h.k"), vec![5.0], "{model}");
         assert_eq!(
-            binding(source, "ConstrainedByMod.RecordKept", name),
-            binding(source, "ConstrainedByMod.RecordDirect", name),
-            "RecordKept: {name}"
+            attributes(source, model, "h.k"),
+            (minimum, Some("N/m".to_string())),
+            "{model}"
         );
     }
 }

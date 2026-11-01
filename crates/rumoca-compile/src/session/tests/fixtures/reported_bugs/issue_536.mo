@@ -70,7 +70,11 @@ package ConstrainedByMod
   model RecordKept "The declared whole record wins over a non-final constrained member, as in OpenModelica"
     replaceable RHolder h(p = R(5, 4)) constrainedby PartialRHolder(p(b = 3));
   end RecordKept;
-  model RecordDirect "The merged modification of RecordKept, written out"
+  model RecordClassKept "The same for a replaceable short class"
+    replaceable model H = RHolder(p = R(5, 4)) constrainedby PartialRHolder(p(b = 3));
+    H h;
+  end RecordClassKept;
+  model RecordDirect "Not #536: a whole record binding and a member modifier written together"
     RHolder h(p(b = 3) = R(5, 4));
   end RecordDirect;
   partial model PartialGain "One parameter for attribute modifiers"
@@ -86,4 +90,14 @@ package ConstrainedByMod
     model G = Gain(k(min = 0, unit = "N/m") = 5);
     G g;
   end ClassAttributes;
+  model AttributeKept "A declared binding keeps the constrained attributes"
+    replaceable Gain h(k = 5) constrainedby PartialGain(k(min = 0, unit = "N/m"));
+  end AttributeKept;
+  model AttributeClassKept "The same for a replaceable short class"
+    replaceable model H = Gain(k = 5) constrainedby PartialGain(k(min = 0, unit = "N/m"));
+    H h;
+  end AttributeClassKept;
+  model AttributeFinalKept "A declared binding does not modify a final constrained attribute"
+    replaceable Gain h(k = 5) constrainedby PartialGain(k(final unit = "N/m"));
+  end AttributeFinalKept;
 end ConstrainedByMod;

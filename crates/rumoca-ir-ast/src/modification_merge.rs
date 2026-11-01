@@ -1,4 +1,4 @@
-//! MLS §7.2.4: a lower-precedence modification merged below a stated one.
+//! MLS §7.2.3: a lower-precedence modification merged below a stated one.
 use super::*;
 use rumoca_core::OpBinary;
 use std::sync::Arc;
@@ -26,27 +26,26 @@ impl Expression {
     /// Merge `default`, a lower-precedence modification of the same element,
     /// below this one: what this modification states wins, nested arguments
     /// merge argument by argument, and a binding only `default` states is kept.
+    /// A binding this one states replaces the whole value, so it supersedes
+    /// `default`'s element modifications (`h(p = R(5, 4))` over `p(b = 3)`
+    /// keeps `p.b = 4`); `default`'s attributes (`start`, `unit`, ...) are
+    /// not part of the value and still merge below it.
     ///
     /// Both use one storage shape: a full argument (`x = e`, `x(...)`,
     /// `x(...) = e`) or, in a component's modification map, its value
     /// (`e`, `x(...)`, `x(...) = e`).
     ///
     /// MLS §7.2.6: an element `default` makes `final` cannot be modified
-    /// again. If this modification states one, the merge fails with that
+    /// again. If this modification states one, or states a binding over a
+    /// final element of the value, the merge fails with that
     /// element's path below the merged one (`a`, `p.a`); `self` is then
     /// partly merged and must not be used.
     pub fn merge_modification_below(&mut self, default: &Self) -> Result<(), String> {
         if let Some(lower) = default.nested_modification() {
             if let Some(stated) = self.nested_modification_mut() {
                 merge_arguments_below(stated, lower)?;
-            } else if let Some(binding) = self.modification_binding() {
-                // A stated binding replaces the whole value, so it modifies
-                // every element below, final ones included.
-                first_final(lower).map_or(Ok(()), Err)?;
-                // Otherwise it takes the lower modification's arguments.
-                let merged = bound(lower, binding, self.span());
-                *self = merged;
-                return Ok(());
+            } else if self.modification_binding().is_some() {
+                return self.bind_over(lower);
             }
         }
         if self.modification_binding().is_none()
@@ -56,6 +55,23 @@ impl Expression {
             let merged = bound(stated, binding, self.span());
             *self = merged;
         }
+        Ok(())
+    }
+
+    /// A stated binding replaces the whole value, so it modifies every
+    /// element of `lower`, final ones included, and supersedes the rest.
+    /// Only `lower`'s attributes remain to merge below it.
+    fn bind_over(&mut self, lower: &Self) -> Result<(), String> {
+        first_final(&arguments_where(lower, |name| !is_attribute(name))).map_or(Ok(()), Err)?;
+        let attributes = arguments_where(lower, is_attribute);
+        let Some(binding) = self
+            .modification_binding()
+            .filter(|_| has_arguments(&attributes))
+        else {
+            return Ok(());
+        };
+        let merged = bound(&attributes, binding, self.span());
+        *self = merged;
         Ok(())
     }
 
@@ -134,6 +150,52 @@ fn first_final(modification: &Expression) -> Option<String> {
             let inner = first_final(argument.nested_modification()?)?;
             Some(format!("{name}.{inner}"))
         })
+}
+
+/// A predefined attribute of a primitive type (MLS §4.9): metadata of a
+/// value, not an element of it.
+fn is_attribute(name: &str) -> bool {
+    rumoca_core::PREDEFINED_COMPONENT_ATTRIBUTES.contains(&name)
+}
+
+/// The arguments of a class modification whose element name `keep` accepts,
+/// with their flags.
+fn arguments_where(modification: &Expression, keep: impl Fn(&str) -> bool) -> Expression {
+    let mut kept = modification.clone();
+    if let Expression::ClassModification {
+        modifications,
+        each_flags,
+        final_flags,
+        redeclare_flags,
+        ..
+    } = &mut kept
+    {
+        let selected: Vec<bool> = modifications
+            .iter()
+            .map(|argument| {
+                argument
+                    .modification_target()
+                    .is_some_and(|target| keep(&target.to_string()))
+            })
+            .collect();
+        retain_selected(modifications, &selected);
+        for flags in [each_flags, final_flags, redeclare_flags] {
+            retain_selected(flags, &selected);
+        }
+    }
+    kept
+}
+
+fn retain_selected<T>(items: &mut Vec<T>, selected: &[bool]) {
+    let mut index = 0;
+    items.retain(|_| {
+        index += 1;
+        selected.get(index - 1).copied().unwrap_or(false)
+    });
+}
+
+fn has_arguments(modification: &Expression) -> bool {
+    matches!(modification, Expression::ClassModification { modifications, .. } if !modifications.is_empty())
 }
 
 /// `nested = binding`, the stored form of `x(...) = e`.
