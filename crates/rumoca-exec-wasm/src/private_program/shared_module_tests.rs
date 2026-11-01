@@ -432,3 +432,39 @@ fn every_admitted_entry_of_the_fixture_is_emitted_by_its_shared_module() {
         sources.len()
     );
 }
+
+#[test]
+fn entries_over_the_module_budget_fill_several_modules_with_the_same_bits() {
+    let (table, site) = table();
+    let sources = sources(&site);
+    let layout = VarLayout::from_parts(Default::default(), Y, 1);
+    let entries = sources
+        .iter()
+        .map(|(block, seed)| (block, *seed))
+        .collect::<Vec<_>>();
+    let whole = compile_private_programs_wasm(&entries, &layout, &table).unwrap();
+    // No two entries fit one module, so each has a module of its own.
+    let split = compile_private_programs_in_modules(&entries, &layout, &table, 1).unwrap();
+    assert_eq!(split.len(), sources.len());
+    for (index, entry) in split.iter().enumerate() {
+        assert!(
+            split[..index]
+                .iter()
+                .all(|other| !std::ptr::eq(other.module_bytes(), entry.module_bytes())),
+            "entry {index} shares a module over the budget"
+        );
+    }
+    let (y, p, seed) = (
+        [0.5, -2.75, 0.3, -0.0, 1e16, 0.7, 3.0, -1.5],
+        [2.5],
+        [0.25, -1.0, 2.0, -0.0, 0.5, 1.5, -3.0, 4.0],
+    );
+    for (entry, (whole, split)) in whole.iter().zip(&split).enumerate() {
+        let count = whole.output_count();
+        assert_eq!(
+            tuple(shared(split, &y, &p, &seed), count),
+            tuple(shared(whole, &y, &p, &seed), count),
+            "entry {entry}"
+        );
+    }
+}

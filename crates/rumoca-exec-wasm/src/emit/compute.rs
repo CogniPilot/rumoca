@@ -14,7 +14,7 @@ pub(crate) use call_program::{
 };
 pub(crate) use exact_assignments::{
     AdmissionCache, admit_private_entry, emit_event_program_module, emit_exact_assignment_module,
-    emit_private_entries_module,
+    emit_private_entries_modules,
 };
 #[cfg(test)]
 pub(crate) use exact_assignments::{emit_private_directional_module, emit_private_program_module};

@@ -167,39 +167,55 @@ pub fn compile_private_program_wasm(
     )?)
 }
 
-/// Compile many complete programs into one module with one entry each. A
+/// The largest module the private emitter builds. Chromium refuses to compile
+/// a module over 8 MiB synchronously on its main thread, where preparation
+/// compiles; half of that leaves room for the estimate of each module's
+/// records.
+const PRIVATE_MODULE_BYTES: usize = 4 << 20;
+
+/// Compile many complete programs into shared modules with one entry each. A
 /// `Some(seed_len)` entry is directional and reads that many seed coordinates.
-/// Entries are returned in order and share the module's checked storage.
+/// Entries are returned in order and share their module's checked storage.
 pub fn compile_private_programs_wasm(
     entries: &[(&ScalarProgramBlock, Option<usize>)],
     layout: &VarLayout,
     table: &SolvePureCallTable,
 ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
+    compile_private_programs_in_modules(entries, layout, table, PRIVATE_MODULE_BYTES)
+}
+
+fn compile_private_programs_in_modules(
+    entries: &[(&ScalarProgramBlock, Option<usize>)],
+    layout: &VarLayout,
+    table: &SolvePureCallTable,
+    module_bytes: usize,
+) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
     layout
         .validate_shape_contract()
         .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-    let (module, artifacts) = crate::emit::emit_private_entries_module(entries, layout, table)
+    let modules = crate::emit::emit_private_entries_modules(entries, layout, table, module_bytes)
         .map_err(WasmCompileError::Backend)?;
-    let exports = artifacts
-        .iter()
-        .map(|artifact| artifact.export.as_str())
-        .collect::<Vec<_>>();
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let runtimes = crate::WasmKernelRuntime::new_entries(module.module_bytes(), &exports)?;
-    #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
-    let runtimes =
-        crate::host_runtime::HostKernelRuntime::new_entries(module.module_bytes(), &exports)?;
-    #[cfg(not(any(
-        all(target_arch = "wasm32", target_os = "unknown"),
-        all(feature = "host-engine", not(target_arch = "wasm32"))
-    )))]
-    let runtimes = vec![(); exports.len()];
-    let module = Rc::new(module);
-    entries
-        .iter()
-        .zip(artifacts)
-        .zip(runtimes)
-        .map(|((&(block, seed_len), artifact), runtime)| {
+    let mut sources = entries.iter();
+    let mut compiled = Vec::with_capacity(entries.len());
+    for (module, artifacts) in modules {
+        let exports = artifacts
+            .iter()
+            .map(|artifact| artifact.export.as_str())
+            .collect::<Vec<_>>();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let runtimes = crate::WasmKernelRuntime::new_entries(module.module_bytes(), &exports)?;
+        #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+        let runtimes =
+            crate::host_runtime::HostKernelRuntime::new_entries(module.module_bytes(), &exports)?;
+        #[cfg(not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(feature = "host-engine", not(target_arch = "wasm32"))
+        )))]
+        let runtimes = vec![(); exports.len()];
+        let module = Rc::new(module);
+        for ((artifact, runtime), &(block, seed_len)) in
+            artifacts.into_iter().zip(runtimes).zip(sources.by_ref())
+        {
             #[cfg(not(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(feature = "host-engine", not(target_arch = "wasm32"))
@@ -217,7 +233,7 @@ pub fn compile_private_programs_wasm(
                     ));
                 }
             };
-            Ok(CompiledPrivateProgramWasm {
+            compiled.push(CompiledPrivateProgramWasm {
                 module: Rc::clone(&module),
                 export: artifact.export,
                 gather_faults: artifact.gather_faults,
@@ -231,9 +247,15 @@ pub fn compile_private_programs_wasm(
                     all(feature = "host-engine", not(target_arch = "wasm32"))
                 ))]
                 runtime,
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    if compiled.len() != entries.len() {
+        return Err(WasmCompileError::Backend(
+            "private modules returned other than one entry per program".into(),
+        ));
+    }
+    Ok(compiled)
 }
 
 /// Admission of programs whose shared module ([`compile_private_programs_wasm`])

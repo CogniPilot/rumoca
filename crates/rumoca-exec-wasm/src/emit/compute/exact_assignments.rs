@@ -88,19 +88,72 @@ pub(crate) struct PrivateEntryArtifact {
     pub(crate) seed_offset: Option<u32>,
 }
 
-/// One module for many private programs: types, math imports and pure-call
-/// helpers once, one exported entry per program, and one defined register
-/// memory sized at construction for the widest entry. Entries run one at a
-/// time and keep no state there between calls (a root register layout has no
-/// undefined source), so they share it.
-pub(crate) fn emit_private_entries_module(
+/// Modules for many private programs: each repeats the types, math imports
+/// and pure-call helpers once, exports one entry per program, and defines one
+/// register memory sized at construction for the widest entry. Entries run
+/// one at a time and keep no state there between calls (a root register
+/// layout has no undefined source), so they share it.
+///
+/// Consecutive entries fill a module until the next would take it past
+/// `module_bytes`; an entry larger than that has a module of its own. Every
+/// module repeats the same import and helper prefix, so an entry's body is
+/// emitted once and is valid in whichever module receives it.
+pub(crate) fn emit_private_entries_modules(
     entries: &[(&solve::ScalarProgramBlock, Option<usize>)],
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
-) -> Result<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>), String> {
+    module_bytes: usize,
+) -> Result<Vec<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>)>, String> {
     let ready = Ready::private_entries(entries, layout, table)?;
-    let count =
-        u32::try_from(ready.plan.programs.len()).map_err(|_| "WASM entry count overflow")?;
+    let mut prefix = Module::new();
+    let types = call_program::add_types(&mut prefix);
+    let catalog = add_import_section(&mut prefix, &ready.imports, &types);
+    let helper_bytes = ready.bodies.iter().map(Function::byte_len).sum::<usize>();
+    let emitted = (0..ready.plan.programs.len())
+        .map(|entry| {
+            let seed_offset = ready.plan.programs[entry].seed.and(ready.seed_offset);
+            emit_programs(
+                &catalog,
+                &ready,
+                layout,
+                true,
+                entry..entry + 1,
+                seed_offset,
+            )
+            .map(|function| (function, seed_offset))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut modules = Vec::new();
+    let mut start = 0;
+    while start < emitted.len() {
+        let mut end = start + 1;
+        // The prefix, then the function, memory and export section headers.
+        let mut bytes =
+            prefix.as_slice().len() + 64 + helper_bytes + entry_bytes(&emitted[start].0);
+        while let Some((next, _)) = emitted.get(end) {
+            bytes += entry_bytes(next);
+            if bytes > module_bytes {
+                break;
+            }
+            end += 1;
+        }
+        modules.push(private_entries_module(&ready, &emitted[start..end])?);
+        start = end;
+    }
+    Ok(modules)
+}
+
+// An entry's body plus a generous bound on its declaration, export and
+// body-size records.
+fn entry_bytes(emitted: &EmittedFunction) -> usize {
+    emitted.function.byte_len() + 32
+}
+
+fn private_entries_module(
+    ready: &Ready,
+    entries: &[(EmittedFunction, Option<u32>)],
+) -> Result<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>), String> {
+    let count = u32::try_from(entries.len()).map_err(|_| "WASM entry count overflow")?;
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
     let catalog = add_import_section(&mut module, &ready.imports, &types);
@@ -134,22 +187,13 @@ pub(crate) fn emit_private_entries_module(
         code.function(body);
     }
     let mut artifacts = Vec::with_capacity(names.len());
-    for (entry, export) in names.into_iter().enumerate() {
-        let seed_offset = ready.plan.programs[entry].seed.and(ready.seed_offset);
-        let emitted = emit_programs(
-            &catalog,
-            &ready,
-            layout,
-            true,
-            entry..entry + 1,
-            seed_offset,
-        )?;
+    for (export, (emitted, seed_offset)) in names.into_iter().zip(entries) {
         code.function(&emitted.function);
         artifacts.push(PrivateEntryArtifact {
             export,
-            gather_faults: emitted.gather_faults,
-            linear_solve_faults: emitted.linear_solve_faults,
-            seed_offset,
+            gather_faults: emitted.gather_faults.clone(),
+            linear_solve_faults: emitted.linear_solve_faults.clone(),
+            seed_offset: *seed_offset,
         });
     }
     module.section(&code);
@@ -157,8 +201,8 @@ pub(crate) fn emit_private_entries_module(
         bytes: module.finish(),
         capacity_policy: crate::CheckedNativeWasmCapacityPolicy::default(),
         scratch_bytes: ready.calls.view().bytes,
-        scratch_report: ready.scratch_report,
-        faults: ready.faults,
+        scratch_report: ready.scratch_report.clone(),
+        faults: ready.faults.clone(),
         gather_faults: Vec::new(),
         linear_solve_faults: Vec::new(),
         math_imports: ready.imports.iter().map(|import| import.symbol()).collect(),

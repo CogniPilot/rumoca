@@ -218,7 +218,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
 struct WasmExecutionBackend {
     layout: VarLayout,
     calls: Rc<rumoca_ir_solve::SolvePureCallTable>,
-    // Private programs requested by one preparation, emitted as one module.
+    // Private programs requested by one preparation, emitted in shared modules.
     batch: Rc<super::batch::ModuleBatch>,
 }
 

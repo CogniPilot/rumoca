@@ -1,8 +1,8 @@
-//! Private programs requested while a runtime is prepared share one module.
+//! Private programs requested while a runtime is prepared share their modules.
 //!
 //! Each request meets every refusal of its own when it is made. Emission and
 //! instantiation wait until preparation finishes (or the first call of a
-//! pending entry), and then build one module for every pending request.
+//! pending entry), and then build the modules of every pending request.
 use rumoca_exec_wasm::CompiledPrivateProgramWasm;
 use rumoca_ir_solve::{ScalarProgramBlock, SolvePureCallTable, VarLayout};
 use std::{
@@ -63,7 +63,7 @@ impl ModuleBatch {
         Ok(entry)
     }
 
-    /// Emit and instantiate every pending request as one module.
+    /// Emit and instantiate every pending request in shared modules.
     pub(super) fn finish(&self) {
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         if pending.is_empty() {
@@ -83,11 +83,13 @@ impl ModuleBatch {
                     let _ = entry.compiled.set(Ok(code));
                 }
             }
-            // A refused module is rebuilt one entry at a time, so each request
-            // keeps its own result and error instead of failing the others.
-            Err(_) => {
+            // Each request met its own refusals when it was admitted, so a
+            // failed build is the engine's (a host limit); every entry reports
+            // it. Rebuilding them one module each would multiply what failed.
+            Err(error) => {
+                let error = error.to_string();
                 for entry in &pending {
-                    entry.compile_alone();
+                    let _ = entry.compiled.set(Err(error.clone()));
                 }
             }
         }
