@@ -7,6 +7,9 @@
 //! what the method bodies execute: the block slot table, the three method
 //! programs and the function owners.
 
+#[cfg(test)]
+mod nan_payload_tests;
+
 use std::collections::BTreeMap;
 
 use minijinja::Value;
