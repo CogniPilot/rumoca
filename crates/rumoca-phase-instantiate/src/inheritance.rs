@@ -1678,12 +1678,14 @@ pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) -> Inst
 fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &ast::Extend) {
     walk_extend_modifications(extend, |modification| {
         // Extract target name and nested modifications from the expression.
-        // Two formats exist:
+        // Three formats exist:
         //   1. ClassModification { target: comp_name, modifications: [...] }
         //      For: extends Foo(friction(useHeatPort=true))
         //   2. Modification { target: comp_name, value: ClassModification { target: TypeName, modifications: [...] } }
         //      For: extends Foo(redeclare final NewType comp(nested=val))
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
+        //   3. Binary { Assign, lhs: ClassModification { target: comp_name, .. }, rhs: binding }
+        //      For: extends Foo(k(min=0) = 5); the binding is a value modification.
         let Some((target_name, nested)) = extend_nested_target_modifications(extend, modification)
         else {
             return;
@@ -1727,6 +1729,15 @@ fn extend_nested_target_modifications<'a>(
         {
             Some((extend_relative_component_target(extend, target)?, value))
         }
+        // `x(...) = e`: the nested part; the binding is a value modification.
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), ast::Expression::ClassModification { .. }) => Some((
+            extend_relative_component_target(extend, modification.expr.modification_target()?)?,
+            lhs,
+        )),
         _ => None,
     }
 }

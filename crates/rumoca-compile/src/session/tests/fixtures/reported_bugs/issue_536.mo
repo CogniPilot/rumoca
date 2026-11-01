@@ -73,4 +73,17 @@ package ConstrainedByMod
   model RecordDirect "The merged modification of RecordKept, written out"
     RHolder h(p(b = 3) = R(5, 4));
   end RecordDirect;
+  partial model PartialGain "One parameter for attribute modifiers"
+    parameter Real k;
+  end PartialGain;
+  model Gain
+    extends PartialGain;
+  end Gain;
+  model ExtendsAttributes "An extends modifier that states attributes and a binding"
+    extends Gain(k(min = 0, unit = "N/m") = 5);
+  end ExtendsAttributes;
+  model ClassAttributes "The same modifier on a short class"
+    model G = Gain(k(min = 0, unit = "N/m") = 5);
+    G g;
+  end ClassAttributes;
 end ConstrainedByMod;

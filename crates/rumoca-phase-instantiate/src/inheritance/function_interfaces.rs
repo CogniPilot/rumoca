@@ -119,7 +119,9 @@ fn apply_alias_modifiers(
             valid = false;
             return;
         };
-        if modification.redeclare || !interface.members.contains_key(&name) {
+        // `x(...) = e` also modifies attributes, which an alias does not carry.
+        let restates_attributes = matches!(modification.expr, ast::Expression::Binary { .. });
+        if modification.redeclare || restates_attributes || !interface.members.contains_key(&name) {
             valid = false;
             return;
         }

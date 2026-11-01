@@ -258,6 +258,41 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
     }
 }
 
+#[test]
+fn issue_536_extends_modifier_with_attributes_keeps_its_binding() {
+    // MLS §7.2: `k(min = 0, unit = "N/m") = 5` modifies k's attributes and
+    // binds it; the extends form applied neither (k = 0.0), unlike a
+    // component modifier. OpenModelica gives k(min = 0.0, unit = "N/m") = 5.0.
+    let source = include_str!("fixtures/reported_bugs/issue_536.mo");
+    for (model, name) in [
+        ("ConstrainedByMod.ExtendsAttributes", "k"),
+        ("ConstrainedByMod.ClassAttributes", "g.k"),
+    ] {
+        assert_eq!(binding(source, model, name), vec![5.0], "{model}: {name}");
+        assert_eq!(
+            attributes(source, model, name),
+            (Some(vec![0.0]), Some("N/m".to_string())),
+            "{model}: {name}"
+        );
+    }
+}
+
+/// The evaluated `min` and the `unit` of one variable of `model`.
+fn attributes(source: &str, model: &str, name: &str) -> (Option<Vec<f64>>, Option<String>) {
+    compile(source, model).dae.inspect(|view| {
+        let (_, declaration) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .unwrap_or_else(|| panic!("{model}: {name} is declared"));
+        let minimum = declaration.minimum().map(|minimum| {
+            rumoca_eval_dae::NumericEvaluator::new(view)
+                .expression(minimum)
+                .expect("min evaluates")
+        });
+        (minimum, declaration.unit().map(ToString::to_string))
+    })
+}
+
 /// The evaluated binding of one variable of `model`.
 fn binding(source: &str, model: &str, name: &str) -> Vec<f64> {
     compile(source, model).dae.inspect(|view| {
