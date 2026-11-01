@@ -698,7 +698,7 @@ fn merge_constraining_clause_modifications(
             .copied()
             .unwrap_or(false);
 
-        let Some(target_name) = constraining_arg_target_name(arg) else {
+        let Some(target_name) = arg.modification_target().map(ToString::to_string) else {
             continue;
         };
         if is_builtin_attribute_name(&target_name) {
@@ -744,13 +744,17 @@ fn merge_constraining_clause_class_modifications(
         );
     };
     for (idx, arg) in arguments.args.iter().enumerate() {
-        let Some(target_name) = constraining_arg_target_name(arg) else {
+        let Some(target) = arg.modification_target().map(ToString::to_string) else {
             continue;
         };
-        let stated = base.modifications.iter().any(|modification| {
-            constraining_arg_target_name(&modification.expr).as_deref() == Some(&target_name)
-        });
-        if stated {
+        if let Some(stated) = base.modifications.iter_mut().find(|modification| {
+            modification
+                .expr
+                .modification_target()
+                .map(ToString::to_string)
+                == Some(target.clone())
+        }) {
+            stated.expr.merge_modification_below(arg);
             continue;
         }
         base.modifications.push(rumoca_ir_ast::ExtendModification {
@@ -761,27 +765,6 @@ fn merge_constraining_clause_class_modifications(
         });
     }
     Ok(())
-}
-
-fn constraining_arg_target_name(arg: &rumoca_ir_ast::Expression) -> Option<String> {
-    match arg {
-        rumoca_ir_ast::Expression::Modification { target, .. }
-        | rumoca_ir_ast::Expression::ClassModification { target, .. } => Some(target.to_string()),
-        rumoca_ir_ast::Expression::Binary { op, lhs, .. }
-            if matches!(op, rumoca_core::OpBinary::Assign)
-                && matches!(
-                    lhs.as_ref(),
-                    rumoca_ir_ast::Expression::ClassModification { .. }
-                ) =>
-        {
-            if let rumoca_ir_ast::Expression::ClassModification { target, .. } = lhs.as_ref() {
-                Some(target.to_string())
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 fn is_builtin_attribute_name(name: &str) -> bool {

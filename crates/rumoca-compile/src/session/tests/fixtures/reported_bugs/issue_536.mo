@@ -33,4 +33,21 @@ package ConstrainedByMod
   equation
     spring.x = time;
   end DeclarationFirst;
+  model Pair "Two parameters of one nested element"
+    parameter Real a;
+    parameter Real b;
+  end Pair;
+  partial model PartialPairHolder
+    Pair p;
+  end PartialPairHolder;
+  model PairHolder
+    extends PartialPairHolder;
+  end PairHolder;
+  model NestedMerge "The declared p.a wins over the constrained one; the constrained p.b survives"
+    replaceable PairHolder h(p(a = 5)) constrainedby PartialPairHolder(p(a = 1, b = 3));
+  end NestedMerge;
+  model NestedClassForm "The same merge for a replaceable short class"
+    replaceable model H = PairHolder(p(a = 5)) constrainedby PartialPairHolder(p(a = 1, b = 3));
+    H h;
+  end NestedClassForm;
 end ConstrainedByMod;

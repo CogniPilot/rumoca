@@ -219,27 +219,37 @@ fn issue_424_partially_unknown_declaration_keeps_mismatched_known_axis() {
 #[test]
 fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
     // MLS §7.3.2: constraining-clause modifiers apply in the declaration and in
-    // any redeclaration, below the declaration's own modifiers.
+    // any redeclaration, below the declaration's own modifiers (§7.2.4 merge).
     let source = include_str!("fixtures/reported_bugs/issue_536.mo");
     for (model, expected) in [
-        ("ConstrainedByMod.Holder", 3.0),
-        ("ConstrainedByMod.HolderRedeclared", 3.0),
-        ("ConstrainedByMod.ClassForm", 3.0),
-        ("ConstrainedByMod.DeclarationFirst", 5.0),
+        ("ConstrainedByMod.Holder", &[("spring.k", 3.0)][..]),
+        ("ConstrainedByMod.HolderRedeclared", &[("spring.k", 3.0)]),
+        ("ConstrainedByMod.ClassForm", &[("spring.k", 3.0)]),
+        ("ConstrainedByMod.DeclarationFirst", &[("spring.k", 5.0)]),
+        (
+            "ConstrainedByMod.NestedMerge",
+            &[("h.p.a", 5.0), ("h.p.b", 3.0)],
+        ),
+        (
+            "ConstrainedByMod.NestedClassForm",
+            &[("h.p.a", 5.0), ("h.p.b", 3.0)],
+        ),
     ] {
         let compiled = compile(source, model);
-        let value = compiled.dae.inspect(|view| {
-            let (_, declaration) = view
-                .variables()
-                .find(|(_, variable)| variable.name().as_str() == "spring.k")
-                .expect("spring.k is declared");
-            let binding = declaration
-                .binding()
-                .unwrap_or_else(|| panic!("{model}: spring.k has a binding"));
-            rumoca_eval_dae::NumericEvaluator::new(view)
-                .expression(binding)
-                .expect("spring.k evaluates")
-        });
-        assert_eq!(value, vec![expected], "{model}");
+        for &(name, value) in expected {
+            let evaluated = compiled.dae.inspect(|view| {
+                let (_, declaration) = view
+                    .variables()
+                    .find(|(_, variable)| variable.name().as_str() == name)
+                    .unwrap_or_else(|| panic!("{model}: {name} is declared"));
+                let binding = declaration
+                    .binding()
+                    .unwrap_or_else(|| panic!("{model}: {name} has a binding"));
+                rumoca_eval_dae::NumericEvaluator::new(view)
+                    .expression(binding)
+                    .expect("binding evaluates")
+            });
+            assert_eq!(evaluated, vec![value], "{model}: {name}");
+        }
     }
 }

@@ -44,6 +44,7 @@ pub mod declared_constants;
 mod external_object;
 pub mod instance;
 mod modelica;
+mod modification_merge;
 mod nodes;
 pub mod scope;
 mod semantic_identity;

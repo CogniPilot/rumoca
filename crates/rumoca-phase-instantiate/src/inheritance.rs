@@ -1628,13 +1628,14 @@ pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) {
             continue;
         };
         prefixed_keys.push(key.clone());
-        if comp.modifications.contains_key(target_name) {
-            continue;
-        }
         inserts.push((target_name.to_string(), value.clone()));
     }
 
     for (target_name, value) in inserts {
+        if let Some(stated) = comp.modifications.get_mut(&target_name) {
+            stated.merge_modification_below(&value);
+            continue;
+        }
         comp.modifications.insert(target_name.clone(), value);
         let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if comp.each_modifications.contains(&prefixed_key) {
