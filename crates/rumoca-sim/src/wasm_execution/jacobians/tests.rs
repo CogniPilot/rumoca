@@ -31,7 +31,10 @@ fn directional_kernel_executes_emitted_wasm_and_rejects_missing_seed() {
     )
     .unwrap();
     let layout = VarLayout::from_parts(Default::default(), 1, 0);
-    let code = WasmJacobian::compile(&source, &layout, &SolvePureCallTable::default()).unwrap();
+    let code = std::rc::Rc::new(
+        WasmJacobian::compile(&source, &layout, &SolvePureCallTable::default()).unwrap(),
+    );
+    assert!(std::rc::Rc::clone(&code).programs_committing().is_none());
     assert!(code.validate(&[1.5], &[], &[], &[]).is_err());
     assert!(code.validate(&[1.5], &[], &[3.0], &[]).is_ok());
     let mut out = [19.0];

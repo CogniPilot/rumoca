@@ -449,6 +449,28 @@ impl DirectionalProgram {
         }
     }
 
+    /// [`Self::eval_programs_committing`] over an ordered subset of the
+    /// programs. `false` declines before any program executes.
+    pub(super) fn eval_selected_programs_committing(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        context: RowEvalContext<'_>,
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        match &self.execution {
+            DirectionalExecution::Reference => Ok(false),
+            DirectionalExecution::Compiled { code, .. } => code.call_selected_programs_committing(
+                programs,
+                inputs,
+                seed,
+                context.external_tables.unwrap_or(&[]),
+                commit,
+            ),
+        }
+    }
+
     pub(super) fn prepare_projection_entries(
         &self,
         applications: &[&solve::ProjectionJacobianApplication],

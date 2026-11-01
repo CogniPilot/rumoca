@@ -139,6 +139,12 @@ impl CompiledSolveExpression for NumericProgram {
 }
 
 impl CompiledSolveJacobianExpression for DirectionalProgram {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],

@@ -50,33 +50,44 @@ impl CompiledJacobianRows {
 }
 
 impl CompiledJacobianRows {
-    /// Run `programs` in order at one point, passing each program's outputs to
-    /// `commit` (which may write `seed`, an input of later programs) before the
-    /// next program runs: what [`Self::call_program_outputs`] and a commit give
-    /// one program at a time, with the inputs checked, the external tables
-    /// installed and the scratch borrowed once for the whole sequence. Each
-    /// program's outputs are staged and reach `commit` only after its native
-    /// call succeeds, so a failing program exposes nothing and stops the
-    /// sequence with every earlier commit standing.
-    pub(crate) fn call_programs_committing<E: From<CompileError>>(
+    /// Execute only the listed programs, in list order. Each successful
+    /// program commits before the next reads its seed; failures leave earlier
+    /// commits standing and stop the sequence. Validate every index before
+    /// execution, then check inputs and borrow scratch once for the sweep.
+    pub(crate) fn call_selected_programs_committing<E: From<CompileError>>(
         &self,
-        programs: std::ops::Range<usize>,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[ExternalTableData],
+        commit: &mut crate::ProgramCommit<'_, E>,
+    ) -> Result<(), E> {
+        if let Some(program) = programs.iter().find(|&&program| program >= self.rows.len()) {
+            return Err(CompileError::Input(format!(
+                "Jacobian program {program} is outside compiled rows"
+            ))
+            .into());
+        }
+        let rows = programs
+            .iter()
+            .filter_map(|&program| self.rows.get(program).map(|row| (program, row)));
+        self.call_rows_committing(rows, inputs, seed, external_tables, commit)
+    }
+
+    fn call_rows_committing<'r, E: From<CompileError>>(
+        &self,
+        rows: impl Iterator<Item = (usize, &'r CompiledJacobianRow)>,
         inputs: (&[f64], &[f64], f64),
         seed: &mut [f64],
         external_tables: &[ExternalTableData],
         commit: &mut crate::ProgramCommit<'_, E>,
     ) -> Result<(), E> {
         let (y, p, t) = inputs;
-        let rows = self.rows.get(programs.clone()).ok_or_else(|| {
-            CompileError::Input(format!(
-                "Jacobian programs {programs:?} are outside compiled rows"
-            ))
-        })?;
         validate_input_requirements(self.input_requirements, y, p, Some(seed))?;
         self.with_tables(external_tables, || {
             let mut staged = self.output_scratch.borrow_mut();
             let mut registers = self.regs_scratch.borrow_mut();
-            for (program, row) in programs.zip(rows) {
+            for (program, row) in rows {
                 resize_native_outputs(&mut staged, row.plan.output_count())?;
                 self.call_jacobian_row(
                     row,

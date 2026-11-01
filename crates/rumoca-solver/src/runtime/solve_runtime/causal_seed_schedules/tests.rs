@@ -1,6 +1,117 @@
 use super::*;
 use solve::{BinaryOp as B, LinearOp as L};
 
+/// Two states, then y2 = 2*y1 + p0, y3 = y0 + y2. With only state 0
+/// active, program 1 reads program 0's skipped (zero-tangent) target.
+fn prunable_executor() -> CausalSeedSchedules {
+    let first = vec![
+        L::LoadY { dst: 0, index: 1 },
+        L::Const { dst: 1, value: 2.0 },
+        L::Binary {
+            dst: 2,
+            op: B::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        L::LoadP { dst: 3, index: 0 },
+        L::Binary {
+            dst: 4,
+            op: B::Add,
+            lhs: 2,
+            rhs: 3,
+        },
+        L::StoreOutput { src: 4 },
+    ];
+    let second = vec![
+        L::LoadY { dst: 0, index: 0 },
+        L::LoadY { dst: 1, index: 2 },
+        L::Binary {
+            dst: 2,
+            op: B::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        L::StoreOutput { src: 2 },
+    ];
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("pruned_seed.mo"),
+        1,
+        2,
+    );
+    let primal = solve::ScalarProgramBlock::with_output_indices(
+        vec![first, second],
+        vec![span; 2],
+        vec![0, 1],
+    )
+    .unwrap();
+    let tangent = solve_eval::ad::lower_scalar_program_block_full_jvp(&primal, 4).unwrap();
+    let leaves = [
+        solve::LeafDependencies::Bounded(solve::IndexIntervals::of([1])),
+        solve::LeafDependencies::Bounded(solve::IndexIntervals::of([0, 1])),
+    ];
+    let schedule = SeedSchedule {
+        program: DirectionalProgram::prepare("pruned_seed", tangent, None, None).unwrap(),
+        targets: vec![vec![2], vec![3]],
+        cones: StateCones::from_leaves(2, &[vec![Some(&leaves[0])], vec![Some(&leaves[1])]]),
+    };
+    let mut schedules = CausalSeedSchedules {
+        state_count: 2,
+        ..Default::default()
+    };
+    schedules
+        .schedules
+        .insert(Default::default(), Rc::new(schedule));
+    schedules
+}
+
+#[test]
+fn pruned_sweep_matches_full_sweep_with_a_skipped_dependency_and_parameter_seed() {
+    let executor = prunable_executor();
+    let id = solve::RefreshSequenceId::default();
+    let schedule = &executor.schedules[&id];
+    let lin = AlgebraicLinearization {
+        t: 0.0,
+        params: &[3.0],
+        settle: AlgebraicSettle {
+            tol: 1e-10,
+            max_iters: 4,
+        },
+    };
+    let y = [5.0, 7.0, 17.0, 22.0];
+    for (sx, sy, sp) in [
+        (1.0, 0.0, 0.0),
+        (-2.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (1.0, 0.0, 2.0),
+    ] {
+        let mut pruned = [sx, sy, 0.0, 0.0, sp];
+        let mut full = pruned;
+        schedule
+            .apply(
+                lin,
+                &y,
+                &mut full,
+                RowEvalContext::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        executor
+            .apply_stages(
+                &[(false, id)],
+                lin,
+                &y,
+                &mut pruned,
+                RowEvalContext::default(),
+            )
+            .unwrap();
+        assert_eq!(pruned.map(f64::to_bits), full.map(f64::to_bits));
+        assert_eq!(pruned, [sx, sy, 2.0 * sy + sp, sx + 2.0 * sy + sp, sp]);
+        if sy == 0.0 && sp == 0.0 {
+            assert_eq!(&*executor.selected.borrow(), &[1], "program 0 was skipped");
+        }
+    }
+}
+
 fn executor(fail_second: bool) -> CausalSeedSchedules {
     let first = vec![
         L::LoadY { dst: 0, index: 0 },
@@ -65,6 +176,7 @@ fn executor(fail_second: bool) -> CausalSeedSchedules {
         Rc::new(SeedSchedule {
             program,
             targets: vec![vec![1], vec![2]],
+            cones: None,
         }),
     );
     schedules

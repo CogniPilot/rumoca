@@ -110,6 +110,12 @@ impl CompiledSolveExpression for Interpreted {
 }
 
 impl CompiledSolveJacobianExpression for Interpreted {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],

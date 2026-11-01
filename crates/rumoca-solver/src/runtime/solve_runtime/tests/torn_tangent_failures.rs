@@ -78,6 +78,12 @@ impl Kernel {
 }
 
 impl CompiledSolveJacobianExpression for Kernel {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call_program_outputs(
         &self,
         program: usize,

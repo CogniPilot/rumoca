@@ -371,6 +371,12 @@ fn direct_wasm_hook_uses_rust_me_lifecycle_and_propagates_execution_failure() {
 struct MarkerJacobian;
 
 impl CompiledSolveJacobianExpression for MarkerJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         _: &[f64],
@@ -400,6 +406,10 @@ fn precompiled_jacobian_hooks_keep_owner_identity_and_refuse_replacement() {
     let hook = backend
         .compile_jacobian_expression(&source.clone())
         .unwrap();
+    assert!(
+        Rc::clone(&hook).programs_committing().is_none(),
+        "retaining a whole Jacobian hook must not invent a committing entry"
+    );
     let mut out = [0.0; 2];
     hook.call(&[0.0; 2], &[], 0.0, &[0.0; 2], &[], &mut out)
         .unwrap();

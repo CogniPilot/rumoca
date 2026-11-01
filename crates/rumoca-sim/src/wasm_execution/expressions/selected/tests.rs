@@ -134,6 +134,7 @@ fn selected_directional_entry_retains_seed_contract_and_exact_source() {
     assert!(code.bind_program(&replay, 0).is_err());
     assert!(code.bind_program(&source, 2).is_err());
     let selected = code.bind_program(&source, 0).unwrap().unwrap();
+    assert!(Rc::clone(&selected).programs_committing().is_none());
     drop(code);
     drop(source);
     let mut out = [19.0; 2];

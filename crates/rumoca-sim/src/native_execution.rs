@@ -187,6 +187,12 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftProgramExpression {
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftProgramJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],
@@ -207,6 +213,12 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftProgramJacobian
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftComputeJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],
@@ -222,26 +234,34 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftComputeJacobian
     }
 }
 
-impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
-    fn call_programs_committing(
+impl rumoca_solver::CompiledProgramsCommitting for CraneliftJacobianExpression {
+    fn call_selected_programs_committing(
         &self,
-        programs: std::ops::Range<usize>,
+        programs: &[usize],
         inputs: (&[f64], &[f64], f64),
         seed: &mut [f64],
         external_tables: &[rumoca_core::ExternalTableData],
         commit: &mut rumoca_solver::ProgramOutputCommit<'_>,
-    ) -> Result<bool, rumoca_solver::RuntimeSolveError> {
+    ) -> Result<(), rumoca_solver::RuntimeSolveError> {
         self.0
-            .call_programs_committing(
+            .call_selected_programs_committing(
                 programs,
                 inputs,
                 seed,
                 external_tables,
                 &mut |program, outputs, seed| commit(program, outputs, seed).map_err(SolveFailure),
             )
-            .map(|()| true)
             .map_err(|SolveFailure(error)| error)
     }
+}
+
+impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+        Some(self)
+    }
+
     fn bind_program(
         &self,
         source: &rumoca_ir_solve::ScalarProgramBlock,

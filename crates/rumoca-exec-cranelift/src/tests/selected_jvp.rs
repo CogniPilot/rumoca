@@ -335,12 +335,69 @@ fn commit_next(program: usize, outputs: &[f64], seed: &mut [f64]) -> Result<(), 
 }
 
 #[test]
+fn selected_programs_commit_only_the_listed_subset_in_list_order() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let mut seed = [0.5, 7.0, 11.0, 13.0];
+    let mut committed = Vec::new();
+    let calls = compiled.jit.program_call_count();
+    compiled
+        .call_selected_programs_committing(
+            &[1, 0, 1],
+            (&[3.0], &[0.0], 0.0),
+            &mut seed,
+            &[],
+            &mut |program, outputs, seed| {
+                committed.push((program, outputs[0]));
+                commit_next(program, outputs, seed)
+            },
+        )
+        .unwrap();
+    assert_eq!(committed, [(1, 21.0), (0, 1.0), (1, 3.0)]);
+    assert_eq!(seed, [0.5, 1.0, 3.0, 13.0]);
+    assert_eq!(compiled.jit.program_call_count(), calls + 3);
+    // Program 2 needs an absent external table: executing it would fail.
+}
+
+#[test]
+fn selected_programs_reject_all_invalid_indices_before_any_execution() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let calls = compiled.jit.program_call_count();
+    for invalid in [3, usize::MAX] {
+        let mut seed = [0.5, 7.0, 11.0, 13.0];
+        let before = seed.map(f64::to_bits);
+        let mut committed = 0;
+        let error = compiled
+            .call_selected_programs_committing(
+                &[0, invalid],
+                (&[3.0], &[0.0], 0.0),
+                &mut seed,
+                &[],
+                &mut |program, outputs, seed| {
+                    committed += 1;
+                    commit_next(program, outputs, seed)
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("outside compiled rows"));
+        assert_eq!(seed.map(f64::to_bits), before);
+        assert_eq!(committed, 0);
+        assert_eq!(compiled.jit.program_call_count(), calls);
+    }
+}
+
+#[test]
 fn committed_programs_read_earlier_commits_like_one_program_at_a_time() {
     let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
     let (y, p) = ([3.0], [0.0]);
     let mut committed = [0.5, 0.0, 0.0, 0.0];
     compiled
-        .call_programs_committing(0..2, (&y, &p, 0.0), &mut committed, &[], &mut commit_next)
+        .call_selected_programs_committing(
+            &[0, 1],
+            (&y, &p, 0.0),
+            &mut committed,
+            &[],
+            &mut commit_next,
+        )
         .unwrap();
     let mut stepwise = [0.5, 0.0, 0.0, 0.0];
     let mut out = Vec::new();
@@ -366,7 +423,13 @@ fn a_failing_program_commits_nothing_and_keeps_earlier_commits() {
     let (y, p) = ([3.0], [0.0]);
     let mut seed = [0.5, 0.0, 0.0, -5.0];
     let error = compiled
-        .call_programs_committing(0..3, (&y, &p, 0.0), &mut seed, &[], &mut commit_next)
+        .call_selected_programs_committing(
+            &[0, 1, 2],
+            (&y, &p, 0.0),
+            &mut seed,
+            &[],
+            &mut commit_next,
+        )
         .unwrap_err();
     assert_eq!(seed, [0.5, 1.0, 3.0, -5.0]);
     let mut out = Vec::new();
@@ -388,8 +451,8 @@ fn a_failing_commit_stops_before_the_next_program() {
     let mut seed = [0.5, 0.0, 0.0, 0.0];
     let calls = compiled.jit.program_call_count();
     let error = compiled
-        .call_programs_committing(
-            0..3,
+        .call_selected_programs_committing(
+            &[0, 1, 2],
             (&[3.0], &[0.0], 0.0),
             &mut seed,
             &[],
@@ -419,8 +482,8 @@ fn committed_programs_check_extents_before_any_program_runs() {
     let mut short_seed = [0.5];
     assert!(
         compiled
-            .call_programs_committing(
-                0..2,
+            .call_selected_programs_committing(
+                &[0, 1],
                 (&[3.0], &[0.0], 0.0),
                 &mut short_seed,
                 &[],
@@ -431,12 +494,24 @@ fn committed_programs_check_extents_before_any_program_runs() {
     let mut seed = [0.5, 0.0, 0.0];
     assert!(
         compiled
-            .call_programs_committing(0..2, (&[], &[0.0], 0.0), &mut seed, &[], &mut count)
+            .call_selected_programs_committing(
+                &[0, 1],
+                (&[], &[0.0], 0.0),
+                &mut seed,
+                &[],
+                &mut count
+            )
             .is_err()
     );
     assert!(
         compiled
-            .call_programs_committing(2..4, (&[3.0], &[0.0], 0.0), &mut seed, &[], &mut count)
+            .call_selected_programs_committing(
+                &[2, 3],
+                (&[3.0], &[0.0], 0.0),
+                &mut seed,
+                &[],
+                &mut count
+            )
             .is_err()
     );
     assert_eq!(compiled.jit.program_call_count(), calls);

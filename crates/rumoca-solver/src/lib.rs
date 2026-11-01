@@ -77,7 +77,7 @@ pub use runtime::solve_ops::{
 };
 #[cfg(not(kani))]
 pub use runtime::solve_runtime::{
-    AlgebraicLinearization, AlgebraicSettle, BlockResidualSplitCounts,
+    AlgebraicLinearization, AlgebraicSettle, BlockResidualSplitCounts, CompiledProgramsCommitting,
     CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
     CompiledSolveExpression, CompiledSolveJacobianExpression, CompiledSolveProjectionJacobian,
     CompiledSolveTargetValues, EventTransactionExecution, EventUpdateRowFilter,

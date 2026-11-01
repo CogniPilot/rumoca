@@ -192,6 +192,12 @@ fn guarded_assignment_fault_preserves_output_length_and_exact_bits() {
 }
 
 impl CompiledSolveJacobianExpression for FaultingExpression {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],

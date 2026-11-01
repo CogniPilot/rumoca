@@ -8,6 +8,12 @@ struct CountedJacobian {
 }
 
 impl CompiledSolveJacobianExpression for CountedJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         _: &[f64],
