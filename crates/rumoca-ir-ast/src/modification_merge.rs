@@ -30,15 +30,20 @@ impl Expression {
     /// Both use one storage shape: a full argument (`x = e`, `x(...)`,
     /// `x(...) = e`) or, in a component's modification map, its value
     /// (`e`, `x(...)`, `x(...) = e`).
-    pub fn merge_modification_below(&mut self, default: &Self) {
+    ///
+    /// MLS §7.2.6: an element `default` makes `final` cannot be modified
+    /// again. If this modification states one, the merge fails with that
+    /// element's path below the merged one (`a`, `p.a`); `self` is then
+    /// partly merged and must not be used.
+    pub fn merge_modification_below(&mut self, default: &Self) -> Result<(), String> {
         if let Some(lower) = default.nested_modification() {
             if let Some(stated) = self.nested_modification_mut() {
-                merge_arguments_below(stated, lower);
+                merge_arguments_below(stated, lower)?;
             } else if let Some(binding) = self.modification_binding() {
                 // A stated binding takes the lower modification's arguments.
                 let merged = bound(lower, binding, self.span());
                 *self = merged;
-                return;
+                return Ok(());
             }
         }
         if self.modification_binding().is_none()
@@ -48,6 +53,7 @@ impl Expression {
             let merged = bound(stated, binding, self.span());
             *self = merged;
         }
+        Ok(())
     }
 
     /// The `x(...)` part of a modification, if it has one.
@@ -114,8 +120,8 @@ fn bound(nested: &Expression, binding: &Expression, span: Span) -> Expression {
 }
 
 /// Append each argument of `lower` whose element `stated` does not modify,
-/// and merge the ones it does.
-fn merge_arguments_below(stated: &mut Expression, lower: &Expression) {
+/// and merge the ones it does, refusing one that `lower` makes `final`.
+fn merge_arguments_below(stated: &mut Expression, lower: &Expression) -> Result<(), String> {
     let (
         Expression::ClassModification {
             modifications,
@@ -133,7 +139,7 @@ fn merge_arguments_below(stated: &mut Expression, lower: &Expression) {
         },
     ) = (stated, lower)
     else {
-        return;
+        return Ok(());
     };
     for (index, argument) in lower_modifications.iter().enumerate() {
         let target = argument.modification_target().map(ToString::to_string);
@@ -146,8 +152,12 @@ fn merge_arguments_below(stated: &mut Expression, lower: &Expression) {
                     == Some(target)
             })
         });
+        let name = target.unwrap_or_default();
         match existing {
-            Some(stated) => stated.merge_modification_below(argument),
+            Some(_) if lower_final.get(index).copied().unwrap_or(false) => return Err(name),
+            Some(stated) => stated
+                .merge_modification_below(argument)
+                .map_err(|inner| format!("{name}.{inner}"))?,
             None => {
                 let count = modifications.len();
                 for flags in [&mut *each_flags, &mut *final_flags, &mut *redeclare_flags] {
@@ -160,4 +170,5 @@ fn merge_arguments_below(stated: &mut Expression, lower: &Expression) {
             }
         }
     }
+    Ok(())
 }

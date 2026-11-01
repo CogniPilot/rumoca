@@ -128,7 +128,7 @@ fn replace_component_type(
     replacement.type_name = ast::Name::from_string(type_name);
     replacement.type_name.def_id = Some(type_id);
     replacement.redeclared_by_modification = true;
-    activate_constrainedby_defaults(&mut replacement);
+    activate_constrainedby_defaults(&mut replacement)?;
     Ok(replacement)
 }
 

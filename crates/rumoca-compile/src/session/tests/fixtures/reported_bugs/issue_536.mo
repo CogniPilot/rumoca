@@ -50,4 +50,11 @@ package ConstrainedByMod
     replaceable model H = PairHolder(p(a = 5)) constrainedby PartialPairHolder(p(a = 1, b = 3));
     H h;
   end NestedClassForm;
+  model NestedFinalKept "A final constrained p.a stays; the declaration modifies only p.b"
+    replaceable PairHolder h(p(b = 4)) constrainedby PartialPairHolder(p(final a = 1, b = 3));
+  end NestedFinalKept;
+  model NestedFinalClassKept "The same for a replaceable short class"
+    replaceable model H = PairHolder(p(b = 4)) constrainedby PartialPairHolder(p(final a = 1, b = 3));
+    H h;
+  end NestedFinalClassKept;
 end ConstrainedByMod;

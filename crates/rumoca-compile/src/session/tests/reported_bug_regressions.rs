@@ -234,6 +234,14 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             "ConstrainedByMod.NestedClassForm",
             &[("h.p.a", 5.0), ("h.p.b", 3.0)],
         ),
+        (
+            "ConstrainedByMod.NestedFinalKept",
+            &[("h.p.a", 1.0), ("h.p.b", 4.0)],
+        ),
+        (
+            "ConstrainedByMod.NestedFinalClassKept",
+            &[("h.p.a", 1.0), ("h.p.b", 4.0)],
+        ),
     ] {
         let compiled = compile(source, model);
         for &(name, value) in expected {
@@ -251,5 +259,45 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             });
             assert_eq!(evaluated, vec![value], "{model}: {name}");
         }
+    }
+}
+
+#[test]
+fn issue_536_constraining_clause_final_modifiers_refuse_a_declared_override() {
+    // MLS §7.2.6: what the constraining clause makes final, the declaration
+    // (component form) or the class it constrains (class form) may not modify.
+    let source = include_str!("fixtures/reported_bugs/issue_536_final.mo");
+    for (model, element) in [
+        ("ConstrainedByFinal.TopFinal", "spring.k"),
+        ("ConstrainedByFinal.NestedFinal", "h.p.a"),
+    ] {
+        let mut session = Session::default();
+        session
+            .add_document("Repro.mo", source)
+            .expect("source parses");
+        let Err(error) = session.compile_model(model) else {
+            panic!("{model}: the final override is refused");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!("`{element}`")) && message.contains("final"),
+            "{model}: {message}"
+        );
+    }
+    for (constraining, element) in [("final p(b = 3)", "p"), ("p(final a = 1, b = 3)", "p.a")] {
+        let class_form = format!(
+            "package P\n  model Pair\n    parameter Real a;\n    parameter Real b;\n  end Pair;\n  \
+             partial model Partial\n    Pair p;\n  end Partial;\n  model Full\n    extends Partial;\n  \
+             end Full;\n  model C\n    replaceable model H = Full(p(a = 5)) constrainedby Partial({constraining});\n    \
+             H h;\n  end C;\nend P;\n"
+        );
+        let Err(error) = Session::default().add_document("Repro.mo", &class_form) else {
+            panic!("class form with {constraining}: the final override is refused");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!("`{element}`")) && message.contains("final"),
+            "class form with {constraining}: {message}"
+        );
     }
 }

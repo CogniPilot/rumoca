@@ -754,7 +754,22 @@ fn merge_constraining_clause_class_modifications(
                 .map(ToString::to_string)
                 == Some(target.clone())
         }) {
-            stated.expr.merge_modification_below(arg);
+            // MLS §7.2.6: the class may not modify what the constraining clause makes final.
+            let refused = if arguments.final_flags.get(idx).copied().unwrap_or(false) {
+                Some(target.clone())
+            } else {
+                stated
+                    .expr
+                    .merge_modification_below(arg)
+                    .err()
+                    .map(|inner| format!("{target}.{inner}"))
+            };
+            if let Some(name) = refused {
+                anyhow::bail!(
+                    "replaceable class `{}` modifies `{name}`, which its constraining clause declares final (MLS §7.2.6)",
+                    class.name.text
+                );
+            }
             continue;
         }
         base.modifications.push(rumoca_ir_ast::ExtendModification {

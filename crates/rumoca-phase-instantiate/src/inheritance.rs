@@ -1498,7 +1498,7 @@ fn merge_class_content(
             });
 
             // MLS §7.3.2: the replacement keeps the constraining-clause modifiers.
-            activate_constrainedby_defaults(comp);
+            activate_constrainedby_defaults(comp)?;
         }
     }
 
@@ -1619,7 +1619,7 @@ fn validate_break_names(
 
 /// MLS §7.3.2: apply a replaceable declaration's constraining-clause
 /// modifiers to it, below any modifier the declaration itself states.
-pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) {
+pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) -> InstantiateResult<()> {
     let mut inserts: Vec<(String, ast::Expression)> = Vec::new();
     let mut prefixed_keys: Vec<String> = Vec::new();
 
@@ -1632,12 +1632,26 @@ pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) {
     }
 
     for (target_name, value) in inserts {
+        let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if let Some(stated) = comp.modifications.get_mut(&target_name) {
-            stated.merge_modification_below(&value);
+            // MLS §7.2.6: the declaration may not modify what the constraining clause makes final.
+            let refused = if comp.final_attributes.contains(&prefixed_key) {
+                Some(target_name.clone())
+            } else {
+                stated
+                    .merge_modification_below(&value)
+                    .err()
+                    .map(|inner| format!("{target_name}.{inner}"))
+            };
+            if let Some(name) = refused {
+                return Err(crate::attributes::final_override_error(
+                    format!("{}.{name}", comp.name),
+                    stated,
+                ));
+            }
             continue;
         }
         comp.modifications.insert(target_name.clone(), value);
-        let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if comp.each_modifications.contains(&prefixed_key) {
             comp.each_modifications.insert(target_name.clone());
         }
@@ -1651,6 +1665,7 @@ pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) {
         comp.each_modifications.shift_remove(&key);
         comp.final_attributes.shift_remove(&key);
     }
+    Ok(())
 }
 
 /// Merge nested class modifications from extends clause into inherited components.
@@ -1795,7 +1810,7 @@ pub fn get_effective_components_with_cache(
     // MLS §7.3.2: the constraining clause's modifiers apply to the declaration
     // itself, not only to a redeclaration.
     for comp in inherited.components.values_mut() {
-        activate_constrainedby_defaults(comp);
+        activate_constrainedby_defaults(comp)?;
     }
 
     Ok(inherited.components)
