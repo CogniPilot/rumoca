@@ -247,7 +247,11 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .clone();
         if indices.is_empty()
             && selected_scalar_type == gast::ScalarType::Integer
-            && let Some(bounds) = integer_call_bounds::derive(self.view, call)
+            && let Some(bounds) = integer_call_bounds::derive(
+                self.view,
+                call,
+                &self.emission.call_sites.parameter_ranges,
+            )
         {
             self.local_integer_bounds
                 .insert(name.lexeme().to_owned(), bounds);
