@@ -68,16 +68,49 @@ pub(crate) fn emit_private_directional_module(
 
 pub(crate) use ready::AdmissionCache;
 
+/// What admission measured of one private entry: the exact module holding it
+/// alone, and the parts a shared module would carry for it.
+#[derive(Clone)]
+pub(crate) struct AdmittedEntry {
+    module_bytes: usize,
+    body_bytes: usize,
+    linked: std::rc::Rc<ready::LinkedSites>,
+}
+
+impl std::fmt::Debug for AdmittedEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdmittedEntry")
+            .field("module_bytes", &self.module_bytes)
+            .field("body_bytes", &self.body_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Refuse a private program now with every refusal its later shared module
-/// would raise for it alone.
+/// would raise for it alone, including a module over `limit` bytes.
 pub(crate) fn admit_private_entry(
     block: &solve::ScalarProgramBlock,
     seed: Option<usize>,
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
     cache: &mut AdmissionCache,
-) -> Result<(), String> {
-    Ready::admit(&[(block, seed)], layout, table, cache)
+    limit: usize,
+) -> Result<AdmittedEntry, String> {
+    let (ready, emitted, linked) = Ready::admit((block, seed), layout, table, cache)?;
+    let body_bytes = entry_bytes(&emitted);
+    let seed_offset = ready.plan.programs[0].seed.and(ready.seed_offset);
+    let (module, _) = private_entries_module(&ready, &[(emitted, seed_offset)])?;
+    let module_bytes = module.bytes.len();
+    if module_bytes > limit {
+        return Err(format!(
+            "WASM private entry needs a module of {module_bytes} bytes, over the {limit} bytes a browser compiles synchronously"
+        ));
+    }
+    Ok(AdmittedEntry {
+        module_bytes,
+        body_bytes,
+        linked,
+    })
 }
 
 /// Per-entry results of one private module; storage and linkage are shared.
@@ -88,28 +121,66 @@ pub(crate) struct PrivateEntryArtifact {
     pub(crate) seed_offset: Option<u32>,
 }
 
-/// Modules for many private programs: each repeats the types, math imports
-/// and pure-call helpers once, exports one entry per program, and defines one
-/// register memory sized at construction for the widest entry. Entries run
-/// one at a time and keep no state there between calls (a root register
-/// layout has no undefined source), so they share it.
+/// Modules for many admitted private programs: each carries the types, math
+/// imports and the pure-call helpers of its own entries once, exports one entry
+/// per program, and defines one register memory sized at construction for its
+/// widest entry. Entries run one at a time and keep no state there between
+/// calls (a root register layout has no undefined source), so they share it.
 ///
-/// Consecutive entries fill a module until the next would take it past
-/// `module_bytes`; an entry larger than that has a module of its own. Every
-/// module repeats the same import and helper prefix, so an entry's body is
-/// emitted once and is valid in whichever module receives it.
+/// Consecutive entries fill a module while the estimate from their admissions
+/// stays within `budget`; an entry over it has the module it was admitted with.
+/// Emitted sizes differ from the estimate only by the encoding of indices and
+/// offsets, and a module over `limit` is divided in two. A module of one entry
+/// is the one its admission measured within `limit`.
 pub(crate) fn emit_private_entries_modules(
-    entries: &[(&solve::ScalarProgramBlock, Option<usize>)],
+    entries: &[(&solve::ScalarProgramBlock, Option<usize>, &AdmittedEntry)],
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
-    module_bytes: usize,
+    (budget, limit): (usize, usize),
 ) -> Result<Vec<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>)>, String> {
-    let ready = Ready::private_entries(entries, layout, table)?;
+    let mut modules = Vec::new();
+    let mut start = 0;
+    while start < entries.len() {
+        let first = entries[start].2;
+        let mut linked = vec![&first.linked];
+        let mut bytes = first.module_bytes;
+        let mut end = start + 1;
+        while let Some((_, _, next)) = entries.get(end) {
+            bytes += next.body_bytes;
+            if !linked
+                .iter()
+                .any(|known| std::rc::Rc::ptr_eq(known, &next.linked))
+            {
+                bytes += next.linked.helper_bytes();
+                linked.push(&next.linked);
+            }
+            if bytes > budget {
+                break;
+            }
+            end += 1;
+        }
+        emit_private_group(&entries[start..end], layout, table, limit, &mut modules)?;
+        start = end;
+    }
+    Ok(modules)
+}
+
+fn emit_private_group(
+    entries: &[(&solve::ScalarProgramBlock, Option<usize>, &AdmittedEntry)],
+    layout: &VarLayout,
+    table: &solve::SolvePureCallTable,
+    limit: usize,
+    modules: &mut Vec<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>)>,
+) -> Result<(), String> {
+    let sources = entries
+        .iter()
+        .map(|(block, seed, _)| (*block, *seed))
+        .collect::<Vec<_>>();
+    let ready = Ready::private_entries(&sources, layout, table)?;
     let mut prefix = Module::new();
     let types = call_program::add_types(&mut prefix);
     let catalog = add_import_section(&mut prefix, &ready.imports, &types);
-    let helper_bytes = ready.bodies.iter().map(Function::byte_len).sum::<usize>();
-    let emitted = (0..ready.plan.programs.len())
+    let emitted = (0..entries.len())
         .map(|entry| {
             let seed_offset = ready.plan.programs[entry].seed.and(ready.seed_offset);
             emit_programs(
@@ -123,24 +194,14 @@ pub(crate) fn emit_private_entries_modules(
             .map(|function| (function, seed_offset))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let mut modules = Vec::new();
-    let mut start = 0;
-    while start < emitted.len() {
-        let mut end = start + 1;
-        // The prefix, then the function, memory and export section headers.
-        let mut bytes =
-            prefix.as_slice().len() + 64 + helper_bytes + entry_bytes(&emitted[start].0);
-        while let Some((next, _)) = emitted.get(end) {
-            bytes += entry_bytes(next);
-            if bytes > module_bytes {
-                break;
-            }
-            end += 1;
-        }
-        modules.push(private_entries_module(&ready, &emitted[start..end])?);
-        start = end;
+    let module = private_entries_module(&ready, &emitted)?;
+    if module.0.bytes.len() > limit && entries.len() > 1 {
+        let (left, right) = entries.split_at(entries.len() / 2);
+        emit_private_group(left, layout, table, limit, modules)?;
+        return emit_private_group(right, layout, table, limit, modules);
     }
-    Ok(modules)
+    modules.push(module);
+    Ok(())
 }
 
 // An entry's body plus a generous bound on its declaration, export and
@@ -165,7 +226,7 @@ fn private_entries_module(
         .and_then(|index| index.checked_add(count).map(|_| index))
         .ok_or("WASM exact entry index overflow")?;
     let mut functions = FunctionSection::new();
-    for _ in &ready.bodies {
+    for _ in ready.bodies.iter() {
         functions.function(3);
     }
     for _ in 0..count {
@@ -183,7 +244,7 @@ fn private_entries_module(
     }
     module.section(&exports);
     let mut code = CodeSection::new();
-    for body in &ready.bodies {
+    for body in ready.bodies.iter() {
         code.function(body);
     }
     let mut artifacts = Vec::with_capacity(names.len());
@@ -226,7 +287,7 @@ fn emit_module(
         )
         .ok_or("WASM exact entry index overflow")?;
     let mut functions = FunctionSection::new();
-    for _ in &ready.bodies {
+    for _ in ready.bodies.iter() {
         functions.function(3);
     }
     functions.function(types.eval_type);
@@ -246,7 +307,7 @@ fn emit_module(
     module.section(&exports);
     let emitted = emit_function(&catalog, &ready, layout, private)?;
     let mut code = CodeSection::new();
-    for body in &ready.bodies {
+    for body in ready.bodies.iter() {
         code.function(body);
     }
     code.function(&emitted.function);

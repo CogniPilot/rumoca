@@ -8,8 +8,8 @@ mod linear_solve;
 mod seed;
 mod tensor;
 pub(super) use compute::{
-    AdmissionCache, admit_private_entry, emit_event_program_module, emit_exact_assignment_module,
-    emit_private_entries_modules,
+    AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
+    emit_exact_assignment_module, emit_private_entries_modules,
 };
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
 pub(super) use compute::{
@@ -63,12 +63,6 @@ pub(crate) enum MathImport {
 
 impl MathImport {
     /// The complete math ABI of every emitted module, in declaration order.
-    #[cfg(any(
-        test,
-        feature = "component-build",
-        feature = "host-engine",
-        all(target_arch = "wasm32", target_os = "unknown")
-    ))]
     pub(crate) const ALL: [Self; 15] = [
         Self::Abs,
         Self::Sin,

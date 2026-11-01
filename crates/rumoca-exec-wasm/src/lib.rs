@@ -66,8 +66,9 @@ pub use native_program::{
     compile_native_assignment_schedule_with_calls_wasm_and_policy,
 };
 pub use private_program::{
-    CompiledPrivateProgramWasm, PrivateProgramAdmission, compile_private_directional_program_wasm,
-    compile_private_program_wasm, compile_private_programs_wasm,
+    AdmittedPrivateProgram, CompiledPrivateProgramWasm, PrivateProgramAdmission,
+    compile_private_directional_program_wasm, compile_private_program_wasm,
+    compile_private_programs_wasm,
 };
 pub use retained_native_program::{
     CompiledRetainedNativeProgramWasm, NativeInvocationLease, NativeInvocationOutcome,

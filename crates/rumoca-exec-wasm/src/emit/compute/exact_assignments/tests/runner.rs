@@ -32,7 +32,7 @@ impl Runner {
         let module = Module::new(&self.engine, artifact.module_bytes()).unwrap();
         let mut linker = Linker::new(&self.engine);
         linker.define("env", "memory", self.public).unwrap();
-        linker.func_wrap("env", "sin", nested_sin).unwrap();
+        define_math(&mut linker);
         linker
             .instantiate(&mut self.store, &module)
             .unwrap()
@@ -90,4 +90,20 @@ fn nested_sin(mut caller: Caller<'_, State>, value: f64) -> f64 {
         caller.data_mut().inside = false;
     }
     value.sin()
+}
+
+/// The complete math ABI, as every host defines it; `sin` runs a child entry.
+fn define_math(linker: &mut Linker<State>) {
+    use crate::emit::MathImport;
+    for import in MathImport::ALL {
+        let name = import.symbol();
+        let binary = move |x: f64, y: f64| crate::math_abi::evaluate(import, x, y);
+        let unary = move |x: f64| crate::math_abi::evaluate(import, x, 0.0);
+        match import {
+            MathImport::Sin => linker.func_wrap("env", name, nested_sin),
+            MathImport::Pow | MathImport::Atan2 => linker.func_wrap("env", name, binary),
+            _ => linker.func_wrap("env", name, unary),
+        }
+        .unwrap();
+    }
 }

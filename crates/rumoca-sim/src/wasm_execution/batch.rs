@@ -3,20 +3,14 @@
 //! Each request meets every refusal of its own when it is made. Emission and
 //! instantiation wait until preparation finishes (or the first call of a
 //! pending entry), and then build the modules of every pending request.
-use rumoca_exec_wasm::CompiledPrivateProgramWasm;
+use rumoca_exec_wasm::{AdmittedPrivateProgram, CompiledPrivateProgramWasm};
 use rumoca_ir_solve::{ScalarProgramBlock, SolvePureCallTable, VarLayout};
 use std::{
     cell::{OnceCell, RefCell},
     rc::{Rc, Weak},
 };
 
-struct Context {
-    layout: VarLayout,
-    calls: Rc<SolvePureCallTable>,
-}
-
 pub(super) struct ModuleBatch {
-    context: Rc<Context>,
     admission: rumoca_exec_wasm::PrivateProgramAdmission,
     pending: RefCell<Vec<Rc<Entry>>>,
     // Self-reference handed to requests, so a pending entry can finish it.
@@ -26,16 +20,15 @@ pub(super) struct ModuleBatch {
 pub(super) struct Entry {
     block: ScalarProgramBlock,
     seed: Option<usize>,
+    admitted: AdmittedPrivateProgram,
     batch: Weak<ModuleBatch>,
     compiled: OnceCell<Result<CompiledPrivateProgramWasm, String>>,
 }
 
 impl ModuleBatch {
     pub(super) fn new(layout: VarLayout, calls: Rc<SolvePureCallTable>) -> Rc<Self> {
-        let admission =
-            rumoca_exec_wasm::PrivateProgramAdmission::new(layout.clone(), Rc::clone(&calls));
+        let admission = rumoca_exec_wasm::PrivateProgramAdmission::new(layout, calls);
         Rc::new_cyclic(|this| Self {
-            context: Rc::new(Context { layout, calls }),
             admission,
             pending: RefCell::default(),
             this: this.clone(),
@@ -48,12 +41,14 @@ impl ModuleBatch {
         block: ScalarProgramBlock,
         seed: Option<usize>,
     ) -> Result<Rc<Entry>, String> {
-        self.admission
+        let admitted = self
+            .admission
             .admit(&block, seed)
             .map_err(|error| error.to_string())?;
         let entry = Rc::new(Entry {
             block,
             seed,
+            admitted,
             batch: self.this.clone(),
             compiled: OnceCell::new(),
         });
@@ -69,13 +64,9 @@ impl ModuleBatch {
         }
         let sources = pending
             .iter()
-            .map(|entry| (&entry.block, entry.seed))
+            .map(|entry| (&entry.block, entry.seed, &entry.admitted))
             .collect::<Vec<_>>();
-        match rumoca_exec_wasm::compile_private_programs_wasm(
-            &sources,
-            &self.context.layout,
-            &self.context.calls,
-        ) {
+        match self.admission.compile(&sources) {
             Ok(compiled) => {
                 for (entry, code) in pending.iter().zip(compiled) {
                     let _ = entry.compiled.set(Ok(code));

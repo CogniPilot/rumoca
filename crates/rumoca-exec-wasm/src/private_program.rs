@@ -167,11 +167,14 @@ pub fn compile_private_program_wasm(
     )?)
 }
 
-/// The largest module the private emitter builds. Chromium refuses to compile
-/// a module over 8 MiB synchronously on its main thread, where preparation
-/// compiles; half of that leaves room for the estimate of each module's
-/// records.
-const PRIVATE_MODULE_BYTES: usize = 4 << 20;
+/// The largest module a browser compiles synchronously: Chromium refuses a
+/// module over 8 MiB on its main thread, where preparation compiles. No
+/// private module exceeds it, and an entry that would alone is refused.
+const SYNC_COMPILE_BYTES: usize = 8 << 20;
+
+/// The estimated size private entries are packed to, half the limit, so that
+/// a packed module rarely needs dividing.
+const PRIVATE_MODULE_BYTES: usize = SYNC_COMPILE_BYTES / 2;
 
 /// Compile many complete programs into shared modules with one entry each. A
 /// `Some(seed_len)` entry is directional and reads that many seed coordinates.
@@ -181,19 +184,55 @@ pub fn compile_private_programs_wasm(
     layout: &VarLayout,
     table: &SolvePureCallTable,
 ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
-    compile_private_programs_in_modules(entries, layout, table, PRIVATE_MODULE_BYTES)
+    compile_private_programs_in_modules(
+        entries,
+        layout,
+        table,
+        (PRIVATE_MODULE_BYTES, SYNC_COMPILE_BYTES),
+    )
 }
 
 fn compile_private_programs_in_modules(
     entries: &[(&ScalarProgramBlock, Option<usize>)],
     layout: &VarLayout,
     table: &SolvePureCallTable,
-    module_bytes: usize,
+    (budget, limit): (usize, usize),
 ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
     layout
         .validate_shape_contract()
         .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-    let modules = crate::emit::emit_private_entries_modules(entries, layout, table, module_bytes)
+    let mut cache = crate::emit::AdmissionCache::default();
+    let admitted = entries
+        .iter()
+        .map(|&(block, seed)| {
+            crate::emit::admit_private_entry(block, seed, layout, table, &mut cache, limit)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(WasmCompileError::Backend)?;
+    let entries = entries
+        .iter()
+        .zip(&admitted)
+        .map(|(&(block, seed), admitted)| (block, seed, admitted))
+        .collect::<Vec<_>>();
+    compile_admitted(&entries, layout, table, (budget, limit))
+}
+
+fn compile_admitted(
+    entries: &[(
+        &ScalarProgramBlock,
+        Option<usize>,
+        &crate::emit::AdmittedEntry,
+    )],
+    layout: &VarLayout,
+    table: &SolvePureCallTable,
+    sizes: (usize, usize),
+) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
+    if entries.is_empty() {
+        return Err(WasmCompileError::Input(
+            "a private module needs at least one program".into(),
+        ));
+    }
+    let modules = crate::emit::emit_private_entries_modules(entries, layout, table, sizes)
         .map_err(WasmCompileError::Backend)?;
     let mut sources = entries.iter();
     let mut compiled = Vec::with_capacity(entries.len());
@@ -213,7 +252,7 @@ fn compile_private_programs_in_modules(
         )))]
         let runtimes = vec![(); exports.len()];
         let module = Rc::new(module);
-        for ((artifact, runtime), &(block, seed_len)) in
+        for ((artifact, runtime), &(block, seed_len, _)) in
             artifacts.into_iter().zip(runtimes).zip(sources.by_ref())
         {
             #[cfg(not(any(
@@ -258,26 +297,49 @@ fn compile_private_programs_in_modules(
     Ok(compiled)
 }
 
-/// Admission of programs whose shared module ([`compile_private_programs_wasm`])
-/// is compiled later. Each admitted program meets every refusal that module
-/// would raise for it alone; call-owner linkage is computed once per distinct
-/// call-site set and reused for the rest of this admission's requests.
+/// Admission of programs whose shared modules ([`PrivateProgramAdmission::compile`])
+/// are compiled later. Each admitted program meets every refusal its module
+/// would raise for it alone, including a module too large for a browser to
+/// compile; call-owner linkage is computed once per distinct call-site set and
+/// reused for the rest of this admission's requests.
 pub struct PrivateProgramAdmission {
     layout: VarLayout,
     table: Rc<SolvePureCallTable>,
     // The layout is checked once, on the first admission.
     checked_layout: std::cell::OnceCell<Result<(), String>>,
     cache: std::cell::RefCell<crate::emit::AdmissionCache>,
+    sizes: (usize, usize),
 }
+
+/// What admission measured of one program, which its shared module is packed by.
+#[derive(Clone, Debug)]
+pub struct AdmittedPrivateProgram(crate::emit::AdmittedEntry);
 
 impl PrivateProgramAdmission {
     pub fn new(layout: VarLayout, table: Rc<SolvePureCallTable>) -> Self {
+        Self::with_sizes(layout, table, (PRIVATE_MODULE_BYTES, SYNC_COMPILE_BYTES))
+    }
+
+    fn with_sizes(layout: VarLayout, table: Rc<SolvePureCallTable>, sizes: (usize, usize)) -> Self {
         Self {
             layout,
             table,
             checked_layout: std::cell::OnceCell::new(),
             cache: Default::default(),
+            sizes,
         }
+    }
+
+    /// Compile admitted programs, in order, into shared modules.
+    pub fn compile(
+        &self,
+        entries: &[(&ScalarProgramBlock, Option<usize>, &AdmittedPrivateProgram)],
+    ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
+        let entries = entries
+            .iter()
+            .map(|&(block, seed, admitted)| (block, seed, &admitted.0))
+            .collect::<Vec<_>>();
+        compile_admitted(&entries, &self.layout, &self.table, self.sizes)
     }
 
     /// `Some(seed_len)` admits a directional entry reading that many seed coordinates.
@@ -285,7 +347,7 @@ impl PrivateProgramAdmission {
         &self,
         block: &ScalarProgramBlock,
         seed_len: Option<usize>,
-    ) -> Result<(), WasmCompileError> {
+    ) -> Result<AdmittedPrivateProgram, WasmCompileError> {
         self.checked_layout
             .get_or_init(|| {
                 self.layout
@@ -298,8 +360,16 @@ impl PrivateProgramAdmission {
             .cache
             .try_borrow_mut()
             .map_err(|_| WasmCompileError::Backend("private admission is reentrant".into()))?;
-        crate::emit::admit_private_entry(block, seed_len, &self.layout, &self.table, &mut cache)
-            .map_err(WasmCompileError::Backend)
+        crate::emit::admit_private_entry(
+            block,
+            seed_len,
+            &self.layout,
+            &self.table,
+            &mut cache,
+            self.sizes.1,
+        )
+        .map(AdmittedPrivateProgram)
+        .map_err(WasmCompileError::Backend)
     }
 }
 

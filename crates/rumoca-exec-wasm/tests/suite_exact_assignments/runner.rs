@@ -56,6 +56,7 @@ impl Runner {
         .unwrap();
         let mut linker = Linker::new(&engine);
         linker.define("env", "memory", memory).unwrap();
+        define_math(&mut linker, &module);
         let instance = linker
             .instantiate(&mut store, &module)
             .unwrap()
@@ -156,4 +157,38 @@ pub(super) fn bytes(values: &[f64]) -> Vec<u8> {
         .iter()
         .flat_map(|value| value.to_le_bytes())
         .collect()
+}
+
+/// Bind the math ABI functions a module imports to the standard library.
+fn define_math(linker: &mut Linker<()>, module: &Module) {
+    for import in module.imports() {
+        let name = import.name();
+        if import.module() != "env" || name == "memory" {
+            continue;
+        }
+        match name {
+            "pow" => linker.func_wrap("env", name, |x: f64, y: f64| x.powf(y)),
+            "atan2" => linker.func_wrap("env", name, |y: f64, x: f64| y.atan2(x)),
+            _ => {
+                let unary: fn(f64) -> f64 = match name {
+                    "abs" => f64::abs,
+                    "sin" => f64::sin,
+                    "cos" => f64::cos,
+                    "tan" => f64::tan,
+                    "asin" => f64::asin,
+                    "acos" => f64::acos,
+                    "atan" => f64::atan,
+                    "sinh" => f64::sinh,
+                    "cosh" => f64::cosh,
+                    "tanh" => f64::tanh,
+                    "exp" => f64::exp,
+                    "log" => f64::ln,
+                    "log10" => f64::log10,
+                    other => panic!("unknown math import {other}"),
+                };
+                linker.func_wrap("env", name, unary)
+            }
+        }
+        .unwrap();
+    }
 }

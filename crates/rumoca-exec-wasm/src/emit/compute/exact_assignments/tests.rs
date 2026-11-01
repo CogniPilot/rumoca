@@ -86,7 +86,8 @@ fn private_modules_define_their_register_memory_and_import_no_arena() {
             _ => {}
         }
     }
-    assert_eq!((imports, memories), (2, 1)); // public memory and sin; private registers
+    // Public memory and the complete math ABI; private registers.
+    assert_eq!((imports as usize, memories), (1 + MathImport::ALL.len(), 1));
     let mut runner = Runner::new();
     let call = runner.instance(&artifact);
     assert_eq!(runner.run(call, [2., 3.]), (0, 6f64.to_bits()));

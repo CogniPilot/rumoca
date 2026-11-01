@@ -7,7 +7,7 @@ pub(super) struct Ready {
     pub arena: arena::ArenaPlan,
     pub calls: CallProgramPlan,
     pub imports: Vec<MathImport>,
-    pub bodies: Vec<Function>,
+    pub bodies: std::rc::Rc<[Function]>,
     pub faults: Vec<TypedCallFault>,
     pub scratch_report: crate::ScratchReport,
     pub observations: Vec<crate::typed_call::retained_event::InvocationStorage>,
@@ -53,11 +53,10 @@ impl Ready {
         layout: &VarLayout,
         table: &solve::SolvePureCallTable,
     ) -> Result<Self, String> {
-        checked_slot_count(layout.y_scalars())?;
-        checked_slot_count(layout.p_scalars())?;
-        let plan = Plan::private_entries(entries)?;
-        let work = layout.y_scalars().max(plan.maximum_tuple);
-        Self::from_plan(plan, layout, table, work, None)
+        Self::private_linked(entries, layout, table, |sites, directional| {
+            link_sites(table, &sites, &directional).map(std::rc::Rc::new)
+        })
+        .map(|(ready, _)| ready)
     }
 
     pub(super) fn event(
@@ -74,15 +73,40 @@ impl Ready {
         Self::from_plan(plan, layout, source.table(), work, Some(source))
     }
 
-    /// Every refusal `private_entries` and entry emission can raise for these
-    /// entries alone, raised now, while their shared module is emitted later.
-    /// Call-owner linkage is computed once per distinct call-site set.
+    /// Every refusal `private_entries` and entry emission can raise for this
+    /// entry alone, raised now, while its shared module is emitted later.
+    /// Call-owner linkage is computed once per distinct call-site set. A module
+    /// holding only this entry is the one built here, so its size is exact.
     pub(super) fn admit(
-        entries: &[(&solve::ScalarProgramBlock, Option<usize>)],
+        entry: (&solve::ScalarProgramBlock, Option<usize>),
         layout: &VarLayout,
         table: &solve::SolvePureCallTable,
         cache: &mut AdmissionCache,
-    ) -> Result<(), String> {
+    ) -> Result<(Self, super::EmittedFunction, std::rc::Rc<LinkedSites>), String> {
+        let (ready, linked) =
+            Self::private_linked(&[entry], layout, table, |sites, directional| {
+                cache.link(table, sites, directional)
+            })?;
+        let seed = ready.plan.programs[0].seed.and(ready.seed_offset);
+        let mut module = Module::new();
+        let types = call_program::add_types(&mut module);
+        let catalog = add_import_section(&mut module, &ready.imports, &types);
+        let emitted = super::emit_programs(&catalog, &ready, layout, true, 0..1, seed)?;
+        Ok((ready, emitted, linked))
+    }
+
+    /// Private entries over linkage of their exact call-site set. Every private
+    /// module imports the complete math ABI, so linkage relocated once serves
+    /// any module and an entry's body does not depend on its neighbours' imports.
+    fn private_linked(
+        entries: &[(&solve::ScalarProgramBlock, Option<usize>)],
+        layout: &VarLayout,
+        table: &solve::SolvePureCallTable,
+        link: impl FnOnce(
+            Vec<solve::SolvePureCallSite>,
+            Vec<solve::SolvePureCallDirectionalSite>,
+        ) -> Result<std::rc::Rc<LinkedSites>, String>,
+    ) -> Result<(Self, std::rc::Rc<LinkedSites>), String> {
         checked_slot_count(layout.y_scalars())?;
         checked_slot_count(layout.p_scalars())?;
         let plan = Plan::private_entries(entries)?;
@@ -93,7 +117,7 @@ impl Ready {
         for site in &directional {
             checked_interface(site.inputs(), site.outputs())?;
         }
-        let linked = cache.link(table, sites, directional)?;
+        let linked = link(sites, directional)?;
         let arena = storage_plan(&plan, &programs)?;
         let work = layout.y_scalars().max(plan.maximum_tuple);
         let calls =
@@ -122,26 +146,19 @@ impl Ready {
                 .ok_or("private seed storage exceeds memory32")?;
         }
         let calls = calls.with_private_extension_bytes(bytes)?;
-        let scratch_report = calls.scratch_report(Vec::new());
+        let scratch_report = calls.scratch_report(linked.helpers.owner_scratch(table));
         let ready = Self {
             plan,
             arena,
             calls,
             imports: MathImport::ALL.to_vec(),
-            bodies: Vec::new(),
+            bodies: std::rc::Rc::clone(&linked.bodies),
             faults: linked.faults.clone(),
             scratch_report,
             observations: Vec::new(),
             seed_offset,
         };
-        let mut module = Module::new();
-        let types = call_program::add_types(&mut module);
-        let catalog = add_import_section(&mut module, &ready.imports, &types);
-        for (entry, program) in ready.plan.programs.iter().enumerate() {
-            let seed = program.seed.and(ready.seed_offset);
-            super::emit_programs(&catalog, &ready, layout, true, entry..entry + 1, seed)?;
-        }
-        Ok(())
+        Ok((ready, linked))
     }
 
     fn from_plan(
@@ -227,7 +244,7 @@ impl Ready {
             calls,
             scratch_report,
             imports,
-            bodies,
+            bodies: bodies.into(),
             faults,
             observations,
             seed_offset,
@@ -316,7 +333,15 @@ fn checked_interface(
 /// One call-site set's linked, relocated and compiled call owners.
 pub(crate) struct LinkedSites {
     helpers: ProgramHelpers,
+    bodies: std::rc::Rc<[Function]>,
     faults: Vec<TypedCallFault>,
+}
+
+impl LinkedSites {
+    /// Bytes of the helper bodies a module of these call sites carries.
+    pub(super) fn helper_bytes(&self) -> usize {
+        self.bodies.iter().map(Function::byte_len).sum()
+    }
 }
 
 /// Linkage results of one batch's requests, keyed by their exact call-site
@@ -367,13 +392,15 @@ fn link_sites(
 ) -> Result<LinkedSites, String> {
     let mut helpers = ProgramHelpers::with_directional(table, sites, directional)
         .map_err(|error| error.to_string())?;
-    // Refusals do not depend on import indices; the complete ABI stands in for
-    // the entry's own import set.
     helpers
         .relocate(&MathImport::ALL)
         .map_err(|error| error.to_string())?;
-    let (_, faults) = helpers
+    let (bodies, faults) = helpers
         .bodies(table, crate::outline::FUNCTION_BYTES)
         .map_err(|error| error.to_string())?;
-    Ok(LinkedSites { helpers, faults })
+    Ok(LinkedSites {
+        helpers,
+        bodies: bodies.into(),
+        faults,
+    })
 }

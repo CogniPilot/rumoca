@@ -444,7 +444,9 @@ fn entries_over_the_module_budget_fill_several_modules_with_the_same_bits() {
         .collect::<Vec<_>>();
     let whole = compile_private_programs_wasm(&entries, &layout, &table).unwrap();
     // No two entries fit one module, so each has a module of its own.
-    let split = compile_private_programs_in_modules(&entries, &layout, &table, 1).unwrap();
+    let split =
+        compile_private_programs_in_modules(&entries, &layout, &table, (1, SYNC_COMPILE_BYTES))
+            .unwrap();
     assert_eq!(split.len(), sources.len());
     for (index, entry) in split.iter().enumerate() {
         assert!(
@@ -526,5 +528,115 @@ fn every_entry_evaluates_a_memoized_call_it_shares_with_another_entry() {
                 "entry {entry} at p = {p}"
             );
         }
+    }
+}
+
+#[test]
+fn an_entry_whose_own_module_is_over_the_limit_is_refused_when_admitted() {
+    let (table, site) = table();
+    let sources = sources(&site);
+    let layout = VarLayout::from_parts(Default::default(), Y, 1);
+    let table = Rc::new(table);
+    for (block, seed) in &sources {
+        // Its module alone, as a group of one entry builds it.
+        let alone = compile_private_programs_in_modules(
+            &[(block, *seed)],
+            &layout,
+            &table,
+            (usize::MAX, usize::MAX),
+        )
+        .unwrap();
+        let bytes = alone[0].module_bytes().len();
+        let at_limit =
+            PrivateProgramAdmission::with_sizes(layout.clone(), Rc::clone(&table), (bytes, bytes));
+        assert!(at_limit.admit(block, *seed).is_ok());
+        let under = bytes - 1;
+        let refusing =
+            PrivateProgramAdmission::with_sizes(layout.clone(), Rc::clone(&table), (under, under));
+        let refused = refusing.admit(block, *seed).unwrap_err().to_string();
+        assert!(refused.contains(&format!("{bytes} bytes")), "{refused}");
+    }
+}
+
+/// Two call owners, each a chain of `length` additions of its input.
+fn long_owners(length: usize) -> (SolvePureCallTable, [solve::SolvePureCallSite; 2]) {
+    let profile = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(profile));
+    let mut builder = SolvePureCallTable::builder(profile);
+    let owners = [1, 2].map(|id| {
+        builder
+            .add_owner(
+                solve::SolvePureCallIdentity::issued(NonZeroU64::new(id).unwrap()),
+                vec![real.clone()],
+                vec![solve::SolvePureCallOutput::result(real.clone())],
+                span(300),
+                |body, inputs, outputs| {
+                    let input = body.load(inputs[0], span(301))?;
+                    let mut value = input;
+                    for _ in 0..length {
+                        value =
+                            body.binary(solve::SolveBinaryOperator::Add, value, input, span(302))?;
+                    }
+                    body.store(outputs[0], value, span(303))
+                },
+            )
+            .unwrap()
+    });
+    let sites = owners.map(|owner| builder.call_site(owner).unwrap());
+    (builder.finish(), sites)
+}
+
+#[test]
+fn no_module_carries_helpers_that_would_take_it_over_the_limit() {
+    let (table, sites) = long_owners(2000);
+    let layout = VarLayout::from_parts(Default::default(), Y, 1);
+    let blocks = sites.map(|site| {
+        ScalarProgramBlock::with_program_spans(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::PureCall {
+                    dst_start: 1,
+                    input_starts: vec![0].into(),
+                    site,
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ]],
+            vec![span(310)],
+        )
+        .unwrap()
+    });
+    let entries = blocks.iter().map(|block| (block, None)).collect::<Vec<_>>();
+    let unlimited = (usize::MAX, usize::MAX);
+    let both = compile_private_programs_in_modules(&entries, &layout, &table, unlimited).unwrap();
+    let alone = entries
+        .iter()
+        .map(|entry| {
+            compile_private_programs_in_modules(&[*entry], &layout, &table, unlimited).unwrap()[0]
+                .module_bytes()
+                .len()
+        })
+        .collect::<Vec<_>>();
+    let limit = alone.iter().copied().max().unwrap();
+    // One module with both owners' helpers is over what each entry needs alone.
+    assert!(both[0].module_bytes().len() > limit);
+    // Packed by an estimate that admits both, the module is divided instead.
+    let packed =
+        compile_private_programs_in_modules(&entries, &layout, &table, (usize::MAX, limit))
+            .unwrap();
+    assert!(!std::ptr::eq(
+        packed[0].module_bytes(),
+        packed[1].module_bytes()
+    ));
+    let (y, p) = ([0.5, -2.75, 0.3, -0.0, 1e16, 0.7, 3.0, -1.5], [2.5]);
+    for (entry, (packed, both)) in packed.iter().zip(&both).enumerate() {
+        assert!(packed.module_bytes().len() <= limit, "entry {entry}");
+        assert_eq!(
+            tuple(shared(packed, &y, &p, &[]), 1),
+            tuple(shared(both, &y, &p, &[]), 1),
+            "entry {entry}"
+        );
     }
 }
