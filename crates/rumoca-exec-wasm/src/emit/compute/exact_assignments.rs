@@ -77,15 +77,6 @@ pub(crate) struct AdmittedEntry {
     linked: std::rc::Rc<ready::LinkedSites>,
 }
 
-impl std::fmt::Debug for AdmittedEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdmittedEntry")
-            .field("module_bytes", &self.module_bytes)
-            .field("body_bytes", &self.body_bytes)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Refuse a private program now with every refusal its later shared module
 /// would raise for it alone, including a module over `limit` bytes.
 pub(crate) fn admit_private_entry(

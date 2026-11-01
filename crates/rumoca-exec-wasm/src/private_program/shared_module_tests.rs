@@ -403,13 +403,15 @@ fn admission_raises_a_linkage_refusal_before_the_shared_module_is_emitted() {
     assert!(admission.admit(ordinary.clone(), None).is_ok());
     let refused = admission
         .admit(block.clone(), None)
-        .unwrap_err()
+        .err()
+        .expect("the linked call is refused")
         .to_string();
     // The same refusal, raised again from the cached linkage, and by the module.
     assert_eq!(
         admission
             .admit(block.clone(), None)
-            .unwrap_err()
+            .err()
+            .expect("the cached linkage refuses it again")
             .to_string(),
         refused
     );
@@ -573,7 +575,8 @@ fn an_entry_whose_own_module_is_over_the_limit_is_refused_when_admitted() {
             PrivateProgramAdmission::with_sizes(layout.clone(), Rc::clone(&table), (under, under));
         let refused = refusing
             .admit(block.clone(), *seed)
-            .unwrap_err()
+            .err()
+            .expect("a module over the limit is refused")
             .to_string();
         assert!(refused.contains(&format!("{bytes} bytes")), "{refused}");
     }

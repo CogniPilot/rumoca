@@ -19,6 +19,7 @@ pub(super) struct ModuleBatch {
 
 pub(super) struct Entry {
     admitted: AdmittedPrivateProgram,
+    outputs: usize,
     batch: Weak<ModuleBatch>,
     compiled: OnceCell<Result<CompiledPrivateProgramWasm, String>>,
 }
@@ -39,12 +40,14 @@ impl ModuleBatch {
         block: ScalarProgramBlock,
         seed: Option<usize>,
     ) -> Result<Rc<Entry>, String> {
+        let outputs = block.stored_output_count();
         let admitted = self
             .admission
             .admit(block, seed)
             .map_err(|error| error.to_string())?;
         let entry = Rc::new(Entry {
             admitted,
+            outputs,
             batch: self.this.clone(),
             compiled: OnceCell::new(),
         });
@@ -83,7 +86,7 @@ impl ModuleBatch {
 
 impl Entry {
     pub(super) fn output_count(&self) -> usize {
-        self.admitted.block().stored_output_count()
+        self.outputs
     }
 
     /// The compiled entry, finishing its pending module on first use.

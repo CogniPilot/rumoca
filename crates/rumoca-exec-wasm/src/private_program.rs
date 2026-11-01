@@ -305,18 +305,11 @@ pub struct PrivateProgramAdmission {
 
 /// One admitted program: the exact block and seed that were admitted, what
 /// admission measured of them, and the admission that may compile them.
-#[derive(Debug)]
 pub struct AdmittedPrivateProgram {
     block: ScalarProgramBlock,
     seed_len: Option<usize>,
     entry: crate::emit::AdmittedEntry,
     admission: u64,
-}
-
-impl AdmittedPrivateProgram {
-    pub fn block(&self) -> &ScalarProgramBlock {
-        &self.block
-    }
 }
 
 static NEXT_ADMISSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
