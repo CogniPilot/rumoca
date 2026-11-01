@@ -243,23 +243,35 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             &[("h.p.a", 1.0), ("h.p.b", 4.0)],
         ),
     ] {
-        let compiled = compile(source, model);
         for &(name, value) in expected {
-            let evaluated = compiled.dae.inspect(|view| {
-                let (_, declaration) = view
-                    .variables()
-                    .find(|(_, variable)| variable.name().as_str() == name)
-                    .unwrap_or_else(|| panic!("{model}: {name} is declared"));
-                let binding = declaration
-                    .binding()
-                    .unwrap_or_else(|| panic!("{model}: {name} has a binding"));
-                rumoca_eval_dae::NumericEvaluator::new(view)
-                    .expression(binding)
-                    .expect("binding evaluates")
-            });
-            assert_eq!(evaluated, vec![value], "{model}: {name}");
+            assert_eq!(binding(source, model, name), vec![value], "{model}: {name}");
         }
     }
+    // A declared whole record over a non-final constrained member merges to
+    // the written-out `p(b = 3) = R(5, 4)` (MLS 7.2.4), however that form reads.
+    for name in ["h.p.a", "h.p.b"] {
+        assert_eq!(
+            binding(source, "ConstrainedByMod.RecordKept", name),
+            binding(source, "ConstrainedByMod.RecordDirect", name),
+            "RecordKept: {name}"
+        );
+    }
+}
+
+/// The evaluated binding of one variable of `model`.
+fn binding(source: &str, model: &str, name: &str) -> Vec<f64> {
+    compile(source, model).dae.inspect(|view| {
+        let (_, declaration) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .unwrap_or_else(|| panic!("{model}: {name} is declared"));
+        let binding = declaration
+            .binding()
+            .unwrap_or_else(|| panic!("{model}: {name} has a binding"));
+        rumoca_eval_dae::NumericEvaluator::new(view)
+            .expression(binding)
+            .expect("binding evaluates")
+    })
 }
 
 #[test]
@@ -270,6 +282,7 @@ fn issue_536_constraining_clause_final_modifiers_refuse_a_declared_override() {
     for (model, element) in [
         ("ConstrainedByFinal.TopFinal", "spring.k"),
         ("ConstrainedByFinal.NestedFinal", "h.p.a"),
+        ("ConstrainedByFinal.RecordFinal", "h.p.a"),
     ] {
         let mut session = Session::default();
         session
@@ -284,20 +297,24 @@ fn issue_536_constraining_clause_final_modifiers_refuse_a_declared_override() {
             "{model}: {message}"
         );
     }
-    for (constraining, element) in [("final p(b = 3)", "p"), ("p(final a = 1, b = 3)", "p.a")] {
+    for (declared, constraining, element) in [
+        ("p(a = 5)", "final p(b = 3)", "p"),
+        ("p(a = 5)", "p(final a = 1, b = 3)", "p.a"),
+        ("p = R(5, 4)", "p(final a = 1, b = 3)", "p.a"),
+    ] {
         let class_form = format!(
-            "package P\n  model Pair\n    parameter Real a;\n    parameter Real b;\n  end Pair;\n  \
-             partial model Partial\n    Pair p;\n  end Partial;\n  model Full\n    extends Partial;\n  \
-             end Full;\n  model C\n    replaceable model H = Full(p(a = 5)) constrainedby Partial({constraining});\n    \
+            "package P\n  record R\n    Real a;\n    Real b;\n  end R;\n  \
+             partial model Partial\n    parameter R p;\n  end Partial;\n  model Full\n    extends Partial;\n  \
+             end Full;\n  model C\n    replaceable model H = Full({declared}) constrainedby Partial({constraining});\n    \
              H h;\n  end C;\nend P;\n"
         );
         let Err(error) = Session::default().add_document("Repro.mo", &class_form) else {
-            panic!("class form with {constraining}: the final override is refused");
+            panic!("class form {declared} against {constraining}: the final override is refused");
         };
         let message = format!("{error:#}");
         assert!(
             message.contains(&format!("`{element}`")) && message.contains("final"),
-            "class form with {constraining}: {message}"
+            "class form {declared} against {constraining}: {message}"
         );
     }
 }

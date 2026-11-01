@@ -57,4 +57,20 @@ package ConstrainedByMod
     replaceable model H = PairHolder(p(b = 4)) constrainedby PartialPairHolder(p(final a = 1, b = 3));
     H h;
   end NestedFinalClassKept;
+  record R
+    Real a;
+    Real b;
+  end R;
+  partial model PartialRHolder
+    parameter R p;
+  end PartialRHolder;
+  model RHolder
+    extends PartialRHolder;
+  end RHolder;
+  model RecordKept "The declared whole record wins over a non-final constrained member, as in OpenModelica"
+    replaceable RHolder h(p = R(5, 4)) constrainedby PartialRHolder(p(b = 3));
+  end RecordKept;
+  model RecordDirect "The merged modification of RecordKept, written out"
+    RHolder h(p(b = 3) = R(5, 4));
+  end RecordDirect;
 end ConstrainedByMod;

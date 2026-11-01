@@ -40,7 +40,10 @@ impl Expression {
             if let Some(stated) = self.nested_modification_mut() {
                 merge_arguments_below(stated, lower)?;
             } else if let Some(binding) = self.modification_binding() {
-                // A stated binding takes the lower modification's arguments.
+                // A stated binding replaces the whole value, so it modifies
+                // every element below, final ones included.
+                first_final(lower).map_or(Ok(()), Err)?;
+                // Otherwise it takes the lower modification's arguments.
                 let merged = bound(lower, binding, self.span());
                 *self = merged;
                 return Ok(());
@@ -107,6 +110,30 @@ impl Expression {
             value => Some(value),
         }
     }
+}
+
+/// The path of the first element a class modification makes `final`, at any
+/// depth of its nested arguments.
+fn first_final(modification: &Expression) -> Option<String> {
+    let Expression::ClassModification {
+        modifications,
+        final_flags,
+        ..
+    } = modification
+    else {
+        return None;
+    };
+    modifications
+        .iter()
+        .enumerate()
+        .find_map(|(index, argument)| {
+            let name = argument.modification_target()?.to_string();
+            if final_flags.get(index).copied().unwrap_or(false) {
+                return Some(name);
+            }
+            let inner = first_final(argument.nested_modification()?)?;
+            Some(format!("{name}.{inner}"))
+        })
 }
 
 /// `nested = binding`, the stored form of `x(...) = e`.

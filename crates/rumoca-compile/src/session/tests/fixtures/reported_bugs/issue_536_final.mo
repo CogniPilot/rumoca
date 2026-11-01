@@ -21,4 +21,17 @@ package ConstrainedByFinal
   model NestedFinal "The declaration modifies p.a, which the constraining clause makes final"
     replaceable PairHolder h(p(a = 5)) constrainedby PartialPairHolder(p(final a = 1, b = 3));
   end NestedFinal;
+  record R
+    Real a;
+    Real b;
+  end R;
+  partial model PartialRHolder
+    parameter R p;
+  end PartialRHolder;
+  model RHolder
+    extends PartialRHolder;
+  end RHolder;
+  model RecordFinal "The declared whole record would override p.a, which the constraining clause makes final"
+    replaceable RHolder h(p = R(5, 4)) constrainedby PartialRHolder(p(final a = 1, b = 3));
+  end RecordFinal;
 end ConstrainedByFinal;
