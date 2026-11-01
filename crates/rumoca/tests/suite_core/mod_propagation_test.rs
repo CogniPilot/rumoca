@@ -682,13 +682,38 @@ fn test_array_component_modifier_reference_typechecks_in_lexical_parent_scope() 
         );
         assert_eq!(
             forwarded.binding.as_ref().map(ToString::to_string),
-            Some(format!("V[{index}]")),
-            "{forwarded_name} must retain the resolved outer array value"
+            Some("V".to_string()),
+            "{forwarded_name} must retain the occurrence-local scalar reference"
         );
     }
 
     typecheck_instanced(&tree, &mut overlay, "Top")
         .expect("source-scoped array element modifier bindings should typecheck");
+
+    let concrete = source.replace(
+        "Group group;",
+        "Group group(V={2,5,11});
+            output Real observed[3]={group.cells[1].sink.amplitude,
+                group.cells[2].sink.amplitude,group.cells[3].sink.amplitude};",
+    );
+    let compiled = rumoca::Compiler::new()
+        .model("Top")
+        .compile_str(&concrete, "SelectedModifierAliases.mo")
+        .expect("the scoped scalar aliases compile through checked DAE");
+    let evaluated =
+        rumoca_sim::eval_dae_at(&compiled.dae, &rumoca_sim::SimOptions::default(), &[], 0.0)
+            .expect("the selected parameter values evaluate");
+    assert!(evaluated.report.error.is_none());
+    for (index, expected) in [2.0_f64, 5.0, 11.0].into_iter().enumerate() {
+        let name = format!("observed[{}]", index + 1);
+        let slot = evaluated
+            .report
+            .solver_y
+            .iter()
+            .find(|slot| slot.name == name)
+            .expect("each authored output remains present");
+        assert_eq!(slot.value.to_bits(), expected.to_bits(), "{name}");
+    }
 }
 
 /// Test that mimics the DFFREG structure more closely
