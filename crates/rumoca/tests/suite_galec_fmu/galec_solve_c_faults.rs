@@ -25,7 +25,7 @@ use rumoca_phase_solve::lower_algorithm_block;
 
 use super::cc_support;
 
-fn profile() -> SolveArithmeticProfile {
+pub(super) fn profile() -> SolveArithmeticProfile {
     SolveArithmeticProfile::construct(
         SolveRealFormat::Binary32,
         SolveIntegerDomain::construct(i32::MIN.into(), i32::MAX.into()).unwrap(),
@@ -33,10 +33,10 @@ fn profile() -> SolveArithmeticProfile {
 }
 
 /// Spans numbered in order: Solve provenance must be exact.
-struct Spans(usize);
+pub(super) struct Spans(pub(super) usize);
 
 impl Spans {
-    fn next(&mut self) -> Span {
+    pub(super) fn next(&mut self) -> Span {
         self.0 += 1;
         Span::from_offsets(SourceId::from_source_name("faults.alg"), self.0, self.0 + 1)
     }
@@ -46,17 +46,17 @@ fn name(text: &str, spans: &mut Spans) -> Name {
     Name::Ident(rumoca_ir_galec::ast::Identifier::new(text), spans.next())
 }
 
-fn decl(ty: ScalarType, text: &str, spans: &mut Spans) -> VariableDeclaration {
+pub(super) fn decl(ty: ScalarType, text: &str, spans: &mut Spans) -> VariableDeclaration {
     let mut decl = VariableDeclaration::scalar(ty, name(text, spans));
     decl.span = spans.next();
     decl
 }
 
-fn sref(text: &str) -> Expression {
+pub(super) fn sref(text: &str) -> Expression {
     Expression::Ref(Reference::state(Name::ident(text)))
 }
 
-fn assign(target: &str, value: Expression, spans: &mut Spans) -> Spanned<Statement> {
+pub(super) fn assign(target: &str, value: Expression, spans: &mut Spans) -> Spanned<Statement> {
     Spanned {
         node: Statement::Assignment {
             target: Reference::state(Name::ident(target)),
@@ -66,7 +66,7 @@ fn assign(target: &str, value: Expression, spans: &mut Spans) -> Spanned<Stateme
     }
 }
 
-fn bin(op: BinaryOp, lhs: Expression, rhs: Expression) -> Expression {
+pub(super) fn bin(op: BinaryOp, lhs: Expression, rhs: Expression) -> Expression {
     Expression::Binary {
         op,
         lhs: Box::new(lhs),
@@ -76,7 +76,7 @@ fn bin(op: BinaryOp, lhs: Expression, rhs: Expression) -> Expression {
 
 /// A literal start of the type's zero: the Algorithm Code view needs start
 /// semantics on every declaration, which a DAE projection always supplies.
-fn zero(ty: ScalarType) -> Expression {
+pub(super) fn zero(ty: ScalarType) -> Expression {
     match ty {
         ScalarType::Real => Expression::Real(0.0),
         ScalarType::Integer => Expression::Integer(0),
@@ -245,7 +245,7 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-fn element(value: &TypedValue) -> String {
+pub(super) fn element(value: &TypedValue) -> String {
     value
         .elements()
         .iter()
@@ -259,7 +259,7 @@ fn element(value: &TypedValue) -> String {
         .join(",")
 }
 
-fn scalar(value: SolveValue) -> TypedValue {
+pub(super) fn scalar(value: SolveValue) -> TypedValue {
     TypedValue::construct(value.value_type().clone(), vec![value.kind()]).unwrap()
 }
 
@@ -294,7 +294,11 @@ fn evaluator_trace(block: &SolveAlgorithmBlock, inputs: Inputs) -> String {
 /// Every declaration's bits, then the status word (signal bits, plus bit 31
 /// when the method failed). A never-written slot prints the zero the C
 /// driver started from (and a failed Startup restores).
-fn snapshot(block: &SolveAlgorithmBlock, state: &[Option<TypedValue>], failed: bool) -> String {
+pub(super) fn snapshot(
+    block: &SolveAlgorithmBlock,
+    state: &[Option<TypedValue>],
+    failed: bool,
+) -> String {
     let status = block
         .slots()
         .iter()
