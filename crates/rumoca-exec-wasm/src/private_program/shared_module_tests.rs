@@ -468,3 +468,63 @@ fn entries_over_the_module_budget_fill_several_modules_with_the_same_bits() {
         );
     }
 }
+
+#[test]
+fn every_entry_evaluates_a_memoized_call_it_shares_with_another_entry() {
+    let (table, site) = table();
+    let layout = VarLayout::from_parts(Default::default(), Y, 1);
+    // The call's input is a parameter, so the module memoizes it. Each entry
+    // is called on its own and must evaluate it rather than read the result
+    // another entry left.
+    let call = |dst: solve::Reg, input: solve::Reg| LinearOp::PureCall {
+        dst_start: dst,
+        input_starts: vec![input].into(),
+        site: site.clone(),
+    };
+    let programs = [
+        vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            call(1, 0),
+            LinearOp::StoreOutput { src: 1 },
+        ],
+        vec![
+            LinearOp::Const { dst: 0, value: 4.0 },
+            LinearOp::LoadP { dst: 1, index: 0 },
+            call(2, 1),
+            LinearOp::Binary {
+                dst: 3,
+                op: BinaryOp::Add,
+                lhs: 0,
+                rhs: 2,
+            },
+            LinearOp::StoreOutput { src: 3 },
+        ],
+    ];
+    let sources = programs
+        .into_iter()
+        .enumerate()
+        .map(|(index, ops)| {
+            ScalarProgramBlock::with_program_spans(vec![ops], vec![span(200 + index)]).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let entries = sources
+        .iter()
+        .map(|block| (block, None))
+        .collect::<Vec<_>>();
+    let compiled = compile_private_programs_wasm(&entries, &layout, &table).unwrap();
+    let y = [0.0; Y];
+    for p in [2.5, -7.75] {
+        // The second entry first, so no earlier call has written the result.
+        for entry in [1, 0, 1] {
+            let expected = tuple(
+                Reference::new(&sources[entry], None, &layout, &table).call(&y, &[p], &[], None),
+                1,
+            );
+            assert_eq!(
+                tuple(shared(&compiled[entry], &y, &[p], &[]), 1),
+                expected,
+                "entry {entry} at p = {p}"
+            );
+        }
+    }
+}

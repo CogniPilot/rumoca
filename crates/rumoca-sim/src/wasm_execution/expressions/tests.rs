@@ -1,3 +1,4 @@
+mod assertion_calls;
 mod authored_models;
 mod conditional_ranges;
 mod linear_solve;

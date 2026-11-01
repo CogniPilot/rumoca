@@ -26,7 +26,6 @@ pub(super) struct ModuleBatch {
 pub(super) struct Entry {
     block: ScalarProgramBlock,
     seed: Option<usize>,
-    context: Rc<Context>,
     batch: Weak<ModuleBatch>,
     compiled: OnceCell<Result<CompiledPrivateProgramWasm, String>>,
 }
@@ -55,7 +54,6 @@ impl ModuleBatch {
         let entry = Rc::new(Entry {
             block,
             seed,
-            context: Rc::clone(&self.context),
             batch: self.this.clone(),
             compiled: OnceCell::new(),
         });
@@ -106,7 +104,12 @@ impl Entry {
         if self.compiled.get().is_none() {
             match self.batch.upgrade() {
                 Some(batch) => batch.finish(),
-                None => self.compile_alone(),
+                // The backend owns its batch for as long as its entries run.
+                None => {
+                    let _ = self
+                        .compiled
+                        .set(Err("WASM private entry outlived its module batch".into()));
+                }
             }
         }
         match self.compiled.get() {
@@ -114,20 +117,5 @@ impl Entry {
             Some(Err(error)) => Err(error.clone()),
             None => Err("WASM private entry was not emitted by its module".into()),
         }
-    }
-
-    fn compile_alone(&self) {
-        let compiled = rumoca_exec_wasm::compile_private_programs_wasm(
-            &[(&self.block, self.seed)],
-            &self.context.layout,
-            &self.context.calls,
-        )
-        .map_err(|error| error.to_string())
-        .and_then(|mut codes| {
-            codes
-                .pop()
-                .ok_or_else(|| "WASM private entry is absent".into())
-        });
-        let _ = self.compiled.set(compiled);
     }
 }

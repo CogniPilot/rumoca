@@ -310,6 +310,8 @@ fn emit_programs(
         emitter.event_stops = &stops;
     }
     emitter.arena = Some(ready.arena.clone());
+    // Each entry of a shared module is called on its own.
+    ready.calls.begin_function();
     emitter.calls = Some(&ready.calls);
     emitter.gather_status_base = Some(
         u32::try_from(ready.faults.len())
