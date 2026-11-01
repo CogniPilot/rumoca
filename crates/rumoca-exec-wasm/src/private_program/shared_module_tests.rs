@@ -400,15 +400,21 @@ fn admission_raises_a_linkage_refusal_before_the_shared_module_is_emitted() {
     .unwrap();
     let table = Rc::new(table);
     let admission = PrivateProgramAdmission::new(layout.clone(), Rc::clone(&table));
-    assert!(admission.admit(&ordinary, None).is_ok());
-    let refused = admission.admit(&block, None).unwrap_err().to_string();
+    assert!(admission.admit(ordinary.clone(), None).is_ok());
+    let refused = admission
+        .admit(block.clone(), None)
+        .unwrap_err()
+        .to_string();
     // The same refusal, raised again from the cached linkage, and by the module.
     assert_eq!(
-        admission.admit(&block, None).unwrap_err().to_string(),
+        admission
+            .admit(block.clone(), None)
+            .unwrap_err()
+            .to_string(),
         refused
     );
     assert!(compile_private_programs_wasm(&[(&block, None)], &layout, &table).is_err());
-    assert!(admission.admit(&ordinary, None).is_ok());
+    assert!(admission.admit(ordinary.clone(), None).is_ok());
 }
 
 #[test]
@@ -418,19 +424,31 @@ fn every_admitted_entry_of_the_fixture_is_emitted_by_its_shared_module() {
     let layout = VarLayout::from_parts(Default::default(), Y, 1);
     let table = Rc::new(table);
     let admission = PrivateProgramAdmission::new(layout.clone(), Rc::clone(&table));
-    for (block, seed) in &sources {
-        admission.admit(block, *seed).unwrap();
-    }
-    let entries = sources
+    let admitted = sources
         .iter()
-        .map(|(block, seed)| (block, *seed))
+        .map(|(block, seed)| admission.admit(block.clone(), *seed).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(
-        compile_private_programs_wasm(&entries, &layout, &table)
-            .unwrap()
-            .len(),
-        sources.len()
-    );
+    let programs = admitted.iter().collect::<Vec<_>>();
+    assert_eq!(admission.compile(&programs).unwrap().len(), sources.len());
+}
+
+#[test]
+fn a_program_admitted_by_another_admission_is_refused() {
+    let (table, site) = table();
+    let sources = sources(&site);
+    let layout = VarLayout::from_parts(Default::default(), Y, 1);
+    let table = Rc::new(table);
+    let ours = PrivateProgramAdmission::new(layout.clone(), Rc::clone(&table));
+    let theirs = PrivateProgramAdmission::new(layout.clone(), Rc::clone(&table));
+    let (block, seed) = &sources[0];
+    let mine = ours.admit(block.clone(), *seed).unwrap();
+    let foreign = theirs.admit(block.clone(), *seed).unwrap();
+    assert!(ours.compile(&[&mine]).is_ok());
+    let Err(refused) = ours.compile(&[&mine, &foreign]) else {
+        panic!("a foreign admission's program was compiled");
+    };
+    let refused = refused.to_string();
+    assert!(refused.contains("another admission"), "{refused}");
 }
 
 #[test]
@@ -549,11 +567,14 @@ fn an_entry_whose_own_module_is_over_the_limit_is_refused_when_admitted() {
         let bytes = alone[0].module_bytes().len();
         let at_limit =
             PrivateProgramAdmission::with_sizes(layout.clone(), Rc::clone(&table), (bytes, bytes));
-        assert!(at_limit.admit(block, *seed).is_ok());
+        assert!(at_limit.admit(block.clone(), *seed).is_ok());
         let under = bytes - 1;
         let refusing =
             PrivateProgramAdmission::with_sizes(layout.clone(), Rc::clone(&table), (under, under));
-        let refused = refusing.admit(block, *seed).unwrap_err().to_string();
+        let refused = refusing
+            .admit(block.clone(), *seed)
+            .unwrap_err()
+            .to_string();
         assert!(refused.contains(&format!("{bytes} bytes")), "{refused}");
     }
 }

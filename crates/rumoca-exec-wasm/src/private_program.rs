@@ -196,25 +196,15 @@ fn compile_private_programs_in_modules(
     entries: &[(&ScalarProgramBlock, Option<usize>)],
     layout: &VarLayout,
     table: &SolvePureCallTable,
-    (budget, limit): (usize, usize),
+    sizes: (usize, usize),
 ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
-    layout
-        .validate_shape_contract()
-        .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-    let mut cache = crate::emit::AdmissionCache::default();
+    let admission =
+        PrivateProgramAdmission::with_sizes(layout.clone(), Rc::new(table.clone()), sizes);
     let admitted = entries
         .iter()
-        .map(|&(block, seed)| {
-            crate::emit::admit_private_entry(block, seed, layout, table, &mut cache, limit)
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(WasmCompileError::Backend)?;
-    let entries = entries
-        .iter()
-        .zip(&admitted)
-        .map(|(&(block, seed), admitted)| (block, seed, admitted))
-        .collect::<Vec<_>>();
-    compile_admitted(&entries, layout, table, (budget, limit))
+        .map(|&(block, seed)| admission.admit(block.clone(), seed))
+        .collect::<Result<Vec<_>, _>>()?;
+    admission.compile(&admitted.iter().collect::<Vec<_>>())
 }
 
 fn compile_admitted(
@@ -303,6 +293,8 @@ fn compile_admitted(
 /// compile; call-owner linkage is computed once per distinct call-site set and
 /// reused for the rest of this admission's requests.
 pub struct PrivateProgramAdmission {
+    // Distinguishes this admission's programs from any other's.
+    id: u64,
     layout: VarLayout,
     table: Rc<SolvePureCallTable>,
     // The layout is checked once, on the first admission.
@@ -311,9 +303,23 @@ pub struct PrivateProgramAdmission {
     sizes: (usize, usize),
 }
 
-/// What admission measured of one program, which its shared module is packed by.
-#[derive(Clone, Debug)]
-pub struct AdmittedPrivateProgram(crate::emit::AdmittedEntry);
+/// One admitted program: the exact block and seed that were admitted, what
+/// admission measured of them, and the admission that may compile them.
+#[derive(Debug)]
+pub struct AdmittedPrivateProgram {
+    block: ScalarProgramBlock,
+    seed_len: Option<usize>,
+    entry: crate::emit::AdmittedEntry,
+    admission: u64,
+}
+
+impl AdmittedPrivateProgram {
+    pub fn block(&self) -> &ScalarProgramBlock {
+        &self.block
+    }
+}
+
+static NEXT_ADMISSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl PrivateProgramAdmission {
     pub fn new(layout: VarLayout, table: Rc<SolvePureCallTable>) -> Self {
@@ -322,6 +328,7 @@ impl PrivateProgramAdmission {
 
     fn with_sizes(layout: VarLayout, table: Rc<SolvePureCallTable>, sizes: (usize, usize)) -> Self {
         Self {
+            id: NEXT_ADMISSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             layout,
             table,
             checked_layout: std::cell::OnceCell::new(),
@@ -330,14 +337,19 @@ impl PrivateProgramAdmission {
         }
     }
 
-    /// Compile admitted programs, in order, into shared modules.
+    /// Compile programs this admission admitted, in order, into shared modules.
     pub fn compile(
         &self,
-        entries: &[(&ScalarProgramBlock, Option<usize>, &AdmittedPrivateProgram)],
+        programs: &[&AdmittedPrivateProgram],
     ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
-        let entries = entries
+        if programs.iter().any(|program| program.admission != self.id) {
+            return Err(WasmCompileError::Input(
+                "a private program admitted by another admission".into(),
+            ));
+        }
+        let entries = programs
             .iter()
-            .map(|&(block, seed, admitted)| (block, seed, &admitted.0))
+            .map(|program| (&program.block, program.seed_len, &program.entry))
             .collect::<Vec<_>>();
         compile_admitted(&entries, &self.layout, &self.table, self.sizes)
     }
@@ -345,7 +357,7 @@ impl PrivateProgramAdmission {
     /// `Some(seed_len)` admits a directional entry reading that many seed coordinates.
     pub fn admit(
         &self,
-        block: &ScalarProgramBlock,
+        block: ScalarProgramBlock,
         seed_len: Option<usize>,
     ) -> Result<AdmittedPrivateProgram, WasmCompileError> {
         self.checked_layout
@@ -360,16 +372,21 @@ impl PrivateProgramAdmission {
             .cache
             .try_borrow_mut()
             .map_err(|_| WasmCompileError::Backend("private admission is reentrant".into()))?;
-        crate::emit::admit_private_entry(
-            block,
+        let entry = crate::emit::admit_private_entry(
+            &block,
             seed_len,
             &self.layout,
             &self.table,
             &mut cache,
             self.sizes.1,
         )
-        .map(AdmittedPrivateProgram)
-        .map_err(WasmCompileError::Backend)
+        .map_err(WasmCompileError::Backend)?;
+        Ok(AdmittedPrivateProgram {
+            block,
+            seed_len,
+            entry,
+            admission: self.id,
+        })
     }
 }
 
