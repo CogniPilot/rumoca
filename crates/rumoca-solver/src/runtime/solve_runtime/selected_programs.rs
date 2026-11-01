@@ -420,9 +420,15 @@ impl CompleteExpression {
     }
 }
 
+enum CommittingExecution {
+    Direct(Rc<dyn CompiledProgramsCommitting>),
+    Programs,
+}
+
 enum JacobianExecution {
     Native {
         whole: Rc<dyn CompiledSolveJacobianExpression>,
+        committing: CommittingExecution,
         programs: Box<[Program<dyn CompiledSolveJacobianExpression>]>,
     },
     Shared(Rc<CompleteJacobian>),
@@ -431,6 +437,7 @@ enum JacobianExecution {
 
 pub(super) struct CompleteJacobian {
     source: solve::ScalarProgramBlock,
+    program_ordinals: Box<[usize]>,
     execution: JacobianExecution,
     scratch: RefCell<Vec<f64>>,
     whole_scratch: RefCell<Vec<f64>>,
@@ -442,6 +449,10 @@ pub(super) fn jacobian_from_whole(
     source: &solve::ScalarProgramBlock,
     whole: Rc<dyn CompiledSolveJacobianExpression>,
 ) -> Result<Rc<CompleteJacobian>, EvalSolveError> {
+    let committing = match Rc::clone(&whole).programs_committing() {
+        Some(entry) => CommittingExecution::Direct(entry),
+        None => CommittingExecution::Programs,
+    };
     let programs = prepare(
         label,
         source,
@@ -451,7 +462,12 @@ pub(super) fn jacobian_from_whole(
     )?;
     Ok(Rc::new(CompleteJacobian {
         source: source.clone(),
-        execution: JacobianExecution::Native { whole, programs },
+        program_ordinals: (0..source.programs().len()).collect(),
+        execution: JacobianExecution::Native {
+            whole,
+            programs,
+            committing,
+        },
         scratch: RefCell::default(),
         whole_scratch: RefCell::default(),
     }))
@@ -461,6 +477,7 @@ impl CompleteJacobian {
     fn shared(source: &solve::ScalarProgramBlock, original: Rc<Self>) -> Rc<Self> {
         Rc::new(Self {
             source: source.clone(),
+            program_ordinals: (0..source.programs().len()).collect(),
             execution: JacobianExecution::Shared(original),
             scratch: RefCell::default(),
             whole_scratch: RefCell::default(),
@@ -475,6 +492,7 @@ impl CompleteJacobian {
     ) -> Result<Rc<Self>, EvalSolveError> {
         Ok(Rc::new(Self {
             source: source.clone(),
+            program_ordinals: (0..source.programs().len()).collect(),
             execution: JacobianExecution::Composite(reuse::ReplacedJacobian::new(
                 primary,
                 mapping,
@@ -500,13 +518,9 @@ impl CompleteJacobian {
         }
     }
 
-    /// Run `programs` in order through the whole native entry, committing each
-    /// program's outputs before the next runs (see
-    /// [`CompiledSolveJacobianExpression::call_programs_committing`]). Each
-    /// program's output count and native error span are those of
-    /// [`Self::call_program_outputs`]. `false` declines before any program
-    /// executes: an empty range, a composite block, a range outside the
-    /// compiled programs, or a backend without the entry.
+    /// Run a range through the committing executor bound at construction.
+    /// Each program commits before the next reads its seed. Empty or invalid
+    /// ranges return `false` before execution; backend support is never probed.
     pub(super) fn call_programs_committing(
         &self,
         programs: std::ops::Range<usize>,
@@ -515,62 +529,15 @@ impl CompleteJacobian {
         tables: &[rumoca_core::ExternalTableData],
         commit: &mut ProgramOutputCommit<'_>,
     ) -> Result<bool, RuntimeSolveError> {
-        let (whole, codes) = match &self.execution {
-            JacobianExecution::Native { whole, programs } => (whole, programs),
-            JacobianExecution::Shared(code) => {
-                return code.call_programs_committing(programs, inputs, seed, tables, commit);
-            }
-            JacobianExecution::Composite(_) => return Ok(false),
-        };
-        if programs.is_empty()
-            || codes.get(programs.clone()).is_none()
-            || programs
-                .clone()
-                .any(|index| source_program_outputs(&self.source, index).is_err())
-        {
+        let Some(programs) = self.program_ordinals.get(programs) else {
             return Ok(false);
-        }
-        let mut next = programs.start;
-        let mut commit_failed = false;
-        let result = whole.call_programs_committing(
-            programs,
-            inputs,
-            seed,
-            tables,
-            &mut |program, outputs, seed| {
-                let committed = validate_runtime_output_len(
-                    "selected directional outputs",
-                    codes[program].outputs,
-                    outputs.len(),
-                )
-                .and_then(|()| commit(program, outputs, seed));
-                commit_failed = committed.is_err();
-                next = program + 1;
-                committed
-            },
-        );
-        match result {
-            Err(error) if !commit_failed => {
-                let spans: &[rumoca_core::Span] = match codes.get(next) {
-                    Some(code) => std::slice::from_ref(&code.span),
-                    None => &[],
-                };
-                Err(admitted_compiled_error(
-                    "selected directional program",
-                    spans,
-                    error,
-                ))
-            }
-            result => result,
-        }
+        };
+        self.call_selected_programs_committing(programs, inputs, seed, tables, commit)
     }
 
-    /// [`Self::call_programs_committing`] over an ordered subset of the
-    /// programs (see
-    /// [`CompiledSolveJacobianExpression::call_selected_programs_committing`]).
-    /// `false` declines before any program executes: an empty list, a composite
-    /// block, an index outside the compiled programs, or a backend without the
-    /// entry.
+    /// Execute an ordered list through the executor bound at construction.
+    /// Empty or invalid lists return `false` before execution. All admitted
+    /// lists use either the direct sweep or the prepared program entries.
     pub(super) fn call_selected_programs_committing(
         &self,
         programs: &[usize],
@@ -579,40 +546,52 @@ impl CompleteJacobian {
         tables: &[rumoca_core::ExternalTableData],
         commit: &mut ProgramOutputCommit<'_>,
     ) -> Result<bool, RuntimeSolveError> {
-        let (whole, codes) = match &self.execution {
-            JacobianExecution::Native { whole, programs } => (whole, programs),
+        if programs.is_empty()
+            || programs
+                .iter()
+                .any(|&index| source_program_outputs(&self.source, index).is_err())
+        {
+            return Ok(false);
+        }
+        let (committing, codes) = match &self.execution {
+            JacobianExecution::Native {
+                committing,
+                programs,
+                ..
+            } => (committing, programs),
             JacobianExecution::Shared(code) => {
                 return code
                     .call_selected_programs_committing(programs, inputs, seed, tables, commit);
             }
-            JacobianExecution::Composite(_) => return Ok(false),
+            JacobianExecution::Composite(_) => {
+                return self
+                    .call_prepared_programs_committing(programs, inputs, seed, tables, commit);
+            }
         };
-        if programs.is_empty()
-            || programs.iter().any(|&index| {
-                codes.get(index).is_none() || source_program_outputs(&self.source, index).is_err()
-            })
-        {
-            return Ok(false);
-        }
+        let CommittingExecution::Direct(committing) = committing else {
+            return self.call_prepared_programs_committing(programs, inputs, seed, tables, commit);
+        };
         let mut committed = 0;
         let mut commit_failed = false;
-        let result = whole.call_selected_programs_committing(
-            programs,
-            inputs,
-            seed,
-            tables,
-            &mut |program, outputs, seed| {
-                let outcome = validate_runtime_output_len(
-                    "selected directional outputs",
-                    codes[program].outputs,
-                    outputs.len(),
-                )
-                .and_then(|()| commit(program, outputs, seed));
-                commit_failed = outcome.is_err();
-                committed += 1;
-                outcome
-            },
-        );
+        let result = committing
+            .call_selected_programs_committing(
+                programs,
+                inputs,
+                seed,
+                tables,
+                &mut |program, outputs, seed| {
+                    let outcome = validate_runtime_output_len(
+                        "selected directional outputs",
+                        codes[program].outputs,
+                        outputs.len(),
+                    )
+                    .and_then(|()| commit(program, outputs, seed));
+                    commit_failed = outcome.is_err();
+                    committed += 1;
+                    outcome
+                },
+            )
+            .map(|()| true);
         match result {
             Err(error) if !commit_failed => {
                 let spans: &[rumoca_core::Span] =
@@ -630,6 +609,27 @@ impl CompleteJacobian {
         }
     }
 
+    fn call_prepared_programs_committing(
+        &self,
+        programs: &[usize],
+        (y, p, t): (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        tables: &[rumoca_core::ExternalTableData],
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        let mut values = self.whole_scratch.borrow_mut();
+        for &program in programs {
+            self.call_program_outputs(
+                program,
+                solve_eval::JacobianEvalInputs { y, p, t, seed },
+                tables,
+                &mut values,
+            )?;
+            commit(program, &values, seed)?;
+        }
+        Ok(true)
+    }
+
     pub(super) fn call_program_outputs(
         &self,
         index: usize,
@@ -639,7 +639,9 @@ impl CompleteJacobian {
     ) -> Result<(), RuntimeSolveError> {
         source_program_outputs(&self.source, index)?;
         let (whole, programs) = match &self.execution {
-            JacobianExecution::Native { whole, programs } => (whole, programs),
+            JacobianExecution::Native {
+                whole, programs, ..
+            } => (whole, programs),
             JacobianExecution::Shared(code) => {
                 return code.call_program_outputs(index, inputs, tables, out);
             }
@@ -691,7 +693,9 @@ impl CompleteJacobian {
     ) -> Result<f64, RuntimeSolveError> {
         source_output(&self.source, coordinate)?;
         let (whole, programs) = match &self.execution {
-            JacobianExecution::Native { whole, programs } => (whole, programs),
+            JacobianExecution::Native {
+                whole, programs, ..
+            } => (whole, programs),
             JacobianExecution::Shared(code) => {
                 return code.call_program_output(coordinate, y, p, t, seed, tables);
             }

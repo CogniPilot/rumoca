@@ -50,34 +50,10 @@ impl CompiledJacobianRows {
 }
 
 impl CompiledJacobianRows {
-    /// Run `programs` in order at one point, passing each program's outputs to
-    /// `commit` (which may write `seed`, an input of later programs) before the
-    /// next program runs: what [`Self::call_program_outputs`] and a commit give
-    /// one program at a time, with the inputs checked, the external tables
-    /// installed and the scratch borrowed once for the whole sequence. Each
-    /// program's outputs are staged and reach `commit` only after its native
-    /// call succeeds, so a failing program exposes nothing and stops the
-    /// sequence with every earlier commit standing.
-    pub(crate) fn call_programs_committing<E: From<CompileError>>(
-        &self,
-        programs: std::ops::Range<usize>,
-        inputs: (&[f64], &[f64], f64),
-        seed: &mut [f64],
-        external_tables: &[ExternalTableData],
-        commit: &mut crate::ProgramCommit<'_, E>,
-    ) -> Result<(), E> {
-        let rows = self.rows.get(programs.clone()).ok_or_else(|| {
-            CompileError::Input(format!(
-                "Jacobian programs {programs:?} are outside compiled rows"
-            ))
-        })?;
-        self.call_rows_committing(programs.zip(rows), inputs, seed, external_tables, commit)
-    }
-
-    /// [`Self::call_programs_committing`] over an ordered subset of the
-    /// programs: each listed program runs and commits in list order, and the
-    /// unlisted ones do not execute. Every index is checked before any
-    /// program runs.
+    /// Execute only the listed programs, in list order. Each successful
+    /// program commits before the next reads its seed; failures leave earlier
+    /// commits standing and stop the sequence. Validate every index before
+    /// execution, then check inputs and borrow scratch once for the sweep.
     pub(crate) fn call_selected_programs_committing<E: From<CompileError>>(
         &self,
         programs: &[usize],

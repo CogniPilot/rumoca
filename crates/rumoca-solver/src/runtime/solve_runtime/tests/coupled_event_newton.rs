@@ -216,6 +216,12 @@ struct EventTangentKernel {
 }
 
 impl CompiledSolveJacobianExpression for EventTangentKernel {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],
@@ -332,6 +338,12 @@ struct JvpKernel {
 }
 
 impl CompiledSolveJacobianExpression for JvpKernel {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         y: &[f64],

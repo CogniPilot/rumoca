@@ -202,7 +202,7 @@ impl CompiledInputRequirements {
 }
 
 /// Receives one program's staged outputs and may write the seed later
-/// programs read; see [`CompiledJacobianV::call_programs_committing`].
+/// programs read; see [`CompiledJacobianV::call_selected_programs_committing`].
 pub type ProgramCommit<'a, E> = dyn FnMut(usize, &[f64], &mut [f64]) -> Result<(), E> + 'a;
 
 pub struct CompiledJacobianV {
@@ -272,22 +272,9 @@ impl CompiledJacobianV {
             .call_program_outputs(program, inputs, external_tables, out)
     }
 
-    /// Run `programs` in order, committing each one's outputs before the next
-    /// runs; a failing program commits nothing and stops the sequence.
-    pub fn call_programs_committing<E: From<CompileError>>(
-        &self,
-        programs: std::ops::Range<usize>,
-        inputs: (&[f64], &[f64], f64),
-        seed: &mut [f64],
-        external_tables: &[ExternalTableData],
-        commit: &mut ProgramCommit<'_, E>,
-    ) -> Result<(), E> {
-        self.jit
-            .call_programs_committing(programs, inputs, seed, external_tables, commit)
-    }
-
-    /// [`Self::call_programs_committing`] over an ordered subset of the
-    /// programs; the unlisted programs do not execute.
+    /// Run only the listed programs in list order, committing each one's
+    /// outputs before the next reads its seed. A failing program commits
+    /// nothing and stops the sequence with earlier commits standing.
     pub fn call_selected_programs_committing<E: From<CompileError>>(
         &self,
         programs: &[usize],

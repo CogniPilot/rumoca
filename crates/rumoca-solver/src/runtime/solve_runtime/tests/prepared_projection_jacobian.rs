@@ -60,6 +60,12 @@ struct PreparedNative {
 struct Compiler(Rc<PreparedNative>);
 
 impl CompiledSolveJacobianExpression for Compiler {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn prepare_projections(
         &self,
         applications: &[&solve::ProjectionJacobianApplication],

@@ -101,6 +101,15 @@ struct FixtureJacobian {
 }
 
 impl CompiledSolveJacobianExpression for FixtureJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        if self.program.is_some() {
+            return None;
+        }
+        Rc::clone(&self.whole).programs_committing()
+    }
+
     fn bind_program(
         &self,
         source: &solve::ScalarProgramBlock,

@@ -9,7 +9,7 @@ use super::CompiledSolveProjectionJacobian;
 
 /// Receives one program's local outputs after it succeeds and may write the
 /// seed later programs read; see
-/// [`CompiledSolveJacobianExpression::call_programs_committing`].
+/// [`CompiledProgramsCommitting::call_selected_programs_committing`].
 pub type ProgramOutputCommit<'a> =
     dyn FnMut(usize, &[f64], &mut [f64]) -> Result<(), crate::RuntimeSolveError> + 'a;
 
@@ -80,6 +80,10 @@ pub trait CompiledSolveExpression {
 
 /// Backend-neutral callable for a checked forward-mode Solve-IR expression.
 pub trait CompiledSolveJacobianExpression {
+    /// Issue the committing-sweep capability during preparation. Absence is
+    /// fixed for this compiled owner; callers bind their prepared program
+    /// executor instead of probing for support during execution.
+    fn programs_committing(self: Rc<Self>) -> Option<Rc<dyn CompiledProgramsCommitting>>;
     /// Bind an existing directional entry without executing or recompiling it.
     fn bind_program(
         &self,
@@ -104,36 +108,6 @@ pub trait CompiledSolveJacobianExpression {
         _inputs: solve_eval::JacobianEvalInputs<'_>,
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut Vec<f64>,
-    ) -> Result<bool, crate::RuntimeSolveError> {
-        Ok(false)
-    }
-
-    /// Run `programs` in order at one point, passing each program's local
-    /// outputs to `commit` (which may write `seed`, read by later programs)
-    /// only after that program succeeds. `false` declines before any program
-    /// executes; an execution or commit error stops at that program, with the
-    /// earlier programs' commits standing.
-    fn call_programs_committing(
-        &self,
-        _programs: std::ops::Range<usize>,
-        _inputs: (&[f64], &[f64], f64),
-        _seed: &mut [f64],
-        _external_tables: &[rumoca_core::ExternalTableData],
-        _commit: &mut ProgramOutputCommit<'_>,
-    ) -> Result<bool, crate::RuntimeSolveError> {
-        Ok(false)
-    }
-
-    /// [`Self::call_programs_committing`] over an ordered subset of the
-    /// programs: only the listed programs execute, in list order. `false`
-    /// declines before any program executes.
-    fn call_selected_programs_committing(
-        &self,
-        _programs: &[usize],
-        _inputs: (&[f64], &[f64], f64),
-        _seed: &mut [f64],
-        _external_tables: &[rumoca_core::ExternalTableData],
-        _commit: &mut ProgramOutputCommit<'_>,
     ) -> Result<bool, crate::RuntimeSolveError> {
         Ok(false)
     }
@@ -176,4 +150,18 @@ pub trait CompiledSolveJacobianExpression {
     ) -> Result<bool, crate::RuntimeSolveError> {
         Ok(false)
     }
+}
+
+/// A construction-issued native sweep over an ordered list of source
+/// programs. Every successful program commits before the next reads its seed.
+/// Errors stop at that program; an admitted entry cannot decline execution.
+pub trait CompiledProgramsCommitting {
+    fn call_selected_programs_committing(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        external_tables: &[rumoca_core::ExternalTableData],
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<(), crate::RuntimeSolveError>;
 }

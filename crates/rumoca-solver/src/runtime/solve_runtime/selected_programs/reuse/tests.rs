@@ -84,6 +84,12 @@ impl CompiledSolveExpression for Probe {
 }
 
 impl CompiledSolveJacobianExpression for Probe {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn bind_program(
         &self,
         source: &solve::ScalarProgramBlock,

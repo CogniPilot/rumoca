@@ -652,7 +652,43 @@ mod native_policy_tests {
         counters: Rc<NativeCallCounters>,
     }
 
+    struct CountingProgramsCommitting {
+        inner: Rc<dyn rumoca_solver::CompiledProgramsCommitting>,
+        counters: Rc<NativeCallCounters>,
+    }
+
+    impl rumoca_solver::CompiledProgramsCommitting for CountingProgramsCommitting {
+        fn call_selected_programs_committing(
+            &self,
+            programs: &[usize],
+            inputs: (&[f64], &[f64], f64),
+            seed: &mut [f64],
+            external_tables: &[rumoca_core::ExternalTableData],
+            commit: &mut rumoca_solver::ProgramOutputCommit<'_>,
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            let result = self.inner.call_selected_programs_committing(
+                programs,
+                inputs,
+                seed,
+                external_tables,
+                commit,
+            );
+            self.counters.jacobian.observe(&result);
+            result
+        }
+    }
+
     impl CompiledSolveJacobianExpression for CountingJacobian {
+        fn programs_committing(
+            self: std::rc::Rc<Self>,
+        ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+            let inner = Rc::clone(&self.inner).programs_committing()?;
+            Some(Rc::new(CountingProgramsCommitting {
+                inner,
+                counters: self.counters.clone(),
+            }))
+        }
+
         fn call_program_output(
             &self,
             coordinate: (usize, usize),
@@ -684,6 +720,59 @@ mod native_policy_tests {
             self.counters.jacobian.observe(&result);
             result
         }
+    }
+
+    #[test]
+    fn counting_decorator_preserves_committing_execution_and_failure_accounting() {
+        let model = state_fixture(&sim_opts(SimExecutionPolicy::Auto));
+        let (backend, counters, _handle) = counting_handle(&model);
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("counted_committing.mo"),
+            1,
+            2,
+        );
+        let source = solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            span.require_provenance("counted committing fixture")
+                .unwrap(),
+        )
+        .unwrap();
+        let compiled = backend.compile_jacobian_expression(&source).unwrap();
+        let committing = compiled.programs_committing().unwrap();
+        let mut seed = [3.0];
+        let mut observed = Vec::new();
+        committing
+            .call_selected_programs_committing(
+                &[0, 0],
+                (&[], &[], 0.0),
+                &mut seed,
+                &[],
+                &mut |program, outputs, seed| {
+                    assert_eq!(program, 0);
+                    observed.push(outputs[0]);
+                    seed[0] = outputs[0] + 1.0;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(observed, [3.0, 4.0]);
+        assert_eq!(seed, [5.0]);
+        let error = committing
+            .call_selected_programs_committing(
+                &[0],
+                (&[], &[], 0.0),
+                &mut seed,
+                &[],
+                &mut |_, _, _| Err("injected committing failure".into()),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("injected committing failure"));
+        assert_eq!(counters.jacobian.attempted.get(), 2);
+        assert_eq!(counters.jacobian.succeeded.get(), 1);
+        assert_eq!(counters.jacobian.failed.get(), 1);
     }
 
     struct CountingAssignment {
@@ -977,6 +1066,12 @@ end DeclinedEvent;
     }
 
     impl CompiledSolveJacobianExpression for FailingCompiled {
+        fn programs_committing(
+            self: std::rc::Rc<Self>,
+        ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+            None
+        }
+
         fn call(
             &self,
             _y: &[f64],

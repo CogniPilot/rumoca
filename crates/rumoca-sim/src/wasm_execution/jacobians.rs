@@ -47,6 +47,12 @@ impl WasmJacobian {
 }
 
 impl rumoca_solver::CompiledSolveJacobianExpression for WasmJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn rumoca_solver::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn bind_program(
         &self,
         source: &ScalarProgramBlock,

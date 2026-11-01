@@ -10,6 +10,12 @@ struct SelectedJacobian {
 }
 
 impl CompiledSolveJacobianExpression for SelectedJacobian {
+    fn programs_committing(
+        self: std::rc::Rc<Self>,
+    ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+        None
+    }
+
     fn call(
         &self,
         _y: &[f64],
@@ -217,6 +223,12 @@ fn default_bulk_outputs_decline_before_any_selected_execution() {
         }
     }
     impl CompiledSolveJacobianExpression for Declining {
+        fn programs_committing(
+            self: std::rc::Rc<Self>,
+        ) -> Option<std::rc::Rc<dyn crate::CompiledProgramsCommitting>> {
+            None
+        }
+
         fn call(
             &self,
             _y: &[f64],
@@ -229,6 +241,7 @@ fn default_bulk_outputs_decline_before_any_selected_execution() {
             Ok(())
         }
     }
+    assert!(Rc::new(Declining).programs_committing().is_none());
     // Without selected entries every optional call declines.
     let expression: &dyn CompiledSolveExpression = &Declining;
     let jacobian: &dyn CompiledSolveJacobianExpression = &Declining;
