@@ -2156,6 +2156,8 @@ jobs:
     # cannot drift until tag time. Only tag pushes prepare/upload Pages content.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@v5
         with:
@@ -2204,6 +2206,14 @@ jobs:
           node packages/rumoca/build.mjs --profile release --variant full-web --optimize
           node packages/rumoca/build.mjs --profile release --variant core --optimize
           EOF
+
+      - name: Reclaim completed WASM intermediates before browser examples
+        run: |
+          # Final npm packages and vendor assets are already staged outside target.
+          # The remaining guide checks build native tools and reuse those packages.
+          df -B1 .
+          rm -rf -- target/wasm32-unknown-unknown
+          df -B1 .
 
       - name: Execute user-guide browser examples
         run: |
