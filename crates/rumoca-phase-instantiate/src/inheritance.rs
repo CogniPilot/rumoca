@@ -1497,9 +1497,8 @@ fn merge_class_content(
                 tree.name_map.get(short_name).copied()
             });
 
-            // MLS §7.3.2: Activate constraining-clause defaults for redeclared
-            // replaceable components.
-            activate_constrainedby_defaults_for_redeclare(comp);
+            // MLS §7.3.2: the replacement keeps the constraining-clause modifiers.
+            activate_constrainedby_defaults(comp);
         }
     }
 
@@ -1618,7 +1617,9 @@ fn validate_break_names(
     Ok(())
 }
 
-pub(super) fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
+/// MLS §7.3.2: apply a replaceable declaration's constraining-clause
+/// modifiers to it, below any modifier the declaration itself states.
+pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) {
     let mut inserts: Vec<(String, ast::Expression)> = Vec::new();
     let mut prefixed_keys: Vec<String> = Vec::new();
 
@@ -1789,6 +1790,12 @@ pub fn get_effective_components_with_cache(
     let local_type_def_ids =
         collect_local_type_def_ids(&inherited.classes, &class.classes, &inherited.components);
     populate_local_component_type_def_ids(&mut inherited.components, &local_type_def_ids);
+
+    // MLS §7.3.2: the constraining clause's modifiers apply to the declaration
+    // itself, not only to a redeclaration.
+    for comp in inherited.components.values_mut() {
+        activate_constrainedby_defaults(comp);
+    }
 
     Ok(inherited.components)
 }

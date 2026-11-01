@@ -628,6 +628,7 @@ fn process_replaceable_element(
             nested_class.is_replaceable = true;
             nested_class.is_redeclare = is_redeclare;
             nested_class.constrainedby = constrainedby;
+            merge_constraining_clause_class_modifications(&mut nested_class, constrainedby_mods)?;
             let name = nested_class.name.text.to_string();
             def.classes.insert(name, nested_class);
         }
@@ -720,6 +721,45 @@ fn merge_constraining_clause_modifications(
         }
     }
 
+    Ok(())
+}
+
+/// MLS §7.3.2: a replaceable class's constraining-clause modifiers apply to the
+/// class itself, below its own. A short class definition states its own
+/// modifiers on its one base, so the constraining ones join them there.
+fn merge_constraining_clause_class_modifications(
+    class: &mut rumoca_ir_ast::ClassDef,
+    constrainedby_mods: Option<&modelica_grammar_trait::ConstrainingClauseOpt>,
+) -> anyhow::Result<()> {
+    let Some(arguments) = constrainedby_mods
+        .and_then(|mods| mods.class_modification.class_modification_opt.as_ref())
+        .map(|opt| &opt.argument_list)
+    else {
+        return Ok(());
+    };
+    let [base] = class.extends.as_mut_slice() else {
+        anyhow::bail!(
+            "constraining-clause modifiers of replaceable class `{}` need a short class definition",
+            class.name.text
+        );
+    };
+    for (idx, arg) in arguments.args.iter().enumerate() {
+        let Some(target_name) = constraining_arg_target_name(arg) else {
+            continue;
+        };
+        let stated = base.modifications.iter().any(|modification| {
+            constraining_arg_target_name(&modification.expr).as_deref() == Some(&target_name)
+        });
+        if stated {
+            continue;
+        }
+        base.modifications.push(rumoca_ir_ast::ExtendModification {
+            expr: arg.clone(),
+            each: arguments.each_flags.get(idx).copied().unwrap_or(false),
+            final_: arguments.final_flags.get(idx).copied().unwrap_or(false),
+            redeclare: false,
+        });
+    }
     Ok(())
 }
 
