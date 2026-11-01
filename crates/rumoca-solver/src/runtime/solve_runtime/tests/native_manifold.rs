@@ -109,7 +109,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         if self.decline {
             return Err("test backend declines this program".into());
         }
@@ -125,7 +125,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         if self.decline {
             return Err("test backend declines this program".into());
         }

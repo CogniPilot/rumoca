@@ -33,7 +33,7 @@ impl Runner {
             compiled.module_bytes(),
             compiled.scratch_bytes(),
             layout,
-            "eval_private",
+            compiled.export_name(),
         )
     }
 

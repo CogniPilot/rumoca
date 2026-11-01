@@ -5,9 +5,6 @@ mod dual_arithmetic;
 mod dual_load;
 pub(in crate::emit) mod layouts;
 pub(in crate::emit) mod register_layout;
-mod storage;
-
-pub(in crate::emit) use storage::ArenaStorage;
 
 use super::*;
 use wasm_encoder::MemorySection;
@@ -17,7 +14,6 @@ pub(super) struct ArenaPlan {
     registers: usize,
     layouts: std::rc::Rc<[IssuedRegisterLayout]>,
     pub(in crate::emit) root_registers: usize,
-    storage: ArenaStorage,
     pub(super) counter: u32,
     pub(super) inner_counter: u32,
     pub(super) dense_workspace: Option<Reg>,
@@ -62,6 +58,11 @@ impl ArenaPlan {
             crate::CheckedNativeWasmCapacityPolicy::default(),
             true,
         )
+    }
+
+    /// The primal profile of entries sharing a directional module's storage.
+    pub(super) fn validate_primal(rows: &[Vec<LinearOp>]) -> Result<(), String> {
+        conditional::visit_operations(rows, |operation| validate_profile(operation, false))
     }
 
     fn required_with_profile(
@@ -112,7 +113,6 @@ impl ArenaPlan {
             layouts: layouts.into(),
             registers,
             root_registers,
-            storage: ArenaStorage::Defined,
             counter,
             inner_counter,
             dense_workspace,
@@ -137,9 +137,6 @@ impl ArenaPlan {
     }
 
     pub(super) fn add_memory(&self, module: &mut Module) {
-        if self.storage == ArenaStorage::Pooled {
-            return;
-        }
         let pages = (self.registers * 8).div_ceil(65536).max(1) as u64;
         let mut memory = MemorySection::new();
         memory.memory(MemoryType {
@@ -242,9 +239,15 @@ impl BodyEmitter<'_> {
     }
 
     pub(in crate::emit) fn require_complete_root_programs(&self) -> Result<(), String> {
-        if let Some(arena) = &self.arena
-            && self.root_program_cursor != arena.layouts.len()
-        {
+        match &self.arena {
+            Some(arena) => self.require_root_programs_through(arena.layouts.len()),
+            None => Ok(()),
+        }
+    }
+
+    /// One entry of a shared module consumes exactly its own issued programs.
+    pub(in crate::emit) fn require_root_programs_through(&self, end: usize) -> Result<(), String> {
+        if self.arena.is_some() && self.root_program_cursor != end {
             return Err("native emission did not consume its complete issued programs".into());
         }
         Ok(())
@@ -294,7 +297,6 @@ impl BodyEmitter<'_> {
             self.push(Instruction::I32Mul);
             self.push(Instruction::I32Add);
         }
-        self.relocate_arena_address()?;
         Ok(())
     }
 
@@ -308,7 +310,6 @@ impl BodyEmitter<'_> {
             .ok_or("native register address overflow")?;
         self.push(Instruction::I32Const(offset as i32));
         self.push(Instruction::I32Add);
-        self.relocate_arena_address()?;
         Ok(())
     }
 

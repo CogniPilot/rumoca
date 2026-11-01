@@ -166,14 +166,14 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         Ok(Rc::new(Self::record(&self.expressions, block)))
     }
 
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         Ok(Rc::new(Self::record(&self.jacobians, block)))
     }
 

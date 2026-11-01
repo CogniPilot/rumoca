@@ -1,12 +1,9 @@
 //! Direct browser-engine execution sharing the caller's wasm_bindgen memory.
-mod pool;
 
 use crate::{WasmCompileError, emit::MathImport};
 
 pub(super) struct WasmKernelRuntime {
     eval_function: js_sys::Function,
-    // Retain the pool until every function referring to its regions is dropped.
-    _arena: Option<pool::ArenaLease>,
 }
 
 impl WasmKernelRuntime {
@@ -15,52 +12,36 @@ impl WasmKernelRuntime {
     }
 
     pub(super) fn new_named(module_bytes: &[u8], export: &str) -> Result<Self, WasmCompileError> {
-        Self::new_with_arena(module_bytes, export, None)
+        let mut entries = Self::new_entries(module_bytes, &[export])?;
+        entries
+            .pop()
+            .ok_or_else(|| WasmCompileError::Backend(format!("missing {export} export")))
     }
 
-    pub(super) fn new_with_arena(
+    /// Instantiate once; each entry keeps the shared instance alive.
+    pub(super) fn new_entries<S: AsRef<str>>(
         module_bytes: &[u8],
-        export: &str,
-        arena_bytes: Option<u32>,
-    ) -> Result<Self, WasmCompileError> {
-        use js_sys::Object;
+        exports: &[S],
+    ) -> Result<Vec<Self>, WasmCompileError> {
         use js_sys::Reflect;
-        use js_sys::Uint8Array;
-        use js_sys::WebAssembly;
         use wasm_bindgen::JsCast;
         use wasm_bindgen::JsValue;
 
-        let wasm_bytes = Uint8Array::from(module_bytes);
-        let module = WebAssembly::Module::new(&wasm_bytes.into())
-            .map_err(|err| WasmCompileError::Backend(format!("module create failed: {err:?}")))?;
-
-        let imports = Object::new();
-        let env = Object::new();
-        let arena = arena_bytes.map(pool::ArenaLease::allocate).transpose()?;
-        if let Some(arena) = &arena {
-            arena.install(&env)?;
-        }
-        Reflect::set(&env, &JsValue::from_str("memory"), &wasm_bindgen::memory()).map_err(
-            |err| WasmCompileError::Backend(format!("memory import set failed: {err:?}")),
-        )?;
-        install_math_abi(&env)?;
-
-        Reflect::set(&imports, &JsValue::from_str("env"), &env)
-            .map_err(|err| WasmCompileError::Backend(format!("env import set failed: {err:?}")))?;
-
-        let instance = WebAssembly::Instance::new(&module, &imports).map_err(|err| {
-            WasmCompileError::Backend(format!("module instantiate failed: {err:?}"))
-        })?;
-        let exports = instance.exports();
-        let eval = Reflect::get(&exports, &JsValue::from_str(export))
-            .map_err(|err| WasmCompileError::Backend(format!("missing eval export: {err:?}")))?;
-        let eval_function = eval.dyn_into::<js_sys::Function>().map_err(|_| {
-            WasmCompileError::Backend(format!("{export} export is not a callable function"))
-        })?;
-        Ok(Self {
-            eval_function,
-            _arena: arena,
-        })
+        let instance = instantiate(module_bytes)?;
+        let exported = instance.exports();
+        exports
+            .iter()
+            .map(|export| {
+                let export = export.as_ref();
+                let eval = Reflect::get(&exported, &JsValue::from_str(export)).map_err(|err| {
+                    WasmCompileError::Backend(format!("missing eval export: {err:?}"))
+                })?;
+                let eval_function = eval.dyn_into::<js_sys::Function>().map_err(|_| {
+                    WasmCompileError::Backend(format!("{export} export is not a callable function"))
+                })?;
+                Ok(Self { eval_function })
+            })
+            .collect()
     }
 
     pub(super) fn call(
@@ -194,6 +175,30 @@ impl WasmKernelRuntime {
             })?;
         status_value(result)
     }
+}
+
+fn instantiate(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
+    use js_sys::Object;
+    use js_sys::Reflect;
+    use js_sys::Uint8Array;
+    use js_sys::WebAssembly;
+    use wasm_bindgen::JsValue;
+
+    let wasm_bytes = Uint8Array::from(module_bytes);
+    let module = WebAssembly::Module::new(&wasm_bytes.into())
+        .map_err(|err| WasmCompileError::Backend(format!("module create failed: {err:?}")))?;
+
+    let imports = Object::new();
+    let env = Object::new();
+    Reflect::set(&env, &JsValue::from_str("memory"), &wasm_bindgen::memory())
+        .map_err(|err| WasmCompileError::Backend(format!("memory import set failed: {err:?}")))?;
+    install_math_abi(&env)?;
+
+    Reflect::set(&imports, &JsValue::from_str("env"), &env)
+        .map_err(|err| WasmCompileError::Backend(format!("env import set failed: {err:?}")))?;
+
+    WebAssembly::Instance::new(&module, &imports)
+        .map_err(|err| WasmCompileError::Backend(format!("module instantiate failed: {err:?}")))
 }
 
 fn status_value(result: wasm_bindgen::JsValue) -> Result<u32, WasmCompileError> {

@@ -11,18 +11,33 @@ use super::selected_programs::CompleteJacobian;
 
 use super::{EvalSolveError, SolveExecutionBackend};
 
-pub(super) fn required_compiled<T>(
+/// A refusal names the refused program's span only when that span belongs to
+/// this block; otherwise the block's span is used when all programs share one.
+pub(super) fn required_compiled<T, E: Into<super::CompileRefusal>>(
     label: &str,
     source_spans: &[rumoca_core::Span],
-    result: Result<T, String>,
+    result: Result<T, E>,
 ) -> Result<T, EvalSolveError> {
-    result.map_err(|message| EvalSolveError::CompiledExecution {
-        message: format!("required compiled program `{label}` could not be lowered: {message}"),
-        span: unique_span(source_spans),
+    result.map_err(|refusal| {
+        let refusal = refusal.into();
+        let span = refusal
+            .span()
+            .filter(|span| source_spans.contains(span))
+            .or_else(|| unique_span(source_spans));
+        EvalSolveError::CompiledExecution {
+            message: format!(
+                "required compiled program `{label}` could not be lowered: {}",
+                refusal.message()
+            ),
+            span,
+        }
     })
 }
 
-pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
+pub(super) fn optional_compiled<T, E: std::fmt::Display>(
+    label: &str,
+    result: Result<T, E>,
+) -> Option<T> {
     match result {
         Ok(compiled) => Some(compiled),
         Err(error) => {

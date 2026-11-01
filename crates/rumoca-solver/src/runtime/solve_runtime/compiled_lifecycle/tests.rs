@@ -80,7 +80,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_selectable_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.families.set(self.families.get() + 1);
         if matches!(self.mode, FamilyMode::Decline) {
             return Err("optional family unavailable".into());
@@ -96,13 +96,13 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.individuals.set(self.individuals.get() + 1);
         assert_eq!(source.row_count(), 1);
         if self.refused == source.program_span(0) {
             return Err("mandatory base unavailable".into());
         }
-        super::super::test_kernels::expression(source)
+        super::super::test_kernels::expression(source).map_err(Into::into)
     }
 }
 

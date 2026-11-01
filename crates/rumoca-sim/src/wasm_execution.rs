@@ -3,6 +3,8 @@
 #[cfg(any(target_arch = "wasm32", test))]
 mod assignments;
 #[cfg(any(target_arch = "wasm32", test))]
+mod batch;
+#[cfg(any(target_arch = "wasm32", test))]
 mod expressions;
 #[cfg(any(target_arch = "wasm32", test))]
 mod jacobians;

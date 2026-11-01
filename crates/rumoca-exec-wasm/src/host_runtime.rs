@@ -6,7 +6,7 @@
 //! with the same status ABI, and copies the written buffers back. Admission is
 //! decided once, when the engine is constructed for the compiled module.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use wasmi::{Engine, Extern, Linker, Memory, MemoryType, Module, Store, TypedFunc};
 
@@ -19,11 +19,12 @@ type Entry = TypedFunc<(i32, i32, f64, i32, i32), i32>;
 struct Instance {
     store: Store<()>,
     memory: Memory,
-    entry: Entry,
 }
 
 pub(crate) struct HostKernelRuntime {
-    instance: RefCell<Instance>,
+    // Entries of one module share its instance, memory and register storage.
+    instance: Rc<RefCell<Instance>>,
+    entry: Entry,
 }
 
 fn backend(context: &str, error: impl std::fmt::Display) -> WasmCompileError {
@@ -32,17 +33,34 @@ fn backend(context: &str, error: impl std::fmt::Display) -> WasmCompileError {
 
 impl HostKernelRuntime {
     pub(crate) fn new_named(module_bytes: &[u8], export: &str) -> Result<Self, WasmCompileError> {
+        let mut entries = Self::new_entries(module_bytes, &[export])?;
+        entries
+            .pop()
+            .ok_or_else(|| backend("missing eval export", export))
+    }
+
+    /// Instantiate once and bind every named entry to that one instance.
+    pub(crate) fn new_entries<S: AsRef<str>>(
+        module_bytes: &[u8],
+        exports: &[S],
+    ) -> Result<Vec<Self>, WasmCompileError> {
         let (store, memory, instance) = instantiate_host_module(module_bytes)?;
-        let entry = instance
-            .get_typed_func::<(i32, i32, f64, i32, i32), i32>(&store, export)
-            .map_err(|e| backend("missing eval export", e))?;
-        Ok(Self {
-            instance: RefCell::new(Instance {
-                store,
-                memory,
+        let entries = exports
+            .iter()
+            .map(|export| {
+                instance
+                    .get_typed_func::<(i32, i32, f64, i32, i32), i32>(&store, export.as_ref())
+                    .map_err(|e| backend("missing eval export", e))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let shared = Rc::new(RefCell::new(Instance { store, memory }));
+        Ok(entries
+            .into_iter()
+            .map(|entry| Self {
+                instance: Rc::clone(&shared),
                 entry,
-            }),
-        })
+            })
+            .collect())
     }
 
     pub(crate) fn call_native(
@@ -54,11 +72,8 @@ impl HostKernelRuntime {
         lanes: &mut [u64],
     ) -> Result<u32, WasmCompileError> {
         let mut guard = self.instance.borrow_mut();
-        let Instance {
-            store,
-            memory,
-            entry,
-        } = &mut *guard;
+        let Instance { store, memory } = &mut *guard;
+        let entry = &self.entry;
         let y_at = 0usize;
         let p_at = y_at + y.len() * 8;
         let scratch_at = p_at + p.len() * 8;

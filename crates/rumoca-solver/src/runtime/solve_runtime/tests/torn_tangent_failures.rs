@@ -119,14 +119,14 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        super::super::test_kernels::expression(source)
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::expression(source).map_err(Into::into)
     }
 
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         let indices = source
             .programs()
             .iter()

@@ -1,4 +1,6 @@
-use rumoca_ir_solve::{ScalarProgramBlock, SolvePureCallTable, VarLayout};
+#[cfg(test)]
+use rumoca_ir_solve::SolvePureCallTable;
+use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
 
 #[cfg(test)]
 mod tests;
@@ -9,15 +11,13 @@ pub(super) struct WasmJacobian {
 }
 
 impl WasmJacobian {
+    #[cfg(test)]
     pub(super) fn compile(
         source: &ScalarProgramBlock,
         layout: &VarLayout,
         calls: &SolvePureCallTable,
     ) -> Result<Self, String> {
-        let required_seed = rumoca_eval_solve::PreparedScalarProgramBlock::new(source.clone())
-            .map_err(|error| error.to_string())?
-            .requirements()
-            .seed_len;
+        let required_seed = Self::required_seed(source)?;
         Ok(Self {
             code: super::expressions::WasmExpression::compile_with_seed(
                 source,
@@ -27,6 +27,32 @@ impl WasmJacobian {
             )?,
             required_seed,
         })
+    }
+
+    pub(super) fn compile_deferred(
+        source: &ScalarProgramBlock,
+        layout: &VarLayout,
+        batch: &super::batch::ModuleBatch,
+    ) -> Result<Self, rumoca_solver::CompileRefusal> {
+        let required_seed = Self::required_seed(source)?;
+        Ok(Self {
+            code: super::expressions::WasmExpression::compile_deferred(
+                source,
+                layout,
+                batch,
+                Some(required_seed),
+            )?,
+            required_seed,
+        })
+    }
+
+    fn required_seed(source: &ScalarProgramBlock) -> Result<usize, String> {
+        Ok(
+            rumoca_eval_solve::PreparedScalarProgramBlock::new(source.clone())
+                .map_err(|error| error.to_string())?
+                .requirements()
+                .seed_len,
+        )
     }
 
     fn validate(

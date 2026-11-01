@@ -441,7 +441,7 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     fn compile_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
         let compiled =
             rumoca_exec_cranelift::compile_expression_scalar_program_block_with_pure_calls(
                 block,
@@ -449,19 +449,19 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
             );
         compiled
             .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string().into())
     }
 
     fn compile_selectable_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
         rumoca_exec_cranelift::compile_selectable_expression_scalar_program_block(
             block,
             Some(&self.pure_calls),
         )
         .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string().into())
     }
 
     fn compile_compute_expression(
@@ -489,14 +489,15 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     fn compile_jacobian_expression(
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, rumoca_solver::CompileRefusal>
+    {
         let compiled = rumoca_exec_cranelift::compile_jacobian_scalar_program_block_with_pure_calls(
             block,
             &self.pure_calls,
         );
         compiled
             .map(|compiled| Rc::new(CraneliftJacobianExpression(compiled)) as Rc<_>)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string().into())
     }
 
     fn compile_assignment_schedule(

@@ -141,7 +141,6 @@ pub(crate) fn emit_with_policy(
         gather_faults: gather_faults.entries,
         linear_solve_faults: gather_faults.linear_solve,
         math_imports: imports.iter().map(|import| import.symbol()).collect(),
-        pooled_arena_bytes: None,
         carried: schedule.carried_state().clone(),
     })
 }

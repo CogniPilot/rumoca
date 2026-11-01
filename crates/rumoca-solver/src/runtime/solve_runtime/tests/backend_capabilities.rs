@@ -29,7 +29,7 @@ impl SolveExecutionBackend for NumericOnly {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         Ok(Rc::new(NumericKernel {
             inner: super::super::test_kernels::expression(source)?,
             calls: self.0.clone(),
@@ -44,14 +44,14 @@ impl SolveExecutionBackend for WithJacobian {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.0.compile_expression(source)
     }
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        super::super::test_kernels::jacobian(source)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::jacobian(source).map_err(Into::into)
     }
 }
 

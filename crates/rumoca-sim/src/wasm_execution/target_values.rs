@@ -1,12 +1,11 @@
 //! Checked prepared value families return private tuples, never solver-Y writes.
 use super::profile;
 use rumoca_eval_solve::{PreparedTargetValuePlan, RowEvalContext};
-use rumoca_exec_wasm::CompiledPrivateProgramWasm;
 use rumoca_ir_solve::{SolvePureCallTable, VarLayout};
 use std::{cell::RefCell, rc::Rc};
 
 pub(super) struct WasmTargetValues {
-    compiled: CompiledPrivateProgramWasm,
+    compiled: Rc<super::batch::Entry>,
     layout: VarLayout,
     // Shared, never copied: only its owner lineage is checked per call, and a
     // deep copy per value family dominated WASM session start-up.
@@ -19,29 +18,21 @@ impl WasmTargetValues {
         plan: &PreparedTargetValuePlan,
         layout: &VarLayout,
         calls: &Rc<SolvePureCallTable>,
+        batch: &super::batch::ModuleBatch,
         context: RowEvalContext<'_>,
     ) -> Result<Self, String> {
         validate_context(context)?;
         validate_call_owner(context, calls)?;
-        let compiled =
-            rumoca_exec_wasm::compile_private_program_wasm(plan.program(), layout, calls)
-                .map_err(|error| error.to_string())?;
+        let compiled = batch.request(plan.program().clone(), None)?;
         if plan.private_result_offset() >= compiled.output_count() {
             return Err("target-value projection exceeds private tuple".into());
         }
-        let count = usize::try_from(compiled.scratch_bytes())
-            .map_err(|_| "target-value scratch exceeds usize")?
-            .div_ceil(8);
-        let mut scratch = Vec::new();
-        scratch
-            .try_reserve_exact(count)
-            .map_err(|error| error.to_string())?;
-        scratch.resize(count, 0.0);
+        // Sized on the first call, once the shared module is emitted.
         Ok(Self {
             compiled,
             layout: layout.clone(),
             calls: Rc::clone(calls),
-            scratch: RefCell::new(scratch),
+            scratch: RefCell::new(Vec::new()),
         })
     }
 }
@@ -94,8 +85,18 @@ impl rumoca_solver::CompiledSolveTargetValues for WasmTargetValues {
         if selected >= self.compiled.output_count() {
             return Err("target-value selection exceeds issued private tuple".into());
         }
+        let compiled = self.compiled.code()?;
         let mut scratch = self.scratch.borrow_mut();
-        self.compiled
+        let cells = usize::try_from(compiled.scratch_bytes())
+            .map_err(|_| "target-value scratch exceeds usize")?
+            .div_ceil(8);
+        if let Some(missing) = cells.checked_sub(scratch.len()).filter(|&n| n > 0) {
+            scratch
+                .try_reserve_exact(missing)
+                .map_err(|error| error.to_string())?;
+            scratch.resize(cells, 0.0);
+        }
+        compiled
             .call(y, p, time, &mut scratch)
             .map_err(rumoca_solver::runtime::native_wasm_error::execution_error)?;
         Ok(scratch[selected])

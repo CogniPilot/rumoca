@@ -33,10 +33,10 @@ fn portable_backend_prepares_the_authored_book_models_completely() {
         let options = rumoca_solver::SimOptions::default();
         let lowered =
             crate::lower_correlated_for_simulation_with_overrides(&compiled.dae, &options).unwrap();
-        let backend = Rc::new(WasmExecutionBackend {
-            layout: lowered.model().problem.layout.clone(),
-            calls: Rc::new(lowered.model().pure_calls.clone()),
-        });
+        let backend = Rc::new(WasmExecutionBackend::new(
+            lowered.model().problem.layout.clone(),
+            Rc::new(lowered.model().pure_calls.clone()),
+        ));
         if let Err(error) =
             rumoca_solver::SolveRuntime::new_with_execution_backend(lowered.model(), Some(backend))
         {

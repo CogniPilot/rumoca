@@ -110,17 +110,17 @@ impl SolveExecutionBackend for CompleteWasmFixture {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         if block.shares_program_owner(&self.source) {
             return Ok(self.derivative.clone());
         }
-        crate::runtime::solve_runtime::test_kernels::expression(block)
+        crate::runtime::solve_runtime::test_kernels::expression(block).map_err(Into::into)
     }
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        crate::runtime::solve_runtime::test_kernels::jacobian(block)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        crate::runtime::solve_runtime::test_kernels::jacobian(block).map_err(Into::into)
     }
 }
 

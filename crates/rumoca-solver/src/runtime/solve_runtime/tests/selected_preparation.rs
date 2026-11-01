@@ -38,7 +38,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         if block.row_count() == 1
             && self
                 .refused

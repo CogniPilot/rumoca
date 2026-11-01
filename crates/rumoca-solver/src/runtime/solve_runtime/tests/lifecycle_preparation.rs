@@ -103,7 +103,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         if block.program_spans().contains(&self.refused)
             && (!self.only_time
                 || block
@@ -125,8 +125,8 @@ impl SolveExecutionBackend for Backend {
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        super::super::test_kernels::jacobian(block)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::jacobian(block).map_err(Into::into)
     }
     fn compile_assignment_schedule(
         &self,

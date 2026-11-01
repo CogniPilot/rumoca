@@ -177,14 +177,14 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
         self.calls.prepare();
         self.inner.compile_expression(block)
     }
     fn compile_selectable_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
         self.calls.prepare();
         self.inner.compile_selectable_expression(block)
     }
@@ -198,7 +198,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, rumoca_solver::CompileRefusal> {
         self.calls.prepare();
         self.inner
             .compile_jacobian_expression(block)

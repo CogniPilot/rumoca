@@ -19,6 +19,7 @@ pub(super) struct WasmExpression {
 }
 
 impl WasmExpression {
+    #[cfg(test)]
     fn compile(
         source: &ScalarProgramBlock,
         layout: &VarLayout,
@@ -27,13 +28,39 @@ impl WasmExpression {
         Self::compile_with_seed(source, layout, calls, None)
     }
 
+    /// Compile the block's own module now; every refusal is a compile error.
+    #[cfg(test)]
     pub(super) fn compile_with_seed(
         source: &ScalarProgramBlock,
         layout: &VarLayout,
         calls: &rumoca_ir_solve::SolvePureCallTable,
         seed_len: Option<usize>,
     ) -> Result<Self, String> {
-        let codes = source
+        let batch = super::batch::ModuleBatch::new(layout.clone(), Rc::new(calls.clone()));
+        let compiled = Self::compile_deferred(source, layout, &batch, seed_len)
+            .map_err(|refusal| refusal.to_string())?;
+        batch.finish();
+        let mut cells = 0;
+        for program in &compiled.selected {
+            cells = cells.max(selected::scratch_cells(program.0.code()?)?);
+        }
+        if let Some(program) = compiled.selected.first() {
+            program.1.borrow_mut().resize(cells, 0.0);
+        }
+        Ok(compiled)
+    }
+
+    /// Request every program of the block from `batch`, which emits them with
+    /// the other requests of the same preparation. A refused program is
+    /// reported with its own span, also when its refusal comes from linkage
+    /// cached for an earlier request.
+    pub(super) fn compile_deferred(
+        source: &ScalarProgramBlock,
+        layout: &VarLayout,
+        batch: &super::batch::ModuleBatch,
+        seed_len: Option<usize>,
+    ) -> Result<Self, rumoca_solver::CompileRefusal> {
+        let entries = source
             .programs()
             .iter()
             .enumerate()
@@ -41,32 +68,21 @@ impl WasmExpression {
                 let span = source
                     .program_span(index)
                     .ok_or("WASM source span is absent")?;
+                let refused =
+                    |message: String| rumoca_solver::CompileRefusal::new(message, Some(span));
                 let block = ScalarProgramBlock::with_program_spans(vec![ops.clone()], vec![span])
-                    .map_err(|error| error.to_string())?;
-                match seed_len {
-                    Some(count) => rumoca_exec_wasm::compile_private_directional_program_wasm(
-                        &block, layout, calls, count,
-                    ),
-                    None => rumoca_exec_wasm::compile_private_program_wasm(&block, layout, calls),
-                }
-                .map_err(|error| error.to_string())
+                    .map_err(|error| refused(error.to_string()))?;
+                batch.request(block, seed_len).map_err(refused)
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, rumoca_solver::CompileRefusal>>()?;
         // A program's scratch is at least the whole Y vector wide, so one buffer
         // per program grows with the program count (20k+ on large models). Calls
         // run one program at a time and copy its outputs out before the next, so
-        // one buffer sized for the widest program serves all of them.
-        let mut cells = 0;
-        for code in &codes {
-            let count = usize::try_from(code.scratch_bytes())
-                .map_err(|_| "WASM expression scratch exceeds usize")?
-                .div_ceil(8);
-            cells = cells.max(count);
-        }
-        let private = Rc::new(RefCell::new(vec![0.0; cells]));
-        let selected = codes
+        // one buffer, sized once its module is emitted, serves all of them.
+        let private = Rc::new(RefCell::new(Vec::new()));
+        let selected = entries
             .into_iter()
-            .map(|code| Rc::new((code, Rc::clone(&private))))
+            .map(|entry| Rc::new((entry, Rc::clone(&private))))
             .collect();
         Ok(Self {
             layout: Rc::new(layout.clone()),
@@ -202,6 +218,19 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
 struct WasmExecutionBackend {
     layout: VarLayout,
     calls: Rc<rumoca_ir_solve::SolvePureCallTable>,
+    // Private programs requested by one preparation, emitted as one module.
+    batch: Rc<super::batch::ModuleBatch>,
+}
+
+impl WasmExecutionBackend {
+    fn new(layout: VarLayout, calls: Rc<rumoca_ir_solve::SolvePureCallTable>) -> Self {
+        let batch = super::batch::ModuleBatch::new(layout.clone(), Rc::clone(&calls));
+        Self {
+            layout,
+            calls,
+            batch,
+        }
+    }
 }
 
 impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
@@ -213,6 +242,10 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
             return Err("portable kernels belong to a different canonical call table".into());
         }
         Ok(())
+    }
+
+    fn finish_preparation(&self) {
+        self.batch.finish();
     }
 
     fn compile_event_observation(
@@ -228,22 +261,29 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         plan: &rumoca_eval_solve::PreparedTargetValuePlan,
         context: rumoca_eval_solve::RowEvalContext<'_>,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveTargetValues>, String> {
-        super::target_values::WasmTargetValues::compile(plan, &self.layout, &self.calls, context)
-            .map(|compiled| Rc::new(compiled) as Rc<_>)
+        super::target_values::WasmTargetValues::compile(
+            plan,
+            &self.layout,
+            &self.calls,
+            &self.batch,
+            context,
+        )
+        .map(|compiled| Rc::new(compiled) as Rc<_>)
     }
 
     fn compile_expression(
         &self,
         block: &ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
-        WasmExpression::compile(block, &self.layout, &self.calls)
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
+        WasmExpression::compile_deferred(block, &self.layout, &self.batch, None)
             .map(|compiled| Rc::new(compiled) as Rc<_>)
     }
     fn compile_jacobian_expression(
         &self,
         block: &ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
-        super::jacobians::WasmJacobian::compile(block, &self.layout, &self.calls)
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, rumoca_solver::CompileRefusal>
+    {
+        super::jacobians::WasmJacobian::compile_deferred(block, &self.layout, &self.batch)
             .map(|code| Rc::new(code) as Rc<_>)
     }
     fn compile_assignment_schedule(
@@ -283,9 +323,9 @@ pub(crate) fn admitted_native_execution_backend(
         return Ok(None);
     }
     Ok(Some(rumoca_solver::fmi_me::MeExecutionBackend::new(
-        Rc::new(WasmExecutionBackend {
-            layout: model.problem.layout.clone(),
-            calls: Rc::new(model.pure_calls.clone()),
-        }),
+        Rc::new(WasmExecutionBackend::new(
+            model.problem.layout.clone(),
+            Rc::new(model.pure_calls.clone()),
+        )),
     )))
 }

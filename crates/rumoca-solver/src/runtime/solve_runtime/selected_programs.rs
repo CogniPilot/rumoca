@@ -221,7 +221,11 @@ pub(super) fn expression_from_whole(
         source,
         &whole,
         |code, source, index| code.bind_program(source, index),
-        |block| backend.compile_expression(block),
+        |block| {
+            backend
+                .compile_expression(block)
+                .map_err(|refusal| refusal.to_string())
+        },
     )?;
     Ok(Rc::new(CompleteExpression {
         source: source.clone(),
@@ -458,7 +462,11 @@ pub(super) fn jacobian_from_whole(
         source,
         &whole,
         |code, source, index| code.bind_program(source, index),
-        |block| backend.compile_jacobian_expression(block),
+        |block| {
+            backend
+                .compile_jacobian_expression(block)
+                .map_err(|refusal| refusal.to_string())
+        },
     )?;
     Ok(Rc::new(CompleteJacobian {
         source: source.clone(),

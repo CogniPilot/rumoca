@@ -200,7 +200,7 @@ impl SolveExecutionBackend for FixtureBackend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         match &self.0 {
             FixtureKernel::Expression(kernel) if kernel.source.shares_program_owner(source) => {
                 Ok(Rc::new(kernel.clone()))
@@ -211,7 +211,7 @@ impl SolveExecutionBackend for FixtureBackend {
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         match &self.0 {
             FixtureKernel::Jacobian(kernel) if kernel.source.shares_program_owner(source) => {
                 Ok(Rc::new(kernel.clone()))

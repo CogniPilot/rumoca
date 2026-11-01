@@ -41,9 +41,13 @@ impl DeclineLog {
         }
     }
 
-    fn observe<T>(&self, program: &str, result: Result<T, String>) -> Result<T, String> {
+    fn observe<T, E: std::fmt::Display>(
+        &self,
+        program: &str,
+        result: Result<T, E>,
+    ) -> Result<T, E> {
         if let Err(reason) = &result {
-            self.record(program, reason);
+            self.record(program, &reason.to_string());
         }
         result
     }
@@ -66,6 +70,10 @@ impl SolveExecutionBackend for RecordingBackend {
         self.inner.validate_model_context(model)
     }
 
+    fn finish_preparation(&self) {
+        self.inner.finish_preparation();
+    }
+
     fn compile_target_values(
         &self,
         plan: &solve_eval::PreparedTargetValuePlan,
@@ -84,7 +92,7 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.log
             .observe("expression", self.inner.compile_expression(block))
     }
@@ -102,7 +110,7 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_selectable_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.log.observe(
             "selectable_expression",
             self.inner.compile_selectable_expression(block),
@@ -112,7 +120,7 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         self.log.observe(
             "jacobian_expression",
             self.inner.compile_jacobian_expression(block),
@@ -185,9 +193,9 @@ mod tests {
         let declined: Result<(), String> = Err("no compact form".into());
         assert!(log.observe("expression", declined.clone()).is_err());
         assert!(log.observe("expression", declined).is_err());
-        assert!(log.observe("expression", Ok(())).is_ok());
+        assert!(log.observe::<(), String>("expression", Ok(())).is_ok());
         assert!(
-            log.observe::<()>("event_transaction", Err("other".into()))
+            log.observe::<(), String>("event_transaction", Err("other".into()))
                 .is_err()
         );
         assert_eq!(

@@ -77,15 +77,15 @@ pub use runtime::solve_ops::{
 };
 #[cfg(not(kani))]
 pub use runtime::solve_runtime::{
-    AlgebraicLinearization, AlgebraicSettle, BlockResidualSplitCounts, CompiledProgramsCommitting,
-    CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
-    CompiledSolveExpression, CompiledSolveJacobianExpression, CompiledSolveProjectionJacobian,
-    CompiledSolveTargetValues, EventTransactionExecution, EventUpdateRowFilter,
-    InitialEventObservation, PrecompiledSolveBackend, PrecompiledSolveBackendBuilder,
-    ProgramOutputCommit, ProjectedEventUpdateInput, ProjectedInitialEventInput,
-    ProjectedInitialEventOutcome, ProjectedPostInitialEventInput, ReferenceReverseExecution,
-    ScalarExecutionView, SolveExecutionBackend, SolveRuntime, SolveRuntimeModel,
-    block_residual_split_counts, reset_block_residual_split_counts,
+    AlgebraicLinearization, AlgebraicSettle, BlockResidualSplitCounts, CompileRefusal,
+    CompiledProgramsCommitting, CompiledSolveAssignmentSchedule, CompiledSolveEventObservation,
+    CompiledSolveEventTransaction, CompiledSolveExpression, CompiledSolveJacobianExpression,
+    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, EventTransactionExecution,
+    EventUpdateRowFilter, InitialEventObservation, PrecompiledSolveBackend,
+    PrecompiledSolveBackendBuilder, ProgramOutputCommit, ProjectedEventUpdateInput,
+    ProjectedInitialEventInput, ProjectedInitialEventOutcome, ProjectedPostInitialEventInput,
+    ReferenceReverseExecution, ScalarExecutionView, SolveExecutionBackend, SolveRuntime,
+    SolveRuntimeModel, block_residual_split_counts, reset_block_residual_split_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{

@@ -242,13 +242,13 @@ impl SolveExecutionBackend for EventTangentBackend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        super::super::test_kernels::expression(block)
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::expression(block).map_err(Into::into)
     }
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         if self
             .refused
             .is_some_and(|span| block.program_spans().contains(&span))
@@ -395,7 +395,7 @@ impl SolveExecutionBackend for JvpBackend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         Ok(Rc::new(PrimalKernel {
             inner: super::super::test_kernels::expression(source)?,
             spans: source.program_spans().to_vec(),
@@ -407,7 +407,7 @@ impl SolveExecutionBackend for JvpBackend {
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         if self
             .refused
             .is_some_and(|span| source.program_spans().contains(&span))

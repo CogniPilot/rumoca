@@ -1,11 +1,27 @@
-//! Execute one complete checked value program without publishing solver storage.
-use crate::{CompiledNativeCallProgramWasm, TypedCallFault, WasmCompileError};
+//! Execute complete checked value programs without publishing solver storage.
+use crate::{
+    CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault, TypedCallFault,
+    WasmCompileError,
+};
 use rumoca_ir_solve::{ScalarProgramBlock, SolvePureCallTable, VarLayout};
+use std::rc::Rc;
 mod directional;
 pub use directional::compile_private_directional_program_wasm;
 
+/// One entry of a module shared by every program compiled with it.
 pub struct CompiledPrivateProgramWasm {
-    artifact: CompiledNativeCallProgramWasm,
+    module: Rc<CompiledNativeCallProgramWasm>,
+    export: String,
+    gather_faults: Vec<NativeGatherFault>,
+    // Read only by an admitted engine's status mapping.
+    #[cfg_attr(
+        not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(feature = "host-engine", not(target_arch = "wasm32"))
+        )),
+        allow(dead_code)
+    )]
+    linear_solve_faults: Vec<NativeLinearSolveFault>,
     y: usize,
     p: usize,
     outputs: usize,
@@ -17,17 +33,22 @@ pub struct CompiledPrivateProgramWasm {
 }
 
 impl CompiledPrivateProgramWasm {
+    /// The whole shared module, including every other entry.
     pub fn module_bytes(&self) -> &[u8] {
-        self.artifact.module_bytes()
+        self.module.module_bytes()
+    }
+    /// This entry's exported function in `module_bytes`.
+    pub fn export_name(&self) -> &str {
+        &self.export
     }
     pub fn scratch_bytes(&self) -> u32 {
-        self.artifact.scratch_bytes()
+        self.module.scratch_bytes()
     }
     pub fn faults(&self) -> &[TypedCallFault] {
-        self.artifact.faults()
+        self.module.faults()
     }
-    pub fn gather_faults(&self) -> &[crate::NativeGatherFault] {
-        self.artifact.gather_faults()
+    pub fn gather_faults(&self) -> &[NativeGatherFault] {
+        &self.gather_faults
     }
     pub const fn output_count(&self) -> usize {
         self.outputs
@@ -51,6 +72,18 @@ impl CompiledPrivateProgramWasm {
         scratch: &mut [f64],
     ) -> Result<(), WasmCompileError> {
         self.call_with_seed(y, p, time, Some(seed), scratch)
+    }
+
+    #[cfg_attr(
+        not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(feature = "host-engine", not(target_arch = "wasm32"))
+        )),
+        allow(dead_code)
+    )]
+    fn status_error(&self, status: u32) -> WasmCompileError {
+        self.module
+            .entry_status_error(status, &self.gather_faults, &self.linear_solve_faults)
     }
 
     fn call_with_seed(
@@ -88,7 +121,7 @@ impl CompiledPrivateProgramWasm {
         {
             let status = self.runtime.call_private(y, p, time, scratch)?;
             if status != 0 {
-                return Err(self.artifact.status_error(status));
+                return Err(self.status_error(status));
             }
             Ok(())
         }
@@ -102,7 +135,7 @@ impl CompiledPrivateProgramWasm {
                 .runtime
                 .call_native(&mut y.to_vec(), p, time, &mut cells, &mut [])?;
             if status != 0 {
-                return Err(self.artifact.status_error(status));
+                return Err(self.status_error(status));
             }
             for (value, bits) in scratch.iter_mut().zip(cells) {
                 *value = f64::from_bits(bits);
@@ -127,47 +160,140 @@ pub fn compile_private_program_wasm(
     layout: &VarLayout,
     table: &SolvePureCallTable,
 ) -> Result<CompiledPrivateProgramWasm, WasmCompileError> {
+    single(compile_private_programs_wasm(
+        &[(block, None)],
+        layout,
+        table,
+    )?)
+}
+
+/// Compile many complete programs into one module with one entry each. A
+/// `Some(seed_len)` entry is directional and reads that many seed coordinates.
+/// Entries are returned in order and share the module's checked storage.
+pub fn compile_private_programs_wasm(
+    entries: &[(&ScalarProgramBlock, Option<usize>)],
+    layout: &VarLayout,
+    table: &SolvePureCallTable,
+) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
     layout
         .validate_shape_contract()
         .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-    let artifact = crate::emit::emit_private_program_module(block, layout, table)
+    let (module, artifacts) = crate::emit::emit_private_entries_module(entries, layout, table)
         .map_err(WasmCompileError::Backend)?;
-    CompiledPrivateProgramWasm::from_artifact(artifact, block, layout, None)
-}
-
-impl CompiledPrivateProgramWasm {
-    fn from_artifact(
-        artifact: CompiledNativeCallProgramWasm,
-        block: &ScalarProgramBlock,
-        layout: &VarLayout,
-        seed: Option<directional::SeedStorage>,
-    ) -> Result<Self, WasmCompileError> {
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let runtime = crate::WasmKernelRuntime::new_with_arena(
-            artifact.module_bytes(),
-            "eval_private",
-            artifact.pooled_arena_bytes,
-        )?;
-        #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
-        let runtime = crate::host_runtime::HostKernelRuntime::new_named(
-            artifact.module_bytes(),
-            "eval_private",
-        )?;
-        Ok(CompiledPrivateProgramWasm {
-            artifact,
-            y: layout.y_scalars(),
-            p: layout.p_scalars(),
-            outputs: block.stored_output_count(),
-            seed,
-            #[cfg(any(
+    let exports = artifacts
+        .iter()
+        .map(|artifact| artifact.export.as_str())
+        .collect::<Vec<_>>();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let runtimes = crate::WasmKernelRuntime::new_entries(module.module_bytes(), &exports)?;
+    #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+    let runtimes =
+        crate::host_runtime::HostKernelRuntime::new_entries(module.module_bytes(), &exports)?;
+    #[cfg(not(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(feature = "host-engine", not(target_arch = "wasm32"))
+    )))]
+    let runtimes = vec![(); exports.len()];
+    let module = Rc::new(module);
+    entries
+        .iter()
+        .zip(artifacts)
+        .zip(runtimes)
+        .map(|((&(block, seed_len), artifact), runtime)| {
+            #[cfg(not(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(feature = "host-engine", not(target_arch = "wasm32"))
-            ))]
-            runtime,
+            )))]
+            let () = runtime;
+            let seed = match (seed_len, artifact.seed_offset) {
+                (Some(count), Some(offset)) => Some(directional::SeedStorage {
+                    offset: offset as usize / 8,
+                    count,
+                }),
+                (None, None) => None,
+                _ => {
+                    return Err(WasmCompileError::Backend(
+                        "private entry seed storage differs from its request".into(),
+                    ));
+                }
+            };
+            Ok(CompiledPrivateProgramWasm {
+                module: Rc::clone(&module),
+                export: artifact.export,
+                gather_faults: artifact.gather_faults,
+                linear_solve_faults: artifact.linear_solve_faults,
+                y: layout.y_scalars(),
+                p: layout.p_scalars(),
+                outputs: block.stored_output_count(),
+                seed,
+                #[cfg(any(
+                    all(target_arch = "wasm32", target_os = "unknown"),
+                    all(feature = "host-engine", not(target_arch = "wasm32"))
+                ))]
+                runtime,
+            })
         })
+        .collect()
+}
+
+/// Admission of programs whose shared module ([`compile_private_programs_wasm`])
+/// is compiled later. Each admitted program meets every refusal that module
+/// would raise for it alone; call-owner linkage is computed once per distinct
+/// call-site set and reused for the rest of this admission's requests.
+pub struct PrivateProgramAdmission {
+    layout: VarLayout,
+    table: Rc<SolvePureCallTable>,
+    // The layout is checked once, on the first admission.
+    checked_layout: std::cell::OnceCell<Result<(), String>>,
+    cache: std::cell::RefCell<crate::emit::AdmissionCache>,
+}
+
+impl PrivateProgramAdmission {
+    pub fn new(layout: VarLayout, table: Rc<SolvePureCallTable>) -> Self {
+        Self {
+            layout,
+            table,
+            checked_layout: std::cell::OnceCell::new(),
+            cache: Default::default(),
+        }
+    }
+
+    /// `Some(seed_len)` admits a directional entry reading that many seed coordinates.
+    pub fn admit(
+        &self,
+        block: &ScalarProgramBlock,
+        seed_len: Option<usize>,
+    ) -> Result<(), WasmCompileError> {
+        self.checked_layout
+            .get_or_init(|| {
+                self.layout
+                    .validate_shape_contract()
+                    .map_err(|error| error.to_string())
+            })
+            .clone()
+            .map_err(WasmCompileError::Input)?;
+        let mut cache = self
+            .cache
+            .try_borrow_mut()
+            .map_err(|_| WasmCompileError::Backend("private admission is reentrant".into()))?;
+        crate::emit::admit_private_entry(block, seed_len, &self.layout, &self.table, &mut cache)
+            .map_err(WasmCompileError::Backend)
     }
 }
 
+fn single(
+    mut compiled: Vec<CompiledPrivateProgramWasm>,
+) -> Result<CompiledPrivateProgramWasm, WasmCompileError> {
+    match (compiled.pop(), compiled.is_empty()) {
+        (Some(entry), true) => Ok(entry),
+        _ => Err(WasmCompileError::Backend(
+            "private module returned other than one entry".into(),
+        )),
+    }
+}
+
+#[cfg(all(test, feature = "host-engine"))]
+mod shared_module_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,9 +13,9 @@ impl SolveExecutionBackend for CompactBackend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.expression.set(self.expression.get() + 1);
-        test_kernels::expression(source)
+        test_kernels::expression(source).map_err(Into::into)
     }
     fn compile_compute_expression(
         &self,

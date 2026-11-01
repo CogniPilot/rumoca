@@ -225,7 +225,7 @@ impl BodyEmitter<'_> {
         self.push(Instruction::I32Mul);
         self.push(Instruction::I32Const(start as i32));
         self.push(Instruction::I32Add);
-        self.relocate_arena_address()
+        Ok(())
     }
 
     fn dense_loop_from(&mut self, counter: u32, from: u32, count: usize) -> Result<(), String> {
