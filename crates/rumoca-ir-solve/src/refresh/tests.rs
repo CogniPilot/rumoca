@@ -5,6 +5,33 @@ use super::*;
 
 mod staged_execution;
 
+#[test]
+fn validate_rejects_a_tampered_leaf_dependency_certificate() {
+    let source = two_output_source(false);
+    let mut owners = ContinuousRefreshOwners::checked_for_source(
+        &source,
+        two_row_dynamic_plan(),
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    owners.validate_against(&source).unwrap();
+    let certificate = &mut owners.exact_assignment_programs[0].assignment_leaf_dependencies[0];
+    assert_eq!(
+        *certificate,
+        LeafDependencies::Bounded(IndexIntervals::default())
+    );
+    *certificate = LeafDependencies::Unbounded;
+    let error = owners.validate_against(&source).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("exact assignment leaf dependencies differ from their issued certificate")
+    );
+}
+
 fn source_block() -> ComputeBlock {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("refresh_owner_test.mo"),

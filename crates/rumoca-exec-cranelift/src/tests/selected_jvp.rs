@@ -335,6 +335,57 @@ fn commit_next(program: usize, outputs: &[f64], seed: &mut [f64]) -> Result<(), 
 }
 
 #[test]
+fn selected_programs_commit_only_the_listed_subset_in_list_order() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let mut seed = [0.5, 7.0, 11.0, 13.0];
+    let mut committed = Vec::new();
+    let calls = compiled.jit.program_call_count();
+    compiled
+        .call_selected_programs_committing(
+            &[1, 0, 1],
+            (&[3.0], &[0.0], 0.0),
+            &mut seed,
+            &[],
+            &mut |program, outputs, seed| {
+                committed.push((program, outputs[0]));
+                commit_next(program, outputs, seed)
+            },
+        )
+        .unwrap();
+    assert_eq!(committed, [(1, 21.0), (0, 1.0), (1, 3.0)]);
+    assert_eq!(seed, [0.5, 1.0, 3.0, 13.0]);
+    assert_eq!(compiled.jit.program_call_count(), calls + 3);
+    // Program 2 needs an absent external table: executing it would fail.
+}
+
+#[test]
+fn selected_programs_reject_all_invalid_indices_before_any_execution() {
+    let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
+    let calls = compiled.jit.program_call_count();
+    for invalid in [3, usize::MAX] {
+        let mut seed = [0.5, 7.0, 11.0, 13.0];
+        let before = seed.map(f64::to_bits);
+        let mut committed = 0;
+        let error = compiled
+            .call_selected_programs_committing(
+                &[0, invalid],
+                (&[3.0], &[0.0], 0.0),
+                &mut seed,
+                &[],
+                &mut |program, outputs, seed| {
+                    committed += 1;
+                    commit_next(program, outputs, seed)
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("outside compiled rows"));
+        assert_eq!(seed.map(f64::to_bits), before);
+        assert_eq!(committed, 0);
+        assert_eq!(compiled.jit.program_call_count(), calls);
+    }
+}
+
+#[test]
 fn committed_programs_read_earlier_commits_like_one_program_at_a_time() {
     let compiled = compile_jacobian_scalar_program_block(&committed_chain()).unwrap();
     let (y, p) = ([3.0], [0.0]);
