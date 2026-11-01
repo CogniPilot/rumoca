@@ -122,3 +122,42 @@ fn a_cached_linkage_refusal_carries_the_span_of_the_request_that_meets_it() {
         assert_eq!(refusal.span(), Some(calling_span));
     }
 }
+
+#[test]
+fn a_directional_preparation_refusal_keeps_its_program_span() {
+    let (first, refused) = (span(300), span(330));
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![
+            vec![
+                LinearOp::LoadSeed { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::LoadSeed {
+                    dst: 0,
+                    index: usize::MAX,
+                },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        vec![first, refused],
+    )
+    .unwrap();
+    let preparation_error = rumoca_eval_solve::PreparedScalarProgramBlock::new(block.clone())
+        .err()
+        .expect("the required seed extent overflows");
+    assert_eq!(preparation_error.source_span(), Some(refused));
+    let backend = WasmExecutionBackend::new(
+        VarLayout::from_parts(Default::default(), 1, 0),
+        Rc::new(rumoca_ir_solve::SolvePureCallTable::default()),
+    );
+    let refusal =
+        rumoca_solver::SolveExecutionBackend::compile_jacobian_expression(&backend, &block)
+            .err()
+            .expect("overflow is refused during construction");
+    assert_eq!(
+        refusal.span(),
+        Some(refused),
+        "structured preparation error was flattened: {refusal}"
+    );
+}

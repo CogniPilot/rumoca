@@ -244,6 +244,29 @@ fn unique_span(spans: &[rumoca_core::Span]) -> Option<rumoca_core::Span> {
     spans.iter().all(|span| *span == first).then_some(first)
 }
 
+#[cfg(test)]
+#[test]
+fn required_spans_keep_members_reject_foreign_and_fall_back_to_a_unique_span() {
+    use rumoca_core::{SourceId, Span};
+    let a = Span::from_offsets(SourceId::from_source_name("block.mo"), 10, 20);
+    let b = Span::from_offsets(SourceId::from_source_name("block.mo"), 30, 40);
+    let foreign = Span::from_offsets(SourceId::from_source_name("foreign.mo"), 30, 40);
+    for (spans, offered, expected) in [
+        (vec![a, b], Some(b), Some(b)),
+        (vec![a, b], Some(foreign), None),
+        (vec![a, b], None, None),
+        (vec![a, a], None, Some(a)),
+        (vec![a, a], Some(foreign), Some(a)),
+        (vec![], Some(a), None),
+    ] {
+        let refusal = super::CompileRefusal::new("refusal", offered);
+        let error = required_compiled("block", &spans, Result::<(), _>::Err(refusal)).unwrap_err();
+        assert!(
+            matches!(error, EvalSolveError::CompiledExecution { span, .. } if span == expected)
+        );
+    }
+}
+
 pub(super) fn admitted_output_call(
     scratch: &std::cell::RefCell<Vec<f64>>,
     out: &mut [f64],

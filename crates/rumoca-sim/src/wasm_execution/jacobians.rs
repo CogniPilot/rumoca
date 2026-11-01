@@ -17,7 +17,7 @@ impl WasmJacobian {
         layout: &VarLayout,
         calls: &SolvePureCallTable,
     ) -> Result<Self, String> {
-        let required_seed = Self::required_seed(source)?;
+        let required_seed = Self::required_seed(source).map_err(|refusal| refusal.to_string())?;
         Ok(Self {
             code: super::expressions::WasmExpression::compile_with_seed(
                 source,
@@ -46,10 +46,12 @@ impl WasmJacobian {
         })
     }
 
-    fn required_seed(source: &ScalarProgramBlock) -> Result<usize, String> {
+    fn required_seed(source: &ScalarProgramBlock) -> Result<usize, rumoca_solver::CompileRefusal> {
         Ok(
             rumoca_eval_solve::PreparedScalarProgramBlock::new(source.clone())
-                .map_err(|error| error.to_string())?
+                .map_err(|error| {
+                    rumoca_solver::CompileRefusal::new(error.to_string(), error.source_span())
+                })?
                 .requirements()
                 .seed_len,
         )
