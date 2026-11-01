@@ -981,6 +981,8 @@ fn build_and_run(model: &str, fixture: &str, driver: &str) -> (String, String) {
 
     let source = out_dir.join(format!("{model}.c"));
     let generated = fs::read_to_string(&source).expect("read generated C source");
+    super::cc_support::assert_every_static_function_is_called(&generated);
+    super::cc_support::assert_clang_formatted_when_available(&source);
     let kernels = out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY);
     assert!(kernels.is_file(), "missing {}", kernels.display());
     let driver_path = out_dir.join("main.c");

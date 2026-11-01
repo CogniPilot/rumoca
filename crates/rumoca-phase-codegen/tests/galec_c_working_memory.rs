@@ -458,6 +458,7 @@ fn unused_entity_suppression_is_emitted_only_where_the_entity_is_unused() {
             let reads = function
                 .lines()
                 .filter(|other| !other.contains(&format!("{name}[1] = {{0}};")))
+                .filter(|other| other.trim() != format!("(void){name};"))
                 .filter(|other| {
                     let trimmed = other.trim_start();
                     match trimmed

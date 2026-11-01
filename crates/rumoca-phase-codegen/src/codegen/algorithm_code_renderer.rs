@@ -120,7 +120,7 @@ mod tests {
     /// literally, is returned as the template rendered it.
     #[test]
     fn only_a_solve_renderer_resolves_unused_marker_candidates() {
-        let template = "void f(void) {\n    float rumoca_galec_r0[1] = {0}; (void)rumoca_galec_r0; \
+        let template = "void f(void) {\n    float rumoca_galec_r0[1] = {0};\n    (void)rumoca_galec_r0; \
                         /*rumoca_galec_void_candidate*/\n    g(rumoca_galec_r0);\n}\n";
         let render = |solve_c| {
             AlgorithmCodeTemplateRenderer {

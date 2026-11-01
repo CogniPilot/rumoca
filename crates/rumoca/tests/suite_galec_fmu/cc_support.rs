@@ -52,3 +52,51 @@ pub(super) fn assurance_c99_cc() -> Command {
     ]);
     command
 }
+
+/// Every file-scope `static` function `source` defines is called in it.
+///
+/// Apple clang's strict C99 build rejects an unused `static` function
+/// (`-Wunused-function` with `-Werror`) while GCC does not warn, so a GCC run
+/// cannot catch an uncalled helper; this textual check does, on every host.
+pub(super) fn assert_every_static_function_is_called(source: &str) {
+    for line in source.lines().filter(|line| line.starts_with("static ")) {
+        let Some(name) = line
+            .split('(')
+            .next()
+            .and_then(|head| head.split_whitespace().last())
+        else {
+            continue;
+        };
+        if !line.trim_end().ends_with('{') || name.is_empty() {
+            continue;
+        }
+        let calls = source.matches(&format!("{name}(")).count();
+        assert!(
+            calls > 1,
+            "static function `{name}` is defined but never called:\n{source}"
+        );
+    }
+}
+
+/// `clang-format --style=file --dry-run -Werror` reports no replacement for
+/// the C file `source`, whose directory holds the emitted `.clang-format`.
+///
+/// Runs only where `clang-format` is installed; the shipped style is pinned by
+/// `rumoca-phase-codegen`'s `galec_c_formatting` test either way.
+pub(super) fn assert_clang_formatted_when_available(source: &std::path::Path) {
+    let Ok(output) = Command::new("clang-format")
+        .arg("--style=file")
+        .arg("--dry-run")
+        .arg("-Werror")
+        .arg(source)
+        .output()
+    else {
+        return;
+    };
+    assert!(
+        output.status.success(),
+        "clang-format wants to reformat {}:\n{}",
+        source.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

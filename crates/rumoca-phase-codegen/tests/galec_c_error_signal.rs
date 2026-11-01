@@ -213,8 +213,10 @@ fn every_status_write_in_rendered_c_is_a_reset_or_a_constant_or() {
         "rendered C must write the word exactly once per method exit:\n{source}"
     );
     assert_eq!(scan(&header, "rendered model.h"), 0);
+    // Matched across the shipped layout's line breaks.
+    let compact = source.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(
-        source
+        compact
             .matches("for (size_t k = 0; k < 6u; ++k) { ctx->rumoca_galec_st[k] = false; }")
             .count(),
         3,

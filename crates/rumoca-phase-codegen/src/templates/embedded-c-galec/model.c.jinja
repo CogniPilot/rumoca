@@ -27,6 +27,8 @@
 {%- set fields.names = fields.names + [symbol(c_state_symbols, slot.name) if slot.status_bit is none else ""] -%}
 {%- endfor -%}
 {%- set field_names = fields.names -%}
+{#- Record helper use while rendering bodies; only called helpers are emitted. -#}
+{%- set helpers = namespace(real32=false, real64=false) -%}
 {#- Traceability (SPEC_0034 GAL-032), in the GALEC-derived export's format:
     paths relative to the traced files' common root, and a trace comment that
     opens a run, printed when an operation's anchor differs from the previous
@@ -51,11 +53,24 @@
 
 {#- Element loops only for arrays: a scalar prints as one statement, in a
     bare scope when it declares C temporaries. -#}
-{%- macro each(ty, scoped=false) -%}
-{%- if count(ty)|int > 1 -%}for (size_t k = 0; k < {{ count(ty) }}; ++k) { {% elif scoped -%}{ {% endif -%}
+{%- macro scope() -%}
+{
+{{ caller() | trim | indent(4, true) }}
+}
 {%- endmacro -%}
-{%- macro done(ty, scoped=false) -%}
-{%- if count(ty)|int > 1 or scoped %} }{% endif -%}
+
+{%- macro each(ty, scoped=false) -%}
+{%- if count(ty)|int > 1 -%}
+for (size_t k = 0; k < {{ count(ty) }}; ++k) {
+{{ caller() | trim | indent(4, true) }}
+}
+{%- elif scoped -%}
+{
+{{ caller() | trim | indent(4, true) }}
+}
+{%- else -%}
+{{ caller() | trim }}
+{%- endif -%}
 {%- endmacro -%}
 {%- macro ix(ty) -%}{{ "[k]" if count(ty)|int > 1 else "[0]" }}{%- endmacro -%}
 
@@ -64,7 +79,11 @@
 {#- Fault when an Integer register leaves the profile's domain. -#}
 {%- macro domain_check(dst, ty, fault) -%}
 {%- if ty.scalar.kind == "integer" -%}
-{{ each(ty, true) }}if ({{ dst }}{{ ix(ty) }} < {{ int64(ty.scalar.profile.minimum) }} || {{ dst }}{{ ix(ty) }} > {{ int64(ty.scalar.profile.maximum) }}) { {{ fault }} }{{ done(ty, true) }}
+{% call each(ty, true) -%}
+if ({{ dst }}{{ ix(ty) }} < {{ int64(ty.scalar.profile.minimum) }} || {{ dst }}{{ ix(ty) }} > {{ int64(ty.scalar.profile.maximum) }}) {
+    {{ fault }}
+}
+{% endcall %}
 {% endif -%}
 {%- endmacro -%}
 
@@ -109,7 +128,9 @@
 {%- macro offset(prog, P, indices, dims, fault, mode, inputs, outputs) -%}
 size_t rumoca_galec_offset = 0;
 {% for index in indices -%}
-if ({{ rn(prog, P, index, mode, inputs, outputs) }}[0] < 1 || {{ rn(prog, P, index, mode, inputs, outputs) }}[0] > {{ dims[loop.index0] }}) { {{ fault }} }
+if ({{ rn(prog, P, index, mode, inputs, outputs) }}[0] < 1 || {{ rn(prog, P, index, mode, inputs, outputs) }}[0] > {{ dims[loop.index0] }}) {
+    {{ fault }}
+}
 rumoca_galec_offset = rumoca_galec_offset * {{ dims[loop.index0] }}u + (size_t)({{ rn(prog, P, index, mode, inputs, outputs) }}[0] - 1);
 {% endfor -%}
 {%- endmacro -%}
@@ -130,10 +151,15 @@ rumoca_galec_offset = rumoca_galec_offset * {{ dims[loop.index0] }}u + (size_t)(
 {%- if operator in ["add", "subtract", "multiply"] -%}
 {{ dst }} = {{ a }} {{ {"add": "+", "subtract": "-", "multiply": "*"}[operator] }} {{ b }};
 {%- elif operator in ["integer_quotient", "integer_remainder", "integer_modulo"] -%}
-if ({{ b }} == 0) { {{ fault }} }
+if ({{ b }} == 0) {
+    {{ fault }}
+}
 {%- if operator == "integer_quotient" %} {{ dst }} = {{ a }} / {{ b }};
 {%- elif operator == "integer_remainder" %} {{ dst }} = {{ a }} % {{ b }};
-{%- else %} {{ dst }} = {{ a }} % {{ b }}; if ({{ dst }} != 0 && (({{ dst }} < 0) != ({{ b }} < 0))) { {{ dst }} += {{ b }}; }{%- endif -%}
+{%- else %} {{ dst }} = {{ a }} % {{ b }};
+if ({{ dst }} != 0 && (({{ dst }} < 0) != ({{ b }} < 0))) {
+    {{ dst }} += {{ b }};
+}{%- endif -%}
 {%- else -%}{{ fail("unsupported-feature:embedded-c-solve:integer " ~ operator) }}{%- endif -%}
 {%- endmacro -%}
 
@@ -150,12 +176,14 @@ if ({{ b }} == 0) { {{ fault }} }
     region's input and output slots bind to. -#}
 {%- macro program(prog, P, mode, inputs, outputs, fault, run) -%}
 {
-{% filter indent(4, true) -%}
+{% set statements -%}
 {% for ty in prog.register_types -%}{% if count(ty)|int == 1 and prog.unread[loop.index0] != "dead" and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none -%}
-{{ ctype(ty) }} {{ P | replace("ctx->", "") }}r{{ loop.index0 }}[1] = {0}; (void){{ P | replace("ctx->", "") }}r{{ loop.index0 }}; /*rumoca_galec_void_candidate*/
+{{ ctype(ty) }} {{ P | replace("ctx->", "") }}r{{ loop.index0 }}[1] = {0};
+(void){{ P | replace("ctx->", "") }}r{{ loop.index0 }}; /*rumoca_galec_void_candidate*/
 {% endif %}{% endfor -%}
 {% for slot in prog.slots -%}{% if slot.storage == "method_local" and count(slot.value_type)|int == 1 -%}
-{{ ctype(slot.value_type) }} {{ P | replace("ctx->", "") }}s{{ slot.id }}[1] = {0}; (void){{ P | replace("ctx->", "") }}s{{ slot.id }}; /*rumoca_galec_void_candidate*/
+{{ ctype(slot.value_type) }} {{ P | replace("ctx->", "") }}s{{ slot.id }}[1] = {0};
+(void){{ P | replace("ctx->", "") }}s{{ slot.id }}; /*rumoca_galec_void_candidate*/
 {% endif %}{% endfor -%}
 {% for issued in prog.operations -%}
 {%- set key = issued.provenance.source ~ ":" ~ issued.provenance.start ~ ":" ~ issued.provenance.end -%}
@@ -165,10 +193,10 @@ if ({{ b }} == 0) { {{ fault }} }
 {%- set run.previous = trace -%}
 {{ operation(issued.operation, prog, P ~ "x" ~ loop.index0 ~ "_", P, mode, inputs, outputs, fault, run) -}}
 {% endfor -%}
-{%- if mode == "function" and P == "ctx->rumoca_galec_" %}@@RUMOCA_GALEC_FAULT_EXIT@@
-{% endif -%}
-{% endfilter %}
-}
+{% endset -%}
+{{ statements | trim | indent(4, true) }}
+{% if mode == "function" and P == "ctx->rumoca_galec_" -%}@@RUMOCA_GALEC_FAULT_EXIT@@
+{% endif -%}}
 {% endmacro -%}
 
 {%- macro operation(op, prog, child, P, mode, inputs, outputs, fault, run) -%}
@@ -177,113 +205,157 @@ if ({{ b }} == 0) { {{ fault }} }
 {%- elif kind == "constant" -%}
 {%- set value = op.value.kind -%}
 {%- set literal = value.kind ~ ":" ~ value.bits -%}
-{{ rn(prog, P, op.destination, mode, inputs, outputs) }}[0] = {% if literal in solve_block.literals %}{{ solve_block.literals[literal] }}{% elif value.kind == "real32" %}rumoca_galec_real32(UINT32_C({{ value.bits }})){% elif value.kind == "real64" %}rumoca_galec_real64(UINT64_C({{ value.bits }})){% elif value.kind == "integer" %}{{ int64(value.bits) }}{% elif value.kind == "boolean" %}{{ "true" if value.bits else "false" }}{% else %}{{ fail("unsupported-feature:embedded-c-solve:constant") }}{% endif %};
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}[0] = {% if literal in solve_block.literals %}{{ solve_block.literals[literal] }}{% elif value.kind == "real32" %}{% set helpers.real32 = true %}rumoca_galec_real32(UINT32_C({{ value.bits }})){% elif value.kind == "real64" %}{% set helpers.real64 = true %}rumoca_galec_real64(UINT64_C({{ value.bits }})){% elif value.kind == "integer" %}{{ int64(value.bits) }}{% elif value.kind == "boolean" %}{{ "true" if value.bits else "false" }}{% else %}{{ fail("unsupported-feature:embedded-c-solve:constant") }}{% endif %};
 {% elif kind == "load" and prog.alias_of[op.destination] is not none -%}
 {% elif kind == "load" -%}
 {%- set ty = prog.register_types[op.destination] -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% elif kind == "store" and prog.forward_to[op.source] is not none -%}
 {% elif kind == "store" -%}
 {%- set ty = prog.register_types[op.source] -%}
-{{ each(ty) }}{{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }} = ({{ slot_ctype(prog, op.slot, mode) }}){{ rn(prog, P, op.source, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ slot_base(prog, op.slot, mode, P, inputs, outputs) }}{{ ix(ty) }} = ({{ slot_ctype(prog, op.slot, mode) }}){{ rn(prog, P, op.source, mode, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% elif kind == "unary" -%}
 {%- set ty = prog.register_types[op.destination] -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ unary(op.operator, rn(prog, P, op.operand, mode, inputs, outputs) ~ ix(ty), ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ unary(op.operator, rn(prog, P, op.operand, mode, inputs, outputs) ~ ix(ty), ty) }};
+{% endcall %}
 {{ domain_check(rn(prog, P, op.destination, mode, inputs, outputs), ty, fault) -}}
 {% elif kind == "binary" -%}
 {%- set ty = prog.register_types[op.destination] -%}
 {%- if ty.scalar.kind == "integer" -%}
-{{ each(ty) }}{{ integer_binary(op.operator, rn(prog, P, op.destination, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.lhs, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.rhs, mode, inputs, outputs) ~ ix(ty), fault) }}{{ done(ty) }}
+{% call each(ty) -%}
+{{ integer_binary(op.operator, rn(prog, P, op.destination, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.lhs, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.rhs, mode, inputs, outputs) ~ ix(ty), fault) }}
+{% endcall %}
 {{ domain_check(rn(prog, P, op.destination, mode, inputs, outputs), ty, fault) -}}
 {%- else -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ real_binary(op.operator, rn(prog, P, op.lhs, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.rhs, mode, inputs, outputs) ~ ix(ty), ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ real_binary(op.operator, rn(prog, P, op.lhs, mode, inputs, outputs) ~ ix(ty), rn(prog, P, op.rhs, mode, inputs, outputs) ~ ix(ty), ty) }};
+{% endcall %}
 {% endif -%}
 {% elif kind == "compare" -%}
 {%- set ty = prog.register_types[op.destination] -%}
 {%- set operand = prog.register_types[op.lhs] -%}
 {#- Named operands: a register compared with itself (the NaN test) is not a
     tautology for the C compiler to flag. -#}
-{{ each(ty, true) }}const {{ ctype(operand) }} rumoca_galec_lhs = {{ rn(prog, P, op.lhs, mode, inputs, outputs) }}{{ ix(ty) }}; const {{ ctype(operand) }} rumoca_galec_rhs = {{ rn(prog, P, op.rhs, mode, inputs, outputs) }}{{ ix(ty) }}; {{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = rumoca_galec_lhs {{ {"equal": "==", "not_equal": "!=", "less": "<", "less_equal": "<=", "greater": ">", "greater_equal": ">="}[op.operator] }} rumoca_galec_rhs;{{ done(ty, true) }}
+{% call each(ty, true) -%}
+const {{ ctype(operand) }} rumoca_galec_lhs = {{ rn(prog, P, op.lhs, mode, inputs, outputs) }}{{ ix(ty) }};
+const {{ ctype(operand) }} rumoca_galec_rhs = {{ rn(prog, P, op.rhs, mode, inputs, outputs) }}{{ ix(ty) }};
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = rumoca_galec_lhs {{ {"equal": "==", "not_equal": "!=", "less": "<", "less_equal": "<=", "greater": ">", "greater_equal": ">="}[op.operator] }} rumoca_galec_rhs;
+{% endcall %}
 {% elif kind == "select" -%}
 {%- set ty = prog.register_types[op.destination] -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.condition, mode, inputs, outputs) }}[0] ? {{ rn(prog, P, op.if_true, mode, inputs, outputs) }}{{ ix(ty) }} : {{ rn(prog, P, op.if_false, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.condition, mode, inputs, outputs) }}[0] ? {{ rn(prog, P, op.if_true, mode, inputs, outputs) }}{{ ix(ty) }} : {{ rn(prog, P, op.if_false, mode, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% elif kind == "convert" -%}
 {%- set ty = prog.register_types[op.destination] -%}
 {%- if op.operator == "integer_to_real" -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ rn(prog, P, op.operand, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = ({{ ctype(ty) }}){{ rn(prog, P, op.operand, mode, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% else -%}
 {%- set source = prog.register_types[op.operand] -%}
-{{ each(ty, true) }}{{ ctype(source) }} rumoca_galec_value = {{ f("floor" if op.operator == "real_to_integer_toward_negative_infinity" else "trunc", source) }}({{ rn(prog, P, op.operand, mode, inputs, outputs) }}{{ ix(ty) }}); if (!(rumoca_galec_value >= -9223372036854775808.0 && rumoca_galec_value < 9223372036854775808.0)) { {{ fault }} } {{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = (int64_t)rumoca_galec_value;{{ done(ty, true) }}
+{% call each(ty, true) -%}
+{{ ctype(source) }} rumoca_galec_value = {{ f("floor" if op.operator == "real_to_integer_toward_negative_infinity" else "trunc", source) }}({{ rn(prog, P, op.operand, mode, inputs, outputs) }}{{ ix(ty) }});
+if (!(rumoca_galec_value >= -9223372036854775808.0 && rumoca_galec_value < 9223372036854775808.0)) {
+    {{ fault }}
+}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = (int64_t)rumoca_galec_value;
+{% endcall %}
 {{ domain_check(rn(prog, P, op.destination, mode, inputs, outputs), ty, fault) -}}
 {% endif -%}
 {% elif kind == "fill" -%}
 {%- set ty = prog.register_types[op.destination] -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.value, mode, inputs, outputs) }}[0];{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.value, mode, inputs, outputs) }}[0];
+{% endcall %}
 {% elif kind == "project_element_dynamic" and op.static_offset is defined -%}
 {{ rn(prog, P, op.destination, mode, inputs, outputs) }}[0] = {{ rn(prog, P, op.aggregate, mode, inputs, outputs) }}[{{ op.static_offset }}];
 {% elif kind == "project_element_dynamic" -%}
-{
+{% call scope() -%}
 {{ offset(prog, P, op.indices, prog.register_types[op.aggregate].dimensions, fault, mode, inputs, outputs) -}}
 {{ rn(prog, P, op.destination, mode, inputs, outputs) }}[0] = {{ rn(prog, P, op.aggregate, mode, inputs, outputs) }}[rumoca_galec_offset];
-}
+{% endcall %}
 {% elif kind == "update_element" and op.static_offset is defined -%}
 {%- set ty = prog.register_types[op.destination] -%}
 {% if prog.same_as[op.destination] is none -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.aggregate, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.aggregate, mode, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% endif -%}
 {{ rn(prog, P, op.destination, mode, inputs, outputs) }}[{{ op.static_offset }}] = {{ rn(prog, P, op.value, mode, inputs, outputs) }}[0];
 {% elif kind == "update_element" -%}
-{
+{% call scope() -%}
 {%- set ty = prog.register_types[op.destination] %}
 {% if prog.same_as[op.destination] is none -%}
-{{ each(ty) }}{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.aggregate, mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, op.destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.aggregate, mode, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% endif -%}
 {{ offset(prog, P, op.indices, ty.dimensions, fault, mode, inputs, outputs) -}}
 {{ rn(prog, P, op.destination, mode, inputs, outputs) }}[rumoca_galec_offset] = {{ rn(prog, P, op.value, mode, inputs, outputs) }}[0];
-}
+{% endcall %}
 {% elif kind == "conditional" -%}
 {%- set names = namespace(captured=[], targets=[]) -%}
 {%- for capture in op.captures -%}{%- set names.captured = names.captured + [rn(prog, P, capture, mode, inputs, outputs)] -%}{%- endfor -%}
 {%- for destination in op.destinations -%}{%- set names.targets = names.targets + [rn(prog, P, destination, mode, inputs, outputs)] -%}{%- endfor -%}
 if ({{ rn(prog, P, op.condition, mode, inputs, outputs) }}[0]) {{ program(op.if_true.body, child ~ "t", "region", names.captured, names.targets, fault, run) | trim }} else {{ program(op.if_false.body, child ~ "f", "region", names.captured, names.targets, fault, run) -}}
 {% elif kind == "fold" -%}
-{
+{% call scope() -%}
 {%- set names = namespace(carried=[], staged=[], captured=[], binders=[]) -%}
 {%- for destination in op.destinations -%}{%- set names.carried = names.carried + [rn(prog, P, destination, mode, inputs, outputs)] -%}{%- set names.staged = names.staged + [child ~ "n" ~ loop.index0] -%}{%- endfor -%}
 {%- for capture in op.captures -%}{%- set names.captured = names.captured + [rn(prog, P, capture, mode, inputs, outputs)] -%}{%- endfor -%}
 {%- for binder in op.domain.binders -%}{%- set names.binders = names.binders + [child ~ "b" ~ loop.index0] -%}{%- endfor %}
 {% for destination in op.destinations -%}
 {%- set ty = prog.register_types[destination] -%}
-{{ each(ty) }}{{ rn(prog, P, destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.initial[loop.index0], mode, inputs, outputs) }}{{ ix(ty) }};{{ done(ty) }}
+{% call each(ty) -%}
+{{ rn(prog, P, destination, mode, inputs, outputs) }}{{ ix(ty) }} = {{ rn(prog, P, op.initial[loop.index0], mode, inputs, outputs) }}{{ ix(ty) }};
+{% endcall %}
 {% endfor -%}
 {{ child }}done = false;
 {% for binder in op.domain.binders -%}
-for ({{ child }}b{{ loop.index0 }}[0] = {{ int64(binder.lower) }}; {{ "!" ~ child ~ "done && " }}({{ int64(binder.step) }} > 0 ? {{ child }}b{{ loop.index0 }}[0] <= {{ int64(binder.upper) }} : {{ child }}b{{ loop.index0 }}[0] >= {{ int64(binder.upper) }}); {{ child }}b{{ loop.index0 }}[0] += {{ int64(binder.step) }}) {
+{{ " " * (4 * loop.index0) }}for ({{ child }}b{{ loop.index0 }}[0] = {{ int64(binder.lower) }}; {{ "!" ~ child ~ "done && " }}({{ int64(binder.step) }} > 0 ? {{ child }}b{{ loop.index0 }}[0] <= {{ int64(binder.upper) }} : {{ child }}b{{ loop.index0 }}[0] >= {{ int64(binder.upper) }}); {{ child }}b{{ loop.index0 }}[0] += {{ int64(binder.step) }}) {
 {% endfor -%}
+{% set iteration -%}
 {% if op.continuation -%}
 {{ program(op.continuation.body, child ~ "c", "region", names.carried + names.captured + names.binders, [child ~ "more"], fault, run) -}}
-if (!{{ child }}more[0]) { {{ child }}done = true; }
+if (!{{ child }}more[0]) {
+    {{ child }}done = true;
+}
 if (!{{ child }}done) {
 {% endif -%}
+{% set transition -%}
 {{ program(op.transition.body, child ~ "s", "region", names.carried + names.captured + names.binders, names.staged, fault, run) -}}
 {% for destination in op.destinations -%}
-{{ each(prog.register_types[destination]) }}{{ rn(prog, P, destination, mode, inputs, outputs) }}{{ ix(prog.register_types[destination]) }} = {{ child }}n{{ loop.index0 }}{{ ix(prog.register_types[destination]) }};{{ done(prog.register_types[destination]) }}
+{% call each(prog.register_types[destination]) -%}
+{{ rn(prog, P, destination, mode, inputs, outputs) }}{{ ix(prog.register_types[destination]) }} = {{ child }}n{{ loop.index0 }}{{ ix(prog.register_types[destination]) }};
+{% endcall %}
 {% endfor -%}
+{% endset -%}
+{{ transition | trim | indent(4 if op.continuation else 0, true) }}
 {% if op.continuation %}}
 {% endif -%}
-{% for binder in op.domain.binders %}}
+{% endset -%}
+{{ iteration | trim | indent(4 * (op.domain.binders|length), true) }}
+{% for binder in op.domain.binders %}{{ " " * (4 * (op.domain.binders|length - loop.index)) }}}
 {% endfor -%}
-}
+{% endcall %}
 {% elif kind == "call" -%}
 if ({{ symbol(c_symbols, solve_block.function_names[op.owner]) }}(scratch,
 {%- for register in op.arguments + op.destinations %}
-    {{ rn(prog, P, register, mode, inputs, outputs) }}{{ "," if not loop.last else ") != 0) {" }}
+        {{ rn(prog, P, register, mode, inputs, outputs) }}{{ "," if not loop.last else ") != 0) {" }}
 {%- endfor %}
 {#- The callee stored the status bits it raised before faulting; join
     them to this frame's status before the fault unwinds (#483 EL007). #}
 {%- set first_status = op.destinations|length - run.status|length %}
 {%- for target in run.status %}
-    if ({{ rn(prog, P, op.destinations[first_status + loop.index0], mode, inputs, outputs) }}[0]) { {{ target }}[0] = true; }
+    if ({{ rn(prog, P, op.destinations[first_status + loop.index0], mode, inputs, outputs) }}[0]) {
+        {{ target }}[0] = true;
+    }
 {%- endfor %}
     {{ fault }}
 }
@@ -296,22 +368,34 @@ void {{ c_model }}_{{ name }}({{ c_model }}State *self) {
     {{ c_model }}Scratch *const scratch = &self->rumoca_galec_scratch;
     struct {{ c_model }}RumocaGalec{{ name | capitalize }} *const ctx = &scratch->methods.{{ name }};
     uint32_t rumoca_galec_status = 0u;
-    for (size_t k = 0; k < 6u; ++k) { ctx->rumoca_galec_st[k] = false; }
+    for (size_t k = 0; k < 6u; ++k) {
+        ctx->rumoca_galec_st[k] = false;
+    }
 {%- if backup %}
 {%- for variable in algorithm_code.variables %}
     memcpy(&scratch->methods.startup.backup.{{ symbol(c_state_symbols, variable.name) }}, &self->{{ symbol(c_state_symbols, variable.name) }}, sizeof self->{{ symbol(c_state_symbols, variable.name) }});
 {%- endfor %}
 {%- endif %}
     /* Never taken: keeps the fault exit referenced in a method that cannot fault. */
-    if (rumoca_galec_status != 0u) { goto rumoca_galec_fault; }
+    if (rumoca_galec_status != 0u) {
+        goto rumoca_galec_fault;
+    }
 {%- set run = namespace(previous="", status=[]) %}
 {%- for k in range(6) %}{% set run.status = run.status + ["(&ctx->rumoca_galec_st[" ~ k ~ "])"] %}{% endfor %}
 {% filter indent(4, true) %}{{ program(prog, "ctx->rumoca_galec_", "method", [], [], "goto rumoca_galec_fault;", run) }}{% endfilter %}
-    for (size_t k = 0; k < 6u; ++k) { if (ctx->rumoca_galec_st[k]) { rumoca_galec_status |= (uint32_t)1u << k; } }
+    for (size_t k = 0; k < 6u; ++k) {
+        if (ctx->rumoca_galec_st[k]) {
+            rumoca_galec_status |= (uint32_t)1u << k;
+        }
+    }
     self->rumoca_galec_error_signal_status = rumoca_galec_status;
     return;
 rumoca_galec_fault:
-    for (size_t k = 0; k < 6u; ++k) { if (ctx->rumoca_galec_st[k]) { rumoca_galec_status |= (uint32_t)1u << k; } }
+    for (size_t k = 0; k < 6u; ++k) {
+        if (ctx->rumoca_galec_st[k]) {
+            rumoca_galec_status |= (uint32_t)1u << k;
+        }
+    }
 {%- if backup %}
 {%- for variable in algorithm_code.variables %}
     memcpy(&self->{{ symbol(c_state_symbols, variable.name) }}, &scratch->methods.startup.backup.{{ symbol(c_state_symbols, variable.name) }}, sizeof self->{{ symbol(c_state_symbols, variable.name) }});
@@ -400,9 +484,7 @@ rumoca_galec_fault:
  * ------------------------------------------------------------------------ */
 {%- endif %}
 
-static inline float rumoca_galec_real32(uint32_t bits) { float value; memcpy(&value, &bits, sizeof value); return value; }
-
-static inline double rumoca_galec_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof value); return value; }
+{%- set function_bodies -%}
 {% for owner in solve_block.functions.owners %}
 /* {{ solve_block.function_names[owner.id] | replace("*/", "* /") | replace("/*", "/ *") }}: the outputs, then its six signal status bits; nonzero on a fault. */
 {%- set signature = namespace(parameters=[c_model ~ "Scratch *scratch"]) %}
@@ -412,7 +494,8 @@ static int {{ symbol(c_symbols, solve_block.function_names[owner.id]) }}(
 {%- for parameter in signature.parameters %}{{ parameter }}{% if not loop.last %},{% if loop.index % 4 == 0 %}
     {% else %} {% endif %}{% endif %}{% endfor %}) {
     struct {{ c_model }}RumocaGalecFn{{ owner.id }} *const ctx = &scratch->level{{ owner.level }}.fn{{ owner.id }};
-    (void)ctx; (void)scratch;
+    (void)ctx;
+    (void)scratch;
 {#- An input the body never reads is marked used: only that one, since
     every `(void)` is a structural-coverage obligation. A load reads it
     unless it is served in place and its register is never read. #}
@@ -427,7 +510,7 @@ static int {{ symbol(c_symbols, solve_block.function_names[owner.id]) }}(
 {%- endif %}
 {%- set inputs_seen.position = inputs_seen.position + 1 %}
 {%- endif %}{% endfor %}
-{%- set run = namespace(previous="", status=[], exit="return 0;\n    rumoca_galec_fault:") %}
+{%- set run = namespace(previous="", status=[], exit="    return 0;\nrumoca_galec_fault:") %}
 {%- set status_slots = solve_block.status_slots[owner.id] %}
 {%- set first_out = owner.outputs|length - status_slots|length %}
 {%- for slot_id in status_slots %}
@@ -441,12 +524,31 @@ static int {{ symbol(c_symbols, solve_block.function_names[owner.id]) }}(
     EL007). The exit is emitted only when some fault site jumps to it. -#}
 {%- set body = program(owner.body, "ctx->rumoca_galec_", "function", [], [], "goto rumoca_galec_fault;" if status_slots|length > 0 else "return 1;", run) %}
 {%- set exits = "goto rumoca_galec_fault;" in body %}
-{% filter indent(4, true) %}{{ body | replace("@@RUMOCA_GALEC_FAULT_EXIT@@", run.exit ~ "\n    return 1;") if exits else body | replace("    @@RUMOCA_GALEC_FAULT_EXIT@@\n", "") }}{% endfilter -%}
+{% filter indent(4, true) %}{{ body | replace("@@RUMOCA_GALEC_FAULT_EXIT@@", run.exit ~ "\n    return 1;") if exits else body | replace("@@RUMOCA_GALEC_FAULT_EXIT@@\n", "") }}{% endfilter -%}
 {%- if not exits %}
     return 0;
 {%- endif %}
 }
 {% endfor %}
+{% endset -%}
+{%- set method_bodies -%}
 {{ method("startup", solve_block.startup, true) }}
 {{ method("recalibrate", solve_block.recalibrate, false) }}
 {{ method("dostep", solve_block.do_step, false) | trim }}
+
+{% endset -%}
+{% if helpers.real32 %}
+static inline float rumoca_galec_real32(uint32_t bits) {
+    float value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+{% endif -%}
+{% if helpers.real64 %}
+static inline double rumoca_galec_real64(uint64_t bits) {
+    double value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+{% endif %}
+{{ function_bodies }}{{ method_bodies | trim }}

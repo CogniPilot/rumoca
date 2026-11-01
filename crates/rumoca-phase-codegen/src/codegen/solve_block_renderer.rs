@@ -80,10 +80,12 @@ impl SolveBlockTemplateRenderer {
         let mut env = create_environment();
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
-        Ok(tmpl.render(minijinja::context! {
-            model_name => model_name,
-            ..self.context.clone()
-        })?)
+        Ok(drop_needless_void_uses(&tmpl.render(
+            minijinja::context! {
+                model_name => model_name,
+                ..self.context.clone()
+            },
+        )?))
     }
 }
 
@@ -915,14 +917,14 @@ fn trace_key(provenance: &serde_json::Value) -> String {
     )
 }
 
-/// The sentinel the Solve C template appends to each `T name[1] = {0};
-/// (void)name;` declaration whose `(void)` use may be needless.
+/// The sentinel the Solve C template appends to each standalone
+/// `(void)name;` use that may be needless.
 pub(super) const VOID_CANDIDATE: &str = " /*rumoca_galec_void_candidate*/";
 
 /// Resolve the template's unused-marker candidates in a Solve-printed C unit:
 /// keep a scalar local's `(void)` use only where the local is never read.
 ///
-/// The Solve template declares every scalar local with a `(void)` use and
+/// The Solve template follows every scalar declaration with a `(void)` use and
 /// [`VOID_CANDIDATE`], because whether a local is read depends on how its
 /// operations print. Every `(void)` is a statement a structural-coverage
 /// obligation has to account for, so a candidate the emitted function itself
@@ -960,23 +962,21 @@ fn flush_function(lines: &mut Vec<&str>, out: &mut String) {
     }
 }
 
-/// For a tagged `T name[1] = {0}; (void)name;` line, the local's name and the
-/// line as printed when the local is unread (marker kept) and when it is read
-/// (marker dropped), both without the sentinel.
+/// For a tagged standalone `(void)name;` line, the local's name and the
+/// line as printed when the local is unread, or an empty line when it is read.
+/// The template owns the declaration and whitespace; only the use is removed.
 fn void_candidate(line: &str) -> Option<(&str, String, String)> {
     let trimmed = line.trim_end_matches('\n');
     let untagged = trimmed.strip_suffix(VOID_CANDIDATE)?;
-    let (declaration, void_use) = untagged.split_once("[1] = {0}; (void)")?;
-    let name = void_use.strip_suffix(';')?;
-    if !name.starts_with("rumoca_galec_") || !declaration.ends_with(name) {
+    let name = untagged
+        .trim_start()
+        .strip_prefix("(void)")?
+        .strip_suffix(';')?;
+    if !name.starts_with("rumoca_galec_") {
         return None;
     }
     let ending = &line[trimmed.len()..];
-    Some((
-        name,
-        format!("{untagged}{ending}"),
-        format!("{declaration}[1] = {{0}};{ending}"),
-    ))
+    Some((name, format!("{untagged}{ending}"), String::new()))
 }
 
 /// `text` with every comment and string or character literal blanked to
@@ -1056,7 +1056,24 @@ mod void_use_tests {
     use super::{VOID_CANDIDATE, drop_needless_void_uses};
 
     fn candidate(name: &str) -> String {
-        format!("    float {name}[1] = {{0}}; (void){name};{VOID_CANDIDATE}\n")
+        format!("    float {name}[1] = {{0}};\n    (void){name};{VOID_CANDIDATE}\n")
+    }
+
+    #[test]
+    fn public_solve_renderer_resolves_standalone_void_candidates() {
+        let template = format!(
+            "void f(void) {{\n{}    g(rumoca_galec_r0);\n}}\n",
+            candidate("rumoca_galec_r0")
+        );
+        let renderer = super::SolveBlockTemplateRenderer {
+            context: minijinja::context! {},
+        };
+        assert_eq!(
+            renderer
+                .render_with_name(&template, "Probe")
+                .expect("renders"),
+            "void f(void) {\n    float rumoca_galec_r0[1] = {0};\n    g(rumoca_galec_r0);\n}\n"
+        );
     }
 
     #[test]
@@ -1080,7 +1097,7 @@ mod void_use_tests {
         );
         let out = drop_needless_void_uses(&text);
         assert!(
-            out.contains("float rumoca_galec_s0[1] = {0}; (void)rumoca_galec_s0;\n"),
+            out.contains("float rumoca_galec_s0[1] = {0};\n    (void)rumoca_galec_s0;\n"),
             "{out}"
         );
         assert!(!out.contains(VOID_CANDIDATE), "{out}");

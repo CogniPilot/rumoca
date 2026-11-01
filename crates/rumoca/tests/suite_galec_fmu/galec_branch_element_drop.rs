@@ -277,7 +277,9 @@ fn run_production_c(source: &str, model: &str, driver: &str) -> String {
         "`{model}` driver exited with {:?}",
         run.status.code()
     );
-    String::from_utf8(run.stdout).expect("driver prints UTF-8")
+    String::from_utf8(run.stdout)
+        .expect("driver prints UTF-8")
+        .replace("\r\n", "\n")
 }
 
 const BRANCH_ELEMENT_DRIVER: &str = r#"

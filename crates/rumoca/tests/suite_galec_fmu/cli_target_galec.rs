@@ -748,8 +748,10 @@ fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
         "GALEC artifact unexpectedly expanded to {} lines",
         galec.lines().count()
     );
+    // The shipped `.clang-format` layout puts each statement and block body
+    // on its own lines (1,272 here); the bound guards projection growth.
     assert!(
-        c.lines().count() <= 850,
+        c.lines().count() <= 1280,
         "C artifact unexpectedly expanded to {} lines",
         c.lines().count()
     );
