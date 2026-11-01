@@ -640,6 +640,7 @@ mod tests {
     mod selected_faults;
     mod selected_jvp;
     mod selected_residual;
+    mod tensor_cross_order;
 
     use super::*;
     use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
