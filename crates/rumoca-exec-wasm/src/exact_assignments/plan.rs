@@ -7,6 +7,8 @@ use rumoca_ir_solve::{
 pub(crate) struct Program {
     pub block: ScalarProgramBlock,
     pub targets: Vec<usize>,
+    /// Declared directional coordinate count of a private entry; none is primal.
+    pub seed: Option<usize>,
 }
 
 pub(crate) struct Plan {
@@ -16,18 +18,38 @@ pub(crate) struct Plan {
 
 impl Plan {
     pub(crate) fn private(block: &ScalarProgramBlock) -> Result<Self, String> {
-        if block.programs().len() != 1 {
-            return Err("private entry requires one complete checked program".into());
-        }
-        let maximum_tuple = block.stored_output_count();
-        if maximum_tuple == 0 {
-            return Err("private entry has no checked output".into());
-        }
-        Ok(Self {
-            programs: vec![Program {
+        Self::private_entries(&[(block, None)])
+    }
+
+    /// One private entry per source; each keeps its own complete checked tuple.
+    pub(crate) fn private_entries(
+        entries: &[(&ScalarProgramBlock, Option<usize>)],
+    ) -> Result<Self, String> {
+        let mut programs = Vec::new();
+        programs
+            .try_reserve_exact(entries.len())
+            .map_err(|_| "WASM private entry plan allocation failed")?;
+        let mut maximum_tuple = 0;
+        for &(block, seed) in entries {
+            if block.programs().len() != 1 {
+                return Err("private entry requires one complete checked program".into());
+            }
+            let count = block.stored_output_count();
+            if count == 0 {
+                return Err("private entry has no checked output".into());
+            }
+            maximum_tuple = maximum_tuple.max(count);
+            programs.push(Program {
                 block: block.clone(),
                 targets: Vec::new(),
-            }],
+                seed,
+            });
+        }
+        if programs.is_empty() {
+            return Err("private module requires at least one entry".into());
+        }
+        Ok(Self {
+            programs,
             maximum_tuple,
         })
     }
@@ -90,7 +112,11 @@ impl Plan {
                 .map_err(|_| "WASM exact assignment target allocation failed")?;
             targets.extend_from_slice(issued.target_indices());
             maximum_tuple = maximum_tuple.max(count);
-            programs.push(Program { block, targets });
+            programs.push(Program {
+                block,
+                targets,
+                seed: None,
+            });
         }
         Ok(Self {
             programs,

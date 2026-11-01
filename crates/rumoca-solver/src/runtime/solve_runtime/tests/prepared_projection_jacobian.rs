@@ -334,14 +334,14 @@ impl SolveExecutionBackend for Compiler {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        super::super::test_kernels::expression(block)
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::expression(block).map_err(Into::into)
     }
 
     fn compile_jacobian_expression(
         &self,
         _block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         Ok(Rc::new(Compiler(self.0.clone())))
     }
 

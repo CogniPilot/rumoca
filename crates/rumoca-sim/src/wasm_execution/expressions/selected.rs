@@ -1,16 +1,23 @@
 //! Bind the already emitted entry of the exact retained scalar source.
 use super::*;
 use rumoca_eval_solve::JacobianEvalInputs;
-use rumoca_exec_wasm::CompiledPrivateProgramWasm;
 use rumoca_solver::{CompiledSolveExpression, CompiledSolveJacobianExpression, RuntimeSolveError};
 use std::cell::RefMut;
 
 #[cfg(test)]
 mod tests;
 
-/// A program's emitted entry and the private scratch it runs on. The scratch is
-/// shared by every program of one expression (see `WasmExpression::compile_with_seed`).
-pub(super) type Program = (CompiledPrivateProgramWasm, Rc<RefCell<Vec<f64>>>);
+/// A program's module entry and the private scratch it runs on. The scratch is
+/// shared by every program of one expression (see `WasmExpression::compile_deferred`).
+pub(super) type Program = (Rc<super::super::batch::Entry>, Rc<RefCell<Vec<f64>>>);
+
+pub(super) fn scratch_cells(
+    code: &rumoca_exec_wasm::CompiledPrivateProgramWasm,
+) -> Result<usize, String> {
+    usize::try_from(code.scratch_bytes())
+        .map(|bytes| bytes.div_ceil(8))
+        .map_err(|_| "WASM expression scratch exceeds usize".into())
+}
 
 struct BoundProgram {
     _source: ScalarProgramBlock,
@@ -93,11 +100,16 @@ pub(super) fn invoke<'a>(
 ) -> Result<RefMut<'a, Vec<f64>>, RuntimeSolveError> {
     let JacobianEvalInputs { y, p, t, seed } = inputs;
     profile::validate_inputs(layout, y.len(), p.len(), tables.len())?;
+    let code = program.0.code()?;
     let mut scratch = program.1.borrow_mut();
+    let cells = scratch_cells(code)?;
+    if scratch.len() < cells {
+        scratch.resize(cells, 0.0);
+    }
     if directional {
-        program.0.call_directional(y, p, t, seed, &mut scratch)
+        code.call_directional(y, p, t, seed, &mut scratch)
     } else {
-        program.0.call(y, p, t, &mut scratch)
+        code.call(y, p, t, &mut scratch)
     }
     .map_err(rumoca_solver::runtime::native_wasm_error::execution_error)?;
     Ok(scratch)

@@ -41,8 +41,6 @@ pub use native_capacity::{
     CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest, decode_native_source_envelope,
     encode_native_source_envelope,
 };
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-mod private_arena;
 mod private_program;
 mod retained_native_program;
 #[cfg(all(
@@ -68,8 +66,9 @@ pub use native_program::{
     compile_native_assignment_schedule_with_calls_wasm_and_policy,
 };
 pub use private_program::{
-    CompiledPrivateProgramWasm, compile_private_directional_program_wasm,
-    compile_private_program_wasm,
+    AdmittedPrivateProgram, CompiledPrivateProgramWasm, PrivateProgramAdmission,
+    compile_private_directional_program_wasm, compile_private_program_wasm,
+    compile_private_programs_wasm,
 };
 pub use retained_native_program::{
     CompiledRetainedNativeProgramWasm, NativeInvocationLease, NativeInvocationOutcome,

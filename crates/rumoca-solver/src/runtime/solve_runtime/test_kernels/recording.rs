@@ -25,14 +25,14 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.inner.compile_expression(block)
     }
 
     fn compile_selectable_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.inner.compile_selectable_expression(block)
     }
 
@@ -53,7 +53,7 @@ impl SolveExecutionBackend for RecordingBackend {
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         let (jacobians, assignments, transactions) = self.requests.get();
         self.requests
             .set((jacobians + 1, assignments, transactions));

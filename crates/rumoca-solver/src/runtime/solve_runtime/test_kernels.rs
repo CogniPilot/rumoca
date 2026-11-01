@@ -10,14 +10,14 @@ impl SolveExecutionBackend for ReferenceBackend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        expression(source)
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        expression(source).map_err(Into::into)
     }
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        jacobian(source)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        jacobian(source).map_err(Into::into)
     }
     fn compile_assignment_schedule(
         &self,

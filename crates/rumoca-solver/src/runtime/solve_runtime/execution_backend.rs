@@ -98,6 +98,10 @@ pub trait SolveExecutionBackend {
         Ok(())
     }
 
+    /// Every owner of one runtime construction has been compiled. A backend
+    /// that defers emission builds its code for all of them here, once.
+    fn finish_preparation(&self) {}
+
     fn compile_target_values(
         &self,
         plan: &solve_eval::PreparedTargetValuePlan,
@@ -120,7 +124,7 @@ pub trait SolveExecutionBackend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String>;
+    ) -> Result<Rc<dyn CompiledSolveExpression>, CompileRefusal>;
 
     /// Prepare an expression used through both whole-block and selected-program
     /// calls. Backends may retain batching when separate entry points would
@@ -128,14 +132,14 @@ pub trait SolveExecutionBackend {
     fn compile_selectable_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, CompileRefusal> {
         self.compile_expression(block)
     }
 
     fn compile_jacobian_expression(
         &self,
         _block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, CompileRefusal> {
         Err("Jacobian expressions are not compiled by this backend".into())
     }
 

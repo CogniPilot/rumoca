@@ -145,7 +145,7 @@ fn conditional_ranges_keep_exact_order_ieee_values_and_compact_nested_code() {
                 &Default::default(),
             )
             .unwrap();
-            sizes.push(code.selected[0].0.module_bytes().len());
+            sizes.push(code.selected[0].0.code().unwrap().module_bytes().len());
             for guard in [1.0, 0.0, 2.0] {
                 y[0] = guard;
                 let mut expected = vec![0.0; count + 3];

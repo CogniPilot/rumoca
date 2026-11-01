@@ -619,7 +619,11 @@ impl SolveRuntime {
             delay_runtime,
             root_condition_count,
         );
-        runtime.scalar_evaluation()?.prepare_torn_sweeps();
+        let evaluation = runtime.scalar_evaluation()?;
+        evaluation.prepare_torn_sweeps();
+        if let Some(backend) = &evaluation.scalar.execution_backend {
+            backend.finish_preparation();
+        }
         Ok(runtime)
     }
 }

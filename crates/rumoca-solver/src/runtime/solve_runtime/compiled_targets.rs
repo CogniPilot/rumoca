@@ -254,7 +254,9 @@ pub(super) fn compile(
         return Err("private target tuple projection exceeds its source outputs".into());
     }
     Ok(Rc::new(TargetValues {
-        code: backend.compile_expression(source)?,
+        code: backend
+            .compile_expression(source)
+            .map_err(|refusal| refusal.to_string())?,
         output_count: source.output_count(),
         spans: source.program_spans().into(),
         scratch: RefCell::default(),

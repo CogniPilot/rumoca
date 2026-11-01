@@ -112,7 +112,7 @@ impl SolveExecutionBackend for AssignmentBackend {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.compilations.set(self.compilations.get() + 1);
         if self.decline {
             return Err("test backend cannot compile this program".into());
@@ -128,8 +128,8 @@ impl SolveExecutionBackend for AssignmentBackend {
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        super::super::test_kernels::jacobian(block)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::jacobian(block).map_err(Into::into)
     }
 
     fn compile_assignment_schedule(
@@ -474,15 +474,15 @@ impl SolveExecutionBackend for ScheduleAdmission {
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-        super::super::test_kernels::expression(block)
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::expression(block).map_err(Into::into)
     }
 
     fn compile_jacobian_expression(
         &self,
         block: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        super::super::test_kernels::jacobian(block)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::jacobian(block).map_err(Into::into)
     }
 
     fn compile_assignment_schedule(

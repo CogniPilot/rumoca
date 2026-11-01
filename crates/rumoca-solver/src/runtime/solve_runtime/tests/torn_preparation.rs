@@ -56,7 +56,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         Ok(Rc::new(Expression {
             code: super::super::test_kernels::expression(source)?,
             calls: Rc::clone(&self.calls),
@@ -66,8 +66,8 @@ impl SolveExecutionBackend for Backend {
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-        super::super::test_kernels::jacobian(source)
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::jacobian(source).map_err(Into::into)
     }
 
     fn compile_assignment_schedule(

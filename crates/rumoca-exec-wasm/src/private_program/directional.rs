@@ -13,19 +13,9 @@ pub fn compile_private_directional_program_wasm(
     table: &SolvePureCallTable,
     seed_len: usize,
 ) -> Result<CompiledPrivateProgramWasm, WasmCompileError> {
-    layout
-        .validate_shape_contract()
-        .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-    let (artifact, seed_offset) =
-        crate::emit::emit_private_directional_module(block, layout, table, seed_len)
-            .map_err(WasmCompileError::Backend)?;
-    CompiledPrivateProgramWasm::from_artifact(
-        artifact,
-        block,
+    single(compile_private_programs_wasm(
+        &[(block, Some(seed_len))],
         layout,
-        Some(SeedStorage {
-            offset: seed_offset as usize / 8,
-            count: seed_len,
-        }),
-    )
+        table,
+    )?)
 }

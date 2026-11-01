@@ -4,7 +4,7 @@ mod runner;
 use super::*;
 use runner::Runner;
 
-fn artifact(storage: arena::ArenaStorage, sinusoid: bool) -> CompiledNativeCallProgramWasm {
+fn artifact(sinusoid: bool) -> CompiledNativeCallProgramWasm {
     let mut ops = vec![
         LinearOp::LoadY { dst: 0, index: 0 },
         LinearOp::LoadP { dst: 1, index: 0 },
@@ -33,25 +33,19 @@ fn artifact(storage: arena::ArenaStorage, sinusoid: bool) -> CompiledNativeCallP
         solve::SolveIntegerDomain::FULL,
     );
     let calls = solve::SolvePureCallTable::builder(arithmetic).finish();
-    emit_module_with_storage(
+    emit_module(
         Ready::private(&block, &layout, &calls).unwrap(),
         &layout,
         true,
-        storage,
     )
     .unwrap()
 }
 
 #[test]
-fn pooled_private_regions_match_defined_arenas_for_ieee_values_without_input_changes() {
-    let pooled = artifact(arena::ArenaStorage::Pooled, false);
-    let defined = artifact(arena::ArenaStorage::Defined, false);
-    assert_eq!(pooled.pooled_arena_bytes(), Some(65536));
-    assert_eq!(defined.pooled_arena_bytes(), None);
-    let mut pool = Runner::new();
-    let first = pool.instance(&pooled, Some(0));
-    let second = pool.instance(&pooled, Some(65536));
-    let plain = pool.instance(&defined, None);
+fn defined_register_memory_keeps_ieee_values_without_input_changes() {
+    let artifact = artifact(false);
+    let mut runner = Runner::new();
+    let call = runner.instance(&artifact);
     for value in [
         0.,
         -0.,
@@ -63,57 +57,38 @@ fn pooled_private_regions_match_defined_arenas_for_ieee_values_without_input_cha
         f64::from_bits(0x7ff8_0123_4567_89ab),
     ] {
         let original = [value, -2.0];
-        let expected = pool.run(plain, original);
-        assert_eq!(pool.run(first, original), expected);
-        assert_eq!(pool.run(second, original), expected);
-        assert_eq!(pool.inputs(), original.map(f64::to_bits));
+        assert_eq!(runner.run(call, original), (0, (value * -2.0).to_bits()));
+        assert_eq!(runner.inputs(), original.map(f64::to_bits));
     }
 }
 
 #[test]
-fn invalid_pooled_bases_fail_before_work_or_publication_and_valid_owner_recovers() {
-    let artifact = artifact(arena::ArenaStorage::Pooled, false);
-    let mut pool = Runner::new();
-    let valid = pool.instance(&artifact, Some(65536));
-    for base in [1u32, 8, 65536 + 8, 2 * 65536, u32::MAX - 7] {
-        let invalid = pool.instance(&artifact, Some(base));
-        let before = pool.private_bytes();
-        assert_eq!(pool.run(invalid, [2., 3.]), (1, 77f64.to_bits()));
-        assert_eq!(pool.private_bytes(), before);
-        assert_eq!(pool.run(valid, [2., 3.]), (0, 6f64.to_bits()));
-    }
+fn nested_math_import_keeps_distinct_kernel_memories_and_outer_old_register_values() {
+    let artifact = artifact(true);
+    let mut runner = Runner::new();
+    let outer = runner.instance(&artifact);
+    let child = runner.instance(&artifact);
+    runner.nested(child);
+    assert_eq!(runner.run(outer, [2., 3.]), (0, 6f64.to_bits()));
+    assert_eq!(runner.nested_calls(), 1);
+    assert_eq!(runner.child_output(), 35f64.to_bits());
+    assert_eq!(runner.inputs(), [2f64.to_bits(), 3f64.to_bits()]);
 }
 
 #[test]
-fn nested_math_import_keeps_distinct_kernel_regions_and_outer_old_register_values() {
-    let artifact = artifact(arena::ArenaStorage::Pooled, true);
-    let mut pool = Runner::new();
-    let outer = pool.instance(&artifact, Some(0));
-    let child = pool.instance(&artifact, Some(65536));
-    pool.nested(child);
-    assert_eq!(pool.run(outer, [2., 3.]), (0, 6f64.to_bits()));
-    assert_eq!(pool.nested_calls(), 1);
-    assert_eq!(pool.child_output(), 35f64.to_bits());
-    assert_eq!(pool.inputs(), [2f64.to_bits(), 3f64.to_bits()]);
-}
-
-#[test]
-fn pooled_instances_do_not_define_memories_or_shift_math_function_indices() {
-    let artifact = artifact(arena::ArenaStorage::Pooled, true);
-    let mut count = 0;
+fn private_modules_define_their_register_memory_and_import_no_arena() {
+    let artifact = artifact(true);
+    let (mut imports, mut memories) = (0, 0);
     for payload in wasmparser::Parser::new(0).parse_all(artifact.module_bytes()) {
         match payload.unwrap() {
-            wasmparser::Payload::ImportSection(imports) => {
-                count = imports.count();
-            }
-            wasmparser::Payload::MemorySection(_) => {
-                panic!("pooled artifact defines private memory")
-            }
+            wasmparser::Payload::ImportSection(section) => imports = section.count(),
+            wasmparser::Payload::MemorySection(section) => memories = section.count(),
             _ => {}
         }
     }
-    assert_eq!(count, 4); // public memory, private memory, immutable base, Math.sin
-    let mut pool = Runner::new();
-    let call = pool.instance(&artifact, Some(65536));
-    assert_eq!(pool.run(call, [2., 3.]), (0, 6f64.to_bits()));
+    // Public memory and the complete math ABI; private registers.
+    assert_eq!((imports as usize, memories), (1 + MathImport::ALL.len(), 1));
+    let mut runner = Runner::new();
+    let call = runner.instance(&artifact);
+    assert_eq!(runner.run(call, [2., 3.]), (0, 6f64.to_bits()));
 }

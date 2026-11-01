@@ -11,18 +11,33 @@ use super::selected_programs::CompleteJacobian;
 
 use super::{EvalSolveError, SolveExecutionBackend};
 
-pub(super) fn required_compiled<T>(
+/// A refusal names the refused program's span only when that span belongs to
+/// this block; otherwise the block's span is used when all programs share one.
+pub(super) fn required_compiled<T, E: Into<super::CompileRefusal>>(
     label: &str,
     source_spans: &[rumoca_core::Span],
-    result: Result<T, String>,
+    result: Result<T, E>,
 ) -> Result<T, EvalSolveError> {
-    result.map_err(|message| EvalSolveError::CompiledExecution {
-        message: format!("required compiled program `{label}` could not be lowered: {message}"),
-        span: unique_span(source_spans),
+    result.map_err(|refusal| {
+        let refusal = refusal.into();
+        let span = refusal
+            .span()
+            .filter(|span| source_spans.contains(span))
+            .or_else(|| unique_span(source_spans));
+        EvalSolveError::CompiledExecution {
+            message: format!(
+                "required compiled program `{label}` could not be lowered: {}",
+                refusal.message()
+            ),
+            span,
+        }
     })
 }
 
-pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
+pub(super) fn optional_compiled<T, E: std::fmt::Display>(
+    label: &str,
+    result: Result<T, E>,
+) -> Option<T> {
     match result {
         Ok(compiled) => Some(compiled),
         Err(error) => {
@@ -227,6 +242,29 @@ pub(super) fn admitted_compiled_error(
 fn unique_span(spans: &[rumoca_core::Span]) -> Option<rumoca_core::Span> {
     let first = spans.first().copied()?;
     spans.iter().all(|span| *span == first).then_some(first)
+}
+
+#[cfg(test)]
+#[test]
+fn required_spans_keep_members_reject_foreign_and_fall_back_to_a_unique_span() {
+    use rumoca_core::{SourceId, Span};
+    let a = Span::from_offsets(SourceId::from_source_name("block.mo"), 10, 20);
+    let b = Span::from_offsets(SourceId::from_source_name("block.mo"), 30, 40);
+    let foreign = Span::from_offsets(SourceId::from_source_name("foreign.mo"), 30, 40);
+    for (spans, offered, expected) in [
+        (vec![a, b], Some(b), Some(b)),
+        (vec![a, b], Some(foreign), None),
+        (vec![a, b], None, None),
+        (vec![a, a], None, Some(a)),
+        (vec![a, a], Some(foreign), Some(a)),
+        (vec![], Some(a), None),
+    ] {
+        let refusal = super::CompileRefusal::new("refusal", offered);
+        let error = required_compiled("block", &spans, Result::<(), _>::Err(refusal)).unwrap_err();
+        assert!(
+            matches!(error, EvalSolveError::CompiledExecution { span, .. } if span == expected)
+        );
+    }
 }
 
 pub(super) fn admitted_output_call(

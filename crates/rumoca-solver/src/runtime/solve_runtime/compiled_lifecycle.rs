@@ -151,6 +151,7 @@ impl CompiledPrograms {
                 backend
                     .compile_expression(&compiled_block)
                     .map(ProgramExecution::Numeric)
+                    .map_err(|refusal| refusal.to_string())
             }
             .map_err(|message| EvalSolveError::CompiledExecution {
                 message: format!(

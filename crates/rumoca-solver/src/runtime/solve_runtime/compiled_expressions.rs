@@ -7,6 +7,50 @@ use rumoca_ir_solve as solve;
 
 use super::CompiledSolveProjectionJacobian;
 
+/// A backend's refusal to compile a program block. When the backend can name
+/// the refused source program, it carries that program's span, so a block of
+/// programs with distinct spans still reports the one that was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompileRefusal {
+    message: String,
+    span: Option<rumoca_core::Span>,
+}
+
+impl CompileRefusal {
+    pub fn new(message: impl Into<String>, span: Option<rumoca_core::Span>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub const fn span(&self) -> Option<rumoca_core::Span> {
+        self.span
+    }
+}
+
+impl From<String> for CompileRefusal {
+    fn from(message: String) -> Self {
+        Self::new(message, None)
+    }
+}
+
+impl From<&str> for CompileRefusal {
+    fn from(message: &str) -> Self {
+        Self::new(message, None)
+    }
+}
+
+impl std::fmt::Display for CompileRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// Receives one program's local outputs after it succeeds and may write the
 /// seed later programs read; see
 /// [`CompiledProgramsCommitting::call_selected_programs_committing`].

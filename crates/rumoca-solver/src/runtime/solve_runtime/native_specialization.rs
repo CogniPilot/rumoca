@@ -89,7 +89,7 @@ impl ScalarExecutionView<'_> {
         let expression = match backend.compile_expression(&block) {
             Ok(expression) => expression,
             Err(error) => {
-                trace_native_execution_failure(program, &error);
+                trace_native_execution_failure(program, &error.to_string());
                 self.scalar
                     .failed_discrete_rows
                     .borrow_mut()
@@ -402,7 +402,7 @@ impl ScalarExecutionView<'_> {
         let expression = match backend.compile_expression(&block) {
             Ok(expression) => expression,
             Err(error) => {
-                trace_native_execution_failure(row, &error);
+                trace_native_execution_failure(row, &error.to_string());
                 failed.borrow_mut().insert(row);
                 return;
             }

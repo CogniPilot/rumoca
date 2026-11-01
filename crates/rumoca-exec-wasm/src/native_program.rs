@@ -39,7 +39,6 @@ pub struct CompiledNativeCallProgramWasm {
     pub(crate) gather_faults: Vec<NativeGatherFault>,
     pub(crate) linear_solve_faults: Vec<NativeLinearSolveFault>,
     pub(crate) math_imports: Vec<&'static str>,
-    pub(crate) pooled_arena_bytes: Option<u32>,
     pub(crate) carried: rumoca_ir_solve::NativeCarriedState,
 }
 
@@ -73,18 +72,23 @@ impl CompiledNativeCallProgramWasm {
         &self.gather_faults
     }
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
+        self.entry_status_error(status, &self.gather_faults, &self.linear_solve_faults)
+    }
+
+    /// Shared helper faults plus the faults of one entry of a shared module.
+    pub(crate) fn entry_status_error(
+        &self,
+        status: u32,
+        gather_faults: &[NativeGatherFault],
+        linear_solve_faults: &[NativeLinearSolveFault],
+    ) -> WasmCompileError {
         if let Some(fault) = self.faults().iter().find(|fault| fault.status == status) {
             return WasmCompileError::TypedSource(fault.clone());
         }
-        if let Some(fault) = self
-            .gather_faults()
-            .iter()
-            .find(|fault| fault.status == status)
-        {
+        if let Some(fault) = gather_faults.iter().find(|fault| fault.status == status) {
             return WasmCompileError::GatherSource(fault.clone());
         }
-        if let Some(fault) = self
-            .linear_solve_faults
+        if let Some(fault) = linear_solve_faults
             .iter()
             .find(|fault| fault.status == status)
         {
@@ -95,11 +99,6 @@ impl CompiledNativeCallProgramWasm {
 
     pub fn math_imports(&self) -> &[&'static str] {
         &self.math_imports
-    }
-    /// Internal browser executors may import a disjoint private arena region.
-    /// Standalone portable native programs keep their defined-memory ABI.
-    pub const fn pooled_arena_bytes(&self) -> Option<u32> {
-        self.pooled_arena_bytes
     }
 }
 

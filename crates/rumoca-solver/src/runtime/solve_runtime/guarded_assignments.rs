@@ -149,7 +149,7 @@ impl ScalarExecutionView<'_> {
                     .insert(program_index, expression);
             }
             Err(error) => {
-                super::trace_native_execution_failure(program_index, &error);
+                super::trace_native_execution_failure(program_index, &error.to_string());
                 self.scalar
                     .failed_guarded_assignments
                     .borrow_mut()

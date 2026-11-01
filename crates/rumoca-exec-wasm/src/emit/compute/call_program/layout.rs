@@ -454,6 +454,14 @@ impl CallProgramPlan {
         Ok(self)
     }
 
+    /// Begin the body of one function: a memoized call is evaluated by its
+    /// first occurrence in that function.
+    pub(in crate::emit) fn begin_function(&self) {
+        for memo in &self.layout.memos {
+            memo.reset();
+        }
+    }
+
     pub(in crate::emit) fn view(&self) -> &CallProgramLayout {
         &self.layout
     }

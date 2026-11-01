@@ -1,6 +1,6 @@
 use super::*;
 
-fn fault_artifact(storage: arena::ArenaStorage) -> CompiledNativeCallProgramWasm {
+fn fault_artifact() -> CompiledNativeCallProgramWasm {
     let span = solve::source_span_from_offsets(11, 44, 50);
     let arithmetic = solve::SolveArithmeticProfile::construct(
         solve::SolveRealFormat::Binary64,
@@ -45,20 +45,18 @@ fn fault_artifact(storage: arena::ArenaStorage) -> CompiledNativeCallProgramWasm
     )
     .unwrap();
     let layout = VarLayout::from_parts(Default::default(), 1, 1);
-    emit_module_with_storage(
+    emit_module(
         Ready::private(&block, &layout, &calls).unwrap(),
         &layout,
         true,
-        storage,
     )
     .unwrap()
 }
 
 #[test]
-fn pooled_prefix_faults_keep_exact_status_span_inputs_and_recovery_vs_defined_memory() {
-    let pooled = fault_artifact(arena::ArenaStorage::Pooled);
-    let defined = fault_artifact(arena::ArenaStorage::Defined);
-    let fault = pooled
+fn prefix_faults_keep_exact_status_span_inputs_and_recovery() {
+    let artifact = fault_artifact();
+    let fault = artifact
         .faults()
         .iter()
         .find(|fault| fault.kind == crate::TypedCallFaultKind::IntegerConversion)
@@ -68,16 +66,15 @@ fn pooled_prefix_faults_keep_exact_status_span_inputs_and_recovery_vs_defined_me
         solve::source_span_from_offsets(11, 44, 50)
     );
     let mut runner = Runner::new();
-    let pooled_call = runner.instance(&pooled, Some(65536));
-    let defined_call = runner.instance(&defined, None);
+    let call = runner.instance(&artifact);
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e100, -3.75] {
         let inputs = [-0., value];
-        let expected = runner.run(defined_call, inputs);
-        let actual = runner.run(pooled_call, inputs);
-        assert_eq!(actual, expected);
+        let actual = runner.run(call, inputs);
         assert_eq!(actual.0 != 0, !value.is_finite() || value.abs() > 1e50);
         if actual.0 != 0 {
             assert_eq!(actual.0 as u32, fault.status);
+        } else {
+            assert_eq!(actual.1, (-0f64).to_bits());
         }
         assert_eq!(runner.inputs(), inputs.map(f64::to_bits));
     }

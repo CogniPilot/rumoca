@@ -79,11 +79,7 @@ pub fn compile_exact_assignment_schedule_wasm(
         crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
             .map_err(WasmCompileError::Backend)?;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let runtime = crate::WasmKernelRuntime::new_with_arena(
-        artifact.module_bytes(),
-        "eval_assignments",
-        artifact.pooled_arena_bytes,
-    )?;
+    let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
     Ok(CompiledExactAssignmentWasm {
         artifact,
         y_count: layout.y_scalars(),

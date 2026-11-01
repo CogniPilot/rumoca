@@ -148,11 +148,17 @@ fn source(prefix: &[LinearOp], mut register: Reg, count: usize) -> Option<Input>
 
 impl Memo {
     /// Whether the occurrence being emitted is the one that evaluates the
-    /// call. Stages and their programs are emitted in execution order and every
-    /// occurrence is a top-level operation of a straight-line program, so the
-    /// first emitted occurrence is the first to run and no later occurrence can
-    /// run before it.
+    /// call. Within one function, stages and their programs are emitted in
+    /// execution order and every occurrence is a top-level operation of a
+    /// straight-line program, so the first emitted occurrence is the first to
+    /// run and no later occurrence can run before it.
     pub(super) fn issue(&self) -> bool {
         !self.issued.replace(true)
+    }
+
+    /// Forget the occurrence issued in an earlier function: functions of one
+    /// module run independently, so none can rely on another's evaluation.
+    pub(super) fn reset(&self) {
+        self.issued.set(false);
     }
 }

@@ -76,11 +76,7 @@ impl CompiledRetainedEventWasm {
         let (artifact, invocations) = crate::emit::emit_event_program_module(&source, layout)
             .map_err(WasmCompileError::Backend)?;
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let runtime = crate::WasmKernelRuntime::new_with_arena(
-            artifact.module_bytes(),
-            "eval_private",
-            artifact.pooled_arena_bytes,
-        )?;
+        let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_private")?;
         #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
         let runtime = crate::host_runtime::HostKernelRuntime::new_named(
             artifact.module_bytes(),

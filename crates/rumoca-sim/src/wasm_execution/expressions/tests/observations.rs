@@ -41,10 +41,10 @@ end PortableWarnings;
     .unwrap();
     let source = SolveExecutionSource::new(lowered.model().clone());
     let model = source.model();
-    let backend = WasmExecutionBackend {
-        layout: model.problem.layout.clone(),
-        calls: Rc::new(model.pure_calls.clone()),
-    };
+    let backend = WasmExecutionBackend::new(
+        model.problem.layout.clone(),
+        Rc::new(model.pure_calls.clone()),
+    );
     let mut messages = Vec::new();
     let mut compiled_count = 0;
     for (kind, block) in [

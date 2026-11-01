@@ -1,8 +1,10 @@
+mod assertion_calls;
 mod authored_models;
 mod conditional_ranges;
 mod linear_solve;
 mod observations;
 mod outer_scalar_fold;
+mod refusal_provenance;
 mod shared_scratch;
 mod tuples;
 use super::*;
@@ -13,10 +15,10 @@ use rumoca_solver::SolveExecutionBackend;
 #[test]
 fn wasm_backend_rejects_a_foreign_call_table_during_context_admission() {
     let model = rumoca_ir_solve::SolveModel::default();
-    let backend = WasmExecutionBackend {
-        layout: model.problem.layout.clone(),
-        calls: Rc::new(model.pure_calls.clone()),
-    };
+    let backend = WasmExecutionBackend::new(
+        model.problem.layout.clone(),
+        Rc::new(model.pure_calls.clone()),
+    );
     assert!(backend.validate_model_context(&model).is_ok());
     assert!(backend.validate_model_context(&model.clone()).is_ok());
     let foreign = rumoca_ir_solve::SolveModel::default();
@@ -39,10 +41,10 @@ fn wasm_backend_rejects_a_foreign_call_table_during_context_admission() {
 #[test]
 fn wasm_backend_rejects_a_changed_layout_with_the_original_call_owner() {
     let model = rumoca_ir_solve::SolveModel::default();
-    let backend = WasmExecutionBackend {
-        layout: model.problem.layout.clone(),
-        calls: Rc::new(model.pure_calls.clone()),
-    };
+    let backend = WasmExecutionBackend::new(
+        model.problem.layout.clone(),
+        Rc::new(model.pure_calls.clone()),
+    );
     let mut changed = model.clone();
     changed.problem.layout = VarLayout::from_parts(Default::default(), 1, 0);
     assert!(changed.pure_calls.shares_table_owner(&model.pure_calls));
@@ -69,10 +71,10 @@ fn wasm_backend_selection_retains_the_declared_engine_for_a_supported_model() {
             .unwrap()
             .is_some()
     );
-    let backend = Rc::new(WasmExecutionBackend {
-        layout: lowered.model().problem.layout.clone(),
-        calls: Rc::new(lowered.model().pure_calls.clone()),
-    });
+    let backend = Rc::new(WasmExecutionBackend::new(
+        lowered.model().problem.layout.clone(),
+        Rc::new(lowered.model().pure_calls.clone()),
+    ));
     rumoca_solver::SolveRuntime::new_with_execution_backend(lowered.model(), Some(backend))
         .expect("the portable backend must prepare the entire supported model");
 }
@@ -146,6 +148,6 @@ fn complete_expression_owns_code_for_every_original_program() {
         compiled
             .selected
             .iter()
-            .all(|entry| !entry.0.module_bytes().is_empty())
+            .all(|entry| !entry.0.code().unwrap().module_bytes().is_empty())
     );
 }

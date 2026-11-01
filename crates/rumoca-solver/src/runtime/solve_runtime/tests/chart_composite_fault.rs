@@ -37,7 +37,7 @@ impl SolveExecutionBackend for Backend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         Ok(Rc::new(PartialFault {
             source: source.clone(),
             calls: self.calls.clone(),

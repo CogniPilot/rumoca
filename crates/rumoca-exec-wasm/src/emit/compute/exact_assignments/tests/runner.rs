@@ -1,7 +1,5 @@
 use super::*;
-use wasmi::{
-    Caller, Engine, Global, Linker, Memory, MemoryType, Module, Mutability, Store, TypedFunc, Val,
-};
+use wasmi::{Caller, Engine, Linker, Memory, MemoryType, Module, Store, TypedFunc};
 
 type Entry = TypedFunc<(i32, i32, f64, i32, i32), i32>;
 
@@ -16,7 +14,6 @@ pub(super) struct Runner {
     engine: Engine,
     store: Store<State>,
     public: Memory,
-    private: Memory,
 }
 
 impl Runner {
@@ -24,33 +21,18 @@ impl Runner {
         let engine = Engine::default();
         let mut store = Store::new(&engine, State::default());
         let public = Memory::new(&mut store, MemoryType::new(1, None)).unwrap();
-        let private = Memory::new(&mut store, MemoryType::new(2, None)).unwrap();
         Self {
             engine,
             store,
             public,
-            private,
         }
     }
 
-    pub(super) fn instance(
-        &mut self,
-        artifact: &CompiledNativeCallProgramWasm,
-        base: Option<u32>,
-    ) -> Entry {
+    pub(super) fn instance(&mut self, artifact: &CompiledNativeCallProgramWasm) -> Entry {
         let module = Module::new(&self.engine, artifact.module_bytes()).unwrap();
         let mut linker = Linker::new(&self.engine);
         linker.define("env", "memory", self.public).unwrap();
-        if let Some(base) = base {
-            linker
-                .define("env", "rumoca_private_arena", self.private)
-                .unwrap();
-            let global = Global::new(&mut self.store, Val::I32(base as i32), Mutability::Const);
-            linker
-                .define("env", "rumoca_private_arena_base", global)
-                .unwrap();
-        }
-        linker.func_wrap("env", "sin", nested_sin).unwrap();
+        define_math(&mut linker);
         linker
             .instantiate(&mut self.store, &module)
             .unwrap()
@@ -72,9 +54,6 @@ impl Runner {
 
     pub(super) fn inputs(&self) -> [u64; 2] {
         [self.bits(0), self.bits(32)]
-    }
-    pub(super) fn private_bytes(&self) -> Vec<u8> {
-        self.private.data(&self.store).to_vec()
     }
     pub(super) fn child_output(&self) -> u64 {
         self.bits(8192)
@@ -111,4 +90,20 @@ fn nested_sin(mut caller: Caller<'_, State>, value: f64) -> f64 {
         caller.data_mut().inside = false;
     }
     value.sin()
+}
+
+/// The complete math ABI, as every host defines it; `sin` runs a child entry.
+fn define_math(linker: &mut Linker<State>) {
+    use crate::emit::MathImport;
+    for import in MathImport::ALL {
+        let name = import.symbol();
+        let binary = move |x: f64, y: f64| crate::math_abi::evaluate(import, x, y);
+        let unary = move |x: f64| crate::math_abi::evaluate(import, x, 0.0);
+        match import {
+            MathImport::Sin => linker.func_wrap("env", name, nested_sin),
+            MathImport::Pow | MathImport::Atan2 => linker.func_wrap("env", name, binary),
+            _ => linker.func_wrap("env", name, unary),
+        }
+        .unwrap();
+    }
 }

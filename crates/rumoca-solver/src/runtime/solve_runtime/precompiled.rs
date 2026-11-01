@@ -165,7 +165,7 @@ impl SolveExecutionBackend for PrecompiledSolveBackend {
     fn compile_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         self.expressions
             .get(source)
             .ok_or_else(|| "no precompiled expression hook for this source owner".into())
@@ -174,7 +174,7 @@ impl SolveExecutionBackend for PrecompiledSolveBackend {
     fn compile_jacobian_expression(
         &self,
         source: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
         self.jacobians
             .get(source)
             .ok_or_else(|| "no precompiled Jacobian hook for this source owner".into())

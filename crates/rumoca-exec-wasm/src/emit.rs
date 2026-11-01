@@ -7,14 +7,16 @@ mod gather;
 mod linear_solve;
 mod seed;
 mod tensor;
-pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
 pub(super) use compute::{
-    emit_event_program_module, emit_exact_assignment_module, emit_private_directional_module,
-    emit_private_program_module,
+    AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
+    emit_exact_assignment_module, emit_private_entries_modules,
 };
+pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
 pub(super) use compute::{
     emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
 };
+#[cfg(test)]
+pub(super) use compute::{emit_private_directional_module, emit_private_program_module};
 
 use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,12 +63,6 @@ pub(crate) enum MathImport {
 
 impl MathImport {
     /// The complete math ABI of every emitted module, in declaration order.
-    #[cfg(any(
-        test,
-        feature = "component-build",
-        feature = "host-engine",
-        all(target_arch = "wasm32", target_os = "unknown")
-    ))]
     pub(crate) const ALL: [Self; 15] = [
         Self::Abs,
         Self::Sin,
@@ -191,15 +187,6 @@ fn add_import_section(
     imports: &[MathImport],
     type_ids: &TypeIds,
 ) -> ImportCatalog {
-    add_import_section_with_arena(module, imports, type_ids, None)
-}
-
-fn add_import_section_with_arena(
-    module: &mut Module,
-    imports: &[MathImport],
-    type_ids: &TypeIds,
-    arena: Option<arena::ArenaPlan>,
-) -> ImportCatalog {
     let mut import_section = ImportSection::new();
     import_section.import(
         "env",
@@ -212,9 +199,6 @@ fn add_import_section_with_arena(
             page_size_log2: None,
         }),
     );
-    if let Some(arena) = arena {
-        arena.add_imports(&mut import_section);
-    }
     let mut function_indices = BTreeMap::new();
     for import in imports {
         let type_id = if import.is_binary() {

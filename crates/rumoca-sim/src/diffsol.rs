@@ -515,9 +515,9 @@ mod native_policy_tests {
     use rumoca_compile::compile::{Session, SessionConfig};
     use rumoca_ir_solve as solve;
     use rumoca_solver::{
-        CompiledSolveAssignmentSchedule, CompiledSolveEventTransaction, CompiledSolveExpression,
-        CompiledSolveJacobianExpression, SimExecutionPolicy, SimOptions, SolveExecutionBackend,
-        fmi_me::MeExecutionBackend,
+        CompileRefusal, CompiledSolveAssignmentSchedule, CompiledSolveEventTransaction,
+        CompiledSolveExpression, CompiledSolveJacobianExpression, SimExecutionPolicy, SimOptions,
+        SolveExecutionBackend, fmi_me::MeExecutionBackend,
     };
 
     use super::{build_simulation_artifact, instantiate_prepared_simulation, simulate_artifact};
@@ -815,7 +815,7 @@ mod native_policy_tests {
         fn compile_expression(
             &self,
             block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        ) -> Result<Rc<dyn CompiledSolveExpression>, CompileRefusal> {
             NativeCallCounters::bump(&self.counters.expression_compiles);
             self.inner.compile_expression(block).map(|inner| {
                 Rc::new(CountingExpression {
@@ -828,7 +828,7 @@ mod native_policy_tests {
         fn compile_jacobian_expression(
             &self,
             block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, CompileRefusal> {
             NativeCallCounters::bump(&self.counters.jacobian_compiles);
             self.inner.compile_jacobian_expression(block).map(|inner| {
                 Rc::new(CountingJacobian {
@@ -1113,14 +1113,14 @@ end DeclinedEvent;
         fn compile_expression(
             &self,
             _block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        ) -> Result<Rc<dyn CompiledSolveExpression>, CompileRefusal> {
             Ok(Rc::new(FailingCompiled))
         }
 
         fn compile_jacobian_expression(
             &self,
             _block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, CompileRefusal> {
             Ok(Rc::new(FailingCompiled))
         }
 
@@ -1151,14 +1151,14 @@ end DeclinedEvent;
         fn compile_expression(
             &self,
             block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        ) -> Result<Rc<dyn CompiledSolveExpression>, CompileRefusal> {
             self.inner.compile_expression(block)
         }
 
         fn compile_jacobian_expression(
             &self,
             block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, CompileRefusal> {
             self.inner.compile_jacobian_expression(block)
         }
 
@@ -1189,15 +1189,15 @@ end DeclinedEvent;
         fn compile_expression(
             &self,
             _block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
-            Err(FORCED_DECLINE.to_string())
+        ) -> Result<Rc<dyn CompiledSolveExpression>, CompileRefusal> {
+            Err(FORCED_DECLINE.to_string().into())
         }
 
         fn compile_jacobian_expression(
             &self,
             _block: &solve::ScalarProgramBlock,
-        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
-            Err(FORCED_DECLINE.to_string())
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, CompileRefusal> {
+            Err(FORCED_DECLINE.to_string().into())
         }
 
         fn compile_assignment_schedule(

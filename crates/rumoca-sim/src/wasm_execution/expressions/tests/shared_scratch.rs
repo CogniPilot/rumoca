@@ -66,7 +66,7 @@ fn compile(programs: Vec<Vec<LinearOp>>, directional: bool) -> WasmExpression {
 }
 
 fn cells(program: &selected::Program) -> usize {
-    (program.0.scratch_bytes() as usize).div_ceil(8)
+    selected::scratch_cells(program.0.code().unwrap()).unwrap()
 }
 
 fn bits(values: &[f64]) -> Vec<u64> {
@@ -89,7 +89,13 @@ fn assert_interleaved_matches_alone(directional: bool) {
         .map(|program| cells(program))
         .max()
         .unwrap();
-    assert!(cells(&shared.selected[1]) < widest);
+    // Entries of one module share its storage, so each reports the widest.
+    assert!(
+        shared
+            .selected
+            .iter()
+            .all(|program| cells(program) == widest)
+    );
     assert_eq!(buffer.borrow().len(), widest);
     let alone = programs
         .into_iter()

@@ -6,7 +6,7 @@ impl SolveExecutionBackend for RefusingTargetBackend {
     fn compile_expression(
         &self,
         _: &solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
         Err("private target tuple is unsupported".into())
     }
 }
