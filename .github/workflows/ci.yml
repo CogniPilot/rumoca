@@ -1431,6 +1431,8 @@ jobs:
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_band_table.json
+            target/msl/results/sim_traces/omc/Modelica.Electrical.Machines.Examples.ControlledDCDrives.SpeedControlledDCPM.json
+            target/msl/results/model_worker/Modelica.Electrical.Machines.Examples.ControlledDCDrives.SpeedControlledDCPM/sim-trace.json
           if-no-files-found: error
           retention-days: 7
 
