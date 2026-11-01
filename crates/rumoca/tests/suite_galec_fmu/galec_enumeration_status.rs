@@ -208,7 +208,7 @@ fn enumeration_literal_in_when_equation_resolves_to_its_ordinal() {
     // `start = Mode.Idle` is the first literal, so Startup leaves ordinal 1;
     // `Mode.Armed` is the second, so the when body leaves ordinal 2.
     assert_eq!(
-        run_driver(dir.path(), "GalecEnumWhen", ENUM_IN_WHEN_DRIVER),
+        run_driver(dir.path(), "GalecEnumWhen", ENUM_IN_WHEN_DRIVER).replace("\r\n", "\n"),
         "startup 1\nstep 2\n"
     );
 }
@@ -253,7 +253,8 @@ fn enumeration_mode_logic_in_a_when_equation_reaches_embedded_c() {
             dir.path(),
             "Flight_GalecEnumModeLogic",
             ENUM_MODE_LOGIC_DRIVER
-        ),
+        )
+        .replace("\r\n", "\n"),
         "startup 1 0.00\n\
          command 0.00: 1 0.00\n\
          command 1.00: 2 0.00\n\
