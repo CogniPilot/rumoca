@@ -4,23 +4,16 @@
 ACCEPTED
 
 ## Summary
-Defines the mandatory PR review process and the rules that the GitHub PR
-template (`.github/pull_request_template.md`) must implement. The template
-is the canonical author/reviewer artifact; this spec defines the rules
-the template enforces.
+Defines mandatory review rules for the canonical `.github/pull_request_template.md` artifact.
 
 ## Motivation
 
-A consistent PR review process catches defects before merge, keeps code
-accessible to humans and AI assistants, and enforces spec compliance.
-Mirroring the PR template against this spec gives one source of truth.
+Consistent reviews catch defects, preserve readability, and enforce spec compliance.
 
 ## PR Template Alignment
 
-The repository PR template at `.github/pull_request_template.md` MUST
-contain a section for every mandatory rule below. Section names in this
-spec mirror the template's section names so reviewers can map them
-one-to-one.
+The PR template MUST contain a section for every mandatory rule below,
+mapped by this table.
 
 | SPEC_0025 §       | PR template section       |
 |-------------------|---------------------------|
@@ -90,9 +83,8 @@ Pre-landing gate (every tip that lands MUST pass it, with coverage):
 cargo xtask verify gate --rev <tip> --coverage
 ```
 
-It snapshots the committed revision, runs the blocking steps below with CI's
-flags in a fresh Cargo target directory, and prints one `GATE_OK` or
-`GATE_FAILED` line naming the revision and its log.
+It runs CI's blocking steps on a committed snapshot in a fresh Cargo target,
+printing `GATE_OK` or `GATE_FAILED` with revision and log.
 
 Standard verification commands (all merged code MUST pass):
 
@@ -226,9 +218,8 @@ net_added_lines:
 
 ### 7. Maintainability Quick Reference
 
-See SPEC_0021 for the authoritative function-length, nesting, and arg-count
-limits. The workspace `Cargo.toml` declares them as clippy `deny` lints, so
-they are enforced by §4 commands.
+SPEC_0021 defines function-length, nesting, and argument limits; workspace
+Clippy `deny` lints enforce them through §4 commands.
 
 ## CI Enforcement
 
