@@ -4,7 +4,7 @@ High-level release summary by `0.x` line. Patch releases are rolled up into thei
 
 ## 0.10.4
 
-See [release notes](docs/releases/0.10.4.md) for changes since 0.10.3, including external-call diagnostics, the optional `velimplicit` solver, compiler fixes and batched stdio values.
+See [release notes](docs/releases/0.10.4.md) for changes since 0.10.3, including external-call diagnostics, the optional `velimplicit` solver, exact FMI directional and adjoint derivatives, constraining-clause modifiers on replaceable declarations, `reinit` and initialization fixes, GALEC and generated-C fixes, batched stdio values, and lower memory use and preparation time for large models.
 
 ## 0.10.3
 
