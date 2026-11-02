@@ -2,7 +2,7 @@ use rumoca_core::{IndexBinderProvenance, Span, StructuredIndexBinder, Structured
 use rumoca_ir_solve::*;
 use std::num::NonZeroU64;
 
-pub fn span() -> Span {
+pub(crate) fn span() -> Span {
     Span::from_offsets(
         rumoca_core::SourceId::from_source_name("tensor_expansion_fixture.mo"),
         1,
@@ -10,11 +10,11 @@ pub fn span() -> Span {
     )
 }
 
-pub fn arithmetic() -> SolveArithmeticProfile {
+pub(crate) fn arithmetic() -> SolveArithmeticProfile {
     SolveArithmeticProfile::construct(SolveRealFormat::Binary64, SolveIntegerDomain::FULL)
 }
 
-pub fn tensor(shape: Vec<u32>) -> SolveValueType {
+pub(crate) fn tensor(shape: Vec<u32>) -> SolveValueType {
     SolveValueType::tensor(SolveScalarType::real(arithmetic()), shape).unwrap()
 }
 
@@ -53,13 +53,13 @@ fn table(
     .unwrap()
 }
 
-pub struct TypedFixture {
-    pub table: SolvePureCallTable,
-    pub input: Vec<f64>,
-    pub expected: Vec<f64>,
+pub(crate) struct TypedFixture {
+    pub(crate) table: SolvePureCallTable,
+    pub(crate) input: Vec<f64>,
+    pub(crate) expected: Vec<f64>,
 }
 
-pub fn literal(n: u32) -> TypedFixture {
+pub(crate) fn literal(n: u32) -> TypedFixture {
     let at = span();
     TypedFixture {
         table: table(vec![], tensor(vec![n]), |b, _, outputs| {
@@ -74,7 +74,7 @@ pub fn literal(n: u32) -> TypedFixture {
     }
 }
 
-pub fn map(n: u32) -> TypedFixture {
+pub(crate) fn map(n: u32) -> TypedFixture {
     let at = span();
     TypedFixture {
         table: table(
@@ -101,7 +101,7 @@ pub fn map(n: u32) -> TypedFixture {
     }
 }
 
-pub fn fold(n: u32) -> TypedFixture {
+pub(crate) fn fold(n: u32) -> TypedFixture {
     let at = span();
     TypedFixture {
         table: table(
@@ -130,7 +130,7 @@ pub fn fold(n: u32) -> TypedFixture {
     }
 }
 
-pub fn row(n: u32, stride: usize) -> ScalarProgramBlock {
+pub(crate) fn row(n: u32, stride: usize) -> ScalarProgramBlock {
     let count = n as usize;
     ScalarProgramBlock::with_output_indices(
         vec![vec![
@@ -156,7 +156,7 @@ pub fn row(n: u32, stride: usize) -> ScalarProgramBlock {
     .unwrap()
 }
 
-pub fn small_product() -> TypedFixture {
+pub(crate) fn small_product() -> TypedFixture {
     let at = span();
     TypedFixture {
         table: table(
@@ -174,7 +174,7 @@ pub fn small_product() -> TypedFixture {
     }
 }
 
-pub fn fused(n: u32) -> TypedFixture {
+pub(crate) fn fused(n: u32) -> TypedFixture {
     let at = span();
     TypedFixture {
         table: table(
