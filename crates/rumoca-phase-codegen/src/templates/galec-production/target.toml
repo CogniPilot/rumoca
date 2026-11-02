@@ -1,5 +1,5 @@
 version = 1
-ir = "algorithm-code"
+ir = "algorithm-block"
 name = "galec-production"
 # Conformance ladder (SPEC_0034 GAL-021/GAL-024): this target earns the
 # "eFMI Production Code export" rung — one schema-valid eFMU container

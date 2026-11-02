@@ -157,7 +157,7 @@ impl<'model> EvalFrame<'model, '_> {
             &mut FrameStorage::default(),
             self.mode,
             self.chain,
-            self.owner,
+            (self.owner, self.block),
         )?;
         let Some(values) = self.accept_completion(completion) else {
             return Ok(());

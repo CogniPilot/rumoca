@@ -30,6 +30,11 @@ enum CheckedView {
     CheckedFmiComponent,
     /// The GALEC Algorithm Code projection.
     AlgorithmCodeProjection,
+    /// The checked GALEC package together with the Solve algorithm block it
+    /// refines into (`lower_algorithm_block`, whose checks refuse a block the
+    /// Solve evaluator could not run exactly), admitted by the manifest's
+    /// `[capabilities]` table. Its C is printed from the Solve block.
+    CheckedSolveAlgorithmBlock,
     /// The materialized Flat scalar-equation view, whose refusal is
     /// `rumoca::codegen::EC007`.
     MaterializedFlatEquations,
@@ -51,6 +56,7 @@ const ALL_CHECKED_VIEWS: &[CheckedView] = &[
     CheckedView::CheckedSolveProblem,
     CheckedView::CheckedFmiComponent,
     CheckedView::AlgorithmCodeProjection,
+    CheckedView::CheckedSolveAlgorithmBlock,
     CheckedView::MaterializedFlatEquations,
     CheckedView::ResolvedAstTree,
     CheckedView::SelfDescribing,
@@ -65,6 +71,7 @@ impl CheckedView {
             Self::CheckedSolveProblem => Some(TargetTemplateIr::Solve),
             Self::CheckedFmiComponent => Some(TargetTemplateIr::Fmi),
             Self::AlgorithmCodeProjection => Some(TargetTemplateIr::AlgorithmCode),
+            Self::CheckedSolveAlgorithmBlock => Some(TargetTemplateIr::AlgorithmBlock),
             Self::MaterializedFlatEquations => Some(TargetTemplateIr::Flat),
             Self::ResolvedAstTree => Some(TargetTemplateIr::Ast),
             Self::SelfDescribing => None,
@@ -83,6 +90,7 @@ impl CheckedView {
                 | Self::CheckedSolveProblem
                 | Self::CheckedFmiComponent
                 | Self::AlgorithmCodeProjection
+                | Self::CheckedSolveAlgorithmBlock
         )
     }
 }
@@ -94,13 +102,13 @@ const BUILTIN_TARGET_SURFACES: &[(&str, CheckedView)] = &[
     ("c-ode", CheckedView::CheckedSolveProblem),
     ("cuda-ode", CheckedView::CheckedSolveProblem),
     ("dae-modelica", CheckedView::CheckedDaeProjection),
-    ("embedded-c-galec", CheckedView::AlgorithmCodeProjection),
+    ("embedded-c-galec", CheckedView::CheckedSolveAlgorithmBlock),
     ("flat-modelica", CheckedView::MaterializedFlatEquations),
     ("fmi2", CheckedView::CheckedFmiComponent),
     ("fmi3", CheckedView::CheckedFmiComponent),
     ("fmi-ls-wasm", CheckedView::CheckedFmiComponent),
     ("galec", CheckedView::AlgorithmCodeProjection),
-    ("galec-production", CheckedView::AlgorithmCodeProjection),
+    ("galec-production", CheckedView::CheckedSolveAlgorithmBlock),
     ("jax-ode", CheckedView::CheckedSolveProblem),
     ("mlir", CheckedView::CheckedSolveProblem),
     ("rust-fixed-ode", CheckedView::CheckedSolveProblem),

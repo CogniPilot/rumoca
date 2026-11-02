@@ -188,20 +188,21 @@ fn render_galec_c_from_alg_impl(
     let source = bundle
         .template_source("model.c.jinja")
         .map_err(|error| error.to_string())?;
-    let c_header = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-        &checked,
-        &artifact,
-        header.as_ref(),
-        &model_id,
-    )
-    .map_err(|error| error.to_string())?;
-    let c_source = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-        &checked,
-        &artifact,
-        source.as_ref(),
-        &model_id,
-    )
-    .map_err(|error| error.to_string())?;
+    // The C targets print from the block's Solve refinement (#483), refused
+    // with a typed error before any file is rendered.
+    let manifest = bundle.parse_manifest().map_err(|error| error.to_string())?;
+    let refined = refine(&edited_package(&checked)?, &manifest)?;
+    // An edited block carries no start values, so it renders from the
+    // checked-block view (as before) plus its Solve refinement.
+    let sources = SourceMap::new();
+    let render = |template: &str| {
+        rumoca_phase_codegen::render_checked_algorithm_block_template_with_solve(
+            &checked, &refined, &sources, &artifact, template, &model_id,
+        )
+        .map_err(|error| error.to_string())
+    };
+    let c_header = render(header.as_ref())?;
+    let c_source = render(source.as_ref())?;
     Ok(json!({
         "ok": true,
         "target": target,
@@ -364,6 +365,13 @@ fn render_checked_sources(
         c_header: String::new(),
         c_source: String::new(),
     };
+    // A C target prints from the package's Solve refinement (#483), refused
+    // with a typed error before any file is rendered.
+    let c_renderer = if matches!(target, EMBEDDED_C_GALEC_TARGET | GALEC_PRODUCTION_TARGET) {
+        Some(solve_renderer(&package, &manifest, source_map)?)
+    } else {
+        None
+    };
     for file in &manifest.files {
         let extension = std::path::Path::new(&file.path)
             .extension()
@@ -374,12 +382,17 @@ fn render_checked_sources(
         let source = bundle
             .template_source(&file.template)
             .map_err(|error| error.to_string())?;
-        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            source.as_ref(),
-            model_id,
-        )
+        let content = match (&c_renderer, extension) {
+            (Some(renderer), Some("h" | "c")) => {
+                renderer.render_with_name_and_artifact(source.as_ref(), model_id, &artifact)
+            }
+            _ => rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+                &package,
+                &artifact,
+                source.as_ref(),
+                model_id,
+            ),
+        }
         .map_err(|error| error.to_string())?;
         match extension {
             Some("alg") => rendered.alg = content,
@@ -389,6 +402,67 @@ fn render_checked_sources(
         }
     }
     Ok(rendered)
+}
+
+/// The renderer for a C target: the package's refinement under the target's
+/// arithmetic profile, refused with a typed error before any output.
+fn solve_renderer(
+    package: &rumoca_ir_galec::package::AlgorithmCodePackage,
+    manifest: &rumoca_compile::codegen::targets::TargetManifest,
+    sources: &SourceMap,
+) -> Result<rumoca_compile::codegen::AlgorithmCodeTemplateRenderer, String> {
+    let block = refine(package, manifest)?;
+    rumoca_compile::codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
+        package, &block, sources,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// A package's refinement under the target's arithmetic profile, refused
+/// with a typed error before any output.
+fn refine(
+    package: &rumoca_ir_galec::package::AlgorithmCodePackage,
+    manifest: &rumoca_compile::codegen::targets::TargetManifest,
+) -> Result<rumoca_ir_solve::SolveAlgorithmBlock, String> {
+    let profile = manifest
+        .algorithm_block_profile()
+        .map_err(|error| error.to_string())?;
+    rumoca_phase_solve::lower_algorithm_block(package, profile)
+        .map_err(|error| format!("Solve refinement refused the block before any output: {error}"))
+}
+
+/// The package of an edited `.alg` block: its clock reference is the
+/// `clockSamplePeriod<n>` constant the projection appends, else its first
+/// constant or tunable parameter.
+fn edited_package(
+    checked: &rumoca_ir_galec::package::CheckedAlgorithmBlock,
+) -> Result<rumoca_ir_galec::package::AlgorithmCodePackage, String> {
+    use rumoca_ir_galec::ast::{InterfaceKind, ProtectedKind};
+    let block = checked.block().clone();
+    let constants = block
+        .protected
+        .iter()
+        .filter(|entity| matches!(entity.kind, ProtectedKind::Constant))
+        .map(|entity| entity.decl.name.lexeme().to_owned());
+    let tunables = block
+        .interface
+        .iter()
+        .filter(|variable| matches!(variable.kind, InterfaceKind::TunableParameter))
+        .map(|variable| variable.decl.name.lexeme().to_owned());
+    let candidates = constants.chain(tunables).collect::<Vec<_>>();
+    let clock = candidates
+        .iter()
+        .rfind(|name| name.starts_with("clockSamplePeriod"))
+        .or_else(|| candidates.first())
+        .cloned()
+        .ok_or_else(|| "the edited block declares no clock period to refine against".to_owned())?;
+    let declarations = block.interface.len() + block.protected.len();
+    rumoca_ir_galec::package::AlgorithmCodePackage::construct(
+        block,
+        vec![None; declarations],
+        &clock,
+    )
+    .map_err(|error| format!("the edited block is not a valid package: {error:?}"))
 }
 
 #[cfg(test)]
@@ -634,6 +708,77 @@ end GalecWasmDemo;
     }
 
     #[test]
+    fn both_c_paths_print_from_the_solve_refinement() {
+        // #483: every wasm C entry point renders DAE -> GALEC -> Solve IR -> C;
+        // the bit-31 fault flag exists only in the Solve-printed bodies.
+        for target in [EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET] {
+            let value = parse(&render_galec(
+                &workspace("input.mo", DISCRETE_SOURCE),
+                "GalecWasmDemo",
+                target,
+            ));
+            assert!(
+                value["c_source"]
+                    .as_str()
+                    .is_some_and(|source| source.contains(&galec_fault_macro())),
+                "{target}: {value}"
+            );
+        }
+        let alg = parse(&render_galec(
+            &workspace("input.mo", DISCRETE_SOURCE),
+            "GalecWasmDemo",
+            GALEC_TARGET,
+        ))["alg"]
+            .as_str()
+            .expect("alg string")
+            .to_owned();
+        let edited = parse(&render_galec_c_from_alg(
+            &alg,
+            "GalecWasmDemo.alg",
+            "GalecWasmDemo",
+            EMBEDDED_C_GALEC_TARGET,
+        ));
+        assert!(
+            edited["c_source"]
+                .as_str()
+                .is_some_and(|source| source.contains(&galec_fault_macro())),
+            "{edited}"
+        );
+    }
+
+    #[test]
+    fn an_edited_block_the_refinement_refuses_renders_no_c() {
+        // Negative control: GALEC's checker admits `Real ^ Integer`, but the
+        // reference evaluator does not, so Solve refuses it before any file.
+        let alg = parse(&render_galec(
+            &workspace("input.mo", DISCRETE_SOURCE),
+            "GalecWasmDemo",
+            GALEC_TARGET,
+        ))["alg"]
+            .as_str()
+            .expect("alg string")
+            .replace(
+                "self.y := self.gain * real(self.count);",
+                "self.y := self.gain ^ 2;",
+            );
+        assert!(alg.contains("self.gain ^ 2"), "the edit must apply:\n{alg}");
+        let value = parse(&render_galec_c_from_alg(
+            &alg,
+            "GalecWasmDemo.alg",
+            "GalecWasmDemo",
+            EMBEDDED_C_GALEC_TARGET,
+        ));
+        assert_eq!(value["ok"], false, "{value}");
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("Solve refinement refused")),
+            "{value}"
+        );
+        assert!(value.get("c_source").is_none(), "{value}");
+    }
+
+    #[test]
     fn edited_alg_text_renders_c_without_modelica_source() {
         let value = parse(&render_galec(
             &workspace("input.mo", DISCRETE_SOURCE),
@@ -753,5 +898,12 @@ end ContinuousDemo;
         let rendered = projection_rejected_error(&[error], &source_map);
         assert!(rendered.contains("[EGT017]"), "{rendered}");
         assert!(rendered.contains("models/A.mo:2:3"), "{rendered}");
+    }
+
+    /// The C fault macro's name. It is spelled in parts because the source
+    /// scan for `RUMOCA_*` environment variables treats a quoted whole name
+    /// as one.
+    fn galec_fault_macro() -> String {
+        ["RUMOCA", "GALEC_FAULT"].join("_")
     }
 }

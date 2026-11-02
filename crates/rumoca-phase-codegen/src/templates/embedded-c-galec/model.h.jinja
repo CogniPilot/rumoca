@@ -1,72 +1,103 @@
-{#- Every emitted C identifier comes from the single symbol policy in
-    `embedded-c-galec/symbols.jinja`, registered here as
-    `galec-c-symbols.jinja` and shared by the header, the source, and the
-    Production Code manifest. This template declares no reserved list and no
-    allocation of its own: a second declaration site is what renames the same
-    variable differently across artifacts. -#}
+{#- #483: the header for the Solve-printed source. The block struct keeps
+    `model.h.jinja`'s declarations, names, types and order, then the status
+    word; the instance-owned working memory that follows is generated from
+    the Solve programs (one frame per method, overlaid in a union because the
+    three methods never run together on one State, one frame per function,
+    and the Startup backup). Nothing is on the stack except scalar
+    temporaries. -#}
 {%- import "galec-c-symbols.jinja" as c_symbol_policy -%}
-{%- import "galec-c-scratch.jinja" as scratch_policy -%}
+{%- import "galec-solve-c.jinja" as solve_c -%}
 {%- set c_symbols = c_symbol_policy.symbols -%}
 {%- set c_state_symbols = c_symbol_policy.state_symbols -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
+{%- if solve_block.arithmetic.real_format != "binary32" -%}{{ fail("unsupported-feature:embedded-c-solve:real-format") }}{%- endif -%}
+{%- set integers = solve_block.arithmetic.integer_domain -%}
+{%- if integers.minimum|string != "-2147483648" or integers.maximum|string != "2147483647" -%}{{ fail("unsupported-feature:embedded-c-solve:integer-domain") }}{%- endif -%}
 {%- macro c_type(kind) -%}
 {%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
 {%- endmacro -%}
-{#- The block's working memory is a decision taken in the checked view, not
-    here: `scratch_layout` says which regions exist, which share storage, and
-    the checked slot-byte budget. The shared scratch partial is the one
-    declaration site for the concrete instance-owned C types. -#}
-{%- set scratch_layout = algorithm_code.package.block.scratch_layout -%}
 {% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
- * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024), printed from the
+ * refined Solve block (DAE -> GALEC -> Solve IR -> C).
  * NOT an eFMI Production Code container.
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed.
  * Target syntax and layout are owned by this template. */{% endblock %}
+/* Status bit 31 (RUMOCA_GALEC_FAULT) is a Rumoca extension, not an eFMI
+ * ErrorSignalStatus bit: the method faulted and returned early. */
 #ifndef RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
 #define RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
 
 #include <stdbool.h>
 #include <stdint.h>
-/* Compile-time deployment accounting (SPEC_0034 GAL-039).
- * `CHECKED_SCRATCH_SLOT_BYTES` excludes target ABI padding; use
- * `sizeof({{ c_model }}State)` for the exact compiler/target instance cost.
- * Auxiliary mutable storage is zero: working memory is instance-owned. */
+
+#define RUMOCA_GALEC_FAULT UINT32_C(0x80000000)
 #define RUMOCA_{{ c_model | upper }}_DISTINCT_INSTANCE_REENTRANT UINT32_C(1)
-{%- if scratch_layout.bytes is none %}
-{{ fail("unsupported-feature:embedded-c-scratch-size") }}
-{%- else %}
-#define RUMOCA_{{ c_model | upper }}_CHECKED_SCRATCH_SLOT_BYTES UINT32_C({{ scratch_layout.bytes }})
-{%- endif %}
 #define RUMOCA_{{ c_model | upper }}_AUXILIARY_SCRATCH_BYTES UINT32_C(0)
-{% if scratch_layout.groups|length > 0 %}
-/* Instance-owned working memory. Regions are overlaid only where the checked
- * call-graph proof says their owners cannot be active together: neither owner
- * reaches the other through the block's calls. Slots inside one region are
- * overlaid into a `rumoca_galec_arm<n>` union only where the checked placement
- * proof says each is used in exactly one arm of one conditional and those arms
- * exclude one another. A region's `rumoca_galec_arena` is one flat float array
- * carrying the Real array slots whose live ranges the checked projection
- * proved disjoint wherever their fixed offsets overlap; the generated source
- * reaches each one through a typed pointer at its offset, so every access is a
- * float access into the arena and every 4-byte offset is naturally aligned.
- * These slots
- * are execution storage, not GALEC LogicalData; no manifest consumer binds to
- * them. Distinct State objects therefore have disjoint mutable storage and may
- * execute concurrently. Calls on the same State still require ordinary
- * exclusive mutable ownership. */
-{{ scratch_policy.declarations(c_model, scratch_layout, c_symbols) }}
-{% endif %}
+
+/* Instance-owned working memory: every Solve register and temporary array. */
+{%- for owner in solve_block.functions.owners %}
+
+struct {{ c_model }}RumocaGalecFn{{ owner.id }} {
+    bool rumoca_galec_unused;
+{{- solve_c.members(owner.body, "rumoca_galec_") }}
+{{- solve_c.pools(owner.body) }}
+};
+{%- endfor %}
+
+/* What a failed Startup restores. */
+struct {{ c_model }}RumocaGalecBackup {
+    bool rumoca_galec_unused;
+{%- for variable in algorithm_code.variables %}
+    {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %};
+{%- endfor %}
+};
+{%- for method, prog in [("startup", solve_block.startup), ("recalibrate", solve_block.recalibrate), ("dostep", solve_block.do_step)] %}
+
+struct {{ c_model }}RumocaGalec{{ method | capitalize }} {
+    bool rumoca_galec_st[6]; /* the method's six signal status bits */
+{%- if method == "startup" %}
+    struct {{ c_model }}RumocaGalecBackup backup; /* only Startup restores */
+{%- endif %}
+{{- solve_c.members(prog, "rumoca_galec_") }}
+{{- solve_c.pools(prog) }}
+};
+{%- endfor %}
+
+typedef struct {
+    union {
+        struct {{ c_model }}RumocaGalecStartup startup;
+        struct {{ c_model }}RumocaGalecRecalibrate recalibrate;
+        struct {{ c_model }}RumocaGalecDostep dostep;
+    } methods;
+{#- One union per call level: a call chain climbs levels strictly, so the
+    frames of one level are never live together. #}
+{%- for level in range(1, solve_block.function_levels + 1) %}
+    union {
+{%- for owner in solve_block.functions.owners %}{% if owner.level == level %}
+        struct {{ c_model }}RumocaGalecFn{{ owner.id }} fn{{ owner.id }};
+{%- endif %}{% endfor %}
+    } level{{ level }};
+{%- endfor %}
+} {{ c_model }}Scratch;
+
 typedef struct {{ c_model }}StateTag {
 {%- for variable in algorithm_code.variables %}
     {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
-    uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
-{%- if scratch_layout.groups|length > 0 %}
+    uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus (+ RUMOCA_GALEC_FAULT) */
     {{ c_model }}Scratch rumoca_galec_scratch; /* instance-owned working memory */
-{%- endif %}
 } {{ c_model }}State;
 
+#define RUMOCA_{{ c_model | upper }}_SCRATCH_BYTES ((uint32_t)sizeof({{ c_model }}Scratch))
+
+/* Call order and preconditions (SPEC_0034 GAL-020 and the Solve contract):
+ * set every input and tunable parameter in the state before calling
+ * _startup; it defines everything else it publishes and, like every method,
+ * saturates each declared range at its return, inputs included. A method
+ * that faults sets RUMOCA_GALEC_FAULT in rumoca_galec_error_signal_status:
+ * a failed _startup restores the state it found except the signals it raised,
+ * the other methods keep what they stored before the fault. */
 void {{ c_model }}_startup({{ c_model }}State *self);
 void {{ c_model }}_recalibrate({{ c_model }}State *self);
 void {{ c_model }}_dostep({{ c_model }}State *self);

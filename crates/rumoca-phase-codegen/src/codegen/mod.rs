@@ -39,6 +39,9 @@ mod galec_manifest_template_tests;
 mod lazy_scalar_projection;
 mod me_projection;
 mod native_fmi_renderer;
+mod solve_block_renderer;
+#[cfg(test)]
+mod solve_render_fixture_tests;
 pub use native_fmi_renderer::NativeFmiTemplateRenderer;
 #[cfg(test)]
 mod native_range_render_tests;
@@ -634,6 +637,33 @@ pub fn render_checked_algorithm_block_template_with_sources<T: Serialize>(
         ir_kind => "algorithm_code",
         model_name,
     })?)
+}
+
+/// As [`render_checked_algorithm_block_template_with_sources`] for a C target:
+/// `refined` is `block`'s Solve refinement, and the method bodies print from it
+/// (#483). For a standalone edited block, which carries no start values.
+pub fn render_checked_algorithm_block_template_with_solve<T: Serialize>(
+    block: &rumoca_ir_galec::package::CheckedAlgorithmBlock,
+    refined: &rumoca_ir_solve::SolveAlgorithmBlock,
+    sources: &rumoca_core::SourceMap,
+    artifact: &T,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block, sources)
+        .map_err(CodegenError::template)?;
+    Ok(solve_block_renderer::drop_needless_void_uses(
+        &tmpl.render(minijinja::context! {
+            algorithm_code => Value::from_serialize(view),
+            solve_block => solve_block_renderer::solve_block_value(refined, sources)?,
+            artifact => Value::from_serialize(artifact),
+            ir_kind => "algorithm_code",
+            model_name,
+        })?,
+    ))
 }
 
 /// Render a DAE using a template string.
@@ -1407,5 +1437,6 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
 }
 
 pub use algorithm_code_renderer::AlgorithmCodeTemplateRenderer;
+pub use solve_block_renderer::SolveBlockTemplateRenderer;
 pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;

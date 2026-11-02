@@ -1,5 +1,5 @@
 version = 1
-ir = "algorithm-code"
+ir = "algorithm-block"
 name = "embedded-c-galec"
 # Conformance (SPEC_0034 GAL-024, two-track rule): this target is the
 # non-eFMI track — a GALEC-derived embedded C export that may exist
@@ -15,7 +15,7 @@ completion_message = """GALEC-derived embedded C sources compiled to: {{ out_dir
   rumoca_galec_kernels.h  shared array-kernel prototypes (model-independent)
   rumoca_galec_kernels.c  shared array-kernel definitions (model-independent)
   {{ model_name }}.h   block-state struct + startup/recalibrate/dostep prototypes
-  {{ model_name }}.c   method definitions printed from the projected GALEC block
+  {{ model_name }}.c   method definitions printed from the refined Solve block
 This is a GALEC-derived embedded C export, NOT an eFMI Production Code
 container (SPEC_0034 GAL-024): no eFMU manifest mapping is emitted.
 Safety assurance: designed for the MISRA C:2023 profile in GAL-029/030;
@@ -23,17 +23,17 @@ MISRA compliance and DO-178C compliance are not claimed.
 Compile preflight: cc -O2 -std=c99 -pedantic -Wall -Wextra -Wconversion
   -Wsign-conversion -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes
   -Wmissing-prototypes -Werror -c {{ out_dir }}/rumoca_galec_kernels.c {{ out_dir }}/{{ model_name }}.c
-Both translation units must be compiled; the model calls into the kernel
-library and checks RUMOCA_GALEC_KERNELS_VERSION against the header beside it.
+The model unit has no dependency on the kernel library; the kernel files are
+still emitted (with their content-derived RUMOCA_GALEC_KERNELS_VERSION) so
+existing build lists keep working.
 Target build: add -fno-math-errno. The generated code never reads errno, so
 the flag is sound, and it lets the compiler inline libm entry points the
 code calls through <math.h> (measured on Cortex-M7 -Os: every sqrtf call
 site becomes one VSQRT.F32 instruction instead of a library call chain)."""
 
-# GAL-028: the target's Integer execution domain. The generated C computes
-# Integer arithmetic on int32_t, so declare that domain here like the galec
-# and galec-production targets do; range-proof enforcement over this domain
-# is tracked pre-cutover work (see SPEC_0034 GAL-028/GAL-030).
+# GAL-028: the target's Integer execution domain. The Solve-printed C stores
+# Integer state as int32_t and computes in int64_t, faulting outside this
+# domain, so the Solve refinement takes the domain from here.
 [integer]
 minimum = -2147483648
 maximum = 2147483647
@@ -74,6 +74,10 @@ name = "galec-c-symbols.jinja"
 [[partials]]
 template = "scratch.jinja"
 name = "galec-c-scratch.jinja"
+
+[[partials]]
+template = "solve_c.jinja"
+name = "galec-solve-c.jinja"
 
 # D2/GAL-008 split: Rust lowers to a closed typed semantic context
 # (collision-checked names, typed variables, recursive expressions/statements,

@@ -166,6 +166,7 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
         coverage.support_partials,
         vec![
             "embedded-c-galec:scratch.jinja".to_string(),
+            "embedded-c-galec:solve_c.jinja".to_string(),
             "embedded-c-galec:symbols.jinja".to_string(),
             "fmi3:me_projection.jinja".to_string(),
             "fmi3:scalar_events.jinja".to_string(),
@@ -671,6 +672,7 @@ fn shared_template_names_are_globally_unique_and_target_owned() {
             "galec-kernels.h.jinja <- embedded-c-galec/kernels.h.jinja".to_string(),
             "galec-model.c.jinja <- embedded-c-galec/model.c.jinja".to_string(),
             "galec-model.h.jinja <- embedded-c-galec/model.h.jinja".to_string(),
+            "galec-solve-c.jinja <- embedded-c-galec/solve_c.jinja".to_string(),
         ],
         "the shared render-environment inventory changed"
     );

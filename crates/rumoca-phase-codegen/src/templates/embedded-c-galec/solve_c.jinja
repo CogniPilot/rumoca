@@ -1,0 +1,55 @@
+{#- #483: names and types shared by the Solve-printed header and source.
+    Every Solve register, method local and loop/fold temporary of an owner
+    (a method or a function) is a member of that owner's frame in the
+    instance-owned scratch; `members` lists them with exactly the names the
+    source's `program` macro uses after its `ctx->` prefix. -#}
+
+{%- macro ctype(ty) -%}
+{%- if ty.scalar.kind == "real" -%}{{ "float" if ty.scalar.profile.format == "binary32" else "double" }}
+{%- elif ty.scalar.kind == "integer" -%}int64_t
+{%- elif ty.scalar.kind == "boolean" -%}bool
+{%- else -%}{{ fail("unsupported-feature:embedded-c-solve:scalar") }}{%- endif -%}
+{%- endmacro -%}
+
+{%- macro count(ty) -%}{{ ty.scalar_count if ty.scalar_count > 0 else 1 }}{%- endmacro -%}
+
+{#- The frame members of `prog` and of every region nested in it, `M` being
+    the member prefix of this program. -#}
+{%- macro members(prog, M) -%}
+{#- Scalar registers and method locals are C locals of the program, and an
+    aliased load has no storage at all. -#}
+{%- for ty in prog.register_types %}{% if count(ty)|int > 1 and prog.pool_of[loop.index0] is none and prog.unread[loop.index0] != "dead" and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none %}
+    {{ ctype(ty) }} {{ M }}r{{ loop.index0 }}[{{ count(ty) }}];
+{%- endif %}{%- endfor %}
+{%- for slot in prog.slots %}{% if slot.storage == "method_local" and count(slot.value_type)|int > 1 %}
+    {{ ctype(slot.value_type) }} {{ M }}s{{ slot.id }}[{{ count(slot.value_type) }}];
+{%- endif %}{% endfor %}
+{%- for issued in prog.operations %}
+{%- set op = issued.operation %}
+{%- set child = M ~ "x" ~ loop.index0 ~ "_" %}
+{%- if op.operation == "conditional" %}
+{{- members(op.if_true.body, child ~ "t") }}
+{{- members(op.if_false.body, child ~ "f") }}
+{%- elif op.operation == "fold" %}
+{%- for destination in op.destinations %}
+    {{ ctype(prog.register_types[destination]) }} {{ child }}n{{ loop.index0 }}[{{ count(prog.register_types[destination]) }}];
+{%- endfor %}
+    bool {{ child }}done;
+{%- for binder in op.domain.binders %}
+    int64_t {{ child }}b{{ loop.index0 }}[1];
+{%- endfor %}
+{%- if op.continuation %}
+    bool {{ child }}more[1];
+{{- members(op.continuation.body, child ~ "c") }}
+{%- endif %}
+{{- members(op.transition.body, child ~ "s") }}
+{%- endif %}
+{%- endfor %}
+{%- endmacro -%}
+
+{#- The pooled array members an owner's registers share (`pool_of`). -#}
+{%- macro pools(owner) -%}
+{%- for pool in owner.pools %}
+    {{ ctype(pool) }} rumoca_galec_p{{ loop.index0 }}[{{ count(pool) }}];
+{%- endfor %}
+{%- endmacro -%}

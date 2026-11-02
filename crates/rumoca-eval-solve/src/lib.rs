@@ -114,9 +114,9 @@ pub use tangent_lanes::{
 };
 pub use typed_program::{
     AssertionInvocationEvaluation, AssertionReport, TypedAssertionFailure, TypedProgramEvalError,
-    TypedValue, TypedValueConstructionError, eval_assertion_invocation, eval_pure_call,
-    eval_pure_call_checked, eval_pure_call_directional, eval_pure_call_directional_checked,
-    render_retained_message,
+    TypedValue, TypedValueConstructionError, eval_algorithm_method, eval_assertion_invocation,
+    eval_pure_call, eval_pure_call_checked, eval_pure_call_directional,
+    eval_pure_call_directional_checked, render_retained_message,
 };
 pub use update_rows::{
     UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_value_exact,

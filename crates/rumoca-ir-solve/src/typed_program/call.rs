@@ -99,6 +99,11 @@ fn shared_slice_eq<T: Eq>(left: &Arc<[T]>, right: &Arc<[T]>) -> bool {
 pub struct SolvePureCallOwnerId(u32);
 
 impl SolvePureCallOwnerId {
+    /// The owner a block lifecycle method evaluates under (#483). A method
+    /// is not a pure-call owner, and no table issues this index: a table's
+    /// owner count stays below `u32::MAX`.
+    pub const LIFECYCLE_METHOD: Self = Self(u32::MAX);
+
     pub(super) const fn from_index(index: u32) -> Self {
         Self(index)
     }
@@ -710,6 +715,12 @@ impl SolvePureCallTable {
     }
 
     #[must_use]
+    /// The owners as the call interfaces a program built against this table
+    /// may emit.
+    pub(in crate::typed_program) fn primal_view(&self) -> SolvePureCallTableView<'_> {
+        SolvePureCallTableView::primal(&self.owners)
+    }
+
     pub const fn owners(&self) -> &[SolvePureCallOwner] {
         &self.owners
     }

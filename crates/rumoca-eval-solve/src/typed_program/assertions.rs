@@ -78,6 +78,9 @@ pub(super) enum InvocationCompletion<'model, T> {
     Fault {
         error: TypedProgramEvalError,
         observations: Vec<ObservedAssertion<'model>>,
+        /// The status bits a bound algorithm-block function had raised
+        /// before the fault (#483 EL007); `None` for any other owner.
+        status: Option<Box<[bool]>>,
     },
 }
 
@@ -148,7 +151,11 @@ impl<'model> EvalFrame<'model, '_> {
             InvocationCompletion::Fault {
                 error,
                 observations,
+                status,
             } => {
+                if let Some(status) = status {
+                    self.absorb_status(&status);
+                }
                 self.fault = Some(error);
                 (None, observations, false)
             }
@@ -209,7 +216,7 @@ impl<'model> EvalFrame<'model, '_> {
                     &mut FrameStorage::default(),
                     self.mode,
                     self.chain,
-                    self.owner,
+                    (self.owner, self.block),
                 )?;
                 let Some(values) = self.accept_completion(completed) else {
                     return Ok(());

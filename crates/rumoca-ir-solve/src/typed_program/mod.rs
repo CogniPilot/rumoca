@@ -1,5 +1,6 @@
 //! Typed, storage-neutral executable Solve vocabulary.
 
+mod algorithm_block;
 mod call;
 mod demand;
 mod integer_interval;
@@ -7,6 +8,11 @@ mod pass_independence;
 mod program;
 mod types;
 
+pub use algorithm_block::{
+    SolveAlgorithmBlock, SolveAlgorithmBlockConstructionError, SolveAlgorithmCodeEntityKind,
+    SolveAlgorithmCodeRef, SolveBlockFunctions, SolveBlockMethod, SolveBlockMethodKind,
+    SolveBlockSlotDeclaration, SolveStatusBinding,
+};
 pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;
 pub use call::{

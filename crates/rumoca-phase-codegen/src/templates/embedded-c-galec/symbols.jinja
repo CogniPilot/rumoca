@@ -91,8 +91,7 @@
     `state_symbols` for the same reason as the helper locals: they never
     compete with a declared block variable. -#}
 {%- set helper_locals = [
-    "result", "value", "extent", "lhs", "rhs", "u1", "u2", "status",
-    "ctx", "startup", "recalibrate", "dostep"
+    "k", "ctx", "scratch", "startup", "recalibrate", "dostep"
 ] -%}
 {#- `state_policy` is the base declaration — the separator and the generated
     namespace are spelled once, here — and `policy` is that same declaration

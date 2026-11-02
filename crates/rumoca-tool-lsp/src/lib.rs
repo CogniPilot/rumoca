@@ -42,3 +42,16 @@ pub use handlers::{
     handle_goto_definition, handle_hover, handle_semantic_tokens, handle_signature_help,
     handle_workspace_symbols, partial_format_options_from_client,
 };
+
+/// Refine a checked GALEC package into the Solve algorithm block an
+/// `algorithm-block` target prints its C from (#483). The browser bindings
+/// reach the Solve phase only through this tool crate.
+///
+/// # Errors
+/// The refinement's refusal, rendered with its code.
+pub fn refine_algorithm_block(
+    package: &rumoca_ir_galec::package::AlgorithmCodePackage,
+    profile: rumoca_ir_solve::SolveArithmeticProfile,
+) -> Result<rumoca_ir_solve::SolveAlgorithmBlock, String> {
+    rumoca_phase_solve::lower_algorithm_block(package, profile).map_err(|error| error.to_string())
+}

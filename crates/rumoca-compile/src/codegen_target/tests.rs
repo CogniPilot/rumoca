@@ -823,6 +823,7 @@ fn builtin_dae_consumers_use_only_the_checked_template_schema() {
                 | TargetTemplateIr::Solve
                 | TargetTemplateIr::Fmi
                 | TargetTemplateIr::AlgorithmCode
+                | TargetTemplateIr::AlgorithmBlock
         ) {
             continue;
         }

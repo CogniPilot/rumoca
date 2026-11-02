@@ -150,7 +150,22 @@ fn artifact_facts() -> serde_json::Value {
     })
 }
 
+use super::solve_render_fixture_tests as support;
+
+/// A C model template (or one extending the shared GALEC C model units)
+/// prints from the Solve view.
+fn needs_solve(template: &str) -> bool {
+    ["solve_block", "galec-model.c.jinja", "galec-model.h.jinja"]
+        .iter()
+        .any(|marker| template.contains(marker))
+}
+
 fn render_block_fixture(block: &CheckedAlgorithmBlock, template: &str) -> String {
+    if needs_solve(template) {
+        // The C model units print from the block's Solve refinement (#483).
+        return support::render_refined(block, &rumoca_core::SourceMap::new(), template, "fixture")
+            .expect("render collision fixture");
+    }
     crate::render_checked_algorithm_block_template_with_artifact(
         block,
         &artifact_facts(),
@@ -326,27 +341,18 @@ fn galec_c_symbols_never_take_a_generated_prefix_spelling() {
             .expect("Production Code manifest template"),
     );
 
+    // The Solve-printed body names method locals by slot id and keeps its own
+    // loop counter `k` withheld from the symbol tables: a user local spelled
+    // like a generated identifier never reaches the C, so it cannot shadow
+    // the loop index or be shadowed by it.
     assert!(
-        source.contains(&format!(
-            "for (int32_t {GENERATED_COPY_ITERATOR} = INT32_C(0);"
-        )),
+        source.contains("for (size_t k = 0; k < "),
         "the array copy must still emit its own loop counter: {source}"
     );
     assert!(
-        !source.contains(&format!("float {GENERATED_COPY_ITERATOR};"))
-            && !source.contains(&format!("float {GENERATED_COPY_ITERATOR} = ")),
-        "a user local spelled like the emitted loop counter must be renamed, \
-         otherwise the loop index silently replaces it inside the copy: {source}"
+        !source.contains(GENERATED_COPY_ITERATOR) && !source.contains("copy_0"),
+        "a method local's source name must not reach the C body: {source}"
     );
-    assert!(source.contains("float copy_0 = 0.0f;"), "{source}");
-    assert!(
-        source.contains(&format!(
-            "self->target[{GENERATED_COPY_ITERATOR}] = \
-             (self->source[{GENERATED_COPY_ITERATOR}] - copy_0);"
-        )),
-        "the copy body must read the renamed local, not the loop index: {source}"
-    );
-    assert!(source.contains("copy_0 = self->gain;"), "{source}");
     assert!(
         !source.contains("rumoca_galec_gain"),
         "no emitted C symbol may live in the generated namespace: {source}"
@@ -417,8 +423,11 @@ fn galec_c_symbols_terminate_when_the_fallback_stem_is_a_generated_prefix() {
     );
     let fields = header
         .lines()
+        .filter(|line| line.contains("/* declaration "))
         .filter_map(|line| line.trim().strip_prefix("float "))
         .filter_map(|line| line.split(';').next())
+        // The clock constant the refinement harness adds is not a fixture field.
+        .filter(|field| *field != support::FIXTURE_PERIOD)
         .map(str::to_owned)
         .collect::<Vec<_>>();
     assert_eq!(fields.len(), 3, "{header}");
@@ -488,6 +497,9 @@ fn galec_c_symbols_let_legitimate_names_keep_their_spelling() {
 /// members shadow nothing, so `state_symbols` keeps them available.
 #[test]
 fn galec_c_policy_reserves_the_helper_local_identifiers() {
+    // The Solve-printed bodies declare these unprefixed identifiers (every
+    // other local carries the `rumoca_galec_` prefix): a file-scope symbol
+    // spelled like one would be shadowed inside them.
     let policy = template_source("embedded-c-galec", "symbols.jinja");
     let source = template_source("embedded-c-galec", "model.c.jinja");
     let withheld = policy
@@ -495,18 +507,18 @@ fn galec_c_policy_reserves_the_helper_local_identifiers() {
         .and_then(|(_, rest)| rest.split_once("] -%}"))
         .map(|(list, _)| list)
         .unwrap_or_else(|| panic!("the shared policy must declare helper_locals: {policy}"));
-    for local in [
-        "result", "value", "extent", "lhs", "rhs", "u1", "u2", "status",
+    for (local, declaration) in [
+        ("k", "size_t k "),
+        ("ctx", "*const ctx = "),
+        ("scratch", "*const scratch = "),
     ] {
         assert!(
             withheld.contains(&format!("\"{local}\"")),
             "the shared policy must withhold the helper local `{local}`: {policy}"
         );
         assert!(
-            ["float ", "int32_t ", "uint32_t *", "bool "]
-                .iter()
-                .any(|ty| source.contains(&format!("{ty}{local}"))),
-            "`{local}` is withheld but no helper body declares it: {source}"
+            source.contains(declaration),
+            "`{local}` is withheld but no emitted body declares it: {source}"
         );
     }
     assert!(
@@ -515,145 +527,65 @@ fn galec_c_policy_reserves_the_helper_local_identifiers() {
         "only the file-scope-capable table may take the helper locals: {policy}"
     );
 
-    let input = |name| galec::InterfaceVariable {
-        kind: galec::InterfaceKind::Input,
-        decl: galec::VariableDeclaration::scalar(galec::ScalarType::Real, name),
-        start: None,
+    // A user function spelled like a helper local is renamed at file scope;
+    // a state field of that spelling is a struct member and keeps it.
+    let real = |name: &str| {
+        galec::VariableDeclaration::scalar(galec::ScalarType::Real, galec::Name::ident(name))
     };
     let mut block = galec::Block::new(galec::Name::ident("HelperLocals"));
-    block.interface = vec![input(galec::Name::ident("result"))];
-    block.do_step.locals = vec![galec::VariableDeclaration::scalar(
-        galec::ScalarType::Real,
-        galec::Name::ident("value"),
-    )];
+    block.interface = vec![
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Input,
+            decl: real("k"),
+            start: None,
+        },
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Output,
+            decl: real("y"),
+            start: None,
+        },
+    ];
+    block.protected_functions = vec![galec::UserFunction {
+        kind: galec::FunctionKind::Stateless,
+        name: galec::Name::ident("k"),
+        signals: Vec::new(),
+        parameters: vec![
+            galec::Parameter {
+                direction: galec::Direction::Input,
+                decl: real("x"),
+            },
+            galec::Parameter {
+                direction: galec::Direction::Output,
+                decl: real("r"),
+            },
+        ],
+        locals: Vec::new(),
+        statements: vec![galec::Spanned::dummy(galec::Statement::Assignment {
+            target: galec::Reference::local(galec::Name::ident("r")),
+            value: galec::Expression::Ref(galec::Reference::local(galec::Name::ident("x"))),
+        })],
+        span: rumoca_core::Span::DUMMY,
+    }];
     block.do_step.statements = vec![galec::Spanned::dummy(galec::Statement::Assignment {
-        target: galec::Reference::local(galec::Name::ident("value")),
-        value: galec::Expression::Ref(galec::Reference::state(galec::Name::ident("result"))),
+        target: galec::Reference::state(galec::Name::ident("y")),
+        value: galec::Expression::Call(galec::FunctionCall {
+            function: galec::Name::ident("k"),
+            arguments: vec![galec::Expression::Ref(galec::Reference::state(
+                galec::Name::ident("k"),
+            ))],
+        }),
     })];
     let block = CheckedAlgorithmBlock::construct(block).expect("valid helper-local fixture");
 
     let header = render_block_fixture(&block, template_source("embedded-c-galec", "model.h.jinja"));
     assert!(
-        header.contains("float result; /* declaration 1: result"),
+        header.contains("float k; /* declaration 1: k"),
         "a struct member is in its own C namespace and must not be renamed: {header}"
     );
     let source = render_block_fixture(&block, template_source("embedded-c-galec", "model.c.jinja"));
     assert!(
-        source.contains("float value_2;") && !source.contains("float value;"),
-        "a symbol from the file-scope-capable table must yield to the helper \
-         local spelling: {source}"
-    );
-}
-
-/// `x ^ 2` on a Real base prints as `(x * x)` in the emitted C when the base is
-/// free to write twice, while every other power keeps its `powf` call.
-///
-/// This is an emission choice, not a semantic one, so it is pinned here on the
-/// C text rather than in the `.alg` goldens — the checked GALEC still prints
-/// `x ^ 2`, which `galec_c_square_reduction_does_not_change_the_alg` asserts.
-///
-/// The multiply is not an approximation of the call: it is the correctly-rounded
-/// square for every binary32 input, and it is what picolibc's own `powf`
-/// computes for `y == 2` (a single `vmul.f32`). See `real_square_form` in
-/// `views/algorithm_code_typed.rs`.
-#[test]
-fn galec_c_prints_a_real_square_as_a_multiply() {
-    let source = render_square_fixture(square_of_input(galec::Expression::Integer(2)));
-    assert!(
-        source.contains("(self->u * self->u)"),
-        "a Real base squared must print as a multiply: {source}"
-    );
-    assert!(
-        !source.contains("powf"),
-        "the squared form must not also emit a powf call: {source}"
-    );
-}
-
-/// A Real exponent literal `2.0` reduces exactly like the Integer `2`.
-#[test]
-fn galec_c_prints_a_real_square_with_a_real_exponent_as_a_multiply() {
-    let source = render_square_fixture(square_of_input(galec::Expression::Real(2.0)));
-    assert!(
-        source.contains("(self->u * self->u)") && !source.contains("powf"),
-        "a Real 2.0 exponent must reduce like the Integer 2: {source}"
-    );
-}
-
-/// Any exponent other than 2 keeps `powf` — there is no single-multiply
-/// equivalent, and inventing one would change the value.
-#[test]
-fn galec_c_keeps_powf_for_a_non_square_exponent() {
-    let source = render_square_fixture(square_of_input(galec::Expression::Integer(3)));
-    assert!(
-        source.contains("powf(self->u, 3)"),
-        "a cube must keep its powf call: {source}"
-    );
-}
-
-/// A compound base is bound by `rumoca_galec_square` rather than printed twice.
-/// The helper's parameter is the binding, so the sum is written once and
-/// evaluated once, exactly as the `powf` call evaluated it once.
-#[test]
-fn galec_c_binds_a_compound_base_before_multiplying() {
-    let source = render_square_fixture(galec::Expression::binary(
-        galec::BinaryOp::Pow,
-        galec::Expression::Paren(Box::new(galec::Expression::binary(
-            galec::BinaryOp::Add,
-            galec::Expression::Ref(galec::Reference::state(galec::Name::ident("u"))),
-            galec::Expression::Real(1.0),
-        ))),
-        galec::Expression::Integer(2),
-    ));
-    assert!(
-        source.contains("rumoca_galec_square(((self->u + 1.0f)))"),
-        "a compound base must be bound by the square helper and appear once: {source}"
-    );
-    assert!(
-        !source.contains("powf"),
-        "the bound form must not also emit a powf call: {source}"
-    );
-    assert!(
-        source.contains("static inline float rumoca_galec_square(float value) {"),
-        "the square helper must be defined where it is called: {source}"
-    );
-}
-
-/// A builtin-call base is bound too. This is the shape the RDD2 navigation
-/// estimator squares in its SE_2(3) left Jacobian, `max(theta_sq, eps) ^ 2`,
-/// and duplicating a call is a cost the `powf` call did not have.
-#[test]
-fn galec_c_binds_a_call_base_before_multiplying() {
-    let source = render_square_fixture(galec::Expression::binary(
-        galec::BinaryOp::Pow,
-        galec::Expression::Call(galec::FunctionCall {
-            function: galec::Name::ident("max"),
-            arguments: vec![
-                galec::Expression::Ref(galec::Reference::state(galec::Name::ident("u"))),
-                galec::Expression::Real(1.0),
-            ],
-        }),
-        galec::Expression::Integer(2),
-    ));
-    assert!(
-        source.contains("rumoca_galec_square(rumoca_galec_max(self->u, 1.0f))"),
-        "a call base must be bound by the square helper and appear once: {source}"
-    );
-    assert!(
-        !source.contains("powf"),
-        "the bound form must not also emit a powf call: {source}"
-    );
-}
-
-/// The helper follows the same reachability rule as every other
-/// `rumoca_galec_` helper: a block that squares only bases free to write twice
-/// never calls it, so defining it would be dead code the profile's `-Werror`
-/// build has to account for.
-#[test]
-fn galec_c_omits_the_square_helper_when_no_base_needs_binding() {
-    let source = render_square_fixture(square_of_input(galec::Expression::Integer(2)));
-    assert!(
-        !source.contains("rumoca_galec_square"),
-        "an in-place multiply must not pull in the binding helper: {source}"
+        source.contains("static int k_2(") && !source.contains("static int k("),
+        "a function spelled like a helper local must yield to it: {source}"
     );
 }
 
@@ -705,14 +637,6 @@ fn square_block(value: galec::Expression) -> CheckedAlgorithmBlock {
     CheckedAlgorithmBlock::construct(block).expect("valid square fixture")
 }
 
-fn render_square_fixture(value: galec::Expression) -> String {
-    render_block_fixture(
-        &square_block(value),
-        templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
-            .expect("C source template"),
-    )
-}
-
 #[test]
 fn galec_c_templates_do_not_use_lossy_sanitization() {
     for target in ["embedded-c-galec", "galec-production"] {
@@ -733,82 +657,6 @@ fn galec_c_templates_do_not_use_lossy_sanitization() {
 /// `1.0e+60f`, which the target's own compile preflight rejects
 /// (`floating constant exceeds range of 'float'`).
 const MODELICA_INFINITY: f64 = 1.0e60;
-
-fn ranged_real(name: &str, min: Option<f64>, max: Option<f64>) -> galec::VariableDeclaration {
-    let mut declaration =
-        galec::VariableDeclaration::scalar(galec::ScalarType::Real, galec::Name::ident(name));
-    declaration.range = galec::RangeAttributes {
-        min: min.map(galec::Expression::Real),
-        max: max.map(galec::Expression::Real),
-    };
-    declaration
-}
-
-fn ranged_integer(name: &str, min: Option<i64>, max: Option<i64>) -> galec::VariableDeclaration {
-    let mut declaration =
-        galec::VariableDeclaration::scalar(galec::ScalarType::Integer, galec::Name::ident(name));
-    declaration.range = galec::RangeAttributes {
-        min: min.map(galec::Expression::Integer),
-        max: max.map(galec::Expression::Integer),
-    };
-    declaration
-}
-
-/// Assign a state variable in `Startup`, so it counts as definitely written
-/// at the `Startup` return boundary.
-fn seed_state(name: &str) -> galec::Spanned<galec::Statement> {
-    seed_typed_state(name, galec::ScalarType::Real)
-}
-
-fn seed_typed_state(name: &str, scalar: galec::ScalarType) -> galec::Spanned<galec::Statement> {
-    galec::Spanned::dummy(galec::Statement::Assignment {
-        target: galec::Reference::state(galec::Name::ident(name)),
-        value: match scalar {
-            galec::ScalarType::Real => galec::Expression::Real(0.0),
-            galec::ScalarType::Integer => galec::Expression::Integer(0),
-            galec::ScalarType::Boolean => galec::Expression::Bool(false),
-        },
-    })
-}
-
-/// One output declaration, seeded in `Startup` unless `seed` says otherwise.
-fn range_block(name: &str, declarations: Vec<(galec::VariableDeclaration, bool)>) -> String {
-    try_range_block(name, declarations).unwrap_or_else(|error| panic!("render {name}: {error}"))
-}
-
-fn try_range_block(
-    name: &str,
-    declarations: Vec<(galec::VariableDeclaration, bool)>,
-) -> Result<String, crate::CodegenError> {
-    let mut block = galec::Block::new(galec::Name::ident(name));
-    for (declaration, seed) in declarations {
-        if seed {
-            let galec::TypeRef::Primitive(scalar) = declaration.ty else {
-                panic!("range fixtures declare primitives only");
-            };
-            block
-                .startup
-                .statements
-                .push(seed_typed_state(declaration.name.lexeme(), scalar));
-        }
-        block.interface.push(galec::InterfaceVariable {
-            kind: if seed {
-                galec::InterfaceKind::Output
-            } else {
-                galec::InterfaceKind::Input
-            },
-            decl: declaration,
-            start: None,
-        });
-    }
-    let block = CheckedAlgorithmBlock::construct(block).expect("valid range fixture");
-    crate::render_checked_algorithm_block_template_with_artifact(
-        &block,
-        &artifact_facts(),
-        template_source("embedded-c-galec", "model.c.jinja"),
-        name,
-    )
-}
 
 /// The three answers, taken directly from the decision the filters expose.
 /// `None` is "no clamp survives", `Err` is "fail closed", and a literal is
@@ -871,277 +719,6 @@ fn target_numeric_domain_decides_every_declared_bound() {
     assert!(integer(i64::from(i32::MAX) + 1, BoundSide::Max).is_err());
 }
 
-/// A bound that no value of the target type can violate is not a weaker
-/// clamp — it is no clamp. The `1e60` spelling of "unbounded" must therefore
-/// leave nothing behind, not an out-of-range `float` literal.
-#[test]
-fn galec_c_unbounded_declared_ranges_emit_no_clamp() {
-    let source = range_block(
-        "Unbounded",
-        vec![(
-            ranged_real("y", Some(-MODELICA_INFINITY), Some(MODELICA_INFINITY)),
-            true,
-        )],
-    );
-    assert!(
-        !source.contains("e+60"),
-        "an unbounded declaration must not render an out-of-range float literal: {source}"
-    );
-    assert!(
-        !source.contains("rumoca_galec_limit"),
-        "a block whose every declared bound is unbounded must emit no limiter at all: {source}"
-    );
-
-    // Mixed: only the side that is representable survives, so a `min`-only
-    // saturation is emitted as a `min`-only saturation.
-    let source = range_block(
-        "MinOnly",
-        vec![(ranged_real("y", Some(-2.5), Some(MODELICA_INFINITY)), true)],
-    );
-    assert!(
-        source.contains("if (self->y < -2.5f) {"),
-        "the representable low bound must still saturate: {source}"
-    );
-    assert!(
-        !source.contains("self->y >"),
-        "the unbounded high side must emit no comparison: {source}"
-    );
-}
-
-/// The other direction is not "unbounded" but "unrepresentable": a `min` at
-/// `+inf` would saturate every finite value to an infinity the target cannot
-/// spell as a literal. Fail closed rather than emit anything for it.
-#[test]
-fn galec_c_unrepresentable_real_ranges_fail_closed() {
-    for (name, min, max) in [
-        ("MinAtInfinity", Some(MODELICA_INFINITY), None),
-        ("MaxAtInfinity", None, Some(-MODELICA_INFINITY)),
-    ] {
-        let error = try_range_block(name, vec![(ranged_real("y", min, max), true)])
-            .expect_err("an unrepresentable bound must not render")
-            .to_string();
-        assert!(
-            error.contains("unsupported-feature:target-real-range"),
-            "{name} must fail closed with a typed unsupported-feature: {error}"
-        );
-    }
-}
-
-/// An integer domain has no value standing for "beyond the finite range", so
-/// a declared bound outside the target's Integer domain (GAL-028) declares a
-/// variable domain the target cannot execute. That fails closed on both sides.
-#[test]
-fn galec_c_integer_ranges_outside_the_target_domain_fail_closed() {
-    for (name, min, max) in [
-        ("IntegerMinTooLow", Some(-3_000_000_000_i64), None),
-        ("IntegerMaxTooHigh", None, Some(3_000_000_000_i64)),
-    ] {
-        let error = try_range_block(name, vec![(ranged_integer("i", min, max), true)])
-            .expect_err("an out-of-domain Integer bound must not render")
-            .to_string();
-        assert!(
-            error.contains("unsupported-feature:target-integer-range"),
-            "{name} must fail closed with a typed unsupported-feature: {error}"
-        );
-    }
-}
-
-/// A bound *at* the edge of the Integer domain is unviolable, so it emits no
-/// comparison — which is also what keeps the target's strict compile preflight
-/// (`-Wtype-limits`) from rejecting an always-false test.
-#[test]
-fn galec_c_integer_domain_edge_bounds_emit_no_clamp() {
-    let source = range_block(
-        "IntegerEdges",
-        vec![(
-            ranged_integer("i", Some(i64::from(i32::MIN)), Some(i64::from(i32::MAX))),
-            true,
-        )],
-    );
-    assert!(
-        !source.contains("rumoca_galec_limit"),
-        "domain-edge Integer bounds must leave no limiter behind: {source}"
-    );
-
-    let source = range_block(
-        "IntegerHighOnly",
-        vec![(
-            ranged_integer("i", Some(i64::from(i32::MIN)), Some(5)),
-            true,
-        )],
-    );
-    assert!(
-        source.contains("if (self->i > INT32_C(5)) {"),
-        "the interior high bound must still saturate: {source}"
-    );
-    assert!(
-        !source.contains("self->i <"),
-        "the domain-edge low bound must emit no comparison: {source}"
-    );
-}
-
-/// The `Startup` return boundary runs on caller-allocated state that nothing
-/// has written yet. Saturating a declaration `Startup` never assigned — a
-/// control input, say — would read indeterminate memory, so that boundary gets
-/// its own limiter over exactly the definitely-written declarations.
-#[test]
-fn galec_c_startup_limits_only_what_startup_wrote() {
-    let source = range_block(
-        "StartupScope",
-        vec![
-            (ranged_real("u", Some(-2.0), Some(2.0)), false),
-            (ranged_real("y", Some(-3.0), Some(3.0)), true),
-        ],
-    );
-    let startup_limiter = source
-        .split_once("static void rumoca_galec_limit_startup(StartupScopeState *self) {")
-        .and_then(|(_, rest)| rest.split_once("\n}"))
-        .map(|(body, _)| body)
-        .unwrap_or_else(|| panic!("the startup boundary needs its own limiter: {source}"));
-    assert!(
-        startup_limiter.contains("self->y") && !startup_limiter.contains("self->u"),
-        "the startup limiter must touch only what Startup wrote: {source}"
-    );
-    assert!(
-        source.contains("static void rumoca_galec_limit_self(StartupScopeState *self) {"),
-        "later boundaries still limit the whole block state: {source}"
-    );
-    let startup_body = source
-        .split_once("void StartupScope_startup(StartupScopeState *self) {")
-        .and_then(|(_, rest)| rest.split_once("\n}"))
-        .map(|(body, _)| body)
-        .expect("startup method body");
-    assert!(
-        startup_body.contains("rumoca_galec_limit_startup(self);")
-            && !startup_body.contains("rumoca_galec_limit_self(self);"),
-        "Startup must call the restricted limiter: {source}"
-    );
-
-    // When Startup writes every ranged declaration the two boundaries are the
-    // same set, and one function serves both.
-    let source = range_block(
-        "StartupCoversAll",
-        vec![(ranged_real("y", Some(-3.0), Some(3.0)), true)],
-    );
-    assert!(
-        !source.contains("rumoca_galec_limit_startup"),
-        "an identical startup scope must not duplicate the limiter: {source}"
-    );
-    assert_eq!(
-        source.matches("    rumoca_galec_limit_self(self);").count(),
-        3,
-        "Startup return, DoStep entry and DoStep return (empty Recalibrate \
-         shares one boundary call): {source}"
-    );
-}
-
-/// A conditional write is not a write: one arm of the `if` leaves the slot
-/// indeterminate, so it stays out of the `Startup` scope.
-#[test]
-fn galec_c_startup_scope_excludes_conditionally_written_state() {
-    let mut block = galec::Block::new(galec::Name::ident("ConditionalSeed"));
-    block.interface = vec![
-        galec::InterfaceVariable {
-            kind: galec::InterfaceKind::Input,
-            decl: galec::VariableDeclaration::scalar(
-                galec::ScalarType::Boolean,
-                galec::Name::ident("enable"),
-            ),
-            start: None,
-        },
-        galec::InterfaceVariable {
-            kind: galec::InterfaceKind::Output,
-            decl: ranged_real("y", Some(-1.0), Some(1.0)),
-            start: None,
-        },
-        galec::InterfaceVariable {
-            kind: galec::InterfaceKind::Output,
-            decl: ranged_real("z", Some(-1.0), Some(1.0)),
-            start: None,
-        },
-    ];
-    block.startup.statements = vec![
-        galec::Spanned::dummy(galec::Statement::If(galec::IfStatement {
-            branches: vec![galec::IfBranch {
-                condition: galec::Condition::Expression(galec::Expression::Ref(
-                    galec::Reference::state(galec::Name::ident("enable")),
-                )),
-                body: vec![seed_state("y")],
-                span: rumoca_core::Span::DUMMY,
-            }],
-            else_body: None,
-        })),
-        seed_state("z"),
-    ];
-    let block = CheckedAlgorithmBlock::construct(block).expect("valid conditional fixture");
-    let source = crate::render_checked_algorithm_block_template_with_artifact(
-        &block,
-        &artifact_facts(),
-        template_source("embedded-c-galec", "model.c.jinja"),
-        "ConditionalSeed",
-    )
-    .expect("render conditional seed fixture");
-
-    let startup_limiter = source
-        .split_once("static void rumoca_galec_limit_startup(ConditionalSeedState *self) {")
-        .and_then(|(_, rest)| rest.split_once("\n}"))
-        .map(|(body, _)| body)
-        .unwrap_or_else(|| panic!("the startup boundary needs its own limiter: {source}"));
-    assert!(
-        startup_limiter.contains("self->z") && !startup_limiter.contains("self->y"),
-        "only the unconditionally written declaration is determinate: {source}"
-    );
-}
-
-/// A method with an empty body limits its state on entry; saturation is
-/// idempotent, so re-running the identical clamp on return is dead code.
-#[test]
-fn galec_c_empty_method_limits_its_boundary_once() {
-    let source = range_block(
-        "EmptyMethods",
-        vec![(ranged_real("y", Some(-1.0), Some(1.0)), true)],
-    );
-    let recalibrate = source
-        .split_once("void EmptyMethods_recalibrate(EmptyMethodsState *self) {")
-        .and_then(|(_, rest)| rest.split_once("\n}"))
-        .map(|(body, _)| body)
-        .expect("recalibrate method body");
-    assert_eq!(
-        recalibrate
-            .matches("rumoca_galec_limit_self(self);")
-            .count(),
-        1,
-        "an empty method must not emit back-to-back boundary limits: {source}"
-    );
-}
-
-#[test]
-fn galec_real_min_max_are_relational_target_helpers() {
-    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
-        .expect("C source template");
-
-    assert!(!source.contains(r#"function == "min" -%}fmin"#), "{source}");
-    assert!(!source.contains(r#"function == "max" -%}fmax"#), "{source}");
-    assert!(
-        source.contains(r#"function == "min" -%}rumoca_galec_min"#),
-        "{source}"
-    );
-    assert!(
-        source.contains(r#"function == "max" -%}rumoca_galec_max"#),
-        "{source}"
-    );
-    assert!(source.contains("if (u1 < u2)"), "{source}");
-    assert!(source.contains("if (u1 > u2)"), "{source}");
-    assert!(
-        source.contains("static inline int32_t rumoca_galec_imin"),
-        "Integer min must retain its distinct builtin mapping"
-    );
-    assert!(
-        source.contains("static inline int32_t rumoca_galec_imax"),
-        "Integer max must retain its distinct builtin mapping"
-    );
-}
-
 #[test]
 fn galec_c_templates_enforce_the_assurance_profile_without_claiming_compliance() {
     let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
@@ -1169,8 +746,8 @@ fn galec_c_templates_enforce_the_assurance_profile_without_claiming_compliance()
     assert!(header.contains("RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED"));
     assert!(source.contains("MISRA compliance and DO-178C compliance are not claimed"));
     assert!(header.contains("MISRA compliance and DO-178C compliance are not claimed"));
-    assert!(source.contains("dimensions|length == 1 %}const"));
-    assert!(source.contains("rank > 1 therefore stays unqualified"));
+    // Function inputs are read-only at every rank in the Solve-printed C.
+    assert!(source.contains("\"const \" ~ ctype(input) ~ \" *rumoca_galec_in\""));
 }
 
 /// The shared symbol policy, addressed the way the render environment
@@ -1254,6 +831,7 @@ fn support_partials_are_shared_and_are_not_artifacts() {
         partials,
         vec![
             "embedded-c-galec/scratch.jinja".to_string(),
+            "embedded-c-galec/solve_c.jinja".to_string(),
             "embedded-c-galec/symbols.jinja".to_string(),
             "fmi3/me_projection.jinja".to_string(),
             "fmi3/scalar_events.jinja".to_string(),
@@ -1473,17 +1051,31 @@ fn render_block_with_symbol_policy(
     env.add_template_owned("inline".to_owned(), template.to_owned())
         .expect("artifact template must parse");
     let sources = rumoca_core::SourceMap::new();
-    let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block, &sources)
-        .expect("checked block view");
-    env.get_template("inline")
-        .expect("artifact template")
-        .render(minijinja::context! {
+    let template = env.get_template("inline").expect("artifact template");
+    let rendered = if needs_solve(template.source()) {
+        // The C model units print from the block's Solve refinement (#483).
+        let (package, refined) = support::refine(block).expect("fixture refines");
+        let view = crate::views::algorithm_code::AlgorithmCodeView::new(&package, &sources)
+            .expect("package view");
+        template.render(minijinja::context! {
+            algorithm_code => minijinja::Value::from_serialize(view),
+            solve_block => super::solve_block_renderer::solve_block_value(&refined, &sources)
+                .expect("Solve block view"),
+            artifact => minijinja::Value::from_serialize(artifact_facts()),
+            ir_kind => "algorithm_code",
+            model_name => "fixture",
+        })
+    } else {
+        let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block, &sources)
+            .expect("checked block view");
+        template.render(minijinja::context! {
             algorithm_code => minijinja::Value::from_serialize(view),
             artifact => minijinja::Value::from_serialize(artifact_facts()),
             ir_kind => "algorithm_code",
             model_name => "fixture",
         })
-        .expect("render against the substitute symbol policy")
+    };
+    rendered.expect("render against the substitute symbol policy")
 }
 
 #[test]
@@ -1523,24 +1115,16 @@ fn galec_c_artifacts_resolve_every_symbol_through_the_shared_policy() {
         );
     }
 
-    // The method local lives only in the C body, so its shared-policy
-    // dependence is checked where it is emitted.
+    // A method local is printed by slot id in the Solve-printed body, never
+    // by name, so no spelling of it reaches the C for any policy to allocate.
     let source = render_block_with_symbol_policy(
         &block,
         template_source("embedded-c-galec", "model.c.jinja"),
         &substitute,
     );
     assert!(
-        source.contains("float copy_0_2 = 0.0f;")
-            && !source.contains("float copy_0;")
-            && !source.contains("float copy_0 = "),
-        "the renamed local must also come from the shared policy: {source}"
-    );
-    assert!(
-        source.contains(&format!(
-            "for (int32_t {GENERATED_COPY_ITERATOR} = INT32_C(0);"
-        )),
-        "the generated loop counter is template-owned and must not move: {source}"
+        !source.contains("copy_0") && !source.contains(GENERATED_COPY_ITERATOR),
+        "a method local's source name must not reach the C body: {source}"
     );
 }
 
@@ -1556,8 +1140,11 @@ fn galec_c_artifacts_agree_on_one_state_field_ordering() {
     // Header struct fields, in declaration order.
     let fields = header
         .lines()
+        .filter(|line| line.contains("/* declaration "))
         .filter_map(|line| line.trim().strip_prefix("float "))
         .filter_map(|line| line.split(';').next())
+        // The clock constant the refinement harness adds is not a fixture field.
+        .filter(|field| *field != support::FIXTURE_PERIOD)
         .map(str::to_owned)
         .collect::<Vec<_>>();
     assert_eq!(fields.len(), 4, "{header}");

@@ -24,6 +24,13 @@ pub use rumoca_eval_solve::{
 };
 use rumoca_ir_dae as dae;
 pub use rumoca_phase_solve::{fmi::finish_fmi_component, lower_solve_package, lower_solve_problem};
+
+/// Refinement of a checked GALEC package into the Solve algorithm block an
+/// `algorithm-block` target prints its C from (#483).
+pub mod algorithm_block {
+    pub use rumoca_phase_solve::{AlgorithmBlockLowerError, lower_algorithm_block};
+}
+
 pub use rumoca_solver::{
     DataSeries, DiffsolMethod, HotpathStatsSnapshot, ObjectiveGradient, ProjectionFallback,
     ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite, RunningKind, RunningTerm,

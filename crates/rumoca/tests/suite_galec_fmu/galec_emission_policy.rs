@@ -191,7 +191,8 @@ const DISCLOSURE: &str = "How this block was built";
 /// the model's spelling when it is unambiguous, which it is for every callee in
 /// this fixture.
 fn defines_function(generated: &str, name: &str) -> bool {
-    generated.contains(&format!("static void {name}("))
+    // A function owner returns its fault flag (#483: Solve-printed C).
+    generated.contains(&format!("static int {name}("))
 }
 
 /// The fully structured emission is what no flag produces, is reachable by
@@ -360,8 +361,10 @@ fn a_callee_with_one_call_site_is_substituted_by_the_cost_model() {
 /// The exception is exact and is the removed calls themselves. A call the
 /// policy substituted has no emitted statement left to anchor, so the span of
 /// the call EXPRESSION goes with it, while every line of the callee's body it
-/// executed stays anchored. Each such loss is checked to be exactly that: a
-/// line of the model that writes one of the substituted calls, and nothing
+/// executed stays anchored. The removed function's preamble (its status and
+/// output seeds, anchored at its declaration) goes the same way. Each such loss
+/// is checked to be exactly that: a line of the model that writes one of the
+/// substituted calls or declares one of the substituted functions, and nothing
 /// else. Naming those call sites in the emitted artifact is the inline-chain
 /// breadcrumb that D6 asks for and this projection does not yet emit, because
 /// the GALEC statement carries a span and no annotation channel.
@@ -391,12 +394,12 @@ fn substituting_every_legal_call_loses_no_anchor_on_a_line_of_arithmetic() {
 }
 
 /// Whether an anchor points at a line of the fixture that writes a call the
-/// policy substitutes.
+/// policy substitutes, or declares the substituted function.
 ///
 /// The fixture is right here, so the model line an anchor names is read from
 /// the source rather than guessed from the anchor's shape.
 fn writes_a_substituted_call(anchor: &str) -> bool {
-    const SUBSTITUTED: [&str; 2] = ["scaleOnce(", "squareTwice("];
+    const SUBSTITUTED: [&str; 2] = ["scaleOnce", "squareTwice"];
     let Some((_, position)) = anchor.split_once(&format!("{MODEL}.mo:")) else {
         return false;
     };
@@ -408,7 +411,11 @@ fn writes_a_substituted_call(anchor: &str) -> bool {
     else {
         return false;
     };
-    SUBSTITUTED.iter().any(|call| line.contains(call))
+    // A call site, or the substituted function's own declaration, which
+    // anchors its preamble (status and output seeds) while it is emitted.
+    SUBSTITUTED
+        .iter()
+        .any(|name| line.contains(&format!("{name}(")) || line.trim() == format!("function {name}"))
 }
 
 /// The `path:line:column-line:column` anchors a translation unit carries.
