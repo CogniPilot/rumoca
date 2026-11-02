@@ -487,10 +487,8 @@ fn algorithm_code_renderer(
     }
     let target = manifest.name.as_deref().unwrap_or("custom");
     let profile = manifest.algorithm_block_profile()?;
-    let block =
-        rumoca_sim::algorithm_block::lower_algorithm_block(&package, profile).map_err(|error| {
-            anyhow::anyhow!("Solve refinement refused target '{target}' before any output: {error}")
-        })?;
+    let block = rumoca_sim::algorithm_block::lower_algorithm_block(&package, profile)
+        .map_err(|error| solve_refinement_error(result, &error, target))?;
     Ok(
         rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
             &package,
@@ -524,6 +522,26 @@ fn galec_projection_error(
             .collect::<Vec<_>>()
             .join("; ")
     )
+}
+
+/// A Solve refinement refusal, raised before any output is written: a source
+/// diagnostic when the refused construct has a span (#483), else the plain
+/// message.
+fn solve_refinement_error(
+    result: &CompilationResult,
+    error: &rumoca_sim::algorithm_block::AlgorithmBlockLowerError,
+    target: &str,
+) -> anyhow::Error {
+    let summary = format!("Solve refinement refused target '{target}' before any output");
+    if error.source_span().is_none() {
+        return anyhow::anyhow!("{summary}: {error}");
+    }
+    CompilerError::SourceDiagnosticsError {
+        summary,
+        diagnostics: vec![error.to_diagnostic()],
+        source_map: Box::new(source_map(result)),
+    }
+    .into()
 }
 
 fn source_map(result: &CompilationResult) -> SourceMap {
@@ -802,9 +820,21 @@ fn write_manifest_files(
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
+    // Render every file before writing any, so a template that refuses
+    // leaves no partial artifact behind (#483).
+    let rendered = manifest
+        .files
+        .iter()
+        .map(|file| render_manifest_file(result, renderer, bundle, file, out_dir, model_identifier))
+        .collect::<Result<Vec<_>>>()?;
     std::fs::create_dir_all(out_dir)?;
-    for file in &manifest.files {
-        write_manifest_file(result, renderer, bundle, file, out_dir, model_identifier)?;
+    for (file, output_path, content) in rendered {
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&output_path, content)?;
+        apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
+        eprintln!("  wrote {}", output_path.display());
     }
     Ok(())
 }
@@ -920,29 +950,23 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 }
 
 #[cfg(feature = "scheduled-sim")]
-fn write_manifest_file(
+/// One manifest file rendered in memory: its entry, output path and content.
+fn render_manifest_file<'f>(
     result: &CompilationResult,
     renderer: &ManifestRenderer,
     bundle: &TargetBundle,
-    file: &TargetFile,
+    file: &'f TargetFile,
     out_dir: &Path,
     model_identifier: &str,
-) -> Result<()> {
+) -> Result<(&'f TargetFile, PathBuf, String)> {
     let rendered_rel_path = renderer
         .render(result, &file.path, model_identifier)
         .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let template = bundle.template_source(&file.template)?;
     let rendered = render_manifest_template(result, renderer, template.as_ref(), model_identifier)
         .with_context(|| format!("Render target template '{}'", file.template))?;
-    std::fs::write(&output_path, rendered)?;
-    apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
-    eprintln!("  wrote {}", output_path.display());
-    Ok(())
+    Ok((file, output_path, rendered))
 }
 
 /// Per-invocation renderer for a manifest target's file templates.

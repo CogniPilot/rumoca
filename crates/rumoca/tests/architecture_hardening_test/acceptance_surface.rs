@@ -239,6 +239,70 @@ fn declared_checked_views_agree_with_each_target_manifest() {
     }
 }
 
+/// IRs a C artifact may be printed from: each is, or is refined into, Solve
+/// IR, so one emitter carries the arithmetic, faults and signals (#483).
+const SOLVE_DERIVED_IRS: &[TargetTemplateIr] = &[
+    TargetTemplateIr::Solve,
+    TargetTemplateIr::Fmi,
+    TargetTemplateIr::AlgorithmBlock,
+];
+
+/// Built-in targets allowed to emit C from another IR, each with its reason.
+/// Adding a row is the review point for a second C path; it is empty because
+/// every C target prints from Solve IR.
+const C_OUTPUT_EXCEPTIONS: &[(&str, &str)] = &[];
+
+/// Whether a `[[files]]` output path is a C or CUDA source or header.
+fn is_c_output(path: &str) -> bool {
+    [".c", ".h", ".cu"]
+        .iter()
+        .any(|extension| path.ends_with(extension))
+}
+
+#[test]
+fn every_target_that_emits_c_prints_it_from_solve_ir() {
+    let mut c_targets = Vec::new();
+    for target in builtin_targets() {
+        let manifest = parse_target_manifest(target.manifest)
+            .unwrap_or_else(|error| panic!("parse `{}` target manifest: {error}", target.name));
+        if !manifest.files.iter().any(|file| is_c_output(&file.path)) {
+            continue;
+        }
+        c_targets.push(target.name);
+        let excepted = C_OUTPUT_EXCEPTIONS
+            .iter()
+            .any(|(name, _)| *name == target.name);
+        assert!(
+            excepted || SOLVE_DERIVED_IRS.contains(&manifest.ir),
+            "target `{}` emits C from {:?} IR; C is printed from Solve IR, so declare a \
+             Solve-derived IR or record the target in C_OUTPUT_EXCEPTIONS with its reason",
+            target.name,
+            manifest.ir
+        );
+    }
+    // Positive control: the scan finds every C target, so it cannot pass vacuously.
+    c_targets.sort_unstable();
+    assert_eq!(
+        c_targets,
+        [
+            "c-ode",
+            "cuda-ode",
+            "embedded-c-galec",
+            "fmi-ls-wasm",
+            "fmi2",
+            "fmi3",
+            "galec-production"
+        ],
+        "the set of C-emitting targets changed; review their IR"
+    );
+    for (name, _) in C_OUTPUT_EXCEPTIONS {
+        assert!(
+            c_targets.contains(name),
+            "C_OUTPUT_EXCEPTIONS row `{name}` names no C-emitting target"
+        );
+    }
+}
+
 #[test]
 fn capability_gated_targets_declare_a_capabilities_table() {
     for target in builtin_targets() {

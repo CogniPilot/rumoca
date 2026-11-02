@@ -429,6 +429,61 @@ fn continuous_model_is_rejected_by_the_capability_gate() {
     );
 }
 
+/// A function loop that can fault after an earlier iteration raised NAN; the
+/// Solve refinement still refuses it (EL007).
+const REFUSED_REFINEMENT_FIXTURE: &str = r#"model EmbeddedGalecRefusedRefinement
+  parameter Real zero = 0.0;
+  function f
+    input Real v[3];
+    input Real z;
+    output Real X[5];
+  algorithm
+    for i in 1:5 loop
+      X[i] := v[i];
+      if z / z < 0.01 then X[1] := 0.0; end if;
+    end for;
+  end f;
+  discrete Real x[5](each start = 0.5);
+equation
+  when sample(0.0, 0.001) then
+    x = f(pre(x[1:3]), zero);
+  end when;
+end EmbeddedGalecRefusedRefinement;
+"#;
+
+/// #483: a construct Solve IR cannot represent is refused with a located
+/// diagnostic before any output exists, and no other generator takes over.
+#[test]
+fn a_refused_refinement_names_its_source_and_writes_nothing() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_fixture(
+        dir.path(),
+        "EmbeddedGalecRefusedRefinement",
+        REFUSED_REFINEMENT_FIXTURE,
+    );
+    let out_dir = dir.path().join("out");
+
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        !output.status.success(),
+        "`compile --target embedded-c-galec` must refuse the held raise.\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("EL007") && stderr.contains("not refined into Solve IR here"),
+        "expected the EL007 Solve refinement refusal, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("EmbeddedGalecRefusedRefinement.mo:"),
+        "the refusal must point into the model source, got stderr:\n{stderr}"
+    );
+    assert!(
+        !out_dir.exists(),
+        "a refused refinement must not create the output directory"
+    );
+}
+
 /// A return-carrying function whose output declares a default (MLS §12.4.4),
 /// driven from a fixed-sample `when` so the GALEC capability gate admits it.
 ///

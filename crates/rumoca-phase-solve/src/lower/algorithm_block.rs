@@ -130,7 +130,35 @@ impl std::fmt::Display for AlgorithmBlockLowerError {
     }
 }
 
+impl AlgorithmBlockLowerError {
+    /// The source construct the refusal names, when one carries a span.
+    #[must_use]
+    pub const fn source_span(&self) -> Option<Span> {
+        match self {
+            Self::Unsupported { span, .. }
+            | Self::LifecycleStore { span, .. }
+            | Self::UnrepresentableBound { span, .. } => Some(*span),
+            Self::Construction(error) => error.source_span(),
+            Self::Function { error, .. } => error.source_span(),
+            Self::MissingProvenance { .. } => None,
+        }
+    }
+}
+
 impl std::error::Error for AlgorithmBlockLowerError {}
+
+impl rumoca_core::PhaseError for AlgorithmBlockLowerError {
+    fn to_diagnostic(&self) -> rumoca_core::Diagnostic {
+        match self.source_span() {
+            Some(span) => rumoca_core::Diagnostic::error(
+                self.code(),
+                self.to_string(),
+                rumoca_core::PrimaryLabel::new(span).with_message("not refined into Solve IR here"),
+            ),
+            None => rumoca_core::Diagnostic::global_error(self.code(), self.to_string()),
+        }
+    }
+}
 
 /// The predefined error signals in status-mask order (INVALID_ARGUMENT is
 /// bit 0, NAN is bit 2), one Boolean status slot each.
