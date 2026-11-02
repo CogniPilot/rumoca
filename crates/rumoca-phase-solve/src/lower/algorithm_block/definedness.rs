@@ -16,6 +16,13 @@
 //! A variable defined at the end of every arm of an `if` with an `else` is
 //! defined after it.
 //!
+//! A local set by a select, `if c then l := a; else l := b; end if;` (each
+//! arm one assignment to `l` or a nested select of it, a short-circuit `and`
+//! being `b = false`), holds `select(c, a, b)`, and a guard reading it
+//! compares as that value: a projection that recomputes the same chain into a
+//! second local guards with an equal condition. The value is forgotten when
+//! the local or anything it reads is assigned.
+//!
 //! An element assignment defines that element: `a[k] := 0` makes a later
 //! `a[k]` readable while nothing its subscripts read has changed (loop
 //! iterators included, so a fact never crosses an iteration), and literal
@@ -60,6 +67,9 @@ struct Defs {
     stale: BTreeSet<String>,
     /// Element facts, under guard conjunctions as for `under`.
     elements: BTreeMap<Element, Vec<BTreeSet<Guard>>>,
+    /// The value of a short-circuit local: canonical text with known values
+    /// expanded, and everything that text reads.
+    values: BTreeMap<VarId, (String, BTreeSet<VarId>)>,
 }
 
 impl Defs {
@@ -106,6 +116,8 @@ impl Defs {
     /// `id` changed: a guard reading it no longer repeats its earlier value,
     /// and an element fact whose subscripts read it names another element.
     fn invalidate(&mut self, id: VarId, path: &[Guard]) {
+        self.values
+            .retain(|local, (_, reads)| *local != id && !reads.contains(&id));
         self.elements
             .retain(|(_, _, reads), _| !reads.contains(&id));
         let stale = self
@@ -322,14 +334,14 @@ impl Proof<'_, '_> {
     ) -> Result<(), AlgorithmBlockLowerError> {
         let depth = self.guards.len();
         let mut arms = Vec::new();
+        // A value set inside an arm holds only on that arm's path.
+        let values = self.defs.values.clone();
         for branch in &if_statement.branches {
             let Condition::Expression(condition) = &branch.condition else {
                 return Err(unsupported("signal check", branch.span));
             };
             self.expression(condition, span)?;
-            let guard = canonical(condition);
-            let mut reads = BTreeSet::new();
-            expression_reads(self.scope, condition, &mut reads);
+            let (guard, reads) = self.value_of(condition);
             self.defs
                 .guard_reads
                 .entry(guard.clone())
@@ -339,6 +351,9 @@ impl Proof<'_, '_> {
             self.defs.stale.remove(&guard);
             self.guards.push((guard.clone(), true));
             self.statements(&branch.body)?;
+            self.defs
+                .values
+                .retain(|id, value| values.get(id) == Some(value));
             arms.push(self.guards.clone());
             self.guards.pop();
             // Later branches run where this condition was false.
@@ -346,6 +361,9 @@ impl Proof<'_, '_> {
         }
         if let Some(body) = &if_statement.else_body {
             self.statements(body)?;
+            self.defs
+                .values
+                .retain(|id, value| values.get(id) == Some(value));
             arms.push(self.guards.clone());
         }
         self.guards.truncate(depth);
@@ -370,7 +388,87 @@ impl Proof<'_, '_> {
                 self.defs.define(id, &guards);
             }
         }
+        if let Some((local, value)) = self.short_circuit_value(if_statement) {
+            self.defs.values.insert(local, value);
+        }
         Ok(())
+    }
+
+    /// The local and value of a select: `if c then l := a; else l := b; end
+    /// if;` holds `select(c, a, b)`, where each arm is one call-free
+    /// assignment to `l` or a nested select of `l`, and nothing it reads is
+    /// `l` (a short-circuit `and` is `b = false`).
+    fn short_circuit_value(
+        &self,
+        if_statement: &IfStatement,
+    ) -> Option<(VarId, (String, BTreeSet<VarId>))> {
+        let [branch] = if_statement.branches.as_slice() else {
+            return None;
+        };
+        let Condition::Expression(condition) = &branch.condition else {
+            return None;
+        };
+        if has_call(condition) {
+            return None;
+        }
+        let (local, (then_text, mut reads)) = self.arm_value(&branch.body)?;
+        let (other, (else_text, else_reads)) =
+            self.arm_value(if_statement.else_body.as_deref()?)?;
+        let (condition_text, condition_reads) = self.value_of(condition);
+        reads.extend(else_reads);
+        reads.extend(condition_reads);
+        if other != local || reads.contains(&local) {
+            return None;
+        }
+        Some((
+            local,
+            (
+                format!("select({condition_text},{then_text},{else_text})"),
+                reads,
+            ),
+        ))
+    }
+
+    /// The local an arm of a select assigns and the value it assigns.
+    fn arm_value(&self, body: &[Spanned<Statement>]) -> Option<(VarId, (String, BTreeSet<VarId>))> {
+        let [statement] = body else {
+            return None;
+        };
+        match &statement.node {
+            Statement::Assignment {
+                target: target @ Reference::Local(part),
+                value,
+            } if part.subscripts.is_empty() && !has_call(value) => {
+                Some((self.scope.resolve(target).ok()?, self.value_of(value)))
+            }
+            Statement::If(nested) => self.short_circuit_value(nested),
+            _ => None,
+        }
+    }
+
+    /// `expression`'s canonical text with every local of known value spelled
+    /// as that value, and everything the text reads.
+    fn value_of(&self, expression: &Expression) -> (String, BTreeSet<VarId>) {
+        let mut reads = BTreeSet::new();
+        expression_reads(self.scope, expression, &mut reads);
+        let known = |reference: &Reference| {
+            let Reference::Local(part) = reference else {
+                return None;
+            };
+            if !part.subscripts.is_empty() {
+                return None;
+            }
+            let id = self.scope.resolve(reference).ok()?;
+            self.defs.values.get(&id).map(|(text, _)| text.clone())
+        };
+        let mut text = String::new();
+        write_canonical_with(expression, &mut text, &known);
+        for id in reads.clone() {
+            if let Some((_, value_reads)) = self.defs.values.get(&id) {
+                reads.extend(value_reads.iter().copied());
+            }
+        }
+        (text, reads)
     }
 
     fn for_loop(&mut self, for_loop: &ForLoop, span: Span) -> Result<(), AlgorithmBlockLowerError> {
@@ -389,6 +487,8 @@ impl Proof<'_, '_> {
         }
         let name = iterator.lexeme().to_owned();
         self.loops.push((name.clone(), start, stop, step));
+        // A value set in the body holds only within one iteration.
+        let values = self.defs.values.clone();
         let scope = self.scope;
         let covered = scope.with_loop(&name, |depth| -> Result<_, AlgorithmBlockLowerError> {
             // The iterator is (re)bound here and on every iteration: no fact
@@ -401,6 +501,9 @@ impl Proof<'_, '_> {
             Ok(covered)
         })?;
         self.loops.pop();
+        self.defs
+            .values
+            .retain(|id, value| values.get(id) == Some(value));
         let guards = self.guards.clone();
         let (whole, elements) = covered;
         for id in whole {
@@ -775,13 +878,17 @@ fn visit_references(expression: &Expression, visit: &mut impl FnMut(&Reference))
 
 /// Span-free text of a condition, so two spellings of one guard compare
 /// equal.
-fn canonical(expression: &Expression) -> String {
-    let mut text = String::new();
-    write_canonical(expression, &mut text);
-    text
+fn write_canonical(expression: &Expression, text: &mut String) {
+    write_canonical_with(expression, text, &|_| None);
 }
 
-fn write_canonical(expression: &Expression, text: &mut String) {
+/// [`write_canonical`], writing `known(reference)` in place of a reference
+/// when it has one.
+fn write_canonical_with(
+    expression: &Expression,
+    text: &mut String,
+    known: &dyn Fn(&Reference) -> Option<String>,
+) {
     use std::fmt::Write as _;
     match expression {
         Expression::Bool(value) => {
@@ -793,7 +900,10 @@ fn write_canonical(expression: &Expression, text: &mut String) {
         Expression::Real(value) => {
             let _ = write!(text, "{:#x}r", value.to_bits());
         }
-        Expression::Ref(reference) => write_reference(reference, text),
+        Expression::Ref(reference) => match known(reference) {
+            Some(value) => text.push_str(&value),
+            None => write_reference(reference, text),
+        },
         Expression::Neg(reference) => {
             text.push_str("-(");
             write_reference(reference, text);
@@ -803,45 +913,45 @@ fn write_canonical(expression: &Expression, text: &mut String) {
             text.push_str("size(");
             write_reference(array, text);
             text.push(',');
-            write_canonical(dimension, text);
+            write_canonical_with(dimension, text, known);
             text.push(')');
         }
         Expression::Call(call) => {
             let _ = write!(text, "{}(", call.function.lexeme());
             for argument in &call.arguments {
-                write_canonical(argument, text);
+                write_canonical_with(argument, text, known);
                 text.push(',');
             }
             text.push(')');
         }
-        Expression::Paren(inner) => write_canonical(inner, text),
+        Expression::Paren(inner) => write_canonical_with(inner, text, known),
         Expression::Not(inner) => {
             text.push_str("not(");
-            write_canonical(inner, text);
+            write_canonical_with(inner, text, known);
             text.push(')');
         }
         Expression::Binary { op, lhs, rhs } => {
             text.push('(');
-            write_canonical(lhs, text);
+            write_canonical_with(lhs, text, known);
             let _ = write!(text, " {op:?} ");
-            write_canonical(rhs, text);
+            write_canonical_with(rhs, text, known);
             text.push(')');
         }
         Expression::If(if_expression) => {
             text.push_str("if(");
             for (condition, value) in &if_expression.branches {
-                write_canonical(condition, text);
+                write_canonical_with(condition, text, known);
                 text.push('?');
-                write_canonical(value, text);
+                write_canonical_with(value, text, known);
                 text.push(';');
             }
-            write_canonical(&if_expression.else_value, text);
+            write_canonical_with(&if_expression.else_value, text, known);
             text.push(')');
         }
         Expression::Array(items) => {
             text.push('{');
             for item in items {
-                write_canonical(item, text);
+                write_canonical_with(item, text, known);
                 text.push(',');
             }
             text.push('}');
@@ -869,4 +979,32 @@ fn write_reference(reference: &Reference, text: &mut String) {
             text.push(']');
         }
     }
+}
+
+/// Whether evaluating `expression` calls a function.
+fn has_call(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call(_) => true,
+        Expression::Bool(_) | Expression::Integer(_) | Expression::Real(_) => false,
+        Expression::Ref(reference) | Expression::Neg(reference) => reference_has_call(reference),
+        Expression::Size { array, dimension } => reference_has_call(array) || has_call(dimension),
+        Expression::Paren(inner) | Expression::Not(inner) => has_call(inner),
+        Expression::Binary { lhs, rhs, .. } => has_call(lhs) || has_call(rhs),
+        Expression::If(if_expression) => {
+            if_expression
+                .branches
+                .iter()
+                .any(|(condition, value)| has_call(condition) || has_call(value))
+                || has_call(&if_expression.else_value)
+        }
+        Expression::Array(items) => items.iter().any(has_call),
+    }
+}
+
+fn reference_has_call(reference: &Reference) -> bool {
+    let parts: &[RefPart] = match reference {
+        Reference::Local(part) => std::slice::from_ref(part),
+        Reference::State(parts) => parts,
+    };
+    parts.iter().flat_map(|part| &part.subscripts).any(has_call)
 }

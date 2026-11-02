@@ -118,6 +118,85 @@ fn a_function_output_unassigned_on_some_path_is_refused() {
     assert!(error.to_string().contains("output"), "{error}");
 }
 
+/// `if flag then <name> := <value>; else <name> := false; end if;`: the
+/// short-circuit select a projection emits for `flag and <value>`.
+fn short_circuit(name: &str, value: Expression) -> Spanned<Statement> {
+    Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![IfBranch {
+            condition: Condition::Expression(sref("flag")),
+            body: vec![plain(local(name), value)],
+            span: Span::DUMMY,
+        }],
+        else_body: Some(vec![plain(local(name), Expression::Bool(false))]),
+    }))
+}
+
+fn when_local(name: &str, body: Vec<Spanned<Statement>>) -> Spanned<Statement> {
+    Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![IfBranch {
+            condition: Condition::Expression(lsref(name)),
+            body,
+            span: Span::DUMMY,
+        }],
+        else_body: None,
+    }))
+}
+
+/// z is assigned under `a` and read under `b`, two locals the same select
+/// computes; between them `between` runs.
+fn recomputed_guard(
+    a_value: Expression,
+    b_value: Expression,
+    between: Vec<Spanned<Statement>>,
+) -> Result<SolveAlgorithmBlock, AlgorithmBlockLowerError> {
+    let mut statements = vec![
+        plain(local("w"), sref("v")),
+        short_circuit("a", a_value),
+        when_local("a", vec![plain(local("z"), sref("v"))]),
+    ];
+    statements.extend(between);
+    statements.extend([
+        short_circuit("b", b_value),
+        when_local("b", vec![plain(state("y"), lref("z"))]),
+    ]);
+    let mut block = local_reader(statements);
+    block.do_step.locals.extend([
+        VariableDeclaration::scalar(ScalarType::Boolean, n("a")),
+        VariableDeclaration::scalar(ScalarType::Boolean, n("b")),
+        real_decl(n("w")),
+    ]);
+    block.do_step.signals = vec![PredefinedSignal::Nan];
+    respan(&mut block);
+    refine(block)
+}
+
+#[test]
+fn a_recomputed_select_guard_proves_what_its_twin_defined() {
+    // ReducedRateController: the projection recomputes the same `and` chain
+    // into a second local, so z is defined under `a` and read under `b`,
+    // which holds the same value.
+    let positive = || bin(BinaryOp::Gt, lsref("w"), r(0.0));
+    recomputed_guard(positive(), positive(), Vec::new())
+        .expect("a guard recomputing the defining guard's value is proven");
+
+    // What the chain reads changes in between: `b` may differ from `a`.
+    let Err(error) = recomputed_guard(positive(), positive(), vec![plain(local("w"), r(-1.0))])
+    else {
+        panic!("a recomputation over a changed operand proves nothing");
+    };
+    assert!(error.to_string().contains("unassigned local"), "{error}");
+
+    // A different value: `b` is not `a`.
+    let Err(error) = recomputed_guard(
+        positive(),
+        bin(BinaryOp::Lt, lsref("w"), r(0.0)),
+        Vec::new(),
+    ) else {
+        panic!("a different select proves nothing");
+    };
+    assert!(error.to_string().contains("unassigned local"), "{error}");
+}
+
 #[test]
 fn a_limit_between_two_guards_forgets_the_guard() {
     // Regression: g := 2; if g < 1.5 then z := 7; limit g; if g < 1.5 then y := z.
