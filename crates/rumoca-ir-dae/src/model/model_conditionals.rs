@@ -144,6 +144,13 @@ impl<'dae> DaeConstruction<'dae> {
         self.issue_model_conditional(condition, guards, self.storage.active_model_arm, provenance)
     }
 
+    /// Whether no model arm is active, so replaying the root context is a
+    /// no-op. A replay loop asks this before fetching the provenance that only
+    /// a real transition needs.
+    pub fn model_arm_context_is_root(&self) -> bool {
+        self.storage.active_model_arm.is_none()
+    }
+
     /// Advance one reconstruction operation's lexical context. A transition
     /// crosses at most one parent edge, or swaps two arms of that parent.
     pub fn replay_model_arm_context(

@@ -29,19 +29,27 @@ impl<'target> ModelConditionalReplay<'target> {
         self.guards.contains(&expression)
     }
 
+    /// `context` and `closing` are `source`'s arm and closed owner of
+    /// `source_id`, looked up once by the caller.
     pub(super) fn prepare<'source>(
         &mut self,
         source: dae::DaeView<'source>,
         source_id: dae::ExprId<'source>,
+        context: Option<dae::ModelArm<'source>>,
+        closing: Option<dae::ModelConditionalView<'source>>,
         target: &mut dae::DaeConstruction<'target>,
         rebuilt: &[Option<dae::ExprId<'target>>],
     ) -> Result<(), dae::DaeConstructionError> {
-        let expression = source
+        // Almost every expression is outside every arm and closes nothing.
+        // Replaying the root context from the root changes nothing, so it
+        // skips the provenance fetch and the transition.
+        if context.is_none() && closing.is_none() && target.model_arm_context_is_root() {
+            return Ok(());
+        }
+        let provenance = source
             .expression(source_id)
-            .expect("checked source expression");
-        let provenance = expression.provenance();
-        let context = source.model_arm_of(source_id);
-        let closing = source.model_conditional_of(source_id);
+            .expect("checked source expression")
+            .provenance();
         let needed = context
             .map(|arm| arm.index() as usize / 2)
             .into_iter()
@@ -77,14 +85,17 @@ impl<'target> ModelConditionalReplay<'target> {
         target.replay_model_arm_context(context, provenance)
     }
 
+    /// `owner` is `source`'s closed owner of `source_id`, looked up once by
+    /// the caller.
     pub(super) fn close<'source>(
         &mut self,
         source: dae::DaeView<'source>,
         source_id: dae::ExprId<'source>,
+        owner: Option<dae::ModelConditionalView<'source>>,
         target: &mut dae::DaeConstruction<'target>,
         rebuilt: &mut [Option<dae::ExprId<'target>>],
     ) -> Result<Option<dae::DaeProvenance>, dae::DaeConstructionError> {
-        let Some(owner) = source.model_conditional_of(source_id) else {
+        let Some(owner) = owner else {
             return Ok(None);
         };
         let expression = source

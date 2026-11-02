@@ -77,26 +77,32 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         self.conditionals.owns_guard(expression.index())
     }
 
-    pub(super) fn prepare_model_expression(
+    /// Enter `id`'s lexical arm context. `arm` and `closing` are the
+    /// caller's lookups of `source.model_arm_of(id)` and
+    /// `source.model_conditional_of(id)`, made once per expression.
+    pub(super) fn prepare_model_expression<'source>(
         &mut self,
-        source: dae::DaeView<'_>,
-        index: usize,
+        source: dae::DaeView<'source>,
+        id: dae::ExprId<'source>,
+        arm: Option<dae::ModelArm<'source>>,
+        closing: Option<dae::ModelConditionalView<'source>>,
         target: &mut dae::DaeConstruction<'target>,
         rebuilt: &[Option<dae::ExprId<'target>>],
     ) -> Result<(), dae::DaeConstructionError> {
-        let id = source.expression_id(index).expect("checked source ordinal");
-        self.conditionals.prepare(source, id, target, rebuilt)
+        self.conditionals
+            .prepare(source, id, arm, closing, target, rebuilt)
     }
 
-    pub(super) fn close_model_expression(
+    pub(super) fn close_model_expression<'source>(
         &mut self,
-        source: dae::DaeView<'_>,
-        index: usize,
+        source: dae::DaeView<'source>,
+        id: dae::ExprId<'source>,
+        closing: Option<dae::ModelConditionalView<'source>>,
         target: &mut dae::DaeConstruction<'target>,
         rebuilt: &mut [Option<dae::ExprId<'target>>],
     ) -> Result<Option<dae::DaeProvenance>, dae::DaeConstructionError> {
-        let id = source.expression_id(index).expect("checked source ordinal");
-        self.conditionals.close(source, id, target, rebuilt)
+        self.conditionals
+            .close(source, id, closing, target, rebuilt)
     }
     pub(super) fn collect(source: dae::DaeView<'_>) -> Result<Self, dae::DaeConstructionError> {
         let mut plan = Self {
@@ -335,7 +341,18 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         };
         let (quotient, builtin, arguments, generated, provenance) =
             (*quotient, *builtin, *arguments, *generated, *provenance);
-        self.prepare_model_expression(context.source, quotient as usize, target, rebuilt)?;
+        let id = context
+            .source
+            .expression_id(quotient as usize)
+            .expect("checked source ordinal");
+        self.prepare_model_expression(
+            context.source,
+            id,
+            context.source.model_arm_of(id),
+            context.source.model_conditional_of(id),
+            target,
+            rebuilt,
+        )?;
         let arguments = target.expressions(|expressions| {
             let mut rebuilder = ExpressionRebuilder::new(
                 context.source,
