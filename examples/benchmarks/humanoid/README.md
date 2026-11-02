@@ -62,6 +62,13 @@ has a 180 s timeout; the CI comparison step has a 15 minute timeout. The first
 hosted run establishes the actual added CI time; historical laptop timings
 cannot establish that number.
 
+CI binds the reused Nix executable to the package derivation's realized output,
+its filtered source path and the immutable flake's exact checkout revision and
+source NAR hash. Both raw Nix records are retained. This package does not embed
+a commit, so CI does not require `build-info`. Direct non-Nix invocations still
+require that command; the optional `--nix-derivation` and `--nix-metadata` inputs
+must be supplied together with `CI_SOURCE_SHA` and pass the same binding checks.
+
 The fixture's Modelica model, contact model, compact MultiBodyLie library and
 joint-coordinate C controller are frozen comparison inputs, not production
 library implementations or a new model generator used by the compiler.

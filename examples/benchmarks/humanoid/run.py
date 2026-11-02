@@ -14,6 +14,7 @@ import sys
 import time
 
 import fidelity
+import package_identity
 
 HERE = Path(__file__).resolve().parent
 
@@ -148,6 +149,8 @@ def main():
     for name in ("rumoca", "msl", "mujoco", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--cc", default="cc")
+    parser.add_argument("--nix-derivation", type=Path)
+    parser.add_argument("--nix-metadata", type=Path)
     args = parser.parse_args()
     for name in ("rumoca", "msl", "mujoco", "output"):
         setattr(args, name, getattr(args, name).resolve())
@@ -176,7 +179,12 @@ def main():
     identities["mujoco_version"] = version().decode("ascii")
     if identities["mujoco_version"] != "3.8.1":
         raise ValueError("unexpected MuJoCo library version")
-    execute([str(args.rumoca), "build-info"], args.output / "rumoca-build-info")
+    if args.nix_derivation or args.nix_metadata:
+        identities["rumoca_package"] = package_identity.retain(
+            args.rumoca, args.nix_derivation, args.nix_metadata,
+            os.environ.get("CI_SOURCE_SHA"), args.output)
+    else:
+        execute([str(args.rumoca), "build-info"], args.output / "rumoca-build-info")
     execute([args.cc, "--version"], args.output / "compiler-version")
     identities["twin_sha256"] = digest(args.output / "twin")
     for name in ("twin_native_act.xml", "params.h", "params.json"):

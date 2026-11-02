@@ -16,7 +16,14 @@ curl --fail --location --retry 2 --connect-timeout 10 --max-time 90 \
 echo "5409cfa17797c52d866dc9d2675badc1378b4bbf88066e60899a489cb1cb8a2d  $deps/msl.zip" | sha256sum --check
 unzip -q "$deps/msl.zip" -d "$deps/msl"
 ulimit -s 1048576
-rumoca_package=$(nix path-info .#rumoca)
+test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
+git diff --exit-code HEAD --
+flake="git+file://$PWD?rev=$CI_SOURCE_SHA"
+rumoca_package=$(nix path-info "$flake#rumoca")
+rumoca_drv=$(nix path-info --derivation "$flake#rumoca")
+nix derivation show "$rumoca_drv" > "$deps/rumoca-derivation.json"
+nix flake metadata --json "$flake" > "$deps/rumoca-flake.json"
 python3 examples/benchmarks/humanoid/run.py \
   --rumoca "$rumoca_package/bin/rumoca" --msl "$deps/msl" \
+  --nix-derivation "$deps/rumoca-derivation.json" --nix-metadata "$deps/rumoca-flake.json" \
   --mujoco "$deps/mujoco-3.8.1" --output "$out"
