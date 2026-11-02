@@ -751,10 +751,13 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             .iter()
             .map(|value| self.expression(value))
             .collect::<Result<Vec<_>, _>>()?;
-        let element_shape = values
-            .first()
-            .map(ShapeEvidence::of_expression)
-            .unwrap_or_else(ShapeEvidence::unknown_scalar);
+        // The checked package refuses an empty constructor
+        // (`GalecError::EmptyArrayConstructor`), so there is no element type to
+        // invent here.
+        let Some(first) = values.first() else {
+            return Err("checked array constructor has no elements".to_string());
+        };
+        let element_shape = ShapeEvidence::of_expression(first);
         for value in &values[1..] {
             require_equal_shape(
                 element_shape.clone(),
@@ -823,14 +826,6 @@ impl ShapeEvidence {
             rank: 0,
             extents: Some(Vec::new()),
             scalar: Some(scalar),
-        }
-    }
-
-    fn unknown_scalar() -> Self {
-        Self {
-            rank: 0,
-            extents: Some(Vec::new()),
-            scalar: None,
         }
     }
 

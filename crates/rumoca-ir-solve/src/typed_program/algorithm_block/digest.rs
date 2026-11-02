@@ -31,6 +31,9 @@ use serde::ser::{
 
 use super::SolveAlgorithmBlock;
 
+#[cfg(test)]
+mod tests;
+
 /// Bumped whenever the hashed byte form changes meaning.
 const FORMAT_TAG: &[u8] = b"rumoca.solve-algorithm-block.v1\0";
 
@@ -88,11 +91,17 @@ impl SolveAlgorithmBlock {
     /// The digest of this block's content; see the module docs for what it
     /// covers.
     pub fn digest(&self) -> Result<SolveAlgorithmBlockDigest, SolveAlgorithmBlockDigestError> {
-        let mut writer = DigestWriter(blake3::Hasher::new());
-        writer.0.update(FORMAT_TAG);
-        self.serialize(&mut writer)?;
-        Ok(SolveAlgorithmBlockDigest(*writer.0.finalize().as_bytes()))
+        digest_of(self)
     }
+}
+
+fn digest_of<T: ?Sized + Serialize>(
+    value: &T,
+) -> Result<SolveAlgorithmBlockDigest, SolveAlgorithmBlockDigestError> {
+    let mut writer = DigestWriter(blake3::Hasher::new());
+    writer.0.update(FORMAT_TAG);
+    value.serialize(&mut writer)?;
+    Ok(SolveAlgorithmBlockDigest(*writer.0.finalize().as_bytes()))
 }
 
 /// Leading byte of every encoded value, and the end of every compound.
