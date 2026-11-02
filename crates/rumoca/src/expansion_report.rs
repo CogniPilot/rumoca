@@ -93,6 +93,13 @@ mod tests {
         assert_eq!(value["collection_complete"], false);
         assert_eq!(value["nonempty"], false);
         assert_eq!(value["invocation_error"], "compile refused");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("failed.json");
+        write(path.to_str().unwrap(), &report, Some("compile refused")).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved, value);
+        let absent_parent = directory.path().join("absent/report.json");
+        assert!(write(absent_parent.to_str().unwrap(), &report, None).is_err());
         let ((), empty) = record_expansion_report(|| {});
         assert_eq!(document(&empty, None)["nonempty"], false);
     }
