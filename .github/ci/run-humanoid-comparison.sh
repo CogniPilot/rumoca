@@ -18,7 +18,7 @@ unzip -q "$deps/msl.zip" -d "$deps/msl"
 ulimit -s 1048576
 test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
 git diff --exit-code HEAD --
-flake="git+file://$PWD?rev=$CI_SOURCE_SHA"
+flake="git+file://$PWD?rev=$CI_SOURCE_SHA&shallow=1"
 rumoca_package=$(nix path-info "$flake#rumoca")
 rumoca_drv=$(nix path-info --derivation "$flake#rumoca")
 nix derivation show "$rumoca_drv" > "$deps/rumoca-derivation.json"

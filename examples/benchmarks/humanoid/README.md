@@ -68,6 +68,8 @@ source NAR hash. Both raw Nix records are retained. This package does not embed
 a commit, so CI does not require `build-info`. Direct non-Nix invocations still
 require that command; the optional `--nix-derivation` and `--nix-metadata` inputs
 must be supplied together with `CI_SOURCE_SHA` and pass the same binding checks.
+The immutable flake URL explicitly permits the existing shallow checkout; the
+binding uses its exact revision and source NAR hash and never needs `revCount`.
 
 The fixture's Modelica model, contact model, compact MultiBodyLie library and
 joint-coordinate C controller are frozen comparison inputs, not production
