@@ -27,6 +27,22 @@ impl<'program> TypedProgramBuilder<'program> {
         {
             return Err(SolveProgramConstructionError::InvalidCallInterface { provenance });
         }
+        // Builtin math retains the existing typed operation and its derivative.
+        let builtin = match body {
+            NativeBody::BuiltinExp => Some(SolveUnaryOperator::Exp),
+            NativeBody::BuiltinLog10 => Some(SolveUnaryOperator::Log10),
+            NativeBody::BuiltinLog => Some(SolveUnaryOperator::Log),
+            NativeBody::BuiltinAcos => Some(SolveUnaryOperator::Acos),
+            _ => None,
+        };
+        if let Some(builtin) = builtin {
+            let [operand] = operands else {
+                return Err(SolveProgramConstructionError::InvalidCallInterface { provenance });
+            };
+            return self
+                .unary(builtin, *operand, provenance)
+                .map(|value| vec![value]);
+        }
         let destinations = body
             .outputs()
             .map(|output| {

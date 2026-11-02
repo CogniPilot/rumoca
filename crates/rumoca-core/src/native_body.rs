@@ -5,9 +5,9 @@
 //! therefore executes only when this closed catalog defines it: each row names
 //! its exact entry point, its ordered external argument interface, and one
 //! definitional evaluator. The DAE proves a declaration against the row's
-//! interface, Solve issues the row as one typed operation, and every evaluator
-//! and backend computes the row's value through [`NativeBody::evaluate`], so
-//! there is one meaning per row (SPEC_0040 DAE-C30).
+//! interface. C rows execute through [`NativeBody::evaluate`]; builtin math
+//! lowers to existing typed mathematical operations and their derivatives
+//! (SPEC_0040 DAE-C30).
 //!
 //! A row whose foreign body reads or writes hidden library state names that
 //! state as a [`ForeignStateCell`]. Flattening threads the cell through every
@@ -23,6 +23,14 @@ mod xorshift;
 )]
 #[serde(rename_all = "snake_case")]
 pub enum NativeBody {
+    /// Scalar Real exponential declared by the builtin language.
+    BuiltinExp,
+    /// Scalar Real base-ten logarithm declared by the builtin language.
+    BuiltinLog10,
+    /// Scalar Real natural logarithm declared by the builtin language.
+    BuiltinLog,
+    /// Scalar Real inverse cosine declared by the builtin language.
+    BuiltinAcos,
     /// `ModelicaRandom_xorshift64star(stateIn, stateOut, result)`.
     Xorshift64Star,
     /// `ModelicaRandom_xorshift128plus(stateIn, stateOut, result)`.
@@ -197,26 +205,50 @@ const IMPURE_DRAW_INTERFACE: [NativeArgument; 4] = [
     output(INTEGER, CELL),
 ];
 
+const BUILTIN_UNARY_REAL_INTERFACE: [NativeArgument; 2] = [input(REAL, None), output(REAL, None)];
+
 impl NativeBody {
     /// Every row of the catalog.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 9] = [
         Self::Xorshift64Star,
         Self::Xorshift128Plus,
         Self::Xorshift1024Star,
         Self::Xorshift1024StarSetState,
         Self::Xorshift1024StarImpureDraw,
+        Self::BuiltinExp,
+        Self::BuiltinLog10,
+        Self::BuiltinLog,
+        Self::BuiltinAcos,
     ];
 
     /// The row a C entry point names, if the catalog defines it.
     pub fn from_c_entry_point(symbol: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|body| body.entry_point() == symbol)
+        Self::ALL.into_iter().find(|body| {
+            !matches!(
+                body,
+                Self::BuiltinExp | Self::BuiltinLog10 | Self::BuiltinLog | Self::BuiltinAcos
+            ) && body.entry_point() == symbol
+        })
     }
 
-    /// The exact C entry point this row defines.
+    /// Supported unary Real bodies in the explicitly declared builtin language.
+    pub fn from_builtin_entry_point(symbol: &str) -> Option<Self> {
+        match symbol {
+            "exp" => Some(Self::BuiltinExp),
+            "log10" => Some(Self::BuiltinLog10),
+            "log" => Some(Self::BuiltinLog),
+            "acos" => Some(Self::BuiltinAcos),
+            _ => None,
+        }
+    }
+
+    /// The exact entry point this row defines in its declared language.
     pub const fn entry_point(self) -> &'static str {
         match self {
+            Self::BuiltinExp => "exp",
+            Self::BuiltinLog10 => "log10",
+            Self::BuiltinLog => "log",
+            Self::BuiltinAcos => "acos",
             Self::Xorshift64Star => "ModelicaRandom_xorshift64star",
             Self::Xorshift128Plus => "ModelicaRandom_xorshift128plus",
             Self::Xorshift1024Star => "ModelicaRandom_xorshift1024star",
@@ -232,6 +264,9 @@ impl NativeBody {
     /// the cell's input and output.
     pub const fn interface(self) -> &'static [NativeArgument] {
         match self {
+            Self::BuiltinExp | Self::BuiltinLog10 | Self::BuiltinLog | Self::BuiltinAcos => {
+                &BUILTIN_UNARY_REAL_INTERFACE
+            }
             Self::Xorshift64Star => &XORSHIFT64STAR_INTERFACE,
             Self::Xorshift128Plus => &XORSHIFT128PLUS_INTERFACE,
             Self::Xorshift1024Star => &XORSHIFT1024STAR_INTERFACE,
@@ -243,7 +278,13 @@ impl NativeBody {
     /// The hidden state this row's foreign body reaches, if any.
     pub const fn foreign_state(self) -> Option<ForeignStateAccess> {
         match self {
-            Self::Xorshift64Star | Self::Xorshift128Plus | Self::Xorshift1024Star => None,
+            Self::BuiltinExp
+            | Self::BuiltinLog10
+            | Self::BuiltinLog
+            | Self::BuiltinAcos
+            | Self::Xorshift64Star
+            | Self::Xorshift128Plus
+            | Self::Xorshift1024Star => None,
             Self::Xorshift1024StarSetState => Some(ForeignStateAccess {
                 cell: ForeignStateCell::Xorshift1024Star,
                 declared: &SET_STATE_DECLARED,
@@ -280,6 +321,24 @@ impl NativeBody {
         inputs: &[&[NativeScalar]],
     ) -> Result<Vec<Vec<NativeScalar>>, NativeBodyError> {
         let mismatch = NativeBodyError::OperandMismatch { body: self };
+        if matches!(
+            self,
+            Self::BuiltinExp | Self::BuiltinLog10 | Self::BuiltinLog | Self::BuiltinAcos
+        ) {
+            return match inputs {
+                [[NativeScalar::Real(value)]] => {
+                    let result = match self {
+                        Self::BuiltinExp => value.exp(),
+                        Self::BuiltinLog10 => value.log10(),
+                        Self::BuiltinLog => value.ln(),
+                        Self::BuiltinAcos => value.acos(),
+                        _ => return Err(mismatch),
+                    };
+                    Ok(vec![vec![NativeScalar::Real(result)]])
+                }
+                _ => Err(mismatch),
+            };
+        }
         let expected = self.inputs().collect::<Vec<_>>();
         if inputs.len() != expected.len() {
             return Err(mismatch);

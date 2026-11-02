@@ -22,13 +22,16 @@ use super::recursive_groups::function_calls;
 use crate::lower::integer_is_exact_binary64;
 
 /// Whether `function` and every function it transitively calls is free of
-/// constructs that only the typed owner executes exactly.
+/// constructs that only the typed owner executes exactly. An external body
+/// has no Modelica result definition to substitute; even a proven native body
+/// must keep its executable typed owner and directional relation.
 pub(crate) fn is_scalar_expandable<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionId<'dae>,
 ) -> Result<bool, solve::SolveProgramConstructionError> {
     every_body(view, function, |body| {
-        !carries_owner_only_construct(view, body.statements(), false)
+        !body.is_external()
+            && !carries_owner_only_construct(view, body.statements(), false)
             && !holds_inexact_integer(view, body)
             && !selects_partial_derivative_arm(view, body)
     })
@@ -73,7 +76,8 @@ pub(super) fn body_is_scalar_storable<'dae>(
 }
 
 /// Whether `accepts` holds for the body of `function` and of every function
-/// it transitively calls; external bodies carry no statements to inspect.
+/// it transitively calls, including external interfaces. Each caller decides
+/// whether an external interface satisfies its own predicate.
 fn every_body<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionId<'dae>,
@@ -88,7 +92,7 @@ fn every_body<'dae>(
         let body = view
             .function(next)
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        if !body.is_external() && !accepts(body) {
+        if !accepts(body) {
             return Ok(false);
         }
         pending.extend(

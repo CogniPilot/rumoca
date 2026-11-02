@@ -515,6 +515,10 @@ fn proven_native_body(
     (purity, language, symbol, result): (FunctionPurity, ExternalLanguage, &VarName, Option<u32>),
     arguments: &[ExternalArgumentEntry],
 ) -> Option<NativeBodyBinding> {
+    if language == ExternalLanguage::Builtin {
+        let body = NativeBody::from_builtin_entry_point(symbol.as_str())?;
+        return proven_builtin_unary_real(storage, function, result, arguments, body);
+    }
     if !purity.is_pure() || language != ExternalLanguage::C || result.is_some() {
         return None;
     }
@@ -560,4 +564,37 @@ fn native_argument_type_matches(value_type: &ValueType, expected: NativeArgument
         NativeElement::Real => ScalarType::Real,
     };
     value_type.scalar_type() == element && value_type.dimensions() == expected.extent.as_slice()
+}
+
+/// Bind only the checked scalar Real return-form interface to a supported builtin.
+/// Declaration purity remains unchanged: this is execution evidence, not
+/// permission to hoist or merge calls (FUNC-032).
+fn proven_builtin_unary_real(
+    storage: &Storage,
+    function: FunctionId<'_>,
+    result: Option<u32>,
+    arguments: &[ExternalArgumentEntry],
+    body: NativeBody,
+) -> Option<NativeBodyBinding> {
+    let [ExternalArgumentEntry::Input(input)] = arguments else {
+        return None;
+    };
+    let result = result?;
+    let entry = storage.functions.get(function.index() as usize)?;
+    if entry.output_values.as_slice() != [result] {
+        return None;
+    }
+    let input_type = *storage.expressions.value_types.get(*input as usize)?;
+    let output_type = entry.values.get(result as usize)?.value_type;
+    for value_type in [input_type, output_type] {
+        let value_type = storage.value_types.get(value_type as usize)?;
+        if value_type.scalar_type() != ScalarType::Real || !value_type.dimensions().is_empty() {
+            return None;
+        }
+    }
+    Some(NativeBodyBinding {
+        body,
+        inputs: vec![*input].into_boxed_slice(),
+        results: vec![0].into_boxed_slice(),
+    })
 }
