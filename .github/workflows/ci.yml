@@ -246,6 +246,24 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
           printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
+      - name: Reclaim runner disk
+        # Hosted runners ship toolchains this job never uses; three jobs ran out of disk on 2026-11-02.
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force > /dev/null || true
+          sudo apt-get clean
+          echo "== disk after cleanup =="
+          df -h . / /tmp || true
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
         with:
@@ -1354,6 +1372,24 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
           printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
+
+      - name: Reclaim runner disk
+        # Hosted runners ship toolchains this job never uses; three jobs ran out of disk on 2026-11-02.
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force > /dev/null || true
+          sudo apt-get clean
+          echo "== disk after cleanup =="
+          df -h . / /tmp || true
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
@@ -2711,6 +2747,25 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
           printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
+
+      - name: Reclaim runner disk
+        if: runner.os == 'Linux'
+        # Hosted runners ship toolchains this job never uses; three jobs ran out of disk on 2026-11-02.
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force > /dev/null || true
+          sudo apt-get clean
+          echo "== disk after cleanup =="
+          df -h . / /tmp || true
 
       - name: Ensure Rosetta for the x86_64 wheel on Apple Silicon
         # GitHub no longer offers Intel macOS runners with a supported Nix
