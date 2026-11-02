@@ -1,4 +1,5 @@
 //! Conservative region read sets, retaining coordinate subsets of captures.
+use super::substitution::{Read, Substitution};
 use super::*;
 use crate::SolveProgramRegion;
 
@@ -85,6 +86,13 @@ fn insert_operand(
     Ok(())
 }
 
+/// The registers a region operation reads, with the substitution all its
+/// destinations share.
+struct Reads<'a> {
+    registers: &'a [Vec<SolveCallDependency>],
+    substitution: Substitution,
+}
+
 /// Substitute readonly captures; carried inputs and static binders are handled
 /// separately by the fold closure, never mistaken for readonly capture leaves.
 fn capture_dependencies(
@@ -94,32 +102,37 @@ fn capture_dependencies(
     summary: &[SolveCallDependency],
     rank: usize,
     consume: Option<&Coordinates>,
-    registers: &[Vec<SolveCallDependency>],
+    reads: &mut Reads<'_>,
 ) -> Result<Vec<SolveCallDependency>, SolveProgramConstructionError> {
-    let mut out = Dependencies::default();
+    let error = || SolveProgramConstructionError::InvalidCallInterface {
+        provenance: context.provenance,
+    };
+    let mut captured = Vec::new();
     for dependency in summary {
         for leaf in dependency.inputs() {
             let Some(capture) = leaf.checked_sub(offset).and_then(|i| captures.get(i)) else {
                 continue;
             };
             let access = match (&dependency.coordinates, consume) {
-                (Some(access), Some(consume)) => access.compose(consume).ok_or(
-                    SolveProgramConstructionError::InvalidCallInterface {
-                        provenance: context.provenance,
-                    },
-                )?,
+                (Some(access), Some(consume)) => access.compose(consume).ok_or_else(error)?,
                 (Some(access), None) => access.clone(),
                 (None, _) => operations::whole_access(
                     rank,
                     context.body.register_types()[capture.index()].dimensions(),
                 ),
             };
-            for source in &registers[capture.index()] {
-                out.insert(source.remap_may_depend(&access, context.provenance)?);
-            }
+            captured.push((capture.index(), access));
         }
     }
-    Ok(out.finish())
+    reads.substitution.output(
+        captured.iter().map(|(register, access)| Read {
+            register: *register,
+            access: Some(access),
+        }),
+        reads.registers,
+        |source, access| may_depend_coordinates(source, access, context.provenance),
+        error,
+    )
 }
 
 pub(super) fn conditional(
@@ -135,6 +148,10 @@ pub(super) fn conditional(
         region_summaries(branches[1], context.available)?,
     ];
     let mut results = Vec::new();
+    let mut reads = Reads {
+        registers,
+        substitution: Substitution::default(),
+    };
     for (index, destination) in destinations.iter().enumerate() {
         let rank = context.body.register_types()[destination.index()]
             .dimensions()
@@ -142,14 +159,14 @@ pub(super) fn conditional(
         let mut out = Dependencies::default();
         insert_operand(
             &mut out,
-            &registers[condition.index()],
+            &reads.registers[condition.index()],
             rank,
             &context.body.register_types()[condition.index()],
             context.provenance,
         )?;
         for branch in &summaries {
             for dependency in
-                capture_dependencies(context, captures, 0, &branch[index], rank, None, registers)?
+                capture_dependencies(context, captures, 0, &branch[index], rank, None, &mut reads)?
             {
                 out.insert(dependency);
             }
@@ -176,6 +193,10 @@ pub(super) fn fold(
         regions.push((region, region_summaries(region, context.available)?));
     }
     let mut results = Vec::new();
+    let mut reads = Reads {
+        registers,
+        substitution: Substitution::default(),
+    };
     for (index, destination) in destinations.iter().enumerate() {
         if continuation.is_none()
             && let Some(result) = pointwise::fold_output(
@@ -185,7 +206,7 @@ pub(super) fn fold(
                 transition,
                 &regions[0].1[index],
                 index,
-                registers,
+                &mut reads,
             )?
         {
             results.push(result);
@@ -200,7 +221,7 @@ pub(super) fn fold(
         for operand in initial {
             insert_operand(
                 &mut out,
-                &registers[operand.index()],
+                &reads.registers[operand.index()],
                 rank,
                 &context.body.register_types()[operand.index()],
                 context.provenance,
@@ -218,7 +239,7 @@ pub(super) fn fold(
                         summary,
                         rank,
                         Some(&consume),
-                        registers,
+                        &mut reads,
                     )?,
                 );
             }

@@ -78,17 +78,19 @@ impl Dependencies {
     /// Record one exact relation on `input`; whether the leaf's relations now
     /// exceed [`LEAF_TERM_BUDGET`].
     fn record_exact(&mut self, input: usize, coordinates: &Coordinates) -> bool {
-        if !self
-            .exact
-            .entry(input)
-            .or_default()
-            .insert(coordinates.clone())
-        {
+        let relations = self.exact.entry(input).or_default();
+        if relations.contains(coordinates) {
             return false;
         }
+        relations.insert(coordinates.clone());
         let terms = self.terms.entry(input).or_default();
         *terms += coordinates.terms();
         *terms > LEAF_TERM_BUDGET
+    }
+
+    /// Whether whole-input runs already cover every leaf of `inputs`.
+    pub(super) fn covers(&self, mut inputs: std::ops::Range<usize>) -> bool {
+        inputs.all(|input| Self::covered(&self.whole, input))
     }
 
     fn covered(whole: &BTreeMap<usize, usize>, input: usize) -> bool {

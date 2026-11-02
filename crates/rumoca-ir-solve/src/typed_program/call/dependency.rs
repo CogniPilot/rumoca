@@ -11,6 +11,7 @@ mod map_access;
 mod operation_tests;
 mod operations;
 mod regions;
+mod substitution;
 pub(in crate::typed_program) mod value_projection;
 
 use super::{SolveOperation, SolveProgramConstructionError, SolvePureCallTableView, TypedProgram};
@@ -30,7 +31,7 @@ use std::ops::Range;
 /// in the run. A coordinate relation holds, with the same relation, for each
 /// leaf of its run. Runs of one summary are disjoint, ordered by first input,
 /// and maximal; only the constructors below issue either form.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SolveCallDependency {
     input: usize,
     count: NonZeroUsize,
@@ -155,14 +156,15 @@ impl SolveCallDependency {
         access: &Coordinates,
         provenance: Span,
     ) -> Result<Self, SolveProgramConstructionError> {
-        if self.composition_exceeds_budget(access) {
-            return Ok(Self {
-                input: self.input,
-                count: self.count,
-                coordinates: None,
-            });
-        }
-        self.remap(access, provenance)
+        let coordinates = match &self.coordinates {
+            Some(source) => may_depend_coordinates(source, access, provenance)?,
+            None => None,
+        };
+        Ok(Self {
+            input: self.input,
+            count: self.count,
+            coordinates,
+        })
     }
 
     /// Whether composing `access` into this relation could exceed the term or
@@ -193,6 +195,23 @@ impl SolveCallDependency {
             coordinates,
         })
     }
+}
+
+/// `source` composed with `access`, or `None` (the whole input) when the
+/// composition could exceed the term or coefficient budget; that is decided
+/// before any composition is allocated.
+fn may_depend_coordinates(
+    source: &Coordinates,
+    access: &Coordinates,
+    provenance: Span,
+) -> Result<Option<Coordinates>, SolveProgramConstructionError> {
+    if source.composition_exceeds_budget(access) {
+        return Ok(None);
+    }
+    source
+        .compose(access)
+        .map(Some)
+        .ok_or(SolveProgramConstructionError::InvalidCallInterface { provenance })
 }
 
 pub(in crate::typed_program) fn derive(
@@ -414,25 +433,38 @@ fn substitute_call(
     if summaries.len() != destinations.len() {
         return Err(error());
     }
+    let mut substitution = substitution::Substitution::default();
     for (output_index, (destination, inputs)) in destinations.iter().zip(summaries).enumerate() {
-        let mut dependencies = Dependencies::default();
-        for input in inputs {
-            for leaf in input.inputs() {
-                let argument = arguments.get(leaf).ok_or_else(error)?;
-                let projected = projected_argument(
-                    input,
-                    interface.outputs[output_index].value_type(),
-                    &interface.inputs[leaf],
-                );
-                substitute_argument(
-                    &mut dependencies,
-                    &registers[argument.index()],
-                    &projected,
-                    provenance,
+        let output = interface.outputs[output_index].value_type();
+        let result = match substitution.finished(inputs, output) {
+            Some(result) => result.clone(),
+            None => {
+                let reads = inputs
+                    .iter()
+                    .flat_map(|input| input.inputs().map(move |leaf| (input, leaf)))
+                    .map(|(input, leaf)| {
+                        let argument = arguments.get(leaf).ok_or_else(error)?;
+                        let projected = projected_argument(input, output, &interface.inputs[leaf]);
+                        Ok((argument.index(), projected))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result = substitution.output(
+                    reads
+                        .iter()
+                        .map(|(register, projected)| substitution::Read {
+                            register: *register,
+                            access: projected.coordinates.as_ref(),
+                        }),
+                    registers,
+                    |source, access| may_depend_coordinates(source, access, provenance),
+                    error,
                 )?;
+                substitution.finish(inputs, output, &result);
+                result
             }
-        }
-        registers[destination.index()] = dependencies.finish();
+        };
+        registers[destination.index()] = result;
+        substitution.assigned(destination.index());
     }
     Ok(())
 }
@@ -450,22 +482,6 @@ fn projected_argument(
         ));
     }
     projected
-}
-
-fn substitute_argument(
-    dependencies: &mut Dependencies,
-    argument: &[SolveCallDependency],
-    input: &SolveCallDependency,
-    provenance: Span,
-) -> Result<(), SolveProgramConstructionError> {
-    for source in argument {
-        let dependency = match &input.coordinates {
-            Some(access) => source.remap_may_depend(access, provenance)?,
-            None => source.widened(),
-        };
-        dependencies.insert(dependency);
-    }
-    Ok(())
 }
 
 fn finite_constant(value: SolveValueKind) -> bool {
