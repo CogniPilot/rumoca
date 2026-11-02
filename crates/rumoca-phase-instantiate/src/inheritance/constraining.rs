@@ -40,6 +40,16 @@ pub(super) fn constrained_extend(
             extend.modifications.push(lower.clone());
             continue;
         };
+        if let Some(read) = enclosing_instance_read(tree, base_class, &lower.expr) {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                format!("{}.{target}", class.name.text),
+                format!(
+                    "its constraining-clause modifier reads `{read}` from an enclosing class, \
+                     which a short class's modifiers are not read in yet"
+                ),
+                stated.expr.span(),
+            )));
+        }
         let refused = if lower.final_ {
             Some(ast::MergeRefusal::Final(target.clone()))
         } else {
@@ -128,4 +138,53 @@ fn nested_arguments(
     } else {
         ast::NestedArguments::Elements
     })
+}
+
+/// The first component a kept modifier reads from an instance scope other
+/// than its base's. Instantiation reads a short class's modifiers in the
+/// base, so such a value would silently change (MLS §7.2: it belongs to the
+/// enclosing class). Package constants and classes read the same anywhere.
+fn enclosing_instance_read(
+    tree: &ast::ClassTree,
+    base_class: &ast::ClassDef,
+    expr: &ast::Expression,
+) -> Option<String> {
+    let bases = inheritance_chain(tree, base_class);
+    ast::collect_component_refs(expr)
+        .into_iter()
+        .find_map(|reference| {
+            let def_id = reference.root_def_id()?;
+            if tree.get_class_by_def_id(def_id).is_some() {
+                return None;
+            }
+            let (owner, _) = path_utils::class_scope_split(tree.def_map.get(&def_id)?)?;
+            let owner_class = tree
+                .name_map
+                .get(owner)
+                .and_then(|id| tree.get_class_by_def_id(*id))?;
+            let instance_owned = owner_class.class_type != rumoca_core::ClassType::Package;
+            (instance_owned && !bases.contains(owner)).then(|| reference.to_string())
+        })
+}
+
+/// The qualified names of `class` and every class it extends.
+fn inheritance_chain(tree: &ast::ClassTree, class: &ast::ClassDef) -> IndexSet<String> {
+    let mut chain = IndexSet::new();
+    let mut pending = vec![class];
+    while let Some(current) = pending.pop() {
+        let Some(name) = current.def_id.and_then(|id| tree.def_map.get(&id)) else {
+            continue;
+        };
+        if !chain.insert(name.clone()) {
+            continue;
+        }
+        pending.extend(
+            current
+                .extends
+                .iter()
+                .filter_map(|extend| extend.base_def_id)
+                .filter_map(|id| tree.get_class_by_def_id(id)),
+        );
+    }
+    chain
 }

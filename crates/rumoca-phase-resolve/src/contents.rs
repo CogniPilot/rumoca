@@ -306,7 +306,67 @@ impl Resolver {
                 self.resolve_component_reference(target, target_scope);
                 self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
             }
+            // `x(...)` and `x(...) = e`: the nested values are written where
+            // the modifier is, like a plain value; nested targets name members
+            // of the modified element's type, which Resolve does not own.
+            Expression::ClassModification { target, .. } => {
+                self.resolve_component_reference(target, target_scope);
+                self.resolve_nested_modifier_values(expr, value_scope);
+            }
+            Expression::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
+                ..
+            } if matches!(lhs.as_ref(), Expression::ClassModification { .. }) => {
+                if let Expression::ClassModification { target, .. } = std::sync::Arc::make_mut(lhs)
+                {
+                    self.resolve_component_reference(target, target_scope);
+                }
+                self.resolve_nested_modifier_values(std::sync::Arc::make_mut(lhs), value_scope);
+                self.resolve_expression(std::sync::Arc::make_mut(rhs), value_scope);
+            }
             other => self.resolve_expression(other, target_scope),
+        }
+    }
+
+    /// Resolve the values below a class modification in `value_scope`.
+    fn resolve_nested_modifier_values(&mut self, expr: &mut Expression, value_scope: ScopeId) {
+        let Expression::ClassModification { modifications, .. } = expr else {
+            return;
+        };
+        for modification in modifications.iter_mut() {
+            match modification {
+                Expression::Modification { value, .. }
+                | Expression::NamedArgument { value, .. } => {
+                    self.resolve_nested_modifier_value(
+                        std::sync::Arc::make_mut(value),
+                        value_scope,
+                    );
+                }
+                Expression::Binary {
+                    op: rumoca_core::OpBinary::Assign,
+                    lhs,
+                    rhs,
+                    ..
+                } => {
+                    self.resolve_nested_modifier_values(std::sync::Arc::make_mut(lhs), value_scope);
+                    self.resolve_expression(std::sync::Arc::make_mut(rhs), value_scope);
+                }
+                nested @ Expression::ClassModification { .. } => {
+                    self.resolve_nested_modifier_values(nested, value_scope);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// One nested modifier value: a further class modification, or a value.
+    fn resolve_nested_modifier_value(&mut self, value: &mut Expression, value_scope: ScopeId) {
+        if matches!(value, Expression::ClassModification { .. }) {
+            self.resolve_nested_modifier_values(value, value_scope);
+        } else {
+            self.resolve_expression(value, value_scope);
         }
     }
 

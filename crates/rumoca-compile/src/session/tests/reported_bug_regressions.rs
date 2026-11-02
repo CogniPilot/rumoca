@@ -351,22 +351,35 @@ fn issue_536_a_class_form_merge_waits_for_the_class_to_be_used() {
 }
 
 #[test]
-fn issue_536_a_kept_class_form_modifier_is_resolved_like_the_class_s_own() {
-    // The class keeps `k(start = f(seed))` for instantiation, and resolution
-    // must still reach `f`; then it reads `seed` exactly as the class's own
-    // modifiers do, so it equals the hand-written `H = Full(k(start =
-    // f(seed)) = 5)`. The component form reads the enclosing C.seed: 8.
+fn issue_536_a_kept_class_form_modifier_keeps_its_lexical_scope() {
+    // The class keeps `k(start = f(seed))` for instantiation. Resolution must
+    // reach `f`, and `seed` is C.seed (MLS §7.2), as in the component form:
+    // start = f(7) = 8. Instantiation still reads a short class's modifiers
+    // in its base, so the class form refuses a read of an enclosing
+    // component rather than giving f(Full.seed).
     let lexical = include_str!("fixtures/reported_bugs/issue_536_lexical.mo");
-    let written = lexical.replace(
-        "replaceable model H=Full(k=5) constrainedby P(k(start=f(seed)));",
-        "model H=Full(k(start=f(seed))=5);",
+    let message = refusal(lexical, "Lex.C");
+    assert!(
+        message.contains("`seed`") && message.contains("enclosing class"),
+        "{message}"
     );
-    assert_ne!(written, lexical);
-    // Strict-reachable compilation keeps only what the target reaches: the
-    // kept modifier must reach `f` too.
     let mut session = Session::default();
     session
         .add_document("Repro.mo", lexical)
+        .expect("source parses");
+    let report = session.compile_model_strict_reachable_uncached_with_recovery("Lex.C");
+    let diagnostics = format!("{:?}", report.requested_result);
+    assert!(
+        !diagnostics.contains("EF024") && diagnostics.contains("enclosing class"),
+        "{diagnostics}"
+    );
+    // A kept modifier that reads no enclosing component is merged, and
+    // strict-reachable compilation reaches the function it calls.
+    let reached = lexical.replace("k(start=f(seed))", "k(start=f(2))");
+    assert_ne!(reached, lexical);
+    let mut session = Session::default();
+    session
+        .add_document("Repro.mo", &reached)
         .expect("source parses");
     let report = session.compile_model_strict_reachable_uncached_with_recovery("Lex.C");
     assert!(
@@ -374,15 +387,7 @@ fn issue_536_a_kept_class_form_modifier_is_resolved_like_the_class_s_own() {
         "{:?}",
         report.requested_result
     );
-    assert_eq!(binding(lexical, "Lex.C", "h.k"), vec![5.0]);
-    assert_eq!(
-        start(lexical, "Lex.C", "h.k"),
-        start(&written, "Lex.C", "h.k")
-    );
-    // Not #536, recorded so a change shows: a short class's own modifiers
-    // read `seed` in its base (Full.seed = 100), on main as well, where
-    // OpenModelica reads the enclosing C.seed.
-    assert_eq!(start(lexical, "Lex.C", "h.k"), Some(vec![101.0]));
+    assert_eq!(start(&reached, "Lex.C", "h.k"), Some(vec![3.0]));
     let component = include_str!("fixtures/reported_bugs/issue_536_lexical_component.mo");
     assert_eq!(binding(component, "Lex.C", "h.k"), vec![5.0]);
     assert_eq!(start(component, "Lex.C", "h.k"), Some(vec![8.0]));
