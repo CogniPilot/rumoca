@@ -264,8 +264,7 @@ impl CraneliftEmitter {
         }
         status::succeed(&mut builder);
         builder.finalize();
-        crate::emit::register_allocation::define_function(&mut *self.module, id, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(id)
     }

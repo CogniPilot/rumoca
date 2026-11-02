@@ -1641,8 +1641,7 @@ impl CraneliftEmitter {
             drop(lower);
             fb.finalize();
         }
-        register_allocation::define_function(&mut *self.module, function, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(function, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(function)
     }
@@ -1744,8 +1743,7 @@ impl CraneliftEmitter {
             drop(lower);
             fb.finalize();
         }
-        register_allocation::define_function(&mut *self.module, function, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(function, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(function)
     }
@@ -1856,8 +1854,7 @@ impl CraneliftEmitter {
             fb.finalize();
         }
 
-        register_allocation::define_function(&mut *self.module, func_id, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(func_id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
     }
@@ -1994,8 +1991,7 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        register_allocation::define_function(&mut *self.module, func_id, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(func_id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
     }
@@ -2067,8 +2063,7 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        register_allocation::define_function(&mut *self.module, func_id, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(func_id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
     }
@@ -2161,8 +2156,7 @@ impl CraneliftEmitter {
             status::succeed(&mut fb);
             fb.finalize();
         }
-        register_allocation::define_function(&mut *self.module, func_id, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(func_id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
     }
@@ -8994,11 +8988,18 @@ pub(crate) fn take_finalizations() -> usize {
 // The closure returns cranelift-module's `ModuleError`, whose size this crate
 // does not control; boxing it here would only move the allocation.
 #[allow(clippy::result_large_err)]
-pub(super) fn finalize_jit_module(module: &mut JITModule) -> Result<(), CompileError> {
+fn finalize_jit_module(module: &mut OwnedJitModule) -> Result<(), CompileError> {
     #[cfg(test)]
     FINALIZATIONS.with(|count| count.set(count.get() + 1));
+    define_queued_functions(module)?;
     catch_cranelift_unwind("finalization", || module.finalize_definitions())?
         .map_err(to_backend_err)
+}
+
+/// Compile and define a module's queued functions; a Cranelift panic becomes
+/// an error here as it does in finalization.
+fn define_queued_functions(module: &mut OwnedJitModule) -> Result<(), CompileError> {
+    catch_cranelift_unwind("compilation", || module.define_queued())?.map_err(to_backend_err)
 }
 
 fn catch_cranelift_unwind<T>(

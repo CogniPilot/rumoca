@@ -622,8 +622,7 @@ impl TableCompiler {
             builder.ins().return_(&[status]);
             builder.finalize();
         }
-        crate::emit::register_allocation::define_function(&mut *self.module, public, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(public, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(())
     }
@@ -747,12 +746,7 @@ impl TableCompiler {
             builder.finalize();
         }
         if self.emission == Emission::Define {
-            crate::emit::register_allocation::define_function(
-                &mut *self.module,
-                function,
-                &mut context,
-            )
-            .map_err(to_backend_err)?;
+            self.module.queue_function(function, &mut context)?;
             self.input_results.push(input_results);
         }
         self.module.clear_context(&mut context);

@@ -1,10 +1,12 @@
-use super::{SINGLE_PASS_VALUE_LIMIT, define_function, single_pass_for, uses_single_pass};
+use super::{
+    QUEUE_ROUND, SINGLE_PASS_VALUE_LIMIT, define_function, single_pass_for, uses_single_pass,
+};
 use crate::emit::host_runtime::host_jit_builder;
 use crate::emit::owned_jit_module::OwnedJitModule;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
-use cranelift_module::{Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module};
 
 fn host_module() -> OwnedJitModule {
     OwnedJitModule::new(JITModule::new(
@@ -31,9 +33,13 @@ fn every_host_frame_beyond_the_guard_page_is_probed_inline() {
 }
 
 /// `() -> f64` summing `count` distinct constants in reverse definition
-/// order, so every constant stays live until the sum reaches it.
-fn live_values_sum(count: u32) -> (f64, usize) {
-    let mut module = host_module();
+/// order, so every constant stays live until the sum reaches it; declared in
+/// `module` as `name` and built in the returned context.
+fn live_values_function(
+    module: &mut OwnedJitModule,
+    name: &str,
+    count: u32,
+) -> (FuncId, cranelift_codegen::Context) {
     let mut context = module.make_context();
     context
         .func
@@ -41,7 +47,7 @@ fn live_values_sum(count: u32) -> (f64, usize) {
         .returns
         .push(AbiParam::new(types::F64));
     let function = module
-        .declare_function("live_values", Linkage::Local, &context.func.signature)
+        .declare_function(name, Linkage::Local, &context.func.signature)
         .expect("declare live-value function");
     let mut frontend = FunctionBuilderContext::new();
     {
@@ -61,27 +67,75 @@ fn live_values_sum(count: u32) -> (f64, usize) {
         builder.ins().return_(&[sum]);
         builder.finalize();
     }
-    let values = context.func.dfg.num_values();
-    define_function(&mut *module, function, &mut context).expect("define live-value function");
-    module.finalize_definitions().expect("finalize");
+    (function, context)
+}
+
+/// The sum `live_values_function` computes, in its order.
+fn expected_live_values_sum(count: u32) -> f64 {
+    (1..=count)
+        .rev()
+        .map(|index| f64::from(index) * 0.5)
+        .reduce(|sum, value| sum + value)
+        .unwrap()
+}
+
+/// Call a finalized `() -> f64` function of `module`.
+fn call_f64(module: &OwnedJitModule, function: FuncId) -> f64 {
     // SAFETY: the function takes no arguments and returns one f64; the module
     // owns its code until after the call.
     let call: extern "C" fn() -> f64 =
         unsafe { std::mem::transmute(module.get_finalized_function(function)) };
-    (call(), values)
+    call()
+}
+
+fn live_values_sum(count: u32) -> (f64, usize) {
+    let mut module = host_module();
+    let (function, mut context) = live_values_function(&mut module, "live_values", count);
+    let values = context.func.dfg.num_values();
+    define_function(&mut *module, function, &mut context).expect("define live-value function");
+    module.finalize_definitions().expect("finalize");
+    (call_f64(&module, function), values)
 }
 
 #[test]
 fn single_pass_and_backtracking_functions_compute_the_same_sums() {
     for count in [8, 200, 256, 400] {
         let (sum, values) = live_values_sum(count);
-        let expected = (1..=count)
-            .rev()
-            .map(|index| f64::from(index) * 0.5)
-            .reduce(|sum, value| sum + value)
-            .unwrap();
+        let expected = expected_live_values_sum(count);
         assert_eq!(sum.to_bits(), expected.to_bits(), "{count} values");
         assert_eq!(uses_single_pass(values), values <= SINGLE_PASS_VALUE_LIMIT);
+    }
+}
+
+#[test]
+fn queued_functions_compile_together_and_each_computes_its_own_sum() {
+    // More than two rounds: two compile while still queuing, the rest when
+    // the module is finalized. Every third function is past the single-pass
+    // limit, so both allocators compile in the same rounds.
+    let mut module = host_module();
+    let count = 2 * QUEUE_ROUND + 7;
+    let functions = (0..count)
+        .map(|index| {
+            let values = if index % 3 == 2 {
+                400
+            } else {
+                8 + index as u32 % 50
+            };
+            let (function, mut context) =
+                live_values_function(&mut module, &format!("queued_{index}"), values);
+            module
+                .queue_function(function, &mut context)
+                .expect("queue live-value function");
+            (function, values)
+        })
+        .collect::<Vec<_>>();
+    crate::emit::finalize_jit_module(&mut module).expect("finalize queued functions");
+    for (index, (function, values)) in functions.into_iter().enumerate() {
+        assert_eq!(
+            call_f64(&module, function).to_bits(),
+            expected_live_values_sum(values).to_bits(),
+            "function {index} of {values} values"
+        );
     }
 }
 
