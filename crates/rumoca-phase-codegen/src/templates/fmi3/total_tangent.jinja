@@ -1,0 +1,463 @@
+{#- Total directional propagation for one retained component.
+    This is an internal numerical consumer, not public FMI API admission.
+    Including translation unit supplies ModelInstance, isfinite and the same
+    fmi-c-kernel/pure-call owners as the component's primal execution.
+
+    All three buffers belong to the derivative call, never the live component:
+    seed is [solver-Y | P | time], rhs holds state derivatives and scratch holds one
+    simultaneous assignment segment. The caller first refreshes a PRIVATE
+    component snapshot, seeds admitted independent coordinates, and initializes
+    every other seed to zero. It validates all buffers/capacities and commits
+    a public sensitivity result only after the whole call succeeds. This keeps
+    failed later segments from exposing partially updated seeds/results.
+-#}
+{%- from "fmi-c-kernel.jinja" import projection_lu_kernel %}
+{%- from "fmi-me-projection.jinja" import program_function %}
+
+{%- macro program(name, body) %}
+{{ program_function(name, body, "ModelInstance* m, const double* seed, double* o", true) }}
+{%- endmacro %}
+
+{%- macro functions(tangent, stem) %}
+{%- for segment in tangent.assignments %}
+{%- set segment_id = loop.index0 %}
+{%- for body in segment.plan.programs %}
+{{ program(stem ~ "_tangent_assign_" ~ segment_id ~ "_" ~ loop.index0, body) }}
+{%- endfor %}
+{%- endfor %}
+{%- for body in tangent.rhs.programs %}
+{{ program(stem ~ "_tangent_rhs_" ~ loop.index0, body) }}
+{%- endfor %}
+
+{%- if tangent.implicit.present %}
+{%- for body in tangent.implicit.plan.programs %}
+{{ program(stem ~ "_tangent_residual_" ~ loop.index0, body) }}
+{%- endfor %}
+static int {{ stem }}_tangent_residuals(ModelInstance* m, const double* seed, double* out) {
+{%- for body in tangent.implicit.plan.programs %}
+    if ({{ stem }}_tangent_residual_{{ loop.index0 }}(m, seed, out) != 0) return -1;
+{%- endfor %}
+    return 0;
+}
+/* Differentiate the complete coupled relation at the private settled point.
+   Algebraic programs ALREADY return residuals. Observation programs return
+   values, so only those rows subtract their target seed, exactly once.
+   R_z dz = -R_known dknown. Neither R_z nor dz alone is the public Jacobian. */
+static int {{ stem }}_implicit_tangent(ModelInstance* m, double* seed, double* scratch,
+                                 double* work, size_t* sizes) {
+    const size_t n = {{ tangent.implicit.n }};
+    double* saved = work;
+    double* matrix = saved + {{ tangent.seed_len }};
+    double* right = matrix + {{ tangent.implicit.matrix_len }};
+    static const size_t targets[{{ tangent.implicit.n }}] = { {% for target in tangent.implicit.targets %}{{ target }},{% endfor %} };
+    static const size_t rows[{{ tangent.implicit.n }}] = { {% for row in tangent.implicit.rows %}{{ row }},{% endfor %} };
+    static const size_t subtract_targets[{{ tangent.implicit.n }}] = { {% for target in tangent.implicit.subtract_targets %}{{ target }},{% endfor %} };
+    for (size_t i=0; i<n; ++i) seed[targets[i]] = 0.0;
+    memcpy(saved, seed, {{ tangent.seed_len }}*sizeof(double));
+    if ({{ stem }}_tangent_residuals(m, seed, scratch) != 0) return -1;
+    for (size_t i=0; i<n; ++i) {
+        double value = scratch[rows[i]];
+        if (subtract_targets[i]) value -= seed[subtract_targets[i]-1];
+        right[i] = -value;
+        if (!isfinite(right[i])) return -1;
+    }
+    for (size_t column=0; column<n; ++column) {
+        memset(seed, 0, {{ tangent.seed_len }}*sizeof(double));
+        seed[targets[column]] = 1.0;
+        if ({{ stem }}_tangent_residuals(m, seed, scratch) != 0) return -1;
+        for (size_t row=0; row<n; ++row) {
+            double value = scratch[rows[row]];
+            if (subtract_targets[row]) value -= seed[subtract_targets[row]-1];
+            if (!isfinite(value)) return -1;
+            matrix[row*n+column] = value;
+        }
+    }
+    memcpy(seed, saved, {{ tangent.seed_len }}*sizeof(double));
+    /* Reuse the component's existing partial-pivot LU; no second linear
+       solver, regularization, or singular least-squares substitute. */
+    rmc_lu(matrix, n, sizes, sizes+n);
+    if (!rmc_lu_solve(matrix, n, sizes, right)) return -1;
+    for (size_t i=0; i<n; ++i) if (!isfinite(right[i])) return -1;
+    for (size_t i=0; i<n; ++i) seed[targets[i]] = right[i];
+    return 0;
+}
+{%- endif %}
+
+{%- if tangent.consistency.present %}
+{%- for body in tangent.consistency.plan.programs %}
+{{ program(stem ~ "_tangent_check_" ~ loop.index0, body) }}
+{%- endfor %}
+static int {{ stem }}_tangent_checks(ModelInstance* m, const double* seed, double* out) {
+{%- for body in tangent.consistency.plan.programs %}
+    if ({{ stem }}_tangent_check_{{ loop.index0 }}(m, seed, out) != 0) return -1;
+{%- endfor %}
+    return 0;
+}
+{%- endif %}
+
+/* m and all buffers are private to this derivative evaluation. This routine
+   writes no live primal coordinate and evaluates source JVPs without allocation. */
+static int {{ stem }}_total_tangent(ModelInstance* m, double* seed,
+                             double* rhs, double* scratch, double* implicit_work,
+                             size_t* implicit_sizes) {
+    (void)scratch; (void)implicit_work; (void)implicit_sizes;
+    if (!m{% if tangent.seed_len > 0 %} || !seed{% endif %}{% if tangent.state_len > 0 %} || !rhs{% endif %}{% if tangent.assignments|length > 0 or tangent.implicit.present or tangent.consistency.present %} || !scratch{% endif %}{% if tangent.implicit.present or tangent.consistency.present %} || !implicit_work{% endif %}{% if tangent.implicit.present %} || !implicit_sizes{% endif %}) return -1;
+    for (size_t k=0; k<{{ tangent.seed_len }}; ++k)
+        if (!isfinite(seed[k])) return -1;
+{%- if tangent.implicit.present %}
+    if ({{ stem }}_implicit_tangent(m, seed, scratch, implicit_work, implicit_sizes) != 0) return -1;
+{%- endif %}
+{%- for segment in tangent.assignments %}
+{%- set segment_id = loop.index0 %}
+{%- for body in segment.plan.programs %}
+    if ({{ stem }}_tangent_assign_{{ segment_id }}_{{ loop.index0 }}(m, seed, scratch) != 0) return -1;
+{%- endfor %}
+    /* Validate the entire simultaneous result before overwriting any seed. */
+    for (size_t k=0; k<{{ segment.targets|length }}; ++k)
+        if (!isfinite(scratch[k])) return -1;
+{%- for target in segment.targets %}
+    seed[{{ target }}] = scratch[{{ loop.index0 }}];
+{%- endfor %}
+{%- endfor %}
+{%- if tangent.implicit.present %}
+    static const size_t implicit_rows[{{ tangent.implicit.n }}] = { {% for row in tangent.implicit.rows %}{{ row }},{% endfor %} };
+    static const size_t implicit_targets[{{ tangent.implicit.n }}] = { {% for target in tangent.implicit.subtract_targets %}{{ target }},{% endfor %} };
+    static const RmcTangentCheck implicit_check = {
+        {{ tangent.seed_len }}, {{ tangent.implicit.n }}, implicit_rows, implicit_targets,
+        {{ stem }}_tangent_residuals, {{ tangent.implicit.tolerance }}
+    };
+    if (rmc_verify_tangent(m, seed, scratch, implicit_work, &implicit_check) != 0) return -1;
+{%- endif %}
+{%- if tangent.consistency.present %}
+    static const size_t check_rows[{{ tangent.consistency.rows|length }}] = { {% for row in tangent.consistency.rows %}{{ row }},{% endfor %} };
+    static const RmcTangentCheck source_check = {
+        {{ tangent.seed_len }}, {{ tangent.consistency.rows|length }}, check_rows, NULL,
+        {{ stem }}_tangent_checks, {{ tangent.consistency.tolerance }}
+    };
+    if (rmc_verify_tangent(m, seed, scratch, implicit_work, &source_check) != 0) return -1;
+{%- endif %}
+{%- for body in tangent.rhs.programs %}
+    if ({{ stem }}_tangent_rhs_{{ loop.index0 }}(m, seed, rhs) != 0) return -1;
+{%- endfor %}
+    for (size_t k=0; k<{{ tangent.state_len }}; ++k)
+        if (!isfinite(rhs[k])) return -1;
+    return 0;
+}
+{%- endmacro %}
+
+{%- macro verification_functions() %}
+typedef int (*RmcTangentRows)(ModelInstance*, const double*, double*);
+typedef struct {
+    size_t seed_len, count;
+    const size_t* rows;
+    const size_t* subtract_targets;
+    RmcTangentRows evaluate;
+    double tolerance;
+} RmcTangentCheck;
+
+static double rmc_tangent_check_value(const RmcTangentCheck* check, size_t row,
+                                      const double* values, const double* seed) {
+    double value = values[check->rows[row]];
+    if (check->subtract_targets && check->subtract_targets[row])
+        value -= seed[check->subtract_targets[row]-1];
+    return value;
+}
+/* fmi_tangents::consistency_row_converged. Scale each source row by the
+   largest actual |Jacobian column * direction| contribution. No unit floor,
+   absolute residual waiver, or fabricated zero derivative. Evaluations use exact source JVPs.
+   All seed/scratch/work buffers and the primal point belong to this request. */
+static int rmc_verify_tangent(ModelInstance* m, double* seed, double* scratch,
+                               double* work, const RmcTangentCheck* check) {
+    double* saved = work;
+    double* scales = saved + check->seed_len;
+    memcpy(saved, seed, check->seed_len*sizeof(double));
+    memset(scales, 0, check->count*sizeof(double));
+    for (size_t column=0; column<check->seed_len; ++column) {
+        if (saved[column] == 0.0) continue;
+        memset(seed, 0, check->seed_len*sizeof(double));
+        seed[column] = 1.0;
+        if (check->evaluate(m, seed, scratch) != 0) return -1;
+        for (size_t row=0; row<check->count; ++row) {
+            double coefficient = rmc_tangent_check_value(check, row, scratch, seed);
+            if (!isfinite(coefficient)) return -1;
+            double contribution = fabs(coefficient*saved[column]);
+            if (!isfinite(contribution)) return -1;
+            if (contribution > scales[row]) scales[row] = contribution;
+        }
+    }
+    memcpy(seed, saved, check->seed_len*sizeof(double));
+    if (check->evaluate(m, seed, scratch) != 0) return -1;
+    for (size_t row=0; row<check->count; ++row) {
+        double value = rmc_tangent_check_value(check, row, scratch, seed);
+        double scale = scales[row];
+        if (!isfinite(value) || !isfinite(scale) || scale < 0.0) return -1;
+        if (value == 0.0) continue;
+        if (scale == 0.0 || fabs(value) > check->tolerance*scale) return -1;
+    }
+    return 0;
+}
+{%- endmacro %}
+
+{#- Construction has issued all three mode plans for this exact component.
+    The API only projects that inventory and executes its numerical programs. -#}
+{%- macro api(plans, fmi, prefix, me) %}
+{%- set tangent = plans.continuous %}
+{%- set initialization = plans.initialization %}
+{%- set post = plans.post %}
+{%- set instance_type = "fmi2Component" if prefix == "fmi2" else "fmi3Instance" %}
+{%- set me_type = "fmi2ModelExchange" if prefix == "fmi2" else "INTERFACE_ME" %}
+{%- set cs_type = "fmi2CoSimulation" if prefix == "fmi2" else "INTERFACE_CS" %}
+{%- if not me.kernel and (tangent.implicit.present or (initialization.available and initialization.implicit.present) or (post.available and post.implicit.present)) %}
+{{ projection_lu_kernel() }}
+{%- endif %}
+{%- if tangent.implicit.present or tangent.consistency.present or (initialization.available and (initialization.implicit.present or initialization.consistency.present)) or (post.available and (post.implicit.present or post.consistency.present)) %}
+{{ verification_functions() }}
+{%- endif %}
+{{ functions(tangent, "rmc") }}
+{%- if initialization.available %}
+{{ functions(initialization, "rmc_initial") }}
+{%- endif %}
+{%- if post.available %}
+{{ functions(post, "rmc_post") }}
+{%- endif %}
+
+static int rmc_evaluate_total_tangent(ModelInstance* m, double* seed, double* rhs,
+                                      double* scratch, double* work, size_t* sizes) {
+{%- if initialization.available %}
+    if (m->state == MODEL_INITIALIZATION)
+        return rmc_initial_total_tangent(m, seed, rhs, scratch, work, sizes);
+{%- endif %}
+{%- if post.available %}
+    if (m->state == MODEL_EVENT || m->state == MODEL_STEP)
+        return rmc_post_total_tangent(m, seed, rhs, scratch, work, sizes);
+{%- endif %}
+    return rmc_total_tangent(m, seed, rhs, scratch, work, sizes);
+}
+
+/* Role bits project the SAME inventory/order as rmc_value_references. Storage
+   type, scalar extent and location are always read from that existing table. */
+static const unsigned short rmc_tangent_roles[] = {
+    0,
+{%- for variable in fmi.variables %}{% set variable_index = loop.index0 %}{% for scalar in range(variable.storage.scalar_count if prefix == "fmi2" else 1) %}
+    {{ (1 if variable.causality == "input" and variable.variability == "continuous" else 0) + (2 if variable.causality == "output" and variable.variability == "continuous" else 0) + (4 if variable.role == "State" else 0) + (16 if variable.causality == "input" and variable.variability == "discrete" else 0) + (32 if variable.initial == "exact" and variable.variability != "constant" else 0) + (64 if variable.initial_unknown else 0) + (128 if variable.causality == "output" and variable.variability == "discrete" else 0) + (256 if variable.causality == "parameter" and variable.variability == "tunable" else 0) + (512 if prefix == "fmi3" and variable.role == "State" and not fmi.state_reinitializations[variable_index] else 0) }},
+{%- endfor %}{% endfor %}
+{%- for variable in fmi.variables %}{% if variable.role == "State" %}{% for scalar in range(variable.storage.scalar_count if prefix == "fmi2" else 1) %}
+    72,
+{%- endfor %}{% endif %}{% endfor %}
+{%- if prefix == "fmi3" %}{% for root in fmi.event_indicator_roots %}
+    0,
+{%- endfor %}{% endif %}
+};
+typedef struct { unsigned char column; size_t base; size_t count; } RmcTangentReference;
+static bool rmc_tangent_reference(const ModelInstance* m, {{ prefix }}ValueReference vr,
+                                  bool known, RmcTangentReference* result) {
+    if (vr >= RMC_VALUE_REFERENCES || vr >= sizeof(rmc_tangent_roles)/sizeof(rmc_tangent_roles[0])) return false;
+    RmcValueReference ref = rmc_value_references[vr];
+    if (ref.kind != RMC_KIND_FLOAT64) return false;
+    unsigned short role = rmc_tangent_roles[vr];
+    if (ref.column == RMC_COLUMN_TIME) {
+        /* Same lifecycle as the existing dedicated SetTime entrypoint.
+           Time is never an unknown or an initialization/CS-step known. */
+        if (!known || m->type != {{ me_type }} || m->state != MODEL_CONTINUOUS) return false;
+    } else if (m->state == MODEL_INITIALIZATION) {
+        if (known) {
+            if (!(role & (1 | 16 | 32)) || !rmc_can_set(m, &ref)) return false;
+            if (ref.column != RMC_COLUMN_Y && ref.column != RMC_COLUMN_P) return false;
+        } else {
+            if (!(role & 64)) return false;
+            if (ref.column != RMC_COLUMN_Y && ref.column != RMC_COLUMN_P && ref.column != RMC_COLUMN_DERIVATIVE) return false;
+        }
+    } else if (m->state == MODEL_EVENT || m->state == MODEL_STEP) {
+        if (known) {
+            /* FMI 3 non-reinitializable ME states are settable in Event Mode.
+               The ordinary setter owner still rejects them in CS Step Mode. */
+            if (!(role & (1 | 16 | 256{% if prefix == "fmi3" %} | 512{% endif %})) || !rmc_can_set(m, &ref)) return false;
+            if (ref.column != RMC_COLUMN_Y && ref.column != RMC_COLUMN_P) return false;
+        } else {
+            if (!(role & (2 | 8 | 128))) return false;
+            if (ref.column != RMC_COLUMN_Y && ref.column != RMC_COLUMN_P && ref.column != RMC_COLUMN_DERIVATIVE) return false;
+        }
+    } else if (known) {
+        if (!(role & 1) && !((role & 4) && m->type == {{ me_type }} && m->state == MODEL_CONTINUOUS)) return false;
+        if (ref.column != RMC_COLUMN_Y && ref.column != RMC_COLUMN_P) return false;
+    } else {
+        if (!(role & (2 | 8))) return false;
+        if (ref.column != RMC_COLUMN_Y && ref.column != RMC_COLUMN_P && ref.column != RMC_COLUMN_DERIVATIVE) return false;
+    }
+    result->column = ref.column;
+    result->base = ref.{{ "index" if prefix == "fmi2" else "base" }};
+    result->count = {{ "1" if prefix == "fmi2" else "ref.count" }};
+    return true;
+}
+static bool rmc_tangent_extent(const ModelInstance* m,
+                               const {{ prefix }}ValueReference refs[], size_t count,
+                               bool known, size_t* extent) {
+    if (!refs && count) return false;
+    size_t total = 0;
+    for (size_t k=0; k<count; ++k) {
+        RmcTangentReference ref;
+        if (!rmc_tangent_reference(m, refs[k], known, &ref) || ref.count > SIZE_MAX-total) return false;
+        total += ref.count;
+    }
+    *extent = total; return true;
+}
+static size_t rmc_tangent_seed_index(RmcTangentReference ref, size_t element) {
+    return ref.column == RMC_COLUMN_TIME ? {{ tangent.time_seed }}
+         : ref.base + element + (ref.column == RMC_COLUMN_P ? {{ tangent.y_len }} : 0);
+}
+static double rmc_tangent_unknown(RmcTangentReference ref, size_t element,
+                                  const double* seed, const double* rhs) {
+    return ref.column == RMC_COLUMN_DERIVATIVE ? rhs[ref.base+element]
+         : seed[rmc_tangent_seed_index(ref, element)];
+}
+
+/* All request/type/role/extent checks precede a snapshot or numerical call.
+   The only public-buffer write is the final memcpy after complete success.
+   Adjoint products use exact directional basis columns from the checked JVPs. */
+static {{ prefix }}Status rmc_tangent_request({{ instance_type }} instance,
+        const {{ prefix }}ValueReference unknowns[], size_t nunknowns,
+        const {{ prefix }}ValueReference knowns[], size_t nknowns,
+        const double input[], size_t ninput, double output[], size_t noutput,
+        bool adjoint) {
+    ModelInstance* live = instance;
+    if (!live) return rmc_tangent_error(live);
+    const bool initializing = live->state == MODEL_INITIALIZATION;
+    const bool post_initial = live->state == MODEL_EVENT || live->state == MODEL_STEP;
+    if (initializing) {
+{%- if initialization.available %}
+        if (live->type != {{ me_type }} && live->type != {{ cs_type }}) return rmc_tangent_error(live);
+{%- else %}
+        return rmc_tangent_error(live);
+{%- endif %}
+    } else if (post_initial) {
+{%- if post.available %}
+        if (!((live->type == {{ me_type }} && live->state == MODEL_EVENT)
+                || (live->type == {{ cs_type }} && live->state == MODEL_STEP))) return rmc_tangent_error(live);
+{%- else %}
+        return rmc_tangent_error(live);
+{%- endif %}
+    } else if (live->type != {{ me_type }} || live->state != MODEL_CONTINUOUS) return rmc_tangent_error(live);
+    size_t nk, nu;
+    if (!rmc_tangent_extent(live, knowns, nknowns, true, &nk)
+            || !rmc_tangent_extent(live, unknowns, nunknowns, false, &nu)
+            || ninput != (adjoint ? nu : nk) || noutput != (adjoint ? nk : nu)
+            || (!input && ninput) || (!output && noutput)
+            || noutput > SIZE_MAX/sizeof(double)) return rmc_tangent_error(live);
+    for (size_t k=0; k<ninput; ++k) if (!isfinite(input[k])) return rmc_tangent_error(live);
+    if (noutput == 0) return {{ prefix }}OK;
+    if (UINT64_C({{ plans.work_len if plans.work_len > 0 else 1 }}) > SIZE_MAX/sizeof(double)
+            || UINT64_C({{ plans.sizes_len }}) > SIZE_MAX/sizeof(size_t)) return rmc_tangent_error(live);
+    const size_t work_len = (size_t)UINT64_C({{ plans.work_len if plans.work_len > 0 else 1 }});
+    double* result = rmc_instance_allocate(live, noutput ? noutput : 1, sizeof(double));
+    double* work = rmc_instance_allocate(live, work_len, sizeof(double));
+    const size_t sizes_len = (size_t)UINT64_C({{ plans.sizes_len }});
+    size_t* sizes = sizes_len && sizes_len <= SIZE_MAX/sizeof(size_t)
+        ? rmc_instance_allocate(live, sizes_len, sizeof(size_t)) : NULL;
+    ModelInstance* point = rmc_instance_allocate(live, 1, sizeof(ModelInstance));
+    bool owns_point = false;
+    {{ prefix }}Status status = {{ prefix }}Error;
+    if (!result || !work || !point || (sizes_len && !sizes)) goto cleanup;
+    memcpy(point, live, sizeof(ModelInstance));
+    if (!rmc_own_text(point, live)) { rmc_instance_free(live, point); point = NULL; goto cleanup; }
+    owns_point = true;
+{%- if initialization.available %}
+    if (initializing) {
+        /* Evaluate f_init on the private point, preserving Initialization Mode
+           and every live value/history field. This is not ExitInitializationMode. */
+{%- if me.init.rows > 0 %}
+        if (rmc_initialize(point, point->tolerance) != {{ prefix }}OK) goto cleanup;
+{%- else %}
+        if (rmc_apply_updates(point, true) < 0) goto cleanup;
+{%- endif %}
+        point->parameters_dirty = false;
+    }
+{%- endif %}
+    /* Settle the same private primal point; live values/relations/texts remain
+       untouched even when a later operation or allocation refuses. */
+    if (settle_public_values(point) != {{ prefix }}OK) goto cleanup;
+    double* seed = work;
+    double* rhs = seed + {{ tangent.seed_len }};
+    double* scratch = rhs + {{ tangent.state_len }};
+    const size_t scratch_len = {% if initialization.available %}initializing ? {{ initialization.scratch_len }} : {% endif %}{% if post.available %}post_initial ? {{ post.scratch_len }} : {% endif %}{{ tangent.scratch_len }};
+    double* implicit_work = scratch + scratch_len;
+    if (!adjoint) {
+        size_t position = 0;
+        for (size_t k=0; k<nknowns; ++k) {
+            RmcTangentReference ref;
+            if (!rmc_tangent_reference(point, knowns[k], true, &ref)) goto cleanup;
+            for (size_t j=0; j<ref.count; ++j) {
+                size_t slot = rmc_tangent_seed_index(ref, j);
+                seed[slot] += input[position++];
+                if (!isfinite(seed[slot])) goto cleanup;
+            }
+        }
+        if (rmc_evaluate_total_tangent(point, seed, rhs, scratch, implicit_work, sizes) != 0) goto cleanup;
+        position = 0;
+        for (size_t k=0; k<nunknowns; ++k) {
+            RmcTangentReference ref;
+            if (!rmc_tangent_reference(point, unknowns[k], false, &ref)) goto cleanup;
+            for (size_t j=0; j<ref.count; ++j)
+                result[position++] = rmc_tangent_unknown(ref, j, seed, rhs);
+        }
+    } else {
+        size_t column = 0;
+        for (size_t k=0; k<nknowns; ++k) {
+            RmcTangentReference known;
+            if (!rmc_tangent_reference(point, knowns[k], true, &known)) goto cleanup;
+            for (size_t j=0; j<known.count; ++j) {
+                memset(work, 0, work_len*sizeof(double));
+                seed[rmc_tangent_seed_index(known, j)] = 1.0;
+                if (rmc_evaluate_total_tangent(point, seed, rhs, scratch, implicit_work, sizes) != 0) goto cleanup;
+                size_t row = 0;
+                double sum = 0.0;
+                for (size_t u=0; u<nunknowns; ++u) {
+                    RmcTangentReference unknown;
+                    if (!rmc_tangent_reference(point, unknowns[u], false, &unknown)) goto cleanup;
+                    for (size_t e=0; e<unknown.count; ++e) {
+                        double product = input[row++]*rmc_tangent_unknown(unknown, e, seed, rhs);
+                        if (!isfinite(product)) goto cleanup;
+                        sum += product;
+                        if (!isfinite(sum)) goto cleanup;
+                    }
+                }
+                result[column++] = sum;
+            }
+        }
+    }
+    for (size_t k=0; k<noutput; ++k) if (!isfinite(result[k])) goto cleanup;
+    if (noutput) memcpy(output, result, noutput*sizeof(double));
+    status = {{ prefix }}OK;
+cleanup:
+    if (owns_point) rmc_release_text(point);
+    rmc_instance_free(live, point); rmc_instance_free(live, sizes);
+    rmc_instance_free(live, work); rmc_instance_free(live, result);
+    return status == {{ prefix }}OK ? status : rmc_tangent_error(live);
+}
+{%- if prefix == "fmi2" %}
+FMI_EXPORT fmi2Status fmi2GetDirectionalDerivative(fmi2Component instance,
+        const fmi2ValueReference unknowns[], size_t nunknowns,
+        const fmi2ValueReference knowns[], size_t nknowns,
+        const fmi2Real seed[], fmi2Real sensitivity[]) {
+    /* FMI 2 scalarizes every VR, so the scalar lengths are the VR counts. */
+    return rmc_tangent_request(instance, unknowns, nunknowns, knowns, nknowns,
+                               seed, nknowns, sensitivity, nunknowns, false);
+}
+{%- else %}
+FMI_EXPORT fmi3Status fmi3GetDirectionalDerivative(fmi3Instance instance,
+        const fmi3ValueReference unknowns[], size_t nunknowns,
+        const fmi3ValueReference knowns[], size_t nknowns,
+        const fmi3Float64 seed[], size_t nseed,
+        fmi3Float64 sensitivity[], size_t nsensitivity) {
+    return rmc_tangent_request(instance, unknowns, nunknowns, knowns, nknowns,
+                               seed, nseed, sensitivity, nsensitivity, false);
+}
+FMI_EXPORT fmi3Status fmi3GetAdjointDerivative(fmi3Instance instance,
+        const fmi3ValueReference unknowns[], size_t nunknowns,
+        const fmi3ValueReference knowns[], size_t nknowns,
+        const fmi3Float64 seed[], size_t nseed,
+        fmi3Float64 sensitivity[], size_t nsensitivity) {
+    return rmc_tangent_request(instance, unknowns, nunknowns, knowns, nknowns,
+                               seed, nseed, sensitivity, nsensitivity, true);
+}
+{%- endif %}
+{%- endmacro %}

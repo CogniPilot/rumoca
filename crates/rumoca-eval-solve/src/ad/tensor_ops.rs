@@ -645,6 +645,7 @@ impl<'a> AdBuilder<'a> {
                 "forward AD expects a primal tensor load with one lane and no seed",
             ));
         }
+        self.check_time_seed_storage(input, input_start, count)?;
         if input == rumoca_ir_solve::TensorInputKind::Y
             && let SeedMode::SolverYSubset { active } = self.seed_mode
         {
@@ -656,9 +657,10 @@ impl<'a> AdBuilder<'a> {
                 rumoca_ir_solve::TensorInputKind::P,
                 SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. },
             ) => None,
-            (rumoca_ir_solve::TensorInputKind::P, SeedMode::SolverYAndP { .. }) => {
-                Some(self.p_seed_index(input_start)?)
-            }
+            (
+                rumoca_ir_solve::TensorInputKind::P,
+                SeedMode::SolverYAndP { .. } | SeedMode::SolverYAndPAndTime { .. },
+            ) => Some(self.p_seed_index(input_start)?),
         };
         if seed_start.is_none() {
             return self.emit_zero_tangent_result(dst_start, count, |dst_start| {

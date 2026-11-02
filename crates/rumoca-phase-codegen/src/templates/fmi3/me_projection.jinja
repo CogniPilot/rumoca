@@ -26,7 +26,7 @@
   The including template defines `ModelInstance` (with `time`, `y`, `p`),
   `Y_LEN`, and `RMC_LOG(m, message)`, and imports `scalar_op`.
 -#}
-{%- from "fmi-c-kernel.jinja" import scalar_op, store_range, store_target, c_string %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, store_range, store_target, c_string, projection_lu_kernel %}
 
 {%- macro c_array(name, type, values) -%}
 {%- if values|length > 0 %}
@@ -143,51 +143,7 @@ static bool rmc_all_finite(const double* values, size_t n) {
     return true;
 }
 
-/* nalgebra LU with partial pivoting on the row-major n x n matrix `a`. An
-   exactly zero multiplier or pivot-row entry contributes nothing to a finite
-   update, so those products are skipped; the arithmetic that remains is the
-   dense factorization's, in its order. */
-static void rmc_lu(double* a, size_t n, size_t* ipiv, size_t* columns) {
-    for (size_t i = 0; i < n; ++i) {
-        size_t piv = i; double best = fabs(a[i * n + i]);
-        for (size_t row = i + 1; row < n; ++row) { double value = fabs(a[row * n + i]); if (value > best) { best = value; piv = row; } }
-        ipiv[i] = i;
-        double diag = a[piv * n + i];
-        if (diag == 0.0) continue;
-        if (piv != i) {
-            ipiv[i] = piv;
-            for (size_t col = 0; col < n; ++col) { double tmp = a[i * n + col]; a[i * n + col] = a[piv * n + col]; a[piv * n + col] = tmp; }
-        }
-        double inv = 1.0 / diag; size_t count = 0; bool finite_row = true;
-        for (size_t col = i + 1; col < n; ++col) {
-            double pivot = a[i * n + col];
-            if (pivot != 0.0) columns[count++] = col;
-            if (!isfinite(pivot)) finite_row = false;
-        }
-        for (size_t row = i + 1; row < n; ++row) {
-            double multiplier = a[row * n + i] * inv;
-            a[row * n + i] = multiplier;
-            if (multiplier == 0.0 && finite_row) continue;
-            if (!finite_row || !isfinite(multiplier)) {
-                for (size_t col = i + 1; col < n; ++col) a[row * n + col] += -a[i * n + col] * multiplier;
-                continue;
-            }
-            for (size_t c = 0; c < count; ++c) { size_t col = columns[c]; a[row * n + col] += -a[i * n + col] * multiplier; }
-        }
-    }
-}
-/* nalgebra LU::solve_mut */
-static bool rmc_lu_solve(const double* lu, size_t n, const size_t* ipiv, double* b) {
-    for (size_t i = 0; i < n; ++i) if (ipiv[i] != i) { double tmp = b[i]; b[i] = b[ipiv[i]]; b[ipiv[i]] = tmp; }
-    for (size_t i = 0; i < n; ++i) { double coeff = b[i]; for (size_t row = i + 1; row < n; ++row) b[row] += -coeff * lu[row * n + i]; }
-    for (size_t i = n; i-- > 0;) {
-        double diag = lu[i * n + i];
-        if (diag == 0.0) return false;
-        double coeff = b[i] / diag; b[i] = coeff;
-        for (size_t row = 0; row < i; ++row) b[row] += -coeff * lu[row * n + i];
-    }
-    return true;
-}
+{{ projection_lu_kernel() }}
 /* Rank-deficient least-squares fallback: one-sided Jacobi SVD, dropping
    singular values at or below `eps` (nalgebra SVD::solve); -1 error */
 RMC_COLD static int rmc_svd_solve(ModelInstance* m, const double* a, size_t n, const double* rhs, double eps, double* x) {
@@ -1393,14 +1349,24 @@ static int rmc_apply_updates(ModelInstance* m, bool initializing) {
     };
     double before[{{ targets|length }}];
     for (size_t k = 0; k < {{ targets|length }}; ++k) before[k] = in_y[k] ? m->y[targets[k]] : m->p[targets[k]];
-{%- for index in fmi.update_order %}{% set program = solve.initialization.update_plan.programs[index] %}
-{%- set start = namespace(assigned=false) %}
-{%- for op in program.ops %}{% if op.kind == "StoreOutput" and targets[op.output_index].Y is defined %}{% set start.assigned = true %}{% endif %}{% endfor %}
-    {% if start.assigned %}if (initializing) {% endif %}{
+{%- for execution in fmi.binding_execution %}
+{%- set program = solve.initialization.update_plan.programs[execution.program_index] %}
+    {% if execution.initialization_only %}if (initializing) {% endif %}{
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+    double binding_output[{{ targets|length }}]; (void)binding_output;
 {%- for op in program.ops %}
-{{ scalar_op(op, "m->p", "-1", targets) }}
+{{ scalar_op(op, "binding_output", "-1") }}
 {%- endfor %}
+{%- for row in execution.parameter_rows %}{% set target = targets[row] %}
+    m->p[{{ target.P.index }}] = binding_output[{{ row }}];
+{%- endfor %}
+{%- if execution.state_start_rows|length > 0 %}
+    if (initializing) {
+{%- for row in execution.state_start_rows %}{% set target = targets[row] %}
+        m->y[{{ target.Y.index }}] = binding_output[{{ row }}];
+{%- endfor %}
+    }
+{%- endif %}
     }
 {%- endfor %}
     if (update_discrete_equations(m) != {{ prefix }}OK) return -1;

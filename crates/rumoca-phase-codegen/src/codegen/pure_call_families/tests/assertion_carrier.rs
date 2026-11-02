@@ -167,6 +167,10 @@ fn compiled_c_keeps_first_fault_and_exact_captures_without_publishing_values() {
 }
 
 pub(super) fn compile_and_execute(source: &str) {
+    compile_and_execute_with_flags(source, &[]);
+}
+
+pub(super) fn compile_and_execute_with_flags(source: &str, flags: &[&str]) {
     let work = tempfile::tempdir().unwrap();
     let file = work.path().join("assertion.c");
     std::fs::write(&file, source).unwrap();
@@ -181,6 +185,7 @@ pub(super) fn compile_and_execute(source: &str) {
             "-Werror",
             "-Wvla",
         ])
+        .args(flags)
         .arg(file)
         .args(["-lm", "-o"])
         .arg(&binary)
@@ -271,6 +276,16 @@ const FORMATTED_CONTROL: &str = r#"{% from "fmi-typed-functions.jinja" import fu
 #include <math.h>
 #define RMC_API
 typedef struct { bool assertion_failed; bool rmc_warned[1]; } ModelInstance;
+/* FMI 3 has no allocator callbacks; the same request/text owner uses libc. */
+static inline void* rmc_instance_allocate(const ModelInstance* m, size_t count, size_t size) {
+    (void)m;
+    if (!count || !size || count > SIZE_MAX/size) return NULL;
+    return calloc(count, size);
+}
+static inline void rmc_instance_free(const ModelInstance* m, void* data) {
+    (void)m;
+    free(data);
+}
 {{ function_prototypes(table) }}
 {{ functions(table) }}
 static size_t logs=0;

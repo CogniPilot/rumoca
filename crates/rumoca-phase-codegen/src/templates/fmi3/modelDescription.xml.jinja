@@ -6,9 +6,9 @@
   generationTool="Rumoca"
   instantiationToken="{{ artifact.identities.fmu }}">
 {% if fmi.deployment.interfaces == "model-exchange-and-co-simulation" %}
-  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching or fmi.scalar_events %} needsCompletedIntegratorStep="true"{% endif %}{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}/>
+  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching or fmi.scalar_events %} needsCompletedIntegratorStep="true"{% endif %}{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}{% if fmi_tangents is defined and fmi_tangents.available %} providesDirectionalDerivatives="true" providesAdjointDerivatives="true"{% endif %}/>
 {% endif %}
-  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}/>
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}{% if fmi_tangents is defined and fmi_tangents.available %} providesDirectionalDerivatives="true" providesAdjointDerivatives="true"{% endif %}/>
   <UnitDefinitions>
     <Unit name="s">
       <BaseUnit s="1"/>
@@ -44,6 +44,7 @@
     <{{ element }} name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}"{% if kind == "Enumeration" %} declaredType="{{ variable.enumeration.name | xml_escape }}"{% endif %} causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}
 {%- if variable.start_fmi3 is defined and kind != "String" %} start="{% for value in variable.start_fmi3 %}{% if kind == "Real" %}{{ value }}{% elif kind == "Boolean" %}{{ "true" if value else "false" }}{% else %}{{ value | int }}{% endif %}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
 {%- if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}
+{%- if variable.role == "State" and not (fmi.native_logger | default(false)) and fmi.state_reinitializations[loop.index0] %} reinit="true"{% endif %}
 {#- FMI 3.0 min, max, and nominal are single values that apply to every
     element of an array variable. Per-element bounds are declared by their
     loosest element (the smallest min, the largest max), which every element

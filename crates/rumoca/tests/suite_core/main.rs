@@ -116,6 +116,7 @@ mod final_parameter_modifiers;
 mod fixed_array_element_initialization;
 mod floating_star_index_reduction;
 mod fluid_function_data;
+mod fmi_derivative_admission;
 #[cfg(target_os = "linux")]
 mod fmi_event_c_warnings;
 mod fmi_family_map_loops;
@@ -123,6 +124,7 @@ mod fmi_me_host_divergence;
 mod fmi_parameter_folds;
 mod fmi_projection_descriptors;
 mod fmi_pure_call_families;
+mod fmi_total_tangent_owners;
 mod for_eq_array_test;
 mod for_loop_element_derivative_alias;
 mod foreign_library_state;

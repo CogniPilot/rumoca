@@ -836,6 +836,7 @@ fn support_partials_are_shared_and_are_not_artifacts() {
             "fmi3/me_projection.jinja".to_string(),
             "fmi3/scalar_events.jinja".to_string(),
             "fmi3/scalar_kernel.jinja".to_string(),
+            "fmi3/total_tangent.jinja".to_string(),
             "fmi3/typed_arithmetic.jinja".to_string(),
             "fmi3/typed_functions.jinja".to_string(),
             "fmi3/typed_tensors.jinja".to_string(),

@@ -15,6 +15,7 @@ mod chart_switching;
 mod co_simulation_step;
 mod declared_causality;
 mod derivative_kinks;
+mod directional_derivatives;
 mod enumerations;
 mod input_defaults;
 mod integer_parameter;

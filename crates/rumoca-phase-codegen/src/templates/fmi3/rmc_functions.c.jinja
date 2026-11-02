@@ -2,4 +2,4 @@
 #include "model.h"
 /* Pure functions and their directional derivatives. */
 typedef int RmcFunctionsUnit;
-{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
+{{ functions(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 or fmi_tangents.available else []) }}

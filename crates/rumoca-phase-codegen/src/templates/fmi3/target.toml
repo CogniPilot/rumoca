@@ -120,3 +120,7 @@ name = "fmi-typed-tensors.jinja"
 [[partials]]
 template = "scalar_events.jinja"
 name = "fmi-scalar-events.jinja"
+
+[[partials]]
+template = "total_tangent.jinja"
+name = "fmi-total-tangent.jinja"

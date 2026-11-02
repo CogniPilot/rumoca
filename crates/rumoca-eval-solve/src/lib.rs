@@ -33,6 +33,7 @@ mod conditional_region;
 mod errors;
 mod event_messages;
 mod event_observations;
+pub mod fmi_tangents;
 #[cfg(test)]
 use event_messages::MAX_EVENT_MESSAGE_BYTES;
 pub use event_messages::{

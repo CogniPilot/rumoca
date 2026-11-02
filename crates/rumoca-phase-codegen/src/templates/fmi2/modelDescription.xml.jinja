@@ -6,7 +6,7 @@
   generationTool="Rumoca"
   guid="{ {{- artifact.identities.fmu -}} }"
   numberOfEventIndicators="{{ fmi.event_indicator_roots|length }}">
-  <ModelExchange modelIdentifier="{{ model_identifier }}">
+  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if fmi_tangents is defined and fmi_tangents.available %} providesDirectionalDerivative="true"{% endif %}>
     <SourceFiles>
       <File name="model.c"/>
       <File name="rmc_rows.c"/>
@@ -16,7 +16,7 @@
       <File name="rmc_jacobian.c"/>
     </SourceFiles>
   </ModelExchange>
-  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true">
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"{% if fmi_tangents is defined and fmi_tangents.available %} providesDirectionalDerivative="true"{% endif %}>
     <SourceFiles>
       <File name="model.c"/>
       <File name="rmc_rows.c"/>

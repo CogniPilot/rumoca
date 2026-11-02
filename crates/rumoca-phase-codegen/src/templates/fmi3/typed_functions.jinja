@@ -183,7 +183,8 @@ return 0;
     other types convert through local arrays. -#}
 {%- macro wrapper(owner, kind="") -%}
 RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
-(void)in; (void)out;
+(void)in;
+if (!out) return 1;
 {% for ty in owner.inputs -%}
 {% if not direct(ty) -%}
 {{ declaration("a" ~ loop.index0, ty) }}

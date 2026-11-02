@@ -30,6 +30,7 @@ mod fmi_c_assertions;
 mod fmi_projection_tests;
 #[cfg(test)]
 mod fmi_reduction_tests;
+mod fmi_tangents;
 #[cfg(test)]
 mod fold_render_tests;
 #[cfg(test)]

@@ -9,7 +9,12 @@ impl<'a> AdBuilder<'a> {
 
     pub(super) fn lower_load_time(&mut self, dst: Reg) -> Result<(), SolveDerivationError> {
         let re = self.emit_load_time()?;
-        let du = self.zero_reg()?;
+        let du = match self.seed_mode {
+            SeedMode::SolverYAndPAndTime {
+                time_seed_index, ..
+            } => self.emit_load_seed(time_seed_index)?,
+            _ => self.zero_reg()?,
+        };
         self.bind(dst, DualReg { re, du })
     }
 
@@ -190,6 +195,7 @@ impl<'a> AdBuilder<'a> {
         dst: Reg,
         index: usize,
     ) -> Result<(), SolveDerivationError> {
+        self.check_time_seed_storage(rumoca_ir_solve::TensorInputKind::Y, index, 1)?;
         let re = self.emit_load_y(index)?;
         let du = if self.seed_mode.y_is_active(index) {
             self.emit_load_seed(index)?
@@ -204,10 +210,13 @@ impl<'a> AdBuilder<'a> {
         dst: Reg,
         index: usize,
     ) -> Result<(), SolveDerivationError> {
+        self.check_time_seed_storage(rumoca_ir_solve::TensorInputKind::P, index, 1)?;
         let re = self.emit_load_p(index)?;
         let du = match self.seed_mode {
             SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. } => self.zero_reg()?,
-            SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)?)?,
+            SeedMode::SolverYAndP { .. } | SeedMode::SolverYAndPAndTime { .. } => {
+                self.emit_load_seed(self.p_seed_index(index)?)?
+            }
         };
         self.bind(dst, DualReg { re, du })
     }
@@ -224,11 +233,12 @@ impl<'a> AdBuilder<'a> {
         count: usize,
         index: Reg,
     ) -> Result<(), SolveDerivationError> {
+        self.check_time_seed_storage(rumoca_ir_solve::TensorInputKind::P, base, count)?;
         let idx = self.lookup(index)?;
         let re = self.emit_load_indexed_p(base, count, idx.re)?;
         let du = match self.seed_mode {
             SeedMode::SolverYOnly | SeedMode::SolverYSubset { .. } => self.zero_reg()?,
-            SeedMode::SolverYAndP { .. } => {
+            SeedMode::SolverYAndP { .. } | SeedMode::SolverYAndPAndTime { .. } => {
                 self.emit_load_indexed_seed(self.p_seed_index(base)?, count, idx.re)?
             }
         };

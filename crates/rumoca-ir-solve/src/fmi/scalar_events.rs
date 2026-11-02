@@ -72,6 +72,13 @@ pub(super) struct ScalarEventProfile {
     schedule: crate::EventIterationSchedule,
 }
 
+impl ScalarEventProfile {
+    /// The exact rows recomputed by this profile's public getter.
+    pub(super) fn public_observation_rows(&self) -> &[bool] {
+        &self.observation_rows
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ScalarEventRoot {
     /// `search`, `announced_time`, or `static`.

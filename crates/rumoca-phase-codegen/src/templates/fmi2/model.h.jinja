@@ -27,7 +27,7 @@
 #include "fmi2Functions.h"
 #define FMI_EXPORT FMI2_Export
 
-enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED };
+enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED, MODEL_ERROR };
 #define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
 #define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
 #define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
@@ -44,5 +44,5 @@ typedef struct {
 } ModelInstance;
 {{ event_now(fmi) }}
 {{ kernel_declarations(me_refresh) }}{{ linear_solve_kernel() }}
-{{ function_prototypes(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 else []) }}
+{{ function_prototypes(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 or fmi_tangents.available else []) }}
 #endif
