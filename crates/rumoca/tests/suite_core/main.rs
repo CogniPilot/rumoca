@@ -116,8 +116,8 @@ mod final_parameter_modifiers;
 mod fixed_array_element_initialization;
 mod floating_star_index_reduction;
 mod fluid_function_data;
-#[cfg(target_os = "linux")]
 mod fmi_derivative_admission;
+#[cfg(target_os = "linux")]
 mod fmi_event_c_warnings;
 mod fmi_family_map_loops;
 mod fmi_me_host_divergence;

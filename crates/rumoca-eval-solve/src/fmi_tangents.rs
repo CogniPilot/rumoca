@@ -398,21 +398,33 @@ fn require_algebraic_coverage(
     component: &FmiCCodegenView,
     assignments: &[FmiTangentSegment],
 ) -> Result<(), FmiTangentPlanError> {
-    let layout = &component.problem().solve_layout;
-    let first = layout.state_scalar_count();
-    let end = first
-        .checked_add(layout.algebraic_scalar_count())
-        .ok_or_else(|| FmiTangentPlanError::Contract("algebraic extent overflow".into()))?;
+    let targets = algebraic_target_range(&component.problem().solve_layout)?;
     let settled = assignments
         .iter()
         .flat_map(|segment| segment.targets.iter().copied())
         .collect::<BTreeSet<_>>();
-    if !(first..end).all(|index| settled.contains(&index)) {
+    if !targets.into_iter().all(|index| settled.contains(&index)) {
         return Err(FmiTangentPlanError::Contract(
             "algebraic tangent inventory is incomplete".into(),
         ));
     }
     Ok(())
+}
+
+/// Output declarations occupy their own trailing Y run, but their values are
+/// still dependent algebraic coordinates in a total derivative relation.
+fn algebraic_target_range(
+    layout: &solve::SolveLayout,
+) -> Result<std::ops::Range<usize>, FmiTangentPlanError> {
+    let first = layout.state_scalar_count();
+    let count = layout
+        .algebraic_scalar_count()
+        .checked_add(layout.output_scalar_count)
+        .ok_or_else(|| FmiTangentPlanError::Contract("algebraic extent overflow".into()))?;
+    let end = first
+        .checked_add(count)
+        .ok_or_else(|| FmiTangentPlanError::Contract("algebraic extent overflow".into()))?;
+    Ok(first..end)
 }
 
 fn require_rhs_coverage(
@@ -464,15 +476,12 @@ fn algebraic_inventory(
             }
         }
     }
-    let first = problem.solve_layout.state_scalar_count();
-    let count = problem.solve_layout.algebraic_scalar_count();
-    let end = first
-        .checked_add(count)
-        .ok_or_else(|| FmiTangentPlanError::Contract("algebraic extent overflow".into()))?;
+    let required = algebraic_target_range(&problem.solve_layout)?;
+    let count = required.len();
     if rows.len() != count
         || targets.len() != count
         || rows.iter().copied().collect::<BTreeSet<_>>().len() != count
-        || targets.iter().copied().collect::<BTreeSet<_>>() != (first..end).collect()
+        || targets.iter().copied().collect::<BTreeSet<_>>() != required.collect()
     {
         return Err(FmiTangentPlanError::ImplicitInventory(
             "relation is not a complete square algebraic inventory".into(),
