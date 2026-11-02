@@ -93,11 +93,20 @@ fn binding_block(compact: bool, permuted: bool) -> ScalarProgramBlock {
 }
 
 fn component(compact: bool, permuted: bool) -> FmiCCodegenView {
-    component_from_binding(binding_block(compact, permuted), permuted)
+    component_from_binding(
+        binding_block(compact, permuted),
+        permuted,
+        solve::SolvePureCallTable::default(),
+    )
 }
 
-fn component_from_binding(block: ScalarProgramBlock, permuted: bool) -> FmiCCodegenView {
+fn component_from_binding(
+    block: ScalarProgramBlock,
+    permuted: bool,
+    calls: solve::SolvePureCallTable,
+) -> FmiCCodegenView {
     let mut model = model_with_one_state_run(false);
+    model.pure_calls = calls;
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 3);
     model.initial_y = vec![2.0, 4.0].into();
     model.parameters = vec![2.0, 6.0, 12.0].into();
@@ -321,10 +330,48 @@ fn check_derivative_capabilities(rendered: &str, target: &str, name: &str) {
     }
 }
 
+/// A checked typed call carries the index dependency through C admission.
+/// The raw scalar indexed-read operation has no settled-parameter proof.
+fn checked_state_read() -> solve::SolvePureCallTable {
+    let arithmetic = solve::SolvePureCallTable::default().arithmetic();
+    let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic));
+    let span = fixture_span();
+    solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(1).unwrap()),
+            vec![real.clone()],
+            vec![solve::SolvePureCallOutput::result(real)],
+            span,
+            |builder, inputs, outputs| {
+                let input = builder.load(inputs[0], span)?;
+                let one = builder.constant(solve::SolveValue::real(arithmetic, 1.0), span)?;
+                let index =
+                    builder.binary(solve::SolveBinaryOperator::Subtract, input, one, span)?;
+                let index = builder.convert(
+                    solve::SolveConversionOperator::RealToIntegerTowardZero,
+                    index,
+                    span,
+                )?;
+                let two = builder.constant(solve::SolveValue::real(arithmetic, 2.0), span)?;
+                let four = builder.constant(solve::SolveValue::real(arithmetic, 4.0), span)?;
+                let values = builder.construct_aggregate(&[two, four], vec![2], span)?;
+                let value = builder.project_element_dynamic(values, &[index], span)?;
+                builder.store(outputs[0], value, span)
+            },
+        )?;
+        Ok(())
+    })
+    .expect("the checked read has one issued owner and exact typed inputs/outputs")
+}
+
 /// The dependent parameter still has a valid value, but another result in
 /// that same source program performs a checked runtime read. After init its
 /// value has no state-write authority; its source failure must still survive.
-fn binding_with_failable_state_result(compact: bool, permuted: bool) -> ScalarProgramBlock {
+fn binding_with_failable_state_result(
+    compact: bool,
+    permuted: bool,
+    calls: &solve::SolvePureCallTable,
+) -> ScalarProgramBlock {
     let original = binding_block(compact, permuted);
     let mut programs = original
         .programs()
@@ -338,27 +385,11 @@ fn binding_with_failable_state_result(compact: bool, permuted: bool) -> ScalarPr
     // At g=2 the source index g-1 is 1 and [2,4][1] is a legal start.
     // At g=4 that index is 3 and must refuse even though this Y row will
     // not be committed. Keep the original k and second state calculations.
-    programs[1].splice(
-        3..4,
-        [
-            LinearOp::Const { dst: 5, value: 2.0 },
-            LinearOp::Const { dst: 6, value: 4.0 },
-            LinearOp::Const { dst: 7, value: 1.0 },
-            LinearOp::Binary {
-                dst: 8,
-                op: BinaryOp::Sub,
-                lhs: 0,
-                rhs: 7,
-            },
-            LinearOp::LoadIndexedRegister {
-                dst: 3,
-                base: 5,
-                stride: 1,
-                dimensions: vec![2].into_boxed_slice(),
-                indices: vec![solve::TensorIndex::Runtime(8)].into_boxed_slice(),
-            },
-        ],
-    );
+    programs[1][3] = LinearOp::PureCall {
+        dst_start: 3,
+        input_starts: vec![0].into_boxed_slice(),
+        site: calls.owners()[0].call_site(),
+    };
     ScalarProgramBlock::with_output_indices(
         programs,
         vec![fixture_span(); 2],
@@ -371,10 +402,9 @@ fn binding_with_failable_state_result(compact: bool, permuted: bool) -> ScalarPr
 fn post_initial_relation_does_not_erase_failure_of_an_uncommitted_state_result() {
     use rumoca_eval_solve::{EvalSolveError, fmi_tangents::FmiTangentPlan};
     for (compact, permuted) in CASES {
-        let component = component_from_binding(
-            binding_with_failable_state_result(compact, permuted),
-            permuted,
-        );
+        let calls = checked_state_read();
+        let block = binding_with_failable_state_result(compact, permuted, &calls);
+        let component = component_from_binding(block, permuted, calls);
         let plan = FmiTangentPlan::derive_event_or_step(&component)
             .expect("the supported checked read remains in the same post-initial owner");
         let system = plan.implicit().expect("the k/h relations remain present");
@@ -384,24 +414,32 @@ fn post_initial_relation_does_not_erase_failure_of_an_uncommitted_state_result()
         let mut out = vec![f64::NAN; system.program().output_count()];
         // A successful first point distinguishes this fault from malformed
         // fixture storage or an unrelated evaluator/seed inventory error.
-        rumoca_eval_solve::eval_scalar_program_block(
+        rumoca_eval_solve::eval_scalar_program_block_with_context(
             system.program(),
             &[2.0, 4.0],
             &[2.0, 6.0, 12.0],
             0.0,
-            Some(&seed),
+            rumoca_eval_solve::RowEvalContext {
+                seed: Some(&seed),
+                pure_calls: Some(component.pure_calls()),
+                ..Default::default()
+            },
             &mut out,
         )
         .expect("the within-bounds point evaluates the complete relation");
         for (&row, &subtract) in system.rows().iter().zip(system.subtract_targets()) {
             assert_eq!(out[row], seed[subtract - 1]);
         }
-        let error = rumoca_eval_solve::eval_scalar_program_block(
+        let error = rumoca_eval_solve::eval_scalar_program_block_with_context(
             system.program(),
             &[2.0, 4.0],
             &[4.0, 12.0, 24.0],
             0.0,
-            Some(&seed),
+            rumoca_eval_solve::RowEvalContext {
+                seed: Some(&seed),
+                pure_calls: Some(component.pure_calls()),
+                ..Default::default()
+            },
             &mut out,
         )
         .expect_err("the unused state result must retain its checked read failure");
