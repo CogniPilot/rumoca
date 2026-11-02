@@ -127,6 +127,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check humanoid benchmark policy and runner controls
+        run: python3 -m unittest discover -s examples/benchmarks/humanoid -p test_benchmark.py -v
+
       - name: Install Node for CI script tests
         uses: actions/setup-node@v5
         with:
@@ -288,6 +291,33 @@ jobs:
           nix build --print-build-logs \
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu
+
+      - name: Compare humanoid native speed and task fidelity with MuJoCo
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 15
+        run: bash .github/ci/run-humanoid-comparison.sh
+
+      - name: Retain humanoid comparison attempts
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v6
+        with:
+          name: humanoid-comparison
+          path: |
+            target/humanoid-comparison
+            !target/humanoid-comparison/cache/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record added humanoid comparison time
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/humanoid-comparison-start" ]; then
+            elapsed=$(( $(date +%s) - $(cat "$RUNNER_TEMP/humanoid-comparison-start") ))
+            mkdir -p target/humanoid-comparison
+            printf '{"elapsed_seconds":%s}\n' "$elapsed" > target/humanoid-comparison/elapsed.json
+            awk -v seconds="$elapsed" 'BEGIN {printf "\nHumanoid comparison added %.2f minutes (downloads + setup + runs + artifact upload; excludes the existing package build).\n", seconds / 60}' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Publish rumoca and its dependency build to the CogniPilot cache
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
