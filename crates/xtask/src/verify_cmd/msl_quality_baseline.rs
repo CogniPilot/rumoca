@@ -110,6 +110,7 @@ struct MslQualityBaselineHeader {
 impl MslQualityBaselineHeader {
     fn cohort_snapshot(&self) -> cohort::CohortSnapshot<'_> {
         cohort::CohortSnapshot {
+            quality_gate_version: Some(self.quality_gate_version),
             evidence: &self.cohort,
             trace: &self.trace_accuracy_stats,
             runtime: &self.runtime_ratio_stats,
@@ -212,6 +213,8 @@ struct RuntimeRatioStats {
 #[derive(Debug, Clone, Deserialize)]
 struct DistributionMedian {
     median: f64,
+    #[serde(default)]
+    sample_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

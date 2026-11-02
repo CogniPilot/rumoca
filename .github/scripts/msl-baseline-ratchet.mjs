@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { cohortComparison } from './msl-baseline-cohort.mjs';
+import { cohortComparison, snapshotRuntimeRatios } from './msl-baseline-cohort.mjs';
 
 const DEFAULT_CHECKED_IN_BASELINE_PATH = fileURLToPath(
   new URL(
@@ -95,6 +95,7 @@ export function promoteBaselineIfImproved({
 // reviewed checked-in baseline of the same commit; the quality gate pins that
 // baseline to its own schema version, so the ratchet keeps no copy of it.
 export function ensurePromotableSnapshot(snapshot, expectedVersion, sourceName = 'source snapshot') {
+  snapshotRuntimeRatios(snapshot, sourceName);
   assert.equal(
     numberAt(snapshot, ['quality_gate_version'], sourceName),
     expectedVersion,
