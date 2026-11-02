@@ -7,6 +7,8 @@ use std::path::Path;
 /// One side of a shared case, read as the resolver reads a baseline.
 #[derive(Deserialize)]
 struct CaseSnapshot {
+    #[serde(default)]
+    quality_gate_version: Option<u64>,
     trace_accuracy_stats: TraceAccuracyStats,
     runtime_ratio_stats: RuntimeRatioStats,
     #[serde(flatten)]
@@ -16,6 +18,7 @@ struct CaseSnapshot {
 impl CaseSnapshot {
     fn view(&self) -> CohortSnapshot<'_> {
         CohortSnapshot {
+            quality_gate_version: self.quality_gate_version,
             evidence: &self.evidence,
             trace: &self.trace_accuracy_stats,
             runtime: &self.runtime_ratio_stats,
@@ -90,6 +93,15 @@ fn resolver_and_ratchet_reach_the_shared_cohort_verdicts() {
         let name = case["name"].as_str().unwrap();
         let reference = case_snapshot(&cases, &case["reference"]);
         let candidate = case_snapshot(&cases, &case["candidate"]);
+        if case["validate_side"].as_str() == Some("reference") {
+            let result = super::snapshot_ratios(reference.view(), "reference baseline");
+            let message = format!("{:#}", result.expect_err(name));
+            assert!(
+                message.contains(case["error"].as_str().unwrap()),
+                "{name}: {message}"
+            );
+            continue;
+        }
         let result = cohort_comparison(reference.view(), candidate.view());
         if let Some(error) = case["error"].as_str() {
             let message = format!("{:#}", result.expect_err(name));
@@ -108,4 +120,36 @@ fn resolver_and_ratchet_reach_the_shared_cohort_verdicts() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn runtime_median_keeps_finite_huge_and_positive_subnormal_midpoints() {
+    for value in [1.0e308, f64::from_bits(1)] {
+        assert_eq!(super::median(vec![value, value]), value);
+    }
+    assert!(super::median(vec![f64::from_bits(1), f64::MAX]).is_finite());
+}
+
+#[test]
+fn candidate_binding_does_not_activate_the_historical_reference_reader() {
+    let cases = shared_cases();
+    let reference = case_snapshot(
+        &cases,
+        &serde_json::json!({
+            "runtime_ratio_stats": {"system_ratio_both_success": {"sample_count": 3}}
+        }),
+    );
+    let candidate = case_snapshot(
+        &cases,
+        &serde_json::json!({
+            "runtime_ratio_stats": {
+                "system_ratio_both_success": {"sample_count": 4},
+                "wall_ratio_both_success": {"sample_count": 4}
+            }
+        }),
+    );
+    let verdict = cohort_comparison(reference.view(), candidate.view()).unwrap();
+    assert!(verdict.regressions.is_empty());
+    assert!(super::snapshot_ratios(reference.view(), "new snapshot").is_err());
+    assert!(cohort_comparison(candidate.view(), reference.view()).is_err());
 }

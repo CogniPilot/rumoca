@@ -4,23 +4,16 @@
 ACCEPTED
 
 ## Summary
-Defines the mandatory PR review process and the rules that the GitHub PR
-template (`.github/pull_request_template.md`) must implement. The template
-is the canonical author/reviewer artifact; this spec defines the rules
-the template enforces.
+Defines mandatory review rules for the canonical `.github/pull_request_template.md` artifact.
 
 ## Motivation
 
-A consistent PR review process catches defects before merge, keeps code
-accessible to humans and AI assistants, and enforces spec compliance.
-Mirroring the PR template against this spec gives one source of truth.
+Consistent reviews catch defects, preserve readability, and enforce spec compliance.
 
 ## PR Template Alignment
 
-The repository PR template at `.github/pull_request_template.md` MUST
-contain a section for every mandatory rule below. Section names in this
-spec mirror the template's section names so reviewers can map them
-one-to-one.
+The PR template MUST contain a section for every mandatory rule below,
+mapped by this table.
 
 | SPEC_0025 §       | PR template section       |
 |-------------------|---------------------------|
@@ -90,9 +83,8 @@ Pre-landing gate (every tip that lands MUST pass it, with coverage):
 cargo xtask verify gate --rev <tip> --coverage
 ```
 
-It snapshots the committed revision, runs the blocking steps below with CI's
-flags in a fresh Cargo target directory, and prints one `GATE_OK` or
-`GATE_FAILED` line naming the revision and its log.
+It runs CI's blocking steps on a committed snapshot in a fresh Cargo target,
+printing `GATE_OK` or `GATE_FAILED` with revision and log.
 
 Standard verification commands (all merged code MUST pass):
 
@@ -174,7 +166,8 @@ Rust developer workflow MUST remain Cargo-native.
 | Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
 | Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |
 | Trace-quality metrics MUST be gated against the resolved promoted baseline when OMC parity data is available | Prevents balanced-but-numerically-worse simulations from passing unnoticed |
-| Runtime speedup medians (system & wall) MUST NOT regress by > 35% | Tolerates hosted-runner noise without hiding material regressions |
+| Runtime speedup medians MUST NOT regress by > 35% for system time or > 45% for wall time, over the baseline runtime cohort | Wall time includes hosted-runner scheduling; the wider wall margin retains the stricter system-time check |
+| Fresh schema-14-or-newer snapshots with measured runtime and promotion candidates MUST bind per-model ratios to the exact roster, positive finite values, sample counts and medians; writers MUST check before output. Historical-reference validation activates only in a separately reviewed rollout with an eligible full non-regressing main baseline | Prevents mixed evidence without activating historical readers prematurely |
 | Cohort-dependent quality totals and runtime medians MUST be compared over the models both baseline and run measured | Cohort growth must not read as regression |
 | The PR comment's speed report MUST take every aggregate over the trace-agreeing (high or near) models, beside a high-only line, and compare compilation as time to runnable labelled JIT vs C toolchain and the FMU path, printed as not measured unless a CI job exports FMUs | A JIT-versus-C-toolchain speedup, or one counting disagreeing traces, is not like for like |
 | The speed report MUST take agreement from the comparator's band table, count initialization in rumoca's simulation time as OMC's `timeSimulation` does, time only OMC rows collected under the run's own worker count and host, and print a methodology block of recorded runner, per-stage parallelism, integrator and tolerance per tool, output density, cache state, and parity gating; OMC reference collection MUST use the rumoca compile and simulation worker counts, both tools MUST use the OMC output grid (the experiment `Interval`, else 500 intervals), and unequal counts or grids are flagged | Timings taken under different contention are not comparable |
@@ -225,9 +218,8 @@ net_added_lines:
 
 ### 7. Maintainability Quick Reference
 
-See SPEC_0021 for the authoritative function-length, nesting, and arg-count
-limits. The workspace `Cargo.toml` declares them as clippy `deny` lints, so
-they are enforced by §4 commands.
+SPEC_0021 defines function-length, nesting, and argument limits; workspace
+Clippy `deny` lints enforce them through §4 commands.
 
 ## CI Enforcement
 
