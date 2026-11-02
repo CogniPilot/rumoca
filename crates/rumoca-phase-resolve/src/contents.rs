@@ -5,8 +5,8 @@
 
 use crate::Resolver;
 use crate::traversal_adapter::{
-    ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
-    walk_subscripts,
+    ResolveTraversalCallbacks, walk_class_modification_values, walk_equations, walk_expression,
+    walk_expressions, walk_statements, walk_subscripts,
 };
 use rumoca_core::{ComponentPath, DefId, Diagnostic, PrimaryLabel, ScopeId};
 use rumoca_ir_ast as ast;
@@ -311,7 +311,7 @@ impl Resolver {
             // of the modified element's type, which Resolve does not own.
             Expression::ClassModification { target, .. } => {
                 self.resolve_component_reference(target, target_scope);
-                self.resolve_nested_modifier_values(expr, value_scope);
+                walk_class_modification_values(self, expr, value_scope);
             }
             Expression::Binary {
                 op: rumoca_core::OpBinary::Assign,
@@ -323,50 +323,10 @@ impl Resolver {
                 {
                     self.resolve_component_reference(target, target_scope);
                 }
-                self.resolve_nested_modifier_values(std::sync::Arc::make_mut(lhs), value_scope);
+                walk_class_modification_values(self, std::sync::Arc::make_mut(lhs), value_scope);
                 self.resolve_expression(std::sync::Arc::make_mut(rhs), value_scope);
             }
             other => self.resolve_expression(other, target_scope),
-        }
-    }
-
-    /// Resolve the values below a class modification in `value_scope`.
-    fn resolve_nested_modifier_values(&mut self, expr: &mut Expression, value_scope: ScopeId) {
-        let Expression::ClassModification { modifications, .. } = expr else {
-            return;
-        };
-        for modification in modifications.iter_mut() {
-            match modification {
-                Expression::Modification { value, .. }
-                | Expression::NamedArgument { value, .. } => {
-                    self.resolve_nested_modifier_value(
-                        std::sync::Arc::make_mut(value),
-                        value_scope,
-                    );
-                }
-                Expression::Binary {
-                    op: rumoca_core::OpBinary::Assign,
-                    lhs,
-                    rhs,
-                    ..
-                } => {
-                    self.resolve_nested_modifier_values(std::sync::Arc::make_mut(lhs), value_scope);
-                    self.resolve_expression(std::sync::Arc::make_mut(rhs), value_scope);
-                }
-                nested @ Expression::ClassModification { .. } => {
-                    self.resolve_nested_modifier_values(nested, value_scope);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// One nested modifier value: a further class modification, or a value.
-    fn resolve_nested_modifier_value(&mut self, value: &mut Expression, value_scope: ScopeId) {
-        if matches!(value, Expression::ClassModification { .. }) {
-            self.resolve_nested_modifier_values(value, value_scope);
-        } else {
-            self.resolve_expression(value, value_scope);
         }
     }
 
