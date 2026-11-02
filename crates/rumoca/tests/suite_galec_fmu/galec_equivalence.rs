@@ -4136,11 +4136,11 @@ fn embedded_c_hoisting_a_staging_guard_keeps_the_per_tick_signal_word() {
 // Fixture 20: destination placement, and the aliasing case that refuses it.
 //
 // A callee's array output may be emitted into a slot the caller already owns,
-// so the read-back copy is never generated
-// (`views::algorithm_code_typed::destination`). The whole risk of that is
-// aliasing: the callee writes the destination WHILE its own body runs, so an
-// operand that shares storage with the destination would stop seeing its
-// pre-call value.
+// so the read-back copy is never generated (originally the GALEC-C
+// projection's destination placement; the Solve-printed C is held to the same
+// fixture). The whole risk of that is aliasing: the callee writes the
+// destination WHILE its own body runs, so an operand that shares storage with
+// the destination would stop seeing its pre-call value.
 //
 // `stage` calls two identical blends. `mixed := blendA(hold)` writes a slot no
 // operand names and is the placement's own case. `hold := blendB(hold)` assigns

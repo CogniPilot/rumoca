@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use lsp_types::{Position, Url};
-use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
+use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateIr, TargetTemplateSource};
 use rumoca_compile::source_roots::decode_source_root_snapshot;
 use rumoca_compile::{Session, SessionConfig};
 use rumoca_core::{PhaseError, SourceMap};
@@ -365,9 +365,10 @@ fn render_checked_sources(
         c_header: String::new(),
         c_source: String::new(),
     };
-    // A C target prints from the package's Solve refinement (#483), refused
-    // with a typed error before any file is rendered.
-    let c_renderer = if matches!(target, EMBEDDED_C_GALEC_TARGET | GALEC_PRODUCTION_TARGET) {
+    // An `algorithm-block` target prints its C from the package's Solve
+    // refinement (#483), refused with a typed error before any file is
+    // rendered. The manifest's IR decides, not the target's name.
+    let c_renderer = if manifest.ir == TargetTemplateIr::AlgorithmBlock {
         Some(solve_renderer(&package, &manifest, source_map)?)
     } else {
         None

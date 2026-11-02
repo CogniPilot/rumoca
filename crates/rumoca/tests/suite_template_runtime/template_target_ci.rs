@@ -165,7 +165,6 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
     assert_eq!(
         coverage.support_partials,
         vec![
-            "embedded-c-galec:scratch.jinja".to_string(),
             "embedded-c-galec:solve_c.jinja".to_string(),
             "embedded-c-galec:symbols.jinja".to_string(),
             "fmi3:me_projection.jinja".to_string(),
@@ -667,7 +666,6 @@ fn shared_template_names_are_globally_unique_and_target_owned() {
             "fmi3-rmc_isolators.c.jinja <- fmi3/rmc_isolators.c.jinja".to_string(),
             "fmi3-rmc_jacobian.c.jinja <- fmi3/rmc_jacobian.c.jinja".to_string(),
             "fmi3-rmc_rows.c.jinja <- fmi3/rmc_rows.c.jinja".to_string(),
-            "galec-c-scratch.jinja <- embedded-c-galec/scratch.jinja".to_string(),
             "galec-c-symbols.jinja <- embedded-c-galec/symbols.jinja".to_string(),
             "galec-clang-format.jinja <- embedded-c-galec/clang_format.jinja".to_string(),
             "galec-kernels.c.jinja <- embedded-c-galec/kernels.c.jinja".to_string(),

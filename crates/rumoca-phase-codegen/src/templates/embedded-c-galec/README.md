@@ -19,7 +19,7 @@ application needs plain C rather than an eFMU container.
   exists. Distinct state objects therefore have disjoint working storage and may
   step concurrently. The generated header states this; it is not left for a
   reader to discover, and it reports the per-instance cost as
-  `CHECKED_SCRATCH_SLOT_BYTES` next to an `AUXILIARY_SCRATCH_BYTES` of zero.
+  `RUMOCA_<MODEL>_SCRATCH_BYTES` next to an `AUXILIARY_SCRATCH_BYTES` of zero.
   Concurrent calls on *one* state object remain forbidden: the three methods
   share that instance's slots, so they require ordinary exclusive mutable
   ownership, which is already true of a block whose methods are its only entry
@@ -27,40 +27,19 @@ application needs plain C rather than an eFMU container.
 - **A local read before it is written observes another owner's data.** GALEC
   does not require definite assignment of locals, so a body may read one; the
   value it gets was always arbitrary, but with the overlay it is now whatever
-  the owner sharing that storage last left there rather than what the same owner
-  left on its own previous activation. The three methods share one group, so a
-  `DoStep` local read before assignment can carry a value `Startup` wrote. The
-  arm overlay extends the same statement one level down: a local read before it
-  is written inside one arm of a conditional can carry what another arm's local
-  left there. It takes a source defect to reach, and neither the old value nor
-  the new one is one the source asked for, but the arbitrary value CHANGED, so
-  a test that passed by accident on the old one may fail on this one.
-- Working memory is **overlaid**: the regions of two owners share storage only
-  where the checked projection has established that the owners can never be
-  active at the same time. The block's calls form one stack, so that holds
-  exactly when neither owner reaches the other through it: two callees of one
-  caller qualify, a caller and its own callee never do, and a method is never
-  argued against a user function at all. The relation is proven in
-  `views/algorithm_code_overlay.rs`, which is also where a group's membership is
-  built, out of permission values only that prover can mint; the accounting is
-  in `views/algorithm_code_typed.rs` (`ScratchLayoutView`) and this target
-  prints it. The generated source reports the achieved total and the heaviest
-  call chain, whose members are pairwise caller and callee and so give the floor
-  no sound overlay can go below.
-- Slots **inside** one region are overlaid by a second, independent rule. A
-  region is exact at region granularity and blind below it: a body that is a
-  long `if/elseif` chain gets one region sized for the sum of every arm even
-  though one arm runs. Two slots of one region therefore share storage where the
-  checked placement analysis puts every use of each inside a different arm of
-  one conditional, and no loop encloses that conditional so it is entered at
-  most once per call. A slot named anywhere outside a single arm keeps storage
-  of its own, including a function's outputs, which the caller reads back by
-  name and cannot qualify by arm. The relation is proven in
-  `views/algorithm_code_slot_overlay.rs`, built from the scope paths in
-  `views/algorithm_code_scopes.rs` and out of permission values only that prover
-  can mint; the generated header spells each one as a `rumoca_galec_arm<n>`
-  union member of the region struct, and the generated source reports how many
-  there are and how many slots they hold.
+  the frame sharing that storage last left there rather than what the same owner
+  left on its own previous activation. The three method frames share one union,
+  so a `DoStep` local read before assignment can carry a value `Startup` wrote.
+  It takes a source defect to reach, and neither the old value nor the new one
+  is one the source asked for, but the arbitrary value CHANGED, so a test that
+  passed by accident on the old one may fail on this one.
+- Working memory is **overlaid** by frame. The three method frames are one
+  union, because the methods never run together on one state object. Each user
+  function gets its call level, one more than its deepest caller's, and the
+  frames of one level are one union: calls do not recurse, so a call chain
+  strictly climbs levels and two frames of one level are never live together.
+  The levels are assigned in `codegen/solve_block_renderer.rs`
+  (`assign_call_levels`) and `model.h.jinja` prints the unions.
 - GALEC Real values use C99 `float` storage and arithmetic for embedded
   deployment.
 - Tensor assignments preserve checked extents and deterministic row-major
@@ -132,17 +111,10 @@ external calls, random operations, and runtime event iteration fail closed.
 - `galec_c_working_memory` executes a block whose value depends on three pieces
   of working memory surviving a call, so an overlay that put a caller and its
   callee on one piece of storage fails with a wrong *number*, not a wrong line
-  of text. The relation itself is tested in
-  `views::algorithm_code_overlay::tests`, including the negative control, that
-  a caller and its own callee are refused, and the projection is tested against
-  an awkward call graph in `views::algorithm_code_typed::layout_tests`.
+  of text, and checks that the header states one union per call level.
 - The same file executes a block whose `DoStep` is a three-armed correction
-  chain, where one buffer per arm shares storage and one buffer read in every
-  arm must not, so an arm overlay that took the spanning buffer produces a wrong
-  number on every path. The arm relation is tested in
-  `views::algorithm_code_slot_overlay::tests`, whose negative controls cover a
-  slot used in two arms, a slot whose home merely encloses the other's, arms of
-  two different conditionals, and arms of a conditional inside a loop.
+  chain with one buffer per arm and one buffer read in every arm, so storage
+  shared with the spanning buffer produces a wrong number on every path.
 
 ## Example
 

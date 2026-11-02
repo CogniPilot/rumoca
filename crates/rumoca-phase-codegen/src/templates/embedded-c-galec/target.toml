@@ -72,10 +72,6 @@ template = "symbols.jinja"
 name = "galec-c-symbols.jinja"
 
 [[partials]]
-template = "scratch.jinja"
-name = "galec-c-scratch.jinja"
-
-[[partials]]
 template = "solve_c.jinja"
 name = "galec-solve-c.jinja"
 

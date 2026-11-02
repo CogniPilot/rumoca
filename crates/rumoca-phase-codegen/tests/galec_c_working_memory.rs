@@ -1,10 +1,10 @@
 //! Executable evidence for the overlaid, instance-owned working memory the
 //! GALEC C targets emit.
 //!
-//! The layout decision itself — which regions may share storage — is a property
-//! of the call graph and is tested as such in
-//! `rumoca-phase-codegen/src/views/algorithm_code_typed.rs`. What is tested
-//! HERE is the thing those properties exist to protect: that the generated C
+//! The layout decision itself — which frames may share storage — is a property
+//! of the call graph, made by the call levels in
+//! `rumoca-phase-codegen/src/codegen/solve_block_renderer.rs`. What is tested
+//! HERE is the thing that property exists to protect: that the generated C
 //! still computes the right numbers. The fixture is built so that an overlay
 //! which put a caller and its callee on the same storage produces a *different
 //! answer*, not merely different text — a test that only checked that the unit
@@ -14,7 +14,6 @@
 //! shares storage between slots inside one region. Its fixture is a correction
 //! chain with one buffer per arm and one buffer every arm reads: an overlay that
 //! took the second buffer gets a wrong number on every path through the chain.
-//! The arm relation itself is tested in `views::algorithm_code_slot_overlay`.
 
 use std::fs;
 use std::process::Command;
