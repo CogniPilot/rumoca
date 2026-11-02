@@ -248,10 +248,6 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             "ConstrainedByMod.RecordKept",
             &[("h.p.a", 5.0), ("h.p.b", 4.0)],
         ),
-        (
-            "ConstrainedByMod.RecordClassKept",
-            &[("h.p.a", 5.0), ("h.p.b", 4.0)],
-        ),
     ] {
         for &(name, value) in expected {
             assert_eq!(binding(source, model, name), vec![value], "{model}: {name}");
@@ -269,7 +265,6 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
     // declared binding, a final one included.
     for (model, minimum) in [
         ("ConstrainedByMod.AttributeKept", Some(vec![0.0])),
-        ("ConstrainedByMod.AttributeClassKept", Some(vec![0.0])),
         ("ConstrainedByMod.AttributeFinalKept", None),
     ] {
         assert_eq!(binding(source, model, "h.k"), vec![5.0], "{model}");
@@ -279,6 +274,97 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             "{model}"
         );
     }
+}
+
+#[test]
+fn issue_536_a_declared_binding_classifies_constrained_members_by_type() {
+    // MLS 7.2.3: a whole binding replaces the value, so it supersedes lower
+    // modifications of a record's elements, whatever they are named, and
+    // refuses a final one (7.2.6). The element's type decides, not the name:
+    // `start` here is a record field, not the Real attribute.
+    let source = include_str!("fixtures/reported_bugs/issue_536_collisions.mo");
+    for (model, expected) in [
+        (
+            "AttributeNameCollision.RecordKept",
+            &[("h.p.start", 5.0), ("h.p.b", 4.0)][..],
+        ),
+        // A binding that also states nested modifications is still a binding.
+        (
+            "UpperNestedAttributes.RecordKept",
+            &[("h.p.a", 5.0), ("h.p.b", 4.0)],
+        ),
+    ] {
+        for &(name, value) in expected {
+            assert_eq!(binding(source, model, name), vec![value], "{model}: {name}");
+        }
+    }
+    for (model, element) in [
+        ("AttributeNameCollision.RecordFinal", "h.p.start"),
+        ("UpperNestedAttributes.RecordFinal", "h.p.b"),
+    ] {
+        let message = refusal(source, model);
+        assert!(
+            message.contains(&format!("`{element}`")) && message.contains("final"),
+            "{model}: {message}"
+        );
+    }
+}
+
+#[test]
+fn issue_536_a_class_form_binding_over_constrained_members_is_refused() {
+    // A class definition resolves no types, so whether a declared binding
+    // supersedes the constraining clause's nested modifiers is not known
+    // there: refused rather than guessed.
+    // Each case alone: the refusal stops the whole class definition.
+    for (record, declared, constraining) in [
+        // A record and a binding over a member (#536 RecordKept, class form).
+        ("Real a;\n    Real b;", "p = R(5, 4)", "p(b = 3)"),
+        // A primitive and a binding over attributes.
+        ("Real a;\n    Real b;", "p = R(5, 4)", "p(a(min = 0))"),
+        // A record member named like an attribute, plain and final.
+        ("Real start;\n    Real b;", "p = R(5, 4)", "p(start = 3)"),
+        (
+            "Real start;\n    Real b;",
+            "p = R(5, 4)",
+            "p(final start = 3)",
+        ),
+        (
+            "Real a;\n    Real b;",
+            "p = R(5, 4)",
+            "p(final a = 1, b = 3)",
+        ),
+    ] {
+        let class_form = format!(
+            "package P\n  record R\n    {record}\n  end R;\n  \
+             partial model Partial\n    parameter R p;\n  end Partial;\n  model Full\n    extends Partial;\n  \
+             end Full;\n  model C\n    replaceable model H = Full({declared}) \
+             constrainedby Partial({constraining});\n    H h;\n  end C;\nend P;\n"
+        );
+        let message = refusal(&class_form, "P.C");
+        assert!(
+            message.contains("binds `p`") && message.contains("does not resolve"),
+            "{declared} against {constraining}: {message}"
+        );
+    }
+    // A primitive element's attributes, in a class definition, likewise.
+    let primitive = "package P\n  partial model Partial\n    parameter Real k;\n  end Partial;\n  \
+         model Full\n    extends Partial;\n  end Full;\n  model C\n    \
+         replaceable model H = Full(k = 5) constrainedby Partial(k(min = 0, unit = \"N/m\"));\n    \
+         H h;\n  end C;\nend P;\n";
+    let message = refusal(primitive, "P.C");
+    assert!(message.contains("binds `k`"), "{message}");
+}
+
+/// The error compiling `model` reports.
+fn refusal(source: &str, model: &str) -> String {
+    let mut session = Session::default();
+    if let Err(error) = session.add_document("Repro.mo", source) {
+        return format!("{error:#}");
+    }
+    let Err(error) = session.compile_model(model) else {
+        panic!("{model}: compiles, but must be refused");
+    };
+    format!("{error:#}")
 }
 
 #[test]
@@ -358,7 +444,6 @@ fn issue_536_constraining_clause_final_modifiers_refuse_a_declared_override() {
     for (declared, constraining, element) in [
         ("p(a = 5)", "final p(b = 3)", "p"),
         ("p(a = 5)", "p(final a = 1, b = 3)", "p.a"),
-        ("p = R(5, 4)", "p(final a = 1, b = 3)", "p.a"),
     ] {
         let class_form = format!(
             "package P\n  record R\n    Real a;\n    Real b;\n  end R;\n  \

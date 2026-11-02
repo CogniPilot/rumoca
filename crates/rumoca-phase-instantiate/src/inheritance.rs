@@ -1498,7 +1498,7 @@ fn merge_class_content(
             });
 
             // MLS §7.3.2: the replacement keeps the constraining-clause modifiers.
-            activate_constrainedby_defaults(comp)?;
+            activate_constrainedby_defaults(tree, comp)?;
         }
     }
 
@@ -1619,7 +1619,13 @@ fn validate_break_names(
 
 /// MLS §7.3.2: apply a replaceable declaration's constraining-clause
 /// modifiers to it, below any modifier the declaration itself states.
-pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) -> InstantiateResult<()> {
+pub(super) fn activate_constrainedby_defaults(
+    tree: &ast::ClassTree,
+    comp: &mut ast::Component,
+) -> InstantiateResult<()> {
+    let class = comp
+        .type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id));
     let mut inserts: Vec<(String, ast::Expression)> = Vec::new();
     let mut prefixed_keys: Vec<String> = Vec::new();
 
@@ -1636,18 +1642,25 @@ pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) -> Inst
         if let Some(stated) = comp.modifications.get_mut(&target_name) {
             // MLS §7.2.6: the declaration may not modify what the constraining clause makes final.
             let refused = if comp.final_attributes.contains(&prefixed_key) {
-                Some(target_name.clone())
+                Some(ast::MergeRefusal::Final(target_name.clone()))
             } else {
-                stated
-                    .merge_modification_below(&value)
-                    .err()
-                    .map(|inner| format!("{target_name}.{inner}"))
+                merge_constrained(tree, class, &target_name, stated, &value)
             };
-            if let Some(name) = refused {
-                return Err(crate::attributes::final_override_error(
-                    format!("{}.{name}", comp.name),
-                    stated,
-                ));
+            match refused {
+                Some(ast::MergeRefusal::Final(name)) => {
+                    return Err(crate::attributes::final_override_error(
+                        format!("{}.{name}", comp.name),
+                        stated,
+                    ));
+                }
+                Some(ast::MergeRefusal::Unclassified(name)) => {
+                    return Err(Box::new(InstantiateError::redeclare_error(
+                        format!("{}.{name}", comp.name),
+                        "a declared binding meets constraining-clause modifiers whose element type is not resolved",
+                        stated.span(),
+                    )));
+                }
+                None => {}
             }
             continue;
         }
@@ -1666,6 +1679,58 @@ pub(super) fn activate_constrainedby_defaults(comp: &mut ast::Component) -> Inst
         comp.final_attributes.shift_remove(&key);
     }
     Ok(())
+}
+
+/// Merge the constraining clause's `value` for `target` below the stated one,
+/// classifying bound elements by their type in `class`.
+fn merge_constrained(
+    tree: &ast::ClassTree,
+    class: Option<&ast::ClassDef>,
+    target: &str,
+    stated: &mut ast::Expression,
+    value: &ast::Expression,
+) -> Option<ast::MergeRefusal> {
+    let classify = |path: &[String]| {
+        let path: Vec<_> = std::iter::once(target.to_string())
+            .chain(path.iter().cloned())
+            .collect();
+        nested_arguments(tree, class, &path)
+    };
+    stated
+        .merge_modification_below(value, &classify)
+        .err()
+        .map(|refusal| refusal.within(target))
+}
+
+/// Whether the element at `path` below `class` takes attributes (a primitive
+/// type) or elements (MLS 4.9); `None` when a type on the way is unresolved.
+fn nested_arguments(
+    tree: &ast::ClassTree,
+    class: Option<&ast::ClassDef>,
+    path: &[String],
+) -> Option<ast::NestedArguments> {
+    let (last, parents) = path.split_last()?;
+    let mut class = class?;
+    for name in parents {
+        let member = get_effective_components(tree, class)
+            .ok()?
+            .get(name)?
+            .clone();
+        class = tree.get_class_by_def_id(member.type_def_id?)?;
+    }
+    let member = get_effective_components(tree, class)
+        .ok()?
+        .get(last)?
+        .clone();
+    if is_builtin_type(&member.type_name.to_string()) {
+        return Some(ast::NestedArguments::Attributes);
+    }
+    let class = tree.get_class_by_def_id(member.type_def_id?)?;
+    Some(if is_effectively_primitive_transitive(tree, class) {
+        ast::NestedArguments::Attributes
+    } else {
+        ast::NestedArguments::Elements
+    })
 }
 
 /// Merge nested class modifications from extends clause into inherited components.
@@ -1821,7 +1886,7 @@ pub fn get_effective_components_with_cache(
     // MLS §7.3.2: the constraining clause's modifiers apply to the declaration
     // itself, not only to a redeclaration.
     for comp in inherited.components.values_mut() {
-        activate_constrainedby_defaults(comp)?;
+        activate_constrainedby_defaults(tree, comp)?;
     }
 
     Ok(inherited.components)

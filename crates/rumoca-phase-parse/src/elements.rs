@@ -756,19 +756,28 @@ fn merge_constraining_clause_class_modifications(
         }) {
             // MLS §7.2.6: the class may not modify what the constraining clause makes final.
             let refused = if arguments.final_flags.get(idx).copied().unwrap_or(false) {
-                Some(target.clone())
+                Some(rumoca_ir_ast::MergeRefusal::Final(target.clone()))
             } else {
+                // A class definition resolves no types, so no element here is
+                // known to take attributes or elements.
                 stated
                     .expr
-                    .merge_modification_below(arg)
+                    .merge_modification_below(arg, &|_| None)
                     .err()
-                    .map(|inner| format!("{target}.{inner}"))
+                    .map(|refusal| refusal.within(&target))
             };
-            if let Some(name) = refused {
-                anyhow::bail!(
+            match refused {
+                Some(rumoca_ir_ast::MergeRefusal::Final(name)) => anyhow::bail!(
                     "replaceable class `{}` modifies `{name}`, which its constraining clause declares final (MLS §7.2.6)",
                     class.name.text
-                );
+                ),
+                Some(rumoca_ir_ast::MergeRefusal::Unclassified(name)) => anyhow::bail!(
+                    "replaceable class `{}` binds `{name}` and its constraining clause modifies it below the binding: \
+                     which of those the binding replaces depends on the type of `{name}`, which a class definition does not resolve; \
+                     state the modifiers on a component declaration instead",
+                    class.name.text
+                ),
+                None => {}
             }
             continue;
         }

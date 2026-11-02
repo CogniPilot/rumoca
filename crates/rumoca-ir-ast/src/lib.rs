@@ -45,6 +45,7 @@ mod external_object;
 pub mod instance;
 mod modelica;
 mod modification_merge;
+pub use modification_merge::{ClassifyNested, MergeRefusal, NestedArguments};
 mod nodes;
 pub mod scope;
 mod semantic_identity;
