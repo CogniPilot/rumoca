@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use minijinja::Value;
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 use rumoca_ir_solve::{
-    SolveAlgorithmBlock, SolveArithmeticProfile, SolvePureCallTable, SolveStorageClass,
-    SolveValueType, TypedProgram,
+    SolveAlgorithmBlock, SolveAlgorithmBlockDigest, SolveArithmeticProfile, SolvePureCallTable,
+    SolveStorageClass, SolveValueType, TypedProgram,
 };
 use serde::Serialize;
 
@@ -165,10 +165,16 @@ pub(super) fn solve_block_value(
         }
     }
     assign_call_levels(&mut json);
+    mark_else_chains(&mut json);
+    let digest = block
+        .digest()
+        .map_err(|error| CodegenError::template(format!("Solve block digest: {error}")))?;
     Ok(Value::from_serialize(TracedView {
         view: json,
         traces,
         literals,
+        digest: digest.to_string(),
+        digest_algorithm: SolveAlgorithmBlockDigest::ALGORITHM,
     }))
 }
 
@@ -180,6 +186,52 @@ struct TracedView {
     /// C literal of every finite or infinite Real constant, keyed
     /// `<kind>:<bits>`: the shortest decimal that reads back to the same bits.
     literals: BTreeMap<String, String>,
+    /// [`SolveAlgorithmBlock::digest`] of the block this view prints, in hex:
+    /// every C model unit records it, so a reader can recompute it from the
+    /// checked package and prove which Solve program the C came from (#483).
+    digest: String,
+    digest_algorithm: &'static str,
+}
+
+/// Mark every `conditional` operation whose `if_false` body holds exactly one
+/// top-level `conditional`: `else_link` is that operation's index, and
+/// `else_depth` counts the links of the else-if chain it starts, so the
+/// template can print the chain iteratively instead of nesting one macro
+/// call per link (#483: an entry-wise matrix built in a loop nests dozens).
+fn mark_else_chains(json: &mut serde_json::Value) {
+    match json {
+        serde_json::Value::Object(fields) => {
+            for value in fields.values_mut() {
+                mark_else_chains(value);
+            }
+            if fields.get("operation").and_then(serde_json::Value::as_str) != Some("conditional") {
+                return;
+            }
+            let link = fields
+                .get("if_false")
+                .and_then(|region| region.pointer("/body/operations"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|operations| {
+                    let mut nested = operations
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, issued)| issued["operation"]["operation"] == "conditional");
+                    let (index, issued) = nested.next()?;
+                    nested.next().is_none().then_some((index, issued))
+                })
+                .map(|(index, issued)| {
+                    let depth = issued["operation"]["else_depth"].as_u64().unwrap_or(0);
+                    (index, depth + 1)
+                });
+            let (link, depth) = link.map_or((serde_json::Value::Null, 0), |(index, depth)| {
+                (serde_json::Value::from(index), depth)
+            });
+            fields.insert("else_link".to_owned(), link);
+            fields.insert("else_depth".to_owned(), serde_json::Value::from(depth));
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(mark_else_chains),
+        _ => {}
+    }
 }
 
 /// Give every serialized program an `alias_of` table: register -> slot for a

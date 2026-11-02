@@ -409,42 +409,37 @@ pub fn render_target_files(
     )
 }
 
-/// Build the switch-dispatch eFMU packaging plan (contract §9 WI-5) for the
-/// `galec`/`galec-production` targets, or `None` for any other target. The
-/// GALEC projection runs here — once, before any filesystem effect — so a
-/// rejection surfaces before an output directory is created.
 /// The emission policy one target is allowed to run under.
 ///
 /// An eFMI container ships TWO representations of one model: `AlgorithmCode` is
 /// the reviewable semantic reference and `ProductionCode` is its optimized C
-/// rendering. This compiler renders both from ONE projected package, so a
-/// policy that collapses call structure would collapse it in the reference too,
-/// and the container would stop containing the thing it exists to contain.
+/// rendering. The reference stays structured whatever the policy, so a
+/// container that prints C projects twice (see [`algorithm_code_renderer`]):
+/// once structured for the `.alg`, once under the policy for the C.
 ///
-/// So a target that ships a container runs fully structured, and a request to
-/// do otherwise is refused rather than ignored: silently dropping the flag
-/// would hand back an artifact that does not match what was asked for.
+/// A container with no C (`galec`) has nothing a policy could shape, and a
+/// request to shape it is refused rather than ignored: silently dropping the
+/// flag would hand back an artifact that does not match what was asked for.
 ///
-/// RELOCATION DEBT. The transform's end-state home is the GALEC to Solve
-/// refinement, where the two representations can legitimately diverge: the
-/// `.alg` stays the structured reference and only the Solve program the C
-/// emitter consumes is optimized. Hosting it in DAE to GALEC lowering is an
-/// interim placement for the container-free `embedded-c-galec` target, and this
-/// refusal is the seam that keeps the interim honest. When the refinement
-/// lands, this function should stop existing rather than grow cases.
+/// RELOCATION DEBT. The transform still runs in DAE to GALEC lowering, which is
+/// why a policy-shaped container needs its second projection. Its end-state
+/// home is the GALEC to Solve refinement, which would optimize only the Solve
+/// program the C emitter consumes from the one structured package.
 fn admitted_emission_policy(
     manifest: &TargetManifest,
     requested: EmissionPolicy,
 ) -> Result<EmissionPolicy> {
-    if manifest.package.is_none() || requested == EmissionPolicy::reviewable() {
+    if manifest.package.is_none()
+        || manifest.ir == TargetTemplateIr::AlgorithmBlock
+        || requested == EmissionPolicy::reviewable()
+    {
         return Ok(requested);
     }
     bail!(
-        "target '{}' packages an eFMI container, whose AlgorithmCode representation is the \
-         reviewable semantic reference and must stay structured whatever the emitted C does. \
-         This compiler renders both representations from one projection, so it cannot yet honour \
-         `--inline-policy {}` / `--scalarize-policy {}` here. Use `--target embedded-c-galec` for \
-         a policy-shaped export, or drop the flags for the container.",
+        "target '{}' packages an eFMI container whose only representation is the AlgorithmCode \
+         reference, which stays structured; `--inline-policy {}` / `--scalarize-policy {}` shape \
+         emitted C, and this target emits none. Use `--target galec-production` for a container \
+         with policy-shaped ProductionCode C, or `--target embedded-c-galec` for the C alone.",
         manifest.name.as_deref().unwrap_or("custom"),
         requested.inline.as_str(),
         requested.scalarize.as_str()
@@ -487,12 +482,33 @@ fn algorithm_code_renderer(
     }
     let target = manifest.name.as_deref().unwrap_or("custom");
     let profile = manifest.algorithm_block_profile()?;
-    let block =
-        rumoca_sim::algorithm_block::lower_algorithm_block(&package, profile).map_err(|error| {
-            anyhow::anyhow!("Solve refinement refused target '{target}' before any output: {error}")
-        })?;
+    let refine = |package| {
+        rumoca_sim::algorithm_block::lower_algorithm_block(package, profile)
+            .map_err(|error| solve_refinement_error(result, &error, target))
+    };
+    let block = refine(&package)?;
+    if manifest.package.is_none() || emission_policy == EmissionPolicy::reviewable() {
+        return Ok(
+            rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
+                &package,
+                &block,
+                result.dae.source_map(),
+            )?,
+        );
+    }
+    // A container's AlgorithmCode is the structured reference whatever shaped
+    // its C. The reference must refine too, so a policy admits no container
+    // the default would refuse.
+    let reference = lower_algorithm_code(
+        result,
+        model,
+        manifest.name.as_deref(),
+        EmissionPolicy::reviewable(),
+    )?;
+    refine(&reference)?;
     Ok(
-        rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block(
+        rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::with_solve_block_and_reference(
+            &reference,
             &package,
             &block,
             result.dae.source_map(),
@@ -524,6 +540,26 @@ fn galec_projection_error(
             .collect::<Vec<_>>()
             .join("; ")
     )
+}
+
+/// A Solve refinement refusal, raised before any output is written: a source
+/// diagnostic when the refused construct has a span (#483), else the plain
+/// message.
+fn solve_refinement_error(
+    result: &CompilationResult,
+    error: &rumoca_sim::algorithm_block::AlgorithmBlockLowerError,
+    target: &str,
+) -> anyhow::Error {
+    let summary = format!("Solve refinement refused target '{target}' before any output");
+    if error.source_span().is_none() {
+        return anyhow::anyhow!("{summary}: {error}");
+    }
+    CompilerError::SourceDiagnosticsError {
+        summary,
+        diagnostics: vec![error.to_diagnostic()],
+        source_map: Box::new(source_map(result)),
+    }
+    .into()
 }
 
 fn source_map(result: &CompilationResult) -> SourceMap {
@@ -802,9 +838,21 @@ fn write_manifest_files(
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
+    // Render every file before writing any, so a template that refuses
+    // leaves no partial artifact behind (#483).
+    let rendered = manifest
+        .files
+        .iter()
+        .map(|file| render_manifest_file(result, renderer, bundle, file, out_dir, model_identifier))
+        .collect::<Result<Vec<_>>>()?;
     std::fs::create_dir_all(out_dir)?;
-    for file in &manifest.files {
-        write_manifest_file(result, renderer, bundle, file, out_dir, model_identifier)?;
+    for (file, output_path, content) in rendered {
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&output_path, content)?;
+        apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
+        eprintln!("  wrote {}", output_path.display());
     }
     Ok(())
 }
@@ -920,29 +968,23 @@ fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) 
 }
 
 #[cfg(feature = "scheduled-sim")]
-fn write_manifest_file(
+/// One manifest file rendered in memory: its entry, output path and content.
+fn render_manifest_file<'f>(
     result: &CompilationResult,
     renderer: &ManifestRenderer,
     bundle: &TargetBundle,
-    file: &TargetFile,
+    file: &'f TargetFile,
     out_dir: &Path,
     model_identifier: &str,
-) -> Result<()> {
+) -> Result<(&'f TargetFile, PathBuf, String)> {
     let rendered_rel_path = renderer
         .render(result, &file.path, model_identifier)
         .with_context(|| format!("Render target output path '{}'", file.path))?;
     let output_path = safe_target_join(out_dir, rendered_rel_path.trim())?;
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let template = bundle.template_source(&file.template)?;
     let rendered = render_manifest_template(result, renderer, template.as_ref(), model_identifier)
         .with_context(|| format!("Render target template '{}'", file.template))?;
-    std::fs::write(&output_path, rendered)?;
-    apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
-    eprintln!("  wrote {}", output_path.display());
-    Ok(())
+    Ok((file, output_path, rendered))
 }
 
 /// Per-invocation renderer for a manifest target's file templates.

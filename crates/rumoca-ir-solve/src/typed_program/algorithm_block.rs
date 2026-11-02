@@ -23,6 +23,9 @@ use super::{
 use rumoca_core::Span;
 use serde::Serialize;
 
+mod digest;
+pub use digest::{SolveAlgorithmBlockDigest, SolveAlgorithmBlockDigestError};
+
 /// What kind of checked Algorithm Code entity a Solve identity refines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]

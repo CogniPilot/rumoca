@@ -16,7 +16,7 @@ use rumoca_phase_codegen::AlgorithmCodeTemplateRenderer;
 pub(crate) const FIXTURE_PERIOD: &str = "rumoca_fixture_period";
 
 /// Refine `block` and render `template` for `model`, with `sources` resolving
-/// trace anchors.
+/// trace anchors and [`fixture_facts`] as the artifact facts.
 pub(crate) fn render_refined(
     block: &CheckedAlgorithmBlock,
     sources: &rumoca_core::SourceMap,
@@ -25,8 +25,29 @@ pub(crate) fn render_refined(
 ) -> Result<String, String> {
     let (package, refined) = refine(block)?;
     AlgorithmCodeTemplateRenderer::with_solve_block(&package, &refined, sources)
-        .and_then(|renderer| renderer.render_with_name_and_artifact(template, model, &()))
+        .and_then(|renderer| {
+            renderer.render_with_name_and_artifact(template, model, &fixture_facts())
+        })
         .map_err(|error| error.to_string())
+}
+
+/// Placeholder checksum-web facts: every field a packaging template reads (the
+/// Production Code manifest), so one helper renders the C model units and the
+/// manifest alike. The C templates read none of them.
+pub(crate) fn fixture_facts() -> serde_json::Value {
+    serde_json::json!({
+        "identities": {"pc_manifest": "id", "ac_manifest": "id"},
+        "checksums": {
+            "ac_manifest_sha1": "0",
+            "c_header_sha1": "0",
+            "c_source_sha1": "0",
+            "c_kernels_header_sha1": "0",
+            "c_kernels_source_sha1": "0",
+            "c_format_sha1": "0"
+        },
+        "generated_at": "1970-01-01T00:00:00Z",
+        "generation_tool": "test"
+    })
 }
 
 /// A fixture block's package and its refinement under the C targets'

@@ -1,27 +1,13 @@
-//! Executable evidence for the overlay bound equalization: the declared width
-//! of a slot that shares a union address with a call-boundary argument.
+//! Executable evidence for a block whose overlaid working memory puts a
+//! call-boundary argument at the address a shorter, never-concurrent sibling
+//! starts.
 //!
-//! The rule itself is a property of one group's offsets and is tested as such in
-//! `rumoca-phase-codegen/src/views/algorithm_code_bound_equalization.rs`. What
-//! is tested HERE is the half that module cannot see: the **detector**. The
-//! decision to widen anything depends on the projection knowing which addresses
-//! the emitted bodies hand to which declared parameter bounds, and that is a
-//! fact about the statement list a target prints, not about the layout.
-//!
-//! So the two fixtures below are the same block twice, with the same
-//! declarations, the same region sizes and the same overlay groups, differing in
-//! exactly one thing: **which** of two equally sized locals the inner call is
-//! given. In `clashing` the argument is the local at offset zero, where a
-//! never-concurrent sibling starts a shorter array, and the sibling is declared
-//! wide enough for the bound. In `clash_free` the argument is the local at
-//! offset sixteen, the shorter sibling still starts at offset zero beside a
-//! longer array, and nothing moves: the clash is left exactly where a C
-//! compiler's value numbering finds it, because no declared bound is ever read
-//! against that address.
-//!
-//! The generated C is then compiled under the target's strict assurance
-//! preflight and run, because a widened extent that changed an answer would be
-//! a wrong-code defect and not a layout decision.
+//! The fixture was built for the GALEC-C projection's bound equalization,
+//! which widened such a sibling's declared extent. That projection is gone and
+//! the model unit is printed from the block's Solve refinement (#483), so what
+//! remains here is the part that never depended on it: the generated C is
+//! compiled under the target's strict assurance preflight and run, and both
+//! outputs are checked against hand arithmetic.
 
 use std::fs;
 use std::process::Command;

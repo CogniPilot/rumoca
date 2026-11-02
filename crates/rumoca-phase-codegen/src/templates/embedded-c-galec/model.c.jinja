@@ -172,6 +172,37 @@ if ({{ dst }} != 0 && (({{ dst }} < 0) != ({{ b }} < 0))) {
 {%- else -%}{{ fail("unsupported-feature:embedded-c-solve:binary " ~ operator) }}{%- endif -%}
 {%- endmacro -%}
 
+{#- The trace comment that opens a run of `issued`'s anchor, when it differs
+    from the previous one in the same C function. -#}
+{%- macro trace_line(issued, run) -%}
+{%- set key = issued.provenance.source ~ ":" ~ issued.provenance.start ~ ":" ~ issued.provenance.end -%}
+{%- set trace = trace_text(solve_block.traces[key]) if key in solve_block.traces else "" -%}
+{%- if trace|length > 0 and trace != run.previous %}{{ trace }}
+{% endif -%}
+{%- set run.previous = trace -%}
+{%- endmacro -%}
+
+{#- A program's statements before indentation, as `program` writes them:
+    its register and local declarations when `decls`, then operations
+    `first` to `last` (exclusive), each after its trace comment. Only the
+    else-if chain uses it; `program` keeps its own copy so ordinary nesting
+    costs no extra macro frame against the recursion limit. -#}
+{%- macro statements(prog, P, mode, inputs, outputs, fault, run, first, last, decls) -%}
+{% if decls -%}
+{% for ty in prog.register_types -%}{% if count(ty)|int == 1 and prog.unread[loop.index0] != "dead" and prog.inline_of[loop.index0] is none and prog.alias_of[loop.index0] is none and prog.forward_to[loop.index0] is none and prog.same_as[loop.index0] is none and (prog.pass_of is not defined or prog.pass_of[loop.index0] is none) -%}
+{{ ctype(ty) }} {{ P | replace("ctx->", "") }}r{{ loop.index0 }}[1] = {0};
+(void){{ P | replace("ctx->", "") }}r{{ loop.index0 }}; /*rumoca_galec_void_candidate*/
+{% endif %}{% endfor -%}
+{% for slot in prog.slots -%}{% if slot.storage == "method_local" and count(slot.value_type)|int == 1 -%}
+{{ ctype(slot.value_type) }} {{ P | replace("ctx->", "") }}s{{ slot.id }}[1] = {0};
+(void){{ P | replace("ctx->", "") }}s{{ slot.id }}; /*rumoca_galec_void_candidate*/
+{% endif %}{% endfor -%}
+{% endif -%}
+{% for issued in prog.operations[first:last] -%}
+{{ trace_line(issued, run) }}{{ operation(issued.operation, prog, P ~ "x" ~ (first + loop.index0) ~ "_", P, mode, inputs, outputs, fault, run) -}}
+{% endfor -%}
+{%- endmacro -%}
+
 {#- One program (a method body, a region body, or a function body) as C
     statements in its own block. `inputs`/`outputs` name the C arrays a
     region's input and output slots bind to. -#}
@@ -199,6 +230,50 @@ if ({{ dst }} != 0 && (({{ dst }} < 0) != ({{ b }} < 0))) {
 {% if mode == "function" and P == "ctx->rumoca_galec_" -%}@@RUMOCA_GALEC_FAULT_EXIT@@
 {% endif -%}}
 {% endmacro -%}
+
+{#- A conditional whose `if_false` body nests the next conditional of an
+    else-if chain (`else_depth` links, marked by the Solve view) as one C
+    chain, rendered iteratively: an entry-wise matrix built in a loop nests
+    dozens of these, past the template engine's recursion limit (#483).
+    Pieces render in text order, so trace runs are those of the recursive
+    form, and are joined inside out with the same trim and indent, so the C
+    is identical to it. -#}
+{%- macro else_chain(op, prog, child, P, mode, inputs, outputs, fault, run) -%}
+{%- set c = namespace(op=op, prog=prog, child=child, P=P, mode=mode, inputs=inputs, outputs=outputs, heads=[], links=[], innermost="") -%}
+{%- for _ in range(op.else_depth + 1) -%}
+{%- set names = namespace(captured=[], targets=[]) -%}
+{%- for capture in c.op.captures -%}{%- set names.captured = names.captured + [rn(c.prog, c.P, capture, c.mode, c.inputs, c.outputs)] -%}{%- endfor -%}
+{%- for destination in c.op.destinations -%}{%- set names.targets = names.targets + [rn(c.prog, c.P, destination, c.mode, c.inputs, c.outputs)] -%}{%- endfor -%}
+{%- set head = "if (" ~ rn(c.prog, c.P, c.op.condition, c.mode, c.inputs, c.outputs) ~ "[0]) " ~ (program(c.op.if_true.body, c.child ~ "t", "region", names.captured, names.targets, fault, run) | trim) ~ " else " -%}
+{%- set c.heads = c.heads + [head] -%}
+{%- set E = c.op.if_false.body -%}
+{%- set EP = c.child ~ "f" -%}
+{%- if loop.last -%}
+{%- set c.innermost = program(E, EP, "region", names.captured, names.targets, fault, run) -%}
+{%- else -%}
+{%- set i = c.op.else_link -%}
+{%- set prefix = statements(E, EP, "region", names.captured, names.targets, fault, run, 0, i, true) ~ trace_line(E.operations[i], run) -%}
+{%- set c.links = c.links + [{"prefix": prefix, "prog": E, "P": EP, "captured": names.captured, "targets": names.targets, "link": i}] -%}
+{%- set c.op = E.operations[i].operation -%}
+{%- set c.prog = E -%}
+{%- set c.child = EP ~ "x" ~ i ~ "_" -%}
+{%- set c.P = EP -%}
+{%- set c.mode = "region" -%}
+{%- set c.inputs = names.captured -%}
+{%- set c.outputs = names.targets -%}
+{%- endif -%}
+{%- endfor -%}
+{%- set suffixes = namespace(text=[]) -%}
+{%- for link in c.links|reverse -%}
+{%- set suffixes.text = [statements(link.prog, link.P, "region", link.captured, link.targets, fault, run, link.link + 1, link.prog.operations|length, false)] + suffixes.text -%}
+{%- endfor -%}
+{%- set joined = namespace(text=c.heads[c.links|length] ~ c.innermost) -%}
+{%- for link in c.links|reverse -%}
+{%- set k = c.links|length - loop.index -%}
+{%- set joined.text = c.heads[k] ~ "{\n" ~ ((link.prefix ~ joined.text ~ suffixes.text[k]) | trim | indent(4, true)) ~ "\n}\n" -%}
+{%- endfor -%}
+{{ joined.text }}
+{%- endmacro -%}
 
 {#- The C value of a typed constant. -#}
 {%- macro constant_value(op) -%}
@@ -331,6 +406,8 @@ if (!(rumoca_galec_value >= -9223372036854775808.0 && rumoca_galec_value < 92233
 {{ offset(prog, P, op.indices, ty.dimensions, fault, mode, inputs, outputs) -}}
 {{ rn(prog, P, op.destination, mode, inputs, outputs) }}[rumoca_galec_offset] = {{ rn(prog, P, op.value, mode, inputs, outputs) }}[0];
 {% endcall %}
+{% elif kind == "conditional" and op.else_depth is defined and op.else_depth > 0 -%}
+{{ else_chain(op, prog, child, P, mode, inputs, outputs, fault, run) -}}
 {% elif kind == "conditional" -%}
 {%- set names = namespace(captured=[], targets=[]) -%}
 {%- for capture in op.captures -%}{%- set names.captured = names.captured + [rn(prog, P, capture, mode, inputs, outputs)] -%}{%- endfor -%}
@@ -442,6 +519,13 @@ rumoca_galec_fault:
  * refined Solve block (DAE -> GALEC -> Solve IR -> C).
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed. */{% endblock %}
+/* Solve program digest ({{ solve_block.digest_algorithm }}): {{ solve_block.digest }}
+ * The refined Solve algorithm block this file was printed from. */
+{#- The digest line sits outside the overridable banner block, so every C
+    target that extends this template records it, whatever its banner says.
+    It is `SolveAlgorithmBlock::digest` of the block whose programs print the
+    bodies below: recomputing it from the checked package proves which Solve
+    program this file came from, which a target name cannot (#483). -#}
 {#- How this block was built (D7). Emitted by every C target that extends this
     template, because the command line that chose the two axes is not retained
     anywhere downstream and a reviewer must be able to read the answer off the

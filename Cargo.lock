@@ -4663,6 +4663,7 @@ name = "rumoca-ir-solve"
 version = "0.10.4"
 dependencies = [
  "bincode",
+ "blake3",
  "indexmap 2.14.0",
  "rumoca-core",
  "self_cell",

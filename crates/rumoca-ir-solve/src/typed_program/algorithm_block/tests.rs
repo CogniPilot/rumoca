@@ -594,3 +594,111 @@ fn status_bindings_must_name_each_owners_canonical_channels() {
         ]
     })));
 }
+
+fn bound_function_block() -> SolveAlgorithmBlock {
+    block_with_one_function(|table| {
+        let (owner, slots) = owner_slots(table);
+        vec![SolveStatusBinding::new(owner, vec![slots[3], slots[4]])]
+    })
+    .expect("canonical status binding")
+}
+
+fn digest(block: &SolveAlgorithmBlock) -> SolveAlgorithmBlockDigest {
+    block
+        .digest()
+        .expect("a checked block has a canonical wire form")
+}
+
+#[test]
+fn digest_is_a_pure_function_of_block_content() {
+    // Two independent constructions, including a function owner and its
+    // status binding, so call sites go through their owner-id wire form.
+    let first = digest(&bound_function_block());
+    assert_eq!(first, digest(&bound_function_block()));
+    let hex = first.to_string();
+    assert_eq!(hex.len(), 64, "{hex}");
+    assert!(
+        hex.bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "{hex}"
+    );
+    let printed = first
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(hex, printed);
+}
+
+#[test]
+fn digest_separates_blocks_that_differ_only_in_content() {
+    let base = || {
+        SolveAlgorithmBlock::construct(profile(), block_slots(), no_locals, no_locals, one_local)
+            .expect("checked block")
+    };
+    let reference = digest(&base());
+    assert_eq!(reference, digest(&base()));
+
+    // A different DoStep body.
+    let body =
+        SolveAlgorithmBlock::construct(profile(), block_slots(), no_locals, no_locals, no_locals)
+            .expect("checked block");
+    // The same table with one slot renamed.
+    let mut renamed_slots = block_slots();
+    renamed_slots[1] = slot(
+        SolveStorageClass::PersistentState,
+        SolveSlotAccess::ReadWrite,
+        SolveAlgorithmCodeEntityKind::Protected,
+        "y",
+        2,
+    );
+    let renamed =
+        SolveAlgorithmBlock::construct(profile(), renamed_slots, no_locals, no_locals, one_local)
+            .expect("checked block");
+    // The same entity cited at another span: the C prints that trace.
+    let mut moved_slots = block_slots();
+    moved_slots[1] = slot(
+        SolveStorageClass::PersistentState,
+        SolveSlotAccess::ReadWrite,
+        SolveAlgorithmCodeEntityKind::Protected,
+        "x",
+        3,
+    );
+    let moved =
+        SolveAlgorithmBlock::construct(profile(), moved_slots, no_locals, no_locals, one_local)
+            .expect("checked block");
+    for (label, changed) in [("body", body), ("name", renamed), ("span", moved)] {
+        assert_ne!(reference, digest(&changed), "{label}");
+    }
+
+    // A declared escape set is block content too.
+    let escaped = bound_function_block()
+        .with_method_escapes(SolveBlockMethodKind::DoStep, [2])
+        .expect("slot 2 is a signal status slot");
+    assert_ne!(digest(&bound_function_block()), digest(&escaped));
+}
+
+#[test]
+fn digest_ignores_the_source_path_but_not_the_byte_range() {
+    // The generated C is byte-identical from any checkout, so the digest it
+    // prints may not hash the source path behind a span's `SourceId`.
+    let input_at = |path: &str, start: usize| {
+        let span = Span::from_offsets(SourceId::from_source_name(path), start, start + 1);
+        SolveBlockSlotDeclaration::construct(
+            real(),
+            SolveStorageClass::Input,
+            SolveSlotAccess::ReadOnly,
+            SolveAlgorithmCodeRef::construct(SolveAlgorithmCodeEntityKind::Interface, "u", span),
+        )
+    };
+    let block = |slot| {
+        SolveAlgorithmBlock::construct(profile(), vec![slot], no_locals, no_locals, no_locals)
+            .expect("checked block")
+    };
+    let home = digest(&block(input_at("/home/alice/models/M.mo", 1)));
+    assert_eq!(
+        home,
+        digest(&block(input_at(r"D:\runner\checkout\models\M.mo", 1)))
+    );
+    assert_ne!(home, digest(&block(input_at("/home/alice/models/M.mo", 2))));
+}

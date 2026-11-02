@@ -21,6 +21,9 @@ tool interchange.
   standard bit encoding and mapped to Algorithm Code `ErrorSignalStatus`.
 - The checksum graph binds both representations and every generated code file
   to the exact packaged bytes.
+- Both C files and the Production Code manifest (a `rumoca.solveProgram` tool
+  annotation, schema-valid under the manifest's `Annotations` list) record the
+  BLAKE3 digest of the refined Solve block the C was printed from.
 
 ## Safety-assurance status
 
@@ -50,6 +53,8 @@ event iteration fail before any package is committed.
 - `cli_target_galec_production` validates schemas, checksum/reference graphs,
   LogicalData coverage, C compilation, and runtime method behavior.
 - Negative controls corrupt representation checksums and required mappings.
+- `galec_solve_digest_routing` recomputes the recorded Solve digest from the
+  checked package and requires a changed program to change it.
 - The co-emitted Algorithm Code receives the same parser round-trip checks as
   the `galec` target.
 

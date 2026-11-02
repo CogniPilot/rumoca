@@ -163,7 +163,6 @@ pub enum CodegenInput<'a> {
     },
     Flat(&'a flat::Model),
     Ast(&'a ast::ClassTree),
-    AlgorithmCode(&'a rumoca_ir_galec::package::AlgorithmCodePackage),
 }
 
 fn dae_template_json_for_solve_context(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
@@ -205,24 +204,6 @@ fn render_with_input_context(
             render_flat_context(tmpl, flat_model, name)?
         }
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
-        (CodegenInput::AlgorithmCode(package), name) => {
-            // This generic entry point carries no session, so it has no source
-            // map to anchor traces against; the empty map keeps every trace
-            // honest (hash + byte range) rather than fabricating a path.
-            let sources = rumoca_core::SourceMap::new();
-            let view = crate::views::algorithm_code::AlgorithmCodeView::new(package, &sources);
-            match name {
-                Some(model_name) => tmpl.render(minijinja::context! {
-                    algorithm_code => minijinja::Value::from_serialize(view),
-                    ir_kind => "algorithm_code",
-                    model_name,
-                })?,
-                None => tmpl.render(minijinja::context! {
-                    algorithm_code => minijinja::Value::from_serialize(view),
-                    ir_kind => "algorithm_code",
-                })?,
-            }
-        }
     };
     Ok(rendered)
 }
