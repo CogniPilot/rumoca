@@ -63,3 +63,55 @@ for (const kind of ["normal", "scene-setup-throws", "controls-dispose-throws", "
     assert.equal(freed, 1);
   });
 }
+
+// Execute the guide's actual finally body against the actual factory. The
+// observer's captured WASM handle is borrowed: the factory owns its release.
+const guide = readFileSync(
+  new URL("../../playground/tests/user_guide_scenarios_smoke.mjs", import.meta.url), "utf8",
+);
+const cleanupBody = guide.match(/finally \{\n(\s+clearTimeout\(timer\);[\s\S]*?withInteractiveConfiguration = construct;)\n\s+\}/)?.[1];
+assert.ok(cleanupBody, "exercise the shipped guide cleanup, not a copy");
+
+for (const setupFails of [false, true]) {
+  test(`guide cleanup releases its observed session once: setupFails=${setupFails}`, async () => {
+    let freed = 0;
+    let removed = 0;
+    const session = { free() {
+      if (freed++) throw new Error("null pointer passed to rust");
+    } };
+    const context = {
+      Map, Promise, clearTimeout,
+      scenarioUsesTouchControls: () => false,
+      createInputRuntime: () => ({}),
+      createInteractiveSession: async () => session,
+      createPointerState: () => ({}),
+      createViewerRuntime: () => ({ api: {} }),
+      compileSceneScript: () => {
+        if (setupFails) throw new Error("scene setup failure");
+        return {};
+      },
+      InteractiveSimulationController: class { stop() {} },
+      InteractiveControls: class { dispose() {} },
+    };
+    vm.createContext(context);
+    const create = vm.runInContext(`${factory}; createInteractiveSimulation`, context);
+    const cleanup = vm.runInContext(
+      `(function(controller, session, timer, host, wasm, construct) { ${cleanupBody} })`, context,
+    );
+    let controller;
+    try {
+      controller = await create({});
+      assert.equal(setupFails, false);
+    } catch (error) {
+      assert.equal(setupFails, true);
+      assert.match(error.message, /scene setup failure/);
+    } finally {
+      const construct = () => {};
+      const wasm = { WasmSimulationSession: { withInteractiveConfiguration: null } };
+      cleanup(controller, session, undefined, { remove() { removed++; } }, wasm, construct);
+      assert.equal(wasm.WasmSimulationSession.withInteractiveConfiguration, construct);
+    }
+    assert.equal(freed, 1);
+    assert.equal(removed, 1);
+  });
+}

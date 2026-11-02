@@ -1,6 +1,8 @@
 //! One idle prepared session, reused only through the original reset owner.
 
 mod options_key;
+#[cfg(test)]
+mod tests;
 
 use options_key::OptionsKey;
 use std::{
