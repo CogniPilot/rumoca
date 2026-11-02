@@ -443,31 +443,26 @@ fn algebraic_inventory(
     component: &FmiCCodegenView,
 ) -> Result<(Vec<usize>, Vec<usize>), FmiTangentPlanError> {
     let problem = component.problem();
-    let plan = problem.continuous.refresh_owners.algebraic();
-    let canonical = problem
-        .continuous
-        .algebraic_projection_plan
-        .blocks
-        .scalar_blocks();
-    let blocks = plan.simultaneous_plan.blocks.scalar_blocks();
-    if blocks.len() != plan.simultaneous_block_indices.len() {
-        return Err(FmiTangentPlanError::ImplicitInventory(
-            "block identities do not cover the relation".into(),
-        ));
-    }
+    // Refresh optimization can isolate some residual rows as assignments.
+    // The implicit tangent relation still needs those equations, including
+    // initialization and post-initialization consumers. Read the complete
+    // correlated row/target owner, not its remaining simultaneous subset.
+    let inventory = &problem.continuous.implicit_row_targets;
     let mut rows = Vec::new();
     let mut targets = Vec::new();
-    for (block, &id) in blocks.iter().zip(&plan.simultaneous_block_indices) {
-        let source = canonical
-            .get(id)
-            .ok_or_else(|| FmiTangentPlanError::ImplicitInventory("noncanonical block".into()))?;
-        if source.rows != block.rows || source.y_indices != block.y_indices {
-            return Err(FmiTangentPlanError::ImplicitInventory(
-                "block rows/coordinates differ from their source owner".into(),
-            ));
+    for row in 0..inventory.len() {
+        match inventory.target_at(row) {
+            Some(solve::ScalarSlot::Y { index, .. }) => {
+                rows.push(row);
+                targets.push(index);
+            }
+            None => {}
+            _ => {
+                return Err(FmiTangentPlanError::ImplicitInventory(
+                    "algebraic residual target is not solver storage".into(),
+                ));
+            }
         }
-        rows.extend_from_slice(&block.rows);
-        targets.extend_from_slice(&block.y_indices);
     }
     let first = problem.solve_layout.state_scalar_count();
     let count = problem.solve_layout.algebraic_scalar_count();
