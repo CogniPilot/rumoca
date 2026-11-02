@@ -731,7 +731,9 @@ fn merge_constraining_clause_modifications(
 /// A class definition resolves no types, so a modifier whose merge depends on
 /// one (a declared binding over it), or that would be refused, is kept apart
 /// in `constraining_modifications` for instantiation to merge or refuse when
-/// the class is used; so are all of them for a class with no single base.
+/// the class is used; so are all of them for a class with no single base,
+/// and one naming an element the class declares itself, which its base
+/// does not have.
 fn merge_constraining_clause_class_modifications(
     class: &mut rumoca_ir_ast::ClassDef,
     constrainedby_mods: Option<&modelica_grammar_trait::ConstrainingClauseOpt>,
@@ -761,6 +763,12 @@ fn merge_constraining_clause_class_modifications(
     let mut deferred = Vec::new();
     for (idx, arg) in arguments.args.iter().enumerate() {
         let target = arg.modification_target().map(ToString::to_string);
+        if target.as_ref().is_some_and(|target| {
+            class.components.contains_key(target) || class.classes.contains_key(target)
+        }) {
+            deferred.push(modification(idx, arg));
+            continue;
+        }
         let stated = target.as_ref().and_then(|target| {
             base.modifications.iter_mut().find(|modification| {
                 modification

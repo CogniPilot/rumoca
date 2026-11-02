@@ -393,6 +393,24 @@ fn issue_536_a_kept_class_form_modifier_keeps_its_lexical_scope() {
     assert_eq!(start(component, "Lex.C", "h.k"), Some(vec![8.0]));
 }
 
+#[test]
+fn issue_536_a_long_form_class_refuses_a_constrained_modifier_of_its_own_member() {
+    // `M extends A; parameter Real k;` with `constrainedby P(k = 1)`: one
+    // base does not make M a short class, and k is M's own, so `k = 1` sent
+    // to `extends A` was silently lost (h.k unbound, on main as well). It is
+    // refused where M is used; an inherited member still takes its
+    // constraining modifier, and the file's other models still compile.
+    let source = include_str!("fixtures/reported_bugs/issue_536_long_form.mo");
+    let message = refusal(source, "Long.C");
+    assert!(
+        message.contains("M.k") && message.contains("declares"),
+        "{message}"
+    );
+    assert_eq!(binding(source, "Long.Inherited", "h.a"), vec![5.0]);
+    assert_eq!(binding(source, "Long.Inherited", "h.k"), vec![3.0]);
+    compile(source, "Long.Healthy");
+}
+
 /// The error compiling `model` reports.
 fn refusal(source: &str, model: &str) -> String {
     let mut session = Session::default();

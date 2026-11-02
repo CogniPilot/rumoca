@@ -28,6 +28,14 @@ pub(super) fn constrained_extend(
         let Some(target) = lower.expr.modification_target().map(ToString::to_string) else {
             continue;
         };
+        if class.components.contains_key(&target) || class.classes.contains_key(&target) {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                format!("{}.{target}", class.name.text),
+                "its constraining-clause modifier names an element the class declares \
+                 itself, which only a short class definition's modifiers reach yet",
+                lower.expr.span(),
+            )));
+        }
         let stated = extend.modifications.iter_mut().find(|modification| {
             modification
                 .expr
