@@ -1681,52 +1681,64 @@ export async function createInteractiveSimulation(options) {
   const virtualGamepad = scenarioUsesTouchControls(config) ? createVirtualGamepad() : null;
   const input = createInputRuntime(config, { virtualGamepad });
   const session = await createInteractiveSession(options || {}, input, onStatus);
-  const viewerSignals = new Map();
-  const pointer = createPointerState();
-  const viewer = createViewerRuntime({
-    THREE,
-    container,
-    viewerSignals,
-    assetBaseUrl,
-    pointer,
-    config,
-    input,
-  });
-  const scene = compileSceneScript(scriptText, viewer.api);
-  onStatus('initializing scene');
-  if (typeof scene.onInit === 'function') {
-    await Promise.resolve(scene.onInit(viewer.api));
-  }
-  onStatus('ready');
-  const controller = new InteractiveSimulationController({
-    config,
-    input,
-    session,
-    viewer,
-    scene,
-    pointer,
-    viewerSignals,
-    onStatus,
-    onError,
-  });
-  const controls = new InteractiveControls({
-    config,
-    input,
-    viewer,
-    pointer,
-    container,
-    controller,
-    virtualGamepad,
-    onStatus,
-  });
+  try {
+    const viewerSignals = new Map();
+    const pointer = createPointerState();
+    const viewer = createViewerRuntime({
+      THREE,
+      container,
+      viewerSignals,
+      assetBaseUrl,
+      pointer,
+      config,
+      input,
+    });
+    const scene = compileSceneScript(scriptText, viewer.api);
+    onStatus('initializing scene');
+    if (typeof scene.onInit === 'function') {
+      await Promise.resolve(scene.onInit(viewer.api));
+    }
+    onStatus('ready');
+    const controller = new InteractiveSimulationController({
+      config,
+      input,
+      session,
+      viewer,
+      scene,
+      pointer,
+      viewerSignals,
+      onStatus,
+      onError,
+    });
+    const controls = new InteractiveControls({
+      config,
+      input,
+      viewer,
+      pointer,
+      container,
+      controller,
+      virtualGamepad,
+      onStatus,
+    });
 
-  return {
-    start: () => controller.start(),
-    stop: () => controller.stop(),
-    dispose() {
-      controller.stop();
-      controls.dispose();
-    },
-    reset: () => controller.reset(),
-  };
+    let disposed = false;
+    return {
+      start: () => controller.start(),
+      stop: () => controller.stop(),
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        controller.stop();
+        try {
+          controls.dispose();
+        } finally {
+          session.free();
+        }
+      },
+      reset: () => controller.reset(),
+    };
+  } catch (error) {
+    session.free();
+    throw error;
+  }
 }

@@ -174,6 +174,7 @@ omission. Format-specific omission belongs in an explicit `Serialize` keyed on
 | Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume only `rumoca-solver`'s generic FMI ME importer/host contract; no DAE, Solve, FMI export-IR, or phase deps |
 | Simulation facade | `rumoca-sim` | Composes optional solvers/reporting/viz; one private item gate shares scheduled-executor prerequisites. |
 | Simulation session APIs | separate from runtime contracts | Simulation sessions are the scheduled runtime surface |
+| One idle prepared-session cache and exclusive live lease | `rumoca-sim::SimulationSessionCache`, `SimulationSessionLease` | In-memory only. Match the compiler-returned DAE aggregate owner and every exact preparation option; no client source/dependency invalidation. Return only released, unfailed sessions. Each hit uses the existing original-default Reset; no Modelica evaluation on drop, no mutable instance sharing, and clearing prevents older leases from repopulating the cache. |
 | Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
 | Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |

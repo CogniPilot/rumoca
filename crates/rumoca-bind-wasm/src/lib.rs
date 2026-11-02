@@ -603,10 +603,33 @@ pub(crate) fn compile_requested_model(
     session: &mut Session,
     model_name: &str,
 ) -> Result<CompilationResult, WasmError> {
-    let mut report = session.compile_model_with_mode(
+    compile_requested_model_with_mode(
+        session,
         model_name,
         CompilationMode::StrictReachableUncachedWithRecovery,
-    );
+    )
+}
+
+/// Reuse only results admitted by the compiler session's dependency cache.
+/// Interactive clients do not own a separate source invalidation policy.
+#[cfg(any(test, feature = "sim-diffsol", feature = "sim-rk45"))]
+pub(crate) fn compile_cached_requested_model(
+    session: &mut Session,
+    model_name: &str,
+) -> Result<CompilationResult, WasmError> {
+    compile_requested_model_with_mode(
+        session,
+        model_name,
+        CompilationMode::StrictReachableWithRecovery,
+    )
+}
+
+fn compile_requested_model_with_mode(
+    session: &mut Session,
+    model_name: &str,
+    mode: CompilationMode,
+) -> Result<CompilationResult, WasmError> {
+    let mut report = session.compile_model_with_mode(model_name, mode);
     if !report.failures.is_empty() {
         return Err(WasmError::new(format!(
             "Compilation error: {}",
@@ -655,6 +678,8 @@ pub(crate) fn with_optional_singleton_session<T>(
 pub(crate) fn clear_singleton_session() -> Result<(), WasmError> {
     let mut lock = singleton_session_lock()?;
     *lock = None;
+    #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+    simulation_session_api::clear_prepared_session_cache();
     Ok(())
 }
 

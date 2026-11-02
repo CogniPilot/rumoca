@@ -5,9 +5,17 @@ use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    WasmError, compile_requested_model, qualify_input_model_name,
+    WasmError, compile_cached_requested_model, qualify_input_model_name,
     simulation_api::build_simulation_options, with_singleton_session,
 };
+
+thread_local! {
+    static PREPARED_SESSION_CACHE: rumoca_sim::SimulationSessionCache = Default::default();
+}
+
+pub(crate) fn clear_prepared_session_cache() {
+    PREPARED_SESSION_CACHE.with(rumoca_sim::SimulationSessionCache::clear);
+}
 
 /// Opaque handle to a real-time simulation session running in WASM.
 ///
@@ -15,11 +23,24 @@ use crate::{
 /// driven from JavaScript via `requestAnimationFrame`.
 #[wasm_bindgen]
 pub struct WasmSimulationSession {
-    session: rumoca_sim::SimulationSession,
+    session: rumoca_sim::SimulationSessionLease,
 }
 
 #[wasm_bindgen]
 impl WasmSimulationSession {
+    /// Release idle prepared resources. Active sessions remain exclusive and
+    /// cannot repopulate this cache when they are later freed.
+    #[wasm_bindgen(js_name = clearPreparationCache)]
+    pub fn clear_preparation_cache() {
+        clear_prepared_session_cache();
+    }
+
+    /// Whether this creation reused a released prepared session and performed
+    /// the original-default reset instead of rebuilding its runtime.
+    pub fn preparation_reused(&self) -> bool {
+        self.session.preparation_reused()
+    }
+
     /// Compile a Modelica model and create a session ready for interactive use.
     ///
     /// `source` is the full Modelica source text and `model_name` is the class
@@ -197,7 +218,7 @@ fn create_interactive_session(
     let (dae, mut opts) = with_singleton_session(|session| {
         session.update_document("input.mo", source);
         let requested_model = qualify_input_model_name(session, model_name);
-        let result = compile_requested_model(session, &requested_model)?;
+        let result = compile_cached_requested_model(session, &requested_model)?;
         let (opts, _) = build_simulation_options(&result, 0.0, options.dt, &options.solver);
         Ok((result.dae, opts))
     })?;
@@ -210,7 +231,8 @@ fn create_interactive_session(
     opts.initial_inputs = initial_inputs()?;
     opts.execution_policy = options.execution_policy;
     opts.param_overrides = options.param_overrides.clone();
-    let session = rumoca_sim::SimulationSession::new(&dae, opts)
+    let session = PREPARED_SESSION_CACHE
+        .with(|cache| cache.acquire(dae, opts))
         .map_err(|e| WasmError::new(format!("Session creation error: {e}")))?;
     Ok(WasmSimulationSession { session })
 }
