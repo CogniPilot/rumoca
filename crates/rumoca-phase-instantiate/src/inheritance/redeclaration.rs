@@ -16,13 +16,10 @@ pub(super) fn extract_extend_modification_target(
     extend: &ast::Extend,
     expr: &ast::Expression,
 ) -> Option<String> {
-    let target = match expr {
-        ast::Expression::Modification { target, .. }
-        | ast::Expression::ClassModification { target, .. } => target,
-        ast::Expression::NamedArgument { name, .. } => return Some(name.text.to_string()),
-        _ => return None,
-    };
-    extend_relative_component_target(extend, target)
+    if let ast::Expression::NamedArgument { name, .. } = expr {
+        return Some(name.text.to_string());
+    }
+    extend_relative_component_target(extend, expr.modification_target()?)
 }
 
 pub(super) fn extend_relative_component_target(
@@ -78,6 +75,13 @@ pub(super) fn extract_modification_value(expr: &ast::Expression) -> Option<ast::
     let value = match expr {
         ast::Expression::Modification { value, .. } => Some(value),
         ast::Expression::NamedArgument { value, .. } => Some(value),
+        // `x(...) = e`: the binding; the nested part merges separately.
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), ast::Expression::ClassModification { .. }) => Some(rhs),
         _ => None,
     }?;
 

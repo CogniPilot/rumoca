@@ -507,6 +507,13 @@ pub struct ClassDef {
     /// Constraining type for replaceable classes (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
     pub constrainedby: Option<Name>,
+    /// Constraining-clause modifiers of a replaceable class whose merge into
+    /// its base's modifiers needs types (MLS §7.3.2, §7.2.3): a declared
+    /// binding over them, a `final` conflict, or a class with no single base.
+    /// Parsing keeps them here; instantiation merges or refuses them when the
+    /// class is used.
+    #[serde(default)]
+    pub constraining_modifications: Vec<ExtendModification>,
     /// Array subscripts for type alias definitions (e.g., `type Vector3 = Real[3]`)
     /// Stores the `[3]` part as subscripts for later use in type resolution
     pub array_subscripts: Vec<Subscript>,
@@ -573,6 +580,7 @@ impl Default for ClassDef {
             is_redeclare: false,
             redeclare_target_def_id: None,
             constrainedby: None,
+            constraining_modifications: Vec::new(),
             array_subscripts: Vec::new(),
             external: None,
             partial_derivative: None,

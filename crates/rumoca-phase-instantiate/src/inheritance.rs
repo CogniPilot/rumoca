@@ -20,6 +20,7 @@ use rumoca_ir_ast::{
     components_are_semantically_compatible as components_are_compatible,
 };
 
+mod constraining;
 mod duplicate_identity;
 mod function_interfaces;
 mod redeclaration;
@@ -32,6 +33,7 @@ use crate::traversal_adapter::{
     walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
+use constraining::*;
 use duplicate_identity::{
     inherited_components_are_identical, merged_declared_names, merged_element_names,
 };
@@ -924,8 +926,13 @@ pub fn process_extends_with_cache(
     }
 
     let mut inherited = InheritedContent::default();
+    let constrained = constrained_extend(tree, class)?;
 
-    for extend in &class.extends {
+    for (index, extend) in class.extends.iter().enumerate() {
+        let extend = constrained
+            .as_ref()
+            .filter(|_| index == 0)
+            .unwrap_or(extend);
         // Skip built-in types (Real, Integer, Boolean, String, ExternalObject)
         // They don't have components/equations to inherit, just type properties
         if is_builtin_type(&extend.base_name.to_string()) {
@@ -1497,9 +1504,8 @@ fn merge_class_content(
                 tree.name_map.get(short_name).copied()
             });
 
-            // MLS §7.3.2: Activate constraining-clause defaults for redeclared
-            // replaceable components.
-            activate_constrainedby_defaults_for_redeclare(comp);
+            // MLS §7.3.2: the replacement keeps the constraining-clause modifiers.
+            activate_constrainedby_defaults(tree, comp)?;
         }
     }
 
@@ -1618,7 +1624,15 @@ fn validate_break_names(
     Ok(())
 }
 
-pub(super) fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
+/// MLS §7.3.2: apply a replaceable declaration's constraining-clause
+/// modifiers to it, below any modifier the declaration itself states.
+pub(super) fn activate_constrainedby_defaults(
+    tree: &ast::ClassTree,
+    comp: &mut ast::Component,
+) -> InstantiateResult<()> {
+    let class = comp
+        .type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id));
     let mut inserts: Vec<(String, ast::Expression)> = Vec::new();
     let mut prefixed_keys: Vec<String> = Vec::new();
 
@@ -1627,15 +1641,22 @@ pub(super) fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Comp
             continue;
         };
         prefixed_keys.push(key.clone());
-        if comp.modifications.contains_key(target_name) {
-            continue;
-        }
         inserts.push((target_name.to_string(), value.clone()));
     }
 
     for (target_name, value) in inserts {
-        comp.modifications.insert(target_name.clone(), value);
         let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
+        if let Some(stated) = comp.modifications.get_mut(&target_name) {
+            // MLS §7.2.6: the declaration may not modify what the constraining clause makes final.
+            let refused = if comp.final_attributes.contains(&prefixed_key) {
+                Some(ast::MergeRefusal::Final(target_name.clone()))
+            } else {
+                merge_constrained(tree, class, &target_name, stated, &value)
+            };
+            refuse_constrained(&comp.name.to_string(), refused, stated)?;
+            continue;
+        }
+        comp.modifications.insert(target_name.clone(), value);
         if comp.each_modifications.contains(&prefixed_key) {
             comp.each_modifications.insert(target_name.clone());
         }
@@ -1649,6 +1670,7 @@ pub(super) fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Comp
         comp.each_modifications.shift_remove(&key);
         comp.final_attributes.shift_remove(&key);
     }
+    Ok(())
 }
 
 /// Merge nested class modifications from extends clause into inherited components.
@@ -1661,12 +1683,14 @@ pub(super) fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Comp
 fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &ast::Extend) {
     walk_extend_modifications(extend, |modification| {
         // Extract target name and nested modifications from the expression.
-        // Two formats exist:
+        // Three formats exist:
         //   1. ClassModification { target: comp_name, modifications: [...] }
         //      For: extends Foo(friction(useHeatPort=true))
         //   2. Modification { target: comp_name, value: ClassModification { target: TypeName, modifications: [...] } }
         //      For: extends Foo(redeclare final NewType comp(nested=val))
         //      Type changes are handled by collect_redeclarations(); here we merge nested mods.
+        //   3. Binary { Assign, lhs: ClassModification { target: comp_name, .. }, rhs: binding }
+        //      For: extends Foo(k(min=0) = 5); the binding is a value modification.
         let Some((target_name, nested)) = extend_nested_target_modifications(extend, modification)
         else {
             return;
@@ -1710,6 +1734,15 @@ fn extend_nested_target_modifications<'a>(
         {
             Some((extend_relative_component_target(extend, target)?, value))
         }
+        // `x(...) = e`: the nested part; the binding is a value modification.
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            ..
+        } if matches!(lhs.as_ref(), ast::Expression::ClassModification { .. }) => Some((
+            extend_relative_component_target(extend, modification.expr.modification_target()?)?,
+            lhs,
+        )),
         _ => None,
     }
 }
@@ -1789,6 +1822,12 @@ pub fn get_effective_components_with_cache(
     let local_type_def_ids =
         collect_local_type_def_ids(&inherited.classes, &class.classes, &inherited.components);
     populate_local_component_type_def_ids(&mut inherited.components, &local_type_def_ids);
+
+    // MLS §7.3.2: the constraining clause's modifiers apply to the declaration
+    // itself, not only to a redeclaration.
+    for comp in inherited.components.values_mut() {
+        activate_constrainedby_defaults(tree, comp)?;
+    }
 
     Ok(inherited.components)
 }

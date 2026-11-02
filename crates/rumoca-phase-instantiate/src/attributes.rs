@@ -392,7 +392,7 @@ pub(super) fn validate_final_type_attribute_overrides(
     Ok(())
 }
 
-fn final_override_error(name: String, value: &ast::Expression) -> Box<InstantiateError> {
+pub(crate) fn final_override_error(name: String, value: &ast::Expression) -> Box<InstantiateError> {
     let span = value.span();
     if span.is_dummy() {
         return Box::new(InstantiateError::missing_source_context(

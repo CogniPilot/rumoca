@@ -5,8 +5,8 @@
 
 use crate::Resolver;
 use crate::traversal_adapter::{
-    ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
-    walk_subscripts,
+    ResolveTraversalCallbacks, walk_class_modification_values, walk_equations, walk_expression,
+    walk_expressions, walk_statements, walk_subscripts,
 };
 use rumoca_core::{ComponentPath, DefId, Diagnostic, PrimaryLabel, ScopeId};
 use rumoca_ir_ast as ast;
@@ -137,6 +137,16 @@ impl Resolver {
                 );
                 self.bind_redeclared_base_slot(modification, ext.base_def_id);
             }
+        }
+        // Constraining-clause modifiers a short class keeps for instantiation
+        // read the same scope as its own modifiers.
+        for modification in class.constraining_modifications.iter_mut() {
+            Self::resolve_extend_modification(
+                self,
+                &mut modification.expr,
+                class_scope,
+                short_class_modifier_scope.unwrap_or(class_scope),
+            );
         }
 
         self.resolve_subscripts(&mut class.array_subscripts, class_scope);
@@ -295,6 +305,26 @@ impl Resolver {
             Expression::Modification { target, value, .. } => {
                 self.resolve_component_reference(target, target_scope);
                 self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
+            }
+            // `x(...)` and `x(...) = e`: the nested values are written where
+            // the modifier is, like a plain value; nested targets name members
+            // of the modified element's type, which Resolve does not own.
+            Expression::ClassModification { target, .. } => {
+                self.resolve_component_reference(target, target_scope);
+                walk_class_modification_values(self, expr, value_scope);
+            }
+            Expression::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
+                ..
+            } if matches!(lhs.as_ref(), Expression::ClassModification { .. }) => {
+                if let Expression::ClassModification { target, .. } = std::sync::Arc::make_mut(lhs)
+                {
+                    self.resolve_component_reference(target, target_scope);
+                }
+                walk_class_modification_values(self, std::sync::Arc::make_mut(lhs), value_scope);
+                self.resolve_expression(std::sync::Arc::make_mut(rhs), value_scope);
             }
             other => self.resolve_expression(other, target_scope),
         }

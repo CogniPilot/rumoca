@@ -1,8 +1,7 @@
 //! Instance-local component replacements, applied before component expansion.
 
 use crate::inheritance::{
-    activate_constrainedby_defaults_for_redeclare, apply_redeclared_dimensions,
-    validate_redeclaration,
+    activate_constrainedby_defaults, apply_redeclared_dimensions, validate_redeclaration,
 };
 use crate::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
@@ -129,7 +128,7 @@ fn replace_component_type(
     replacement.type_name = ast::Name::from_string(type_name);
     replacement.type_name.def_id = Some(type_id);
     replacement.redeclared_by_modification = true;
-    activate_constrainedby_defaults_for_redeclare(&mut replacement);
+    activate_constrainedby_defaults(tree, &mut replacement)?;
     Ok(replacement)
 }
 

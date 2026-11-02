@@ -628,6 +628,7 @@ fn process_replaceable_element(
             nested_class.is_replaceable = true;
             nested_class.is_redeclare = is_redeclare;
             nested_class.constrainedby = constrainedby;
+            merge_constraining_clause_class_modifications(&mut nested_class, constrainedby_mods)?;
             let name = nested_class.name.text.to_string();
             def.classes.insert(name, nested_class);
         }
@@ -697,7 +698,7 @@ fn merge_constraining_clause_modifications(
             .copied()
             .unwrap_or(false);
 
-        let Some(target_name) = constraining_arg_target_name(arg) else {
+        let Some(target_name) = arg.modification_target().map(ToString::to_string) else {
             continue;
         };
         if is_builtin_attribute_name(&target_name) {
@@ -723,25 +724,76 @@ fn merge_constraining_clause_modifications(
     Ok(())
 }
 
-fn constraining_arg_target_name(arg: &rumoca_ir_ast::Expression) -> Option<String> {
-    match arg {
-        rumoca_ir_ast::Expression::Modification { target, .. }
-        | rumoca_ir_ast::Expression::ClassModification { target, .. } => Some(target.to_string()),
-        rumoca_ir_ast::Expression::Binary { op, lhs, .. }
-            if matches!(op, rumoca_core::OpBinary::Assign)
-                && matches!(
-                    lhs.as_ref(),
-                    rumoca_ir_ast::Expression::ClassModification { .. }
-                ) =>
-        {
-            if let rumoca_ir_ast::Expression::ClassModification { target, .. } = lhs.as_ref() {
-                Some(target.to_string())
-            } else {
-                None
-            }
+/// MLS §7.3.2: a replaceable class's constraining-clause modifiers apply to the
+/// class itself, below its own. A short class definition states its own
+/// modifiers on its one base, so the constraining ones join them there.
+///
+/// A class definition resolves no types, so a modifier whose merge depends on
+/// one (a declared binding over it), or that would be refused, is kept apart
+/// in `constraining_modifications` for instantiation to merge or refuse when
+/// the class is used; so are all of them for a class with no single base,
+/// and one naming an element the class declares itself, which its base
+/// does not have.
+fn merge_constraining_clause_class_modifications(
+    class: &mut rumoca_ir_ast::ClassDef,
+    constrainedby_mods: Option<&modelica_grammar_trait::ConstrainingClauseOpt>,
+) -> anyhow::Result<()> {
+    let Some(arguments) = constrainedby_mods
+        .and_then(|mods| mods.class_modification.class_modification_opt.as_ref())
+        .map(|opt| &opt.argument_list)
+    else {
+        return Ok(());
+    };
+    let modification =
+        |idx: usize, arg: &rumoca_ir_ast::Expression| rumoca_ir_ast::ExtendModification {
+            expr: arg.clone(),
+            each: arguments.each_flags.get(idx).copied().unwrap_or(false),
+            final_: arguments.final_flags.get(idx).copied().unwrap_or(false),
+            redeclare: false,
+        };
+    let [base] = class.extends.as_mut_slice() else {
+        class.constraining_modifications = arguments
+            .args
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| modification(idx, arg))
+            .collect();
+        return Ok(());
+    };
+    let mut deferred = Vec::new();
+    for (idx, arg) in arguments.args.iter().enumerate() {
+        let target = arg.modification_target().map(ToString::to_string);
+        if target.as_ref().is_some_and(|target| {
+            class.components.contains_key(target) || class.classes.contains_key(target)
+        }) {
+            deferred.push(modification(idx, arg));
+            continue;
         }
-        _ => None,
+        let stated = target.as_ref().and_then(|target| {
+            base.modifications.iter_mut().find(|modification| {
+                modification
+                    .expr
+                    .modification_target()
+                    .map(ToString::to_string)
+                    .as_ref()
+                    == Some(target)
+            })
+        });
+        let Some(stated) = stated else {
+            base.modifications.push(modification(idx, arg));
+            continue;
+        };
+        let mut merged = stated.expr.clone();
+        let typeless = !arguments.final_flags.get(idx).copied().unwrap_or(false)
+            && merged.merge_modification_below(arg, &|_| None).is_ok();
+        if typeless {
+            stated.expr = merged;
+        } else {
+            deferred.push(modification(idx, arg));
+        }
     }
+    class.constraining_modifications = deferred;
+    Ok(())
 }
 
 fn is_builtin_attribute_name(name: &str) -> bool {
