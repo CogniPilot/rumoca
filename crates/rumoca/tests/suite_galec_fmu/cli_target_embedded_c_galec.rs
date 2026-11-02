@@ -874,6 +874,89 @@ int main(void) {
 }
 ";
 
+const ELSE_IF_CHAIN_MODEL: &str = "EmbeddedGalecElseIfChain";
+
+/// Links in the else-if chain: well past the depth the template engine's
+/// recursion limit allowed when each `elseif` nested one more macro call.
+const ELSE_IF_CHAIN_LINKS: usize = 60;
+
+/// A function whose `if`/`elseif` chain has [`ELSE_IF_CHAIN_LINKS`] branches.
+/// Branch `k` writes element `(k - 1) mod 3 + 1` with `k`, so no two
+/// neighbouring branches write the same element and each stays a lazy region:
+/// the shape NavigationEstimator's entry-wise matrix assembly lowers to.
+fn else_if_chain_fixture() -> String {
+    let branches = (1..=ELSE_IF_CHAIN_LINKS)
+        .map(|k| {
+            let keyword = if k == 1 { "if" } else { "elseif" };
+            format!(
+                "    {keyword} u < {k}.0 then\n      e[{}] := {k}.0;\n",
+                (k - 1) % 3 + 1
+            )
+        })
+        .collect::<String>();
+    format!(
+        "model {ELSE_IF_CHAIN_MODEL}
+  function pick
+    input Real u;
+    output Real e[3];
+  algorithm
+    e := {{0.0, 0.0, 0.0}};
+{branches}    end if;
+  end pick;
+
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  discrete output Real y1(start = 0.0);
+  discrete output Real y2(start = 0.0);
+  discrete output Real y3(start = 0.0);
+protected
+  discrete Real e[3];
+equation
+  when sample(0.0, samplePeriod) then
+    e = pick(u);
+    y1 = e[1];
+    y2 = e[2];
+    y3 = e[3];
+  end when;
+end {ELSE_IF_CHAIN_MODEL};
+"
+    )
+}
+
+const ELSE_IF_CHAIN_DRIVER: &str = "\
+#include <stdio.h>
+#include \"EmbeddedGalecElseIfChain.h\"
+
+static void probe(float u) {
+    EmbeddedGalecElseIfChainState state;
+    EmbeddedGalecElseIfChain_startup(&state);
+    EmbeddedGalecElseIfChain_recalibrate(&state);
+    state.u = u;
+    EmbeddedGalecElseIfChain_dostep(&state);
+    printf(\"%.1f %.1f %.1f\\n\", (double)state.y1, (double)state.y2, (double)state.y3);
+}
+
+int main(void) {
+    probe(0.5f);
+    probe(1.5f);
+    probe(59.5f);
+    probe(100.0f);
+    return 0;
+}
+";
+
+/// #483: a long else-if chain renders (it exceeded the template recursion
+/// limit when each link nested a macro call) and each branch keeps its write.
+#[test]
+fn a_long_else_if_chain_renders_and_selects_its_branch() {
+    let fixture = else_if_chain_fixture();
+    let (_, stdout) = build_and_run(ELSE_IF_CHAIN_MODEL, &fixture, ELSE_IF_CHAIN_DRIVER);
+    assert_eq!(
+        stdout, "1.0 0.0 0.0\n0.0 2.0 0.0\n0.0 0.0 60.0\n0.0 0.0 0.0\n",
+        "branch k writes k into element (k - 1) mod 3 + 1; no branch matches u = 100"
+    );
+}
+
 const PARTIAL_BRANCH_MODEL: &str = "EmbeddedGalecPartialBranchWrites";
 
 /// Branches whose write sets *overlap partially*: the `then` branch writes
