@@ -39,6 +39,8 @@ use super::*;
 /// direction: a callee with one owner anywhere has at most one owner here.
 pub(super) struct CallSiteCensus {
     owners: std::collections::BTreeMap<u32, std::collections::BTreeSet<u32>>,
+    /// What every call site passes each scalar Integer parameter.
+    pub(super) parameter_ranges: super::integer_call_bounds::ParameterRanges,
 }
 
 /// The census a lowering that was never handed the projection's own has.
@@ -49,6 +51,7 @@ pub(super) struct CallSiteCensus {
 /// deciding from facts it does not have is the failure mode to design out.
 static NO_CALL_SITES: CallSiteCensus = CallSiteCensus {
     owners: std::collections::BTreeMap::new(),
+    parameter_ranges: super::integer_call_bounds::ParameterRanges::none(),
 };
 
 impl CallSiteCensus {
@@ -69,7 +72,10 @@ impl CallSiteCensus {
                     .insert(owner.index());
             }
         }
-        Self { owners }
+        Self {
+            owners,
+            parameter_ranges: super::integer_call_bounds::ParameterRanges::derive(view),
+        }
     }
 
     /// Whether this callee is called from exactly one place.

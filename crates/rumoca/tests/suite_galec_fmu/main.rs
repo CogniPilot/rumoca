@@ -16,6 +16,7 @@ mod galec_enumeration_status;
 mod galec_equation_pre;
 mod galec_equivalence;
 mod galec_integer_sign;
+mod galec_parameter_ranges;
 mod galec_periodic_real;
 mod galec_signed_zero;
 mod galec_single_element_index;
