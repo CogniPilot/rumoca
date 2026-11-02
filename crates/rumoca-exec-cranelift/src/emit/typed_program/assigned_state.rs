@@ -193,6 +193,11 @@ impl ProgramLowerer<'_, '_> {
         destination: Value,
         count: u32,
     ) -> Result<(), CompileError> {
+        crate::expansion::moved(
+            u64::from(count),
+            "assigned-frame-copy",
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
         self.for_each_element(count, |this, index| {
             let from = this.cell_address(source, 0, index);
             let to = this.cell_address(destination, 0, index);

@@ -70,6 +70,11 @@ pub struct SimBenchArgs {
     #[arg(long)]
     pub(crate) json: bool,
 
+    /// Write calling-thread native emission/source/copy diagnostics as JSON.
+    /// Collection adds preparation overhead; these timings are instrumented.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) expansion_report: Option<String>,
+
     #[command(flatten)]
     pub(crate) diagnostics: DiagnosticsArgs,
 }
@@ -198,6 +203,26 @@ struct SimBenchReport {
 }
 
 pub(crate) fn run_sim_bench(args: SimBenchArgs) -> Result<()> {
+    let Some(path) = args.expansion_report.clone() else {
+        return run_sim_bench_measured(args);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (outcome, report) =
+            rumoca_sim::native_expansion::record_expansion_report(|| run_sim_bench_measured(args));
+        let error = outcome.as_ref().err().map(ToString::to_string);
+        crate::expansion_report::write(&path, &report, error.as_deref())?;
+        outcome?;
+        if !report.complete || report.entries.is_empty() {
+            bail!("native expansion collection is incomplete or empty; inspect {path}");
+        }
+        Ok(())
+    }
+    #[cfg(target_arch = "wasm32")]
+    bail!("native expansion reports are unavailable on wasm32: {path}")
+}
+
+fn run_sim_bench_measured(args: SimBenchArgs) -> Result<()> {
     if args.iterations == 0 {
         bail!("rumoca sim bench requires --iterations greater than zero");
     }
@@ -571,4 +596,49 @@ fn print_human_report(report: &SimBenchReport) {
             .map(|time| format!("{time:.6}s"))
             .unwrap_or_else(|| "n/a".to_string())
     );
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod expansion_tests {
+    use clap::Parser;
+
+    #[test]
+    fn the_cli_writes_a_nonempty_native_report_for_a_tiny_benchmark() {
+        let directory = tempfile::tempdir().unwrap();
+        let model = directory.path().join("NativeReportFixture.mo");
+        let report = directory.path().join("emission.json");
+        std::fs::write(&model,
+            "model NativeReportFixture Real x(start=1, fixed=true); equation der(x)=-x; end NativeReportFixture;"
+        ).unwrap();
+        let cli = crate::cli::Cli::try_parse_from([
+            "rumoca",
+            "sim",
+            "bench",
+            model.to_str().unwrap(),
+            "--model",
+            "NativeReportFixture",
+            "--solver",
+            "bdf",
+            "--t-end",
+            "0.02",
+            "--dt",
+            "0.01",
+            "--iterations",
+            "1",
+            "--warmups",
+            "0",
+            "--json",
+            "--expansion-report",
+            report.to_str().unwrap(),
+        ])
+        .unwrap();
+        crate::cli::run(cli).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        assert_eq!(saved["schema"], "rumoca-native-expansion-v2");
+        assert_eq!(saved["collection_complete"], true);
+        assert_eq!(saved["nonempty"], true);
+        assert!(saved["invocation_error"].is_null());
+        assert!(!saved["entries"].as_array().unwrap().is_empty());
+    }
 }

@@ -23,6 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod expansion;
 mod host_runtime;
 mod input_validation;
 #[cfg(test)]
@@ -1393,6 +1394,7 @@ fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
 }
 
 struct CraneliftEmitter {
+    _expansion_table_scope: crate::expansion::CallTableScope,
     module: OwnedJitModule,
     math: MathImports,
     fold_functions: HashMap<usize, FuncId>,
@@ -1423,6 +1425,9 @@ impl CraneliftEmitter {
     fn new(
         pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     ) -> Result<Self, CompileError> {
+        let expansion_table_scope = crate::expansion::call_table_scope(
+            pure_calls.as_ref().map(|table| table.expansion_source()),
+        );
         let mut builder = host_jit_builder()?;
         register_math_symbols(&mut builder);
         if let Some(pure_calls) = &pure_calls {
@@ -1430,6 +1435,7 @@ impl CraneliftEmitter {
         }
         let module = OwnedJitModule::new(JITModule::new(builder));
         Ok(Self {
+            _expansion_table_scope: expansion_table_scope,
             module,
             math: MathImports::default(),
             fold_functions: HashMap::new(),
@@ -2553,6 +2559,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 targets.len()
             )));
         }
+        self.store_assignment_outputs(row, outputs, targets)
+    }
+
+    fn store_assignment_outputs_unrecorded(
+        &mut self,
+        outputs: Vec<cranelift_codegen::ir::Value>,
+        targets: &[usize],
+    ) -> Result<(), CompileError> {
         for (value, &target) in outputs.into_iter().zip(targets) {
             let offset = target
                 .checked_mul(std::mem::size_of::<f64>())
@@ -2609,28 +2623,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .map_err(|_| CompileError::Backend("residual output index exceeds i32".to_string()))?;
         for op in row {
             self.source_operation = op as *const _;
-            if let LinearOp::StoreOutputRange {
-                start,
-                count,
-                stride: 1,
-            } = *op
-                && let Some(next) = self.copy_taped_output_range(start, count, out_ptr, out_idx)?
-            {
-                out_idx = next;
-                continue;
-            }
-            let values = match op.clone() {
-                LinearOp::StoreOutputRange {
-                    start,
-                    count,
-                    stride,
-                } => self.lower_output_range(start, count, stride)?,
-                operation => self.lower_op(operation)?.into_iter().collect(),
-            };
-            for value in values {
-                self.fb.ins().store(self.flags, value, out_ptr, out_idx * 8);
-                out_idx += 1;
-            }
+            out_idx = self.lower_recorded_output(op, out_ptr, out_idx)?;
         }
         Ok(())
     }
@@ -3887,7 +3880,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(None)
     }
 
-    fn lower_function_fold_on_stack(
+    fn lower_function_fold_on_stack_unrecorded(
         &mut self,
         carried_slot: StackSlot,
         captures: &[cranelift_codegen::ir::Value],
@@ -3914,6 +3907,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             && program.update.len() <= 128
             && program.continuation.is_none()
         {
+            crate::expansion::path("row-static-fold");
             for ordinal in 0..count {
                 let constants = fold_index_constants(&program.domain, &extents, &strides, ordinal);
                 let indices = constants
@@ -3951,6 +3945,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(body);
         self.fb.seal_block(body);
+        let expansion_loop =
+            crate::expansion::loop_scope(count as u64, std::ptr::from_ref(&*self.fb.func) as usize);
         if let Some(continuation) = &program.continuation {
             let predicate = self.lower_fold_continuation(
                 carried_slot,
@@ -3993,6 +3989,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.fb.ins().jump(header, &[next_ordinal.into()]);
         self.fb.seal_block(header);
 
+        drop(expansion_loop);
         self.fb.switch_to_block(exit);
         self.fb.seal_block(exit);
         Ok(())
@@ -4497,6 +4494,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         destination_base: usize,
         count: usize,
     ) -> Result<(), CompileError> {
+        crate::expansion::moved(
+            count as u64,
+            "row-stack-loop",
+            std::ptr::from_ref(&*self.fb.func) as usize,
+        );
         if count == 0 {
             return Ok(());
         }
@@ -4573,6 +4575,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         destination: cranelift_codegen::ir::Value,
         count: usize,
     ) -> Result<(), CompileError> {
+        crate::expansion::moved(
+            count as u64,
+            "row-pointer-loop",
+            std::ptr::from_ref(&*self.fb.func) as usize,
+        );
         if count == 0 {
             return Ok(());
         }

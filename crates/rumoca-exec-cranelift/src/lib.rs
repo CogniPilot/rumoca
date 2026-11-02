@@ -10,6 +10,11 @@ mod compute_block;
 mod selected_program;
 pub use checked_observation::{CompiledEventObservation, compile_event_observation};
 mod emit;
+mod expansion;
+pub use expansion::{
+    EXPANSION_FLOOR, ExpansionCopy, ExpansionEntry, ExpansionReport, ExpansionSource,
+    ForcedExpansion, record_expansion_report,
+};
 
 pub use compute_block::{
     CompiledComputeExpression, CompiledComputeJacobian, compile_expression_compute_block,
