@@ -37,9 +37,7 @@ equation
 end MapLoops;
 "#;
 
-/// The `(trip count, step)` of every `map` loop in the rendered functions, as
-/// the template emits them.
-fn map_loops(target: &str) -> Vec<(usize, i64)> {
+fn rendered_functions(target: &str) -> String {
     let compiled = Compiler::new()
         .model("MapLoops")
         .compile_str(SOURCE, "fmi_family_map_loops.mo")
@@ -50,7 +48,16 @@ fn map_loops(target: &str) -> Vec<(usize, i64)> {
         .iter()
         .find(|file| file.path.ends_with("rmc_functions.c"))
         .unwrap_or_else(|| panic!("{target} renders its function sources"));
-    let lines = functions.content.lines().collect::<Vec<_>>();
+    functions.content.clone()
+}
+
+/// Count source-family Maps, before the separately emitted directional owners.
+/// Their Fold loops have an early-exit guard, not a literal-only condition.
+fn map_loops(functions: &str) -> Vec<(usize, i64)> {
+    let lines = functions
+        .lines()
+        .take_while(|line| !line.starts_with("static int rumoca_pure_directional_"))
+        .collect::<Vec<_>>();
     let mut loops = Vec::new();
     for (position, line) in lines.iter().enumerate() {
         let Some(count) = line
@@ -87,9 +94,45 @@ fn map_loops(target: &str) -> Vec<(usize, i64)> {
 fn map_loops_count_negative_and_non_divisible_steps_exactly() {
     for target in ["fmi2", "fmi3"] {
         assert_eq!(
-            map_loops(target),
+            map_loops(&rendered_functions(target)),
             [(2, -2), (2, 4), (3, -4), (3, -3)],
             "{target}"
         );
     }
+}
+
+#[test]
+fn directional_folds_are_not_source_map_loops() {
+    let functions = "for (size_t i0=0; i0<3; ++i0) {\n\
+                     if (i0) b0[0]+=(-INT64_C(3));\n\
+                     static int rumoca_pure_directional_0(void);\n\
+                     for (size_t i0=0; i0<3 && !fold_done; ++i0) {\n\
+                     if (i0) b0[0]+=(-INT64_C(3));";
+    assert_eq!(map_loops(functions), [(3, -3)]);
+}
+
+#[test]
+fn source_maps_keep_exact_count_step_and_presence_checks() {
+    let functions = rendered_functions("fmi3");
+    for (before, after) in [
+        ("i0<3;", "i0<4;"),
+        ("b0[0]+=(-INT64_C(3));", "b0[0]+=(-INT64_C(2));"),
+        ("for (size_t i0=0; i0<", "for (size_t removed=0; removed<"),
+    ] {
+        assert!(
+            functions.contains(before),
+            "the rendered witness has {before}"
+        );
+        assert_ne!(
+            map_loops(&functions.replace(before, after)),
+            [(2, -2), (2, 4), (3, -4), (3, -3)],
+            "changing {before} must invalidate the source-map check"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "a literal trip count")]
+fn malformed_source_map_conditions_are_not_skipped() {
+    map_loops("for (size_t i0=0; i0<bad; ++i0) {\nif (i0) b0[0]+=INT64_C(1);");
 }
