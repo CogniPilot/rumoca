@@ -350,6 +350,44 @@ fn issue_536_a_class_form_merge_waits_for_the_class_to_be_used() {
     );
 }
 
+#[test]
+fn issue_536_a_kept_class_form_modifier_is_resolved_like_the_class_s_own() {
+    // The class keeps `k(start = f(seed))` for instantiation, and resolution
+    // must still reach `f`; then it reads `seed` exactly as the class's own
+    // modifiers do, so it equals the hand-written `H = Full(k(start =
+    // f(seed)) = 5)`. The component form reads the enclosing C.seed: 8.
+    let lexical = include_str!("fixtures/reported_bugs/issue_536_lexical.mo");
+    let written = lexical.replace(
+        "replaceable model H=Full(k=5) constrainedby P(k(start=f(seed)));",
+        "model H=Full(k(start=f(seed))=5);",
+    );
+    assert_ne!(written, lexical);
+    // Strict-reachable compilation keeps only what the target reaches: the
+    // kept modifier must reach `f` too.
+    let mut session = Session::default();
+    session
+        .add_document("Repro.mo", lexical)
+        .expect("source parses");
+    let report = session.compile_model_strict_reachable_uncached_with_recovery("Lex.C");
+    assert!(
+        report.requested_succeeded(),
+        "{:?}",
+        report.requested_result
+    );
+    assert_eq!(binding(lexical, "Lex.C", "h.k"), vec![5.0]);
+    assert_eq!(
+        start(lexical, "Lex.C", "h.k"),
+        start(&written, "Lex.C", "h.k")
+    );
+    // Not #536, recorded so a change shows: a short class's own modifiers
+    // read `seed` in its base (Full.seed = 100), on main as well, where
+    // OpenModelica reads the enclosing C.seed.
+    assert_eq!(start(lexical, "Lex.C", "h.k"), Some(vec![101.0]));
+    let component = include_str!("fixtures/reported_bugs/issue_536_lexical_component.mo");
+    assert_eq!(binding(component, "Lex.C", "h.k"), vec![5.0]);
+    assert_eq!(start(component, "Lex.C", "h.k"), Some(vec![8.0]));
+}
+
 /// The error compiling `model` reports.
 fn refusal(source: &str, model: &str) -> String {
     let mut session = Session::default();

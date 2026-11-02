@@ -138,6 +138,16 @@ impl Resolver {
                 self.bind_redeclared_base_slot(modification, ext.base_def_id);
             }
         }
+        // Constraining-clause modifiers a short class keeps for instantiation
+        // read the same scope as its own modifiers.
+        for modification in class.constraining_modifications.iter_mut() {
+            Self::resolve_extend_modification(
+                self,
+                &mut modification.expr,
+                class_scope,
+                short_class_modifier_scope.unwrap_or(class_scope),
+            );
+        }
 
         self.resolve_subscripts(&mut class.array_subscripts, class_scope);
 

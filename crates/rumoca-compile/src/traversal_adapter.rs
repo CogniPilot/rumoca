@@ -180,6 +180,11 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
         for extend in &class.extends {
             self.collect_extend(extend)?;
         }
+        // Constraining-clause modifiers a short class keeps for instantiation
+        // reach what they name as its extends modifiers do.
+        for modification in &class.constraining_modifications {
+            self.visit_expression(&modification.expr)?;
+        }
         let scope_imports = class
             .scope_id
             .and_then(|scope_id| self.tree.scope_tree.get(scope_id))

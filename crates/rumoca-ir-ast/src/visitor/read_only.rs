@@ -344,6 +344,10 @@ pub fn walk_class_def_default<V: Visitor + ?Sized>(
         for ext in &class.extends {
             visitor.visit_extend(ext)?;
         }
+        for modification in &class.constraining_modifications {
+            visitor
+                .visit_expression_ctx(&modification.expr, ExpressionContext::ExtendModification)?;
+        }
         visitor.visit_each(&class.imports, V::visit_import)?;
         for subscript in &class.array_subscripts {
             visitor.visit_subscript_ctx(subscript, SubscriptContext::ClassArraySubscript)?;
