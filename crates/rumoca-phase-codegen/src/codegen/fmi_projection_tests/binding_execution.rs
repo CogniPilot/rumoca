@@ -262,6 +262,34 @@ fn actual_built_in_c_templates_render_derivative_capabilities_from_complete_plan
 }
 
 #[test]
+fn every_fmi_model_description_starts_with_its_xml_declaration() {
+    let renderer = SolveTemplateRenderer::new_owned_with_fmi(component(false, false)).unwrap();
+    let mut rendered_targets = Vec::new();
+    for target in crate::templates::builtin_targets() {
+        let Some(template) = target.template_source("modelDescription.xml.jinja") else {
+            continue;
+        };
+        let xml = renderer
+            .render_with_name_and_artifact(
+                template,
+                "BindingExecutionFixture",
+                &artifact_identities(),
+            )
+            .expect("the built-in FMI description renders");
+        assert!(
+            xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+            "{} must put its XML declaration at byte zero: {:?}",
+            target.name,
+            &xml.as_bytes()[..xml.len().min(64)]
+        );
+        rendered_targets.push(target.name);
+    }
+    for target in ["fmi2", "fmi3", "fmi-ls-wasm"] {
+        assert!(rendered_targets.contains(&target));
+    }
+}
+
+#[test]
 fn layered_wasm_metadata_does_not_inherit_c_derivative_capabilities() {
     let renderer = SolveTemplateRenderer::new_owned_with_fmi(component(false, false)).unwrap();
     let xml = renderer
