@@ -201,6 +201,29 @@ impl<'a> AlgorithmCodeView<'a> {
             emission: EmissionView::new(package.emission_policy(), block),
         })
     }
+
+    /// This view with its Algorithm Code structure (the block the `.alg`
+    /// prints and its method signals) taken from `reference`, keeping this
+    /// view's emission, trace legend and symbols for the C.
+    ///
+    /// An eFMI container ships its AlgorithmCode as the structured reference
+    /// while its C may come from a policy-shaped projection of the same model
+    /// (#483). Both describe one block, so their names and interfaces must
+    /// agree; a mismatch is refused rather than packaged.
+    pub(crate) fn with_reference(mut self, reference: Self) -> Result<Self, String> {
+        if reference.block_name != self.block_name
+            || reference.variable_names != self.variable_names
+        {
+            return Err(format!(
+                "the structured reference '{}' and the emitted block '{}' do not declare the \
+                 same interface",
+                reference.block_name, self.block_name
+            ));
+        }
+        self.package = reference.package;
+        self.methods = reference.methods;
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

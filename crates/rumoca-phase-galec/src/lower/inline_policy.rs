@@ -14,16 +14,16 @@
 //! them is meant to be optimized: `AlgorithmCode` is the reviewable semantic
 //! reference and `ProductionCode` is its optimized C rendering. A transform
 //! that runs during DAE-to-GALEC lowering reshapes the reference itself, which
-//! is why a container target refuses a non-default policy outright
-//! (`target_manifest::admitted_emission_policy`) and only the container-free
-//! `embedded-c-galec` export can use one.
+//! is why a container target under a non-default policy projects twice
+//! (`target_manifest::algorithm_code_renderer`): once structured for the
+//! `.alg`, once through this module for the C.
 //!
 //! The end-state home is the GALEC-to-Solve refinement, where the two
 //! representations can legitimately diverge: the `.alg` stays the structured
 //! reference, and only the Solve program the C emitter consumes is optimized.
 //! Moving this module there is owed work, not a settled location, and the
-//! refusal above is the seam that keeps the interim placement honest instead of
-//! letting it quietly become the design.
+//! second projection is the seam that keeps the interim placement honest
+//! instead of letting it quietly become the design.
 
 use super::*;
 

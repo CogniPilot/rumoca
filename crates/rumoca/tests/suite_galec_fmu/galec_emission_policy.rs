@@ -434,43 +434,114 @@ fn source_anchors(generated: &str) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-/// An eFMI container's AlgorithmCode representation stays structured, because
-/// it is the reviewable semantic reference the container exists to ship.
-///
-/// This compiler renders both container representations from one projection, so
-/// a policy that collapsed call structure would collapse it in the `.alg` too.
-/// Until the transform moves into the GALEC-to-Solve refinement, where the two
-/// representations can legitimately diverge, a container target refuses the
-/// flag rather than silently dropping it: an artifact that does not match what
-/// was asked for is worse than an error saying so.
+/// A container with no C has nothing a policy could shape, so `galec`, which
+/// ships only the structured AlgorithmCode reference, refuses the flag rather
+/// than silently dropping it: an artifact that does not match what was asked
+/// for is worse than an error saying so.
 #[test]
-fn an_efmi_container_refuses_a_policy_that_would_reshape_its_reference() {
-    for target in ["galec", "galec-production"] {
-        let dir = tempdir().expect("tempdir");
-        let out_dir = dir.path().join("out");
-        let file = write_fixture(dir.path(), MODEL, FIXTURE);
-        // The default is admitted: a container still compiles, it just compiles
-        // the structured artifact.
-        let structured = run_compile_target_with(&file, target, &out_dir, &[]);
+fn a_container_with_no_c_refuses_a_policy() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_fixture(dir.path(), MODEL, FIXTURE);
+    // The default is admitted: the container still compiles.
+    let structured = run_compile_target_with(&file, "galec", &dir.path().join("out"), &[]);
+    assert!(
+        structured.status.success(),
+        "`galec` must still compile under the default.\nstderr:\n{}",
+        String::from_utf8_lossy(&structured.stderr)
+    );
+    let out_dir = dir.path().join("out-policy");
+    let refused =
+        run_compile_target_with(&file, "galec", &out_dir, &["--inline-policy", "cost-model"]);
+    assert!(
+        !refused.status.success(),
+        "`galec` emits no C, so it must refuse a policy that only shapes C"
+    );
+    let stderr = super::cli_support::strip_ansi(&String::from_utf8_lossy(&refused.stderr))
+        .replace('\n', " ");
+    assert!(
+        stderr.contains("AlgorithmCode") && stderr.contains("galec-production"),
+        "the refusal must say what it protects and where a policy applies:\n{stderr}"
+    );
+    assert!(!out_dir.exists(), "a refused compile must write nothing");
+}
+
+/// An eFMI container ships its AlgorithmCode as the structured reference
+/// whatever shaped its ProductionCode C (#483).
+///
+/// Under a policy, `galec-production` projects twice: the `.alg` and its
+/// manifest are byte for byte the default container's, while the C is printed
+/// from the policy-shaped projection, says so, and computes the same numbers.
+#[test]
+fn a_container_keeps_its_reference_structured_and_shapes_only_its_c() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_fixture(dir.path(), MODEL, FIXTURE);
+    let build = |name: &str, flags: &[&str]| {
+        let out_dir = dir.path().join(name);
+        let output = run_compile_target_with(&file, "galec-production", &out_dir, flags);
         assert!(
-            structured.status.success(),
-            "`{target}` must still compile under the default.\nstderr:\n{}",
-            String::from_utf8_lossy(&structured.stderr)
+            output.status.success(),
+            "`galec-production {flags:?}` failed.\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        let out_dir = dir.path().join("out-policy");
-        let refused =
-            run_compile_target_with(&file, target, &out_dir, &["--inline-policy", "cost-model"]);
-        assert!(
-            !refused.status.success(),
-            "`{target}` must refuse a policy that would reshape its AlgorithmCode reference"
-        );
-        let stderr = super::cli_support::strip_ansi(&String::from_utf8_lossy(&refused.stderr))
-            .replace('\n', " ");
-        assert!(
-            stderr.contains("AlgorithmCode") || stderr.contains("eFMI container"),
-            "the refusal must say which representation it is protecting:\n{stderr}"
-        );
-    }
+        out_dir.join(MODEL)
+    };
+    let structured = build("structured", &[]);
+    let inlined = build("inlined", &["--inline-policy", "all"]);
+    let read = |root: &Path, path: &str| {
+        fs::read_to_string(root.join(path)).unwrap_or_else(|error| panic!("read {path}: {error}"))
+    };
+    // A manifest's `id` and `generationDateAndTime` name the build, not the
+    // block, so they differ between any two builds.
+    let per_build = |manifest: String| {
+        manifest
+            .split(' ')
+            .filter(|attribute| {
+                !attribute.starts_with("id=") && !attribute.starts_with("generationDateAndTime=")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let alg_path = format!("AlgorithmCode/{MODEL}.alg");
+    assert_eq!(
+        read(&inlined, &alg_path),
+        read(&structured, &alg_path),
+        "the .alg must stay the structured reference under a policy"
+    );
+    assert_eq!(
+        per_build(read(&inlined, "AlgorithmCode/manifest.xml")),
+        per_build(read(&structured, "AlgorithmCode/manifest.xml")),
+        "the AlgorithmCode manifest must describe the structured reference under a policy"
+    );
+    let alg = read(&inlined, &alg_path);
+    assert!(
+        alg.contains("squareTwice"),
+        "the reference keeps every function:\n{alg}"
+    );
+    let c_path = format!("ProductionCode/{MODEL}.c");
+    let c = read(&inlined, &c_path);
+    assert!(
+        c.contains(DISCLOSURE) && c.contains("inline policy:    all"),
+        "the ProductionCode C must disclose the policy it was printed under:\n{c}"
+    );
+    assert!(
+        !defines_function(&c, "squareTwice") && defines_function(&c, "keepAsCall"),
+        "`--inline-policy all` must collapse every legal call in the C only:\n{c}"
+    );
+    assert!(
+        defines_function(&read(&structured, &c_path), "squareTwice"),
+        "the default container's C keeps the call"
+    );
+    let production = |root: &Path| {
+        let pc = root.join("ProductionCode");
+        build_and_run(&pc, &pc.join(format!("{MODEL}.c")), &["galec-production"])
+    };
+    let observed = production(&inlined);
+    assert!(!observed.is_empty(), "the driver must print the values");
+    assert_eq!(
+        observed,
+        production(&structured),
+        "the policy-shaped container C must compute exactly what the structured one does"
+    );
 }
 
 /// Every setting computes the same numbers, exactly.

@@ -53,6 +53,33 @@ impl AlgorithmCodeTemplateRenderer {
     ) -> Result<Self, CodegenError> {
         let view = crate::views::algorithm_code::AlgorithmCodeView::new(package, sources)
             .map_err(CodegenError::template)?;
+        Self::solve_context(view, block, sources)
+    }
+
+    /// [`Self::with_solve_block`] for an eFMI container whose two
+    /// representations come from two projections of one model (#483):
+    /// `reference` is the structured package its AlgorithmCode ships, and
+    /// `package` the policy-shaped one `block` refines for the C.
+    pub fn with_solve_block_and_reference(
+        reference: &AlgorithmCodePackage,
+        package: &AlgorithmCodePackage,
+        block: &rumoca_ir_solve::SolveAlgorithmBlock,
+        sources: &rumoca_core::SourceMap,
+    ) -> Result<Self, CodegenError> {
+        use crate::views::algorithm_code::AlgorithmCodeView;
+        let reference =
+            AlgorithmCodeView::new(reference, sources).map_err(CodegenError::template)?;
+        let view = AlgorithmCodeView::new(package, sources)
+            .and_then(|view| view.with_reference(reference))
+            .map_err(CodegenError::template)?;
+        Self::solve_context(view, block, sources)
+    }
+
+    fn solve_context(
+        view: crate::views::algorithm_code::AlgorithmCodeView<'_>,
+        block: &rumoca_ir_solve::SolveAlgorithmBlock,
+        sources: &rumoca_core::SourceMap,
+    ) -> Result<Self, CodegenError> {
         Ok(Self {
             context: minijinja::context! {
                 algorithm_code => Value::from_serialize(view),
