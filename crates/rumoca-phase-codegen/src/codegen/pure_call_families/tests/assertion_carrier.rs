@@ -167,6 +167,10 @@ fn compiled_c_keeps_first_fault_and_exact_captures_without_publishing_values() {
 }
 
 pub(super) fn compile_and_execute(source: &str) {
+    compile_and_execute_with_flags(source, &[]);
+}
+
+pub(super) fn compile_and_execute_with_flags(source: &str, flags: &[&str]) {
     let work = tempfile::tempdir().unwrap();
     let file = work.path().join("assertion.c");
     std::fs::write(&file, source).unwrap();
@@ -181,6 +185,7 @@ pub(super) fn compile_and_execute(source: &str) {
             "-Werror",
             "-Wvla",
         ])
+        .args(flags)
         .arg(file)
         .args(["-lm", "-o"])
         .arg(&binary)

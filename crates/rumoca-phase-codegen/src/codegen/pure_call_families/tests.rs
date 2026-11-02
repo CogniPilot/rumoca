@@ -1,5 +1,7 @@
 mod assertion_carrier;
 mod nocaptures_directional;
+#[cfg(target_os = "linux")]
+mod output_storage;
 mod reductions;
 
 use std::num::NonZeroU64;

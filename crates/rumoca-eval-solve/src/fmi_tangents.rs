@@ -686,6 +686,38 @@ mod tests {
     use solve::{BinaryOp, LinearOp};
 
     #[test]
+    fn tangent_plan_errors_preserve_the_typed_derivation_cause() {
+        use std::error::Error;
+
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("fmi-derivation-error.mo"),
+            2,
+            9,
+        );
+        let error = FmiTangentPlanError::Derivation(ad::SolveDerivationError::contract(
+            "unowned result",
+            span,
+        ));
+        let cause = error
+            .source()
+            .expect("a derivation failure must remain inspectable through the error chain")
+            .downcast_ref::<ad::SolveDerivationError>()
+            .expect("the source must retain its concrete derivation-error type");
+        assert_eq!(cause.source_span(), Some(span));
+        assert_eq!(error.to_string(), cause.to_string());
+        assert!(cause.source().is_none());
+        for error in [
+            FmiTangentPlanError::IncompleteProfile("profile".into()),
+            FmiTangentPlanError::ImplicitInventory("implicit".into()),
+            FmiTangentPlanError::InitializationInventory("initialization".into()),
+            FmiTangentPlanError::AlternateCoordinates,
+            FmiTangentPlanError::Contract("contract".into()),
+        ] {
+            assert!(error.source().is_none());
+        }
+    }
+
+    #[test]
     fn consistency_uses_its_direction_scale_without_a_unit_floor() {
         assert!(consistency_row_converged(0.0, 0.0));
         assert!(consistency_row_converged(1e-13, 1.0));
