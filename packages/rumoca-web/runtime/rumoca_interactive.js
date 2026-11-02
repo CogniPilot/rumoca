@@ -1728,11 +1728,14 @@ export async function createInteractiveSimulation(options) {
       dispose() {
         if (disposed) return;
         disposed = true;
-        controller.stop();
         try {
-          controls.dispose();
+          controller.stop();
         } finally {
-          session.free();
+          try {
+            controls.dispose();
+          } finally {
+            session.free();
+          }
         }
       },
       reset: () => controller.reset(),

@@ -5,7 +5,6 @@ mod options_key;
 use options_key::OptionsKey;
 use std::{
     cell::RefCell,
-    ops::Deref,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -88,7 +87,22 @@ impl SimulationSessionCache {
 
 /// Exclusive ownership of one actual session. There is no Clone or shared
 /// mutable session handle. Dropping it evaluates no Modelica code; the next
-/// explicit acquire performs Reset before publishing a hit.
+/// explicit acquire performs Reset before publishing a hit. Fallible reads must
+/// use `apply` so errors prevent reuse; only passive time inspection is exposed.
+///
+/// ```compile_fail,E0599
+/// use rumoca_sim::SimulationSessionLease;
+/// fn read_without_tracking(lease: &SimulationSessionLease) {
+///     let _ = lease.get("x");
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use rumoca_sim::SimulationSessionLease;
+/// fn state_without_tracking(lease: &SimulationSessionLease) {
+///     let _ = lease.state();
+/// }
+/// ```
 pub struct SimulationSessionLease {
     session: Option<SimulationSession>,
     key: Option<SessionKey>,
@@ -99,6 +113,12 @@ pub struct SimulationSessionLease {
 }
 
 impl SimulationSessionLease {
+    /// Current time only; all fallible session access goes through `apply`.
+    #[must_use]
+    pub fn time(&self) -> f64 {
+        self.session.as_ref().expect("live session lease").time()
+    }
+
     #[must_use]
     pub fn preparation_reused(&self) -> bool {
         self.reused
@@ -116,14 +136,6 @@ impl SimulationSessionLease {
             self.reusable = false;
         }
         event
-    }
-}
-
-impl Deref for SimulationSessionLease {
-    type Target = SimulationSession;
-
-    fn deref(&self) -> &Self::Target {
-        self.session.as_ref().expect("live session lease")
     }
 }
 
