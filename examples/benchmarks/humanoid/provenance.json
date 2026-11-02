@@ -1,0 +1,27 @@
+{
+  "HumanoidPhysical.mo": {
+    "original_sha256": "98b5d5426e15774139cbad62673c4a01338b7a4ea71426e10b4f9980ed3f47e9"
+  },
+  "GroundContact.mo": {
+    "original_sha256": "c8c27ec96a8f92a011da9ff7e617d5e65ea44004b80bf13e73bdb28882a6131c"
+  },
+  "MultiBodyLie/package.mo": {
+    "original_sha256": "a51b337d384bb0fd8d2bffe4e4ccef82a554db8557abd22d4a2e5089c825c500"
+  },
+  "twin.c": {
+    "original_sha256": "24d66e8d3d205d03a478c044f727c3173249d03e7c353109c3cd9eb14a8b0e8a"
+  },
+  "robot.py": {
+    "original_sha256": "790a549e88fdcf4eb21d963c17939fdb3f5eab299d8f80ba89b58a1c1999e00b"
+  },
+  "generate.py": {
+    "original_sha256": "0258e9e028e4f10408e408df050d0fec2e5078dd645d267389fe1b514735c59d"
+  },
+  "reference.csv": {
+    "compressed_original_sha256": "67c62c959043055e1d8c53b0c29e654f44ec7a3a1bc5a5e08d9543f7b1c9016d",
+    "transformation": "Project time,pelvis_x,pelvis_z,phase; preserve all raw row ordering and duplicates; no numeric change."
+  },
+  "description": "Frozen spatial-algebra humanoid and original joint-coordinate MuJoCo controller, 2026-10-29. Modelica inputs retain their exact frozen source bytes; generator removes an unused numpy import and a machine-specific import path, and normalizes only its generated-header provenance comment. Numerical generator expressions are unchanged. Reference projects four task columns from the original BDF trace without changing rows or numbers.",
+  "generated_mjcf_sha256": "a9d0303a10224d67ad7b8ee0b3ab5190648e0979894a95d97ae72ded1fcc78e6",
+  "reference_gate": "Four seconds, final time >=3.998; min pelvis height >= half reference minimum; final height within 0.05 m; x at 3.5 s within 15 percent; nonzero phase transitions within 2."
+}
