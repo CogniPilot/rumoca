@@ -26,7 +26,7 @@ fn block(counts: &[usize], outputs: Vec<usize>, compact: bool) -> ScalarProgramB
         .map(|&count| {
             let mut ops = (0..count)
                 .map(|dst| LinearOp::Const {
-                    dst,
+                    dst: dst.try_into().unwrap(),
                     value: dst as f64 + 1.0,
                 })
                 .collect::<Vec<_>>();
@@ -37,7 +37,9 @@ fn block(counts: &[usize], outputs: Vec<usize>, compact: bool) -> ScalarProgramB
                     stride: 1,
                 });
             } else {
-                ops.extend((0..count).map(|src| LinearOp::StoreOutput { src }));
+                ops.extend((0..count).map(|src| LinearOp::StoreOutput {
+                    src: src.try_into().unwrap(),
+                }));
             }
             ops
         })

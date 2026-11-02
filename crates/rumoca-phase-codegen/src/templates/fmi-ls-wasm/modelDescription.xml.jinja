@@ -1,1 +1,5 @@
+{#- The pinned WIT adapter still returns Error for derivative requests.
+    Its deployment metadata must not advertise the C kernel's capability. -#}
+{% with fmi_tangents = {"available": false} %}
 {% include "fmi3-modelDescription.xml.jinja" %}
+{% endwith %}

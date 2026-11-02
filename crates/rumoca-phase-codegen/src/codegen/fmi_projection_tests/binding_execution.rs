@@ -255,22 +255,41 @@ fn actual_built_in_c_templates_render_derivative_capabilities_from_complete_plan
                     )
                     .expect("actual MiniJinja templates consume the same checked component");
                 assert!(!rendered.trim().is_empty());
-                if name == "modelDescription.xml.jinja" {
-                    for flag in [
-                        "providesDirectionalDerivative",
-                        "providesDirectionalDerivatives",
-                        "providesAdjointDerivatives",
-                    ] {
-                        let expected = if target == "fmi2" {
-                            flag == "providesDirectionalDerivative"
-                        } else {
-                            flag != "providesDirectionalDerivative"
-                        };
-                        assert_eq!(rendered.contains(&format!("{flag}=\"true\"")), expected);
-                    }
-                }
+                check_derivative_capabilities(&rendered, target, name);
             }
         }
+    }
+}
+
+#[test]
+fn layered_wasm_metadata_does_not_inherit_c_derivative_capabilities() {
+    let renderer = SolveTemplateRenderer::new_owned_with_fmi(component(false, false)).unwrap();
+    let xml = renderer
+        .render_with_name_and_artifact(
+            builtin_template("fmi-ls-wasm", "modelDescription.xml.jinja"),
+            "BindingExecutionFixture",
+            &artifact_identities(),
+        )
+        .expect("the layered adapter metadata renders with its own capabilities");
+    for flag in [
+        "providesDirectionalDerivatives",
+        "providesAdjointDerivatives",
+    ] {
+        assert!(!xml.contains(&format!("{flag}=\"true\"")));
+    }
+}
+
+fn check_derivative_capabilities(rendered: &str, target: &str, name: &str) {
+    if name != "modelDescription.xml.jinja" {
+        return;
+    }
+    for flag in [
+        "providesDirectionalDerivative",
+        "providesDirectionalDerivatives",
+        "providesAdjointDerivatives",
+    ] {
+        let expected = (target == "fmi2") == (flag == "providesDirectionalDerivative");
+        assert_eq!(rendered.contains(&format!("{flag}=\"true\"")), expected);
     }
 }
 

@@ -216,6 +216,7 @@ fn validate_deployment_metadata(root: &Path) {
         "canGetAndSetFMUState=\"true\"",
         "canSerializeFMUState=\"true\"",
         "providesDirectionalDerivatives=\"true\"",
+        "providesAdjointDerivatives=\"true\"",
         "hasEventMode=\"true\"",
     ] {
         assert!(

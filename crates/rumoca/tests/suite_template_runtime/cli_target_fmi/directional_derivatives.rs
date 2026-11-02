@@ -4,6 +4,9 @@ use super::*;
 use quick_xml::{Reader, events::Event};
 use std::collections::BTreeMap;
 
+mod profile_controls;
+
+const COMMON: &str = include_str!("../../fixtures/fmi-partial-derivatives/api-common.h");
 const DRIVER: &str = include_str!("../../fixtures/fmi-partial-derivatives/driver.c");
 
 #[test]
@@ -54,13 +57,19 @@ fn execute(
         .find(|file| file.path == "modelDescription.xml")
         .unwrap()
         .content;
-    fs::write(
-        work.path().join("sources/references.h"),
-        references(xml, version, width),
-    )
-    .unwrap();
-    fs::write(work.path().join("sources/driver.c"), DRIVER).unwrap();
-    let sources = work.path().join("sources");
+    run_rendered(
+        work.path(),
+        headers,
+        DRIVER,
+        &references(xml, version, width),
+    );
+}
+
+fn run_rendered(work: &Path, headers: &Path, driver: &str, references: &str) {
+    fs::write(work.join("sources/references.h"), references).unwrap();
+    fs::write(work.join("sources/api-common.h"), COMMON).unwrap();
+    fs::write(work.join("sources/driver.c"), driver).unwrap();
+    let sources = work.join("sources");
     let mut units: Vec<_> = fs::read_dir(&sources)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -72,7 +81,7 @@ fn execute(
         })
         .collect();
     units.sort();
-    let binary = work.path().join("directional-derivative-api");
+    let binary = work.join("directional-derivative-api");
     checked_output(
         Command::new("cc")
             .args([
@@ -94,10 +103,7 @@ fn execute(
         &mut Command::new(binary),
         "execute actual FMI derivative API harness",
     );
-    print!(
-        "{model}/{version}: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
 }
 
 fn metadata(xml: &str) -> BTreeMap<String, String> {
