@@ -630,6 +630,7 @@ fn convert_standard_class_specifier(
         is_redeclare: false,
         redeclare_target_def_id: None,
         constrainedby: None,
+        constraining_modifications: Vec::new(),
         array_subscripts: vec![],
         external: body.external,
         partial_derivative: None,
@@ -702,6 +703,7 @@ fn convert_extends_class_specifier(
         is_redeclare: false,
         redeclare_target_def_id: None,
         constrainedby: None,
+        constraining_modifications: Vec::new(),
         array_subscripts: vec![],
         external: body.external,
         partial_derivative: None,
@@ -754,6 +756,7 @@ fn convert_enum_class_specifier(
         is_redeclare: false,
         redeclare_target_def_id: None,
         constrainedby: None,
+        constraining_modifications: Vec::new(),
         array_subscripts: vec![],
         external: None, // Enums don't have external declarations
         partial_derivative: None,
@@ -818,6 +821,7 @@ fn convert_type_class_specifier(
         is_redeclare: false,
         redeclare_target_def_id: None,
         constrainedby: None,
+        constraining_modifications: Vec::new(),
         array_subscripts,
         external: None, // Type aliases don't have external declarations
         partial_derivative: None,
@@ -899,6 +903,7 @@ fn convert_function_partial_class_specifier(
         is_redeclare: false,
         redeclare_target_def_id: None,
         constrainedby: None,
+        constraining_modifications: Vec::new(),
         array_subscripts: vec![],
         external: None, // Function partial applications don't have external declarations
         partial_derivative: None,
@@ -968,6 +973,7 @@ fn convert_der_class_specifier(
         is_redeclare: false,
         redeclare_target_def_id: None,
         constrainedby: None,
+        constraining_modifications: Vec::new(),
         array_subscripts: vec![],
         external: None,
         partial_derivative: Some(partial_derivative),

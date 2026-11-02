@@ -12,9 +12,17 @@ package AttributeNameCollision
   model RecordKept
     replaceable RHolder h(p = R(5, 4)) constrainedby PartialRHolder(p(start = 3));
   end RecordKept;
+  model RecordClassKept
+    replaceable model H = RHolder(p = R(5, 4)) constrainedby PartialRHolder(p(start = 3));
+    H h;
+  end RecordClassKept;
   model RecordFinal
     replaceable RHolder h(p = R(5, 4)) constrainedby PartialRHolder(p(final start = 3));
   end RecordFinal;
+  model RecordClassFinal
+    replaceable model H = RHolder(p = R(5, 4)) constrainedby PartialRHolder(p(final start = 3));
+    H h;
+  end RecordClassFinal;
 end AttributeNameCollision;
 
 package UpperNestedAttributes

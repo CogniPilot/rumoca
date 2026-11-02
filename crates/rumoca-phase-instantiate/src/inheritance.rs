@@ -20,6 +20,7 @@ use rumoca_ir_ast::{
     components_are_semantically_compatible as components_are_compatible,
 };
 
+mod constraining;
 mod duplicate_identity;
 mod function_interfaces;
 mod redeclaration;
@@ -32,6 +33,7 @@ use crate::traversal_adapter::{
     walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
+use constraining::*;
 use duplicate_identity::{
     inherited_components_are_identical, merged_declared_names, merged_element_names,
 };
@@ -924,8 +926,13 @@ pub fn process_extends_with_cache(
     }
 
     let mut inherited = InheritedContent::default();
+    let constrained = constrained_extend(tree, class)?;
 
-    for extend in &class.extends {
+    for (index, extend) in class.extends.iter().enumerate() {
+        let extend = constrained
+            .as_ref()
+            .filter(|_| index == 0)
+            .unwrap_or(extend);
         // Skip built-in types (Real, Integer, Boolean, String, ExternalObject)
         // They don't have components/equations to inherit, just type properties
         if is_builtin_type(&extend.base_name.to_string()) {
@@ -1646,22 +1653,7 @@ pub(super) fn activate_constrainedby_defaults(
             } else {
                 merge_constrained(tree, class, &target_name, stated, &value)
             };
-            match refused {
-                Some(ast::MergeRefusal::Final(name)) => {
-                    return Err(crate::attributes::final_override_error(
-                        format!("{}.{name}", comp.name),
-                        stated,
-                    ));
-                }
-                Some(ast::MergeRefusal::Unclassified(name)) => {
-                    return Err(Box::new(InstantiateError::redeclare_error(
-                        format!("{}.{name}", comp.name),
-                        "a declared binding meets constraining-clause modifiers whose element type is not resolved",
-                        stated.span(),
-                    )));
-                }
-                None => {}
-            }
+            refuse_constrained(&comp.name.to_string(), refused, stated)?;
             continue;
         }
         comp.modifications.insert(target_name.clone(), value);
@@ -1679,58 +1671,6 @@ pub(super) fn activate_constrainedby_defaults(
         comp.final_attributes.shift_remove(&key);
     }
     Ok(())
-}
-
-/// Merge the constraining clause's `value` for `target` below the stated one,
-/// classifying bound elements by their type in `class`.
-fn merge_constrained(
-    tree: &ast::ClassTree,
-    class: Option<&ast::ClassDef>,
-    target: &str,
-    stated: &mut ast::Expression,
-    value: &ast::Expression,
-) -> Option<ast::MergeRefusal> {
-    let classify = |path: &[String]| {
-        let path: Vec<_> = std::iter::once(target.to_string())
-            .chain(path.iter().cloned())
-            .collect();
-        nested_arguments(tree, class, &path)
-    };
-    stated
-        .merge_modification_below(value, &classify)
-        .err()
-        .map(|refusal| refusal.within(target))
-}
-
-/// Whether the element at `path` below `class` takes attributes (a primitive
-/// type) or elements (MLS 4.9); `None` when a type on the way is unresolved.
-fn nested_arguments(
-    tree: &ast::ClassTree,
-    class: Option<&ast::ClassDef>,
-    path: &[String],
-) -> Option<ast::NestedArguments> {
-    let (last, parents) = path.split_last()?;
-    let mut class = class?;
-    for name in parents {
-        let member = get_effective_components(tree, class)
-            .ok()?
-            .get(name)?
-            .clone();
-        class = tree.get_class_by_def_id(member.type_def_id?)?;
-    }
-    let member = get_effective_components(tree, class)
-        .ok()?
-        .get(last)?
-        .clone();
-    if is_builtin_type(&member.type_name.to_string()) {
-        return Some(ast::NestedArguments::Attributes);
-    }
-    let class = tree.get_class_by_def_id(member.type_def_id?)?;
-    Some(if is_effectively_primitive_transitive(tree, class) {
-        ast::NestedArguments::Attributes
-    } else {
-        ast::NestedArguments::Elements
-    })
 }
 
 /// Merge nested class modifications from extends clause into inherited components.

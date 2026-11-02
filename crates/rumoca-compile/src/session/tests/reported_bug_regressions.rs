@@ -248,6 +248,10 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
             "ConstrainedByMod.RecordKept",
             &[("h.p.a", 5.0), ("h.p.b", 4.0)],
         ),
+        (
+            "ConstrainedByMod.RecordClassKept",
+            &[("h.p.a", 5.0), ("h.p.b", 4.0)],
+        ),
     ] {
         for &(name, value) in expected {
             assert_eq!(binding(source, model, name), vec![value], "{model}: {name}");
@@ -265,6 +269,7 @@ fn issue_536_constraining_clause_modifiers_apply_to_the_default_declaration() {
     // declared binding, a final one included.
     for (model, minimum) in [
         ("ConstrainedByMod.AttributeKept", Some(vec![0.0])),
+        ("ConstrainedByMod.AttributeClassKept", Some(vec![0.0])),
         ("ConstrainedByMod.AttributeFinalKept", None),
     ] {
         assert_eq!(binding(source, model, "h.k"), vec![5.0], "{model}");
@@ -311,48 +316,38 @@ fn issue_536_a_declared_binding_classifies_constrained_members_by_type() {
 }
 
 #[test]
-fn issue_536_a_class_form_binding_over_constrained_members_is_refused() {
-    // A class definition resolves no types, so whether a declared binding
-    // supersedes the constraining clause's nested modifiers is not known
-    // there: refused rather than guessed.
-    // Each case alone: the refusal stops the whole class definition.
-    for (record, declared, constraining) in [
-        // A record and a binding over a member (#536 RecordKept, class form).
-        ("Real a;\n    Real b;", "p = R(5, 4)", "p(b = 3)"),
-        // A primitive and a binding over attributes.
-        ("Real a;\n    Real b;", "p = R(5, 4)", "p(a(min = 0))"),
-        // A record member named like an attribute, plain and final.
-        ("Real start;\n    Real b;", "p = R(5, 4)", "p(start = 3)"),
-        (
-            "Real start;\n    Real b;",
-            "p = R(5, 4)",
-            "p(final start = 3)",
+fn issue_536_a_class_form_merge_waits_for_the_class_to_be_used() {
+    // A class definition resolves no types, so a merge that needs them is
+    // made, or refused, where the class is used: a file whose replaceable
+    // class is never used still compiles everything else, as on main.
+    let source = include_str!("fixtures/reported_bugs/issue_536_scope.mo");
+    compile(source, "ScopeWitness.Healthy");
+    // Used, the class merges `k(start = 0)` below its `k = 5`, as
+    // OpenModelica gives; main dropped the start.
+    assert_eq!(binding(source, "ScopeWitness.Unused", "h.k"), vec![5.0]);
+    assert_eq!(start(source, "ScopeWitness.Unused", "h.k"), Some(vec![0.0]));
+    let collisions = include_str!("fixtures/reported_bugs/issue_536_collisions.mo");
+    assert_eq!(
+        binding(
+            collisions,
+            "AttributeNameCollision.RecordClassKept",
+            "h.p.start"
         ),
-        (
-            "Real a;\n    Real b;",
-            "p = R(5, 4)",
-            "p(final a = 1, b = 3)",
+        vec![5.0]
+    );
+    assert_eq!(
+        binding(
+            collisions,
+            "AttributeNameCollision.RecordClassKept",
+            "h.p.b"
         ),
-    ] {
-        let class_form = format!(
-            "package P\n  record R\n    {record}\n  end R;\n  \
-             partial model Partial\n    parameter R p;\n  end Partial;\n  model Full\n    extends Partial;\n  \
-             end Full;\n  model C\n    replaceable model H = Full({declared}) \
-             constrainedby Partial({constraining});\n    H h;\n  end C;\nend P;\n"
-        );
-        let message = refusal(&class_form, "P.C");
-        assert!(
-            message.contains("binds `p`") && message.contains("does not resolve"),
-            "{declared} against {constraining}: {message}"
-        );
-    }
-    // A primitive element's attributes, in a class definition, likewise.
-    let primitive = "package P\n  partial model Partial\n    parameter Real k;\n  end Partial;\n  \
-         model Full\n    extends Partial;\n  end Full;\n  model C\n    \
-         replaceable model H = Full(k = 5) constrainedby Partial(k(min = 0, unit = \"N/m\"));\n    \
-         H h;\n  end C;\nend P;\n";
-    let message = refusal(primitive, "P.C");
-    assert!(message.contains("binds `k`"), "{message}");
+        vec![4.0]
+    );
+    let message = refusal(collisions, "AttributeNameCollision.RecordClassFinal");
+    assert!(
+        message.contains("`H.p.start`") && message.contains("final"),
+        "{message}"
+    );
 }
 
 /// The error compiling `model` reports.
@@ -384,6 +379,21 @@ fn issue_536_extends_modifier_with_attributes_keeps_its_binding() {
             "{model}: {name}"
         );
     }
+}
+
+/// The evaluated `start` of one variable of `model`.
+fn start(source: &str, model: &str, name: &str) -> Option<Vec<f64>> {
+    compile(source, model).dae.inspect(|view| {
+        let (_, declaration) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .unwrap_or_else(|| panic!("{model}: {name} is declared"));
+        declaration.start().map(|start| {
+            rumoca_eval_dae::NumericEvaluator::new(view)
+                .expression(start)
+                .expect("start evaluates")
+        })
+    })
 }
 
 /// The evaluated `min` and the `unit` of one variable of `model`.
@@ -444,6 +454,8 @@ fn issue_536_constraining_clause_final_modifiers_refuse_a_declared_override() {
     for (declared, constraining, element) in [
         ("p(a = 5)", "final p(b = 3)", "p"),
         ("p(a = 5)", "p(final a = 1, b = 3)", "p.a"),
+        // A declared record over a final member, whatever its name.
+        ("p = R(5, 4)", "p(final a = 1, b = 3)", "p.a"),
     ] {
         let class_form = format!(
             "package P\n  record R\n    Real a;\n    Real b;\n  end R;\n  \
@@ -451,12 +463,9 @@ fn issue_536_constraining_clause_final_modifiers_refuse_a_declared_override() {
              end Full;\n  model C\n    replaceable model H = Full({declared}) constrainedby Partial({constraining});\n    \
              H h;\n  end C;\nend P;\n"
         );
-        let Err(error) = Session::default().add_document("Repro.mo", &class_form) else {
-            panic!("class form {declared} against {constraining}: the final override is refused");
-        };
-        let message = format!("{error:#}");
+        let message = refusal(&class_form, "P.C");
         assert!(
-            message.contains(&format!("`{element}`")) && message.contains("final"),
+            message.contains(&format!("`H.{element}`")) && message.contains("final"),
             "class form {declared} against {constraining}: {message}"
         );
     }

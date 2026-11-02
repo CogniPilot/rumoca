@@ -727,6 +727,11 @@ fn merge_constraining_clause_modifications(
 /// MLS §7.3.2: a replaceable class's constraining-clause modifiers apply to the
 /// class itself, below its own. A short class definition states its own
 /// modifiers on its one base, so the constraining ones join them there.
+///
+/// A class definition resolves no types, so a modifier whose merge depends on
+/// one (a declared binding over it), or that would be refused, is kept apart
+/// in `constraining_modifications` for instantiation to merge or refuse when
+/// the class is used; so are all of them for a class with no single base.
 fn merge_constraining_clause_class_modifications(
     class: &mut rumoca_ir_ast::ClassDef,
     constrainedby_mods: Option<&modelica_grammar_trait::ConstrainingClauseOpt>,
@@ -737,57 +742,49 @@ fn merge_constraining_clause_class_modifications(
     else {
         return Ok(());
     };
-    let [base] = class.extends.as_mut_slice() else {
-        anyhow::bail!(
-            "constraining-clause modifiers of replaceable class `{}` need a short class definition",
-            class.name.text
-        );
-    };
-    for (idx, arg) in arguments.args.iter().enumerate() {
-        let Some(target) = arg.modification_target().map(ToString::to_string) else {
-            continue;
-        };
-        if let Some(stated) = base.modifications.iter_mut().find(|modification| {
-            modification
-                .expr
-                .modification_target()
-                .map(ToString::to_string)
-                == Some(target.clone())
-        }) {
-            // MLS §7.2.6: the class may not modify what the constraining clause makes final.
-            let refused = if arguments.final_flags.get(idx).copied().unwrap_or(false) {
-                Some(rumoca_ir_ast::MergeRefusal::Final(target.clone()))
-            } else {
-                // A class definition resolves no types, so no element here is
-                // known to take attributes or elements.
-                stated
-                    .expr
-                    .merge_modification_below(arg, &|_| None)
-                    .err()
-                    .map(|refusal| refusal.within(&target))
-            };
-            match refused {
-                Some(rumoca_ir_ast::MergeRefusal::Final(name)) => anyhow::bail!(
-                    "replaceable class `{}` modifies `{name}`, which its constraining clause declares final (MLS §7.2.6)",
-                    class.name.text
-                ),
-                Some(rumoca_ir_ast::MergeRefusal::Unclassified(name)) => anyhow::bail!(
-                    "replaceable class `{}` binds `{name}` and its constraining clause modifies it below the binding: \
-                     which of those the binding replaces depends on the type of `{name}`, which a class definition does not resolve; \
-                     state the modifiers on a component declaration instead",
-                    class.name.text
-                ),
-                None => {}
-            }
-            continue;
-        }
-        base.modifications.push(rumoca_ir_ast::ExtendModification {
+    let modification =
+        |idx: usize, arg: &rumoca_ir_ast::Expression| rumoca_ir_ast::ExtendModification {
             expr: arg.clone(),
             each: arguments.each_flags.get(idx).copied().unwrap_or(false),
             final_: arguments.final_flags.get(idx).copied().unwrap_or(false),
             redeclare: false,
+        };
+    let [base] = class.extends.as_mut_slice() else {
+        class.constraining_modifications = arguments
+            .args
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| modification(idx, arg))
+            .collect();
+        return Ok(());
+    };
+    let mut deferred = Vec::new();
+    for (idx, arg) in arguments.args.iter().enumerate() {
+        let target = arg.modification_target().map(ToString::to_string);
+        let stated = target.as_ref().and_then(|target| {
+            base.modifications.iter_mut().find(|modification| {
+                modification
+                    .expr
+                    .modification_target()
+                    .map(ToString::to_string)
+                    .as_ref()
+                    == Some(target)
+            })
         });
+        let Some(stated) = stated else {
+            base.modifications.push(modification(idx, arg));
+            continue;
+        };
+        let mut merged = stated.expr.clone();
+        let typeless = !arguments.final_flags.get(idx).copied().unwrap_or(false)
+            && merged.merge_modification_below(arg, &|_| None).is_ok();
+        if typeless {
+            stated.expr = merged;
+        } else {
+            deferred.push(modification(idx, arg));
+        }
     }
+    class.constraining_modifications = deferred;
     Ok(())
 }
 
