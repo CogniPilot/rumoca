@@ -17,6 +17,10 @@ SOURCES = {
 }
 MODEL = "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic"
 MSL_SHA = "5409cfa17797c52d866dc9d2675badc1378b4bbf88066e60899a489cb1cb8a2d"
+# The existing ModelWorkerDaemon::spawn contract on both archived revisions.
+WORKER_ENV = {"RAYON_NUM_THREADS": "1", "MIMALLOC_ARENA_EAGER_COMMIT": "0",
+              "MIMALLOC_PURGE_DELAY": "0"}
+WATCHDOG_SECONDS = 90
 
 
 def sha(path):
@@ -93,7 +97,19 @@ def timing_row(raw):
     return {key: row[key] for key in keys}
 
 
-def attempt(worker, root, directory):
+def thread_affinity(pid):
+    threads = []
+    for task in sorted((Path("/proc") / str(pid) / "task").glob("*")):
+        try:
+            fields = dict(line.split(":", 1) for line in (task / "status").read_text().splitlines() if ":" in line)
+            threads.append({"tid": int(task.name), "name": fields["Name"].strip(),
+                            "cpus_allowed_list": fields["Cpus_allowed_list"].strip()})
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return {"monotonic": time.monotonic(), "threads": threads}
+
+
+def attempt(worker, root, directory, cpu=None):
     directory.mkdir()
     request = {"protocol_version": 5, "model_name": MODEL,
                "run_simulation": True, "selected_for_simulation": True,
@@ -101,26 +117,37 @@ def attempt(worker, root, directory):
                "emit_json": False, "nan_trace": False, "emit_modelica": False,
                "source_root_path": str(root.resolve()), "output_dir": str(directory.resolve())}
     write(directory / "request.json", request)
+    if cpu is None:
+        cpu = min(os.sched_getaffinity(0))
     command = [str(worker), "--request-json", str((directory / "request.json").resolve()),
-               "--jobs", "1", "--memory-limit-mb", "4096"]
+               "--jobs", "1", "--memory-limit-mb", "4096", "--cpu-core-id", str(cpu)]
+    environment = dict(os.environ, **WORKER_ENV)
     write(directory / "before.json", snapshot())
     started = time.monotonic()
-    outcome = {"command": command, "timeout_seconds": 90, "timed_out": False}
+    outcome = {"command": command, "timeout_seconds": WATCHDOG_SECONDS, "timed_out": False,
+               "requested_cpu": cpu, "worker_environment": WORKER_ENV}
     process = None
     try:
-        with (directory / "stdout.log").open("wb") as stdout, (directory / "stderr.log").open("wb") as stderr:
-            process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
-            try:
-                outcome["returncode"] = process.wait(timeout=90)
-            except subprocess.TimeoutExpired:
-                outcome["timed_out"] = True
+        with (directory / "stdout.log").open("wb") as stdout, (directory / "stderr.log").open("wb") as stderr, (directory / "affinity.jsonl").open("w") as affinity:
+            process = subprocess.Popen(command, stdout=stdout, stderr=stderr, env=environment, start_new_session=True)
+            while process.poll() is None:
+                affinity.write(json.dumps(thread_affinity(process.pid)) + "\n")
+                affinity.flush()
+                if time.monotonic() - started >= WATCHDOG_SECONDS:
+                    outcome["timed_out"] = True
+                    break
+                try:
+                    process.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    continue
+            outcome["returncode"] = process.poll()
     finally:
         if process is not None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.wait()
+            outcome["returncode"] = process.wait()
         outcome["wall_seconds"] = time.monotonic() - started
         write(directory / "outcome.json", outcome)
         write(directory / "after.json", snapshot())
@@ -140,16 +167,18 @@ def measure(inputs, archive, root, output, pair):
     output = Path(output)
     output.mkdir()
     order = ["old", "current"] if pair != "2" else ["current", "old"]
+    cpu = min(os.sched_getaffinity(0))
     write(output / "plan.json", {"pair": pair, "order": order, "sources": SOURCES,
                                   "msl_sha256": MSL_SHA, "model": MODEL,
-                                  "parity": "unmeasured", "host": snapshot()})
+                                  "parity": "unmeasured", "host": snapshot(),
+                                  "requested_cpu": cpu, "worker_environment": WORKER_ENV})
     results = {}
     for label in order:
         try:
             manifest = json.loads((Path(inputs) / label / "manifest.json").read_text())
             write(output / (label + "-producer.json"), manifest)
             worker = verified_worker(manifest, label)
-            results[label] = attempt(worker, Path(root), output / label)
+            results[label] = attempt(worker, Path(root), output / label, cpu)
         except Exception as error:
             results[label] = {"error": str(error)}
         write(output / "summary.json", results)
