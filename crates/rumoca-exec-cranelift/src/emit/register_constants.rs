@@ -5,6 +5,25 @@ impl RowLowerCtx<'_, '_> {
         &mut self,
         op: LinearOp,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        if !crate::expansion::enabled() {
+            return self.lower_op_with_constants(op);
+        }
+        let token = crate::expansion::row(
+            &op,
+            (
+                std::ptr::from_ref(&*self.fb.func) as usize,
+                self.fb.func.dfg.num_insts(),
+            ),
+        );
+        let result = self.lower_op_with_constants(op);
+        crate::expansion::finish(token, self.fb.func.dfg.num_insts(), result.is_ok());
+        result
+    }
+
+    fn lower_op_with_constants(
+        &mut self,
+        op: LinearOp,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
         let constant = self.operation_constant(&op);
         let destination = op
             .dst_register()

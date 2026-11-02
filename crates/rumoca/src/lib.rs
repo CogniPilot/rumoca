@@ -49,6 +49,8 @@ pub mod cli;
 pub(crate) mod cache_cmd;
 #[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
 mod component_delivery;
+#[cfg(all(feature = "scheduled-sim", not(target_arch = "wasm32")))]
+mod expansion_report;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod fmt_cli;
 #[cfg(feature = "scheduled-sim")]

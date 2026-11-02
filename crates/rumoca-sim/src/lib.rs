@@ -100,6 +100,16 @@ use wasm_execution as native_execution;
 pub use native_execution::{
     NativeComputeInventory, native_compute_inventory, native_initialization_inventory,
 };
+/// Opt-in calling-thread native emission diagnostics. No generated code reads
+/// these counters, and machine-code worker execution is outside their scope.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_expansion {
+    pub use rumoca_exec_cranelift::{
+        EXPANSION_FLOOR, ExpansionCopy, ExpansionEntry, ExpansionReport, ExpansionSource,
+        ForcedExpansion, record_expansion_report,
+    };
+}
+
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;

@@ -583,6 +583,15 @@ jobs:
           # sharding it buys no overall wall-clock, only jobs + runner cost.
           cargo xtask verify workspace
 
+      - name: Retain native tensor expansion fixture census
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-tensor-expansion-fixtures
+          path: target/tensor-expansion-fixtures
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Prepare GNU static-PIE test executables (Linux)
         if: runner.os == 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         timeout-minutes: 20

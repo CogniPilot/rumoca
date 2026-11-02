@@ -39,6 +39,7 @@ impl ProgramLowerer<'_, '_> {
         let tape = create_tape(self.builder, self.pointer_type, layout.tape_cells)?;
         let table = self.table;
         let mut nested = ProgramLowerer {
+            emission: self.emission,
             builder: self.builder,
             module: self.module,
             math: self.math,

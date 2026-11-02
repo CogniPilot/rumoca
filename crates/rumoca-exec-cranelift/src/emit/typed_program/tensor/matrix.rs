@@ -77,6 +77,7 @@ impl ProgramLowerer<'_, '_> {
         rhs: &ValueLocation,
         (rows, inner, columns): (usize, usize, usize),
     ) -> Result<(), CompileError> {
+        crate::expansion::path("host-matrix");
         use cranelift_codegen::ir::AbiParam;
         use cranelift_module::{Linkage, Module};
         let extent = |value: usize| {
@@ -132,6 +133,7 @@ impl ProgramLowerer<'_, '_> {
         (rows, inner, columns): (usize, usize, usize),
         transposed: u64,
     ) -> Result<(), CompileError> {
+        crate::expansion::path("host-matrix-stored");
         use cranelift_codegen::ir::AbiParam;
         use cranelift_module::{Linkage, Module};
         let extent = |value: usize| {
@@ -188,6 +190,10 @@ impl ProgramLowerer<'_, '_> {
         rhs: &ValueLocation,
         (rows, inner, columns): (usize, usize, usize),
     ) -> Result<(), CompileError> {
+        crate::expansion::path("static-matrix");
+        crate::expansion::forced(crate::ForcedExpansion::StaticUnroll {
+            limit: crate::emit::MAX_STATIC_MATRIX_WORK as u64,
+        });
         let scalar = destination.value_type.element_type();
         for output in 0..rows * columns {
             // The first product is its own sum, as in the scalar references:
@@ -262,6 +268,7 @@ impl ProgramLowerer<'_, '_> {
         rhs: &ValueLocation,
         (rows, inner, columns): (usize, usize, usize),
     ) -> Result<(), CompileError> {
+        crate::expansion::path("loop-matrix");
         let output_count = rows
             .checked_mul(columns)
             .ok_or_else(|| CompileError::Backend("typed matrix output size overflows".into()))?;

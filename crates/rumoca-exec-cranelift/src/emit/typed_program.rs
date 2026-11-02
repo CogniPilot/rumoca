@@ -10,6 +10,7 @@ mod assigned_state;
 mod assigned_state_tests;
 mod control;
 mod elementwise;
+mod expansion;
 mod flat_map;
 #[cfg(test)]
 mod fold_comparison_tests;
@@ -153,7 +154,12 @@ pub(super) fn take_import_declarations() -> usize {
 }
 
 impl CompiledPureCallTable {
+    pub(super) fn expansion_source(&self) -> &solve::SolvePureCallTable {
+        &self._source
+    }
+
     pub(crate) fn compile(table: &solve::SolvePureCallTable) -> Result<Self, CompileError> {
+        let _source_scope = crate::expansion::call_table_scope(Some(table));
         let table_id = NEXT_TABLE_ID.fetch_add(1, Ordering::Relaxed);
         let support = support::decide(table_id, table)?;
         let mut compiler = TableCompiler::new(table_id, table, Emission::Define, &support)?;
@@ -710,6 +716,7 @@ impl TableCompiler {
                 ProgramLayout::new(program, (input_count, outputs.len()), &predicate_slots)?;
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
             let mut lowerer = ProgramLowerer {
+                emission: self.emission,
                 builder: &mut builder,
                 module: &mut self.module,
                 math: &mut self.math,
@@ -1211,6 +1218,7 @@ fn cell_pointer(
 }
 
 struct ProgramLowerer<'a, 'b> {
+    emission: Emission,
     builder: &'a mut FunctionBuilder<'b>,
     module: &'a mut JITModule,
     math: &'a mut MathImports,
@@ -1240,9 +1248,10 @@ struct ProgramLowerer<'a, 'b> {
 
 impl ProgramLowerer<'_, '_> {
     fn lower(&mut self, program: &solve::TypedProgram) -> Result<(), CompileError> {
-        for operation in program.operations() {
+        let source = crate::expansion::program(program, self.table);
+        for (ordinal, operation) in program.operations().iter().enumerate() {
             self.operation = operation as *const _;
-            self.lower_operation(operation.operation())?;
+            self.lower_recorded(operation, (source, ordinal), program)?;
         }
         Ok(())
     }
@@ -1261,6 +1270,7 @@ impl ProgramLowerer<'_, '_> {
                 .is_some_and(Option::is_some)
         {
             // Evaluated per element by the operation that reads it.
+            crate::expansion::path("deferred-fusion");
             return Ok(());
         }
         if let Some(destination) = destination
@@ -1272,6 +1282,7 @@ impl ProgramLowerer<'_, '_> {
                 || (self.register(destination)?.value_type.scalar_count() >= 4
                     && self.vectorizes(operation)?))
         {
+            crate::expansion::path("fused-consumer");
             return self.lower_fused(operation, destination);
         }
         match operation {
@@ -1750,6 +1761,11 @@ impl ProgramLowerer<'_, '_> {
         if source.value_type == destination.value_type
             && self.physical(source) == self.physical(destination)
         {
+            crate::expansion::moved(
+                0,
+                "physical-alias",
+                std::ptr::from_ref(&*self.builder.func) as usize,
+            );
             return Ok(());
         }
         self.copy_between_bases(
@@ -1779,6 +1795,11 @@ impl ProgramLowerer<'_, '_> {
             return Ok(());
         }
         let count = source.value_type.scalar_count();
+        crate::expansion::moved(
+            u64::from(count),
+            if count > 16 { "memmove" } else { "static-copy" },
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
         if count > 16 {
             // Cells are 64-bit whatever the element type, so a value is one
             // contiguous byte range; a block move beats the scalar loop.
@@ -1826,7 +1847,12 @@ impl ProgramLowerer<'_, '_> {
                 .icmp_imm(IntCC::UnsignedLessThan, index, i64::from(count));
         self.builder.ins().brif(in_range, loop_body, &[], exit, &[]);
         self.builder.switch_to_block(loop_body);
+        let loop_scope = crate::expansion::loop_scope(
+            u64::from(count),
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
         body(self, index)?;
+        drop(loop_scope);
         let next = self.builder.ins().iadd_imm(index, 1);
         self.builder.ins().jump(header, &[next.into()]);
         self.builder.seal_block(loop_body);

@@ -344,6 +344,7 @@ impl ProgramLowerer<'_, '_> {
         if !self.flat_storage_is_elementwise(&destination, captures)? {
             return Ok(false);
         }
+        crate::expansion::path("flat-map");
         self.for_each_element(destination.value_type.scalar_count(), |this, index| {
             let mut values = Vec::with_capacity(plan.len());
             for step in &plan {

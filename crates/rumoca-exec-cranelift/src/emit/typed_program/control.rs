@@ -1,3 +1,4 @@
+use super::super::observation_carrier::{LOOP_ENTER, LOOP_EXIT};
 use super::{
     CompileError, ProgramLayout, ProgramLowerer, StorageBase, ValueLocation, checked_cells,
     create_tape,
@@ -213,12 +214,11 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(body);
         self.builder.seal_block(body);
-        self.carrier_event(
-            super::super::observation_carrier::LOOP_ENTER,
-            current,
-            0,
-            Some(ordinal),
-        )?;
+        let expansion_loop = crate::expansion::loop_scope(
+            count as u64,
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
+        self.carrier_event(LOOP_ENTER, current, 0, Some(ordinal))?;
         self.store_domain_binders(
             domain,
             &extents,
@@ -239,18 +239,14 @@ impl ProgramLowerer<'_, '_> {
             )?;
         }
         self.lower_region(transition, current, next_frame)?;
-        self.carrier_event(
-            super::super::observation_carrier::LOOP_EXIT,
-            current,
-            0,
-            None,
-        )?;
+        self.carrier_event(LOOP_EXIT, current, 0, None)?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
         self.builder
             .ins()
             .jump(header, &[next.into(), next_frame.into(), current.into()]);
         self.builder.seal_block(header);
 
+        drop(expansion_loop);
         self.builder.switch_to_block(exit);
         self.builder.seal_block(exit);
         let result = self.builder.block_params(exit)[0];
@@ -413,6 +409,10 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(body);
         self.builder.seal_block(body);
+        let expansion_loop = crate::expansion::loop_scope(
+            count as u64,
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
         self.store_domain_binders(domain, &extents, &strides, ordinal, frame, binder_cell)?;
         if let (Some(continuation), Some(predicate)) = (continuation, predicate) {
             let continuation_layout = ProgramLayout::region(continuation)?;
@@ -444,6 +444,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.ins().jump(header, &[next.into()]);
         self.builder.seal_block(header);
 
+        drop(expansion_loop);
         self.builder.switch_to_block(exit);
         self.builder.seal_block(exit);
         Ok(())
@@ -515,12 +516,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.ins().brif(proceed, pass, &[], stopped, &[]);
         self.builder.switch_to_block(stopped);
         self.builder.seal_block(stopped);
-        self.carrier_event(
-            super::super::observation_carrier::LOOP_EXIT,
-            current,
-            0,
-            None,
-        )?;
+        self.carrier_event(LOOP_EXIT, current, 0, None)?;
         self.builder.ins().jump(exit, &[current.into()]);
         self.builder.switch_to_block(pass);
         self.builder.seal_block(pass);
@@ -649,6 +645,10 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(iteration);
         self.builder.seal_block(iteration);
+        let expansion_loop = crate::expansion::loop_scope(
+            count as u64,
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
         self.store_domain_binders(domain, &extents, &strides, ordinal, input, capture_cells)?;
         self.lower_region(body, input, output)?;
         self.copy_map_output(output, &destination, ordinal, output_cells)?;
@@ -656,6 +656,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.ins().jump(header, &[next.into()]);
         self.builder.seal_block(header);
 
+        drop(expansion_loop);
         self.builder.switch_to_block(exit);
         self.builder.seal_block(exit);
         Ok(())
@@ -692,6 +693,7 @@ impl ProgramLowerer<'_, '_> {
         )?;
         let tape = create_tape(self.builder, self.pointer_type, layout.tape_cells)?;
         let mut nested = ProgramLowerer {
+            emission: self.emission,
             builder: self.builder,
             module: self.module,
             math: self.math,
@@ -850,6 +852,15 @@ impl ProgramLowerer<'_, '_> {
         ordinal: Value,
         output_cells: u32,
     ) -> Result<(), CompileError> {
+        crate::expansion::moved(
+            u64::from(output_cells),
+            if output_cells > 16 {
+                "map-output-memmove"
+            } else {
+                "map-output-static"
+            },
+            std::ptr::from_ref(&*self.builder.func) as usize,
+        );
         if output_cells > 16 {
             // One iteration's result is a contiguous run of the destination.
             let target = self
