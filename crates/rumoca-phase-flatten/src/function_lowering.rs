@@ -757,9 +757,44 @@ fn seed_complete_record_defaults(flat: &mut flat::Model) {
             else {
                 continue;
             };
-            value.default = Some(constructor.call(Vec::new(), value.span));
+            value.default = repeated_over_shape(
+                constructor.call(Vec::new(), value.span),
+                &value.shape_expr,
+                value.span,
+            );
         }
     }
+}
+
+/// `element` as the default of a declaration with `shape`: itself for a
+/// scalar, `fill(element, n1, ...)` for an array (MLS 3.7 §10.3.3), so every
+/// element of a record array starts at the record's defaults. `None` while an
+/// extent is unknown (`:`).
+fn repeated_over_shape(
+    element: rumoca_core::Expression,
+    shape: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+) -> Option<rumoca_core::Expression> {
+    if shape.is_empty() {
+        return Some(element);
+    }
+    let mut args = Vec::with_capacity(shape.len() + 1);
+    args.push(element);
+    for extent in shape {
+        args.push(match extent {
+            rumoca_core::Subscript::Index { value, span } => rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(*value),
+                span: *span,
+            },
+            rumoca_core::Subscript::Expr { expr, .. } => (**expr).clone(),
+            rumoca_core::Subscript::Colon { .. } => return None,
+        });
+    }
+    Some(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args,
+        span,
+    })
 }
 
 /// One decomposition pass. Returns whether any record parameter was decomposed.
