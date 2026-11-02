@@ -1,7 +1,6 @@
 //! Current-source fixture census. Historical known-open classifications are
 //! deliberately not promoted: a qualified run must bind the current manifest.
 
-#[path = "tensor_expansion/fixtures.rs"]
 mod fixtures;
 
 use rumoca_eval_solve::PureCallInvocation;
