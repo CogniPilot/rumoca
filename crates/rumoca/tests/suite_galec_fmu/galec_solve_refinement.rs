@@ -562,6 +562,47 @@ equation
   end when;
 end DistinctSignalsAcrossARegionCall;
 "#;
+
+    /// B10 (Nav's rejection-counter shape): inside a function's `if` a call
+    /// raises NAN and completes, then an Integer increment overflows at the
+    /// third tick. As one region the `if` would still hold the call's NAN bit
+    /// when it faults.
+    pub(in super::super) const PENDING_SIGNAL_IN_A_FUNCTION_REGION: &str = r#"
+model PendingSignalInAFunctionRegion
+  parameter Real zero = 0.0;
+  function h
+    input Real z;
+    output Real a;
+  algorithm
+    if z / z < 0.01 then a := 0.0; else a := 1.0; end if;
+  end h;
+  function f
+    input Real v[3];
+    input Real z;
+    input Integer n;
+    input Boolean flag;
+    output Real X[3];
+  protected
+    Real a;
+    Integer c;
+  algorithm
+    X := v;
+    if flag then
+      a := h(z);
+      c := 2147483644 + n;
+      c := c + 1;
+      X[1] := a + c;
+    end if;
+  end f;
+  discrete Real x[3](each start = 0.5);
+  discrete Integer n(start = 0);
+equation
+  when sample(0.0, 0.001) then
+    n = pre(n) + 1;
+    x = f(pre(x), zero, n, n > 0);
+  end when;
+end PendingSignalInAFunctionRegion;
+"#;
 }
 
 /// A loop body whose fault precedes its raise: the second iteration can
@@ -634,5 +675,20 @@ fn a_raise_a_loop_still_holds_at_a_fault_is_refused() {
              oracle comparison: {:?}",
             run(name, &package, &solve)
         ),
+    }
+}
+
+/// B10 is admitted: the function's top-level `if` lowers split, so the
+/// call's NAN bit is published before the increment can overflow, and the
+/// fault at DoStep 3 keeps it, as in the GALEC oracle.
+#[test]
+fn a_raise_before_a_fault_in_a_function_if_reaches_the_status() {
+    let source = pub_signals::PENDING_SIGNAL_IN_A_FUNCTION_REGION;
+    let name = model_name(source);
+    let package = project(source).unwrap_or_else(|error| panic!("{name}: {error}"));
+    let solve = lower_algorithm_block(&package, profile())
+        .unwrap_or_else(|error| panic!("{name}: the split `if` refines: {error}"));
+    if let Err(error) = run(name, &package, &solve) {
+        panic!("{name}: {error}");
     }
 }

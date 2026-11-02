@@ -1477,3 +1477,79 @@ fn a_fault_keeps_the_caller_and_callee_signals_in_c() {
         "status word {status:#x} must keep NAN, OVERFLOW and the fault bit"
     );
 }
+
+const PENDING_SIGNAL_MODEL: &str = "PendingSignalInAFunctionRegion";
+
+const PENDING_SIGNAL_DRIVER: &str = r#"#include <stdio.h>
+#include "PendingSignalInAFunctionRegion.h"
+int main(void) {
+    static PendingSignalInAFunctionRegionState state;
+    PendingSignalInAFunctionRegion_startup(&state);
+    PendingSignalInAFunctionRegion_recalibrate(&state);
+    for (int tick = 1; tick <= 3; ++tick) {
+        PendingSignalInAFunctionRegion_dostep(&state);
+        printf("%lu\n", (unsigned long)state.rumoca_galec_error_signal_status);
+    }
+    return 0;
+}
+"#;
+
+/// #483 EL007 B10 in C: inside a function's `if` a call raises NAN, then an
+/// increment overflows at the third DoStep. The split `if` publishes the
+/// call's bit first, so the faulting step's status word keeps NAN with the
+/// fault bit, as in the GALEC oracle; the steps before it do not fault.
+#[test]
+fn a_raise_before_a_fault_in_a_function_if_reaches_the_c_status() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(
+        dir.path(),
+        PENDING_SIGNAL_MODEL,
+        super::galec_solve_refinement::pub_signals::PENDING_SIGNAL_IN_A_FUNCTION_REGION,
+    );
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "the fixture must export: {}",
+        strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    );
+    let driver = out_dir.join("pending_signal.c");
+    fs::write(&driver, PENDING_SIGNAL_DRIVER).expect("write driver");
+    let program = out_dir.join("pending_signal");
+    let compile = assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver)
+        .arg(out_dir.join(format!("{PENDING_SIGNAL_MODEL}.c")))
+        .arg(out_dir.join(super::cc_support::GALEC_KERNEL_LIBRARY))
+        .arg("-lm")
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "driver compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&program).output().expect("run driver");
+    let statuses: Vec<u64> = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(|line| line.trim().parse().expect("the driver prints status words"))
+        .collect();
+    // SIGNALS order: INVALID_ARGUMENT, OVERFLOW, NAN, ...; bit 31 is the fault.
+    let (nan, fault) = (1 << 2, 1 << 31);
+    assert_eq!(statuses.len(), 3, "{statuses:?}");
+    for (tick, status) in statuses[..2].iter().enumerate() {
+        assert_eq!(
+            status & fault,
+            0,
+            "DoStep {} must not fault: {status:#x}",
+            tick + 1
+        );
+    }
+    assert_eq!(
+        statuses[2] & (nan | fault),
+        nan | fault,
+        "DoStep 3's status word {:#x} must keep NAN with the fault bit",
+        statuses[2]
+    );
+}

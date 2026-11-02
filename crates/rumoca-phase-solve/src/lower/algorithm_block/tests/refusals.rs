@@ -764,36 +764,42 @@ fn a_shadowed_iterator_never_covers_a_whole_array() {
         .expect("independent loops over both axes define the matrix");
 }
 
-/// EL007: inside one region of a function a raise precedes a
-/// fault. The region holds the raised bit until it completes, so the fault
-/// would lose it: refused, although a function's top level publishes as it
-/// goes.
+/// EL007: inside a loop body of a function a raise precedes a fault. The
+/// loop region holds the raised bit until it completes, so the fault would
+/// lose it: refused. (A top-level `if` of this shape lowers split and is
+/// admitted; see `galec_solve_refinement` in the rumoca suite.)
 #[test]
-fn a_raise_a_function_region_still_holds_at_a_fault_is_refused() {
-    use rumoca_ir_galec::ast::Identifier;
+fn a_raise_a_function_loop_region_still_holds_at_a_fault_is_refused() {
+    use rumoca_ir_galec::ast::{ForLoop, Identifier};
     let mut function = user_function(
         "held",
         &["a"],
         &["b"],
         vec![
             plain(local("b"), lsref("a")),
-            Spanned::dummy(Statement::If(IfStatement {
-                branches: vec![IfBranch {
-                    condition: Condition::Expression(bin(BinaryOp::Gt, lsref("a"), r(0.0))),
-                    body: vec![
-                        Spanned::dummy(Statement::Signal(vec![Identifier::new("NAN")])),
-                        plain(
-                            local("k"),
-                            builtin_call(
-                                "divisionTowardsZero",
-                                vec![Expression::Integer(1), Expression::Integer(0)],
+            Spanned::dummy(Statement::for_loop(ForLoop::new(
+                Some(n("i")),
+                Expression::Integer(1),
+                None,
+                Expression::Integer(1),
+                vec![Spanned::dummy(Statement::If(IfStatement {
+                    branches: vec![IfBranch {
+                        condition: Condition::Expression(bin(BinaryOp::Gt, lsref("a"), r(0.0))),
+                        body: vec![
+                            Spanned::dummy(Statement::Signal(vec![Identifier::new("NAN")])),
+                            plain(
+                                local("k"),
+                                builtin_call(
+                                    "divisionTowardsZero",
+                                    vec![Expression::Integer(1), Expression::Integer(0)],
+                                ),
                             ),
-                        ),
-                    ],
-                    span: Span::DUMMY,
-                }],
-                else_body: None,
-            })),
+                        ],
+                        span: Span::DUMMY,
+                    }],
+                    else_body: None,
+                }))],
+            ))),
         ],
     );
     function.signals = vec![Identifier::new("NAN")];
@@ -807,7 +813,7 @@ fn a_raise_a_function_region_still_holds_at_a_fault_is_refused() {
     block.protected_functions = vec![function];
     respan(&mut block);
     let Err(error) = refine(block) else {
-        panic!("a raise held by a function region at a fault is refused");
+        panic!("a raise held by a function loop region at a fault is refused");
     };
     assert!(error.to_string().contains("fault after"), "{error}");
 }

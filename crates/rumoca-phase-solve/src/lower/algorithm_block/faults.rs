@@ -153,19 +153,39 @@ pub(super) fn require_fault_visible_state(
     Ok(())
 }
 
-/// What a call contributes. A function's top level stores its status as it
-/// goes and a fault carries every bit raised before it to the caller
-/// (EL007), so only its `if` and `for` bodies are regions; its top-level `if`
-/// lowers whole, not split.
+/// What a call contributes, and which top-level `if` statements lower split.
+/// A function's top level stores its status as it goes and a fault carries
+/// every bit raised before it to the caller (EL007), so only its `if` and
+/// `for` bodies are regions. A top-level `if` lowers whole, unless as one
+/// region it would hold a raised bit or a store at a later fault: that `if`
+/// splits as a method's does, publishing each statement before the next.
 pub(super) fn function_summary(
     scope: &MethodScope<'_>,
     statements: &[Spanned<Statement>],
-) -> Summary {
+) -> (Summary, BTreeSet<usize>) {
     let mut ctx = Ctx {
         locals: local_ranges(scope, statements),
         ..Ctx::default()
     };
-    statements_summary(scope, &mut ctx, statements)
+    let mut summary = NOTHING;
+    let mut split = BTreeSet::new();
+    for (index, statement) in statements.iter().enumerate() {
+        let mut next = statement_summary(scope, &mut ctx, &statement.node);
+        if let Statement::If(if_statement) = &statement.node
+            && next.lost
+            && if_statement
+                .branches
+                .iter()
+                .all(|branch| matches!(branch.condition, Condition::Expression(_)))
+        {
+            ctx.split = true;
+            next = split_if_summary(scope, &mut ctx, if_statement);
+            ctx.split = false;
+            split.insert(index);
+        }
+        summary = ctx.then(summary, next);
+    }
+    (summary, split)
 }
 
 fn statements_summary(
