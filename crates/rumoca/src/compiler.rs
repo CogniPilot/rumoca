@@ -765,9 +765,10 @@ fn loaded_source_root_document_uri(
 /// status: they are reports, not rejections.
 ///
 /// The report is the model's target-scoped (save) diagnostics: they read the
-/// strict target resolution the compile retained and the stage queries it
-/// filled, so reporting resolves nothing again and covers exactly the classes
-/// the model reaches.
+/// strict target resolution the compile retained, so reporting resolves
+/// nothing again and covers exactly the classes the model reaches. The strict
+/// DAE compile does not fill the session's stage queries, so the model-stage
+/// diagnostics instantiate, flatten and construct the DAE once more.
 fn report_compile_warnings(session: &mut Session, model_name: &str) {
     let diagnostics = session.semantic_diagnostics_query(model_name, SemanticDiagnosticsMode::Save);
     let source_map = diagnostics.source_map;

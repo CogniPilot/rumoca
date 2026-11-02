@@ -37,7 +37,7 @@ mod torn_sweep_run_tests;
 #[cfg(test)]
 mod zero_assignment_tests;
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 
 use crate::compute_block_scalarize::scalarize_product as checked_product;
 use crate::tensor_policy::{
@@ -124,7 +124,9 @@ pub struct PreparedScalarProgramBlock {
     /// Programs holding an assertion observation, which only the checked
     /// event-action adapter evaluates, so no execution backend compiles them.
     row_requires_checked_observation: Vec<bool>,
-    row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
+    /// Each program's assignment shapes, derived on the first query: a large
+    /// model prepares many programs whose shapes no reader ever asks for.
+    row_assignment_shapes: Vec<OnceCell<AssignmentShapes>>,
     target_value_families: RefCell<target_value_plan::TargetValueFamilies>,
     row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
     row_parameter_indices: Vec<Box<[usize]>>,
@@ -136,6 +138,9 @@ pub struct PreparedScalarProgramBlock {
     scratch: RefCell<RowEvalScratch>,
     row_output_scratch: RefCell<Vec<f64>>,
 }
+
+/// A program's assignment shapes, each with the output offset it assigns.
+type AssignmentShapes = Box<[(usize, TargetAssignmentShape)]>;
 
 /// One unchecked, output-specific request for a compiler-certified target assignment.
 pub struct TargetAssignmentOutputRequest<'a> {
@@ -494,9 +499,21 @@ impl PreparedScalarProgramBlock {
     /// (`target = expr`); its full program then evaluates the residual, while
     /// shapeless rows with an implicit target evaluate the target value.
     pub fn row_has_assignment_shape(&self, row_idx: usize) -> bool {
-        self.row_assignment_shapes
-            .get(row_idx)
+        self.assignment_shapes(row_idx)
             .is_some_and(|shapes| !shapes.is_empty())
+    }
+
+    /// The assignment shapes of program `row_idx`, with their output offsets,
+    /// derived on first use. A block prepared with evaluation facts has none.
+    fn assignment_shapes(&self, row_idx: usize) -> Option<&[(usize, TargetAssignmentShape)]> {
+        let program = self.block.program(row_idx)?;
+        let shapes = self.row_assignment_shapes.get(row_idx)?;
+        Some(shapes.get_or_init(|| match self.facts {
+            construction::RowFacts::Full => {
+                target_assignment_shapes_with_output_offsets(program).into_boxed_slice()
+            }
+            construction::RowFacts::Evaluation => AssignmentShapes::default(),
+        }))
     }
 
     pub fn row_output_count(&self, row_idx: usize) -> Option<usize> {
@@ -862,9 +879,9 @@ impl PreparedScalarProgramBlock {
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.
-            if self.row_assignment_shapes[request.row_idx]
-                .iter()
-                .any(|(output, _)| *output == selected_output)
+            if self
+                .assignment_shapes(request.row_idx)
+                .is_some_and(|shapes| shapes.iter().any(|(output, _)| *output == selected_output))
             {
                 return Ok(None);
             }
@@ -989,8 +1006,7 @@ impl PreparedScalarProgramBlock {
         output_offset: usize,
         target_y_index: usize,
     ) -> Option<&TargetAssignmentShape> {
-        self.row_assignment_shapes
-            .get(row_idx)?
+        self.assignment_shapes(row_idx)?
             .iter()
             .find_map(|(output, shape)| {
                 (*output == output_offset && shape.target_y_index() == target_y_index)
