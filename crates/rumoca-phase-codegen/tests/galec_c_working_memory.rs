@@ -544,25 +544,10 @@ fn mentions(text: &str, name: &str) -> bool {
 fn the_production_code_manifest_describes_no_working_memory() {
     let template = templates::builtin_template_source("galec-production", "pc_manifest.xml.jinja")
         .expect("built-in template");
-    let manifest = render_checked_algorithm_block_template_with_artifact(
-        &fixture(),
-        &json!({
-            "identities": {"pc_manifest": "id", "ac_manifest": "id"},
-            "checksums": {
-                "ac_manifest_sha1": "0",
-                "c_header_sha1": "0",
-                "c_source_sha1": "0",
-                "c_kernels_header_sha1": "0",
-                "c_kernels_source_sha1": "0",
-                "c_format_sha1": "0"
-            },
-            "generated_at": "1970-01-01T00:00:00Z",
-            "generation_tool": "test"
-        }),
-        template,
-        MODEL,
-    )
-    .expect("manifest must render");
+    // The manifest records the digest of the block's Solve refinement (#483).
+    let manifest =
+        support::render_refined(&fixture(), &rumoca_core::SourceMap::new(), template, MODEL)
+            .expect("manifest must render");
     assert!(!manifest.contains("TD_SCRATCH"), "{manifest}");
     assert!(!manifest.contains("CO_SCRATCH"), "{manifest}");
     assert!(!manifest.contains("rumoca_galec_scratch"), "{manifest}");

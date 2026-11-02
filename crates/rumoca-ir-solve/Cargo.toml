@@ -21,6 +21,9 @@ indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 thiserror = { workspace = true }
 bincode = { workspace = true }
+# Content digest of a refined algorithm block (#483): the artifacts record it
+# so a test can prove which Solve program the emitted C was printed from.
+blake3 = { workspace = true }
 self_cell = { workspace = true }
 
 [dev-dependencies]

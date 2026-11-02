@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use minijinja::Value;
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 use rumoca_ir_solve::{
-    SolveAlgorithmBlock, SolveArithmeticProfile, SolvePureCallTable, SolveStorageClass,
-    SolveValueType, TypedProgram,
+    SolveAlgorithmBlock, SolveAlgorithmBlockDigest, SolveArithmeticProfile, SolvePureCallTable,
+    SolveStorageClass, SolveValueType, TypedProgram,
 };
 use serde::Serialize;
 
@@ -166,10 +166,15 @@ pub(super) fn solve_block_value(
     }
     assign_call_levels(&mut json);
     mark_else_chains(&mut json);
+    let digest = block
+        .digest()
+        .map_err(|error| CodegenError::template(format!("Solve block digest: {error}")))?;
     Ok(Value::from_serialize(TracedView {
         view: json,
         traces,
         literals,
+        digest: digest.to_string(),
+        digest_algorithm: SolveAlgorithmBlockDigest::ALGORITHM,
     }))
 }
 
@@ -181,6 +186,11 @@ struct TracedView {
     /// C literal of every finite or infinite Real constant, keyed
     /// `<kind>:<bits>`: the shortest decimal that reads back to the same bits.
     literals: BTreeMap<String, String>,
+    /// [`SolveAlgorithmBlock::digest`] of the block this view prints, in hex:
+    /// every C model unit records it, so a reader can recompute it from the
+    /// checked package and prove which Solve program the C came from (#483).
+    digest: String,
+    digest_algorithm: &'static str,
 }
 
 /// Mark every `conditional` operation whose `if_false` body holds exactly one

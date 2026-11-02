@@ -17,6 +17,11 @@
     variable behind a scratch slot for a `DataReference` to name, and no
     consumer may bind to one. The generated C header remains the authoritative
     declaration and resource-accounting interface for this execution storage. -#}
+{#- The closing `Annotations` record the digest of the refined Solve block
+    both C files were printed from, as their banners do (#483). The schema
+    allows one tool annotation list after `CodeContainer`; an `Annotation`
+    takes only its `type` and element content, which the XSD validates
+    laxly, so the digest is an attribute of a Rumoca-owned child element. -#}
 {%- macro function(id, name, return_id, self_id) %}
           <Function{{ attr("id", id) }}{{ attr("name", name) }}>
             <ReturnParameter{{ attr("id", return_id) }} typeDefRefId="TD_VOID"/>
@@ -111,4 +116,9 @@
       </FunctionReferences>
     </LogicalData>
   </CodeContainer>
+  <Annotations>
+    <Annotation type="rumoca.solveProgram">
+      <SolveProgram{{ attr("digestAlgorithm", solve_block.digest_algorithm) }}{{ attr("digest", solve_block.digest) }}/>
+    </Annotation>
+  </Annotations>
 </Manifest>

@@ -162,7 +162,8 @@ fn needs_solve(template: &str) -> bool {
 
 fn render_block_fixture(block: &CheckedAlgorithmBlock, template: &str) -> String {
     if needs_solve(template) {
-        // The C model units print from the block's Solve refinement (#483).
+        // The C model units print from the block's Solve refinement (#483),
+        // and the Production Code manifest records that refinement's digest.
         return support::render_refined(block, &rumoca_core::SourceMap::new(), template, "fixture")
             .expect("render collision fixture");
     }
@@ -1151,13 +1152,16 @@ fn galec_c_artifacts_agree_on_one_state_field_ordering() {
 
     // Manifest components, in the same declaration order, excluding the
     // template-owned error-signal component appended after the block's own
-    // variables.
+    // variables. The manifest renders from the same refined package as the
+    // header (it records the refinement's digest), so it carries the same
+    // harness clock constant.
     let components = manifest
         .match_indices("<Component id=\"CO_")
         .filter_map(|(index, _)| manifest[index..].split_once("name=\""))
         .filter_map(|(_, rest)| rest.split_once('"'))
         .map(|(name, _)| name.to_owned())
         .filter(|name| name != "rumoca_galec_error_signal_status")
+        .filter(|name| name != support::FIXTURE_PERIOD)
         .collect::<Vec<_>>();
 
     assert_eq!(

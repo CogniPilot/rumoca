@@ -104,6 +104,9 @@ external calls, random operations, and runtime event iteration fail closed.
 - `cli_target_embedded_c_galec` compiles the generated C under strict
   conversion warnings and checks both the target's explicit non-eFMI
   self-description and its no-compliance-claim banner.
+- `galec_solve_digest_routing` reads the Solve program digest both model units
+  print after their banner and recomputes it from the checked package, so the
+  C is tied to the refined block it came from, not to a target name.
 - `galec_c_arrays` executes recursive tensor expressions and covers malformed
   shapes and unresolved values.
 - `galec_equivalence` compares generated C execution with the checked GALEC

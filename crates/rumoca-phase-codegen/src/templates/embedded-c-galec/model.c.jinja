@@ -519,6 +519,13 @@ rumoca_galec_fault:
  * refined Solve block (DAE -> GALEC -> Solve IR -> C).
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed. */{% endblock %}
+/* Solve program digest ({{ solve_block.digest_algorithm }}): {{ solve_block.digest }}
+ * The refined Solve algorithm block this file was printed from. */
+{#- The digest line sits outside the overridable banner block, so every C
+    target that extends this template records it, whatever its banner says.
+    It is `SolveAlgorithmBlock::digest` of the block whose programs print the
+    bodies below: recomputing it from the checked package proves which Solve
+    program this file came from, which a target name cannot (#483). -#}
 {#- How this block was built (D7). Emitted by every C target that extends this
     template, because the command line that chose the two axes is not retained
     anywhere downstream and a reviewer must be able to read the answer off the

@@ -4,7 +4,8 @@
 //! convention each caller has to remember:
 //!
 //! * every built-in artifact template that prints GALEC C from the Solve view
-//!   (it reads both the Algorithm Code and Solve views) belongs to a
+//!   (it reads both the Algorithm Code and Solve views; the Production Code
+//!   manifest does too, for the refined block's digest) belongs to a
 //!   target whose manifest declares `ir = "algorithm-block"`, the IR every C
 //!   entry point (CLI, LSP preview, both WASM bindings) refines before it
 //!   renders; and
@@ -20,7 +21,6 @@ use rumoca_phase_codegen::{
     AlgorithmCodeTemplateRenderer, render_algorithm_code_template_with_artifact,
     render_checked_algorithm_block_template_with_artifact, templates,
 };
-use serde_json::json;
 
 mod support;
 
@@ -93,6 +93,7 @@ fn every_template_that_prints_solve_c_belongs_to_an_algorithm_block_target() {
             ("embedded-c-galec", "model.h.jinja"),
             ("galec-production", "model.c.jinja"),
             ("galec-production", "model.h.jinja"),
+            ("galec-production", "pc_manifest.xml.jinja"),
         ],
         "the Solve-reading artifact templates changed; review their routing"
     );
@@ -137,11 +138,18 @@ fn the_solve_c_templates_render_only_from_a_refinement() {
             .unwrap_or_else(|error| panic!("{name}/{path} must render when refined: {error}"));
         // The package route a non-algorithm-block manifest takes, and the
         // checked-block route of the unrefined `.alg` boundary, both refuse.
+        // They get the same complete artifact facts, so only the missing
+        // refinement can make them fail.
         let unrefined = [
-            render_algorithm_code_template_with_artifact(&package, &json!({}), template, MODEL),
+            render_algorithm_code_template_with_artifact(
+                &package,
+                &support::fixture_facts(),
+                template,
+                MODEL,
+            ),
             render_checked_algorithm_block_template_with_artifact(
                 &block,
-                &json!({}),
+                &support::fixture_facts(),
                 template,
                 MODEL,
             ),
@@ -188,7 +196,7 @@ fn u_times_or_plus(op: galec::BinaryOp, literal: f64) -> galec::Expression {
 }
 
 /// Render `template` from `package` and `refined` with every other input of
-/// the paired control fixed: no source map, the fixture model name, no
+/// the paired control fixed: no source map, the fixture model name, fixed
 /// artifact facts and the renderer's default options.
 fn paired_render(
     package: &rumoca_ir_galec::package::AlgorithmCodePackage,
@@ -200,7 +208,9 @@ fn paired_render(
         refined,
         &rumoca_core::SourceMap::new(),
     )
-    .and_then(|renderer| renderer.render_with_name_and_artifact(template, MODEL, &()))
+    .and_then(|renderer| {
+        renderer.render_with_name_and_artifact(template, MODEL, &support::fixture_facts())
+    })
     .expect("paired render")
 }
 
