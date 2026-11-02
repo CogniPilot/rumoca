@@ -5,6 +5,7 @@
 mod fourbar_connect_order;
 mod move_supplied_derivative;
 mod msl_sim_regression;
+mod post_commit_projection;
 mod selected_medium_through_alias_chain;
 mod state_jacobian_oracle;
 mod trajectory_sensitivity_msl;

@@ -1559,20 +1559,30 @@ impl SolveMeKernel {
         // relation memory refreshes from the projected canonical view;
         // parameter-only relation memory remains on its selected event side.
         for _ in 0..policy.settle.max_iters {
-            let mut changed = runtime.apply_post_commit_assignments_until_stable(
+            runtime.apply_post_commit_assignments_until_stable(
                 solver_y,
                 &mut self.params,
                 event_time,
                 policy.settle.tol,
                 policy.settle.max_iters,
             )?;
-            changed |=
-                project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
-            changed |= runtime.update_algebraic_relation_memory_from_solver_y_except_overrides(
-                event_time,
+            project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
+            let mut changed = runtime
+                .update_algebraic_relation_memory_from_solver_y_except_overrides(
+                    event_time,
+                    solver_y,
+                    &mut self.params,
+                    root_relation_overrides,
+                )?;
+            // The projection certifies the coordinate for its input parameters.
+            // Recheck derived rows at that coordinate before accepting the view;
+            // only a changed discrete value requires another certified projection.
+            changed |= runtime.apply_post_commit_assignments_until_stable(
                 solver_y,
                 &mut self.params,
-                root_relation_overrides,
+                event_time,
+                policy.settle.tol,
+                policy.settle.max_iters,
             )?;
             if !changed {
                 return Ok(());

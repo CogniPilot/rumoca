@@ -825,6 +825,9 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
         bool changed = false, relations = false;
         if (rmc_post_commit_assignments(m, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
         if (rmc_event_projection(m, &changed) != {{ prefix }}OK || rmc_relation_refresh(m, true, &relations) != {{ prefix }}OK) return {{ prefix }}Error;
+        /* The coordinate is certified; its derived rows must agree with it. */
+        changed = false;
+        if (rmc_post_commit_assignments(m, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
         if (!changed && !relations) return {{ prefix }}OK;
     }
     RMC_LOG(m, "the post-commit event view did not converge");
