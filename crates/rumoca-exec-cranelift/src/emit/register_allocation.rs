@@ -167,7 +167,7 @@ struct QueuedFunction {
 
 /// Queued functions compiled in one parallel round: enough to occupy every
 /// core, few enough that their contexts stay small beside the module.
-const QUEUE_ROUND: usize = 256;
+pub(super) const QUEUE_ROUND: usize = 256;
 
 impl QueuedFunctions {
     /// Queue `function`, built in `context`, which is left as `fresh`. Whether

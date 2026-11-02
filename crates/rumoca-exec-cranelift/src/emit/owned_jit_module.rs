@@ -5,6 +5,7 @@ use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 
 use super::register_allocation::QueuedFunctions;
+use super::{CompileError, define_queued_functions};
 
 /// Sole owner of one Cranelift executable-memory arena.
 ///
@@ -30,15 +31,16 @@ impl OwnedJitModule {
     }
 
     /// Queue `function`, built in `context`, to compile with the module's
-    /// other functions; `context` is left empty for the next function.
+    /// other functions; `context` is left empty for the next function. A
+    /// round compiled here is guarded as finalization's is.
     pub(super) fn queue_function(
         &mut self,
         function: FuncId,
         context: &mut cranelift_codegen::Context,
-    ) -> Result<(), String> {
+    ) -> Result<(), CompileError> {
         let fresh = self.make_context();
         if self.queued.push(function, context, fresh) {
-            self.define_queued()?;
+            define_queued_functions(self)?;
         }
         Ok(())
     }
@@ -108,9 +110,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use cranelift_jit::{BranchProtection, JITBuilder, JITMemoryProvider, JITModule};
-    use cranelift_module::ModuleResult;
+
+    use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+    use cranelift_module::{Linkage, Module, ModuleResult};
 
     use super::OwnedJitModule;
+    use crate::emit::CompileError;
+    use crate::emit::register_allocation::QUEUE_ROUND;
 
     struct CountingMemory {
         frees: Arc<AtomicUsize>,
@@ -118,7 +125,7 @@ mod tests {
 
     impl JITMemoryProvider for CountingMemory {
         fn allocate_readexec(&mut self, _size: usize, _align: u64) -> io::Result<*mut u8> {
-            unreachable!("the ownership test does not compile code")
+            panic!("these tests provide no code memory")
         }
 
         fn allocate_readwrite(&mut self, _size: usize, _align: u64) -> io::Result<*mut u8> {
@@ -155,5 +162,53 @@ mod tests {
         assert_eq!(frees.load(Ordering::SeqCst), 1);
         drop(second);
         assert_eq!(frees.load(Ordering::SeqCst), 2);
+    }
+
+    /// Queue a function `() -> i64` returning 0 in `module`.
+    fn queue_zero(module: &mut OwnedJitModule, index: usize) -> Result<(), CompileError> {
+        let mut context = module.make_context();
+        context
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I64));
+        let function = module
+            .declare_function(
+                &format!("zero_{index}"),
+                Linkage::Local,
+                &context.func.signature,
+            )
+            .expect("declare zero function");
+        let mut frontend = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut frontend);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let zero = builder.ins().iconst(types::I64, 0);
+        builder.ins().return_(&[zero]);
+        builder.finalize();
+        module.queue_function(function, &mut context)
+    }
+
+    #[test]
+    fn a_panic_defining_a_queued_round_is_an_error_on_both_paths() {
+        // The code allocator panics, as a defect below the queue might.
+        let mut early = guarded_module(Arc::new(AtomicUsize::new(0)));
+        let results = (0..QUEUE_ROUND)
+            .map(|index| queue_zero(&mut early, index))
+            .collect::<Vec<_>>();
+        assert!(results[..QUEUE_ROUND - 1].iter().all(Result::is_ok));
+        assert!(
+            matches!(results[QUEUE_ROUND - 1], Err(CompileError::Backend(_))),
+            "{:?}",
+            results[QUEUE_ROUND - 1]
+        );
+
+        let mut tail = guarded_module(Arc::new(AtomicUsize::new(0)));
+        queue_zero(&mut tail, 0).expect("one function waits in the queue");
+        assert!(matches!(
+            crate::emit::finalize_jit_module(&mut tail),
+            Err(CompileError::Backend(_))
+        ));
     }
 }

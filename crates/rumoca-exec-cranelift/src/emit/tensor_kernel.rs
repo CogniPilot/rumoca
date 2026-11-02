@@ -115,9 +115,7 @@ impl CraneliftEmitter {
             fb.seal_all_blocks();
             fb.finalize();
         }
-        self.module
-            .queue_function(func_id, &mut context)
-            .map_err(to_backend_err)?;
+        self.module.queue_function(func_id, &mut context)?;
         self.module.clear_context(&mut context);
         Ok(func_id)
     }
