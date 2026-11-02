@@ -84,8 +84,32 @@ const SETTLED: InitializationRowRole = InitializationRowRole::SurplusAlgebraicCh
 fn initialization_rows_over_declaration_seeds_are_refused() {
     assert_refused(
         "C initialization evaluates residual rows only on the settled algebraic refresh",
-        |model| one_initial_row(model, InitializationRowRole::SurplusCheck),
+        |model| {
+            one_initial_row(model, InitializationRowRole::SurplusCheck);
+            model.problem.layout = crate::VarLayout::from_parts(Default::default(), 1, 2);
+            model.initial_y = crate::SolveInitialValues::repeat(0.0, 1).unwrap();
+            let mut initialization = model.problem.initialization.clone().into_input();
+            initialization.residual = ComputeBlock::from_scalar_program_block(rows(vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]]));
+            model.problem.initialization =
+                crate::InitializationSolveSystem::construct(initialization)
+                    .expect("one declaration-seed row is a checked initialization");
+        },
     );
+}
+
+#[test]
+fn constant_initialization_row_is_settled_without_declaration_seed_isolation() {
+    let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    one_initial_row(&mut model, InitializationRowRole::SurplusCheck);
+    FmiComponent::construct(model, vec![input])
+        .expect("the fixture is a checked component")
+        .into_codegen_view()
+        .try_c()
+        .expect("a constant row reads no declaration seed");
 }
 
 #[test]

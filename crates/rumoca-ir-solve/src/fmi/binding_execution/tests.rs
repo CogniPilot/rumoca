@@ -123,6 +123,20 @@ fn empty_initialization_retains_its_exact_empty_owner() {
 
 #[test]
 fn program_without_an_owned_result_is_refused() {
-    let source = block(&[0], vec![], false);
-    assert!(BindingExecution::checked(&source, &[], &[0]).is_err());
+    // The scalar owner refuses this before a BindingExecution can be issued.
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fmi-binding-execution.mo"),
+        0,
+        1,
+    );
+    let error = ScalarProgramBlock::with_output_indices(vec![vec![]], vec![span], vec![])
+        .expect_err("a binding program must own a result");
+    assert!(matches!(
+        error,
+        crate::SolveProblemShapeContractError::ScalarProgramMissingOutput {
+            program_index: 0,
+            ..
+        }
+    ));
+    assert_eq!(error.source_span(), Some(span));
 }
