@@ -38,6 +38,13 @@ The repository ships a complete worked example:
 `examples/codegen/checked_dae_report/target.toml` renders a readable report
 from the canonical checked DAE projection.
 
+For `ir = "solve"`, `solve_blocks.continuous.residual_scalar` is an optional
+scalar view of the residual, using the same tensor lowering and pure-call
+inlining as `derivative_rhs_scalar`. It is built only when requested and
+retains the original residual's output indices, including derivative-row
+holes. Test `is not none` before rendering it: unsupported scalar programs
+yield `none`. The original `residual` and `implicit_rhs` remain available.
+
 ## Design Rule: Language Knowledge Lives in Targets
 
 Rumoca's compiler phases are deliberately target-agnostic: no Rust code

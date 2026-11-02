@@ -33,6 +33,7 @@ mod nested_function_receiver;
 mod periodic_clock_session;
 mod reported_bug_runtime;
 mod solve_renderer_without_dae;
+mod solve_residual_scalar;
 
 mod actual_stream_product_events;
 mod additive_torque;

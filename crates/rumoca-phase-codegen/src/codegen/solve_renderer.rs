@@ -364,8 +364,7 @@ fn solve_render_context_value_with_handles(
     let artifacts = handle.artifacts();
     let solve_value = super::solve_lazy::solve_value(handle.clone())?;
     let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;
-    let prepared_blocks =
-        solve_template_blocks_value(solve_problem, artifacts, handle.inlined_pure_calls())?;
+    let prepared_blocks = solve_template_blocks_value(&handle)?;
     let scalar_derivative_programs = prepared_blocks.scalar_derivative_programs;
     let solve_blocks = prepared_blocks.value;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(

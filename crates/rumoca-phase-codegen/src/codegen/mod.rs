@@ -296,16 +296,17 @@ struct PreparedSolveBlocks {
 }
 
 fn solve_template_blocks_value(
-    solve_problem: &solve::SolveProblem,
-    artifacts: &solve::SolveArtifacts,
-    pure_calls: Option<&solve::SolvePureCallTable>,
+    handle: &solve_lazy::SolveRenderHandle,
 ) -> Result<PreparedSolveBlocks, CodegenError> {
+    let solve_problem = handle.problem();
+    let artifacts = handle.artifacts();
+    let pure_calls = handle.inlined_pure_calls();
     let derivative_scalar =
         solve_lazy::scalar_lowered_block(&solve_problem.continuous.derivative_rhs, pure_calls)?;
     let scalar_derivative_programs = derivative_scalar.is_some();
     let initialization = solve_lazy::initialization_blocks(solve_problem, pure_calls)?;
     let value = minijinja::context! {
-        continuous => minijinja::context! {
+        continuous => solve_lazy::continuous_blocks(minijinja::context! {
             implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
             residual => solve_template_compute_block_json(&solve_problem.continuous.residual)?,
             derivative_rhs => solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
@@ -323,7 +324,7 @@ fn solve_template_blocks_value(
                 Some(block) => solve_template_compute_block_json(&block)?,
                 None => Value::from(()),
             },
-        },
+        }, handle.clone()),
         // The explicit initialization's parameter assignments (computed
         // parameters such as a weight matrix built from other parameters) for
         // targets without an initialization solver: render as
