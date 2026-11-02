@@ -766,9 +766,10 @@ fn loaded_source_root_document_uri(
 ///
 /// The report is the model's target-scoped (save) diagnostics: they read the
 /// strict target resolution the compile retained, so reporting resolves
-/// nothing again and covers exactly the classes the model reaches. The strict
-/// DAE compile does not fill the session's stage queries, so the model-stage
-/// diagnostics instantiate, flatten and construct the DAE once more.
+/// nothing again and covers exactly the classes the model reaches. The body
+/// and model-stage warnings (synthesized inners and WD001 structural
+/// selections) come from the warnings the strict compile kept, so the model is
+/// not instantiated, flattened or built into a DAE a second time.
 fn report_compile_warnings(session: &mut Session, model_name: &str) {
     let diagnostics = session.semantic_diagnostics_query(model_name, SemanticDiagnosticsMode::Save);
     let source_map = diagnostics.source_map;

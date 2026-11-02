@@ -1257,7 +1257,7 @@ impl Session {
         let tree = target.resolved.inner();
         let mut failures = Vec::new();
 
-        let requested_result = compile_model_dae_internal_with_options(
+        let (requested_result, warnings) = compile_model_dae_internal_with_warnings(
             tree,
             model_name,
             self.instantiation_options.clone(),
@@ -1279,7 +1279,12 @@ impl Session {
         }
 
         match requested_result {
-            DaePhaseResult::Success(result) => Ok(result),
+            DaePhaseResult::Success(result) => {
+                if let Some(warnings) = warnings {
+                    self.retain_strict_compile_warnings(model_name, &target, warnings);
+                }
+                Ok(result)
+            }
             DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => {
                 Err(Box::new(StrictCompileFailure::from_dae_phase_result(
                     "strict DAE compile returned non-success requested result without collected diagnostics"

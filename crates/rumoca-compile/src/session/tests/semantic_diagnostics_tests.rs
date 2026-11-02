@@ -417,3 +417,120 @@ end Child;
         expect_cold_child_diagnostics(&mut session);
     }
 }
+
+/// A synthesized inner (WI013, a body warning) and a structurally fixed branch
+/// (WD001, a model-stage warning) in one strict-compilable model.
+const COMPILED_WARNINGS_SOURCE: &str = r#"package P
+  model Env
+    parameter Real g = 9.81;
+  end Env;
+  model M
+    outer Env env;
+    parameter Boolean b = true;
+    Real x(start = 0);
+    Real y;
+  equation
+    y = env.g;
+    if b then
+      der(x) = 1;
+    else
+      x = 0;
+    end if;
+  end M;
+end P;
+"#;
+
+fn compiled_warnings_session() -> Session {
+    let mut session = Session::default();
+    session
+        .add_document("test.mo", COMPILED_WARNINGS_SOURCE)
+        .expect("document should parse");
+    session
+}
+
+#[test]
+fn save_diagnostics_after_a_strict_compile_equal_a_fresh_save_query() {
+    let mut compiled = compiled_warnings_session();
+    compiled
+        .compile_model_dae_strict_reachable_uncached_with_recovery("P.M")
+        .expect("P.M compiles");
+    let after_compile = compiled.semantic_diagnostics_query("P.M", SemanticDiagnosticsMode::Save);
+
+    let direct = compiled_warnings_session()
+        .semantic_diagnostics_query("P.M", SemanticDiagnosticsMode::Save);
+    let codes: Vec<_> = direct
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.code.as_deref())
+        .collect();
+    assert!(
+        codes.contains(&"WI013") && codes.contains(&"WD001"),
+        "the fixture must exercise both a body and a model-stage warning: {codes:?}"
+    );
+    assert_eq!(
+        format!("{:?}", after_compile.diagnostics),
+        format!("{:?}", direct.diagnostics),
+        "Save diagnostics read from a strict compile must equal those a fresh Save query builds"
+    );
+    assert_eq!(
+        after_compile.global_resolution_failure,
+        direct.global_resolution_failure
+    );
+}
+
+#[test]
+fn save_diagnostics_after_a_strict_compile_build_neither_body_nor_model_stage() {
+    let mut session = compiled_warnings_session();
+    session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("P.M")
+        .expect("P.M compiles");
+    let diagnostics = session.semantic_diagnostics_query("P.M", SemanticDiagnosticsMode::Save);
+    assert!(!diagnostics.diagnostics.is_empty());
+    let state = &session.query_state.flat.semantic_diagnostics;
+    assert!(
+        state.body_artifacts.is_empty() && state.model_stage_artifacts.is_empty(),
+        "the compile's warnings must answer Save without instantiating, flattening or building the DAE again"
+    );
+}
+
+#[test]
+fn a_document_edit_drops_the_strict_compile_warnings() {
+    let mut session = compiled_warnings_session();
+    session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("P.M")
+        .expect("P.M compiles");
+    assert_eq!(
+        session
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_compile_warnings
+            .keys()
+            .count(),
+        1
+    );
+    let _ = session.update_document(
+        "test.mo",
+        COMPILED_WARNINGS_SOURCE.replace("9.81", "9.8").as_str(),
+    );
+    assert!(
+        session
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_compile_warnings
+            .is_empty(),
+        "a document edit must drop the compile's warnings with its resolution proof"
+    );
+    let rebuilt = session.semantic_diagnostics_query("P.M", SemanticDiagnosticsMode::Save);
+    assert!(
+        !session
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .model_stage_artifacts
+            .is_empty(),
+        "after an edit Save diagnostics are built again: {:?}",
+        rebuilt.diagnostics
+    );
+}

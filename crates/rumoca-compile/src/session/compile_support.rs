@@ -87,6 +87,16 @@ fn dae_model_outcome_internal_with_options(
     model_name: &str,
     instantiation_options: InstantiateOptions,
 ) -> DaeModelOutcome {
+    dae_model_outcome_and_warnings_with_options(tree, model_name, instantiation_options).0
+}
+
+/// [`dae_model_outcome_internal_with_options`], plus the warnings a successful
+/// outcome carries, taken from the typed overlay before flatten consumes it.
+fn dae_model_outcome_and_warnings_with_options(
+    tree: &ast::ClassTree,
+    model_name: &str,
+    instantiation_options: InstantiateOptions,
+) -> (DaeModelOutcome, Option<StrictCompileWarnings>) {
     notify_compile_phase(FailedPhase::Instantiate, CompilePhaseEvent::Started);
     let instantiate_start = maybe_start_timer();
     let instantiate_outcome = InstantiatedModelOutcome::from_instantiation_outcome(
@@ -103,6 +113,13 @@ fn dae_model_outcome_internal_with_options(
         maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
     }
     notify_compile_phase(FailedPhase::Typecheck, CompilePhaseEvent::Completed);
+    let synthesized = match &typed_outcome {
+        TypedModelOutcome::Success(overlay) => Some((
+            overlay.synthesized_inners.clone(),
+            overlay.synthesized_inner_messages.clone(),
+        )),
+        _ => None,
+    };
 
     notify_compile_phase(FailedPhase::Flatten, CompilePhaseEvent::Started);
     let flatten_start = maybe_start_timer();
@@ -122,7 +139,18 @@ fn dae_model_outcome_internal_with_options(
     }
     notify_compile_phase(FailedPhase::ToDae, CompilePhaseEvent::Completed);
 
-    dae_outcome
+    let warnings = match (&dae_outcome, synthesized) {
+        (
+            DaeModelOutcome::Success(artifact),
+            Some((synthesized_inners, synthesized_inner_messages)),
+        ) => Some(StrictCompileWarnings {
+            synthesized_inners,
+            synthesized_inner_messages,
+            structural_selections: artifact.structural_selections.clone(),
+        }),
+        _ => None,
+    };
+    (dae_outcome, warnings)
 }
 
 fn dae_model_outcome_internal(tree: &ast::ClassTree, model_name: &str) -> DaeModelOutcome {
@@ -157,14 +185,19 @@ pub(super) fn compile_model_dae_internal(
     dae_phase_result_from_dae(tree, model_name, dae_outcome)
 }
 
-pub(super) fn compile_model_dae_internal_with_options(
+/// Compile one model to a DAE with the given instantiation options, plus a
+/// successful compile's warnings for the model's Save diagnostics.
+pub(super) fn compile_model_dae_internal_with_warnings(
     tree: &ast::ClassTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
-) -> DaePhaseResult {
-    let dae_outcome =
-        dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
-    dae_phase_result_from_dae(tree, model_name, dae_outcome)
+) -> (DaePhaseResult, Option<StrictCompileWarnings>) {
+    let (dae_outcome, warnings) =
+        dae_model_outcome_and_warnings_with_options(tree, model_name, instantiation_options);
+    (
+        dae_phase_result_from_dae(tree, model_name, dae_outcome),
+        warnings,
+    )
 }
 
 pub(super) fn typed_model_outcome_from_instantiated(

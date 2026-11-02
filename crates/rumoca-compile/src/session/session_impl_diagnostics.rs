@@ -51,6 +51,41 @@ impl Session {
         }
     }
 
+    /// Retain a successful strict compilation's warnings for the model's Save
+    /// diagnostics, under the same condition as its resolution proof.
+    pub(in crate::session) fn retain_strict_compile_warnings(
+        &mut self,
+        model_name: &str,
+        target: &StrictTargetResolution,
+        warnings: StrictCompileWarnings,
+    ) {
+        if target.query_mode != ResolveBuildMode::StrictCompileRecovery {
+            return;
+        }
+        let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
+        let records = &mut self
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_compile_warnings;
+        records.shift_remove(&key);
+        records.insert(key, warnings);
+        Self::trim_lru_cache(records, MAX_SESSION_SEMANTIC_DIAGNOSTICS_CACHE_ENTRIES);
+    }
+
+    fn cached_save_compile_warnings(&mut self, model_name: &str) -> Option<StrictCompileWarnings> {
+        let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
+        let records = &mut self
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_compile_warnings;
+        let record = records.shift_remove(&key)?;
+        let result = record.clone();
+        records.insert(key, record);
+        Some(result)
+    }
+
     fn insert_save_resolution_proof(&mut self, model_name: &str, proof: StrictTargetResolution) {
         let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
         self.query_state
@@ -483,6 +518,35 @@ impl Session {
 
         let tree = interface.resolved.inner();
         let warnings = model_diagnostics_for_tree(tree, interface.warnings.clone());
+        // A successful strict compile already established the body and model-stage
+        // warnings; report them instead of building both stages again.
+        let compiled = (mode == SemanticDiagnosticsMode::Save)
+            .then(|| self.cached_save_compile_warnings(model_name))
+            .flatten();
+        if let Some(compiled) = compiled {
+            let model_span = class_primary_span(tree, model_name)
+                .unwrap_or_else(|| default_tree_span(&tree.source_map));
+            let body = model_diagnostics_for_tree(
+                tree,
+                synthesized_inner_diagnostics(
+                    &compiled.synthesized_inners,
+                    &compiled.synthesized_inner_messages,
+                    model_span,
+                ),
+            );
+            if interface
+                .class_type
+                .as_ref()
+                .is_some_and(|class_type| !is_simulatable_class_type(class_type))
+            {
+                return merge_model_diagnostics(warnings, body);
+            }
+            let model_stage = model_diagnostics_for_tree(
+                tree,
+                structural_selection_warnings(&compiled.structural_selections),
+            );
+            return merge_model_diagnostics(warnings, merge_model_diagnostics(body, model_stage));
+        }
         let body =
             self.body_semantic_diagnostics_query(tree, model_name, mode, interface.fingerprint);
         if interface
