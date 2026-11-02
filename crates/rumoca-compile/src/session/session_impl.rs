@@ -1253,6 +1253,7 @@ impl Session {
         let target = self
             .resolve_strict_compilation_target(model_name)
             .map_err(|failure| Box::new(strict_pre_phase_failure(model_name, failure.failures)))?;
+        self.retain_strict_target_proof(model_name, &target);
         let tree = target.resolved.inner();
         let mut failures = Vec::new();
 

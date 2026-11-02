@@ -150,6 +150,47 @@ fn save_resolution_proof_is_reused_exactly_then_invalidated_by_document_edit() {
 }
 
 #[test]
+fn strict_dae_compile_retains_its_resolution_for_save_diagnostics() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            "model M\n  Real x(start = 0);\nequation\n  der(x) = 1;\nend M;\n",
+        )
+        .expect("document should parse");
+
+    session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("M")
+        .expect("M compiles");
+    let key = SemanticDiagnosticsCacheKey::new("M", SemanticDiagnosticsMode::Save);
+    let retained = session
+        .query_state
+        .flat
+        .semantic_diagnostics
+        .save_resolution_proofs
+        .get(&key)
+        .expect("the strict DAE compile should retain its target resolution")
+        .resolved
+        .clone();
+
+    let diagnostics = session.semantic_diagnostics_query("M", SemanticDiagnosticsMode::Save);
+    assert!(diagnostics.diagnostics.is_empty());
+    let read = session
+        .query_state
+        .flat
+        .semantic_diagnostics
+        .save_resolution_proofs
+        .get(&key)
+        .expect("Save diagnostics keep the proof")
+        .resolved
+        .clone();
+    assert!(
+        std::sync::Arc::ptr_eq(&retained, &read),
+        "Save diagnostics must read the resolution the strict compile retained, not resolve again"
+    );
+}
+
+#[test]
 fn body_semantic_diagnostics_use_distinct_cache_from_model_stage() {
     let source = r#"function F
   input Real x;
