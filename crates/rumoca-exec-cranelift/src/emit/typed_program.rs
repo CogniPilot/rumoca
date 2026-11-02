@@ -59,6 +59,8 @@ use observation::{
 };
 use operators::{map_binary, map_float_compare, map_int_compare, map_unary};
 use rumoca_ir_solve as solve;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use storage::compact_register_tape;
 pub use support::{NativeFormDecline, NativeFormSupport, NativeOwnerSupport};
@@ -131,6 +133,7 @@ pub(crate) struct CompiledPureCallTable {
     symbols: Box<[Option<PureCallSymbol>]>,
     directional_symbols: Box<[Option<PureCallSymbol>]>,
     observation_symbols: Box<[Option<PureCallSymbol>]>,
+    symbol_addresses: Arc<BTreeMap<String, usize>>,
     support: Box<[NativeOwnerSupport]>,
     _source: solve::SolvePureCallTable,
     _input_results: Vec<InputResults>,
@@ -182,15 +185,12 @@ impl CompiledPureCallTable {
     }
 
     pub(super) fn register_symbols(&self, builder: &mut JITBuilder) {
-        for symbol in self.symbols.iter().flatten() {
-            builder.symbol(&symbol.name, symbol.address);
-        }
-        for symbol in self.directional_symbols.iter().flatten() {
-            builder.symbol(&symbol.name, symbol.address);
-        }
-        for symbol in self.observation_symbols.iter().flatten() {
-            builder.symbol(&symbol.name, symbol.address);
-        }
+        let symbols = Arc::clone(&self.symbol_addresses);
+        // Each child module retains this table's code owner. Resolve only its
+        // imports instead of copying every helper into every JIT symbol table.
+        builder.symbol_lookup_fn(Box::new(move |name| {
+            symbols.get(name).map(|&address| address as *const u8)
+        }));
     }
 
     /// Whether the table issued any native helper. A module that may call
@@ -815,11 +815,19 @@ impl TableCompiler {
                     .transpose()?,
             );
         }
+        let symbol_addresses = symbols
+            .iter()
+            .chain(&directional_symbols)
+            .chain(&observation_symbols)
+            .flatten()
+            .map(|symbol| (symbol.name.clone(), symbol.address as usize))
+            .collect();
         Ok(CompiledPureCallTable {
             scratch: Default::default(),
             symbols: symbols.into_boxed_slice(),
             directional_symbols: directional_symbols.into_boxed_slice(),
             observation_symbols: observation_symbols.into_boxed_slice(),
+            symbol_addresses: Arc::new(symbol_addresses),
             support: support.into_boxed_slice(),
             _source: table.clone(),
             _input_results: self.input_results,
