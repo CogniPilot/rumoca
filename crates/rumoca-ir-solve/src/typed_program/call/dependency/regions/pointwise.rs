@@ -8,7 +8,7 @@ pub(super) fn fold_output(
     transition: &SolveProgramRegion,
     summary: &[SolveCallDependency],
     index: usize,
-    registers: &[Vec<SolveCallDependency>],
+    reads: &mut Reads<'_>,
 ) -> Result<Option<Vec<SolveCallDependency>>, SolveProgramConstructionError> {
     let Some(value) = initial.get(index) else {
         return Ok(None);
@@ -28,7 +28,7 @@ pub(super) fn fold_output(
     // The domain can be empty; preserve the incoming value as well as every
     // iteration's capture reads. Self-coordinate-only recurrence proves that
     // later iterations cannot add another carry or another coordinate.
-    for dependency in &registers[value.index()] {
+    for dependency in &reads.registers[value.index()] {
         out.insert(dependency.remap_may_depend(&identity, context.provenance)?);
     }
     merge(
@@ -40,7 +40,7 @@ pub(super) fn fold_output(
             summary,
             dimensions.len(),
             None,
-            registers,
+            reads,
         )?,
     );
     Ok(Some(out.finish()))

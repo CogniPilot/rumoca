@@ -128,15 +128,13 @@ impl Coordinates {
         let count = access.output_rank.checked_add(free_dimensions.len())?;
         let substitute = |source: &AffineForm| {
             let mut result = AffineForm::constant(source.constant, count);
-            for (coefficient, substitution) in source
+            for (&coefficient, substitution) in source
                 .coeffs
                 .iter()
                 .take(self.output_rank)
                 .zip(&access.subscripts)
             {
-                let mut extended = substitution.clone();
-                extended.coeffs.resize(count, 0);
-                result = result.checked_add(&extended.checked_scale(*coefficient)?)?;
+                add_scaled(&mut result, substitution, coefficient)?;
             }
             let free_start = access.output_rank + access.free_dimensions.len();
             for (index, coefficient) in source.coeffs.iter().skip(self.output_rank).enumerate() {
@@ -312,6 +310,21 @@ impl Coordinates {
         }
         Some(elements)
     }
+}
+
+/// `result += coefficient * substitution`, in place: any overflow fails, as
+/// adding a scaled copy of the substitution would.
+fn add_scaled(result: &mut AffineForm, substitution: &AffineForm, coefficient: i64) -> Option<()> {
+    if coefficient == 0 {
+        return Some(());
+    }
+    result.constant = result
+        .constant
+        .checked_add(substitution.constant.checked_mul(coefficient)?)?;
+    for (slot, value) in result.coeffs.iter_mut().zip(&substitution.coeffs) {
+        *slot = slot.checked_add(value.checked_mul(coefficient)?)?;
+    }
+    Some(())
 }
 
 fn checked_prefix_bounds(form: &AffineForm, dimensions: &[u32]) -> Option<(i64, i64)> {
