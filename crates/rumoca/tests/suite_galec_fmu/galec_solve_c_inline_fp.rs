@@ -229,7 +229,7 @@ fn c_trace(name: &str, inputs: [u32; 4], dir: &Path) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     let run = std::process::Command::new(&exe).output().expect("run");
-    String::from_utf8_lossy(&run.stdout).into_owned()
+    String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n")
 }
 
 #[test]
