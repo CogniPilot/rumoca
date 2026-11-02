@@ -24,15 +24,11 @@ application needs plain C rather than an eFMU container.
   share that instance's slots, so they require ordinary exclusive mutable
   ownership, which is already true of a block whose methods are its only entry
   points.
-- **A local read before it is written observes another owner's data.** GALEC
-  does not require definite assignment of locals, so a body may read one; the
-  value it gets was always arbitrary, but with the overlay it is now whatever
-  the frame sharing that storage last left there rather than what the same owner
-  left on its own previous activation. The three method frames share one union,
-  so a `DoStep` local read before assignment can carry a value `Startup` wrote.
-  It takes a source defect to reach, and neither the old value nor the new one
-  is one the source asked for, but the arbitrary value CHANGED, so a test that
-  passed by accident on the old one may fail on this one.
+- **Local reads must be defined.** The checked GALEC package alone does not
+  establish definite assignment. Solve refinement proves that each local read
+  follows an assignment on its executed path and refuses an unproved read with
+  EL007. C storage may be zero-initialized, but that zero is never an accepted
+  substitute for an unassigned GALEC value.
 - Working memory is **overlaid** by frame. The three method frames are one
   union, because the methods never run together on one state object. Each user
   function gets its call level, one more than its deepest caller's, and the
