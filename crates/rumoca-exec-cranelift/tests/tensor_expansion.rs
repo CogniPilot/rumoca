@@ -121,7 +121,7 @@ fn capture_pack_and_fold_body_keep_their_actual_loop_contexts() {
 
 fn measure_row(n: u32, stride: usize) -> ExpansionReport {
     let source = fixtures::row(n, stride);
-    let y: Vec<_> = (0..n as usize * stride)
+    let y: Vec<_> = (0..(n as usize * stride).max(256))
         .map(|i| if i % 2 == 0 { -0.0 } else { i as f64 })
         .collect();
     let plain = compile_expression_scalar_program_block(&source).unwrap();
@@ -129,7 +129,13 @@ fn measure_row(n: u32, stride: usize) -> ExpansionReport {
     plain.call(&y, &[], 0.0, &mut expected).unwrap();
     assert_eq!(
         bits(&expected),
-        bits(&y.iter().step_by(stride).copied().collect::<Vec<_>>())
+        bits(
+            &y.iter()
+                .step_by(stride)
+                .take(n as usize)
+                .copied()
+                .collect::<Vec<_>>()
+        )
     );
     let (compiled, report) =
         record_expansion_report(|| compile_expression_scalar_program_block(&source));

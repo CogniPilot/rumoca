@@ -53,13 +53,17 @@ CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 \
   cargo test -p rumoca-exec-cranelift --test tensor_expansion -- --nocapture
 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 \
   cargo test -p rumoca --lib expansion_report::tests -- --nocapture
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 \
+  cargo test -p rumoca --lib sim_bench::expansion_tests -- --nocapture
 ```
 
 The four original literal/Map/Fold/output-range witnesses are built at
-16/17/64/128 elements, with contiguous and strided output variants and a bounded
-static matrix control, an exact-order fused chain and a row call whose table was
-compiled outside collection. They check numerical bits with collection enabled and
-disabled and preserve raw source/counter inventories under
+16/17/64/128 elements. Range controls use contiguous and strided outputs over a
+fixed wide input, varying the projected output count on the existing tape path.
+Separate controls cover a bounded static matrix, an exact-order fused chain
+and a row call whose table was compiled outside collection. They compare
+numerical bits with collection enabled and disabled and preserve raw inventories
+under
 `target/tensor-expansion-fixtures`. Linux CI uploads that directory from the
 normal workspace suite; no second build or duplicate test run is added.
 The historical private known-open list is not a measured current baseline.

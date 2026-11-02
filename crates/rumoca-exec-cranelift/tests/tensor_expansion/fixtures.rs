@@ -138,7 +138,9 @@ pub fn row(n: u32, stride: usize) -> ScalarProgramBlock {
                 dst_start: 0,
                 input: TensorInputKind::Y,
                 input_start: 0,
-                count: count * stride,
+                // Keep the row on its existing tape path while varying only
+                // the projected output count (the direct-register cap is 128).
+                count: (count * stride).max(256),
                 seed_start: None,
                 lanes: 1,
             },
