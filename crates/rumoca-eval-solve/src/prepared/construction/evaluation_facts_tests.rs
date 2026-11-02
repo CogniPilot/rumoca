@@ -85,11 +85,10 @@ fn tensor_affine_count(block: &PreparedScalarProgramBlock) -> usize {
         .sum()
 }
 
+/// Every program's assignment shapes, deriving those not yet queried.
 fn assignment_shape_count(block: &PreparedScalarProgramBlock) -> usize {
-    block
-        .row_assignment_shapes
-        .iter()
-        .map(|row| row.len())
+    (0..block.row_assignment_shapes.len())
+        .map(|row| block.assignment_shapes(row).map_or(0, <[_]>::len))
         .sum()
 }
 
@@ -109,6 +108,11 @@ fn residual_preparation_does_not_materialize_unselected_slice_assignments() {
 
 #[test]
 fn evaluation_blocks_derive_no_assignment_certificates_for_slice_rows() {
+    let full = PreparedScalarProgramBlock::new(stencil_block()).unwrap();
+    assert!(
+        assignment_shape_count(&full) > 0,
+        "a full block certifies the stencil rows"
+    );
     let evaluation = PreparedEvaluationBlock::new(stencil_block()).unwrap();
     assert_eq!(assignment_shape_count(&evaluation.0), 0);
     assert_eq!(tensor_affine_count(&evaluation.0), 0);
@@ -130,6 +134,21 @@ fn evaluation_blocks_derive_no_assignment_certificates_for_slice_rows() {
     )
     .unwrap();
     assert_eq!(tensor_affine_count(&replaced.0), 0);
+}
+
+#[test]
+fn full_blocks_derive_a_program_s_assignment_shapes_on_its_first_query() {
+    let full = PreparedScalarProgramBlock::new(stencil_block()).unwrap();
+    let derived = |block: &PreparedScalarProgramBlock| {
+        block
+            .row_assignment_shapes
+            .iter()
+            .map(|shapes| shapes.get().is_some())
+            .collect::<Vec<_>>()
+    };
+    assert!(derived(&full).iter().all(|derived| !derived));
+    full.row_has_assignment_shape(0);
+    assert_eq!(derived(&full), [true]);
 }
 
 #[test]

@@ -65,8 +65,7 @@ impl PreparedScalarProgramBlock {
             };
         }
         let owned_by_other_shape = self
-            .row_assignment_shapes
-            .get(row_idx)
+            .assignment_shapes(row_idx)
             .is_some_and(|shapes| shapes.iter().any(|(output, _)| *output == output_offset));
         if owned_by_other_shape || row_output_depends_on_y_index(row, output_offset, target_y_index)
         {

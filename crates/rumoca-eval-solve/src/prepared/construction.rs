@@ -39,7 +39,6 @@ struct PreparedRow {
     reverse_y_gradient_supported: bool,
     is_causal: bool,
     requires_checked_observation: bool,
-    assignment_shapes: Box<[(usize, TargetAssignmentShape)]>,
     tensor_affine_assignments: tensor_affine_assignment::PreparedTensorAffineAssignments,
     parameter_indices: Box<[usize]>,
     parameter_static_y_gradient_params: Option<Box<[usize]>>,
@@ -53,11 +52,7 @@ pub(super) enum RowFacts {
     Evaluation,
 }
 
-fn prepare_row(
-    block: &ScalarProgramBlock,
-    row_idx: usize,
-    facts: RowFacts,
-) -> Result<PreparedRow, EvalSolveError> {
+fn prepare_row(block: &ScalarProgramBlock, row_idx: usize) -> Result<PreparedRow, EvalSolveError> {
     let span = block.program_span(row_idx);
     let row = block.program(row_idx).ok_or_else(|| {
         invalid_row("prepared program is outside its block").with_source_span(span)
@@ -67,12 +62,6 @@ fn prepare_row(
         invalid_row("checked block has no register certificate for its program")
             .with_source_span(span)
     })?;
-    let assignment_shapes = match facts {
-        RowFacts::Full => target_assignment_shapes_with_output_offsets(row)
-            .map_err(|error| error.with_source_span(span))?
-            .into_boxed_slice(),
-        RowFacts::Evaluation => Box::default(),
-    };
     let tensor_affine_assignments =
         tensor_affine_assignment::PreparedTensorAffineAssignments::default();
     let parameter_indices = row_parameter_indices(row).into_boxed_slice();
@@ -85,7 +74,6 @@ fn prepare_row(
         requires_checked_observation: row
             .iter()
             .any(|operation| matches!(operation, LinearOp::PureCallObservation { .. })),
-        assignment_shapes,
         tensor_affine_assignments,
         parameter_static_y_gradient_params: parameter_static_y_gradient(row)
             .then(|| parameter_indices.clone()),
@@ -190,7 +178,7 @@ impl PreparedScalarProgramBlock {
             block,
         };
         for row_idx in 0..row_count {
-            let row = prepare_row(&prepared.block, row_idx, facts)?;
+            let row = prepare_row(&prepared.block, row_idx)?;
             prepared.requirements = prepared.requirements.merge(row.requirement);
             prepared.push_row(row);
         }
@@ -216,7 +204,7 @@ impl PreparedScalarProgramBlock {
         let mut prepared = base.clone();
         prepared.block = block;
         for &row_idx in replaced {
-            let row = prepare_row(&prepared.block, row_idx, prepared.facts)?;
+            let row = prepare_row(&prepared.block, row_idx)?;
             prepared.set_row(row_idx, row);
         }
         prepared.requirements = prepared
@@ -237,7 +225,7 @@ impl PreparedScalarProgramBlock {
         self.row_is_causal.push(row.is_causal);
         self.row_requires_checked_observation
             .push(row.requires_checked_observation);
-        self.row_assignment_shapes.push(row.assignment_shapes);
+        self.row_assignment_shapes.push(OnceCell::new());
         self.row_tensor_affine_assignments
             .push(row.tensor_affine_assignments);
         self.row_parameter_indices.push(row.parameter_indices);
@@ -252,7 +240,7 @@ impl PreparedScalarProgramBlock {
         self.row_reverse_y_gradient_supported[row_idx] = row.reverse_y_gradient_supported;
         self.row_is_causal[row_idx] = row.is_causal;
         self.row_requires_checked_observation[row_idx] = row.requires_checked_observation;
-        self.row_assignment_shapes[row_idx] = row.assignment_shapes;
+        self.row_assignment_shapes[row_idx] = OnceCell::new();
         self.row_tensor_affine_assignments[row_idx] = row.tensor_affine_assignments;
         self.row_parameter_indices[row_idx] = row.parameter_indices;
         self.row_parameter_static_y_gradient_params[row_idx] =

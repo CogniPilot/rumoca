@@ -164,7 +164,10 @@ impl PreparedScalarProgramBlock {
             .ok_or_else(|| invalid_prepared_row("issued target prefix cannot materialize"))?;
         let coefficient_output_error =
             || invalid_prepared_row("issued coefficient output cannot materialize");
-        for (candidate_output, shape) in self.row_assignment_shapes[row].iter() {
+        let shapes = self
+            .assignment_shapes(row)
+            .ok_or_else(|| invalid_prepared_row("issued target row is outside its block"))?;
+        for (candidate_output, shape) in shapes {
             // The canonical evaluator selects the first shape for this pair.
             if !issued.insert((*candidate_output, shape.target_y_index()))
                 || shape.expr_eval_len() != prefix_len

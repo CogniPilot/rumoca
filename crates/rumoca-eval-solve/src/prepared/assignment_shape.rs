@@ -105,7 +105,7 @@ pub fn target_assignment_shapes(
     row: &[LinearOp],
 ) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
     let mut shapes = Vec::new();
-    for (_, shape) in target_assignment_shapes_with_output_offsets(row)? {
+    for (_, shape) in target_assignment_shapes_with_output_offsets(row) {
         if shapes.iter().all(|existing: &TargetAssignmentShape| {
             existing.target_y_index() != shape.target_y_index()
         }) {
@@ -117,8 +117,8 @@ pub fn target_assignment_shapes(
 
 pub(super) fn target_assignment_shapes_with_output_offsets(
     row: &[LinearOp],
-) -> Result<Vec<(usize, TargetAssignmentShape)>, EvalSolveError> {
-    Ok(rumoca_ir_solve::derive_target_assignment_shapes(row))
+) -> Vec<(usize, TargetAssignmentShape)> {
+    rumoca_ir_solve::derive_target_assignment_shapes(row)
 }
 
 fn read_shape_reg(
