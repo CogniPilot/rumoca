@@ -22,6 +22,7 @@ mod galec_signed_zero;
 mod galec_single_element_index;
 mod galec_slice_value_bounds;
 mod galec_solve_c_faults;
+mod galec_solve_c_inline_fp;
 mod galec_solve_refinement;
 mod galec_store_order;
 
