@@ -13,7 +13,7 @@ import time
 
 SOURCES = {
     "old": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
-    "current": "d8453e8b539c27a9d63dd3b0cead9c72d3a6cbfb",
+    "current": "4b475aee41ac6b0ca811d19297780c14824a2150",
 }
 MODEL = "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic"
 MSL_SHA = "5409cfa17797c52d866dc9d2675badc1378b4bbf88066e60899a489cb1cb8a2d"

@@ -25,7 +25,7 @@ jobs:
           - label: old
             source: da9d7ca4708e6b5d694a0163d07d5007d61a86eb
           - label: current
-            source: d8453e8b539c27a9d63dd3b0cead9c72d3a6cbfb
+            source: 4b475aee41ac6b0ca811d19297780c14824a2150
     steps:
       - uses: actions/checkout@v5
         with:
