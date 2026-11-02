@@ -1,0 +1,115 @@
+name: Engine1b timing diagnostic
+
+# A branch-only experiment: no release, baseline, or general CI dispatch.
+on:
+  push:
+    branches: ['engine1b-timing-diagnostic']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: 4
+  RUST_TEST_THREADS: 4
+  RAYON_NUM_THREADS: 4
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: old
+            source: da9d7ca4708e6b5d694a0163d07d5007d61a86eb
+          - label: current
+            source: d8453e8b539c27a9d63dd3b0cead9c72d3a6cbfb
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.source }}
+          path: producer
+          persist-credentials: false
+      - name: Verify immutable producer
+        env:
+          EXPECTED_SOURCE: ${{ matrix.source }}
+        run: test "$(git -C producer rev-parse HEAD)" = "$EXPECTED_SOURCE"
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+      - name: Build the existing release artifact graph
+        working-directory: producer
+        run: nix build --max-jobs 1 --cores 4 --print-build-logs .#msl-artifacts --out-link ../result-msl-artifacts
+      - name: Export bound worker closure
+        env:
+          SOURCE_LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          (cd producer && nix derivation show .#msl-artifacts) > export/derivation.json
+          python3 infra/verification/engine1b_timing_diagnostic.py bind producer result-msl-artifacts export/manifest.json
+          mapfile -t closure < <(nix-store -qR ./result-msl-artifacts | sort -u)
+          nix-store --export "${closure[@]}" | gzip -1 > export/closure.nar.gz
+          (cd export && sha256sum closure.nar.gz > closure.sha256)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: engine1b-producer-${{ matrix.label }}
+          path: export/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  measure:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: engine1b-producer-old
+          path: inputs/old
+      - uses: actions/download-artifact@v8
+        with:
+          name: engine1b-producer-current
+          path: inputs/current
+      - name: Import both exact closures
+        run: |
+          set -euo pipefail
+          for label in old current; do
+            (cd "inputs/$label" && sha256sum -c closure.sha256)
+            gzip -dc "inputs/$label/closure.nar.gz" | nix-store --import
+          done
+      - name: Obtain the pinned MSL archive
+        run: |
+          curl --fail --location --retry 3 --output msl.zip https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          echo '5409cfa17797c52d866dc9d2675badc1378b4bbf88066e60899a489cb1cb8a2d  msl.zip' | sha256sum -c -
+          python3 -m zipfile -e msl.zip msl
+      - name: Run one alternating pair of fresh workers
+        env:
+          PAIR: ${{ matrix.pair }}
+        run: python3 infra/verification/engine1b_timing_diagnostic.py measure inputs msl.zip msl evidence "$PAIR"
+      - name: Retain every attempt and its provenance
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: engine1b-pair-${{ matrix.pair }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
