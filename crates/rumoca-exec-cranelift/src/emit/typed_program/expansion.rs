@@ -23,7 +23,7 @@ impl ProgramLowerer<'_, '_> {
                 },
                 operation_kind(operation.operation()),
                 Some(operation.provenance()),
-                self.defined_scalars(operation.operation()),
+                defined_scalars(operation.operation(), original),
                 (
                     std::ptr::from_ref(&*self.builder.func) as usize,
                     self.builder.func.dfg.num_insts(),
@@ -74,16 +74,14 @@ impl ProgramLowerer<'_, '_> {
         }
         members.into_iter().collect()
     }
+}
 
-    fn defined_scalars(&self, operation: &solve::SolveOperation) -> u64 {
-        let mut elements = 0;
-        operation.visit_output_registers(|register| {
-            if let Ok(location) = self.register(register) {
-                elements += u64::from(location.value_type.scalar_count());
-            }
-        });
-        elements
-    }
+fn defined_scalars(operation: &solve::SolveOperation, source: &solve::TypedProgram) -> u64 {
+    let mut elements = 0;
+    operation.visit_output_registers(|register| {
+        elements += u64::from(source.register_types()[register.index()].scalar_count());
+    });
+    elements
 }
 
 fn operation_kind(operation: &solve::SolveOperation) -> &'static str {

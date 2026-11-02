@@ -236,6 +236,10 @@ fn fused_emission_names_its_original_producers_and_preserves_term_order() {
         .find(|entry| entry.path == "deferred-fusion")
         .unwrap();
     assert_eq!(deferred.instructions, 0);
+    assert_eq!(
+        deferred.elements, 64,
+        "deferred values keep their canonical source shape"
+    );
     let ExpansionSource::Typed { program, operation } = deferred.source else {
         panic!("typed source")
     };
