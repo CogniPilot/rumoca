@@ -125,7 +125,7 @@ pub enum FmiTangentMode {
 
 /// Derivatives of retained initialization checks with no solved target.
 /// A consumer must validate these after solving the tangent relation; ignoring
-/// them would admit a perturbation outside the source initialization system.
+/// them would accept a seed direction that violates the source initialization system.
 pub struct FmiTangentConsistency {
     program: solve::ScalarProgramBlock,
     rows: Box<[usize]>,

@@ -96,7 +96,7 @@ static int {{ stem }}_tangent_checks(ModelInstance* m, const double* seed, doubl
 {%- endif %}
 
 /* m and all buffers are private to this derivative evaluation. This routine
-   writes no live primal coordinate and never allocates or finite-differences. */
+   writes no live primal coordinate and evaluates source JVPs without allocation. */
 static int {{ stem }}_total_tangent(ModelInstance* m, double* seed,
                              double* rhs, double* scratch, double* implicit_work,
                              size_t* implicit_sizes) {
@@ -164,7 +164,7 @@ static double rmc_tangent_check_value(const RmcTangentCheck* check, size_t row,
 }
 /* fmi_tangents::consistency_row_converged. Scale each source row by the
    largest actual |Jacobian column * direction| contribution. No unit floor,
-   absolute residual waiver, finite difference, or fabricated zero derivative.
+   absolute residual waiver, or fabricated zero derivative. Evaluations use exact source JVPs.
    All seed/scratch/work buffers and the primal point belong to this request. */
 static int rmc_verify_tangent(ModelInstance* m, double* seed, double* scratch,
                                double* work, const RmcTangentCheck* check) {
@@ -313,7 +313,7 @@ static double rmc_tangent_unknown(RmcTangentReference ref, size_t element,
 
 /* All request/type/role/extent checks precede a snapshot or numerical call.
    The only public-buffer write is the final memcpy after complete success.
-   Adjoint products use exact directional basis columns, never perturbations. */
+   Adjoint products use exact directional basis columns from the checked JVPs. */
 static {{ prefix }}Status rmc_tangent_request({{ instance_type }} instance,
         const {{ prefix }}ValueReference unknowns[], size_t nunknowns,
         const {{ prefix }}ValueReference knowns[], size_t nknowns,
