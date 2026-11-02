@@ -4,6 +4,8 @@ use cranelift_codegen::ir;
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 
+use super::register_allocation::QueuedFunctions;
+
 /// Sole owner of one Cranelift executable-memory arena.
 ///
 /// `JITModule` intentionally does not release code memory from `Drop`; its
@@ -11,11 +13,40 @@ use cranelift_module::{FuncId, Module};
 /// function pointer into the module has become unreachable. Compiled Rumoca
 /// owners keep this field last, so their pointer metadata and attached call
 /// tables are dropped before this guard releases the arena.
-pub(super) struct OwnedJitModule(Option<JITModule>);
+///
+/// It also holds the functions built for the module but not yet compiled;
+/// [`super::finalize_jit_module`] defines them before finalizing.
+pub(super) struct OwnedJitModule {
+    module: Option<JITModule>,
+    queued: QueuedFunctions,
+}
 
 impl OwnedJitModule {
     pub(super) fn new(module: JITModule) -> Self {
-        Self(Some(module))
+        Self {
+            module: Some(module),
+            queued: QueuedFunctions::default(),
+        }
+    }
+
+    /// Queue `function`, built in `context`, to compile with the module's
+    /// other functions; `context` is left empty for the next function.
+    pub(super) fn queue_function(
+        &mut self,
+        function: FuncId,
+        context: &mut cranelift_codegen::Context,
+    ) -> Result<(), String> {
+        let fresh = self.make_context();
+        if self.queued.push(function, context, fresh) {
+            self.define_queued()?;
+        }
+        Ok(())
+    }
+
+    /// Compile and define every queued function, in queue order.
+    pub(super) fn define_queued(&mut self) -> Result<(), String> {
+        let module = self.module.as_mut().expect("owned JIT module is present");
+        self.queued.define_into(module)
     }
 }
 
@@ -48,19 +79,19 @@ impl Deref for OwnedJitModule {
     type Target = JITModule;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref().expect("owned JIT module is present")
+        self.module.as_ref().expect("owned JIT module is present")
     }
 }
 
 impl DerefMut for OwnedJitModule {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().expect("owned JIT module is present")
+        self.module.as_mut().expect("owned JIT module is present")
     }
 }
 
 impl Drop for OwnedJitModule {
     fn drop(&mut self) {
-        let Some(module) = self.0.take() else {
+        let Some(module) = self.module.take() else {
             return;
         };
         // SAFETY: the guard is the last field of every compiled owner. Dropping
