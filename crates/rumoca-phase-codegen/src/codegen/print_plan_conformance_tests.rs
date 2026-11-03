@@ -1483,6 +1483,7 @@ const UNSELECTED: &[&str] = &[];
 /// production rendering plus markers only: stripped of its markers it must
 /// equal the production output byte for byte, and decode in full.
 fn marked_rendering(
+    regions: &[registry::Region],
     plain: &Printer,
     marked: &Printer,
     program: &solve::TypedProgram,
@@ -1496,7 +1497,7 @@ fn marked_rendering(
         ));
     }
     let rendered = marked.definition(&wire, name);
-    let output = registry::stripped(&rendered);
+    let output = registry::stripped(&rendered, regions);
     if output != production {
         return Err(format!(
             "{name}: marked rendering is not production plus markers"
@@ -1525,7 +1526,7 @@ fn every_registered_region_is_rendered_selected_and_decoded() {
     let plain = Printer::builtin();
     let mut rendered = String::new();
     for (program, name) in conformance_programs() {
-        rendered.push_str(&marked_rendering(&plain, &marked, &program, name).unwrap());
+        rendered.push_str(&marked_rendering(&regions, &plain, &marked, &program, name).unwrap());
     }
     let (unrun, unselected) = registry::unreached(&regions, &rendered);
     assert_eq!(
@@ -1549,7 +1550,28 @@ fn a_marked_rendering_must_be_production_plus_markers() {
         "@@R:tensor_item@@ ",
         1,
     );
-    assert!(marked_rendering(&plain, &Printer::new(forged), &program, "tensor").is_err());
+    assert!(marked_rendering(&regions, &plain, &Printer::new(forged), &program, "tensor").is_err());
+    // A forged marker payload the instrumentation never issues is kept by
+    // stripping, so it cannot vanish into an output that matches production.
+    let unissued = registry::instrumented(template, &regions).replacen(
+        "\"@@R:tensor_item@@\"",
+        "\"@@R:tensor_item@@@@R:forged@@\"",
+        1,
+    );
+    assert!(
+        marked_rendering(
+            &regions,
+            &plain,
+            &Printer::new(unissued),
+            &program,
+            "tensor"
+        )
+        .is_err()
+    );
+    assert_eq!(
+        registry::stripped("a@@R:tensor_item@@b@@R:forged@@c", &regions),
+        "ab@@R:forged@@c"
+    );
     let injected = template.replacen(
         "{%- macro plan_outputs(plan) -%}\n",
         "{%- macro plan_outputs(plan) -%}\n@@V:x:y:z@@",
@@ -1557,7 +1579,16 @@ fn a_marked_rendering_must_be_production_plus_markers() {
     );
     assert_ne!(injected, template, "anchor");
     let marked = Printer::new(registry::instrumented(&injected, &regions));
-    assert!(marked_rendering(&Printer::new(injected), &marked, &program, "tensor").is_err());
+    assert!(
+        marked_rendering(
+            &regions,
+            &Printer::new(injected),
+            &marked,
+            &program,
+            "tensor"
+        )
+        .is_err()
+    );
 }
 
 /// A registered region production never renders, or a declared variant no

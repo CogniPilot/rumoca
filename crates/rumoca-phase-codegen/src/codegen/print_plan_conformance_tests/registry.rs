@@ -126,17 +126,34 @@ pub(super) fn unreached(regions: &[Region], rendered: &str) -> (Vec<String>, Vec
     (unrun, unselected)
 }
 
-/// `text` without the markers `instrumented` inserts.
-pub(super) fn stripped(text: &str) -> String {
+/// Every marker key `instrumented` issues for `regions`.
+pub(super) fn marker_keys(regions: &[Region]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for region in regions {
+        keys.push(format!("R:{}", region.name));
+        for (path, variants) in &region.tags {
+            for variant in variants {
+                keys.push(format!("V:{}:{path}:{variant}", region.name));
+            }
+        }
+    }
+    keys
+}
+
+/// `text` without the markers `instrumented` issues for `regions`. Any other
+/// `@@...@@` text is kept, so a forged or unknown marker cannot be erased
+/// into an output that matches production.
+pub(super) fn stripped(text: &str, regions: &[Region]) -> String {
+    let keys = marker_keys(regions);
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("@@") {
         out.push_str(&rest[..at]);
         let tail = &rest[at + 2..];
-        let marker = (tail.starts_with("R:") || tail.starts_with("V:"))
-            .then(|| tail.find("@@"))
-            .flatten();
-        match marker {
+        let issued = tail
+            .find("@@")
+            .filter(|&end| keys.iter().any(|k| *k == tail[..end]));
+        match issued {
             Some(end) => rest = &tail[end + 2..],
             None => {
                 out.push_str("@@");
