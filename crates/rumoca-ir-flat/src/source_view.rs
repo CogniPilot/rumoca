@@ -1,7 +1,10 @@
 //! Canonical, target-neutral source equation views (SPEC_0041 §7).
 
+mod residual;
 #[cfg(test)]
 mod tests;
+
+pub use residual::{SourceEquationPresentation, SourceEquationSides};
 
 use crate::{Equation, EquationOrigin, Model, StructuredEquationFamily};
 use rumoca_core::{ComprehensionScalarView, Expression, Span, StructuredIndexBinder};

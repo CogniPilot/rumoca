@@ -234,6 +234,11 @@ or initial equation rows and checked BinderSubstitution loop bodies. Unsupported
 unmaterialized families, invalid ranges and overlaps refuse before any view is
 returned; zero-point families consume no scalar rows. It does not render text,
 change numerical Solve IR, or authorize a backend migration.
+`flat::Equation::source_presentation` issues original ordered subtraction
+operands or the complete zero-residual view, retaining span/origin without
+rewriting or evaluating its source AST. The matching
+`DaeView::source_equation_presentation` retains branded expression identities
+and equation provenance without mutating the checked DAE or its wire.
 
 These rules are normative by reference from SPEC_0029 §12.
 
