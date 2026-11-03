@@ -3,6 +3,7 @@
 mod algorithm_block;
 mod call;
 mod demand;
+mod entry;
 mod integer_interval;
 mod pass_independence;
 mod program;
@@ -17,29 +18,34 @@ pub use algorithm_block::{
 pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;
 pub use call::{
-    AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
-    ScopedSolvePureCallTable, SolveAssertionLevel, SolveCallSiteCount,
-    SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
-    SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
-    SolvePureCallWireError, SolvePureCallWireScope, SolveRecursionProfile, SolveRecursiveGroup,
-    SolveRecursiveMember,
+    AssertionRegionKind, AssertionRegionStep, AssertionSource, BoundSolvePureCallBody,
+    CheckedAssertionFlow, ScopedSolvePureCallTable, SolveAssertionLevel, SolveCallSiteCount,
+    SolveCallValueRole, SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite,
+    SolvePureCallIdentity, SolvePureCallInputCoordinate, SolvePureCallOutput,
+    SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallSite,
+    SolvePureCallTable, SolvePureCallTableBuilder, SolvePureCallWireError, SolvePureCallWireScope,
+    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
 };
 pub use demand::{SolveLiveness, SolveOutputDemand, visit_demanded_calls, visit_demanded_reads};
+pub use entry::{
+    EntryCallCatalog, EntryCallOccurrence, EntryCallOccurrenceId, EntryCallOccurrences,
+    EntryCallTarget, SharedHelperProgramEntry, TypedProgramEntry,
+};
 pub use integer_interval::{
     SolveIntegerInterval, fold_integer_compare, fold_scalar_binary, fold_scalar_unary,
 };
 pub use pass_independence::{IndependentPasses, LaneExactness, SolveIndexForm};
 pub use program::{
     MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, ProgramAssertion, ProgramAssignedState,
-    ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveAssertionForwarding,
-    SolveAssertionMessage, SolveAssignedConditional, SolveAssignedStateId,
-    SolveAssignedStateOperation, SolveBinaryOperator, SolveCompareOperator,
-    SolveConversionOperator, SolveOperation, SolveProgramConstructionError, SolveProgramRegion,
-    SolveReductionOperator, SolveRegisterId, SolveSlot, SolveSlotAccess, SolveSlotId,
-    SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis, SolveUnaryOperator,
-    TypedProgram, TypedProgramBuilder, index_forms, invariant_guard,
-    promoted_concatenate_dimensions,
+    ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis,
+    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
+    SolveAssertionForwarding, SolveAssertionMessage, SolveAssignedConditional,
+    SolveAssignedStateId, SolveAssignedStateOperation, SolveBinaryDirectionalSource,
+    SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator, SolveOperation,
+    SolveProgramConstructionError, SolveProgramRegion, SolveReductionOperator, SolveRegisterId,
+    SolveSlot, SolveSlotAccess, SolveSlotId, SolveSpannedOperation, SolveStorageClass,
+    SolveTensorViewAxis, SolveUnaryDirectionalSource, SolveUnaryOperator, TypedProgram,
+    TypedProgramBuilder, index_forms, invariant_guard, promoted_concatenate_dimensions,
 };
 pub use types::{
     SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,
