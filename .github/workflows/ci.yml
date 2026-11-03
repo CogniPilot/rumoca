@@ -2848,6 +2848,11 @@ jobs:
       # a login profile re-prepends the runner's rustup and Homebrew paths,
       # which shadow the pinned Nix toolchain and Python (on Apple Silicon the
       # rustup host toolchain has no x86_64-apple-darwin standard library).
+      - name: Prepare Nix wheel environment
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash .github/scripts/ci-nix-prepare.sh "${{ matrix.nix_system }}"
+
       - name: Run Python binding Rust tests
         if: matrix.name == 'linux-x86_64-gnu'
         shell: bash
