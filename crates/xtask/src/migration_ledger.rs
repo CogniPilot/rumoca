@@ -7,6 +7,7 @@
 mod tests;
 
 pub mod baseline;
+pub mod captured;
 
 // Component controls are ordinary Cargo tests. This byte relation is not yet
 // consumed by the production authorization path, which remains fail-closed.
@@ -17,7 +18,6 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Component, Path};
 
 const REFERENCE: &str = include_str!("../policy/backend-migration-ledger.json");
@@ -170,46 +170,6 @@ fn validate_finding(finding: &Finding, files: &BTreeMap<String, String>) -> Resu
     Ok(())
 }
 
-fn inventory(root: &Path, scope: &str) -> Result<BTreeMap<String, String>> {
-    let mut start = root.to_path_buf();
-    for component in relative_path(scope)?.components() {
-        start.push(component);
-        ensure!(
-            !fs::symlink_metadata(&start)?.file_type().is_symlink(),
-            "symlink in covered backend scope: {}",
-            start.display()
-        );
-    }
-    ensure!(
-        start.is_dir(),
-        "covered backend directory is missing: {scope}"
-    );
-    let mut result = BTreeMap::new();
-    for entry in walkdir::WalkDir::new(&start).follow_links(false) {
-        let entry = entry.context("cannot inspect covered backend source")?;
-        ensure!(
-            !entry.file_type().is_symlink(),
-            "symlink in covered backend: {}",
-            entry.path().display()
-        );
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        ensure!(entry.file_type().is_file(), "unsupported backend file kind");
-        let relative = entry
-            .path()
-            .strip_prefix(root)
-            .context("backend escaped repository")?;
-        let relative = relative
-            .to_str()
-            .context("non-UTF8 backend path")?
-            .replace('\\', "/");
-        let bytes = fs::read(entry.path()).with_context(|| format!("read {relative}"))?;
-        result.insert(relative, digest(&bytes));
-    }
-    Ok(result)
-}
-
 fn changed_sources(
     expected: &BTreeMap<String, String>,
     actual: &BTreeMap<String, String>,
@@ -230,14 +190,13 @@ fn changed_sources(
 }
 
 fn check(root: &Path, reference: &str) -> Result<usize> {
-    let ledger = parse_ledger(reference)?;
-    let disk = fs::read(root.join(LEDGER_PATH)).context("missing migration ledger")?;
-    ensure!(
-        disk == reference.as_bytes(),
-        "migration ledger changed; rebaselining or status-only retirement is forbidden"
-    );
-    let actual = inventory(root, BACKEND)?;
-    let changes = changed_sources(&ledger.files, &actual);
+    let roots = BTreeSet::from([BACKEND.into(), LEDGER_PATH.into()]);
+    let capture = crate::print_boundary_check::source_closure::capture(root, &roots)?;
+    captured::check_with_reference(&capture, reference)
+}
+
+fn check_inventory(ledger: &Ledger, actual: &BTreeMap<String, String>) -> Result<usize> {
+    let changes = changed_sources(&ledger.files, actual);
     if !changes.is_empty() {
         bail!(
             "legacy backend freeze violated ({} paths):\n{}\nRetirement needs the real source-bound plan/API/conformance gate; counts and approved flags cannot authorize a change.",
