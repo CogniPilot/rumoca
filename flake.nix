@@ -421,6 +421,7 @@
 
         checks = {
           inherit rumoca;
+          python-cargo-deps = rumocaPython.cargoDeps;
           clippy = craneLib.cargoClippy (
             commonArgs
             // {
