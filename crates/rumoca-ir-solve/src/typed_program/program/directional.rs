@@ -16,6 +16,8 @@ mod linear_solve;
 mod mapped;
 mod pointwise;
 mod reduction;
+mod relation;
+pub use relation::{SolveBinaryDirectionalSource, SolveUnaryDirectionalSource};
 
 use arithmetic::DirectionalArithmetic;
 use pointwise::{

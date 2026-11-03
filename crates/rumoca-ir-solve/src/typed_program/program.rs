@@ -18,6 +18,7 @@ pub use assigned_state::{
 };
 mod assertions;
 mod directional;
+pub use directional::{SolveBinaryDirectionalSource, SolveUnaryDirectionalSource};
 mod entry_interface;
 pub use assertions::{ProgramAssertion, SolveAssertionMessage};
 mod fault_flow;

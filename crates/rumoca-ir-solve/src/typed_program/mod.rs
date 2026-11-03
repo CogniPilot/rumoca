@@ -36,12 +36,12 @@ pub use program::{
     MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, ProgramAssertion, ProgramAssignedState,
     ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveAssertionForwarding,
     SolveAssertionMessage, SolveAssignedConditional, SolveAssignedStateId,
-    SolveAssignedStateOperation, SolveBinaryOperator, SolveCompareOperator,
-    SolveConversionOperator, SolveOperation, SolveProgramConstructionError, SolveProgramRegion,
-    SolveReductionOperator, SolveRegisterId, SolveSlot, SolveSlotAccess, SolveSlotId,
-    SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis, SolveUnaryOperator,
-    TypedProgram, TypedProgramBuilder, index_forms, invariant_guard,
-    promoted_concatenate_dimensions,
+    SolveAssignedStateOperation, SolveBinaryDirectionalSource, SolveBinaryOperator,
+    SolveCompareOperator, SolveConversionOperator, SolveOperation, SolveProgramConstructionError,
+    SolveProgramRegion, SolveReductionOperator, SolveRegisterId, SolveSlot, SolveSlotAccess,
+    SolveSlotId, SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis,
+    SolveUnaryDirectionalSource, SolveUnaryOperator, TypedProgram, TypedProgramBuilder,
+    index_forms, invariant_guard, promoted_concatenate_dimensions,
 };
 pub use types::{
     SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,
