@@ -1281,3 +1281,22 @@ fn registered_arguments_must_be_the_macros_own() {
         "extra argument",
     );
 }
+
+#[test]
+fn a_decoded_refusal_must_be_the_environment_fail() {
+    for shadow in [
+        "{% macro fail(message) %}{% endmacro %}\n",
+        "{% from \"other\" import refuse as fail %}\n",
+        "{% set fail = 1 %}\n",
+        "{% for fail in plan.items %}{% endfor %}\n",
+    ] {
+        let template = format!("{shadow}{DECODED}");
+        refused(&template, Some(REGISTRY), Rule::Composition, shadow);
+    }
+    // Unregistered, the same binding does not matter to the decoded check.
+    assert!(
+        !decoded_region(&format!("{{% set fail = 1 %}}\n{DECODED}"), None, "item")
+            .iter()
+            .any(|(_, r)| *r == Rule::Composition)
+    );
+}
