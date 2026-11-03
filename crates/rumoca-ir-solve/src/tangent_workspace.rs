@@ -1,125 +1,254 @@
 //! The workspace of one directional-derivative evaluation, issued from its
-//! phase demands.
+//! checked phase schedule.
 //!
-//! A tangent evaluation keeps one seed column and one state column for its
-//! whole run, then runs its phases one after another: the right-hand side,
+//! A tangent evaluation of a [`SolveProblem`] keeps one seed column, over
+//! the problem's seed domain (its `y` and `p` scalars and time), and one
+//! column of its state scalars for its whole run, then runs its phases one
+//! after another: the right-hand side,
 //! each simultaneous assignment segment, an optional implicit solve and an
-//! optional consistency check. Because no two phases are live at once, one
-//! scratch region of the largest phase demand serves all of them, and the
+//! optional consistency check. [`SolveTangentSchedule`] admits exactly that
+//! order, built only from the checked program of each phase; each phase's
+//! demand is read from its program. Because the schedule is sequential, one
+//! scratch region of the largest phase demand serves every phase, and the
 //! implicit solve and the consistency check, the two phases that also need a
 //! private region (each beginning with its own saved seed), share one region
-//! of the larger demand. Every extent is checked; a printer or evaluator
-//! uses the issued extents and derives none.
+//! of the larger demand. The issued workspace keeps the schedule it was
+//! issued for (the problem and each phase's program, by identity), so a
+//! consumer refuses a workspace issued for another problem or programs.
 
-/// The implicit solve phase: `unknowns` simultaneous targets solved through a
-/// dense `unknowns x unknowns` system, and its program's output count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolveImplicitTangentDemand {
-    pub unknowns: usize,
-    pub outputs: usize,
+use crate::{ScalarProgramBlock, SolveProblem};
+
+/// One phase of a tangent schedule and the program that runs it.
+#[derive(Debug, Clone)]
+enum Phase {
+    Rhs,
+    Assignment { targets: usize },
+    Implicit { unknowns: usize },
+    Consistency { rows: usize },
 }
 
-/// The consistency phase: `rows` checked rows and its program's output count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolveConsistencyTangentDemand {
-    pub rows: usize,
-    pub outputs: usize,
+/// The checked, sequential phase schedule of one tangent evaluation.
+#[derive(Debug, Clone)]
+pub struct SolveTangentSchedule<'problem> {
+    problem: &'problem SolveProblem,
+    seed: usize,
+    states: usize,
+    phases: Vec<(Phase, ScalarProgramBlock)>,
 }
 
-/// What each phase of one tangent evaluation needs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolveTangentDemand<'a> {
-    /// Elements of the seed column.
-    pub seed: usize,
-    /// Elements of the state column.
-    pub states: usize,
-    /// Outputs of the right-hand-side program.
-    pub rhs_outputs: usize,
-    /// Targets of each simultaneous assignment segment, in order.
-    pub segment_targets: &'a [usize],
-    pub implicit: Option<SolveImplicitTangentDemand>,
-    pub consistency: Option<SolveConsistencyTangentDemand>,
-}
-
-/// The issued workspace extents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolveTangentWorkspace {
+/// The issued workspace extents, with the schedule they were issued for.
+#[derive(Debug, Clone)]
+pub struct SolveTangentWorkspace<'problem> {
     implicit_matrix_len: usize,
     implicit_pivot_len: usize,
     scratch_len: usize,
     private_len: usize,
     work_len: usize,
+    schedule: SolveTangentSchedule<'problem>,
 }
 
-/// Which extent of a tangent workspace overflows.
+/// Why a tangent schedule or workspace is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolveTangentWorkspaceError {
+    /// The seed domain of the problem overflows.
+    SeedDomain,
+    /// An assignment segment's outputs are not exactly its targets in order.
+    SegmentCoverage,
+    /// A phase was added after a phase that must follow it, or twice.
+    PhaseOrder,
     ImplicitMatrix,
     ImplicitPivot,
     ImplicitPrivate,
     ConsistencyPrivate,
     Workspace,
+    /// The workspace was issued for another schedule.
+    ForeignSchedule,
 }
 
 impl std::fmt::Display for SolveTangentWorkspaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::SeedDomain => "tangent seed extent overflow",
+            Self::SegmentCoverage => {
+                "tangent segment does not cover its simultaneous target inventory"
+            }
+            Self::PhaseOrder => "tangent phases are not in their sequential order",
             Self::ImplicitMatrix => "implicit matrix extent overflow",
             Self::ImplicitPivot => "implicit pivot extent overflow",
             Self::ImplicitPrivate => "implicit workspace extent overflow",
             Self::ConsistencyPrivate => "consistency workspace extent overflow",
             Self::Workspace => "tangent workspace extent overflow",
+            Self::ForeignSchedule => "tangent workspace was issued for another schedule",
         })
     }
 }
 
 impl std::error::Error for SolveTangentWorkspaceError {}
 
-impl SolveTangentWorkspace {
-    /// Issue the workspace for `demand`.
-    pub fn issue(demand: &SolveTangentDemand<'_>) -> Result<Self, SolveTangentWorkspaceError> {
-        let mut scratch_len = demand
-            .segment_targets
-            .iter()
-            .copied()
-            .fold(demand.rhs_outputs, usize::max);
-        let (mut private_len, mut implicit_matrix_len, mut implicit_pivot_len) = (0, 0, 0);
-        if let Some(implicit) = demand.implicit {
-            let n = implicit.unknowns;
-            implicit_pivot_len = n
-                .checked_mul(2)
-                .ok_or(SolveTangentWorkspaceError::ImplicitPivot)?;
-            implicit_matrix_len = n
-                .checked_mul(n)
-                .ok_or(SolveTangentWorkspaceError::ImplicitMatrix)?;
-            private_len = demand
-                .seed
-                .checked_add(implicit_matrix_len)
-                .and_then(|length| length.checked_add(n))
-                .ok_or(SolveTangentWorkspaceError::ImplicitPrivate)?;
-            scratch_len = scratch_len.max(implicit.outputs);
+impl Phase {
+    /// Phases run in this order; equal ranks may repeat only for segments.
+    const fn rank(&self) -> u8 {
+        match self {
+            Self::Rhs => 0,
+            Self::Assignment { .. } => 1,
+            Self::Implicit { .. } => 2,
+            Self::Consistency { .. } => 3,
         }
-        if let Some(consistency) = demand.consistency {
-            let checks = demand
-                .seed
-                .checked_add(consistency.rows)
-                .ok_or(SolveTangentWorkspaceError::ConsistencyPrivate)?;
-            private_len = private_len.max(checks);
-            scratch_len = scratch_len.max(consistency.outputs);
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rhs, Self::Rhs) => true,
+            (Self::Assignment { targets: a }, Self::Assignment { targets: b }) => a == b,
+            (Self::Implicit { unknowns: a }, Self::Implicit { unknowns: b }) => a == b,
+            (Self::Consistency { rows: a }, Self::Consistency { rows: b }) => a == b,
+            _ => false,
         }
-        let work_len = demand
+    }
+}
+
+impl<'problem> SolveTangentSchedule<'problem> {
+    /// Elements of `problem`'s tangent seed domain: one direction per `y`
+    /// and `p` scalar, and one for time.
+    pub fn seed_len(problem: &SolveProblem) -> Result<usize, SolveTangentWorkspaceError> {
+        problem
+            .layout
+            .y_scalars()
+            .checked_add(problem.layout.p_scalars())
+            .and_then(|length| length.checked_add(1))
+            .ok_or(SolveTangentWorkspaceError::SeedDomain)
+    }
+
+    /// A schedule of `problem` whose first phase is the right-hand side
+    /// `rhs`; its seed and state columns are the problem's own.
+    pub fn new(
+        problem: &'problem SolveProblem,
+        rhs: &ScalarProgramBlock,
+    ) -> Result<Self, SolveTangentWorkspaceError> {
+        Ok(Self {
+            problem,
+            seed: Self::seed_len(problem)?,
+            states: problem.solve_layout.state_scalar_count(),
+            phases: vec![(Phase::Rhs, rhs.clone())],
+        })
+    }
+
+    /// Add a simultaneous assignment segment of `targets` targets, whose
+    /// program writes exactly its targets in order.
+    pub fn assignment(
+        self,
+        program: &ScalarProgramBlock,
+        targets: usize,
+    ) -> Result<Self, SolveTangentWorkspaceError> {
+        if program.output_indices().iter().copied().ne(0..targets) {
+            return Err(SolveTangentWorkspaceError::SegmentCoverage);
+        }
+        self.push(Phase::Assignment { targets }, program)
+    }
+
+    /// Add the implicit solve of `unknowns` simultaneous targets.
+    pub fn implicit(
+        self,
+        program: &ScalarProgramBlock,
+        unknowns: usize,
+    ) -> Result<Self, SolveTangentWorkspaceError> {
+        self.push(Phase::Implicit { unknowns }, program)
+    }
+
+    /// Add the consistency check of `rows` checked rows.
+    pub fn consistency(
+        self,
+        program: &ScalarProgramBlock,
+        rows: usize,
+    ) -> Result<Self, SolveTangentWorkspaceError> {
+        self.push(Phase::Consistency { rows }, program)
+    }
+
+    fn push(
+        mut self,
+        phase: Phase,
+        program: &ScalarProgramBlock,
+    ) -> Result<Self, SolveTangentWorkspaceError> {
+        let last = self.phases.last().map_or(0, |(last, _)| last.rank());
+        let repeats = matches!(phase, Phase::Assignment { .. });
+        if phase.rank() < last || (phase.rank() == last && !repeats) {
+            return Err(SolveTangentWorkspaceError::PhaseOrder);
+        }
+        self.phases.push((phase, program.clone()));
+        Ok(self)
+    }
+
+    /// Whether `other` schedules the same problem, phases and programs.
+    fn same(&self, other: &Self) -> bool {
+        std::ptr::eq(self.problem, other.problem)
+            && self.phases.len() == other.phases.len()
+            && self
+                .phases
+                .iter()
+                .zip(&other.phases)
+                .all(|((a, pa), (b, pb))| a.same(b) && pa.shares_program_owner(pb))
+    }
+
+    /// Issue the workspace this schedule needs.
+    pub fn issue(self) -> Result<SolveTangentWorkspace<'problem>, SolveTangentWorkspaceError> {
+        let (mut scratch_len, mut private_len) = (0usize, 0usize);
+        let (mut implicit_matrix_len, mut implicit_pivot_len) = (0, 0);
+        for (phase, program) in &self.phases {
+            scratch_len = scratch_len.max(program.output_count());
+            match *phase {
+                Phase::Rhs => {}
+                Phase::Assignment { targets } => scratch_len = scratch_len.max(targets),
+                Phase::Implicit { unknowns: n } => {
+                    implicit_pivot_len = n
+                        .checked_mul(2)
+                        .ok_or(SolveTangentWorkspaceError::ImplicitPivot)?;
+                    implicit_matrix_len = n
+                        .checked_mul(n)
+                        .ok_or(SolveTangentWorkspaceError::ImplicitMatrix)?;
+                    let own = self
+                        .seed
+                        .checked_add(implicit_matrix_len)
+                        .and_then(|length| length.checked_add(n))
+                        .ok_or(SolveTangentWorkspaceError::ImplicitPrivate)?;
+                    private_len = private_len.max(own);
+                }
+                Phase::Consistency { rows } => {
+                    let own = self
+                        .seed
+                        .checked_add(rows)
+                        .ok_or(SolveTangentWorkspaceError::ConsistencyPrivate)?;
+                    private_len = private_len.max(own);
+                }
+            }
+        }
+        let work_len = self
             .seed
-            .checked_add(demand.states)
+            .checked_add(self.states)
             .and_then(|length| length.checked_add(scratch_len))
             .and_then(|length| length.checked_add(private_len))
             .ok_or(SolveTangentWorkspaceError::Workspace)?;
-        Ok(Self {
+        Ok(SolveTangentWorkspace {
             implicit_matrix_len,
             implicit_pivot_len,
             scratch_len,
             private_len,
             work_len,
+            schedule: self,
         })
+    }
+}
+
+impl<'problem> SolveTangentWorkspace<'problem> {
+    /// This workspace, when it was issued for exactly `schedule`.
+    pub fn for_schedule(
+        &self,
+        schedule: &SolveTangentSchedule<'_>,
+    ) -> Result<&Self, SolveTangentWorkspaceError> {
+        if self.schedule.same(schedule) {
+            Ok(self)
+        } else {
+            Err(SolveTangentWorkspaceError::ForeignSchedule)
+        }
     }
 
     /// Elements of the implicit system's dense matrix.
@@ -155,107 +284,4 @@ impl SolveTangentWorkspace {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn demand(segments: &[usize]) -> SolveTangentDemand<'_> {
-        SolveTangentDemand {
-            seed: 4,
-            states: 6,
-            rhs_outputs: 3,
-            segment_targets: segments,
-            implicit: None,
-            consistency: None,
-        }
-    }
-
-    #[test]
-    fn sequential_phases_share_one_scratch_region_of_the_largest_demand() {
-        let workspace = SolveTangentWorkspace::issue(&demand(&[2, 7, 1])).unwrap();
-        assert_eq!(workspace.scratch_len(), 7);
-        assert_eq!(workspace.private_len(), 0);
-        assert_eq!(workspace.work_len(), 4 + 6 + 7);
-        assert_eq!(
-            (
-                workspace.implicit_matrix_len(),
-                workspace.implicit_pivot_len()
-            ),
-            (0, 0)
-        );
-    }
-
-    #[test]
-    fn the_implicit_solve_and_consistency_reuse_one_private_region() {
-        let mut both = demand(&[2]);
-        both.implicit = Some(SolveImplicitTangentDemand {
-            unknowns: 3,
-            outputs: 5,
-        });
-        both.consistency = Some(SolveConsistencyTangentDemand {
-            rows: 20,
-            outputs: 9,
-        });
-        let workspace = SolveTangentWorkspace::issue(&both).unwrap();
-        assert_eq!(workspace.implicit_matrix_len(), 9);
-        assert_eq!(workspace.implicit_pivot_len(), 6);
-        // Implicit needs 4 + 9 + 3 = 16, consistency 4 + 20 = 24: the
-        // phases never overlap, so the larger region serves both, not 40.
-        assert_eq!(workspace.private_len(), 24);
-        assert_eq!(workspace.scratch_len(), 9);
-        assert_eq!(workspace.work_len(), 4 + 6 + 9 + 24);
-
-        both.consistency = None;
-        let implicit = SolveTangentWorkspace::issue(&both).unwrap();
-        assert_eq!(implicit.private_len(), 16);
-        assert_eq!(implicit.scratch_len(), 5);
-    }
-
-    #[test]
-    fn every_overflowing_extent_is_refused() {
-        let huge = SolveImplicitTangentDemand {
-            unknowns: usize::MAX / 2 + 1,
-            outputs: 1,
-        };
-        let mut matrix = demand(&[]);
-        matrix.implicit = Some(SolveImplicitTangentDemand {
-            unknowns: 1usize << (usize::BITS / 2),
-            outputs: 1,
-        });
-        assert_eq!(
-            SolveTangentWorkspace::issue(&matrix),
-            Err(SolveTangentWorkspaceError::ImplicitMatrix)
-        );
-        let mut pivot = demand(&[]);
-        pivot.implicit = Some(huge);
-        assert_eq!(
-            SolveTangentWorkspace::issue(&pivot),
-            Err(SolveTangentWorkspaceError::ImplicitPivot)
-        );
-        let mut private = demand(&[]);
-        private.seed = usize::MAX;
-        private.implicit = Some(SolveImplicitTangentDemand {
-            unknowns: 1,
-            outputs: 1,
-        });
-        assert_eq!(
-            SolveTangentWorkspace::issue(&private),
-            Err(SolveTangentWorkspaceError::ImplicitPrivate)
-        );
-        let mut checks = demand(&[]);
-        checks.seed = usize::MAX;
-        checks.consistency = Some(SolveConsistencyTangentDemand {
-            rows: 1,
-            outputs: 1,
-        });
-        assert_eq!(
-            SolveTangentWorkspace::issue(&checks),
-            Err(SolveTangentWorkspaceError::ConsistencyPrivate)
-        );
-        let mut total = demand(&[]);
-        total.states = usize::MAX;
-        assert_eq!(
-            SolveTangentWorkspace::issue(&total),
-            Err(SolveTangentWorkspaceError::Workspace)
-        );
-    }
-}
+mod tests;

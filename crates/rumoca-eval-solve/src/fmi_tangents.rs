@@ -181,7 +181,46 @@ pub struct FmiTangentPlan<'component> {
     rhs: solve::ScalarProgramBlock,
     seed_len: usize,
     consistency: Option<FmiTangentConsistency>,
-    workspace: solve::SolveTangentWorkspace,
+    workspace: solve::SolveTangentWorkspace<'component>,
+}
+
+fn contract(error: solve::SolveTangentWorkspaceError) -> FmiTangentPlanError {
+    FmiTangentPlanError::Contract(error.to_string())
+}
+
+/// The checked sequential phase schedule of one tangent plan, built from its
+/// own phase programs in execution order.
+fn tangent_schedule<'component>(
+    component: &'component FmiCCodegenView,
+    seed_len: usize,
+    rhs: &solve::ScalarProgramBlock,
+    assignments: &[FmiTangentSegment],
+    implicit: Option<&FmiImplicitTangentSystem>,
+    consistency: Option<&FmiTangentConsistency>,
+) -> Result<solve::SolveTangentSchedule<'component>, FmiTangentPlanError> {
+    let problem = component.problem();
+    if solve::SolveTangentSchedule::seed_len(problem).map_err(contract)? != seed_len {
+        return Err(FmiTangentPlanError::Contract(
+            "tangent plan seed is not its problem's seed domain".into(),
+        ));
+    }
+    let mut schedule = solve::SolveTangentSchedule::new(problem, rhs).map_err(contract)?;
+    for segment in assignments {
+        schedule = schedule
+            .assignment(segment.program(), segment.targets().len())
+            .map_err(contract)?;
+    }
+    if let Some(system) = implicit {
+        schedule = schedule
+            .implicit(system.program(), system.targets().len())
+            .map_err(contract)?;
+    }
+    if let Some(checks) = consistency {
+        schedule = schedule
+            .consistency(checks.program(), checks.rows().len())
+            .map_err(contract)?;
+    }
+    Ok(schedule)
 }
 
 /// Complete derivative coverage for the three equation sets of one C component.
@@ -229,12 +268,7 @@ impl<'component> FmiTangentPlan<'component> {
         {
             return Err(FmiTangentPlanError::AlternateCoordinates);
         }
-        let seed_len = problem
-            .layout
-            .y_scalars()
-            .checked_add(problem.layout.p_scalars())
-            .and_then(|length| length.checked_add(1))
-            .ok_or_else(|| FmiTangentPlanError::Contract("seed extent overflow".into()))?;
+        let seed_len = solve::SolveTangentSchedule::seed_len(problem).map_err(contract)?;
         let (assignments, implicit) = if component.public_observation_rows().iter().any(|&row| row)
         {
             (Vec::new(), Some(derive_implicit(component)?))
@@ -271,37 +305,16 @@ impl<'component> FmiTangentPlan<'component> {
         seed_len: usize,
         consistency: Option<FmiTangentConsistency>,
     ) -> Result<Self, FmiTangentPlanError> {
-        let mut segment_targets = Vec::with_capacity(assignments.len());
-        for segment in &assignments {
-            let outputs = segment.program().output_indices();
-            if outputs.len() != segment.targets().len()
-                || outputs.iter().copied().ne(0..segment.targets().len())
-            {
-                return Err(FmiTangentPlanError::Contract(
-                    "tangent segment does not cover its simultaneous target inventory".into(),
-                ));
-            }
-            segment_targets.push(segment.targets().len());
-        }
-        let workspace = solve::SolveTangentWorkspace::issue(&solve::SolveTangentDemand {
-            seed: seed_len,
-            states: component.problem().solve_layout.state_scalar_count(),
-            rhs_outputs: rhs.output_count(),
-            segment_targets: &segment_targets,
-            implicit: implicit
-                .as_ref()
-                .map(|system| solve::SolveImplicitTangentDemand {
-                    unknowns: system.targets().len(),
-                    outputs: system.program().output_count(),
-                }),
-            consistency: consistency
-                .as_ref()
-                .map(|checks| solve::SolveConsistencyTangentDemand {
-                    rows: checks.rows().len(),
-                    outputs: checks.program().output_count(),
-                }),
-        })
-        .map_err(|error| FmiTangentPlanError::Contract(error.to_string()))?;
+        let workspace = tangent_schedule(
+            component,
+            seed_len,
+            &rhs,
+            &assignments,
+            implicit.as_ref(),
+            consistency.as_ref(),
+        )?
+        .issue()
+        .map_err(contract)?;
         Ok(Self {
             component,
             mode,
@@ -314,10 +327,20 @@ impl<'component> FmiTangentPlan<'component> {
         })
     }
 
-    /// The workspace Solve IR issued for this plan's phases.
-    #[must_use]
-    pub const fn workspace(&self) -> solve::SolveTangentWorkspace {
-        self.workspace
+    /// The workspace Solve IR issued for this plan's phases, refused unless
+    /// it was issued for exactly this plan's checked phase programs.
+    pub fn workspace(
+        &self,
+    ) -> Result<&solve::SolveTangentWorkspace<'component>, FmiTangentPlanError> {
+        let schedule = tangent_schedule(
+            self.component,
+            self.seed_len,
+            &self.rhs,
+            &self.assignments,
+            self.implicit.as_ref(),
+            self.consistency.as_ref(),
+        )?;
+        self.workspace.for_schedule(&schedule).map_err(contract)
     }
 
     /// Issue the complete initialization relation from the same checked

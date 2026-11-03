@@ -73,6 +73,16 @@ fn assignment_values(tangent: &FmiTangentPlan<'_>) -> Result<Vec<Value>, Codegen
         .collect()
 }
 
+/// The plan's issued workspace; one issued for other phase programs is a
+/// contract failure.
+fn issued_workspace<'plan, 'component>(
+    tangent: &'plan FmiTangentPlan<'component>,
+) -> Result<&'plan rumoca_ir_solve::SolveTangentWorkspace<'component>, CodegenError> {
+    tangent
+        .workspace()
+        .map_err(|error| CodegenError::template(format!("FMI tangent workspace: {error}")))
+}
+
 fn implicit_value(tangent: &FmiTangentPlan<'_>) -> Result<NumericalProjection, CodegenError> {
     let Some(system) = tangent.implicit() else {
         return Ok(absent_projection());
@@ -85,7 +95,7 @@ fn implicit_value(tangent: &FmiTangentPlan<'_>) -> Result<NumericalProjection, C
             rows => system.rows(),
             subtract_targets => system.subtract_targets(),
             tolerance => rumoca_eval_solve::projection_policy::ALGEBRAIC_REFRESH_TOLERANCE,
-            matrix_len => tangent.workspace().implicit_matrix_len(),
+            matrix_len => issued_workspace(tangent)?.implicit_matrix_len(),
             plan => program_value(system.program())?,
         },
     })
@@ -123,7 +133,7 @@ fn tangent_value(
     let assignments = assignment_values(tangent)?;
     let implicit = implicit_value(tangent)?;
     let consistency = consistency_value(tangent)?;
-    let workspace = tangent.workspace();
+    let workspace = issued_workspace(tangent)?;
     let problem = tangent.component().problem();
     Ok(ProjectedTangent {
         value: minijinja::context! {

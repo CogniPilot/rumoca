@@ -27,10 +27,8 @@ pub(super) fn derive(
         ));
     }
     let y_len = problem.layout.y_scalars();
-    let seed_len = y_len
-        .checked_add(problem.layout.p_scalars())
-        .and_then(|length| length.checked_add(1))
-        .ok_or_else(|| FmiTangentPlanError::Contract("post-initial seed extent overflow".into()))?;
+    let seed_len = rumoca_ir_solve::SolveTangentSchedule::seed_len(problem)
+        .map_err(|error| FmiTangentPlanError::Contract(error.to_string()))?;
     let mut relation = Relation::default();
     let (rows, targets) = algebraic_inventory(component)?;
     let algebraic = to_scalar_program_block(&continuous.implicit_rhs)
