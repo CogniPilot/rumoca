@@ -748,9 +748,7 @@ fn normalize_algebraic_projection_tearing(
     }
     // Coupled tearing executes through the scalar projection used by the
     // runtime; compact independent singleton runs have no tearing to promote.
-    let projection = rumoca_ir_solve::scalar_refinement::to_scalar_program_projection(
-        &problem.continuous.implicit_rhs,
-    )?;
+    let projection = crate::to_scalar_program_projection(&problem.continuous.implicit_rhs)?;
     let implicit_scalar_rhs = TargetAssignmentCatalog::new(projection.block())?;
     let shared_targets = problem
         .continuous

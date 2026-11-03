@@ -1,4 +1,4 @@
-use crate::{LinearOp, ScalarProgramBlock};
+use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
 
 use super::kernel_plan::{AffineKernelNode, AffineKernelPlan};
 use super::{ScalarizeError, scalarize_vec_with_capacity_optional};
@@ -6,8 +6,8 @@ use super::{ScalarizeError, scalarize_vec_with_capacity_optional};
 pub(super) fn scalarize_affine_rows_with_span(
     domain: &rumoca_core::StructuredIndexDomain,
     base_ops: &[LinearOp],
-    load_strides: &[crate::AffineStencilLoadStride],
-    const_strides: &[crate::AffineStencilConstStride],
+    load_strides: &[rumoca_ir_solve::AffineStencilLoadStride],
+    const_strides: &[rumoca_ir_solve::AffineStencilConstStride],
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<Vec<Vec<LinearOp>>, ScalarizeError> {
@@ -34,7 +34,7 @@ pub(super) fn scalarize_affine_rows_with_span(
 /// Expand a tensor output map into concrete scalar output slots.
 pub fn tensor_output_indices(
     domain: &rumoca_core::StructuredIndexDomain,
-    output_map: &crate::TensorOutputMap,
+    output_map: &rumoca_ir_solve::TensorOutputMap,
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, ScalarizeError> {
@@ -44,9 +44,9 @@ pub fn tensor_output_indices(
 }
 
 /// Compute a tensor node's logical output count without materializing its scalar view.
-pub fn tensor_output_count(
+pub(crate) fn tensor_output_count(
     domain: &rumoca_core::StructuredIndexDomain,
-    output_map: &crate::TensorOutputMap,
+    output_map: &rumoca_ir_solve::TensorOutputMap,
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<usize, ScalarizeError> {
@@ -97,11 +97,11 @@ pub fn scalar_program_output_count(
     checked_tensor_output_count_optional(&indices, output_cursor, kind, block_span(block))
 }
 
-pub fn validate_affine_stride_metadata(
+pub(crate) fn validate_affine_stride_metadata(
     domain: &rumoca_core::StructuredIndexDomain,
     base_ops: &[LinearOp],
-    load_strides: &[crate::AffineStencilLoadStride],
-    const_strides: &[crate::AffineStencilConstStride],
+    load_strides: &[rumoca_ir_solve::AffineStencilLoadStride],
+    const_strides: &[rumoca_ir_solve::AffineStencilConstStride],
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<(), ScalarizeError> {
@@ -192,13 +192,13 @@ trait StrideTermDimension {
     fn dimension(&self) -> usize;
 }
 
-impl StrideTermDimension for crate::AffineStencilIndexStrideTerm {
+impl StrideTermDimension for rumoca_ir_solve::AffineStencilIndexStrideTerm {
     fn dimension(&self) -> usize {
         self.dimension
     }
 }
 
-impl StrideTermDimension for crate::AffineStencilConstStrideTerm {
+impl StrideTermDimension for rumoca_ir_solve::AffineStencilConstStrideTerm {
     fn dimension(&self) -> usize {
         self.dimension
     }
@@ -327,12 +327,12 @@ fn block_span(block: &ScalarProgramBlock) -> Option<rumoca_core::Span> {
 }
 
 fn tensor_output_map_error(
-    error: crate::TensorOutputMapError,
+    error: rumoca_ir_solve::TensorOutputMapError,
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> ScalarizeError {
     match error {
-        crate::TensorOutputMapError::Dimension {
+        rumoca_ir_solve::TensorOutputMapError::Dimension {
             output_dimension,
             domain_rank,
         } => ScalarizeError::InvalidOutputMapDimension {
@@ -341,16 +341,16 @@ fn tensor_output_map_error(
             dimension_count: domain_rank,
             span,
         },
-        crate::TensorOutputMapError::StructuredIndexDomain { error } => {
+        rumoca_ir_solve::TensorOutputMapError::StructuredIndexDomain { error } => {
             ScalarizeError::ShapeContract {
                 message: format!("structured index domain is invalid: {error}"),
                 span: Some(span),
             }
         }
-        crate::TensorOutputMapError::NegativeIndex { value } => {
+        rumoca_ir_solve::TensorOutputMapError::NegativeIndex { value } => {
             ScalarizeError::NegativeOutputIndex { kind, value, span }
         }
-        crate::TensorOutputMapError::OutputIndexOverflow => {
+        rumoca_ir_solve::TensorOutputMapError::OutputIndexOverflow => {
             ScalarizeError::OutputIndexArithmeticOverflow { kind, span }
         }
     }

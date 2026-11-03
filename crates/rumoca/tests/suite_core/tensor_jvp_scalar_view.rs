@@ -51,8 +51,7 @@ fn the_derivative_jacobian_rows_are_the_view_of_the_tensor_jvp() {
     );
     let native = rumoca_sim::native_compute_inventory(block).expect("native compile");
     assert_eq!(native.kernels, counts.map + counts.affine_stencil);
-    let primal =
-        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(block).expect("primal view");
+    let primal = rumoca_eval_solve::to_scalar_program_block(block).expect("primal view");
     let per_row = rumoca_eval_solve::ad::lower_scalar_program_block_full_ad_with_spans(
         primal.programs(),
         primal.program_spans(),
@@ -62,8 +61,7 @@ fn the_derivative_jacobian_rows_are_the_view_of_the_tensor_jvp() {
     let tensor =
         rumoca_eval_solve::ad::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
             .expect("tensor JVP");
-    let view =
-        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&tensor).expect("JVP view");
+    let view = rumoca_eval_solve::to_scalar_program_block(&tensor).expect("JVP view");
     assert_eq!(view.programs(), per_row.as_slice());
     assert_eq!(view.output_indices(), primal.output_indices());
     assert_eq!(view.program_spans(), primal.program_spans());
@@ -90,7 +88,7 @@ fn the_mixed_derivative_jacobian_relation_equals_its_scalar_view() {
     let jvp =
         rumoca_eval_solve::ad::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
             .expect("tensor JVP");
-    let view = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&jvp).expect("JVP view");
+    let view = rumoca_eval_solve::to_scalar_program_block(&jvp).expect("JVP view");
     let rows = view.output_count();
     let columns = problem.layout.y_scalars() + problem.layout.p_scalars();
     let span = view.first_source_span().expect("source-backed JVP");

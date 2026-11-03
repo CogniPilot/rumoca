@@ -217,10 +217,9 @@ fn linked_block<'a>(
 /// Check every reported block against the linked plan; the largest step group
 /// one evaluation answers.
 fn assert_linked(model: &solve::SolveModel, report: &Report) -> usize {
-    let jvp = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &model.artifacts.continuous.implicit_jacobian_v,
-    )
-    .expect("scalarize the solver-Y JVP");
+    let jvp =
+        rumoca_eval_solve::to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
+            .expect("scalarize the solver-Y JVP");
     let mut largest_group = 0;
     for generated in &report.blocks {
         let tearing = linked_block(model, generated);

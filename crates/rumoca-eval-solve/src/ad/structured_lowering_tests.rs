@@ -618,8 +618,7 @@ fn matrix_product_with_seeded_factors_uses_one_block_product() {
         panic!("a matrix product stays a matrix product");
     };
     assert_eq!(*k, 4, "the inner dimension doubles for [dA | A] [B; dB]");
-    let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&derived)
-        .expect("the product scalarizes");
+    let scalar = crate::to_scalar_program_block(&derived).expect("the product scalarizes");
     let context = crate::RowEvalContext {
         seed: Some(&[1.0, 2.0, 3.0, 4.0]),
         ..Default::default()

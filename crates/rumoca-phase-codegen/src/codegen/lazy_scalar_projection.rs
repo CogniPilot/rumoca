@@ -27,7 +27,7 @@ impl LazyScalarProjection {
     fn scalar(&self) -> Result<&Arc<solve::ScalarProgramBlock>, &CodegenError> {
         self.scalar
             .get_or_init(|| {
-                rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&self.block)
+                rumoca_eval_solve::to_scalar_program_block(&self.block)
                     .map(Arc::new)
                     .map_err(CodegenError::from)
             })
@@ -118,6 +118,6 @@ pub(super) fn views(block: Arc<solve::ComputeBlock>) -> (Value, Value) {
 pub(super) fn validate(block: &solve::ComputeBlock) -> Result<(), CodegenError> {
     block
         .validate_shape_contract("scalarize compute block")
-        .map_err(rumoca_ir_solve::scalar_refinement::ScalarizeError::from)
+        .map_err(rumoca_eval_solve::ScalarizeError::from)
         .map_err(CodegenError::from)
 }

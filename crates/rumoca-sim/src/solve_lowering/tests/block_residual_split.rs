@@ -30,10 +30,9 @@ fn sample(state: &mut u64) -> f64 {
 /// Check every split program of every block the runtime splits; returns the
 /// programs checked.
 fn check_splits(label: &str, model: &solve::SolveModel) -> usize {
-    let implicit = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &model.problem.continuous.implicit_rhs,
-    )
-    .expect("scalar residual programs");
+    let implicit =
+        rumoca_eval_solve::to_scalar_program_block(&model.problem.continuous.implicit_rhs)
+            .expect("scalar residual programs");
     let prepared = PreparedScalarProgramBlock::new(implicit.clone()).expect("prepared programs");
     let structures = model.artifacts.continuous.structural.algebraic_projection();
     let blocks = &model

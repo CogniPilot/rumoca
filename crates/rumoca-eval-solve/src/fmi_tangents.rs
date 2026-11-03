@@ -14,8 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rumoca_ir_solve::{self as solve, fmi::FmiCCodegenView};
 
-use crate::ad;
-use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
+use crate::{ad, to_scalar_program_block};
 
 /// Direction-normalized consistency check for a retained source residual.
 /// `scale` is the largest absolute Jacobian-column times seed contribution

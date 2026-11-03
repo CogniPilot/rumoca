@@ -1,15 +1,9 @@
-//! Canonical pure scalar semantics and source-bound refinement construction.
-
-use crate::{
+use rumoca_ir_solve::{
     ComputeBlock, ComputeNode, LinearOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock,
     SolveProblemShapeContractError, SolveVisitor,
 };
 
 mod affine;
-mod bound;
-mod node;
-pub use bound::{ForeignScalarRefinementSource, SourceScalarRefinement};
-pub use node::{SourceNodeRefinementError, SourceNodeScalarRefinement};
 mod dense;
 mod kernel_plan;
 
@@ -18,7 +12,7 @@ pub use affine::{
     tensor_output_indices,
 };
 use affine::{checked_tensor_output_count_optional, scalarize_affine_rows_with_span};
-pub use affine::{tensor_output_count, validate_affine_stride_metadata};
+pub(crate) use affine::{tensor_output_count, validate_affine_stride_metadata};
 use dense::{MatMulScalarizeInput, scalarize_linsolve, scalarize_matmul};
 pub use kernel_plan::{AffineKernelConst, AffineKernelLoad, AffineKernelNode, AffineKernelPlan};
 
@@ -58,24 +52,14 @@ impl ScalarProgramProjection {
 pub fn to_scalar_program_projection(
     block: &ComputeBlock,
 ) -> Result<ScalarProgramProjection, ScalarizeError> {
-    let source = block
-        .checked_source_view("scalarize compute block")
+    block
+        .validate_shape_contract("scalarize compute block")
         .map_err(ScalarizeError::from)?;
-    Ok(source.scalar_refinement()?.into_projection())
-}
-
-fn project_checked_source(block: &ComputeBlock) -> Result<ScalarProgramProjection, ScalarizeError> {
     if let [ComputeNode::ScalarPrograms(source)] = block.nodes.as_slice() {
         return scalar_owner_projection(source);
     }
     let mut collector = ScalarProgramCollector::default();
     collector.visit_compute_block(block)?;
-    finish_projection(collector)
-}
-
-fn finish_projection(
-    collector: ScalarProgramCollector,
-) -> Result<ScalarProgramProjection, ScalarizeError> {
     let block = ScalarProgramBlock::with_output_indices(
         collector.rows,
         collector.program_spans,
@@ -207,10 +191,10 @@ pub enum ScalarizeError {
 
 struct AffineComputeNodeInput<'a> {
     domain: &'a rumoca_core::StructuredIndexDomain,
-    output_map: &'a crate::TensorOutputMap,
+    output_map: &'a rumoca_ir_solve::TensorOutputMap,
     base_ops: &'a [LinearOp],
-    load_strides: &'a [crate::AffineStencilLoadStride],
-    const_strides: &'a [crate::AffineStencilConstStride],
+    load_strides: &'a [rumoca_ir_solve::AffineStencilLoadStride],
+    const_strides: &'a [rumoca_ir_solve::AffineStencilConstStride],
     span: rumoca_core::Span,
     kind: &'static str,
 }
@@ -557,6 +541,39 @@ impl ScalarProgramCollector {
             tensor_output_indices(input.domain, input.output_map, input.kind, input.span)?;
         self.append_tensor_programs(scalar_programs, output_indices, input.span, input.kind)
     }
+
+    fn trace_compute_node(
+        &self,
+        node_index: usize,
+        node: &ComputeNode,
+        output_cursor_before: usize,
+    ) {
+        if !tracing::enabled!(target: "rumoca_eval_solve::scalarize", tracing::Level::DEBUG) {
+            return;
+        }
+        let (kind, declared_outputs) = compute_node_trace_fields(node);
+        tracing::debug!(
+            target: "rumoca_eval_solve::scalarize",
+            node_index,
+            kind,
+            output_cursor_before,
+            output_cursor_after = self.next_output,
+            declared_outputs,
+            "scalarized compute node"
+        );
+    }
+}
+
+fn compute_node_trace_fields(node: &ComputeNode) -> (&'static str, String) {
+    match node {
+        ComputeNode::ScalarPrograms(block) => ("scalar", format!("{:?}", block.output_indices())),
+        ComputeNode::MatMul { m, n, .. } => ("matmul", format!("{m}x{n}")),
+        ComputeNode::LinSolve { n, .. } => ("linsolve", n.to_string()),
+        ComputeNode::Map { output_map, .. } => ("map", format!("{output_map:?}")),
+        ComputeNode::AffineStencil { output_map, .. } => {
+            ("affine_stencil", format!("{output_map:?}"))
+        }
+    }
 }
 
 impl SolveVisitor for ScalarProgramCollector {
@@ -567,7 +584,9 @@ impl SolveVisitor for ScalarProgramCollector {
         node_index: usize,
         node: &ComputeNode,
     ) -> Result<(), Self::Error> {
+        let output_cursor_before = self.next_output;
         self.append_compute_node(node_index, node)?;
+        self.trace_compute_node(node_index, node, output_cursor_before);
         Ok(())
     }
 
@@ -778,7 +797,7 @@ pub fn checked_contiguous_output_count(
         })
 }
 
-pub fn scalarize_product(
+pub(super) fn scalarize_product(
     lhs: usize,
     rhs: usize,
     kind: &'static str,

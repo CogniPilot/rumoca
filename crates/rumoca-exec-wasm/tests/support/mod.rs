@@ -1,5 +1,4 @@
-use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext};
-use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
+use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext, to_scalar_program_block};
 use rumoca_ir_solve::*;
 use wasmi::{Engine, Linker, Memory, MemoryType, Module, Store};
 

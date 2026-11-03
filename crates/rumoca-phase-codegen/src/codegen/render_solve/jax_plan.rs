@@ -71,17 +71,12 @@ fn scalar_step(
 ) -> Result<(Value, Vec<usize>), CodegenError> {
     // Scalarize only this unsupported node, preserving source spans and
     // original global placement. Other native nodes remain compact owners.
-    let scalar =
-        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&solve::ComputeBlock {
-            nodes: vec![node.clone()],
-        })?;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&solve::ComputeBlock {
+        nodes: vec![node.clone()],
+    })?;
     let indices = match node {
         solve::ComputeNode::ScalarPrograms(source) => {
-            rumoca_ir_solve::scalar_refinement::scalar_program_output_indices(
-                source,
-                cursor,
-                "JAX scalar fallback",
-            )?
+            rumoca_eval_solve::scalar_program_output_indices(source, cursor, "JAX scalar fallback")?
         }
         solve::ComputeNode::MatMul { .. } | solve::ComputeNode::LinSolve { .. } => scalar
             .output_indices()

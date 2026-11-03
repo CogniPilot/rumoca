@@ -521,10 +521,8 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
         "the checked linear solve consumes two compact tensor loads without scalar Move repacking"
     );
 
-    let rows = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &solve.continuous.derivative_rhs,
-    )
-    .expect("checked linear solve has a scalar execution view");
+    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
+        .expect("checked linear solve has a scalar execution view");
     let mut derivative = [0.0; 2];
     rumoca_eval_solve::eval_scalar_program_block(
         &rows,

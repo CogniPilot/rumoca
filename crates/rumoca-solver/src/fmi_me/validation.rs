@@ -31,10 +31,9 @@ pub(super) fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result
              {derivative_count} state-derivative row(s), so no reduced state-only ODE exists"
         )));
     }
-    let derivative_rows = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &model.problem.continuous.derivative_rhs,
-    )
-    .map_err(|error| evaluation(error.to_string()))?;
+    let derivative_rows =
+        rumoca_eval_solve::to_scalar_program_block(&model.problem.continuous.derivative_rhs)
+            .map_err(|error| evaluation(error.to_string()))?;
     let direct_dependencies = derivative_non_state_loads(model, &derivative_rows);
     if direct_dependencies.is_empty() {
         return Ok(());
@@ -48,10 +47,9 @@ fn require_projection_producers(
 ) -> Result<(), MeError> {
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
-    let implicit_rows = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &model.problem.continuous.implicit_rhs,
-    )
-    .map_err(|error| evaluation(error.to_string()))?;
+    let implicit_rows =
+        rumoca_eval_solve::to_scalar_program_block(&model.problem.continuous.implicit_rhs)
+            .map_err(|error| evaluation(error.to_string()))?;
     let producer_rows = projection_producer_rows(model, implicit_rows.output_count())?;
     let mut visited = BTreeSet::new();
     let mut pending = direct_dependencies.into_iter().collect::<Vec<_>>();

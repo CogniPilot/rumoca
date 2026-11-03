@@ -1,6 +1,6 @@
 use super::*;
-use crate::{AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm};
 use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
+use rumoca_ir_solve::{AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm};
 
 fn span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)

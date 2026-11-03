@@ -72,8 +72,8 @@ impl MlirError {
     }
 }
 
-impl From<rumoca_ir_solve::scalar_refinement::ScalarizeError> for MlirError {
-    fn from(value: rumoca_ir_solve::scalar_refinement::ScalarizeError) -> Self {
+impl From<rumoca_eval_solve::ScalarizeError> for MlirError {
+    fn from(value: rumoca_eval_solve::ScalarizeError) -> Self {
         Self::Scalarization {
             message: value.to_string(),
             span: value.source_span(),

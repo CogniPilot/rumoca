@@ -445,7 +445,7 @@ fn solve_render_context_value_with_handles(
 pub(super) fn c_renderable_derivative_nodes(
     block: &solve::ComputeBlock,
 ) -> Result<Vec<solve::ComputeNode>, CodegenError> {
-    let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(block)?;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
     if scalar.is_empty() {
         Ok(Vec::new())
     } else {

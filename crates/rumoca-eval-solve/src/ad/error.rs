@@ -56,8 +56,8 @@ impl From<rumoca_ir_solve::SolveProblemShapeContractError> for SolveDerivationEr
     }
 }
 
-impl From<rumoca_ir_solve::scalar_refinement::ScalarizeError> for SolveDerivationError {
-    fn from(error: rumoca_ir_solve::scalar_refinement::ScalarizeError) -> Self {
+impl From<crate::ScalarizeError> for SolveDerivationError {
+    fn from(error: crate::ScalarizeError) -> Self {
         let reason = error.to_string();
         match error.source_span() {
             Some(span) => Self::contract(reason, span),
@@ -69,8 +69,8 @@ impl From<rumoca_ir_solve::scalar_refinement::ScalarizeError> for SolveDerivatio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ScalarizeError;
     use rumoca_ir_solve::SolveProblemShapeContractError;
-    use rumoca_ir_solve::scalar_refinement::ScalarizeError;
 
     fn source_span() -> Span {
         Span::from_offsets(rumoca_core::SourceId::from_source_name("error.mo"), 3, 9)

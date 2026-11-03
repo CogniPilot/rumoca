@@ -1,4 +1,4 @@
-use crate::{BinaryOp, LinearOp, Reg};
+use rumoca_ir_solve::{BinaryOp, LinearOp, Reg};
 
 use super::{ScalarizeError, scalarize_product as checked_product};
 
@@ -254,7 +254,7 @@ fn max_reg_in_op(
                 span,
             )?);
             for index in indices {
-                if let crate::TensorIndex::Runtime(register) = index {
+                if let rumoca_ir_solve::TensorIndex::Runtime(register) = index {
                     last = last.max(register);
                 }
             }
@@ -264,8 +264,8 @@ fn max_reg_in_op(
         | LinearOp::LoadIndexedFoldCapture { dst, indices, .. } => indices
             .iter()
             .filter_map(|index| match index {
-                crate::TensorIndex::Constant(_) => None,
-                crate::TensorIndex::Runtime(register) => Some(*register),
+                rumoca_ir_solve::TensorIndex::Constant(_) => None,
+                rumoca_ir_solve::TensorIndex::Runtime(register) => Some(*register),
             })
             .fold(dst, Reg::max),
         LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => dst.max(src),
@@ -438,14 +438,16 @@ fn max_reg_in_op(
             let mut value_count = lanes;
             for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
                 match subscript {
-                    crate::TensorUpdateSubscript::Whole => {
+                    rumoca_ir_solve::TensorUpdateSubscript::Whole => {
                         value_count = checked_product(value_count, extent as usize, kind, span)?;
                     }
-                    crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(register)) => {
-                        last = last.max(*register)
-                    }
-                    crate::TensorUpdateSubscript::Index(crate::TensorIndex::Constant(_)) => {}
-                    crate::TensorUpdateSubscript::Slice { start, dimensions } => {
+                    rumoca_ir_solve::TensorUpdateSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Runtime(register),
+                    ) => last = last.max(*register),
+                    rumoca_ir_solve::TensorUpdateSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Constant(_),
+                    ) => {}
+                    rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
                         let count = dimensions.iter().try_fold(1usize, |count, extent| {
                             checked_product(count, *extent as usize, kind, span)
                         })?;
@@ -701,7 +703,7 @@ fn max_reg_in_op(
                 }
             }
             for node in nodes {
-                if let crate::FoldTensorNode::Select { condition, .. } = node {
+                if let rumoca_ir_solve::FoldTensorNode::Select { condition, .. } = node {
                     last = last.max(condition);
                 }
             }
@@ -716,7 +718,7 @@ fn max_reg_in_op(
         } => {
             let mut last = 0;
             for source in initial {
-                if let crate::FoldInitialSource::Registers { start, count } = source
+                if let rumoca_ir_solve::FoldInitialSource::Registers { start, count } = source
                     && count != 0
                 {
                     last = last.max(checked_reg_range_last(start, count, kind, span)?);

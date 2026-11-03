@@ -26,10 +26,8 @@ pub(crate) fn retear_unproven_blocks(
         return Ok(());
     }
     let prepared = PreparedScalarProgramBlock::new(
-        rumoca_ir_solve::scalar_refinement::to_scalar_program_projection(
-            &problem.continuous.implicit_rhs,
-        )?
-        .into_block(),
+        rumoca_eval_solve::to_scalar_program_projection(&problem.continuous.implicit_rhs)?
+            .into_block(),
     )?;
     let blocks = &problem.continuous.algebraic_projection_plan.blocks;
     let targets_shared = problem

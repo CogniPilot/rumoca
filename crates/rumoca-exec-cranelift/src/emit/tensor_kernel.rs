@@ -9,7 +9,7 @@
 use std::marker::PhantomData;
 
 use super::*;
-use rumoca_ir_solve::scalar_refinement::AffineKernelPlan;
+use rumoca_eval_solve::AffineKernelPlan;
 
 /// Whether the loop kernel owns a node with this base program: straight-line
 /// scalar arithmetic with exactly one output. Every other program keeps the
@@ -46,8 +46,8 @@ fn tensor_kernel_input_requirements(
 
 /// Per-op role of one base program inside the loop body.
 enum PointOp<'a> {
-    Load(&'a rumoca_ir_solve::scalar_refinement::AffineKernelLoad),
-    Const(&'a rumoca_ir_solve::scalar_refinement::AffineKernelConst),
+    Load(&'a rumoca_eval_solve::AffineKernelLoad),
+    Const(&'a rumoca_eval_solve::AffineKernelConst),
 }
 
 impl CraneliftEmitter {
@@ -193,7 +193,7 @@ impl CraneliftEmitter {
 impl RowLowerCtx<'_, '_> {
     fn lower_strided_load(
         &mut self,
-        load: &rumoca_ir_solve::scalar_refinement::AffineKernelLoad,
+        load: &rumoca_eval_solve::AffineKernelLoad,
         op: LinearOp,
         point: &KernelPoint<'_>,
     ) -> Result<(), CompileError> {
@@ -222,10 +222,10 @@ impl RowLowerCtx<'_, '_> {
 }
 
 /// `base`, then `value += (k_d as f64) * s_d` for every binder in order: the
-/// IEEE operations [`rumoca_ir_solve::scalar_refinement::AffineKernelConst::value_at`] performs.
+/// IEEE operations [`rumoca_eval_solve::AffineKernelConst::value_at`] performs.
 fn strided_const(
     fb: &mut FunctionBuilder<'_>,
-    constant: &rumoca_ir_solve::scalar_refinement::AffineKernelConst,
+    constant: &rumoca_eval_solve::AffineKernelConst,
     ordinals: &[cranelift_codegen::ir::Value],
 ) -> cranelift_codegen::ir::Value {
     let mut value = fb.ins().f64const(constant.base_value());

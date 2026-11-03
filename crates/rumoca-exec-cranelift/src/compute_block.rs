@@ -9,7 +9,7 @@
 //! seed vector (a JVP block from Solve AD).
 
 use rumoca_core::ExternalTableData;
-use rumoca_ir_solve::scalar_refinement::{AffineKernelNode, AffineKernelPlan};
+use rumoca_eval_solve::{AffineKernelNode, AffineKernelPlan};
 use rumoca_ir_solve::{ComputeBlock, ComputeNode, ScalarProgramBlock};
 
 use crate::emit::{
@@ -253,19 +253,15 @@ fn compile_block<K: BlockKind>(
                 cursor = cursor.max(plan.output_count());
             }
             (ComputeNode::ScalarPrograms(rows), _, _) => {
-                let indices = rumoca_ir_solve::scalar_refinement::scalar_program_output_indices(
+                let indices = rumoca_eval_solve::scalar_program_output_indices(
                     rows,
                     cursor,
                     "scalar programs",
                 )
                 .map_err(input_error)?;
                 cursor = cursor.max(
-                    rumoca_ir_solve::scalar_refinement::scalar_program_output_count(
-                        rows,
-                        cursor,
-                        "scalar programs",
-                    )
-                    .map_err(input_error)?,
+                    rumoca_eval_solve::scalar_program_output_count(rows, cursor, "scalar programs")
+                        .map_err(input_error)?,
                 );
                 let placed = ScalarProgramBlock::with_output_indices(
                     rows.programs().to_vec(),
@@ -278,11 +274,10 @@ fn compile_block<K: BlockKind>(
                 )?)));
             }
             (tensor, _, _) => {
-                let view =
-                    rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&ComputeBlock {
-                        nodes: vec![tensor.clone()],
-                    })
-                    .map_err(input_error)?;
+                let view = rumoca_eval_solve::to_scalar_program_block(&ComputeBlock {
+                    nodes: vec![tensor.clone()],
+                })
+                .map_err(input_error)?;
                 // The scalar view of one tensor node writes its own output map.
                 let end = view
                     .output_indices()
@@ -297,7 +292,7 @@ fn compile_block<K: BlockKind>(
     Ok(Some(CompiledBlock { segments, kernels }))
 }
 
-fn input_error(error: rumoca_ir_solve::scalar_refinement::ScalarizeError) -> CompileError {
+fn input_error(error: rumoca_eval_solve::ScalarizeError) -> CompileError {
     CompileError::Input(error.to_string())
 }
 

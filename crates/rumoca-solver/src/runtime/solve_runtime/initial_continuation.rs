@@ -94,9 +94,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rumoca_eval_solve::EvalSolveError;
+use rumoca_eval_solve::{EvalSolveError, to_scalar_program_block};
 use rumoca_ir_solve as solve;
-use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
 
 /// The exact solves the initialization homotopy continuation drives.
 ///

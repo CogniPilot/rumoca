@@ -42,11 +42,9 @@ fn lowered(model: &str, source: &str) -> solve::SolveModel {
 /// The checker: recompute every causal step's proof from its row.
 pub(crate) fn assert_every_step_is_proven(model: &solve::SolveModel) -> usize {
     let prepared = PreparedScalarProgramBlock::new(
-        rumoca_ir_solve::scalar_refinement::to_scalar_program_projection(
-            &model.problem.continuous.implicit_rhs,
-        )
-        .expect("the residual programs scalarize")
-        .into_block(),
+        rumoca_eval_solve::to_scalar_program_projection(&model.problem.continuous.implicit_rhs)
+            .expect("the residual programs scalarize")
+            .into_block(),
     )
     .expect("the residual programs prepare");
     let mut steps = 0;

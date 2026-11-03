@@ -205,7 +205,7 @@ pub(super) fn chart_record(
         &group,
     )?;
     let jvp_block = refusing(
-        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        rumoca_eval_solve::to_scalar_program_block(
             &sources.system.artifacts.continuous.implicit_jacobian_v,
         ),
         "the implicit Jacobian does not scalarize",

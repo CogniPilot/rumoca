@@ -902,7 +902,6 @@ pub(crate) fn fixture_pattern(rows: usize, columns: usize, diagonal: bool) -> St
         .expect("fixture pattern")
 }
 
-pub mod scalar_refinement;
 mod solver_views;
 mod tensor;
 use tensor::output_index_overflow;

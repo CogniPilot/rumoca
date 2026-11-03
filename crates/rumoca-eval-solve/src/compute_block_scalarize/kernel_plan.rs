@@ -7,7 +7,9 @@
 //! loop nest. Construction proves every bound once over the whole domain, so
 //! neither consumer re-checks a point.
 
-use crate::{AffineStencilConstStride, AffineStencilLoadStride, LinearOp, TensorOutputMap};
+use rumoca_ir_solve::{
+    AffineStencilConstStride, AffineStencilLoadStride, LinearOp, TensorOutputMap,
+};
 
 use super::ScalarizeError;
 use super::affine::validate_affine_stride_metadata;

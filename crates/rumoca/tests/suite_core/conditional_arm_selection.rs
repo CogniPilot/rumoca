@@ -157,7 +157,7 @@ fn derivative_conditional_counts(model: &str, source: &str) -> (usize, usize) {
         Err(error) => panic!("lower {model}: {error:#}"),
     };
     let block = &package.problem.continuous.derivative_rhs;
-    let scalar = match rumoca_ir_solve::scalar_refinement::to_scalar_program_block(block) {
+    let scalar = match rumoca_eval_solve::to_scalar_program_block(block) {
         Ok(scalar) => scalar,
         Err(error) => panic!("scalarize {model}: {error:#}"),
     };

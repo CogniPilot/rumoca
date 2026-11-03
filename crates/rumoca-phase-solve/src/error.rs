@@ -167,8 +167,8 @@ impl From<rumoca_ir_solve::SolveProblemShapeContractError> for LowerError {
     }
 }
 
-impl From<rumoca_ir_solve::scalar_refinement::ScalarizeError> for LowerError {
-    fn from(error: rumoca_ir_solve::scalar_refinement::ScalarizeError) -> Self {
+impl From<rumoca_eval_solve::ScalarizeError> for LowerError {
+    fn from(error: rumoca_eval_solve::ScalarizeError) -> Self {
         let reason = error.to_string();
         match error.source_span() {
             Some(span) => Self::contract(reason, span),

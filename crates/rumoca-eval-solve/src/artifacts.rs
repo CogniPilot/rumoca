@@ -84,9 +84,7 @@ fn lower_artifacts(
             None,
         )
     } else {
-        let implicit_rhs = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-            &problem.continuous.implicit_rhs,
-        )?;
+        let implicit_rhs = crate::to_scalar_program_block(&problem.continuous.implicit_rhs)?;
         let implicit_jacobian_v_scalar =
             full_jvp_scalar_view(&problem.continuous.implicit_rhs, &problem.layout)?;
         let full_jacobian_v =
@@ -158,9 +156,7 @@ fn full_jvp_scalar_view(
     layout: &solve::VarLayout,
 ) -> Result<solve::ScalarProgramBlock, SolveDerivationError> {
     let jvp = lower_compute_block_full_jvp(block, layout.y_scalars())?;
-    Ok(rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &jvp,
-    )?)
+    Ok(crate::to_scalar_program_block(&jvp)?)
 }
 
 /// The discrete event rows' JVPs; a family whose rows do not all lower is
@@ -190,12 +186,10 @@ fn lower_discrete_artifacts(problem: &solve::SolveProblem) -> solve::DiscreteSol
         rhs_jacobian_v: jvp(&discrete.rhs),
         runtime_assignment_jacobian_v: jvp(&discrete.runtime_assignment_rhs),
         guarded_jacobian_v: guarded_primal.ok().as_ref().and_then(jvp),
-        structured_jacobian_v: rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-            &discrete.structured_rhs,
-        )
-        .ok()
-        .as_ref()
-        .and_then(jvp),
+        structured_jacobian_v: crate::to_scalar_program_block(&discrete.structured_rhs)
+            .ok()
+            .as_ref()
+            .and_then(jvp),
     }
 }
 

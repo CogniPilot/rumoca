@@ -63,10 +63,8 @@ fn structured_boolean_relations_retain_raw_initialization_and_held_transient_tru
         .solve_layout
         .initial_event_parameter_index
         .unwrap();
-    let rhs = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &model.problem.discrete.structured_rhs,
-    )
-    .unwrap();
+    let rhs =
+        rumoca_eval_solve::to_scalar_program_block(&model.problem.discrete.structured_rhs).unwrap();
     let mut output = vec![0.0; rhs.stored_output_count()];
     for &memory in &model.problem.solve_layout.relation_memory_parameter_indices {
         p[memory] = 0.0;

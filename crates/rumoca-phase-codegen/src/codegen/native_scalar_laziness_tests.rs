@@ -151,10 +151,8 @@ fn scalar_fallback_is_lazy_shared_and_matches_checked_projection() {
         Some(1)
     );
     assert!(!projection.initialized());
-    let expected = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
-        &problem.continuous.derivative_rhs,
-    )
-    .unwrap();
+    let expected =
+        rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs).unwrap();
     let programs = legacy.get_attr("programs").unwrap();
     assert!(projection.initialized());
     let actual = programs
