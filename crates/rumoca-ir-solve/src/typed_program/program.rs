@@ -24,7 +24,7 @@ mod loop_flow;
 mod native;
 mod operation_visit;
 mod pass_flow;
-mod print_plan;
+pub(crate) mod print_plan;
 mod read_flow;
 mod storage_plan;
 pub use print_plan::{

@@ -207,6 +207,43 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endif -%}
 {% endmacro %}
 
+{#- One fixed spelling per issued tensor kernel; every count is issued. -#}
+{%- macro tensor_item(item) -%}
+{% if item.kernel.kind == "fill" -%}
+for (size_t k=0; k<{{ item.kernel.extent }}; ++k) r{{ item.destination }}[k]=r{{ item.kernel.value }}[0];
+{% elif item.kernel.kind == "identity" -%}
+for (size_t i=0; i<{{ item.kernel.size }}; ++i) for (size_t j=0; j<{{ item.kernel.size }}; ++j) r{{ item.destination }}[i*{{ item.kernel.size }}+j]=(i==j)?1.0:0.0;
+{% elif item.kernel.kind == "diagonal" -%}
+for (size_t i=0; i<{{ item.kernel.size }}; ++i) for (size_t j=0; j<{{ item.kernel.size }}; ++j) r{{ item.destination }}[i*{{ item.kernel.size }}+j]=(i==j)?r{{ item.kernel.operand }}[i]:0.0;
+{% elif item.kernel.kind == "concatenate" -%}
+{ size_t cursor=0;
+for (size_t outer=0; outer<{{ item.kernel.outer }}; ++outer) {
+{% for part in item.kernel.parts -%}
+for (size_t k=0; k<{{ part.width }}; ++k) r{{ item.destination }}[cursor++]=r{{ part.operand }}[outer*{{ part.width }}+k];
+{% endfor -%}
+} }
+{% elif item.kernel.kind == "construct_aggregate" -%}
+{% for part in item.kernel.parts -%}
+memcpy(&r{{ item.destination }}[{{ part.offset }}], r{{ part.operand }}, {{ part.width }} * sizeof(r{{ part.operand }}[0]));
+{% endfor -%}
+{% elif item.kernel.kind == "scale" -%}
+for (size_t k=0; k<{{ item.kernel.extent }}; ++k) r{{ item.destination }}[k]=r{{ item.kernel.aggregate }}[k]*r{{ item.kernel.scalar }}[0];
+{% elif item.kernel.kind == "transpose" -%}
+for (size_t i=0; i<{{ item.kernel.rows }}; ++i) for (size_t j=0; j<{{ item.kernel.columns }}; ++j) for (size_t k=0; k<{{ item.kernel.trailing }}; ++k) r{{ item.destination }}[(j*{{ item.kernel.rows }}+i)*{{ item.kernel.trailing }}+k]=r{{ item.kernel.operand }}[(i*{{ item.kernel.columns }}+j)*{{ item.kernel.trailing }}+k];
+{% elif item.kernel.kind == "matrix_multiply" -%}
+for (size_t i=0; i<{{ item.kernel.rows }}; ++i) for (size_t j=0; j<{{ item.kernel.columns }}; ++j) { double sum=0.0; for (size_t k=0; k<{{ item.kernel.inner }}; ++k) sum+=r{{ item.kernel.lhs }}[i*{{ item.kernel.inner }}+k]*r{{ item.kernel.rhs }}[k*{{ item.kernel.columns }}+j]; r{{ item.destination }}[i*{{ item.kernel.columns }}+j]=sum; }
+{% elif item.kernel.kind == "cross" -%}
+r{{ item.destination }}[0]=r{{ item.kernel.lhs }}[1]*r{{ item.kernel.rhs }}[2]-r{{ item.kernel.lhs }}[2]*r{{ item.kernel.rhs }}[1];r{{ item.destination }}[1]=r{{ item.kernel.lhs }}[2]*r{{ item.kernel.rhs }}[0]-r{{ item.kernel.lhs }}[0]*r{{ item.kernel.rhs }}[2];r{{ item.destination }}[2]=r{{ item.kernel.lhs }}[0]*r{{ item.kernel.rhs }}[1]-r{{ item.kernel.lhs }}[1]*r{{ item.kernel.rhs }}[0];
+{% elif item.kernel.kind == "project_element" -%}
+{ size_t index=0;
+{% for axis in item.kernel.axes -%}
+index=index*{{ axis.extent }}+{{ axis.coordinate }};
+{% endfor -%}
+r{{ item.destination }}[0]=r{{ item.kernel.aggregate }}[index];
+}
+{% endif -%}
+{% endmacro %}
+
 {#- Plan-only fragments: each takes the issued print projection, or one of
     its items, and nothing else; element and name spellings are issued
     tokens. -#}
@@ -227,7 +264,7 @@ memcpy(s{{ item.slot }}, in[{{ item.argument }}], sizeof(s{{ item.slot }}));
 {% elif item.kind == "copy" %}memcpy({{ storage_name(item.destination) }}, {{ storage_name(item.source) }}, sizeof({{ storage_name(item.destination) }}));
 {% elif item.kind == "constant" %}r{{ item.destination }}[0] = {% if item.value.kind == "real64" %}rumoca_real64(UINT64_C({{ item.value.bits }})){% elif item.value.kind == "int64" %}{{ integer_literal(item.value.value) }}{% elif item.value.value %}true{% else %}false{% endif %};
 {% elif item.kind == "select" %}memcpy(r{{ item.destination }}, (r{{ item.condition }}[0] ? r{{ item.if_true }} : r{{ item.if_false }}), sizeof(r{{ item.destination }}));
-{% elif item.kind == "elementwise" %}{{ elementwise(item) }}{% elif item.kind == "convert" %}{{ convert(item) }}{% endif %}{%- endmacro %}
+{% elif item.kind == "elementwise" %}{{ elementwise(item) }}{% elif item.kind == "convert" %}{{ convert(item) }}{% elif item.kind == "tensor" %}{{ tensor_item(item) }}{% endif %}{%- endmacro %}
 {%- macro plan_outputs(plan) -%}
 {% for item in plan.outputs -%}
 if (out[{{ item.output }}]) memcpy(out[{{ item.output }}], s{{ item.slot }}, sizeof(s{{ item.slot }}));

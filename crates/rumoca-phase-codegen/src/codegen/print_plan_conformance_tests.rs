@@ -14,6 +14,7 @@ use solve::{
 use super::codegen_test_support::builtin_template;
 
 mod scalar;
+mod tensor;
 
 const OPENING: &str = "(const void* const in[], void* const out[], const RmcAssertionObserver* observer) {\n(void)in; (void)out; (void)observer; (void)rumoca_real64;\n";
 const CLOSING: &str = "return 0;\n}\n";
@@ -266,6 +267,15 @@ impl Printer {
             .expect("typed body renders")
     }
 
+    fn plan_item(&self, program: &serde_json::Value, index: usize) -> String {
+        self.environment
+            .render_str(
+                "{% from 'functions' import plan_item %}{{ plan_item(program.print.body[index]) }}",
+                minijinja::context! { program => program, index => index },
+            )
+            .expect("plan item renders")
+    }
+
     fn legacy(&self, program: &serde_json::Value, name: &str, index: usize) -> String {
         self.environment
             .render_str(
@@ -490,6 +500,13 @@ impl Cursor<'_, '_> {
                     Err(finding) => self.finding(finding),
                 }
             }
+            Body::Tensor { .. } => {
+                let mut text = self.text;
+                match tensor::check(&mut text, item) {
+                    Ok(()) => self.text = text,
+                    Err(finding) => self.finding(finding),
+                }
+            }
             Body::Legacy { index, ledger } => {
                 if ledger.is_none() {
                     self.finding(format!(
@@ -637,20 +654,115 @@ fn reduction_program() -> solve::TypedProgram {
     .expect("checked reduction program")
 }
 
-/// An identity, whose printing no audit row owns yet.
-fn identity_program() -> solve::TypedProgram {
-    solve::TypedProgram::construct(profile(), |builder| {
+/// A lazy conditional, whose printing no audit row owns yet.
+fn conditional_program() -> solve::TypedProgram {
+    let arithmetic = profile();
+    let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic));
+    solve::TypedProgram::construct(arithmetic, |builder| {
         let output = builder.declare_slot(
-            solve::SolveValueType::tensor(solve::SolveScalarType::real(profile()), vec![2, 2])
-                .unwrap(),
+            real.clone(),
             solve::SolveStorageClass::Output,
             solve::SolveSlotAccess::ReadWrite,
             span(),
         )?;
-        let identity = builder.identity(solve::SolveScalarType::real(profile()), 2, span())?;
-        builder.store(output, identity, span())
+        let condition = builder.constant(solve::SolveValue::boolean(true), span())?;
+        let results = builder.conditional(
+            condition,
+            &[],
+            vec![real],
+            span(),
+            |region, _, outputs| {
+                let value = region.constant(solve::SolveValue::real(arithmetic, 1.0), span())?;
+                region.store(outputs[0], value, span())
+            },
+            |region, _, outputs| {
+                let value = region.constant(solve::SolveValue::real(arithmetic, 2.0), span())?;
+                region.store(outputs[0], value, span())
+            },
+        )?;
+        builder.store(output, results[0], span())
     })
-    .expect("checked identity program")
+    .expect("checked conditional program")
+}
+
+/// A read-only input slot of `value_type`, loaded into a register.
+fn input<'p>(
+    builder: &mut solve::TypedProgramBuilder<'p>,
+    value_type: solve::SolveValueType,
+) -> Result<solve::ProgramRegister<'p>, solve::SolveProgramConstructionError> {
+    let slot = builder.declare_slot(
+        value_type,
+        solve::SolveStorageClass::Input,
+        solve::SolveSlotAccess::ReadOnly,
+        span(),
+    )?;
+    builder.load(slot, span())
+}
+
+fn real_tensor(dimensions: Vec<u32>) -> solve::SolveValueType {
+    solve::SolveValueType::tensor(solve::SolveScalarType::real(profile()), dimensions).unwrap()
+}
+
+/// Every closed tensor kernel: products in each operand rank, transposes,
+/// cross products, scaling, identities, diagonals, fills, aggregate
+/// construction, concatenation on both axes and a static projection.
+fn tensor_program() -> solve::TypedProgram {
+    solve::TypedProgram::construct(profile(), |builder| {
+        let m = input(builder, real_tensor(vec![2, 3]))?;
+        let v = input(builder, real_tensor(vec![3]))?;
+        let w = input(builder, real_tensor(vec![3]))?;
+        let s = input(
+            builder,
+            solve::SolveValueType::scalar(solve::SolveScalarType::real(profile())),
+        )?;
+        let scalar = solve::SolveValueType::scalar(solve::SolveScalarType::real(profile()));
+        let t = builder.transpose(m, span())?;
+        let results = [
+            (t, real_tensor(vec![3, 2])),
+            (builder.matrix_multiply(m, v, span())?, real_tensor(vec![2])),
+            (
+                builder.matrix_multiply(t, m, span())?,
+                real_tensor(vec![3, 3]),
+            ),
+            (builder.matrix_multiply(v, t, span())?, real_tensor(vec![2])),
+            (builder.matrix_multiply(v, w, span())?, scalar.clone()),
+            (builder.cross(v, w, span())?, real_tensor(vec![3])),
+            (builder.scale(v, s, span())?, real_tensor(vec![3])),
+            (
+                builder.identity(solve::SolveScalarType::real(profile()), 3, span())?,
+                real_tensor(vec![3, 3]),
+            ),
+            (builder.diagonal(v, span())?, real_tensor(vec![3, 3])),
+            (
+                builder.fill(s, vec![2, 2], span())?,
+                real_tensor(vec![2, 2]),
+            ),
+            (
+                builder.construct_aggregate(&[v, w], vec![2, 3], span())?,
+                real_tensor(vec![2, 3]),
+            ),
+            (
+                builder.concatenate(0, &[m, m], span())?,
+                real_tensor(vec![4, 3]),
+            ),
+            (
+                builder.concatenate(1, &[m, m, m], span())?,
+                real_tensor(vec![2, 9]),
+            ),
+            (builder.project_element(m, vec![1, 2], span())?, scalar),
+        ];
+        for (result, value_type) in results {
+            let slot = builder.declare_slot(
+                value_type,
+                solve::SolveStorageClass::Output,
+                solve::SolveSlotAccess::ReadWrite,
+                span(),
+            )?;
+            builder.store(slot, result, span())?;
+        }
+        Ok(())
+    })
+    .expect("checked tensor program")
 }
 
 /// A map whose body is its own region definition, printed before its owner.
@@ -977,7 +1089,7 @@ fn a_same_id_substitution_in_the_printed_plan_fails_conformance() {
 /// An operation no audit row owns cannot pass as unmigrated printing.
 #[test]
 fn an_unledgered_legacy_operation_fails_conformance() {
-    let findings = check(&Printer::builtin(), &identity_program(), "identity");
+    let findings = check(&Printer::builtin(), &conditional_program(), "conditional");
     assert!(
         findings
             .iter()
@@ -1115,4 +1227,141 @@ fn a_non_canonical_decimal_spelling_fails_conformance() {
         assert!(rendered.contains("[010]"), "{label}: control prints 010");
         assert_decoding_findings(label, &check(&printer, &program, "wide"));
     }
+}
+
+/// The tensor items of a program, by body position.
+fn tensor_items(program: &solve::TypedProgram) -> Vec<(usize, usize)> {
+    program
+        .print_plan()
+        .body()
+        .iter()
+        .enumerate()
+        .filter_map(|(position, item)| match item {
+            Body::Tensor { index, .. } => Some((position, *index)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn tensor_bodies_print_exactly_their_issued_plans() {
+    let program = tensor_program();
+    assert_eq!(
+        check(&Printer::builtin(), &program, "tensor"),
+        Vec::<String>::new()
+    );
+    assert_eq!(tensor_items(&program).len(), 14);
+    assert_eq!(coverage(&program).1, 0);
+}
+
+/// Each tensor item prints the bytes its unmigrated macro printed for the
+/// same operation, so moving it to the plan changes no generated code.
+#[test]
+fn tensor_items_print_what_their_legacy_route_printed() {
+    let printer = Printer::builtin();
+    let program = tensor_program();
+    let wire = serde_json::to_value(&program).unwrap();
+    for (position, index) in tensor_items(&program) {
+        assert_eq!(
+            printer.plan_item(&wire, position),
+            printer.legacy(&wire, "tensor", index),
+            "operation {index}"
+        );
+    }
+}
+
+/// Each injected deviation from an issued tensor item is a finding.
+#[test]
+fn printing_a_tensor_item_but_its_plan_fails_conformance() {
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    let injections = [
+        (
+            "product operands swapped",
+            "sum+=r{{ item.kernel.lhs }}[i*{{ item.kernel.inner }}+k]*r{{ item.kernel.rhs }}[k*{{ item.kernel.columns }}+j]",
+            "sum+=r{{ item.kernel.rhs }}[i*{{ item.kernel.inner }}+k]*r{{ item.kernel.lhs }}[k*{{ item.kernel.columns }}+j]",
+        ),
+        (
+            "transpose stride from the wrong axis",
+            "=r{{ item.kernel.operand }}[(i*{{ item.kernel.columns }}+j)",
+            "=r{{ item.kernel.operand }}[(i*{{ item.kernel.rows }}+j)",
+        ),
+        (
+            "fill extent recomputed",
+            "k<{{ item.kernel.extent }}; ++k) r{{ item.destination }}[k]=r{{ item.kernel.value }}[0];",
+            "k<{{ item.kernel.extent + 1 }}; ++k) r{{ item.destination }}[k]=r{{ item.kernel.value }}[0];",
+        ),
+        (
+            "extent in a non-canonical spelling",
+            "for (size_t k=0; k<{{ item.kernel.trailing }}; ++k)",
+            "for (size_t k=0; k<0{{ item.kernel.trailing }}; ++k)",
+        ),
+        (
+            "dropped concatenation part",
+            "{% for part in item.kernel.parts -%}\nfor (size_t k=0;",
+            "{% for part in item.kernel.parts[1:] -%}\nfor (size_t k=0;",
+        ),
+        (
+            "aggregate offset from the loop",
+            "memcpy(&r{{ item.destination }}[{{ part.offset }}]",
+            "memcpy(&r{{ item.destination }}[{{ loop.index0 }}]",
+        ),
+        (
+            "projection coordinate dropped",
+            "index=index*{{ axis.extent }}+{{ axis.coordinate }};",
+            "index=index*{{ axis.extent }}+0;",
+        ),
+        (
+            "cross product term sign",
+            "r{{ item.destination }}[0]=r{{ item.kernel.lhs }}[1]*r{{ item.kernel.rhs }}[2]-r{{ item.kernel.lhs }}[2]*r{{ item.kernel.rhs }}[1];",
+            "r{{ item.destination }}[0]=r{{ item.kernel.lhs }}[1]*r{{ item.kernel.rhs }}[2]+r{{ item.kernel.lhs }}[2]*r{{ item.kernel.rhs }}[1];",
+        ),
+        (
+            "scale scalar read at the running element",
+            "=r{{ item.kernel.aggregate }}[k]*r{{ item.kernel.scalar }}[0];",
+            "=r{{ item.kernel.aggregate }}[k]*r{{ item.kernel.scalar }}[k];",
+        ),
+        (
+            "identity diagonal value",
+            "(i==j)?1.0:0.0;",
+            "(i==j)?0.0:1.0;",
+        ),
+        (
+            "diagonal read at a fixed element",
+            "(i==j)?r{{ item.kernel.operand }}[i]:0.0;",
+            "(i==j)?r{{ item.kernel.operand }}[0]:0.0;",
+        ),
+        (
+            "dropped tensor item",
+            "{% elif item.kind == \"tensor\" %}{{ tensor_item(item) }}",
+            "{% elif item.kind == \"tensor\" %}",
+        ),
+    ];
+    let program = tensor_program();
+    for (label, original, injected) in injections {
+        assert_eq!(template.matches(original).count(), 1, "{label}: anchor");
+        let printer = Printer::new(template.replacen(original, injected, 1));
+        assert_decoding_findings(label, &check(&printer, &program, "tensor"));
+    }
+}
+
+/// A tensor item whose operands are exchanged under the same id prints a
+/// valid-looking product that is still not the issued plan.
+#[test]
+fn a_same_id_tensor_substitution_fails_conformance() {
+    let printer = Printer::builtin();
+    let program = tensor_program();
+    let mut wire = serde_json::to_value(&program).unwrap();
+    let body = wire["print"]["body"].as_array_mut().unwrap();
+    let product = body
+        .iter_mut()
+        .find(|item| item["kind"] == "tensor" && item["kernel"]["kind"] == "matrix_multiply")
+        .unwrap();
+    let lhs = product["kernel"]["lhs"].clone();
+    product["kernel"]["lhs"] = product["kernel"]["rhs"].clone();
+    product["kernel"]["rhs"] = lhs;
+    let rendered = printer.definition(&wire, "tensor");
+    assert_decoding_findings(
+        "swapped product",
+        &check_rendered(&printer, &program, &wire, "tensor", &rendered),
+    );
 }

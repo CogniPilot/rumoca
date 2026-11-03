@@ -8,6 +8,7 @@
 //! item naming the audit ledger row that owns its remaining printer decision.
 
 mod scalar;
+mod tensor;
 
 use serde::Serialize;
 
@@ -20,6 +21,7 @@ pub use scalar::{
     SolveBinaryToken, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
     SolveElementOperand, SolveIntegerLiteral, SolveKernel, SolveLiteral, SolveUnaryToken,
 };
+pub use tensor::{SolveElementAxis, SolveTensorKernel, SolveTensorPart};
 
 /// The element token of an issued value: each printer has one fixed
 /// spelling per token.
@@ -137,6 +139,12 @@ pub enum SolveBodyItem {
         extent: u32,
         token: SolveConversionToken,
         domain: Option<SolveDomainCheck>,
+    },
+    /// Register `destination` computed by the closed tensor `kernel`.
+    Tensor {
+        index: usize,
+        destination: usize,
+        kernel: SolveTensorKernel,
     },
     /// Not yet projected: printed from the operation by the printer's
     /// unmigrated macro, under the decision owned by audit row `ledger`, or
@@ -353,12 +361,12 @@ fn body_item(
             destination: slot(stored.index()),
             source: register(source.index()),
         },
-        other => {
-            scalar::scalar_item(index, other, register_types).unwrap_or(SolveBodyItem::Legacy {
+        other => scalar::scalar_item(index, other, register_types)
+            .or_else(|| tensor::tensor_item(index, other, register_types))
+            .unwrap_or(SolveBodyItem::Legacy {
                 index,
                 ledger: legacy_ledger(other),
-            })
-        }
+            }),
     }
 }
 
