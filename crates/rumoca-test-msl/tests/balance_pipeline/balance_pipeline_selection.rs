@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(target_os = "linux")]
 use indexmap::IndexSet;
 use rumoca_worker::MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT;
 use std::collections::HashSet;
