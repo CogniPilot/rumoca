@@ -3,6 +3,9 @@
 //! This cannot admit a changed region. Source stability through actual builds
 //! and checked AST/API/output products remain separate joint-gate obligations.
 
+#[cfg(test)]
+mod tests;
+
 use super::{BACKEND, LEDGER_PATH, REFERENCE, REFERENCE_SHA256};
 use crate::print_boundary_check::source_closure::SourceClosure;
 use anyhow::{Result, ensure};
@@ -34,6 +37,3 @@ pub(super) fn check_with_reference(capture: &SourceClosure, reference: &str) -> 
         .collect();
     super::check_inventory(&ledger, &actual)
 }
-
-#[cfg(test)]
-mod tests;

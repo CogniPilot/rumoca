@@ -4,6 +4,9 @@
 //! nor a supplied hash grants trust: the embedded, hash-pinned ledger must match.
 //! This is a source identity fact only, never authorization to replace a region.
 
+#[cfg(test)]
+mod tests;
+
 use super::{Ledger, REFERENCE, REFERENCE_SHA256, digest, parse_ledger, relative_path};
 use anyhow::{Result, ensure};
 
@@ -67,6 +70,3 @@ impl FrozenSource<'_, '_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

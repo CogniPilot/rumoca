@@ -59,10 +59,10 @@ fn overlap_out_of_order_and_duplicate_ids_cannot_hide_an_uncovered_segment() {
 #[test]
 fn hostile_coordinates_refuse_without_indexing_or_wrapping() {
     for (before, after) in [
-        (3..2, 0..0),
+        (Range { start: 3, end: 2 }, 0..0),
         (0..usize::MAX, 0..0),
         (0..0, usize::MAX..usize::MAX),
-        (0..0, 1..0),
+        (0..0, Range { start: 1, end: 0 }),
     ] {
         assert!(matches!(
             prove_complement(b"a", b"a", &[pair(7, before, after)]),

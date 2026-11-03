@@ -6,7 +6,6 @@
 //! retires a finding, or establishes source-capture identity on its own.
 
 #[cfg(test)]
-#[path = "source_complement/tests.rs"]
 mod tests;
 
 use std::collections::BTreeSet;
