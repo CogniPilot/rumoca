@@ -38,15 +38,15 @@ pub(super) fn derive(
     relation.append(&algebraic, &rows, &targets, false)?;
     append_live_parameter_bindings(component, &mut relation)?;
     append_parameter_discretes(component, &mut relation)?;
-    Ok(FmiTangentPlan {
+    FmiTangentPlan::issue(
         component,
-        mode: FmiTangentMode::EventOrStep,
-        assignments: Vec::new(),
-        implicit: relation.finish(y_len, seed_len - 1)?,
-        rhs: derive_rhs(component)?,
+        FmiTangentMode::EventOrStep,
+        Vec::new(),
+        relation.finish(y_len, seed_len - 1)?,
+        derive_rhs(component)?,
         seed_len,
-        consistency: None,
-    })
+        None,
+    )
 }
 
 /// The same checked execution projection drives primal refresh and tangent

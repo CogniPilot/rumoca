@@ -75,15 +75,15 @@ pub(super) fn derive(
     }
     let implicit = relation.finish(y_len, seed_len - 1)?;
     let consistency = derive_consistency(&initial, &checks, y_len, problem.layout.p_scalars())?;
-    Ok(FmiTangentPlan {
+    FmiTangentPlan::issue(
         component,
-        mode: FmiTangentMode::Initialization,
-        assignments: Vec::new(),
+        FmiTangentMode::Initialization,
+        Vec::new(),
         implicit,
-        rhs: derive_rhs(component)?,
+        derive_rhs(component)?,
         seed_len,
         consistency,
-    })
+    )
 }
 
 pub(super) fn combined_targets(
