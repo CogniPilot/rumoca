@@ -1,4 +1,6 @@
 //! Issued primal handles reuse the original directional arithmetic relation.
+mod aggregate;
+
 use super::*;
 
 fn scalar(format: SolveRealFormat, value: f64) -> TypedValue {

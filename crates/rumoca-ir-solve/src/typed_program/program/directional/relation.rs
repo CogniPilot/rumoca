@@ -3,6 +3,9 @@
 #[cfg(test)]
 mod tests;
 
+mod aggregate;
+pub use aggregate::{SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource};
+
 use super::*;
 
 /// The exact scalar unary occurrence emitted by its constructor. No caller

@@ -17,7 +17,10 @@ mod mapped;
 mod pointwise;
 mod reduction;
 mod relation;
-pub use relation::{SolveBinaryDirectionalSource, SolveUnaryDirectionalSource};
+pub use relation::{
+    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
+    SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
+};
 
 use arithmetic::DirectionalArithmetic;
 use pointwise::{
@@ -1055,7 +1058,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 aggregate,
                 scalar,
                 scalar_on_lhs,
-                &value_type,
+                (primal, &value_type),
                 provenance,
             )?;
             return self.bind(destination, Directional { primal, tangent }, provenance);
