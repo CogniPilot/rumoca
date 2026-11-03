@@ -66,7 +66,9 @@ impl SolveRuntime {
             })
             .collect();
         let implicit_scalar_projection =
-            solve_eval::to_scalar_program_projection(&model.problem.continuous.implicit_rhs)?;
+            rumoca_ir_solve::scalar_refinement::to_scalar_program_projection(
+                &model.problem.continuous.implicit_rhs,
+            )?;
         let mut refresh_program_rows = FxHashMap::default();
         for (row, source) in implicit_scalar_projection
             .sources()
