@@ -439,6 +439,27 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
           printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
+      - name: Reclaim unused SDKs before Linux tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before Linux test SDK reclaim =="
+          df -h . / /tmp
+          # Same fixed SDK paths as the template-runtime job; keep Rust, Cargo,
+          # Nix, target outputs and qualification evidence untouched.
+          for path in /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
+            if test -e "$path"; then du -sh -- "$path"; fi
+          done
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          echo "== disk after Linux test SDK reclaim =="
+          df -h . / /tmp
+
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/apt-install
@@ -599,7 +620,9 @@ jobs:
               echo "== resource snapshot: $(date -Is) =="
               df -h . /tmp /home/runner/actions-runner/cached 2>/dev/null || true
               free -h || true
-              du -sh target target/debug target/debug/deps target/debug/incremental target/msl target/cmm ~/.rustup ~/.cargo ~/.cargo/registry ~/.cargo/git /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+              for path in target target/debug target/debug/deps target/debug/build target/debug/incremental target/msl target/cmm ~/.rustup ~/.cargo ~/.cargo/registry ~/.cargo/git /home/runner/actions-runner/cached/_diag; do
+                du -sh -- "$path" 2>/dev/null || true
+              done
               ps -eo pid,ppid,%cpu,%mem,rss,vsz,comm,args --sort=-rss | head -n 15 || true
               sleep 60
             done
@@ -626,7 +649,9 @@ jobs:
               echo "== resource snapshot: $(date -Is) =="
               df -h . /tmp /home/runner/actions-runner/cached 2>/dev/null || true
               free -h || true
-              du -sh target target/debug target/debug/deps target/debug/incremental target/msl target/cmm ~/.rustup ~/.cargo ~/.cargo/registry ~/.cargo/git /home/runner/actions-runner/cached/_diag 2>/dev/null || true
+              for path in target target/debug target/debug/deps target/debug/build target/debug/incremental target/msl target/cmm ~/.rustup ~/.cargo ~/.cargo/registry ~/.cargo/git /home/runner/actions-runner/cached/_diag; do
+                du -sh -- "$path" 2>/dev/null || true
+              done
               ps -eo pid,ppid,%cpu,%mem,rss,vsz,comm,args --sort=-rss | head -n 15 || true
               sleep 60
             done

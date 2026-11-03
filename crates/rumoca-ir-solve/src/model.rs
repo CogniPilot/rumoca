@@ -3,6 +3,7 @@ use super::*;
 mod affine_elimination;
 mod assignment_decomposition;
 mod clock_partition;
+mod continuous_source;
 mod event_schedule;
 mod event_transaction;
 mod guarded_assignment;
@@ -18,6 +19,7 @@ mod storage_tests;
 
 pub use affine_elimination::AffineEliminationLayout;
 pub use assignment_decomposition::{CheckedAssignmentDecomposition, ScalarArtifactRefusal};
+pub use continuous_source::{ContinuousNumericalSource, ContinuousNumericalSourceError};
 pub use event_schedule::{
     CoupledNewtonPolicy, EventIterationSchedule, EventPassStep, EventScheduleError,
     RelationPassStep, SettleStep,

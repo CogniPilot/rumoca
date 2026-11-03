@@ -1,7 +1,28 @@
+mod assertions;
+mod assigned_state;
 mod calls;
-pub use calls::{ProgramCall, SolveAssertionForwarding};
+mod construction;
 mod construction_checks;
 mod construction_error;
+mod directional;
+mod entry_interface;
+mod fault_flow;
+mod linear_solve;
+mod loop_flow;
+mod native;
+mod operation_visit;
+mod pass_flow;
+pub(crate) mod print_plan;
+mod read_flow;
+mod storage_class;
+mod storage_plan;
+mod tensor;
+#[cfg(test)]
+mod tests;
+mod value_numbering;
+pub(in crate::typed_program) mod wire;
+
+pub use calls::{ProgramCall, SolveAssertionForwarding};
 use construction_checks::{
     binary_operator_accepts, checked_ordinal, construct_region, declare_interface_slots,
     indices_in_bounds, require_fold_domain, require_map_domain, require_provenance,
@@ -9,30 +30,29 @@ use construction_checks::{
 };
 pub use construction_error::SolveProgramConstructionError;
 
-mod assigned_state;
+pub use assertions::{ProgramAssertion, SolveAssertionMessage};
 use assigned_state::{AssignedStateConstruction, AssignedStateLayout};
 pub use assigned_state::{
     ProgramAssignedState, SolveAssignedConditional, SolveAssignedStateId,
     SolveAssignedStateOperation,
 };
-mod assertions;
-mod directional;
-pub use assertions::{ProgramAssertion, SolveAssertionMessage};
-mod fault_flow;
-mod linear_solve;
-mod loop_flow;
-mod native;
-mod operation_visit;
-mod pass_flow;
-mod read_flow;
-mod tensor;
-mod value_numbering;
+pub use directional::{
+    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
+    SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
+};
+pub use print_plan::{
+    SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
+    SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel,
+    SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveRegisterFrame,
+    SolveUnaryToken,
+};
+pub(super) use storage_plan::DERIVED;
+pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 use value_numbering::ValueKey;
 
 pub use loop_flow::{MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, invariant_guard};
 pub use pass_flow::index_forms;
 pub use tensor::promoted_concatenate_dimensions;
-pub(in crate::typed_program) mod wire;
 
 use std::marker::PhantomData;
 
@@ -512,6 +532,10 @@ pub struct TypedProgram {
     register_types: Box<[SolveValueType]>,
     operations: Box<[SolveSpannedOperation]>,
     assigned_states: AssignedStateLayout,
+    #[serde(serialize_with = "storage_plan::derived")]
+    storage: SolveStoragePlan,
+    #[serde(serialize_with = "storage_plan::derived")]
+    print: SolvePrintPlan,
     #[serde(skip)]
     read_flow: read_flow::ReadFlow,
     #[serde(skip)]
@@ -525,92 +549,6 @@ pub struct TypedProgram {
 }
 
 impl TypedProgram {
-    pub fn construct(
-        arithmetic: SolveArithmeticProfile,
-        build: impl for<'program> FnOnce(
-            &mut TypedProgramBuilder<'program>,
-        ) -> Result<(), SolveProgramConstructionError>,
-    ) -> Result<Self, SolveProgramConstructionError> {
-        Self::construct_with_calls(arithmetic, SolvePureCallTableView::default(), build)
-    }
-
-    pub(super) fn construct_with_calls(
-        arithmetic: SolveArithmeticProfile,
-        available_calls: SolvePureCallTableView<'_>,
-        build: impl for<'program> FnOnce(
-            &mut TypedProgramBuilder<'program>,
-        ) -> Result<(), SolveProgramConstructionError>,
-    ) -> Result<Self, SolveProgramConstructionError> {
-        Self::construct_with_owner(arithmetic, available_calls, &[], build)
-    }
-
-    pub(super) fn construct_with_owner(
-        arithmetic: SolveArithmeticProfile,
-        available_calls: SolvePureCallTableView<'_>,
-        assertion_outputs: &[SolvePureCallOutput],
-        build: impl for<'program> FnOnce(
-            &mut TypedProgramBuilder<'program>,
-        ) -> Result<(), SolveProgramConstructionError>,
-    ) -> Result<Self, SolveProgramConstructionError> {
-        Self::construct_with_assigned_interface(
-            arithmetic,
-            available_calls,
-            assertion_outputs,
-            Vec::new(),
-            Vec::new(),
-            None,
-            build,
-        )
-    }
-
-    fn construct_with_assigned_interface(
-        arithmetic: SolveArithmeticProfile,
-        available_calls: SolvePureCallTableView<'_>,
-        assertion_outputs: &[SolvePureCallOutput],
-        state_inputs: Vec<SolveValueType>,
-        state_outputs: Vec<SolveValueType>,
-        region_provenance: Option<Span>,
-        build: impl for<'program> FnOnce(
-            &mut TypedProgramBuilder<'program>,
-        ) -> Result<(), SolveProgramConstructionError>,
-    ) -> Result<Self, SolveProgramConstructionError> {
-        if state_inputs
-            .iter()
-            .chain(&state_outputs)
-            .any(|value_type| !value_type.belongs_to(arithmetic))
-        {
-            return Err(SolveProgramConstructionError::WireMismatch);
-        }
-        let mut builder = TypedProgramBuilder {
-            arithmetic,
-            slots: Vec::new(),
-            slot_initialized: Vec::new(),
-            register_types: Vec::new(),
-            operations: Vec::new(),
-            numbering: std::collections::HashMap::new(),
-            numbered_values: true,
-            assigned_states: AssignedStateConstruction::interface(state_inputs, state_outputs),
-            available_calls,
-            assertion_outputs,
-            marker: PhantomData,
-        };
-        build(&mut builder)?;
-        builder.assigned_states.complete(
-            builder
-                .operations
-                .last()
-                .map(|op| op.provenance)
-                .or(region_provenance),
-        )?;
-        Ok(Self::assemble(
-            arithmetic,
-            builder.slots,
-            builder.register_types,
-            builder.operations,
-            builder.assigned_states.layout,
-        ))
-    }
-
     fn assemble(
         arithmetic: SolveArithmeticProfile,
         slots: Vec<SolveSlot>,
@@ -622,12 +560,16 @@ impl TypedProgram {
         let fault_flow = fault_flow::FaultFlow::of(&operations, &register_types, &slots, &[]);
         let loop_flow = loop_flow::LoopFlow::of(&operations);
         let pass_flow = pass_flow::PassFlow::of(&operations, &fault_flow);
+        let storage = SolveStoragePlan::host(&slots, &register_types, &operations);
+        let print = SolvePrintPlan::of(&slots, &register_types, &operations, &storage);
         let mut program = Self {
             arithmetic,
             slots: slots.into_boxed_slice(),
             register_types: register_types.into_boxed_slice(),
             operations: operations.into_boxed_slice(),
             assigned_states,
+            storage,
+            print,
             read_flow,
             fault_flow,
             loop_flow,
@@ -776,6 +718,7 @@ pub struct TypedProgramBuilder<'program> {
     arithmetic: SolveArithmeticProfile,
     slots: Vec<SolveSlot>,
     slot_initialized: Vec<bool>,
+    entry_interface: entry_interface::EntryConstruction,
     register_types: Vec<SolveValueType>,
     operations: Vec<SolveSpannedOperation>,
     numbering: std::collections::HashMap<ValueKey, SolveRegisterId>,
@@ -789,6 +732,28 @@ pub struct TypedProgramBuilder<'program> {
 }
 
 impl<'program> TypedProgramBuilder<'program> {
+    pub(in crate::typed_program) fn bound_call_indices(
+        &self,
+    ) -> Option<(
+        &'program [SolvePureCallOwnerId],
+        &'program [Option<SolvePureCallOwnerId>],
+    )> {
+        self.available_calls.bound_indices()
+    }
+
+    pub(in crate::typed_program) fn bound_call_namespace(
+        &self,
+    ) -> Option<&'program [crate::BoundSolvePureCallBody<'program>]> {
+        self.available_calls.bound_namespace()
+    }
+
+    pub(in crate::typed_program) fn shares_bound_call_namespace(
+        &self,
+        bindings: &[crate::BoundSolvePureCallBody<'_>],
+    ) -> bool {
+        self.available_calls.shares_bound_namespace(bindings)
+    }
+
     pub fn declare_slot(
         &mut self,
         value_type: SolveValueType,
@@ -804,17 +769,16 @@ impl<'program> TypedProgramBuilder<'program> {
             return Err(SolveProgramConstructionError::WritableConstant { provenance });
         }
         let id = SolveSlotId(checked_ordinal(self.slots.len(), provenance)?);
-        self.slots.push(SolveSlot {
+        let slot = SolveSlot {
             id,
             value_type,
             storage,
             access,
             provenance,
-        });
-        self.slot_initialized.push(!matches!(
-            storage,
-            SolveStorageClass::Output | SolveStorageClass::MethodLocal
-        ));
+        };
+        self.entry_declare_slot(&slot)?;
+        self.slots.push(slot);
+        self.slot_initialized.push(storage.initialized_externally());
         Ok(ProgramSlot {
             id,
             marker: PhantomData,
@@ -830,6 +794,7 @@ impl<'program> TypedProgramBuilder<'program> {
         provenance: Span,
     ) -> Result<(), SolveProgramConstructionError> {
         let index = self.slot(slot, provenance)?.id.index();
+        self.entry_assume_slot_initialized(index, provenance)?;
         self.slot_initialized[index] = true;
         Ok(())
     }
@@ -906,6 +871,7 @@ impl<'program> TypedProgramBuilder<'program> {
             return Err(SolveProgramConstructionError::TypeMismatch { provenance });
         }
         let slot_id = slot.id;
+        self.entry_store(slot_id, provenance)?;
         self.push(
             SolveOperation::Store {
                 slot: slot_id,
@@ -1976,6 +1942,3 @@ impl<'program> TypedProgramBuilder<'program> {
         });
     }
 }
-
-#[cfg(test)]
-mod tests;

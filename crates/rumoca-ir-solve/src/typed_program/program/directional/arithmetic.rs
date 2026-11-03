@@ -256,10 +256,6 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         })
     }
 
-    // SPEC_0021: Exception - exhaustive tangent relation over every checked
-    // binary operator, including the scalar AD singular-value guards.
-    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-    #[allow(clippy::too_many_lines)]
     pub(super) fn derive_binary(
         &mut self,
         operator: SolveBinaryOperator,
@@ -271,6 +267,22 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         let direct_primal = self
             .builder
             .binary(operator, lhs.primal, rhs.primal, provenance)?;
+        self.derive_binary_from_primal(operator, lhs, rhs, direct_primal, value_type, provenance)
+    }
+
+    // SPEC_0021: Exception - exhaustive tangent relation over every checked
+    // binary operator, including the scalar AD singular-value guards.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn derive_binary_from_primal(
+        &mut self,
+        operator: SolveBinaryOperator,
+        lhs: Directional<ProgramRegister<'program>>,
+        rhs: Directional<ProgramRegister<'program>>,
+        direct_primal: ProgramRegister<'program>,
+        value_type: &SolveValueType,
+        provenance: Span,
+    ) -> Result<Directional<ProgramRegister<'program>>, SolveProgramConstructionError> {
         if !is_real(value_type) {
             return Ok(Directional {
                 primal: direct_primal,

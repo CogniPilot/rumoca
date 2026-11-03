@@ -25,7 +25,7 @@ fn original_eq(left: &SolvePureCallTable, right: &SolvePureCallTable) -> bool {
 }
 
 #[test]
-fn immutable_table_clone_shares_only_exact_complete_lineage() {
+fn immutable_table_clone_shares_complete_read_only_owner_storage() {
     let original = table(SolveBinaryOperator::Add);
     let cloned = original.clone();
     assert!(original.shares_table_owner(&cloned));
@@ -37,7 +37,12 @@ fn immutable_table_clone_shares_only_exact_complete_lineage() {
         &original.immutable_lineage,
         &cloned.immutable_lineage
     ));
-    assert_ne!(original.owners.as_ptr(), cloned.owners.as_ptr());
+    assert!(Arc::ptr_eq(&original.owners, &cloned.owners));
+    assert!(Arc::ptr_eq(&original.groups, &cloned.groups));
+    assert!(std::ptr::eq(
+        original.owners()[0].body(),
+        cloned.owners()[0].body()
+    ));
     assert_eq!(original == cloned, original_eq(&original, &cloned));
 }
 

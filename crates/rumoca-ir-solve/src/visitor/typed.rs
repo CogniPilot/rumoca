@@ -25,67 +25,75 @@ pub fn walk_typed_program<V: SolveVisitor + ?Sized>(
 ) -> Result<(), V::Error> {
     for (index, operation) in program.operations().iter().enumerate() {
         visitor.visit_typed_operation(program, index, operation)?;
-        match operation.operation() {
-            SolveOperation::AssignedConditional { program } => {
-                visitor.visit_typed_program(program.if_true().body())?;
-                visitor.visit_typed_program(program.if_false().body())?;
-            }
-            SolveOperation::Conditional {
-                if_true, if_false, ..
-            } => {
-                visitor.visit_typed_program(if_true.body())?;
-                visitor.visit_typed_program(if_false.body())?;
-            }
-            SolveOperation::Map { body, .. } => visitor.visit_typed_program(body.body())?,
-            SolveOperation::Fold {
-                transition,
-                continuation,
-                ..
-            } => {
-                if let Some(continuation) = continuation {
-                    visitor.visit_typed_program(continuation.body())?;
-                }
-                visitor.visit_typed_program(transition.body())?;
-            }
-            SolveOperation::CheckAssertion { message, .. } => {
-                if let SolveAssertionMessage::Captures { program } = message {
-                    visitor.visit_typed_program(program.body())?;
-                }
-            }
-            SolveOperation::AssignedState { .. }
-            | SolveOperation::Constant { .. }
-            | SolveOperation::Load { .. }
-            | SolveOperation::Store { .. }
-            | SolveOperation::Unary { .. }
-            | SolveOperation::Binary { .. }
-            | SolveOperation::Compare { .. }
-            | SolveOperation::Convert { .. }
-            | SolveOperation::Select { .. }
-            | SolveOperation::Scale { .. }
-            | SolveOperation::BroadcastBinary { .. }
-            | SolveOperation::Transpose { .. }
-            | SolveOperation::MatrixMultiply { .. }
-            | SolveOperation::Cross { .. }
-            | SolveOperation::Reduce { .. }
-            | SolveOperation::Identity { .. }
-            | SolveOperation::Diagonal { .. }
-            | SolveOperation::Concatenate { .. }
-            | SolveOperation::Fill { .. }
-            | SolveOperation::ConstructAggregate { .. }
-            | SolveOperation::ProjectElement { .. }
-            | SolveOperation::ProjectElementDynamic { .. }
-            | SolveOperation::ProjectSlice { .. }
-            | SolveOperation::ProjectView { .. }
-            | SolveOperation::SelectElement { .. }
-            | SolveOperation::UpdateElement { .. }
-            | SolveOperation::UpdateSlice { .. }
-            | SolveOperation::UpdateView { .. }
-            | SolveOperation::Call { .. }
-            | SolveOperation::LinearSolve { .. }
-            | SolveOperation::Native { .. } => {}
+        for child in nested_typed_programs(operation.operation())
+            .into_iter()
+            .flatten()
+        {
+            visitor.visit_typed_program(child)?;
         }
     }
     Ok(())
+}
+
+/// Structural children in the canonical source traversal order; no execution
+/// or branch selection is performed.
+pub(crate) fn nested_typed_programs(operation: &SolveOperation) -> [Option<&TypedProgram>; 2] {
+    match operation {
+        SolveOperation::AssignedConditional { program } => [
+            Some(program.if_true().body()),
+            Some(program.if_false().body()),
+        ],
+        SolveOperation::Conditional {
+            if_true, if_false, ..
+        } => [Some(if_true.body()), Some(if_false.body())],
+        SolveOperation::Map { body, .. } => [Some(body.body()), None],
+        SolveOperation::Fold {
+            transition,
+            continuation,
+            ..
+        } => [
+            continuation.as_ref().map(|p| p.body()),
+            Some(transition.body()),
+        ],
+        SolveOperation::CheckAssertion { message, .. } => [
+            match message {
+                SolveAssertionMessage::Captures { program } => Some(program.body()),
+                SolveAssertionMessage::NoCaptures => None,
+            },
+            None,
+        ],
+        SolveOperation::AssignedState { .. }
+        | SolveOperation::Constant { .. }
+        | SolveOperation::Load { .. }
+        | SolveOperation::Store { .. }
+        | SolveOperation::Unary { .. }
+        | SolveOperation::Binary { .. }
+        | SolveOperation::Compare { .. }
+        | SolveOperation::Convert { .. }
+        | SolveOperation::Select { .. }
+        | SolveOperation::Scale { .. }
+        | SolveOperation::BroadcastBinary { .. }
+        | SolveOperation::Transpose { .. }
+        | SolveOperation::MatrixMultiply { .. }
+        | SolveOperation::Cross { .. }
+        | SolveOperation::Reduce { .. }
+        | SolveOperation::Identity { .. }
+        | SolveOperation::Diagonal { .. }
+        | SolveOperation::Concatenate { .. }
+        | SolveOperation::Fill { .. }
+        | SolveOperation::ConstructAggregate { .. }
+        | SolveOperation::ProjectElement { .. }
+        | SolveOperation::ProjectElementDynamic { .. }
+        | SolveOperation::ProjectSlice { .. }
+        | SolveOperation::ProjectView { .. }
+        | SolveOperation::SelectElement { .. }
+        | SolveOperation::UpdateElement { .. }
+        | SolveOperation::UpdateSlice { .. }
+        | SolveOperation::UpdateView { .. }
+        | SolveOperation::Call { .. }
+        | SolveOperation::LinearSolve { .. }
+        | SolveOperation::Native { .. } => [None, None],
+    }
 }
 
 #[cfg(test)]
