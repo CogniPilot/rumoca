@@ -37,22 +37,20 @@ mod torn_sweep_run_tests;
 #[cfg(test)]
 mod zero_assignment_tests;
 
+use rumoca_ir_solve::scalar_refinement::{
+    checked_contiguous_output_count, scalar_program_output_count, scalar_program_output_indices,
+    tensor_output_count, validate_affine_stride_metadata,
+};
 use std::cell::{OnceCell, RefCell};
 
-use crate::compute_block_scalarize::scalarize_product as checked_product;
 use crate::tensor_policy::{
     LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
 };
 use crate::{
     EvalSolveError, OutputCursor, PreparedLazyRowPlan, PreparedRowEval, RowEvalContext,
     RowEvalScratch, RowInputRequirements, SimulationRuntimeState, SpecializedRowProgram,
-    compute_block_scalarize::{
-        checked_contiguous_output_count, scalar_program_output_count,
-        scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
-    },
     eval_prevalidated_discard_output_program, eval_prevalidated_single_output_program,
-    eval_program_no_output, eval_row_prepared_maybe_fast,
-    linear_solve::solve_all_unchecked,
+    eval_program_no_output, eval_row_prepared_maybe_fast, linear_solve::solve_all_unchecked,
     record_solve_block_eval, required_registers, row_input_requirements,
     validate_input_requirements, validate_input_requirements_with_span, validate_output_len,
 };
@@ -70,6 +68,7 @@ use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::AlgebraicRefreshRow;
 #[cfg(test)]
 use rumoca_ir_solve::BinaryOp;
+use rumoca_ir_solve::scalar_refinement::scalarize_product as checked_product;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
     ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,

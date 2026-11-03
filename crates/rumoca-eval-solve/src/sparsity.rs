@@ -23,8 +23,9 @@ use rumoca_ir_solve::{
     StructuralPatternError,
 };
 
-use crate::{EvalSolveError, to_scalar_program_block};
+use crate::EvalSolveError;
 use reverse_invalidations::derive_algebraic_reverse_invalidations;
+use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without
 /// losing the owner span the authority reported it against.

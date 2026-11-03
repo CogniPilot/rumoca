@@ -136,7 +136,8 @@ fn compact_kernel_matches_the_compiled_scalar_view_bit_for_bit() {
     let block = ComputeBlock {
         nodes: vec![scalar_node(), grid_stencil()],
     };
-    let view = rumoca_eval_solve::to_scalar_program_block(&block).expect("scalar view");
+    let view =
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&block).expect("scalar view");
     let rows = compile_expression_scalar_program_block(&view).expect("row compile");
     let compact = compile_expression_compute_block(&block, None)
         .expect("compact compile")
@@ -263,7 +264,8 @@ fn directional_kernel_matches_the_compiled_scalar_view_bit_for_bit() {
     let block = ComputeBlock {
         nodes: vec![directional_map(), scalar_node()],
     };
-    let view = rumoca_eval_solve::to_scalar_program_block(&block).expect("scalar view");
+    let view =
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&block).expect("scalar view");
     let rows = compile_jacobian_scalar_program_block(&view).expect("row compile");
     let compact = compile_jacobian_compute_block(&block, None)
         .expect("compact compile")

@@ -159,7 +159,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
     let package = rumoca_phase_solve::lower_solve_package(&compiled.dae)?;
     let problem = &package.problem;
     let block = &problem.continuous.derivative_rhs;
-    let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
+    let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(block)?;
     let block_output_count = block.len()?;
     let total_ops: usize = scalar.programs().iter().map(|program| program.len()).sum();
     let approx_bytes = total_ops * std::mem::size_of::<rumoca_ir_solve::LinearOp>();

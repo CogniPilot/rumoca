@@ -1,6 +1,7 @@
 use rumoca_ir_solve::{Reg, SolveProblemShapeContractError};
 
-use crate::{ScalarizeError, tensor_index};
+use crate::tensor_index;
+use rumoca_ir_solve::scalar_refinement::ScalarizeError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalSolveError {

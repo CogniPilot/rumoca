@@ -39,7 +39,8 @@ fn a_structured_initial_nest_lowers_to_one_map_node() {
     let residual = problem.initialization.residual();
     let counts = residual.compute_node_counts();
     assert_eq!(counts.map, 1, "the 4 x 3 nest is one Map node");
-    let view = rumoca_eval_solve::to_scalar_program_block(residual).expect("scalar view");
+    let view =
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(residual).expect("scalar view");
     assert_eq!(view.programs().len(), 12);
     // The native backend runs the residual and its Jacobian as one loop
     // kernel each, with no row compiled per point.
@@ -61,11 +62,13 @@ fn the_tensor_jvp_of_the_initial_family_equals_the_per_row_jvp() {
     let tensor =
         rumoca_eval_solve::ad::lower_compute_block_full_jvp(residual, seeds).expect("tensor JVP");
     let rows = rumoca_eval_solve::ad::lower_scalar_program_block_full_jvp(
-        &rumoca_eval_solve::to_scalar_program_block(residual).expect("scalar view"),
+        &rumoca_ir_solve::scalar_refinement::to_scalar_program_block(residual)
+            .expect("scalar view"),
         seeds,
     )
     .expect("per-row JVP");
-    let tensor = rumoca_eval_solve::to_scalar_program_block(&tensor).expect("JVP view");
+    let tensor =
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&tensor).expect("JVP view");
     assert_eq!(tensor.programs(), rows.programs());
     assert_eq!(tensor.output_indices(), rows.output_indices());
 }
@@ -147,8 +150,10 @@ fn a_mixed_initial_residual_keeps_an_exact_row_relation() {
         rumoca_ir_solve::StructuralPatternView::Stacked { .. }
     ));
     let scalar = rumoca_eval_solve::derive_jacobian_pattern_from_scalar_jvp(
-        &rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)
-            .expect("JVP view"),
+        &rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+            &artifacts.initialization.residual_jacobian_v,
+        )
+        .expect("JVP view"),
         pattern.rows() as usize,
         pattern.columns() as usize,
         pattern.provenance().span(),

@@ -34,8 +34,8 @@ use rumoca_eval_solve::refresh_plan::trace_refresh_plan;
 use rumoca_eval_solve::{
     EvalSolveError, PreparedComputeBlock, PreparedEvaluationBlock, PreparedEventTransactionProgram,
     PreparedGuardedAssignmentProgram, PreparedScalarProgramBlock, RowEvalContext,
-    to_scalar_program_block,
 };
+use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
 
 /// The algebraic projection an event walk runs between its steps, reporting
 /// whether it changed the coordinate.

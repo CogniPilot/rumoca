@@ -248,7 +248,9 @@ impl PreparedScalarProgramBlock {
     }
 
     pub fn from_compute_block(block: &ComputeBlock) -> Result<Self, EvalSolveError> {
-        Self::new(crate::to_scalar_program_block(block)?)
+        Self::new(rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+            block,
+        )?)
     }
 }
 

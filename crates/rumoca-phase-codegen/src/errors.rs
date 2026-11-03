@@ -192,8 +192,8 @@ fn template_error_context(err: &minijinja::Error) -> (String, &minijinja::Error)
     (message, origin)
 }
 
-impl From<rumoca_eval_solve::ScalarizeError> for CodegenError {
-    fn from(err: rumoca_eval_solve::ScalarizeError) -> Self {
+impl From<rumoca_ir_solve::scalar_refinement::ScalarizeError> for CodegenError {
+    fn from(err: rumoca_ir_solve::scalar_refinement::ScalarizeError) -> Self {
         Self::SolveScalarizationFailed {
             message: err.to_string(),
             span: err.source_span(),

@@ -624,7 +624,7 @@ impl NativeComputeInventory {
             Some(counts) => counts,
             None => (
                 0,
-                rumoca_eval_solve::to_scalar_program_block(block)
+                rumoca_ir_solve::scalar_refinement::to_scalar_program_block(block)
                     .map_err(|error| error.to_string())?
                     .programs()
                     .len(),

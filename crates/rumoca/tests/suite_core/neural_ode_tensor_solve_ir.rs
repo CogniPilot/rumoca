@@ -178,7 +178,7 @@ fn check_block(label: &str, block: &ComputeBlock, p_len: usize, failures: &mut V
                 let scalarized = ComputeBlock {
                     nodes: vec![node.clone()],
                 };
-                match rumoca_eval_solve::to_scalar_program_block(&scalarized) {
+                match rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&scalarized) {
                     Ok(program) => check_program(
                         &format!("{node_label}.scalarized"),
                         &program,

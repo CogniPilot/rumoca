@@ -18,8 +18,9 @@ use std::path::PathBuf;
 use rumoca_compile::compile::{Session, SessionConfig, SourceRootKind};
 use rumoca_eval_solve::{
     ColoredTangentEvaluator, PreparedScalarProgramBlock, RowEvalContext, TangentPoint,
-    TornTangentEvaluator, to_scalar_program_block,
+    TornTangentEvaluator,
 };
+use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
 use rumoca_ir_solve::{self as solve, ColoredTangentPlan, TornTangentPlan};
 
 use super::super::entry::lower_dae_for_simulation;

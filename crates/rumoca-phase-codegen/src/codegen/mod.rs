@@ -352,7 +352,7 @@ impl LazyScalarRowsValue {
     fn rows(&self) -> Option<&std::sync::Arc<Vec<Vec<solve::LinearOp>>>> {
         self.scalar
             .get_or_init(|| {
-                rumoca_eval_solve::to_scalar_program_block(&self.block)
+                rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&self.block)
                     .ok()
                     .map(|scalar| std::sync::Arc::new(scalar.programs().to_vec()))
             })

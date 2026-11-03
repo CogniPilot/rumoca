@@ -112,7 +112,7 @@ fn nested_relation_reads_keep_captures_lazy_arithmetic_and_full_affine_proof() {
             span: source_span(),
         }],
     };
-    let scalar = rumoca_eval_solve::to_scalar_program_block(&block).unwrap();
+    let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&block).unwrap();
     for (y, p, expected) in [
         (
             vec![0.25, 4.0, 0.0],

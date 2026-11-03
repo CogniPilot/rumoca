@@ -23,10 +23,9 @@ mod tests;
 use std::collections::BTreeMap;
 
 use minijinja::Value;
-use rumoca_eval_solve::{
-    PreparedScalarProgramBlock, projection_policy as policy, to_scalar_program_projection,
-};
+use rumoca_eval_solve::{PreparedScalarProgramBlock, projection_policy as policy};
 use rumoca_ir_solve as solve;
+use rumoca_ir_solve::scalar_refinement::to_scalar_program_projection;
 
 use crate::errors::CodegenError;
 use assign::AssignmentCatalog;
@@ -367,7 +366,9 @@ fn prepared_implicit(
 /// in place of the primary's while that chart is active.
 fn alternate_derivative(problem: &solve::SolveProblem) -> Result<Value, CodegenError> {
     super::solve_renderer::require_builtin_fmi_template_domain(problem)?;
-    let scalar = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)?;
+    let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &problem.continuous.derivative_rhs,
+    )?;
     Ok(Value::from_object(
         super::scalar_program_plan::ScalarProgramPlan::new(std::sync::Arc::new(scalar))?,
     ))
@@ -391,7 +392,7 @@ fn chart_value(
     seed_blocks: Option<&mut Vec<(usize, usize)>>,
 ) -> Result<Value, CodegenError> {
     let plans = chart_plans(&system.problem, &system.artifacts)?;
-    let tangent_jvp = rumoca_eval_solve::to_scalar_program_block(
+    let tangent_jvp = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
         &system.artifacts.continuous.implicit_jacobian_v,
     )?;
     let mut catalog = BlockCatalog {

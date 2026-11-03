@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use minijinja::Value;
-use rumoca_eval_solve::to_scalar_program_projection;
 use rumoca_ir_solve as solve;
+use rumoca_ir_solve::scalar_refinement::to_scalar_program_projection;
 use serde::Serialize;
 
 use super::super::scalar_program_plan::ScalarProgramPlan;
@@ -264,8 +264,9 @@ fn tangent_value(
         &artifacts.continuous.implicit_jacobian_v_scalar,
         seed_len,
     );
-    let residual_block =
-        rumoca_eval_solve::to_scalar_program_block(&artifacts.initialization.residual_jacobian_v)?;
+    let residual_block = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &artifacts.initialization.residual_jacobian_v,
+    )?;
     let cone = tangent_cone(problem, artifacts, seed_blocks, &residual_block)?;
     let mut kept_blocks = Vec::with_capacity(seed_blocks.len());
     for (block, kept) in seed_blocks.iter().zip(&cone.blocks) {

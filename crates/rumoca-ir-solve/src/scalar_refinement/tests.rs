@@ -1,8 +1,6 @@
 use super::*;
+use crate::{AffineStencilConstStride, AffineStencilLoadStride, TensorNodeMetadata, UnaryOp};
 use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
-use rumoca_ir_solve::{
-    AffineStencilConstStride, AffineStencilLoadStride, TensorNodeMetadata, UnaryOp,
-};
 
 fn fixture_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
@@ -59,7 +57,7 @@ fn one_by_one_matmul_node(lhs: f64, rhs: f64) -> ComputeNode {
         n: 1,
         lhs_pattern: crate::fixture_pattern(1, 1, false),
         rhs_pattern: crate::fixture_pattern(1, 1, false),
-        metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+        metadata: crate::TensorNodeMetadata::default(),
         span: fixture_span(),
     }
 }
@@ -245,11 +243,8 @@ fn affine_stencil_expands_to_exact_scalar_rows() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::AffineStencil {
             domain: test_tensor_domain(3),
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(
-                0,
-                &test_tensor_domain(3),
-            )
-            .expect("valid dense output map"),
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &test_tensor_domain(3))
+                .expect("valid dense output map"),
             base_ops: vec![
                 LinearOp::LoadP { dst: 0, index: 2 },
                 LinearOp::LoadY { dst: 1, index: 10 },
@@ -262,13 +257,13 @@ fn affine_stencil_expands_to_exact_scalar_rows() {
             ],
             load_strides: vec![AffineStencilLoadStride {
                 op_position: 1,
-                terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                terms: vec![crate::AffineStencilIndexStrideTerm {
                     dimension: 0,
                     stride: 2,
                 }],
             }],
             const_strides: Vec::new(),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span: fixture_span(),
         }],
     };
@@ -299,7 +294,7 @@ fn affine_scalar_view_combines_duplicate_stride_descriptors() {
     let domain = test_tensor_domain(3);
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &domain)
                 .expect("valid dense output map"),
             domain,
             base_ops: vec![
@@ -309,21 +304,21 @@ fn affine_scalar_view_combines_duplicate_stride_descriptors() {
             load_strides: vec![
                 AffineStencilLoadStride {
                     op_position: 0,
-                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                    terms: vec![crate::AffineStencilIndexStrideTerm {
                         dimension: 0,
                         stride: isize::MAX,
                     }],
                 },
                 AffineStencilLoadStride {
                     op_position: 0,
-                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                    terms: vec![crate::AffineStencilIndexStrideTerm {
                         dimension: 0,
                         stride: 1,
                     }],
                 },
                 AffineStencilLoadStride {
                     op_position: 0,
-                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                    terms: vec![crate::AffineStencilIndexStrideTerm {
                         dimension: 0,
                         stride: -isize::MAX,
                     }],
@@ -355,11 +350,8 @@ fn map_expands_through_same_scalar_view_ordering() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: test_tensor_domain(3),
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(
-                0,
-                &test_tensor_domain(3),
-            )
-            .expect("valid dense output map"),
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &test_tensor_domain(3))
+                .expect("valid dense output map"),
             base_ops: vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -367,12 +359,12 @@ fn map_expands_through_same_scalar_view_ordering() {
             load_strides: Vec::new(),
             const_strides: vec![AffineStencilConstStride {
                 op_position: 0,
-                terms: vec![rumoca_ir_solve::AffineStencilConstStrideTerm {
+                terms: vec![crate::AffineStencilConstStrideTerm {
                     dimension: 0,
                     stride: 2.0,
                 }],
             }],
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span: fixture_span(),
         }],
     };
@@ -400,9 +392,9 @@ fn map_scalar_view_preserves_sparse_output_indices() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: domain.clone(),
-            output_map: rumoca_ir_solve::TensorOutputMap {
+            output_map: crate::TensorOutputMap {
                 start: 2,
-                strides: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                strides: vec![crate::AffineStencilIndexStrideTerm {
                     dimension: 0,
                     stride: 2,
                 }],
@@ -414,12 +406,12 @@ fn map_scalar_view_preserves_sparse_output_indices() {
             load_strides: Vec::new(),
             const_strides: vec![AffineStencilConstStride {
                 op_position: 0,
-                terms: vec![rumoca_ir_solve::AffineStencilConstStrideTerm {
+                terms: vec![crate::AffineStencilConstStrideTerm {
                     dimension: 0,
                     stride: 1.0,
                 }],
             }],
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span: fixture_span(),
         }],
     };
@@ -448,7 +440,7 @@ fn scalar_program_block_output_overflow_is_refused_at_construction() {
 
     assert!(matches!(
         err,
-        rumoca_ir_solve::SolveProblemShapeContractError::OutputIndexOverflow { .. }
+        crate::SolveProblemShapeContractError::OutputIndexOverflow { .. }
     ));
     assert_eq!(err.source_span(), Some(span));
 }
@@ -518,9 +510,9 @@ fn scalarize_reports_negative_tensor_output_map_with_span() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: test_tensor_domain(2),
-            output_map: rumoca_ir_solve::TensorOutputMap {
+            output_map: crate::TensorOutputMap {
                 start: 0,
-                strides: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                strides: vec![crate::AffineStencilIndexStrideTerm {
                     dimension: 0,
                     stride: -1,
                 }],
@@ -531,7 +523,7 @@ fn scalarize_reports_negative_tensor_output_map_with_span() {
             ],
             load_strides: Vec::new(),
             const_strides: Vec::new(),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span,
         }],
     };
@@ -558,9 +550,9 @@ fn scalarize_reports_invalid_tensor_output_map_dimension_with_span() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: test_tensor_domain(1),
-            output_map: rumoca_ir_solve::TensorOutputMap {
+            output_map: crate::TensorOutputMap {
                 start: 0,
-                strides: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                strides: vec![crate::AffineStencilIndexStrideTerm {
                     dimension: 1,
                     stride: 1,
                 }],
@@ -571,7 +563,7 @@ fn scalarize_reports_invalid_tensor_output_map_dimension_with_span() {
             ],
             load_strides: Vec::new(),
             const_strides: Vec::new(),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span,
         }],
     };
@@ -596,11 +588,8 @@ fn scalarize_reports_invalid_native_stride_position_with_span() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: test_tensor_domain(1),
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(
-                0,
-                &test_tensor_domain(1),
-            )
-            .expect("valid dense output map"),
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &test_tensor_domain(1))
+                .expect("valid dense output map"),
             base_ops: vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -610,7 +599,7 @@ fn scalarize_reports_invalid_native_stride_position_with_span() {
                 terms: Vec::new(),
             }],
             const_strides: Vec::new(),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span,
         }],
     };
@@ -631,11 +620,8 @@ fn scalarize_reports_native_stride_wrong_op_kind() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::AffineStencil {
             domain: test_tensor_domain(1),
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(
-                0,
-                &test_tensor_domain(1),
-            )
-            .expect("valid dense output map"),
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &test_tensor_domain(1))
+                .expect("valid dense output map"),
             base_ops: vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -645,7 +631,7 @@ fn scalarize_reports_native_stride_wrong_op_kind() {
                 terms: Vec::new(),
             }],
             const_strides: Vec::new(),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span: fixture_span(),
         }],
     };
@@ -665,11 +651,8 @@ fn scalarize_reports_native_stride_invalid_dimension() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: test_tensor_domain(1),
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(
-                0,
-                &test_tensor_domain(1),
-            )
-            .expect("valid dense output map"),
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &test_tensor_domain(1))
+                .expect("valid dense output map"),
             base_ops: vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -677,12 +660,12 @@ fn scalarize_reports_native_stride_invalid_dimension() {
             load_strides: Vec::new(),
             const_strides: vec![AffineStencilConstStride {
                 op_position: 0,
-                terms: vec![rumoca_ir_solve::AffineStencilConstStrideTerm {
+                terms: vec![crate::AffineStencilConstStrideTerm {
                     dimension: 1,
                     stride: 1.0,
                 }],
             }],
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span: fixture_span(),
         }],
     };
@@ -707,11 +690,8 @@ fn scalarize_reports_invalid_stride_metadata_for_empty_domain() {
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
             domain: test_tensor_domain(0),
-            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(
-                0,
-                &test_tensor_domain(0),
-            )
-            .expect("valid dense output map"),
+            output_map: crate::TensorOutputMap::dense_contiguous(0, &test_tensor_domain(0))
+                .expect("valid dense output map"),
             base_ops: vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -721,7 +701,7 @@ fn scalarize_reports_invalid_stride_metadata_for_empty_domain() {
                 terms: Vec::new(),
             }],
             const_strides: Vec::new(),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span,
         }],
     };
@@ -758,7 +738,7 @@ fn scalarize_matmul_rejects_temp_register_overflow_with_span() {
             n: 1,
             lhs_pattern: crate::fixture_pattern(1, 1, false),
             rhs_pattern: crate::fixture_pattern(1, 1, false),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span,
         }],
     };
@@ -793,7 +773,7 @@ fn scalarize_matmul_rejects_source_register_range_overflow_with_span() {
             n: 1,
             lhs_pattern: crate::fixture_pattern(1, 2, false),
             rhs_pattern: crate::fixture_pattern(2, 1, false),
-            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            metadata: crate::TensorNodeMetadata::default(),
             span,
         }],
     };
@@ -893,4 +873,74 @@ fn explicit_scalar_node_advances_following_tensor_output_cursor() {
     let rows = to_scalar_program_block(&block).expect("valid mixed block should scalarize");
     assert_eq!(rows.output_indices(), [0, 3, 4]);
     assert_eq!(rows.output_count(), 5);
+}
+
+#[test]
+fn source_refinement_rejects_equal_foreign_owner_and_retains_exact_source_rows() {
+    let block = crate::ComputeBlock {
+        nodes: vec![crate::ComputeNode::ScalarPrograms(
+            crate::ScalarProgramBlock::with_output_indices(
+                vec![vec![
+                    crate::LinearOp::Const {
+                        dst: 0,
+                        value: -0.0,
+                    },
+                    crate::LinearOp::StoreOutput { src: 0 },
+                ]],
+                vec![rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name("source.mo"),
+                    2,
+                    9,
+                )],
+                vec![3],
+            )
+            .unwrap(),
+        )],
+    };
+    let before = serde_json::to_value(&block).unwrap();
+    let source = block.checked_source_view("refine").unwrap();
+    let issued = source.scalar_refinement().unwrap();
+    let projection = issued.checked_projection(source).unwrap();
+    assert_eq!(projection.block().output_indices(), [3]);
+    assert_eq!(
+        projection.sources(),
+        [crate::RefreshScalarProgramSource::checked(0, 0)]
+    );
+    let crate::LinearOp::Const { value, .. } = projection.block().programs()[0][0] else {
+        panic!("constant missing")
+    };
+    assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+    let foreign = block.clone();
+    let error = issued
+        .checked_projection(foreign.checked_source_view("foreign").unwrap())
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("another checked compute source"));
+    assert_eq!(serde_json::to_value(&block).unwrap(), before);
+}
+
+#[test]
+fn source_refinement_empty_and_malformed_sources_do_not_issue_partial_rows() {
+    let empty = crate::ComputeBlock::default();
+    let source = empty.checked_source_view("empty").unwrap();
+    let issued = source.scalar_refinement().unwrap();
+    assert!(
+        issued
+            .checked_projection(source)
+            .unwrap()
+            .block()
+            .programs()
+            .is_empty()
+    );
+    let mut bad_node = one_by_one_matmul_node(1.0, 2.0);
+    if let ComputeNode::MatMul { m, k, .. } = &mut bad_node {
+        *m = usize::MAX;
+        *k = 2;
+    }
+    let bad = ComputeBlock {
+        nodes: vec![bad_node],
+    };
+    let checked = bad.checked_source_view("bad").unwrap();
+    assert!(checked.scalar_refinement().is_err());
+    assert!(to_scalar_program_projection(&bad).is_err());
 }

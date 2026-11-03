@@ -99,7 +99,7 @@ fn linsolve_block() -> ComputeBlock {
 fn linsolve_scalar_block() -> ComputeBlock {
     let node_block = linsolve_block();
     ComputeBlock::from_scalar_program_block(
-        rumoca_eval_solve::to_scalar_program_block(&node_block)
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&node_block)
             .expect("valid LinSolve fixture should scalarize"),
     )
 }

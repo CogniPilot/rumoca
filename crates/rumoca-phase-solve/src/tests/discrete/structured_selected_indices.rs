@@ -225,8 +225,10 @@ fn evaluate(
     choose: bool,
     row: f64,
 ) -> Result<Vec<f64>, rumoca_eval_solve::EvalSolveError> {
-    let block =
-        rumoca_eval_solve::to_scalar_program_block(&problem.discrete.structured_rhs).unwrap();
+    let block = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &problem.discrete.structured_rhs,
+    )
+    .unwrap();
     let mut output = vec![f64::NAN; 3];
     rumoca_eval_solve::eval_scalar_program_block(
         &block,

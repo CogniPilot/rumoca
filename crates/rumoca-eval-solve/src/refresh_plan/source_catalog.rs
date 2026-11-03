@@ -3,7 +3,10 @@ use rumoca_ir_solve as solve;
 use std::ops::Range;
 
 use super::{OutputRowPosition, first_block_span, reserve_refresh_index_map_capacity};
-use crate::{EvalSolveError, scalar_program_output_count, scalar_program_output_indices};
+use crate::EvalSolveError;
+use rumoca_ir_solve::scalar_refinement::{
+    scalar_program_output_count, scalar_program_output_indices,
+};
 
 pub(super) struct CanonicalScalarProgram<'a> {
     pub(super) source: solve::RefreshScalarProgramSource,

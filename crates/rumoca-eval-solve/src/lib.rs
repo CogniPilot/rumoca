@@ -28,7 +28,6 @@ use rumoca_ir_solve::{
 pub mod ad;
 pub mod artifacts;
 mod block_residual_split;
-mod compute_block_scalarize;
 mod conditional_region;
 mod errors;
 mod event_messages;
@@ -78,12 +77,6 @@ use tensor_index::tensor_register_offset;
 mod typed_program;
 mod update_rows;
 pub use block_residual_split::PreparedBlockResidualSplit;
-pub use compute_block_scalarize::{
-    AffineKernelConst, AffineKernelLoad, AffineKernelNode, AffineKernelPlan,
-    ScalarProgramProjection, ScalarizeError, checked_contiguous_output_count,
-    checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
-    tensor_output_indices, to_scalar_program_block, to_scalar_program_projection,
-};
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{

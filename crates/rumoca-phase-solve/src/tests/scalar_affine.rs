@@ -73,8 +73,10 @@ fn repeated_derivative_with_coefficient(operator: dae::BinaryOperator, dynamic: 
 fn repeated_derivatives_keep_symbolic_coefficients_and_live_parameter_values() {
     let model = repeated_derivative_model(dae::BinaryOperator::Add);
     let solve = lower_solve_problem(&model).expect("a repeated derivative remains affine");
-    let program =
-        rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs).unwrap();
+    let program = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &solve.continuous.derivative_rhs,
+    )
+    .unwrap();
     for parameter in [1.0, 3.0, 9.0] {
         let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
         parameters[0] = parameter;
@@ -115,8 +117,10 @@ fn a_product_of_derivative_occurrences_is_not_affine() {
 fn state_dependent_affine_coefficients_are_live_and_reject_invalid_values() {
     let model = repeated_derivative_with_coefficient(dae::BinaryOperator::Add, true);
     let solve = lower_solve_problem(&model).unwrap();
-    let program =
-        rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs).unwrap();
+    let program = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &solve.continuous.derivative_rhs,
+    )
+    .unwrap();
     let parameters = vec![1.0; solve.solve_layout.compiled_parameter_len];
     for state in [0.0, 1.0, 3.0, 9.0, -2.0] {
         let mut output = [f64::NAN];

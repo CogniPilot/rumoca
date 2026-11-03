@@ -246,8 +246,9 @@ fn spd_solve_preserves_sequential_scratch_and_bounds_fold_expansion() {
 
     let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
         .expect("the three-dimensional SPD solve should lower to Solve IR");
-    let scalar = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual)
-        .expect("the algebraic residual has one shared scalar view");
+    let scalar =
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&solve.continuous.residual)
+            .expect("the algebraic residual has one shared scalar view");
     let largest_program = scalar.programs().iter().map(Vec::len).max().unwrap_or(0);
     assert!(
         largest_program < 10_000,

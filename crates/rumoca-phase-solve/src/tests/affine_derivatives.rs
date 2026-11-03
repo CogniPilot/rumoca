@@ -223,8 +223,10 @@ fn translation_time_guard_selects_its_affine_derivative_branch() {
             .any(|operation| matches!(operation, LinearOp::LoadP { index: 0, .. })),
         "the structural guard is absent from runtime dependencies: {program:?}"
     );
-    let block =
-        rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs).unwrap();
+    let block = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &solve.continuous.derivative_rhs,
+    )
+    .unwrap();
     for coefficient in [2.0, 4.0] {
         for guard in [0.0, 1.0] {
             let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
@@ -497,10 +499,13 @@ fn check_wrapped_derivative_alias(wrappers: &[dae::UnaryOperator]) {
             .unwrap(),
         ["x", "a"]
     );
-    let derivative = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
-        .expect("derivative has a checked execution view");
-    let residual = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual)
-        .expect("algebraic alias has a checked execution view");
+    let derivative = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+        &solve.continuous.derivative_rhs,
+    )
+    .expect("derivative has a checked execution view");
+    let residual =
+        rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&solve.continuous.residual)
+            .expect("algebraic alias has a checked execution view");
     let parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
     for (state, alias) in [(2.0, -2.0), (-3.0, 3.0), (0.0, 0.0), (2.0, 1.0)] {
         for (program, expected) in [(&derivative, -state), (&residual, alias + state)] {

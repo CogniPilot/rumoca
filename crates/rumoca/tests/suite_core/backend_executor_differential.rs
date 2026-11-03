@@ -13,11 +13,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rumoca::Compiler;
-use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext, to_scalar_program_block};
+use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext};
 use rumoca_exec_cranelift::{
     CompiledExpressionRows, CompiledPureCallTable, compile_expression_scalar_program_block,
     compile_expression_scalar_program_block_with_pure_calls,
 };
+use rumoca_ir_solve::scalar_refinement::to_scalar_program_block;
 use rumoca_ir_solve::{ComputeBlock, LinearOp, ScalarProgramBlock, SolveModel, SolvePureCallTable};
 use rumoca_sim::SimOptions;
 

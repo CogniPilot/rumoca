@@ -669,7 +669,7 @@ pub(in crate::codegen) struct NativeFamilyTemplatePartition {
 
 pub(in crate::codegen) fn native_family_template_partition(
     block: &solve::ComputeBlock,
-) -> Result<NativeFamilyTemplatePartition, rumoca_eval_solve::ScalarizeError> {
+) -> Result<NativeFamilyTemplatePartition, rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     let mut partition = NativeFamilyTemplatePartition {
         families: Vec::new(),
         native_dense_nodes: Vec::new(),
@@ -693,7 +693,7 @@ fn partition_node_for_template(
     partition: &mut NativeFamilyTemplatePartition,
     node: &solve::ComputeNode,
     output_cursor: &mut usize,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     match node {
         solve::ComputeNode::Map {
             domain,
@@ -754,13 +754,13 @@ fn partition_node_for_template(
         }
         solve::ComputeNode::ScalarPrograms(block) => {
             let block_span = scalar_program_block_source_span(block)?;
-            let output_indices = rumoca_eval_solve::scalar_program_output_indices(
+            let output_indices = rumoca_ir_solve::scalar_refinement::scalar_program_output_indices(
                 block,
                 *output_cursor,
                 "scalar fallback",
             )?;
             push_scalar_program_block_fallback_rows(partition, block, &output_indices, block_span)?;
-            *output_cursor = rumoca_eval_solve::scalar_program_output_count(
+            *output_cursor = rumoca_ir_solve::scalar_refinement::scalar_program_output_count(
                 block,
                 *output_cursor,
                 "scalar fallback",
@@ -769,7 +769,7 @@ fn partition_node_for_template(
         solve::ComputeNode::MatMul { m, n, span, .. } => {
             let span = required_compute_node_span(*span, "matmul scalar fallback")?;
             let count = rumoca_core::checked_product(*m, *n).ok_or(
-                rumoca_eval_solve::ScalarizeError::ProductOverflow {
+                rumoca_ir_solve::scalar_refinement::ScalarizeError::ProductOverflow {
                     kind: "matmul scalar fallback",
                     lhs: *m,
                     rhs: *n,
@@ -813,9 +813,9 @@ fn compact_tensor_output_count(
     output_map: &solve::TensorOutputMap,
     kind: &'static str,
     span: rumoca_core::Span,
-) -> Result<usize, rumoca_eval_solve::ScalarizeError> {
+) -> Result<usize, rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     output_map.output_count(domain).map_err(|error| {
-        rumoca_eval_solve::ScalarizeError::ShapeContract {
+        rumoca_ir_solve::scalar_refinement::ScalarizeError::ShapeContract {
             message: format!("{kind} output map is invalid: {error:?}"),
             span: Some(span),
         }
@@ -825,21 +825,21 @@ fn compact_tensor_output_count(
 fn required_compute_node_span(
     span: rumoca_core::Span,
     kind: &'static str,
-) -> Result<rumoca_core::Span, rumoca_eval_solve::ScalarizeError> {
+) -> Result<rumoca_core::Span, rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     if span.is_dummy() {
-        return Err(rumoca_eval_solve::ScalarizeError::MissingSourceSpan { kind });
+        return Err(rumoca_ir_solve::scalar_refinement::ScalarizeError::MissingSourceSpan { kind });
     }
     Ok(span)
 }
 
 pub(in crate::codegen) fn scalar_program_block_source_span(
     block: &solve::ScalarProgramBlock,
-) -> Result<rumoca_core::Span, rumoca_eval_solve::ScalarizeError> {
-    block
-        .first_source_span()
-        .ok_or(rumoca_eval_solve::ScalarizeError::MissingSourceSpan {
+) -> Result<rumoca_core::Span, rumoca_ir_solve::scalar_refinement::ScalarizeError> {
+    block.first_source_span().ok_or(
+        rumoca_ir_solve::scalar_refinement::ScalarizeError::MissingSourceSpan {
             kind: "scalar fallback",
-        })
+        },
+    )
 }
 
 fn push_scalar_program_block_fallback_rows(
@@ -847,7 +847,7 @@ fn push_scalar_program_block_fallback_rows(
     block: &solve::ScalarProgramBlock,
     output_indices: &[usize],
     block_span: rumoca_core::Span,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     reserve_partition_capacity(
         &mut partition.scalar_fallback_rows,
         output_indices.len(),
@@ -883,11 +883,11 @@ fn push_program_output_fallback_rows(
     output_indices: &[usize],
     output_ordinal: &mut usize,
     span: rumoca_core::Span,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     let output_count = solve::ScalarProgramBlock::program_output_count(program);
     for program_output_ordinal in 0..output_count {
         let output_index = *output_indices.get(*output_ordinal).ok_or_else(|| {
-            rumoca_eval_solve::ScalarizeError::ShapeContract {
+            rumoca_ir_solve::scalar_refinement::ScalarizeError::ShapeContract {
                 message: format!(
                     "scalar fallback output index missing for StoreOutput ordinal {}",
                     *output_ordinal
@@ -902,7 +902,7 @@ fn push_program_output_fallback_rows(
             native_dense: false,
         });
         *output_ordinal = output_ordinal.checked_add(1).ok_or(
-            rumoca_eval_solve::ScalarizeError::OutputCountOverflow {
+            rumoca_ir_solve::scalar_refinement::ScalarizeError::OutputCountOverflow {
                 kind: "scalar fallback output ordinal",
                 index: *output_ordinal,
                 span,
@@ -916,13 +916,13 @@ fn render_domain_scalar_count(
     domain: &rumoca_core::StructuredIndexDomain,
     kind: &'static str,
     span: rumoca_core::Span,
-) -> Result<usize, rumoca_eval_solve::ScalarizeError> {
-    domain
-        .scalar_count()
-        .map_err(|err| rumoca_eval_solve::ScalarizeError::ShapeContract {
+) -> Result<usize, rumoca_ir_solve::scalar_refinement::ScalarizeError> {
+    domain.scalar_count().map_err(|err| {
+        rumoca_ir_solve::scalar_refinement::ScalarizeError::ShapeContract {
             message: format!("native {kind} family structured index domain is invalid: {err}"),
             span: Some(span),
-        })
+        }
+    })
 }
 
 fn push_multi_output_tensor_fallback_program(
@@ -932,8 +932,8 @@ fn push_multi_output_tensor_fallback_program(
     count: usize,
     native_dense: bool,
     span: rumoca_core::Span,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
-    let next_output_cursor = rumoca_eval_solve::checked_contiguous_output_count(
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
+    let next_output_cursor = rumoca_ir_solve::scalar_refinement::checked_contiguous_output_count(
         *output_cursor,
         count,
         "scalar fallback output",
@@ -948,16 +948,18 @@ fn push_multi_output_tensor_fallback_program(
     let local = solve::ComputeBlock {
         nodes: vec![node.clone()],
     };
-    let scalar = rumoca_eval_solve::to_scalar_program_block(&local)?;
+    let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(&local)?;
     let expected_program_count = usize::from(count > 0);
     if scalar.programs().len() != expected_program_count {
-        return Err(rumoca_eval_solve::ScalarizeError::ShapeContract {
-            message: format!(
-                "native dense fallback expected {expected_program_count} programs, got {}",
-                scalar.programs().len()
-            ),
-            span: Some(span),
-        });
+        return Err(
+            rumoca_ir_solve::scalar_refinement::ScalarizeError::ShapeContract {
+                message: format!(
+                    "native dense fallback expected {expected_program_count} programs, got {}",
+                    scalar.programs().len()
+                ),
+                span: Some(span),
+            },
+        );
     }
     reserve_partition_capacity(
         &mut partition.fallback_programs,
@@ -988,7 +990,7 @@ fn push_native_dense_node(
     node: &solve::ComputeNode,
     output_offset: usize,
     span: rumoca_core::Span,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     reserve_partition_capacity(
         &mut partition.native_dense_nodes,
         1,
@@ -1008,7 +1010,7 @@ fn partition_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
     span: Option<rumoca_core::Span>,
-) -> Result<Vec<T>, rumoca_eval_solve::ScalarizeError> {
+) -> Result<Vec<T>, rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     let mut values = Vec::new();
     reserve_partition_capacity(&mut values, capacity, context, span)?;
     Ok(values)
@@ -1019,14 +1021,15 @@ fn reserve_partition_capacity<T>(
     additional: usize,
     context: &'static str,
     span: Option<rumoca_core::Span>,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     if additional == 0 {
         return Ok(());
     }
-    let span =
-        span.ok_or(rumoca_eval_solve::ScalarizeError::MissingSourceSpan { kind: context })?;
+    let span = span.ok_or(
+        rumoca_ir_solve::scalar_refinement::ScalarizeError::MissingSourceSpan { kind: context },
+    )?;
     values.try_reserve_exact(additional).map_err(|_| {
-        rumoca_eval_solve::ScalarizeError::ShapeContract {
+        rumoca_ir_solve::scalar_refinement::ScalarizeError::ShapeContract {
             message: format!("{context} exceeds host memory limits"),
             span: Some(span),
         }
@@ -1055,7 +1058,7 @@ fn push_native_affine_family(
     kind: &'static str,
     family: NativeAffineFamily<'_>,
     count: usize,
-) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+) -> Result<(), rumoca_ir_solve::scalar_refinement::ScalarizeError> {
     let NativeAffineFamily {
         domain,
         output_map,

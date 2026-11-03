@@ -364,9 +364,11 @@ pub(in crate::codegen) fn compute_node_value(
         // An affine stencil renders as its scalarized expansion — matching how
         // `c_renderable_derivative_nodes` lowers stencils for the C templates.
         solve::ComputeNode::Map { .. } | solve::ComputeNode::AffineStencil { .. } => {
-            let scalar = rumoca_eval_solve::to_scalar_program_block(&solve::ComputeBlock {
-                nodes: vec![node.as_ref().clone()],
-            })?;
+            let scalar = rumoca_ir_solve::scalar_refinement::to_scalar_program_block(
+                &solve::ComputeBlock {
+                    nodes: vec![node.as_ref().clone()],
+                },
+            )?;
             let scalar = Arc::new(scalar);
             lazy_map(&["ScalarPrograms"], move |k| {
                 (k == "ScalarPrograms").then(|| scalar_program_block_value(scalar.clone()))
