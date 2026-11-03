@@ -304,11 +304,14 @@ fn literal_gaussian_elimination_fails_although_its_ast_is_clean() {
 #[test]
 fn literal_c_admits_only_declaration_spelling() {
     let found = |text: &str| literal_c::forbidden_c_tokens(text);
+    // `\u{0}` stands for an issued value, as the run lexer sees one.
     for admitted in [
-        "/* for each row */ const double * const * ; // while ok\n\"for(;;)\" 'x'",
-        "( ) [ ] { } , ; = . -> return ;",
-        "#include <math.h>\n#include \"model.h\"\n#ifndef GUARD\n#define GUARD\n#endif\n#pragma once\n",
-        "static inline void ( int32_t * , uint64_t ) ;",
+        "/* for each row */ const double * const * \u{0} ; // while ok\n",
+        "\u{0} ( \u{0} ) [ \u{0} ] { \u{0} } , ; \u{0} = \u{0} . \u{0} -> \u{0} ;",
+        "return \u{0} ; return ;",
+        "#ifndef GUARD\n#define GUARD\n#endif\n#pragma once\n",
+        "static inline void \u{0} ( int32_t * , uint64_t ) ;",
+        "unsigned long int \u{0} ; const struct \u{0} * \u{0} ;",
     ] {
         assert_eq!(found(admitted), Vec::new(), "{admitted:?}");
     }
@@ -341,6 +344,23 @@ fn literal_c_admits_only_declaration_spelling() {
         "#if 1\n",
         "#define N 4\n",
         "( ) * ( )",
+        "int size_t",
+        "size_t (",
+        "'A'",
+        "\"s\"",
+        "#include <math.h>\n",
+        "#include \"model.h\"\n",
+        "return int",
+        "struct int",
+        "int ( \u{0} )",
+        ". x",
+        "\u{0} . int",
+        "return ( \u{0} ) ;",
+        "\u{0} return \u{0} ;",
+        "struct ;",
+        "\u{0} . ;",
+        "\u{0} const ;",
+        "\u{0} struct \u{0} ;",
     ] {
         assert!(!found(rejected).is_empty(), "{rejected:?} must be rejected");
     }
@@ -760,4 +780,32 @@ fn each_literal_join_check_fails_on_its_own() {
         rules_of(&[("t.c.jinja", "int ;{% if plan.flag %} ( {% endif %}\n")]),
         Vec::new()
     );
+}
+
+#[test]
+fn declaration_words_need_a_declaration_role_and_constants_are_issued() {
+    // Review witnesses: valid C, with no issued value or instruction in it.
+    for text in [
+        "int size_t(int ptrdiff_t) { return size_t(ptrdiff_t); }",
+        "int size_t(void) { return 'A'; }",
+        "#include \"/tmp/unbound-numerical-body.h\"\n",
+        // The same recursion with ordinary names stays refused.
+        "int f(int g) { return f(g); }",
+    ] {
+        let found = rules_of(&[("t.c.jinja", text)]);
+        assert!(
+            found.iter().any(|(_, _, r)| *r == Rule::LiteralExecutable),
+            "{text:?}: {found:?}"
+        );
+    }
+    // In a macro region too.
+    let region_text = "{% macro body(op) %} int size_t(int ptrdiff_t) { return size_t(ptrdiff_t); }{% endmacro %}";
+    let found = region(&[("lib.jinja", region_text)], "body");
+    assert!(
+        found.iter().any(|(_, _, r)| *r == Rule::LiteralExecutable),
+        "{found:?}"
+    );
+    // A declaration printed from issued names passes.
+    let declared = "{{ plan.return_type }} {{ plan.name }}( const double * {{ plan.argument }} )\n{\n    return {{ plan.result }};\n}\n";
+    assert_eq!(rules_of(&[("t.c.jinja", declared)]), Vec::new());
 }

@@ -4,13 +4,15 @@
 //! instructions; literal text may only spell declarations, punctuation and the
 //! fixed spelling of an issued instruction.
 //!
-//! Admission is positive: literal C may hold only declaration words and
-//! `return`, the punctuation of declarations, calls, indexing, member access and
-//! assignment, comments, string and character literals, and include-guard
-//! directives. Every other name, every number and every operator must arrive as
-//! an issued value, so no algorithm can be spelled in literal text, with or
-//! without loops. There is no reviewed ABI-fragment exemption. A language with no
-//! literal check fails closed on any literal text at all.
+//! Admission is positive: literal C may hold only declaration specifiers in a
+//! declaration-specifier position (base types, the fixed-width and size type
+//! names, qualifiers, storage classes and tag keywords), `return` before an
+//! issued value, the punctuation of declarations, calls, indexing, member access
+//! and assignment, comments, and include-guard directives. Every other name,
+//! every number, every string or character literal, every include and every
+//! operator must arrive as an issued value. There is no reviewed ABI-fragment
+//! exemption. A language with no literal check fails closed on any literal text
+//! at all.
 //!
 //! Rendering can join text the template keeps apart, so the check reasons about
 //! what is printed, not about each text node alone:
@@ -28,60 +30,13 @@ use super::{Language, Rule, Violation};
 use minijinja::machinery::Span;
 use minijinja::machinery::ast::{Expr, Stmt};
 
-/// The only words literal C may contain: types, qualifiers and declaration
-/// keywords, and `return`. Every other name is issued.
-const ADMITTED_WORDS: &[&str] = &[
-    "void",
-    "char",
-    "short",
-    "int",
-    "long",
-    "float",
-    "double",
-    "signed",
-    "unsigned",
-    "_Bool",
-    "bool",
-    "const",
-    "volatile",
-    "restrict",
-    "static",
-    "extern",
-    "inline",
-    "struct",
-    "union",
-    "enum",
-    "typedef",
-    "int8_t",
-    "int16_t",
-    "int32_t",
-    "int64_t",
-    "uint8_t",
-    "uint16_t",
-    "uint32_t",
-    "uint64_t",
-    "size_t",
-    "ptrdiff_t",
-    "intptr_t",
-    "uintptr_t",
-    "return",
+/// Base type keywords: they may combine with each other, as in `unsigned long`.
+const BASE_TYPES: &[&str] = &[
+    "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "_Bool",
 ];
-/// Words after which `*` declares a pointer rather than multiplying.
-const DECLARATOR_WORDS: &[&str] = &[
-    "void",
-    "char",
-    "short",
-    "int",
-    "long",
-    "float",
-    "double",
-    "signed",
-    "unsigned",
-    "_Bool",
+/// Fixed-width and size type names: one per declaration specifier list.
+const NAMED_TYPES: &[&str] = &[
     "bool",
-    "const",
-    "volatile",
-    "restrict",
     "int8_t",
     "int16_t",
     "int32_t",
@@ -95,6 +50,12 @@ const DECLARATOR_WORDS: &[&str] = &[
     "intptr_t",
     "uintptr_t",
 ];
+/// Qualifiers and storage classes.
+const QUALIFIERS: &[&str] = &[
+    "const", "volatile", "restrict", "static", "extern", "inline", "typedef",
+];
+/// Tag keywords: an issued tag or a `{` must follow.
+const TAGS: &[&str] = &["struct", "union", "enum"];
 /// Multi-character punctuators, longest first; only `->` is admitted.
 const MULTI_PUNCTUATORS: &[&str] = &[
     "<<=", ">>=", "...", "%:%:", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||",
@@ -429,13 +390,33 @@ fn trigraphs(text: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// The role of the previous significant token, for the declaration roles of
+/// the words that follow it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Prev {
+    /// A statement or declaration may start: the text start, `(` `{` `[` `,`
+    /// `;` `}` `)` or `=`.
+    Boundary,
+    BaseType,
+    NamedType,
+    Qualifier,
+    Tag,
+    Return,
+    Star,
+    /// An issued value.
+    Value,
+    /// An issued tag after `struct`, `union` or `enum`: a type, so `*` may follow.
+    TagName,
+    /// Member access, whose member must be issued.
+    Access,
+}
+
 struct Lexer<'t> {
     bytes: &'t [u8],
     text: &'t str,
     at: usize,
     line_start: bool,
-    /// The previous token admits a following `*` as a pointer declarator.
-    declarator: bool,
+    prev: Prev,
     found: Vec<(usize, String)>,
     open: Option<(usize, &'static str)>,
 }
@@ -447,7 +428,7 @@ impl<'t> Lexer<'t> {
             text,
             at,
             line_start: true,
-            declarator: false,
+            prev: Prev::Boundary,
             found: Vec::new(),
             open: None,
         }
@@ -464,9 +445,7 @@ impl<'t> Lexer<'t> {
                 self.line_start = true;
                 self.at += 1;
             } else if c == 0 {
-                // An issued value: a whole token the plan supplied.
-                self.declarator = false;
-                self.at += 1;
+                self.issued();
             } else if c.is_ascii_whitespace() {
                 self.at += 1;
             } else if c == b'#' && self.line_start {
@@ -476,6 +455,17 @@ impl<'t> Lexer<'t> {
                 self.token(c);
             }
         }
+    }
+
+    /// An issued value: a whole token the plan supplied. A tag, `return`,
+    /// member access or a declaration specifier list may precede it.
+    fn issued(&mut self) {
+        self.prev = if self.prev == Prev::Tag {
+            Prev::TagName
+        } else {
+            Prev::Value
+        };
+        self.at += 1;
     }
 
     fn token(&mut self, c: u8) {
@@ -489,7 +479,6 @@ impl<'t> Lexer<'t> {
             }
         } else if c == b'"' || c == b'\'' {
             self.quoted(c);
-            self.declarator = false;
         } else if c.is_ascii_alphabetic() || c == b'_' {
             self.word();
         } else if c.is_ascii_digit()
@@ -506,6 +495,8 @@ impl<'t> Lexer<'t> {
         self.at = self.bytes.len();
     }
 
+    /// String and character literals are data the plan has to issue: a
+    /// character literal is an integer constant, and a string can be indexed.
     fn quoted(&mut self, quote: u8) {
         let start = self.at;
         self.at += 1;
@@ -515,15 +506,21 @@ impl<'t> Lexer<'t> {
         {
             self.at += if self.bytes[self.at] == b'\\' { 2 } else { 1 };
         }
+        let kind = if quote == b'"' {
+            "string literal"
+        } else {
+            "character literal"
+        };
         if self.bytes.get(self.at) == Some(&quote) {
             self.at += 1;
+            self.reject(
+                start,
+                format!("{kind} in literal text: constants are issued"),
+            );
+            self.prev = Prev::Value;
         } else {
             self.at = start;
-            self.end_open(if quote == b'"' {
-                "string literal"
-            } else {
-                "character literal"
-            });
+            self.end_open(kind);
         }
     }
 
@@ -535,15 +532,32 @@ impl<'t> Lexer<'t> {
             self.at += 1;
         }
         let word = &self.text[start..self.at];
-        if !ADMITTED_WORDS.contains(&word) {
-            self.reject(
+        let (role, admitted) = word_role(word, self.prev);
+        match role {
+            None => self.reject(
                 start,
                 format!(
                     "name `{word}` in literal text: names other than declaration words are issued"
                 ),
-            );
+            ),
+            Some(_) if !admitted => self.reject(
+                start,
+                format!("`{word}` in literal text outside a declaration specifier position"),
+            ),
+            Some(_) => {}
         }
-        self.declarator = DECLARATOR_WORDS.contains(&word);
+        self.prev = role.unwrap_or(Prev::Value);
+    }
+
+    /// `return`, a tag keyword and member access must be followed by an issued
+    /// value (or `;`, `{`).
+    fn follow_rule_failed(&mut self, at: usize, token: &str) {
+        let what = match self.prev {
+            Prev::Return => "`return` must be followed by an issued value or `;`",
+            Prev::Tag => "a tag keyword must be followed by an issued tag or `{`",
+            _ => "member access must name an issued member",
+        };
+        self.reject(at, format!("{what}, not `{token}`"));
     }
 
     fn number(&mut self) {
@@ -562,7 +576,7 @@ impl<'t> Lexer<'t> {
             start,
             format!("numeric constant `{literal}` in literal text: constants are issued"),
         );
-        self.declarator = false;
+        self.prev = Prev::Value;
     }
 
     fn punctuator(&mut self, rest: &str) {
@@ -575,12 +589,29 @@ impl<'t> Lexer<'t> {
                     format!("operator `{op}` in literal text: operators are issued"),
                 );
             }
-            self.declarator = false;
+            self.after_punctuator(start, op);
+            self.prev = if *op == "->" {
+                Prev::Access
+            } else {
+                Prev::Boundary
+            };
             return;
         }
         let c = rest.chars().next().unwrap_or_default();
         self.at += c.len_utf8().max(1);
-        if c == '*' && self.declarator {
+        let token = c.to_string();
+        if c == '*' {
+            if !matches!(
+                self.prev,
+                Prev::BaseType | Prev::NamedType | Prev::Qualifier | Prev::Star | Prev::TagName
+            ) {
+                self.reject(
+                    start,
+                    "operator `*` in literal text: only a pointer declarator after a type"
+                        .to_owned(),
+                );
+            }
+            self.prev = Prev::Star;
             return;
         }
         if !c.is_ascii() || !ADMITTED_PUNCTUATION.contains(&(c as u8)) {
@@ -589,12 +620,40 @@ impl<'t> Lexer<'t> {
                 format!("operator `{c}` in literal text: operators are issued"),
             );
         }
-        self.declarator = false;
+        self.after_punctuator(start, &token);
+        self.prev = if c == '.' {
+            Prev::Access
+        } else {
+            Prev::Boundary
+        };
     }
 
-    /// A preprocessor line (already spliced). Only include and include-guard
-    /// directives are admitted; a macro body or a conditional expression would
-    /// be code the check cannot follow.
+    /// The follow rules of the previous token, and `(` after a type word,
+    /// which would start a function-style cast or a parenthesized declarator.
+    fn after_punctuator(&mut self, at: usize, token: &str) {
+        let allowed = match self.prev {
+            Prev::Return => token == ";",
+            Prev::Tag => token == "{",
+            Prev::Access => false,
+            Prev::BaseType | Prev::NamedType | Prev::Qualifier => token != "(",
+            _ => true,
+        };
+        if !allowed {
+            if matches!(
+                self.prev,
+                Prev::BaseType | Prev::NamedType | Prev::Qualifier
+            ) {
+                self.reject(at, "`(` after a type word in literal text".to_owned());
+            } else {
+                self.follow_rule_failed(at, token);
+            }
+        }
+    }
+
+    /// A preprocessor line (already spliced). Only include-guard directives are
+    /// admitted. An include brings in text whose closure no gate here has
+    /// authorized, so a needed header arrives as an issued directive; a macro
+    /// body or a conditional expression would be code the check cannot follow.
     fn directive(&mut self) {
         let start = self.at;
         let end = self.text[start..]
@@ -605,17 +664,13 @@ impl<'t> Lexer<'t> {
         let name = words.next().unwrap_or_default();
         let rest: Vec<&str> = words.collect();
         let admitted = match name {
-            "include" => {
-                rest.len() == 1
-                    && (is_bracketed(rest[0], '<', '>') || is_bracketed(rest[0], '"', '"'))
-            }
             "ifndef" | "ifdef" | "define" => rest.len() == 1 && is_identifier(rest[0]),
             "endif" => rest.is_empty(),
             "pragma" => rest == ["once"],
             _ => false,
         };
         if !admitted {
-            self.reject(start, format!("directive `#{line}` in literal text: only include and include-guard directives are admitted"));
+            self.reject(start, format!("directive `#{line}` in literal text: only include-guard directives are admitted; includes are issued"));
         }
         self.at = end;
         if end == self.bytes.len() {
@@ -625,8 +680,30 @@ impl<'t> Lexer<'t> {
     }
 }
 
-fn is_bracketed(text: &str, open: char, close: char) -> bool {
-    text.len() >= 2 && text.starts_with(open) && text.ends_with(close)
+/// A word's role, and whether that role may follow `prev`. `None` is a name,
+/// which literal text never spells.
+fn word_role(word: &str, prev: Prev) -> (Option<Prev>, bool) {
+    let declaration_start = matches!(prev, Prev::Boundary | Prev::Qualifier);
+    if BASE_TYPES.contains(&word) {
+        (
+            Some(Prev::BaseType),
+            declaration_start || prev == Prev::BaseType,
+        )
+    } else if NAMED_TYPES.contains(&word) {
+        (Some(Prev::NamedType), declaration_start)
+    } else if QUALIFIERS.contains(&word) {
+        let after = matches!(
+            prev,
+            Prev::BaseType | Prev::NamedType | Prev::Star | Prev::TagName
+        );
+        (Some(Prev::Qualifier), declaration_start || after)
+    } else if TAGS.contains(&word) {
+        (Some(Prev::Tag), declaration_start)
+    } else if word == "return" {
+        (Some(Prev::Return), prev == Prev::Boundary)
+    } else {
+        (None, false)
+    }
 }
 
 fn is_identifier(text: &str) -> bool {
