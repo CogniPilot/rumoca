@@ -1,0 +1,19 @@
+# Decoded print-plan regions: macro regions whose whole production output a
+# blocking print-plan conformance decoder consumes. The template check
+# (`cargo xtask verify lint`) reads this file; the conformance tests read the
+# same file and prove each region is invoked and decoded in production.
+#
+# A row lets its region dispatch on the listed closed issued tags and call the
+# other decoded regions of its file, and hands its literal text to the
+# decoder's reviewed spelling table. Every other template rule still applies,
+# and the region must also be in COVERED_MACROS.
+#
+# [[region]]
+# file = "fmi3/<template>.jinja"
+# macro = "<name>"
+# consumer = "<the production route that renders it>"
+# decoder = "<the blocking conformance test that consumes its output>"
+# [[region.tag]]
+# path = "<argument>.<field>..."
+# schema = "<the issued Solve IR type the tag belongs to>"
+# variants = ["<each serialized variant>", ...]

@@ -3,8 +3,8 @@
 //! cites, so they fail if the gate stops recognizing the audited constructs.
 
 use super::{
-    Language, RepoTemplates, Rule, TemplateSource, check, check_macro, gate, literal_c, repo_root,
-    uncovered_passes,
+    Language, RepoTemplates, Rule, TemplateSource, check, check_macro, gate, literal_c,
+    load_registry, repo_root, uncovered_passes,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
@@ -871,4 +871,273 @@ fn literal_nul_and_bare_defines_are_refused() {
         rules_of(&[("t.h.jinja", "#pragma once\n{{ plan.decl }} ;\n")]),
         Vec::new()
     );
+}
+
+#[test]
+fn public_policy_and_cli_entries_reach_the_real_registry() {
+    crate::run_print_plan_template_check()
+        .expect("current legacy registry has no uncovered passes");
+    crate::run_print_plan_template_check_cli(&["--report".to_owned()])
+        .expect("legacy report entry");
+    assert!(
+        crate::run_print_plan_template_check_cli(&[
+            "--c".to_owned(),
+            "--macro".to_owned(),
+            "trip_count".to_owned(),
+            "fmi3/typed_functions.jinja".to_owned(),
+        ])
+        .is_err(),
+        "real legacy macro must be refused through the CLI"
+    );
+    assert!(
+        crate::run_print_plan_template_check_cli(&[
+            "--c".to_owned(),
+            "fmi3/typed_functions.jinja".to_owned(),
+        ])
+        .is_err(),
+        "real legacy whole template must be refused through the CLI"
+    );
+}
+
+/// A decoded fragment and its helper, in the shape of the plan-only
+/// fragments: dispatch on issued closed tags, reviewed spellings in literal
+/// text, and a registered helper called with issued paths.
+const DECODED: &str = r#"{%- macro name(value) -%}{% if value.space == "slot" %}s{% else %}r{% endif %}{{ value.id }}{%- endmacro %}
+{%- macro item(item) -%}{% if item.kind == "copy" %}memcpy({{ name(item.destination) }}, {{ name(item.source) }}, sizeof({{ name(item.destination) }}));
+{% elif item.kind == "fill" %}for (size_t k=0; k<{{ item.extent }}; ++k) r{{ item.destination.id }}[k]=r{{ item.value }}[0];
+{% endif %}{%- endmacro %}
+"#;
+
+const REGISTRY: &str = r#"
+[[region]]
+file = "fmi3/f.jinja"
+macro = "item"
+consumer = "fixture definition"
+decoder = "fixture decoder"
+[[region.tag]]
+path = "item.kind"
+schema = "Body"
+variants = ["copy", "fill"]
+
+[[region]]
+file = "fmi3/f.jinja"
+macro = "name"
+consumer = "fixture definition"
+decoder = "fixture decoder"
+[[region.tag]]
+path = "value.space"
+schema = "NameSpace"
+variants = ["slot", "register"]
+"#;
+
+fn decoded_region(template: &str, registry: Option<&str>, name: &str) -> Vec<(u16, Rule)> {
+    let mut files = vec![("fmi3/f.jinja", template)];
+    if let Some(registry) = registry {
+        files.push(("fmi3/print_plan_regions.toml", registry));
+    }
+    check_macro(&Fixture::new(&files), "fmi3/f.jinja", name, Language::C)
+        .expect("region check")
+        .violations
+        .into_iter()
+        .map(|v| (v.line, v.rule))
+        .collect()
+}
+
+fn refused(template: &str, registry: Option<&str>, rule: Rule, why: &str) {
+    let found = decoded_region(template, registry, "item");
+    assert!(
+        found.iter().any(|(_, r)| *r == rule),
+        "{why}: expected {rule:?}, found {found:?}"
+    );
+}
+
+#[test]
+fn a_registered_decoded_region_admits_tag_dispatch_helpers_and_spellings() {
+    assert_eq!(decoded_region(DECODED, Some(REGISTRY), "item"), Vec::new());
+    assert_eq!(decoded_region(DECODED, Some(REGISTRY), "name"), Vec::new());
+}
+
+#[test]
+fn the_literal_exemption_needs_the_decoded_registry() {
+    // Unregistered, or with no registry at all, the same region is literal C:
+    // its spellings, dispatch and helper call all fail.
+    for registry in [None, Some("")] {
+        let found = decoded_region(DECODED, registry, "item");
+        for rule in [Rule::LiteralExecutable, Rule::Arithmetic, Rule::Call] {
+            assert!(found.iter().any(|(_, r)| *r == rule), "{rule:?}: {found:?}");
+        }
+    }
+    // Registering only the helper leaves the caller under the lexer.
+    let helper_only = &REGISTRY[REGISTRY
+        .find("[[region]]\nfile = \"fmi3/f.jinja\"\nmacro = \"name\"")
+        .unwrap()..];
+    refused(
+        DECODED,
+        Some(helper_only),
+        Rule::LiteralExecutable,
+        "caller unregistered",
+    );
+}
+
+#[test]
+fn decoded_regions_dispatch_only_on_declared_closed_tags() {
+    let with = |condition: &str| DECODED.replacen("item.kind == \"fill\"", condition, 1);
+    // An undeclared variant of a declared tag.
+    refused(
+        &with("item.kind == \"scale\""),
+        Some(REGISTRY),
+        Rule::ValueTest,
+        "undeclared variant",
+    );
+    // Equality on a path that is not a declared tag: extents and names are not tags.
+    refused(
+        &with("item.extent == \"3\""),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "non-tag path",
+    );
+    // A tag compared with another path, inequality, and membership.
+    refused(
+        &with("item.kind == item.other"),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "path to path",
+    );
+    refused(
+        &with("item.kind != \"copy\""),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "inequality",
+    );
+    refused(
+        &with("item.kind in [\"fill\"]"),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "membership",
+    );
+    // A tag is its full path from the region's argument: the same field read
+    // from a free root is not the declared tag, so it is not dispatch.
+    refused(
+        &with("plan.kind == \"fill\""),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "free root",
+    );
+}
+
+#[test]
+fn decoded_regions_keep_every_other_ast_rule() {
+    let spliced = |text: &str| DECODED.replacen("memcpy(", text, 1);
+    refused(
+        &spliced("{% set n = item.extent %}memcpy("),
+        Some(REGISTRY),
+        Rule::Assignment,
+        "set",
+    );
+    refused(
+        &spliced("{{ item.extent * 2 }}memcpy("),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "arithmetic",
+    );
+    refused(
+        &spliced("{{ item.extent|default(1) }}memcpy("),
+        Some(REGISTRY),
+        Rule::Fallback,
+        "fallback",
+    );
+    refused(
+        &spliced("{{ item.rows[0] }}memcpy("),
+        Some(REGISTRY),
+        Rule::RangeOrSubscript,
+        "subscript",
+    );
+    refused(
+        &spliced("{{ item.raw|safe }}memcpy("),
+        Some(REGISTRY),
+        Rule::Call,
+        "raw filter",
+    );
+    refused(
+        &spliced("{% include item.file %}memcpy("),
+        Some(REGISTRY),
+        Rule::Composition,
+        "dynamic include",
+    );
+    refused(
+        &spliced("{{ name(item.a ~ \"x\") }}memcpy("),
+        Some(REGISTRY),
+        Rule::Arithmetic,
+        "computed helper argument",
+    );
+}
+
+#[test]
+fn decoded_helpers_must_be_registered_and_not_recursive() {
+    // A helper call of an unregistered macro.
+    let unregistered = DECODED
+        .replace("macro name(", "macro label(")
+        .replace("{{ name(", "{{ label(");
+    refused(
+        &unregistered,
+        Some(REGISTRY),
+        Rule::Call,
+        "unregistered helper",
+    );
+    // A registered helper whose own body is not print-only fails through the call.
+    let bad_helper = DECODED.replacen(
+        "s{% else %}r{% endif %}",
+        "s{% else %}{{ value.id + 1 }}{% endif %}",
+        1,
+    );
+    refused(&bad_helper, Some(REGISTRY), Rule::Arithmetic, "helper body");
+    // Recursion through a helper.
+    let recursive = DECODED.replacen(
+        "{{ value.id }}{%- endmacro %}",
+        "{{ item(value) }}{%- endmacro %}",
+        1,
+    );
+    refused(&recursive, Some(REGISTRY), Rule::Composition, "recursion");
+}
+
+#[test]
+fn malformed_or_one_sided_registration_fails_the_gate() {
+    let files = |registry: &'static str| {
+        Fixture::new(&[
+            ("fmi3/f.jinja", DECODED),
+            ("fmi3/print_plan_regions.toml", registry),
+        ])
+    };
+    let covered = [
+        ("fmi3/f.jinja", "item", Language::C),
+        ("fmi3/f.jinja", "name", Language::C),
+    ];
+    assert!(gate(&files(REGISTRY), &[], &[], &covered).is_ok());
+    // Decoded but not covered: a region needs both registries.
+    assert!(gate(&files(REGISTRY), &[], &[], &covered[..1]).is_err());
+    // Malformed rows.
+    for broken in [
+        REGISTRY.replacen("decoder = \"fixture decoder\"\n", "", 1),
+        REGISTRY.replacen("variants = [\"copy\", \"fill\"]", "variants = []", 1),
+        REGISTRY.replacen(
+            "variants = [\"copy\", \"fill\"]",
+            "variants = [\"copy\", \"fill\", \"copy\"]",
+            1,
+        ),
+        REGISTRY.replacen("path = \"item.kind\"", "path = \"item.kind[0]\"", 1),
+        format!(
+            "{REGISTRY}\n[[region]]\nfile = \"fmi3/f.jinja\"\nmacro = \"item\"\nconsumer = \"c\"\ndecoder = \"d\"\n"
+        ),
+        "[[region]".to_owned(),
+    ] {
+        let leaked: &'static str = Box::leak(broken.clone().into_boxed_str());
+        assert!(
+            gate(&files(leaked), &[], &[], &covered).is_err(),
+            "{broken}"
+        );
+        // Each row fault is reported by the registry itself, not only through
+        // the literal checks that an ignored row leaves in force.
+        let (_, problems) = load_registry(&files(leaked));
+        assert!(!problems.is_empty(), "registry fault unreported: {broken}");
+    }
 }

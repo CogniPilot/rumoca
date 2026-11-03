@@ -38,6 +38,13 @@ const COVERED_MACROS: &[(&str, &str, Language)] = &[];
 
 const TEMPLATE_DIR: &str = "crates/rumoca-phase-codegen/src/templates";
 
+/// The decoded-region registry, relative to the codegen template directory:
+/// macro regions whose whole production output a blocking print-plan
+/// conformance decoder consumes, with the closed issued tags each may dispatch
+/// on. The conformance tests read the same file and prove each row's region is
+/// invoked and decoded; registration here only selects the checks.
+const REGION_REGISTRY: &str = "fmi3/print_plan_regions.toml";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Rule {
     Parse,
@@ -171,6 +178,97 @@ impl RepoTemplates {
     }
 }
 
+/// One decoded region: a covered macro whose reviewed spelling table, in the
+/// named consumer's conformance decoder, governs its literal text.
+#[derive(Clone, Debug)]
+pub(crate) struct DecodedRegion {
+    pub(crate) file: String,
+    pub(crate) name: String,
+    pub(crate) dispatch: Vec<ast_rules::Dispatch>,
+}
+
+/// The registry's regions, and a violation for every malformed row. A
+/// missing registry decodes nothing, so every literal check stays in force.
+pub(crate) fn load_registry(source: &dyn TemplateSource) -> (Vec<DecodedRegion>, Vec<Violation>) {
+    let Ok(text) = source.read(REGION_REGISTRY) else {
+        return (Vec::new(), Vec::new());
+    };
+    let flag = |detail: String| Violation {
+        file: REGION_REGISTRY.to_owned(),
+        line: 0,
+        column: 0,
+        rule: Rule::RegionSelection,
+        detail,
+    };
+    let table: toml::Table = match toml::from_str(&text) {
+        Ok(table) => table,
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![flag(format!("unparsable registry: {error}"))],
+            );
+        }
+    };
+    let mut regions: Vec<DecodedRegion> = Vec::new();
+    let mut violations = Vec::new();
+    for row in rows(&table, "region") {
+        let field = |key| str_field(row, key).filter(|v| !v.trim().is_empty());
+        let (Some(file), Some(name), Some(_), Some(_)) = (
+            field("file"),
+            field("macro"),
+            field("consumer"),
+            field("decoder"),
+        ) else {
+            violations.push(flag(
+                "a region row needs file, macro, consumer and decoder".to_owned(),
+            ));
+            continue;
+        };
+        if regions.iter().any(|r| r.file == file && r.name == name) {
+            violations.push(flag(format!("{file} macro {name} is registered twice")));
+            continue;
+        }
+        let mut dispatch: Vec<ast_rules::Dispatch> = Vec::new();
+        for tag in rows(row, "tag") {
+            let path = str_field(tag, "path").unwrap_or_default();
+            let variants: Vec<String> = tag
+                .get("variants")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            let well_formed = !path.is_empty()
+                && path.split('.').all(is_name)
+                && str_field(tag, "schema").is_some_and(|s| !s.is_empty())
+                && !variants.is_empty()
+                && variants.iter().collect::<BTreeSet<_>>().len() == variants.len()
+                && !dispatch.iter().any(|d| d.path == path);
+            if well_formed {
+                dispatch.push(ast_rules::Dispatch {
+                    path: path.to_owned(),
+                    variants,
+                });
+            } else {
+                violations.push(flag(format!(
+                    "{file} macro {name}: a tag needs a new dotted path, a schema and distinct variants"
+                )));
+            }
+        }
+        regions.push(DecodedRegion {
+            file: file.to_owned(),
+            name: name.to_owned(),
+            dispatch,
+        });
+    }
+    (regions, violations)
+}
+
+fn is_name(part: &str) -> bool {
+    part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn rows<'t>(table: &'t toml::Table, key: &str) -> impl Iterator<Item = &'t toml::Table> {
     table
         .get(key)
@@ -216,12 +314,45 @@ pub(crate) fn check(source: &dyn TemplateSource, root: &str, language: Language)
 /// that name must exist, its arguments are the only path roots, and its body,
 /// literal text and static closure follow the template rules. The rest of the
 /// file is not checked and not covered by a pass.
+///
+/// A region the decoded-region registry names is checked as decoded: it may
+/// also dispatch on its registered closed tags and call registered decoded
+/// helpers of the same file (each checked the same way, never recursively),
+/// and its literal text is governed by its consumer's conformance decoder
+/// instead of the literal lexer. Everything else stays in force.
 pub(crate) fn check_macro(
     source: &dyn TemplateSource,
     file: &str,
     name: &str,
     language: Language,
 ) -> Result<Report> {
+    let (registry, problems) = load_registry(source);
+    let mut report = Report {
+        files: Vec::new(),
+        violations: problems,
+    };
+    let mut path = Vec::new();
+    let mut done = BTreeSet::new();
+    check_region(
+        source,
+        &registry,
+        (file, name),
+        language,
+        (&mut path, &mut done),
+        &mut report,
+    )?;
+    report.violations.sort();
+    Ok(report)
+}
+
+fn check_region(
+    source: &dyn TemplateSource,
+    registry: &[DecodedRegion],
+    (file, name): (&str, &str),
+    language: Language,
+    (path, done): (&mut Vec<String>, &mut BTreeSet<String>),
+    report: &mut Report,
+) -> Result<()> {
     let text = source.read(file)?;
     let ast = match parse(
         &text,
@@ -231,43 +362,83 @@ pub(crate) fn check_macro(
     ) {
         Ok(ast) => ast,
         Err(error) => {
-            return Ok(Report {
-                files: vec![file.to_owned()],
-                violations: vec![parse_violation(file, &error)],
-            });
+            report.files.push(file.to_owned());
+            report.violations.push(parse_violation(file, &error));
+            return Ok(());
         }
     };
     let mut found = Vec::new();
     find_macros(std::slice::from_ref(&ast), name, &mut found);
     let [region] = found.as_slice() else {
-        return Ok(Report {
-            files: vec![file.to_owned()],
-            violations: vec![Violation {
-                file: file.to_owned(),
-                line: found.get(1).map_or(0, |m| m.span().start_line),
-                column: 0,
-                rule: Rule::RegionSelection,
-                detail: format!(
-                    "{} macros named {name:?}; exactly one is required",
-                    found.len()
-                ),
-            }],
+        report.files.push(file.to_owned());
+        report.violations.push(Violation {
+            file: file.to_owned(),
+            line: found.get(1).map_or(0, |m| m.span().start_line),
+            column: 0,
+            rule: Rule::RegionSelection,
+            detail: format!(
+                "{} macros named {name:?}; exactly one is required",
+                found.len()
+            ),
         });
+        return Ok(());
     };
+    let decoded = registry.iter().find(|r| r.file == file && r.name == name);
     let (roots, mut violations) = macro_roots(file, region);
     let mut walk = Walk::new(source, language, Some(roots));
     walk.report.violations.append(&mut violations);
     walk.stack.push(file.to_owned());
     walk.report.files.push(format!(
-        "{file} (macro {name} only; the rest of the file is not covered)"
+        "{file} (macro {name}{} only; the rest of the file is not covered)",
+        if decoded.is_some() { ", decoded," } else { "" }
     ));
     let mut edges = Vec::new();
-    walk.check_body(file, &region.body, &mut edges);
-    for edge in edges {
-        walk.follow(&edge)?;
+    match decoded {
+        Some(region_row) => {
+            let helpers = registry
+                .iter()
+                .filter(|r| r.file == file)
+                .map(|r| r.name.clone())
+                .collect();
+            ast_rules::AstChecker::new(file, &mut walk.report.violations, &mut edges)
+                .with_roots(walk.roots.clone())
+                .with_decoded(region_row.dispatch.clone(), helpers)
+                .stmts(&region.body);
+        }
+        None => walk.check_body(file, &region.body, &mut edges),
     }
-    walk.report.violations.sort();
-    Ok(walk.report)
+    let key = format!("{file}#{name}");
+    path.push(key.clone());
+    for edge in edges {
+        if edge.kind != "helper" {
+            walk.follow(&edge)?;
+            continue;
+        }
+        let helper = format!("{file}#{}", edge.target);
+        if path.contains(&helper) {
+            walk.report.violations.push(Violation {
+                file: edge.from.clone(),
+                line: edge.line,
+                column: edge.column,
+                rule: Rule::Composition,
+                detail: format!("helper recursion through {}", edge.target),
+            });
+        } else if done.insert(helper) {
+            check_region(
+                source,
+                registry,
+                (file, &edge.target),
+                language,
+                (path, done),
+                report,
+            )?;
+        }
+    }
+    path.pop();
+    done.insert(key);
+    report.files.append(&mut walk.report.files);
+    report.violations.append(&mut walk.report.violations);
+    Ok(())
 }
 
 type MacroNode<'s, 'a> =
@@ -469,6 +640,25 @@ pub(crate) fn gate(
     }
     for (file, name, language) in macros {
         failed.extend(check_macro(source, file, name, *language)?.violations);
+    }
+    let (registry, problems) = load_registry(source);
+    failed.extend(problems);
+    for row in &registry {
+        if !macros
+            .iter()
+            .any(|(f, n, _)| *f == row.file && *n == row.name)
+        {
+            failed.push(Violation {
+                file: REGION_REGISTRY.to_owned(),
+                line: 0,
+                column: 0,
+                rule: Rule::RegionSelection,
+                detail: format!(
+                    "{} macro {} is a decoded region but not in COVERED_MACROS; a region needs both registries",
+                    row.file, row.name
+                ),
+            });
+        }
     }
     let unregistered = uncovered_passes(source, artifacts, templates)?;
     if !unregistered.is_empty() {

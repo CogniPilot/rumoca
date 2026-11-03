@@ -46,6 +46,14 @@ const FALLBACK_NAMES: &[&str] = &["default", "d", "defined", "undefined", "none"
 /// for punctuation.
 const PUNCTUATION_LOOP_MARKERS: &[&str] = &["first", "last"];
 
+/// One closed issued tag a decoded region may dispatch on: a dotted path from
+/// a macro argument and the exact variants its schema declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Dispatch {
+    pub(crate) path: String,
+    pub(crate) variants: Vec<String>,
+}
+
 pub(super) struct AstChecker<'v> {
     file: String,
     scopes: Vec<String>,
@@ -53,6 +61,11 @@ pub(super) struct AstChecker<'v> {
     /// targets in scope) a path may start from. `None` checks a whole template,
     /// whose free names are the render context.
     roots: Option<Vec<String>>,
+    /// In a decoded region, the closed tags `{% if path == "variant" %}` may
+    /// test; anywhere else equality stays forbidden.
+    dispatch: Vec<Dispatch>,
+    /// In a decoded region, the registered decoded helper regions it may call.
+    helpers: Vec<String>,
     violations: &'v mut Vec<Violation>,
     composition: &'v mut Vec<Composition>,
 }
@@ -67,9 +80,17 @@ impl<'v> AstChecker<'v> {
             file: file.to_owned(),
             scopes: Vec::new(),
             roots: None,
+            dispatch: Vec::new(),
+            helpers: Vec::new(),
             violations,
             composition,
         }
+    }
+
+    pub(super) fn with_decoded(mut self, dispatch: Vec<Dispatch>, helpers: Vec<String>) -> Self {
+        self.dispatch = dispatch;
+        self.helpers = helpers;
+        self
     }
 
     pub(super) fn with_roots(mut self, roots: Option<Vec<String>>) -> Self {
@@ -227,12 +248,75 @@ impl<'v> AstChecker<'v> {
                     None => self.flag(f.span(), Rule::Call, "filter without an operand"),
                 }
             }
+            Expr::Call(c) if self.helper_call(c) => {}
             other => self.plan_path(other, "output"),
         }
     }
 
+    /// A call of a registered decoded helper region whose arguments are issued
+    /// paths, string constants or further helper calls. The helper's own body
+    /// is checked as a decoded region through the composition edge.
+    fn helper_call(&mut self, call: &ast::Spanned<ast::Call<'_>>) -> bool {
+        let Expr::Var(callee) = &call.expr else {
+            return false;
+        };
+        if !self.helpers.iter().any(|h| h == callee.id) {
+            return false;
+        }
+        for arg in &call.args {
+            match arg {
+                CallArg::Pos(Expr::Const(c)) if c.value.as_str().is_some() => {}
+                CallArg::Pos(Expr::Call(inner)) if self.helper_call(inner) => {}
+                CallArg::Pos(e) => self.plan_path(e, "helper argument"),
+                CallArg::Kwarg(_, e) | CallArg::PosSplat(e) | CallArg::KwargSplat(e) => {
+                    self.flag(
+                        expr_span(e),
+                        Rule::Call,
+                        "helper argument other than a position",
+                    );
+                }
+            }
+        }
+        let span = call.span();
+        self.composition.push(Composition {
+            from: self.file.clone(),
+            line: span.start_line,
+            column: span.start_col,
+            kind: "helper",
+            target: callee.id.to_owned(),
+        });
+        true
+    }
+
+    /// `{% if path == "variant" %}` in a decoded region: dispatch on a declared
+    /// closed tag. A declared tag with an undeclared variant is flagged here;
+    /// any other equality is not dispatch.
+    fn dispatches(&mut self, expr: &Expr<'_>) -> bool {
+        let Expr::BinOp(b) = expr else {
+            return false;
+        };
+        if !matches!(b.op, ast::BinOpKind::Eq) {
+            return false;
+        }
+        let (Some(path), Some(variant)) = (dotted(&b.left), const_str(&b.right)) else {
+            return false;
+        };
+        let Some(tag) = self.dispatch.iter().find(|d| d.path == path) else {
+            return false;
+        };
+        if !tag.variants.contains(&variant) {
+            let detail = format!("{path} has no declared variant {variant:?}");
+            self.flag(b.span(), Rule::ValueTest, detail);
+        }
+        self.plan_path(&b.left, "dispatch tag");
+        true
+    }
+
     /// `{% if ... %}`: an issued Boolean, or a loop's first/last marker.
     fn condition(&mut self, expr: &Expr<'_>) {
+        if self.dispatches(expr) {
+            return;
+        }
         if let Some(marker) = loop_marker(expr) {
             if !PUNCTUATION_LOOP_MARKERS.contains(&marker) {
                 self.flag(
@@ -430,6 +514,15 @@ fn is_plain_path(expr: &Expr<'_>) -> bool {
         Expr::Var(v) => v.id != "loop",
         Expr::GetAttr(a) => is_plain_path(&a.expr),
         _ => false,
+    }
+}
+
+/// `a.b.c` for a plain attribute path from a name.
+fn dotted(expr: &Expr<'_>) -> Option<String> {
+    match expr {
+        Expr::Var(v) if v.id != "loop" => Some(v.id.to_owned()),
+        Expr::GetAttr(a) => Some(format!("{}.{}", dotted(&a.expr)?, a.name)),
+        _ => None,
     }
 }
 
