@@ -25,6 +25,8 @@ mod native_mixed_assignment_tests;
 #[cfg(feature = "sim-rk45")]
 mod periodic_clock_tests;
 mod portable_source_root_tests;
+#[cfg(feature = "sim-rk45")]
+mod prepared_session_cache_tests;
 mod scenario_config_tests;
 mod session_recovery_tests;
 mod simulation_runtime_tests;

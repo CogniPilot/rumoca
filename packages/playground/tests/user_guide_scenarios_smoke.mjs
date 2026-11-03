@@ -141,7 +141,6 @@ try {
           } finally {
             clearTimeout(timer);
             controller?.dispose();
-            session?.free();
             host.remove();
             wasm.WasmSimulationSession.withInteractiveConfiguration = construct;
           }

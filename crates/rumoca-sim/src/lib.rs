@@ -72,6 +72,8 @@ mod error;
 mod me_backend;
 pub mod row_eval_trace;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod session_cache;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_protocol;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
@@ -129,6 +131,8 @@ pub use diffsol::{
 pub use error::{SimError, SimFailureStage};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub use session_cache::{SimulationSessionCache, SimulationSessionLease};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use session_protocol::{
     SESSION_MAX_LINE_BYTES, SESSION_PARENT_DISCONNECTED_EXIT_CODE,
