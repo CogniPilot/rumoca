@@ -294,3 +294,62 @@ fn reviewer_outer_subscript_is_not_whole_occurrence_shape() {
         Err(SourceAttributeError::UnknownShape { .. })
     ));
 }
+
+// Structured-reference identity regression controls.
+fn structured_reference(parts: &[(&str, u32)], cached: &str) -> Expression {
+    use rumoca_core::{ComponentRefPart, ComponentReference, DefId};
+    let component = ComponentReference::construct(
+        false,
+        span(),
+        parts
+            .iter()
+            .map(|(ident, def)| ComponentRefPart {
+                ident: (*ident).into(),
+                span: span(),
+                def_id: DefId::new(*def),
+                subs: vec![],
+            })
+            .collect(),
+    )
+    .unwrap();
+    Expression::VarRef {
+        name: Reference::with_component_reference(cached, component)
+            .with_instance_id(InstanceId::new(2)),
+        subscripts: vec![],
+        span: span(),
+    }
+}
+
+#[test]
+fn source_attributes_field_selection_is_not_whole_occurrence_shape() {
+    let model = model(
+        vec![4],
+        structured_reference(&[("p", 22), ("q", 23)], "p"),
+        vec![4],
+    );
+    assert!(model.validate().is_ok());
+    let result = model
+        .source_attributes()
+        .unwrap()
+        .variable(InstanceId::new(1));
+    eprintln!("field-selection p.q cached p -> {result:?}");
+    assert!(matches!(
+        result,
+        Err(SourceAttributeError::UnknownShape { .. })
+    ));
+}
+
+#[test]
+fn source_attributes_differently_named_structure_is_not_whole_occurrence_shape() {
+    let model = model(vec![4], structured_reference(&[("q", 23)], "p"), vec![4]);
+    assert!(model.validate().is_ok());
+    let result = model
+        .source_attributes()
+        .unwrap()
+        .variable(InstanceId::new(1));
+    eprintln!("structure q cached p -> {result:?}");
+    assert!(matches!(
+        result,
+        Err(SourceAttributeError::UnknownShape { .. })
+    ));
+}

@@ -1,7 +1,7 @@
 //! Source attribute presentation from exact finalized Flat occurrence facts.
 
 use crate::{Model, ModelShapeContractError, Variable};
-use rumoca_core::{Expression, InstanceId, Reference, Span};
+use rumoca_core::{ComponentPath, Expression, InstanceId, Reference, Span};
 use std::collections::HashMap;
 
 #[cfg(test)]
@@ -134,7 +134,8 @@ impl<'model> SourceAttributeCatalog<'model> {
             } if subscripts.is_empty() && unselected_reference(name) => {
                 let variable = self.variables.get(&name.instance_id()?)?;
                 // An occurrence identity cannot authorize a differently named reference.
-                (name.var_name() == &variable.name).then(|| variable.dims.clone())
+                (ComponentPath::from_reference(name).var_name() == &variable.name)
+                    .then(|| variable.dims.clone())
             }
             Expression::Array { elements, kind, .. } => {
                 let operands = elements
