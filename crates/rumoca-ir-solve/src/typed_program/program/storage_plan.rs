@@ -15,6 +15,19 @@ use serde::Serialize;
 
 use super::{SolveOperation, SolveSlot, SolveSpannedOperation, SolveStorageClass, SolveValueType};
 
+/// The serde name of a value derived from content that is serialized beside
+/// it. Wire formats see it as its value; the block digest leaves it out, so a
+/// derived plan is not hashed a second time.
+pub(in crate::typed_program) const DERIVED: &str = "rumoca.solve.derived";
+
+/// Serialize `value` as derived content (see [`DERIVED`]).
+pub(super) fn derived<T: Serialize, S: serde::Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_newtype_struct(DERIVED, value)
+}
+
 /// Where one slot of a program body lives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "placement", rename_all = "snake_case")]
