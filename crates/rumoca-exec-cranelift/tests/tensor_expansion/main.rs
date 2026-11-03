@@ -1,7 +1,8 @@
-//! Current-source fixture census. Historical known-open classifications are
-//! deliberately not promoted: a qualified run must bind the current manifest.
+//! Current-source fixture census and exact unforced-warning inventory gate.
+//! Each report is retained before its measured inventory is checked.
 
 mod fixtures;
+mod gate;
 
 use rumoca_eval_solve::PureCallInvocation;
 use rumoca_exec_cranelift::{
@@ -15,6 +16,33 @@ fn retain(name: &str, report: &ExpansionReport) {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join(format!("{name}.txt")), format!("{report:#?}\n")).unwrap();
     println!("E2 raw census retained: {name}");
+    let warnings: Vec<_> = report
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.is_unforced_suspect())
+        .map(|(index, entry)| warning_key(index, entry))
+        .collect();
+    let inventory = gate::Inventory {
+        complete: report.complete,
+        emitted_entries: report.entries.len(),
+        unattributed_copies: report.unattributed_copy_sites,
+        warnings: &warnings,
+    };
+    gate::check(name, inventory).unwrap_or_else(|error| panic!("{name}: {error}\n{report:#?}"));
+}
+
+fn warning_key(index: usize, entry: &ExpansionEntry) -> String {
+    let source = match &entry.source {
+        ExpansionSource::Typed { program, operation } => format!("Typed/{program}/{operation}"),
+        ExpansionSource::Row(_) => "Row".into(),
+        ExpansionSource::AssignmentOutputs(_) => "AssignmentOutputs".into(),
+        ExpansionSource::FunctionFold(_) => "FunctionFold".into(),
+    };
+    format!(
+        "{index}:{}:{source}:{}:{}",
+        entry.phase, entry.kind, entry.path
+    )
 }
 
 fn bits(values: &[f64]) -> Vec<u64> {
