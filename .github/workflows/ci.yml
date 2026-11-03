@@ -687,8 +687,25 @@ jobs:
             --test suite_heavy_solve -- --nocapture
 
       - name: Run workspace tests
-        if: runner.os != 'Linux' && !cancelled() && steps.test-prerequisites.outcome == 'success'
+        if: runner.os == 'macOS' && !cancelled() && steps.test-prerequisites.outcome == 'success'
         run: cargo xtask verify workspace
+
+      - name: Run workspace tests (Windows unlocked launcher)
+        if: runner.os == 'Windows' && !cancelled() && steps.test-prerequisites.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # nextest rebuilds the workspace, including xtask. Windows cannot replace
+          # a running executable, so keep the orchestrator outside Cargo's outputs.
+          cargo build --package xtask --bin xtask
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          target_dir=$(python -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["target_directory"])' <<< "$metadata")
+          target_dir=$(cygpath -u "$target_dir")
+          runner_temp=$(cygpath -u "${RUNNER_TEMP:?}")
+          launcher_dir=$(mktemp -d "$runner_temp/rumoca-xtask.XXXXXX")
+          trap 'rm -rf -- "$launcher_dir"' EXIT
+          cp -- "$target_dir/debug/xtask.exe" "$launcher_dir/xtask.exe"
+          "$launcher_dir/xtask.exe" verify workspace
 
       - name: Build all binaries
         run: cargo xtask verify binaries
