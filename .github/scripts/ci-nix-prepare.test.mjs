@@ -25,7 +25,11 @@ if (name === 'curl') {
   if (args[0] === '--version') process.stdout.write('mock Nix\\n');
   else if (args[0] === 'build') {
     code = state.buildCode ?? 0;
-    process.stdout.write(state.output ?? state.root);
+    const defaultOutputs = state.docFirst ? [state.root + '-doc', state.root] :
+      [state.root, state.root + '-doc'];
+    const selected = args.at(-1) === 'nixpkgs#bashInteractive^out';
+    process.stdout.write(state.output ??
+      (state.multipleOutputs && !selected ? defaultOutputs.join('\\n') : state.root));
   } else if (args[0] === 'print-dev-env') code = state.envCode ?? 0;
   else code = 99;
 }
@@ -66,7 +70,7 @@ test('prepares locked native Bash then the exact wheel environment once', () => 
   const nix = calls(r, 'nix');
   assert.deepEqual(nix.map(c => c[1]), ['--version', 'build', 'print-dev-env']);
   assert.deepEqual(nix[1].slice(2), ['--option', 'substituters', 'https://cache.nixos.org',
-    '--no-update-lock-file', '--no-link', '--print-out-paths', '--inputs-from', '.', 'nixpkgs#bashInteractive']);
+    '--no-update-lock-file', '--no-link', '--print-out-paths', '--inputs-from', '.', 'nixpkgs#bashInteractive^out']);
   assert.deepEqual(nix[2].slice(2), ['--option', 'substituters', 'https://cache.nixos.org',
     '--no-update-lock-file', '.#devShells.x86_64-darwin.ci-python-wheel']);
   assert.equal(calls(r, 'bash').length, 1);
@@ -75,6 +79,17 @@ test('prepares locked native Bash then the exact wheel environment once', () => 
     '--fail', '--connect-timeout', '5', '--max-time', '10', '--output', '/dev/null',
     '--write-out', '%{http_code}', 'https://cache.nixos.org/nix-cache-info']);
 });
+
+for (const docFirst of [false, true]) {
+  test(`selects executable out without relying on default output order ${docFirst}`, () => {
+    const r = run({ multipleOutputs: true, docFirst }, ['x86_64-linux']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(preparationCalls(r).map(c => c[1]), ['build', 'print-dev-env']);
+    assert.equal(preparationCalls(r)[0].at(-1), 'nixpkgs#bashInteractive^out');
+    assert.deepEqual(calls(r, 'bash'), [['bash', '--version']]);
+    assert.ok(r.stdout.includes(`Prepared native Bash: ${r.state.root}/bin/bash`));
+  });
+}
 
 for (const [code, http] of [[6, '000'], [7, '000'], [28, '000'], [22, '429'],
   [22, '500'], [22, '502'], [22, '503'], [22, '504']]) {

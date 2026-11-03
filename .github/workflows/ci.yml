@@ -1912,6 +1912,24 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
           printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
+      - name: Reclaim runner disk before ModelicaTest inputs
+        # Use the same fixed unused-SDK cleanup as the MSL shards.
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== disk before cleanup =="
+          df -h . / /tmp || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force > /dev/null || true
+          sudo apt-get clean
+          echo "== disk after cleanup =="
+          df -h . / /tmp || true
+
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
@@ -1989,16 +2007,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "== ModelicaTest disk before closure import =="
+          df -h . / /tmp || true
+          du -sh -- target/nix-cache /nix/store target/debug target/msl "$HOME/.cargo" 2>/dev/null || true
           for archive in \
             target/nix-cache/openmodelica-cli-closure.nar.zst \
             target/nix-cache/msl-artifacts-closure.nar.zst
           do
             zstd --decompress --stdout "$archive" | nix-store --import
+            rm -- "$archive"
           done
           nix build .#openmodelica-cli --out-link result-openmodelica
           nix build .#msl-artifacts --out-link result-msl-artifacts
           echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
           result-openmodelica/bin/omc --version
+          echo "== ModelicaTest disk after closure import =="
+          df -h . / /tmp || true
+          du -sh -- target/nix-cache /nix/store target/debug target/msl "$HOME/.cargo" 2>/dev/null || true
 
       - name: Run ModelicaTest semantic gate
         shell: bash

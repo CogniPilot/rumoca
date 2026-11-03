@@ -50,7 +50,7 @@ printf 'Preparing wheel shell for %s\n' "$system"
 # signature verification and the project's locked nixpkgs input.
 options=(--option substituters https://cache.nixos.org --no-update-lock-file)
 if bash_root="$(nix build "${options[@]}" --no-link --print-out-paths \
-  --inputs-from . nixpkgs#bashInteractive)"; then
+  --inputs-from . 'nixpkgs#bashInteractive^out')"; then
   :
 else
   status=$?
