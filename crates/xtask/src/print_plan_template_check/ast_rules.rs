@@ -317,19 +317,7 @@ impl<'v> AstChecker<'v> {
         let mut spelled: Vec<String> = Vec::new();
         let mut node = first;
         loop {
-            match self.dispatch_tag(&node.expr) {
-                Some((p, variant)) if p == path => {
-                    if spelled.contains(&variant) {
-                        let detail = format!("{path} == {variant:?} is spelled twice");
-                        self.flag(node.span(), Rule::ValueTest, detail);
-                    }
-                    spelled.push(variant);
-                }
-                _ => {
-                    let detail = format!("a dispatch chain on {path} tests something else");
-                    self.flag(node.span(), Rule::ValueTest, detail);
-                }
-            }
+            self.record_dispatch_variant(node, &path, &mut spelled);
             self.condition(&node.expr);
             self.stmts(&node.true_body);
             let rest: Vec<&Stmt<'_>> = node
@@ -359,6 +347,27 @@ impl<'v> AstChecker<'v> {
         for variant in declared.iter().filter(|v| !spelled.contains(v)) {
             let detail = format!("declared {path} variant {variant:?} has no spelling");
             self.flag(first.span(), Rule::ValueTest, detail);
+        }
+    }
+
+    fn record_dispatch_variant(
+        &mut self,
+        node: &ast::Spanned<ast::IfCond<'_>>,
+        path: &str,
+        spelled: &mut Vec<String>,
+    ) {
+        match self.dispatch_tag(&node.expr) {
+            Some((p, variant)) if p == path => {
+                if spelled.contains(&variant) {
+                    let detail = format!("{path} == {variant:?} is spelled twice");
+                    self.flag(node.span(), Rule::ValueTest, detail);
+                }
+                spelled.push(variant);
+            }
+            _ => {
+                let detail = format!("a dispatch chain on {path} tests something else");
+                self.flag(node.span(), Rule::ValueTest, detail);
+            }
         }
     }
 

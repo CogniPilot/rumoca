@@ -171,20 +171,7 @@ impl RepoTemplates {
             let text = fs::read_to_string(&manifest)?;
             let table: toml::Table =
                 toml::from_str(&text).with_context(|| format!("parsing {}", manifest.display()))?;
-            for row in rows(&table, "partials") {
-                if let (Some(n), Some(t)) = (str_field(row, "name"), str_field(row, "template")) {
-                    shared.insert(n.to_owned(), format!("{name}/{t}"));
-                }
-            }
-            for row in rows(&table, "files") {
-                let Some(t) = str_field(row, "template") else {
-                    continue;
-                };
-                artifacts.push(format!("{name}/{t}"));
-                if let Some(n) = str_field(row, "shared_as") {
-                    shared.insert(n.to_owned(), format!("{name}/{t}"));
-                }
-            }
+            register_manifest_templates(&table, &name, &mut shared, &mut artifacts);
         }
         artifacts.sort();
         Ok(Self {
@@ -196,6 +183,28 @@ impl RepoTemplates {
 
     pub(crate) fn artifacts(&self) -> &[String] {
         &self.artifacts
+    }
+}
+
+fn register_manifest_templates(
+    table: &toml::Table,
+    name: &str,
+    shared: &mut BTreeMap<String, String>,
+    artifacts: &mut Vec<String>,
+) {
+    for row in rows(&table, "partials") {
+        if let (Some(n), Some(t)) = (str_field(row, "name"), str_field(row, "template")) {
+            shared.insert(n.to_owned(), format!("{name}/{t}"));
+        }
+    }
+    for row in rows(&table, "files") {
+        let Some(t) = str_field(row, "template") else {
+            continue;
+        };
+        artifacts.push(format!("{name}/{t}"));
+        if let Some(n) = str_field(row, "shared_as") {
+            shared.insert(n.to_owned(), format!("{name}/{t}"));
+        }
     }
 }
 
@@ -524,12 +533,7 @@ fn check_region(
     report: &mut Report,
 ) -> Result<()> {
     let text = source.read(file)?;
-    let ast = match parse(
-        &text,
-        file,
-        SyntaxConfig::default(),
-        WhitespaceConfig::default(),
-    ) {
+    let ast = match parse(&text, file, SyntaxConfig, WhitespaceConfig::default()) {
         Ok(ast) => ast,
         Err(error) => {
             report.files.push(file.to_owned());
@@ -568,20 +572,7 @@ fn check_region(
         });
     }
     let (roots, mut violations) = macro_roots(file, region);
-    if let Some(row) = decoded {
-        let declared: Vec<&String> = row.arguments.iter().map(|(a, _)| a).collect();
-        if declared != roots.iter().collect::<Vec<_>>() {
-            violations.push(Violation {
-                file: REGION_REGISTRY.to_owned(),
-                line: 0,
-                column: 0,
-                rule: Rule::RegionSelection,
-                detail: format!(
-                    "{file} macro {name}: registered arguments {declared:?} are not the macro's {roots:?}"
-                ),
-            });
-        }
-    }
+    check_registered_arguments(file, name, decoded, &roots, &mut violations);
     let mut walk = Walk::new(source, language, Some(roots));
     walk.report.violations.append(&mut violations);
     walk.stack.push(file.to_owned());
@@ -639,6 +630,29 @@ fn check_region(
     report.files.append(&mut walk.report.files);
     report.violations.append(&mut walk.report.violations);
     Ok(())
+}
+
+fn check_registered_arguments(
+    file: &str,
+    name: &str,
+    decoded: Option<&DecodedRegion>,
+    roots: &[String],
+    violations: &mut Vec<Violation>,
+) {
+    if let Some(row) = decoded {
+        let declared: Vec<&String> = row.arguments.iter().map(|(a, _)| a).collect();
+        if declared != roots.iter().collect::<Vec<_>>() {
+            violations.push(Violation {
+                file: REGION_REGISTRY.to_owned(),
+                line: 0,
+                column: 0,
+                rule: Rule::RegionSelection,
+                detail: format!(
+                    "{file} macro {name}: registered arguments {declared:?} are not the macro's {roots:?}"
+                ),
+            });
+        }
+    }
 }
 
 type MacroNode<'s, 'a> =
@@ -777,12 +791,7 @@ impl<'s> Walk<'s> {
         self.report.files.push(file.to_owned());
         let text = self.source.read(file)?;
         let mut edges = Vec::new();
-        match parse(
-            &text,
-            file,
-            SyntaxConfig::default(),
-            WhitespaceConfig::default(),
-        ) {
+        match parse(&text, file, SyntaxConfig, WhitespaceConfig::default()) {
             Ok(ast) => self.check_body(file, std::slice::from_ref(&ast), &mut edges),
             Err(error) => self.report.violations.push(parse_violation(file, &error)),
         }

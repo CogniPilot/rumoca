@@ -249,14 +249,7 @@ impl CText<'_, '_> {
     ) {
         match current {
             Piece::Opaque { span, what } => {
-                for (side, neighbour, edge) in [("before", before, left), ("after", after, right)] {
-                    if !opaque_side_safe(neighbour, edge, side == "before") {
-                        let detail = format!(
-                            "{what} not delimited {side} by whitespace or ( ) [ ] {{ }} , ; in literal text"
-                        );
-                        self.flag((span.start_line, span.start_col), detail);
-                    }
-                }
+                self.opaque_edges(*span, what, before, after, (left, right));
             }
             Piece::Text { span, text } => {
                 let (first, last) = edge_chars(text);
@@ -266,6 +259,24 @@ impl CText<'_, '_> {
                 if after.is_none() && right == Edge::Block && !delimits(last) {
                     self.flag((span.start_line, span.start_col), "literal text at a control-block edge must end with whitespace or a delimiter".to_owned());
                 }
+            }
+        }
+    }
+
+    fn opaque_edges(
+        &mut self,
+        span: Span,
+        what: &str,
+        before: Option<&Piece<'_>>,
+        after: Option<&Piece<'_>>,
+        (left, right): (Edge, Edge),
+    ) {
+        for (side, neighbour, edge) in [("before", before, left), ("after", after, right)] {
+            if !opaque_side_safe(neighbour, edge, side == "before") {
+                let detail = format!(
+                    "{what} not delimited {side} by whitespace or ( ) [ ] {{ }} , ; in literal text"
+                );
+                self.flag((span.start_line, span.start_col), detail);
             }
         }
     }
@@ -365,7 +376,10 @@ fn splice(text: &str) -> (String, Vec<usize>) {
 
 /// Offsets in `text` and descriptions of executable-body tokens in C text,
 /// plus the construct the text ends inside, if any.
-pub(super) fn scan(text: &str) -> (Vec<(usize, String)>, Option<(usize, &'static str)>) {
+type FoundTokens = Vec<(usize, String)>;
+type OpenConstruct = Option<(usize, &'static str)>;
+
+pub(super) fn scan(text: &str) -> (FoundTokens, OpenConstruct) {
     let mut found = trigraphs(text);
     let (spliced, map) = splice(text);
     let mut lexer = Lexer::new(&spliced, 0);
@@ -486,8 +500,8 @@ impl<'t> Lexer<'t> {
         let rest = &self.text[self.at..];
         if rest.starts_with("//") {
             self.at += rest.find('\n').unwrap_or(rest.len());
-        } else if rest.starts_with("/*") {
-            match rest[2..].find("*/") {
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            match comment.find("*/") {
                 Some(end) => self.at += end + 4,
                 None => self.end_open("comment"),
             }

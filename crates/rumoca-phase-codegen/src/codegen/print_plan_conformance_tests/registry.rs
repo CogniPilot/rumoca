@@ -206,17 +206,17 @@ pub(super) fn unreached(regions: &[Region], events: &[Occurrence]) -> (Vec<Strin
         .filter(|region| !observed.contains(format!("R:{}", region.name).as_str()))
         .map(|region| region.name.clone())
         .collect();
-    let mut unselected = Vec::new();
-    for region in regions {
-        for (path, variants) in &region.tags {
-            for variant in variants {
-                let key = format!("{}:{path}:{variant}", region.name);
-                if !observed.contains(format!("V:{key}").as_str()) {
-                    unselected.push(key);
-                }
-            }
-        }
-    }
+    let unselected = regions
+        .iter()
+        .flat_map(|region| {
+            region.tags.iter().flat_map(move |(path, variants)| {
+                variants
+                    .iter()
+                    .map(move |variant| format!("{}:{path}:{variant}", region.name))
+            })
+        })
+        .filter(|key| !observed.contains(format!("V:{key}").as_str()))
+        .collect();
     (unrun, unselected)
 }
 
