@@ -7,6 +7,8 @@
 //! again. An operation whose printing has not moved here yet is a `Legacy`
 //! item naming the audit ledger row that owns its remaining printer decision.
 
+mod scalar;
+
 use serde::Serialize;
 
 use super::{
@@ -14,6 +16,10 @@ use super::{
     SolveStorageClass, SolveStoragePlan, SolveValueType,
 };
 use crate::{SolveRealFormat, SolveScalarType};
+pub use scalar::{
+    SolveBinaryToken, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
+    SolveElementOperand, SolveIntegerLiteral, SolveKernel, SolveLiteral, SolveUnaryToken,
+};
 
 /// The element token of an issued value: each printer has one fixed
 /// spelling per token.
@@ -97,6 +103,40 @@ pub enum SolveBodyItem {
         index: usize,
         destination: SolveName,
         source: SolveName,
+    },
+    /// Register `destination` holds the issued literal `value`.
+    Constant {
+        index: usize,
+        destination: usize,
+        value: SolveLiteral,
+    },
+    /// The whole value of `if_true` or `if_false`, chosen by the first
+    /// element of `condition`.
+    Select {
+        index: usize,
+        destination: usize,
+        condition: usize,
+        if_true: usize,
+        if_false: usize,
+    },
+    /// `extent` elements of `destination`, each computed by `kernel`, then
+    /// checked against the destination's integer `domain`.
+    Elementwise {
+        index: usize,
+        destination: usize,
+        extent: u32,
+        kernel: SolveKernel,
+        domain: Option<SolveDomainCheck>,
+    },
+    /// `extent` elements of `operand` converted by `token`, then checked
+    /// against the destination's integer `domain`.
+    Convert {
+        index: usize,
+        destination: usize,
+        operand: usize,
+        extent: u32,
+        token: SolveConversionToken,
+        domain: Option<SolveDomainCheck>,
     },
     /// Not yet projected: printed from the operation by the printer's
     /// unmigrated macro, under the decision owned by audit row `ledger`, or
@@ -293,10 +333,12 @@ fn body_item(
             destination: slot(stored.index()),
             source: register(source.index()),
         },
-        other => SolveBodyItem::Legacy {
-            index,
-            ledger: legacy_ledger(other),
-        },
+        other => {
+            scalar::scalar_item(index, other, register_types).unwrap_or(SolveBodyItem::Legacy {
+                index,
+                ledger: legacy_ledger(other),
+            })
+        }
     }
 }
 

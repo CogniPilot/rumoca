@@ -16,6 +16,94 @@
 {#- The one spelling of each issued element token. -#}
 {%- macro element(token) -%}{% if token == "real64" %}double{% elif token == "int64" %}int64_t{% elif token == "boolean" %}bool{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %}{%- endmacro %}
 {%- macro storage_name(name) -%}{% if name.space == "slot" %}s{% else %}r{% endif %}{{ name.id }}{%- endmacro %}
+{#- The one spelling of each issued scalar token; each prints issued fields
+    only. Statement spellings emit complete lines. -#}
+{%- macro operand(value) -%}r{{ value.register }}[{% if value.broadcast %}0{% else %}k{% endif %}]{%- endmacro %}
+{%- macro integer_literal(value) -%}{% if value.sign == "minimum" %}INT64_MIN{% elif value.sign == "negative" %}(-INT64_C({{ value.magnitude }})){% else %}INT64_C({{ value.magnitude }}){% endif %}{%- endmacro %}
+{%- macro unary_spelling(token, a) -%}
+{%- if token == "negate" -%}(-{{ a }})
+{%- elif token == "not" -%}(!{{ a }})
+{%- elif token == "sign" -%}({{ a }}>0 ? 1 : ({{ a }}<0 ? -1 : 0))
+{%- elif token == "integer_abs" -%}({{ a }}<0 ? -{{ a }} : {{ a }})
+{%- elif token == "real_abs" -%}fabs({{ a }})
+{%- elif token == "ceiling" -%}ceil({{ a }})
+{%- elif token == "truncate" -%}trunc({{ a }})
+{%- else -%}{{ token }}({{ a }}){% endif -%}
+{%- endmacro %}
+{%- macro binary_spelling(token, a, b) -%}
+{%- if token == "boolean_min" -%}({{ a }} && {{ b }})
+{%- elif token == "boolean_max" -%}({{ a }} || {{ b }})
+{%- elif token == "power" -%}pow({{ a }},{{ b }})
+{%- elif token == "atan2" -%}atan2({{ a }},{{ b }})
+{%- elif token == "real_min" -%}rumoca_real_min({{ a }},{{ b }})
+{%- elif token == "real_max" -%}rumoca_real_max({{ a }},{{ b }})
+{%- elif token == "add" -%}({{ a }} + {{ b }})
+{%- elif token == "subtract" -%}({{ a }} - {{ b }})
+{%- elif token == "multiply" -%}({{ a }} * {{ b }})
+{%- elif token == "divide" -%}({{ a }} / {{ b }})
+{%- elif token == "and" -%}({{ a }} && {{ b }})
+{%- else -%}({{ a }} || {{ b }}){% endif -%}
+{%- endmacro %}
+{%- macro compare_spelling(token) -%}
+{%- if token == "equal" -%}=={%- elif token == "not_equal" -%}!={%- elif token == "less" -%}<{%- elif token == "less_equal" -%}<={%- elif token == "greater" -%}>{%- else -%}>={%- endif -%}
+{%- endmacro %}
+{%- macro checked(token, d, a, b) -%}
+{% if token == "add" -%}
+if (({{ b }}>0 && {{ a }}>INT64_MAX-{{ b }}) || ({{ b }}<0 && {{ a }}<INT64_MIN-{{ b }})) return 1;
+r{{ d }}[k] = {{ a }}+{{ b }};
+{% elif token == "subtract" -%}
+if (({{ b }}<0 && {{ a }}>INT64_MAX+{{ b }}) || ({{ b }}>0 && {{ a }}<INT64_MIN+{{ b }})) return 1;
+r{{ d }}[k] = {{ a }}-{{ b }};
+{% elif token == "multiply" -%}
+if ({{ a }}>0 ? ({{ b }}>0 ? {{ a }}>INT64_MAX/{{ b }} : {{ b }}<INT64_MIN/{{ a }}) : ({{ a }}<0 ? ({{ b }}>0 ? {{ a }}<INT64_MIN/{{ b }} : ({{ b }}<0 && {{ a }}<INT64_MAX/{{ b }})) : 0)) return 1;
+r{{ d }}[k] = {{ a }}*{{ b }};
+{% elif token == "quotient" -%}
+if ({{ b }} == 0) return 1;
+if ({{ a }} == INT64_MIN && {{ b }} == -1) return 1;
+r{{ d }}[k] = {{ a }}/{{ b }};
+{% elif token == "modulo" -%}
+if ({{ b }} == 0) return 1;
+r{{ d }}[k] = {{ b }} == -1 ? 0 : {{ a }}%{{ b }};
+if (r{{ d }}[k] != 0 && ((r{{ d }}[k] < 0) != ({{ b }} < 0))) r{{ d }}[k] += {{ b }};
+{% elif token == "remainder" -%}
+if ({{ b }} == 0) return 1;
+r{{ d }}[k] = {{ b }} == -1 ? 0 : {{ a }}%{{ b }};
+{% elif token == "min" -%}
+r{{ d }}[k] = {{ a }} < {{ b }} ? {{ a }} : {{ b }};
+{% else -%}
+r{{ d }}[k] = {{ a }} > {{ b }} ? {{ a }} : {{ b }};
+{% endif -%}
+{% endmacro %}
+{%- macro domain(item) -%}
+{% if item.domain -%}
+for (size_t k=0; k<{{ item.extent }}; ++k) if (r{{ item.destination }}[k]<{{ integer_literal(item.domain.minimum) }} || r{{ item.destination }}[k]>{{ integer_literal(item.domain.maximum) }}) return 1;
+{% endif -%}
+{% endmacro %}
+{%- macro elementwise(item) -%}
+for (size_t k=0; k<{{ item.extent }}; ++k) {
+{% if item.kernel.kind == "unary" -%}
+{% if item.kernel.min_operand_check -%}
+if ({{ operand(item.kernel.operand) }} == INT64_MIN) return 1;
+{% endif -%}
+r{{ item.destination }}[k] = {{ unary_spelling(item.kernel.token, operand(item.kernel.operand)) }};
+{% elif item.kernel.kind == "binary" -%}
+r{{ item.destination }}[k] = {{ binary_spelling(item.kernel.token, operand(item.kernel.lhs), operand(item.kernel.rhs)) }};
+{% elif item.kernel.kind == "checked" -%}
+{{ checked(item.kernel.token, item.destination, operand(item.kernel.lhs), operand(item.kernel.rhs)) -}}
+{% else -%}
+r{{ item.destination }}[k] = {{ operand(item.kernel.lhs) }} {{ compare_spelling(item.kernel.token) }} {{ operand(item.kernel.rhs) }};
+{% endif -%}
+}
+{{ domain(item) -}}
+{% endmacro %}
+{%- macro convert(item) -%}
+{% if item.token == "integer_to_real" -%}
+for (size_t k=0; k<{{ item.extent }}; ++k) r{{ item.destination }}[k] = (double)r{{ item.operand }}[k];
+{% else -%}
+for (size_t k=0; k<{{ item.extent }}; ++k) { double v={% if item.token == "real_to_integer_toward_zero" %}trunc{% else %}floor{% endif %}(r{{ item.operand }}[k]); if (!isfinite(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) return 1; r{{ item.destination }}[k]=(int64_t)v; }
+{{ domain(item) -}}
+{% endif -%}
+{% endmacro %}
 {%- macro ctype(ty) -%}{% if ty.scalar.kind == "real" %}double{% elif ty.scalar.kind == "integer" %}int64_t{% else %}bool{% endif %}{%- endmacro %}
 
 {%- macro call(name, inputs, outputs) -%}
@@ -155,7 +243,9 @@ memcpy(s{{ item.slot }}, in[{{ item.argument }}], sizeof(s{{ item.slot }}));
 {% for item in plan.registers %}{{ element(item.element) }} r{{ item.name.id }}[{{ item.extent }}]; (void)r{{ item.name.id }};{% endfor %}
 {% for item in plan.body %}{% if item.kind == "view" %}const {{ element(item.element) }}* r{{ item.register }} = s{{ item.slot }}; (void)r{{ item.register }};
 {% elif item.kind == "copy" %}memcpy({{ storage_name(item.destination) }}, {{ storage_name(item.source) }}, sizeof({{ storage_name(item.destination) }}));
-{% else %}{{ operation(program.operations[item.index].operation, program, name ~ "_region_" ~ item.index, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
+{% elif item.kind == "constant" %}r{{ item.destination }}[0] = {% if item.value.kind == "real64" %}rumoca_real64(UINT64_C({{ item.value.bits }})){% elif item.value.kind == "int64" %}{{ integer_literal(item.value.value) }}{% elif item.value.value %}true{% else %}false{% endif %};
+{% elif item.kind == "select" %}memcpy(r{{ item.destination }}, (r{{ item.condition }}[0] ? r{{ item.if_true }} : r{{ item.if_false }}), sizeof(r{{ item.destination }}));
+{% elif item.kind == "elementwise" %}{{ elementwise(item) }}{% elif item.kind == "convert" %}{{ convert(item) }}{% else %}{{ operation(program.operations[item.index].operation, program, name ~ "_region_" ~ item.index, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
 {% for item in plan.outputs -%}
 if (out[{{ item.output }}]) memcpy(out[{{ item.output }}], s{{ item.slot }}, sizeof(s{{ item.slot }}));
 {% endfor -%}

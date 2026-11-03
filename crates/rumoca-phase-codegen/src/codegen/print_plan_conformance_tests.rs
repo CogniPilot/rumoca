@@ -13,6 +13,8 @@ use solve::{
 
 use super::codegen_test_support::builtin_template;
 
+mod scalar;
+
 const OPENING: &str = "(const void* const in[], void* const out[], const RmcAssertionObserver* observer) {\n(void)in; (void)out; (void)observer; (void)rumoca_real64;\n";
 const CLOSING: &str = "return 0;\n}\n";
 
@@ -409,6 +411,16 @@ impl Cursor<'_> {
                 },
                 decode_body,
             ),
+            Body::Constant { .. }
+            | Body::Select { .. }
+            | Body::Elementwise { .. }
+            | Body::Convert { .. } => {
+                let mut text = self.text;
+                match scalar::check(&mut text, item) {
+                    Ok(()) => self.text = text,
+                    Err(finding) => self.finding(finding),
+                }
+            }
             Body::Legacy { index, ledger } => {
                 if ledger.is_none() {
                     self.finding(format!(
@@ -531,28 +543,171 @@ fn reduction_program() -> solve::TypedProgram {
     .expect("checked reduction program")
 }
 
-/// A select, whose printing no audit row owns yet.
-fn select_program() -> solve::TypedProgram {
+/// An identity, whose printing no audit row owns yet.
+fn identity_program() -> solve::TypedProgram {
     solve::TypedProgram::construct(profile(), |builder| {
         let output = builder.declare_slot(
-            real(2),
+            solve::SolveValueType::tensor(solve::SolveScalarType::real(profile()), vec![2, 2])
+                .unwrap(),
             solve::SolveStorageClass::Output,
             solve::SolveSlotAccess::ReadWrite,
             span(),
         )?;
-        let input = builder.declare_slot(
+        let identity = builder.identity(solve::SolveScalarType::real(profile()), 2, span())?;
+        builder.store(output, identity, span())
+    })
+    .expect("checked identity program")
+}
+
+fn narrow_profile() -> solve::SolveArithmeticProfile {
+    solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::construct(-100, 100).unwrap(),
+    )
+}
+
+/// Checked integer arithmetic, the minimum-operand guards, comparison and
+/// both conversions under a narrowed integer domain.
+fn integer_program() -> solve::TypedProgram {
+    let arithmetic = narrow_profile();
+    let integer = solve::SolveScalarType::integer(arithmetic);
+    let ints = solve::SolveValueType::tensor(integer, vec![3]).unwrap();
+    let reals =
+        solve::SolveValueType::tensor(solve::SolveScalarType::real(arithmetic), vec![3]).unwrap();
+    solve::TypedProgram::construct(arithmetic, |builder| {
+        let a = builder.declare_slot(
+            ints.clone(),
+            solve::SolveStorageClass::Input,
+            solve::SolveSlotAccess::ReadOnly,
+            span(),
+        )?;
+        let x = builder.declare_slot(
+            reals.clone(),
+            solve::SolveStorageClass::Input,
+            solve::SolveSlotAccess::ReadOnly,
+            span(),
+        )?;
+        let out = builder.declare_slot(
+            ints.clone(),
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let flags = builder.declare_slot(
+            solve::SolveValueType::tensor(solve::SolveScalarType::Boolean, vec![3]).unwrap(),
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let back = builder.declare_slot(
+            reals,
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let a = builder.load(a, span())?;
+        let x = builder.load(x, span())?;
+        let truncated = builder.convert(
+            solve::SolveConversionOperator::RealToIntegerTowardZero,
+            x,
+            span(),
+        )?;
+        let floored = builder.convert(
+            solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
+            x,
+            span(),
+        )?;
+        let mut value = builder.binary(solve::SolveBinaryOperator::Add, a, truncated, span())?;
+        for operator in [
+            solve::SolveBinaryOperator::Subtract,
+            solve::SolveBinaryOperator::Multiply,
+            solve::SolveBinaryOperator::IntegerQuotient,
+            solve::SolveBinaryOperator::IntegerModulo,
+            solve::SolveBinaryOperator::IntegerRemainder,
+            solve::SolveBinaryOperator::Min,
+            solve::SolveBinaryOperator::Max,
+        ] {
+            value = builder.binary(operator, value, floored, span())?;
+        }
+        let negated = builder.unary(solve::SolveUnaryOperator::Negate, value, span())?;
+        let magnitude = builder.unary(solve::SolveUnaryOperator::Abs, negated, span())?;
+        let seven =
+            builder.constant(solve::SolveValue::integer(arithmetic, -7).unwrap(), span())?;
+        let shifted = builder.broadcast_binary(
+            solve::SolveBinaryOperator::Add,
+            magnitude,
+            seven,
+            true,
+            span(),
+        )?;
+        builder.store(out, shifted, span())?;
+        let less = builder.compare(solve::SolveCompareOperator::Less, a, shifted, span())?;
+        builder.store(flags, less, span())?;
+        let real = builder.convert(
+            solve::SolveConversionOperator::IntegerToReal,
+            shifted,
+            span(),
+        )?;
+        builder.store(back, real, span())
+    })
+    .expect("checked integer program")
+}
+
+/// Real constants, functions, a broadcast with the scalar on the left,
+/// Boolean min/and and a select.
+fn real_program() -> solve::TypedProgram {
+    let arithmetic = profile();
+    let boolean = solve::SolveValueType::tensor(solve::SolveScalarType::Boolean, vec![2]).unwrap();
+    solve::TypedProgram::construct(arithmetic, |builder| {
+        let x = builder.declare_slot(
             real(2),
             solve::SolveStorageClass::Input,
             solve::SolveSlotAccess::ReadOnly,
             span(),
         )?;
-        let value = builder.load(input, span())?;
-        let negated = builder.unary(solve::SolveUnaryOperator::Negate, value, span())?;
-        let condition = builder.constant(solve::SolveValue::boolean(true), span())?;
-        let chosen = builder.select(condition, value, negated, span())?;
-        builder.store(output, chosen, span())
+        let out = builder.declare_slot(
+            real(2),
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let flags = builder.declare_slot(
+            boolean,
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let x = builder.load(x, span())?;
+        let half = builder.constant(solve::SolveValue::real(arithmetic, -0.5), span())?;
+        let mut value = builder.unary(solve::SolveUnaryOperator::Sqrt, x, span())?;
+        for operator in [
+            solve::SolveUnaryOperator::Sign,
+            solve::SolveUnaryOperator::Abs,
+            solve::SolveUnaryOperator::Ceiling,
+            solve::SolveUnaryOperator::Log10,
+        ] {
+            value = builder.unary(operator, value, span())?;
+        }
+        let scaled = builder.broadcast_binary(
+            solve::SolveBinaryOperator::Multiply,
+            value,
+            half,
+            true,
+            span(),
+        )?;
+        let powered = builder.binary(solve::SolveBinaryOperator::Power, scaled, x, span())?;
+        let smaller = builder.binary(solve::SolveBinaryOperator::Min, powered, x, span())?;
+        let positive = builder.compare(solve::SolveCompareOperator::Greater, smaller, x, span())?;
+        let negative =
+            builder.compare(solve::SolveCompareOperator::LessEqual, smaller, x, span())?;
+        let both = builder.binary(solve::SolveBinaryOperator::Min, positive, negative, span())?;
+        let either = builder.binary(solve::SolveBinaryOperator::And, both, positive, span())?;
+        builder.store(flags, either, span())?;
+        let truth = builder.constant(solve::SolveValue::boolean(false), span())?;
+        let chosen = builder.select(truth, smaller, x, span())?;
+        builder.store(out, chosen, span())
     })
-    .expect("checked select program")
+    .expect("checked real program")
 }
 
 #[test]
@@ -561,6 +716,8 @@ fn typed_bodies_print_exactly_their_issued_plans() {
     for (program, name) in [
         (mixed_program(), "mixed"),
         (reduction_program(), "reduction"),
+        (integer_program(), "integer"),
+        (real_program(), "real"),
     ] {
         assert_eq!(check(&printer, &program, name), Vec::<String>::new());
     }
@@ -568,8 +725,10 @@ fn typed_bodies_print_exactly_their_issued_plans() {
 
 #[test]
 fn coverage_reports_projected_and_quarantined_items() {
-    assert_eq!(coverage(&mixed_program()), (4, 1));
-    assert_eq!(coverage(&reduction_program()), (3, 2));
+    assert_eq!(coverage(&mixed_program()), (5, 0));
+    assert_eq!(coverage(&reduction_program()), (4, 1));
+    assert_eq!(coverage(&integer_program()), (21, 0));
+    assert_eq!(coverage(&real_program()).1, 0);
 }
 
 #[test]
@@ -600,10 +759,7 @@ fn the_issued_plan_places_views_copies_and_argument_copies() {
                 slot: 1,
                 ..
             },
-            Body::Legacy {
-                ledger: Some("D068"),
-                ..
-            },
+            Body::Elementwise { .. },
             Body::Copy { .. },
             Body::Copy { .. },
             Body::Copy { .. },
@@ -689,11 +845,65 @@ fn a_same_id_substitution_in_the_printed_plan_fails_conformance() {
 /// An operation no audit row owns cannot pass as unmigrated printing.
 #[test]
 fn an_unledgered_legacy_operation_fails_conformance() {
-    let findings = check(&Printer::builtin(), &select_program(), "select");
+    let findings = check(&Printer::builtin(), &identity_program(), "identity");
     assert!(
         findings
             .iter()
             .any(|finding| finding.contains("no audit ledger row")),
         "{findings:?}"
     );
+}
+
+/// Each injected deviation from an issued scalar item is a finding.
+#[test]
+fn printing_a_scalar_item_but_its_plan_fails_conformance() {
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    let injections = [
+        (
+            "multiply spelled as add",
+            "{%- elif token == \"multiply\" -%}({{ a }} * {{ b }})",
+            "{%- elif token == \"multiply\" -%}({{ a }} + {{ b }})",
+            "real",
+        ),
+        (
+            "dropped overflow check",
+            "if (({{ b }}>0 && {{ a }}>INT64_MAX-{{ b }}) || ({{ b }}<0 && {{ a }}<INT64_MIN-{{ b }})) return 1;\n",
+            "",
+            "integer",
+        ),
+        (
+            "changed constant bits",
+            "rumoca_real64(UINT64_C({{ item.value.bits }}))",
+            "rumoca_real64(UINT64_C({{ item.value.bits }}0))",
+            "real",
+        ),
+        (
+            "broadcast read at the running element",
+            "[{% if value.broadcast %}0{% else %}k{% endif %}]",
+            "[k]",
+            "real",
+        ),
+        (
+            "dropped domain check",
+            "{% if item.domain -%}",
+            "{% if false -%}",
+            "integer",
+        ),
+        (
+            "dropped minimum-operand check",
+            "{% if item.kernel.min_operand_check -%}",
+            "{% if false -%}",
+            "integer",
+        ),
+    ];
+    for (label, original, injected, fixture) in injections {
+        assert_eq!(template.matches(original).count(), 1, "{label}: anchor");
+        let printer = Printer::new(template.replacen(original, injected, 1));
+        let program = if fixture == "real" {
+            real_program()
+        } else {
+            integer_program()
+        };
+        assert_decoding_findings(label, &check(&printer, &program, fixture));
+    }
 }

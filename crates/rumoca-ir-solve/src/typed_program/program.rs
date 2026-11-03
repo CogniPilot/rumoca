@@ -28,8 +28,9 @@ mod print_plan;
 mod read_flow;
 mod storage_plan;
 pub use print_plan::{
-    SolveBodyItem, SolveElementToken, SolveFrameItem, SolveName, SolveNameSpace, SolveOutputCopy,
-    SolvePrintPlan,
+    SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
+    SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel,
+    SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveUnaryToken,
 };
 pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 mod tensor;
