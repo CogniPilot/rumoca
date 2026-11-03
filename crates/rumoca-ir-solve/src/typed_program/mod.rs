@@ -3,6 +3,7 @@
 mod algorithm_block;
 mod call;
 mod demand;
+mod entry;
 mod integer_interval;
 mod pass_independence;
 mod program;
@@ -26,6 +27,7 @@ pub use call::{
     SolveRecursiveMember,
 };
 pub use demand::{SolveLiveness, SolveOutputDemand, visit_demanded_calls, visit_demanded_reads};
+pub use entry::TypedProgramEntry;
 pub use integer_interval::{
     SolveIntegerInterval, fold_integer_compare, fold_scalar_binary, fold_scalar_unary,
 };

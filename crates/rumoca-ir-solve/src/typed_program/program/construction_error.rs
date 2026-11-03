@@ -30,6 +30,7 @@ pub enum SolveProgramConstructionError {
     IncompleteCallOutput { provenance: Span },
     DuplicateCallIdentity { provenance: Span },
     UninitializedSlot { provenance: Span },
+    InvalidEntryInterface { provenance: Span },
 }
 
 impl SolveProgramConstructionError {
@@ -60,7 +61,8 @@ impl SolveProgramConstructionError {
             | Self::InvalidTensorAlgebra { provenance }
             | Self::IncompleteCallOutput { provenance }
             | Self::DuplicateCallIdentity { provenance }
-            | Self::UninitializedSlot { provenance } => Some(*provenance),
+            | Self::UninitializedSlot { provenance }
+            | Self::InvalidEntryInterface { provenance } => Some(*provenance),
         }
     }
 }
@@ -68,6 +70,9 @@ impl SolveProgramConstructionError {
 impl std::fmt::Display for SolveProgramConstructionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
+            Self::InvalidEntryInterface { .. } => {
+                "complete entry requires read-only arguments and exactly one store per output"
+            }
             Self::MissingProvenance => "typed program owner is missing exact provenance",
             Self::WireMismatch => "typed program wire does not replay through checked construction",
             Self::IdentityOverflow { .. } => "typed program identity capacity exceeded",
