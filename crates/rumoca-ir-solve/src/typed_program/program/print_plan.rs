@@ -187,6 +187,15 @@ pub struct SolvePrintPlan {
     outputs: Box<[SolveOutputCopy]>,
 }
 
+impl super::TypedProgram {
+    /// The print projection of this body, assembled from its storage plan;
+    /// printers spell it.
+    #[must_use]
+    pub fn print_plan(&self) -> &SolvePrintPlan {
+        &self.print
+    }
+}
+
 impl SolvePrintPlan {
     pub(super) fn of(
         slots: &[SolveSlot],

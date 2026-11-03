@@ -112,6 +112,15 @@ impl SolveStoragePlan {
     }
 }
 
+impl super::TypedProgram {
+    /// Where each slot and register of this body lives, issued once at
+    /// assembly; emitters print it.
+    #[must_use]
+    pub fn storage_plan(&self) -> &SolveStoragePlan {
+        &self.storage
+    }
+}
+
 /// Whether the body stores each slot, and how many operations define each
 /// register.
 fn stores_and_writes(

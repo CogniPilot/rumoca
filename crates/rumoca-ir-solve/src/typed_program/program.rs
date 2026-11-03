@@ -742,20 +742,6 @@ impl TypedProgram {
             .register_moves_at(register.index(), operation)
     }
 
-    /// Where each slot and register of this body lives, issued once at
-    /// assembly; emitters print it.
-    #[must_use]
-    pub fn storage_plan(&self) -> &SolveStoragePlan {
-        &self.storage
-    }
-
-    /// The print projection of this body, assembled from its storage plan;
-    /// printers spell it.
-    #[must_use]
-    pub fn print_plan(&self) -> &SolvePrintPlan {
-        &self.print
-    }
-
     /// Whether `operation` is the last load of the read-only `slot`, whose
     /// value is dead afterwards.
     #[must_use]
