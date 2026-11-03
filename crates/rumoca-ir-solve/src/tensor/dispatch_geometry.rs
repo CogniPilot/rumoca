@@ -7,7 +7,8 @@ use std::ops::ControlFlow;
 #[cfg(test)]
 mod tests;
 
-/// One-dimensional resource facts supplied by the compiler's target description.
+/// Immutable one-dimensional dispatch limits. Production issuance is reserved
+/// for the canonical Solve IR target description; that issuer is not added here.
 /// This subproduct chooses no representation, fallback, ordering or ABI.
 #[derive(Debug)]
 pub struct DispatchBounds {
@@ -15,8 +16,9 @@ pub struct DispatchBounds {
     max_groups: usize,
 }
 
+#[cfg(test)]
 impl DispatchBounds {
-    pub fn construct(
+    pub(crate) fn construct(
         group_size: usize,
         max_group_size: usize,
         max_groups: usize,
