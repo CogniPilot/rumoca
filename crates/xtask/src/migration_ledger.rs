@@ -6,6 +6,13 @@
 #[cfg(test)]
 mod tests;
 
+pub mod baseline;
+
+// Component controls are ordinary Cargo tests. This byte relation is not yet
+// consumed by the production authorization path, which remains fail-closed.
+#[cfg(test)]
+mod source_complement;
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
