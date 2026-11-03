@@ -97,8 +97,11 @@ fn element(spelling: &str) -> Option<Element> {
     }
 }
 
-fn number<T: std::str::FromStr>(text: &str) -> Option<T> {
-    text.parse().ok()
+/// A decimal token in its one canonical spelling: C reads a leading zero
+/// as octal, so `010` is not the issued 10 and must not decode as it.
+fn number<T: std::str::FromStr + ToString>(text: &str) -> Option<T> {
+    let value: T = text.parse().ok()?;
+    (value.to_string() == text).then_some(value)
 }
 
 /// `<p><id>` for prefix `s` or `r`.
@@ -284,6 +287,9 @@ fn check(printer: &Printer, program: &solve::TypedProgram, name: &str) -> Vec<St
     check_rendered(printer, program, &wire, name, &rendered)
 }
 
+/// Every finding of one whole `definition()` output against its issued
+/// plans: each nested region definition in issued order, then the function
+/// itself, its exact closing, and nothing after it.
 fn check_rendered(
     printer: &Printer,
     program: &solve::TypedProgram,
@@ -291,12 +297,70 @@ fn check_rendered(
     name: &str,
     rendered: &str,
 ) -> Vec<String> {
+    let mut text = rendered;
+    let mut findings = Vec::new();
+    account_definition(printer, program, wire, name, &mut text, &mut findings);
+    if findings.is_empty() && !text.is_empty() {
+        findings.push(format!(
+            "{name}: unaccounted output after the definition: {text:?}"
+        ));
+    }
+    findings
+}
+
+/// The region bodies one operation's definition prints before its owner,
+/// with the name suffix the definition gives each.
+fn nested_bodies(operation: &solve::SolveOperation) -> Vec<(&solve::TypedProgram, &'static str)> {
+    match operation {
+        solve::SolveOperation::CheckAssertion {
+            message: solve::SolveAssertionMessage::Captures { program },
+            ..
+        } => vec![(program.body(), "message")],
+        solve::SolveOperation::Conditional {
+            if_true, if_false, ..
+        } => vec![(if_true.body(), "true"), (if_false.body(), "false")],
+        solve::SolveOperation::Map { body, .. } => vec![(body.body(), "map")],
+        solve::SolveOperation::Fold {
+            transition,
+            continuation,
+            ..
+        } => {
+            let mut bodies = vec![(transition.body(), "fold")];
+            bodies.extend(
+                continuation
+                    .iter()
+                    .map(|region| (region.body(), "continue")),
+            );
+            bodies
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Consumes one definition from the front of `text`: its nested region
+/// definitions, recursively, then its own function through the closing.
+fn account_definition(
+    printer: &Printer,
+    program: &solve::TypedProgram,
+    wire: &serde_json::Value,
+    name: &str,
+    text: &mut &str,
+    findings: &mut Vec<String>,
+) {
+    for (index, issued) in program.operations().iter().enumerate() {
+        for (body, suffix) in nested_bodies(issued.operation()) {
+            let nested = serde_json::to_value(body).expect("region serializes");
+            let child = format!("{name}_region_{index}_{suffix}");
+            account_definition(printer, body, &nested, &child, text, findings);
+        }
+    }
     let opening = format!("static int {name}{OPENING}");
-    let Some(start) = rendered.find(&opening) else {
-        return vec![format!("{name}: no function opening in {rendered:?}")];
+    let Some(rest) = text.strip_prefix(opening.as_str()) else {
+        findings.push(format!("{name}: no function opening at {text:?}"));
+        return;
     };
     let mut body = Cursor {
-        text: &rendered[start + opening.len()..],
+        text: rest,
         name,
         findings: Vec::new(),
     };
@@ -307,21 +371,26 @@ fn check_rendered(
         body.item(item, printer, wire);
     }
     body.outputs(plan.outputs());
-    if !body.text.starts_with(CLOSING) {
-        let text = body.text;
-        body.finding(format!("unconsumed body text before closing: {text:?}"));
+    match body.text.strip_prefix(CLOSING) {
+        Some(rest) => *text = rest,
+        None => {
+            let unconsumed = body.text;
+            body.finding(format!(
+                "unconsumed body text before closing: {unconsumed:?}"
+            ));
+        }
     }
-    body.findings
+    findings.extend(body.findings);
 }
 
 /// The unread rest of one function body and the findings so far.
-struct Cursor<'a> {
-    text: &'a str,
-    name: &'a str,
+struct Cursor<'text, 'name> {
+    text: &'text str,
+    name: &'name str,
     findings: Vec<String>,
 }
 
-impl Cursor<'_> {
+impl Cursor<'_, '_> {
     fn finding(&mut self, finding: String) {
         self.findings.push(format!("{}: {finding}", self.name));
     }
@@ -512,6 +581,31 @@ fn mixed_program() -> solve::TypedProgram {
     .expect("checked mixed program")
 }
 
+/// Eleven inputs, so an argument index and an extent reach 10.
+fn wide_program() -> solve::TypedProgram {
+    solve::TypedProgram::construct(profile(), |builder| {
+        let output = builder.declare_slot(
+            real(10),
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let mut last = None;
+        for _ in 0..11 {
+            last = Some(builder.declare_slot(
+                real(10),
+                solve::SolveStorageClass::Input,
+                solve::SolveSlotAccess::ReadOnly,
+                span(),
+            )?);
+        }
+        let value = builder.load(last.expect("eleven inputs"), span())?;
+        let negated = builder.unary(solve::SolveUnaryOperator::Negate, value, span())?;
+        builder.store(output, negated, span())
+    })
+    .expect("checked wide program")
+}
+
 /// A reduction and an integer and Boolean frame.
 fn reduction_program() -> solve::TypedProgram {
     let integer = solve::SolveScalarType::Integer(solve::SolveIntegerDomain::FULL);
@@ -557,6 +651,43 @@ fn identity_program() -> solve::TypedProgram {
         builder.store(output, identity, span())
     })
     .expect("checked identity program")
+}
+
+/// A map whose body is its own region definition, printed before its owner.
+fn map_program() -> solve::TypedProgram {
+    let arithmetic = profile();
+    let integer = solve::SolveScalarType::integer(arithmetic);
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 3,
+            step: 1,
+        }],
+    };
+    solve::TypedProgram::construct(arithmetic, |builder| {
+        let output = builder.declare_slot(
+            solve::SolveValueType::tensor(integer, vec![3]).unwrap(),
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span(),
+        )?;
+        let mapped = builder.map(
+            domain,
+            &[],
+            solve::SolveValueType::scalar(integer),
+            span(),
+            |region, _, binders, element| {
+                let value = region.load(binders[0], span())?;
+                let negated = region.unary(solve::SolveUnaryOperator::Negate, value, span())?;
+                region.store(element, negated, span())
+            },
+        )?;
+        builder.store(output, mapped, span())
+    })
+    .expect("checked map program")
 }
 
 fn narrow_profile() -> solve::SolveArithmeticProfile {
@@ -718,6 +849,7 @@ fn typed_bodies_print_exactly_their_issued_plans() {
         (reduction_program(), "reduction"),
         (integer_program(), "integer"),
         (real_program(), "real"),
+        (map_program(), "map"),
     ] {
         assert_eq!(check(&printer, &program, name), Vec::<String>::new());
     }
@@ -905,5 +1037,82 @@ fn printing_a_scalar_item_but_its_plan_fails_conformance() {
             integer_program()
         };
         assert_decoding_findings(label, &check(&printer, &program, fixture));
+    }
+}
+
+/// Whole-output controls: text before, after or duplicating an admitted
+/// definition is never ignored.
+#[test]
+fn injected_text_outside_the_named_function_must_not_be_ignored() {
+    let printer = Printer::builtin();
+    let program = mixed_program();
+    let wire = serde_json::to_value(&program).unwrap();
+    let rendered = printer.definition(&wire, "mixed");
+    assert_eq!(
+        check_rendered(&printer, &program, &wire, "mixed", &rendered),
+        Vec::<String>::new()
+    );
+    for (label, text) in [
+        (
+            "prefix",
+            format!("static int injected_decision(void) {{ return 42; }}\n{rendered}"),
+        ),
+        (
+            "suffix",
+            format!("{rendered}static int injected_decision(void) {{ return 42; }}\n"),
+        ),
+        ("duplicate definition", format!("{rendered}{rendered}")),
+    ] {
+        let findings = check_rendered(&printer, &program, &wire, "mixed", &text);
+        assert!(
+            !findings.is_empty(),
+            "{label}: all output must be accounted for"
+        );
+    }
+}
+
+/// A nested region definition printed under a different owner name is not
+/// the issued region, and nothing before the owner is skipped.
+#[test]
+fn a_region_definition_under_another_owner_fails_conformance() {
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    let original = "{{ definition(op.body.body, child ~ \"_map\", prefix, assertion_outputs, source_predicate_outputs) -}}";
+    assert_eq!(template.matches(original).count(), 1, "anchor");
+    let printer = Printer::new(template.replacen(
+        original,
+        "{{ definition(op.body.body, child ~ \"_mapped\", prefix, assertion_outputs, source_predicate_outputs) -}}",
+        1,
+    ));
+    let findings = check(&printer, &map_program(), "map");
+    assert!(!findings.is_empty(), "wrong region owner must fail");
+}
+
+/// A decimal 10 printed as `010` is octal 8 in C: an extent or argument
+/// index in any but its canonical spelling is not the issued one.
+#[test]
+fn a_non_canonical_decimal_spelling_fails_conformance() {
+    let program = wide_program();
+    assert_eq!(
+        check(&Printer::builtin(), &program, "wide"),
+        Vec::<String>::new()
+    );
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    for (label, original, injected) in [
+        (
+            "extent 10 printed as 010",
+            "r{{ item.name.id }}[{{ item.extent }}];",
+            "r{{ item.name.id }}[{% if item.extent == 10 %}0{% endif %}{{ item.extent }}];",
+        ),
+        (
+            "argument 10 printed as 010",
+            "= in[{{ item.argument }}]; (void)s{{ item.slot }};",
+            "= in[{% if item.argument == 10 %}0{% endif %}{{ item.argument }}]; (void)s{{ item.slot }};",
+        ),
+    ] {
+        assert_eq!(template.matches(original).count(), 1, "{label}: anchor");
+        let printer = Printer::new(template.replacen(original, injected, 1));
+        let rendered = printer.definition(&serde_json::to_value(&program).unwrap(), "wide");
+        assert!(rendered.contains("[010]"), "{label}: control prints 010");
+        assert_decoding_findings(label, &check(&printer, &program, "wide"));
     }
 }

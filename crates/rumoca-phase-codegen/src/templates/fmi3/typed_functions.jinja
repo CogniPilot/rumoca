@@ -207,6 +207,33 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endif -%}
 {% endmacro %}
 
+{#- Plan-only fragments: each takes the issued print projection, or one of
+    its items, and nothing else; element and name spellings are issued
+    tokens. -#}
+{%- macro plan_frame(plan) -%}
+{% for item in plan.slots -%}
+{% if item.kind == "argument_view" -%}
+const {{ element(item.element) }}* s{{ item.slot }} = in[{{ item.argument }}]; (void)s{{ item.slot }};
+{% elif item.kind == "frame_from_argument" -%}
+{{ element(item.element) }} s{{ item.slot }}[{{ item.extent }}]; (void)s{{ item.slot }};
+memcpy(s{{ item.slot }}, in[{{ item.argument }}], sizeof(s{{ item.slot }}));
+{% else -%}
+{{ element(item.element) }} s{{ item.name.id }}[{{ item.extent }}]; (void)s{{ item.name.id }};
+{% endif -%}
+{% endfor -%}
+{% for item in plan.registers %}{{ element(item.element) }} r{{ item.name.id }}[{{ item.extent }}]; (void)r{{ item.name.id }};{% endfor %}
+{% endmacro %}
+{%- macro plan_item(item) -%}{% if item.kind == "view" %}const {{ element(item.element) }}* r{{ item.register }} = s{{ item.slot }}; (void)r{{ item.register }};
+{% elif item.kind == "copy" %}memcpy({{ storage_name(item.destination) }}, {{ storage_name(item.source) }}, sizeof({{ storage_name(item.destination) }}));
+{% elif item.kind == "constant" %}r{{ item.destination }}[0] = {% if item.value.kind == "real64" %}rumoca_real64(UINT64_C({{ item.value.bits }})){% elif item.value.kind == "int64" %}{{ integer_literal(item.value.value) }}{% elif item.value.value %}true{% else %}false{% endif %};
+{% elif item.kind == "select" %}memcpy(r{{ item.destination }}, (r{{ item.condition }}[0] ? r{{ item.if_true }} : r{{ item.if_false }}), sizeof(r{{ item.destination }}));
+{% elif item.kind == "elementwise" %}{{ elementwise(item) }}{% elif item.kind == "convert" %}{{ convert(item) }}{% endif %}{%- endmacro %}
+{%- macro plan_outputs(plan) -%}
+{% for item in plan.outputs -%}
+if (out[{{ item.output }}]) memcpy(out[{{ item.output }}], s{{ item.slot }}, sizeof(s{{ item.slot }}));
+{% endfor -%}
+{% endmacro %}
+
 {%- macro definition(program, name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}) -%}
 {% for issued in program.operations -%}
 {% set op = issued.operation -%}
@@ -227,28 +254,12 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endfor -%}
 static int {{ name }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer) {
 (void)in; (void)out; (void)observer; (void)rumoca_real64;
-{# The frame, body and output copies print the body's issued print plan;
-   an operation the plan has not projected yet prints through `operation`. -#}
-{% set plan = program.print -%}
-{% for item in plan.slots -%}
-{% if item.kind == "argument_view" -%}
-const {{ element(item.element) }}* s{{ item.slot }} = in[{{ item.argument }}]; (void)s{{ item.slot }};
-{% elif item.kind == "frame_from_argument" -%}
-{{ element(item.element) }} s{{ item.slot }}[{{ item.extent }}]; (void)s{{ item.slot }};
-memcpy(s{{ item.slot }}, in[{{ item.argument }}], sizeof(s{{ item.slot }}));
-{% else -%}
-{{ element(item.element) }} s{{ item.name.id }}[{{ item.extent }}]; (void)s{{ item.name.id }};
-{% endif -%}
-{% endfor -%}
-{% for item in plan.registers %}{{ element(item.element) }} r{{ item.name.id }}[{{ item.extent }}]; (void)r{{ item.name.id }};{% endfor %}
-{% for item in plan.body %}{% if item.kind == "view" %}const {{ element(item.element) }}* r{{ item.register }} = s{{ item.slot }}; (void)r{{ item.register }};
-{% elif item.kind == "copy" %}memcpy({{ storage_name(item.destination) }}, {{ storage_name(item.source) }}, sizeof({{ storage_name(item.destination) }}));
-{% elif item.kind == "constant" %}r{{ item.destination }}[0] = {% if item.value.kind == "real64" %}rumoca_real64(UINT64_C({{ item.value.bits }})){% elif item.value.kind == "int64" %}{{ integer_literal(item.value.value) }}{% elif item.value.value %}true{% else %}false{% endif %};
-{% elif item.kind == "select" %}memcpy(r{{ item.destination }}, (r{{ item.condition }}[0] ? r{{ item.if_true }} : r{{ item.if_false }}), sizeof(r{{ item.destination }}));
-{% elif item.kind == "elementwise" %}{{ elementwise(item) }}{% elif item.kind == "convert" %}{{ convert(item) }}{% else %}{{ operation(program.operations[item.index].operation, program, name ~ "_region_" ~ item.index, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
-{% for item in plan.outputs -%}
-if (out[{{ item.output }}]) memcpy(out[{{ item.output }}], s{{ item.slot }}, sizeof(s{{ item.slot }}));
-{% endfor -%}
+{# The frame, items and output copies print the body's issued print plan
+   through the plan-only fragments; an operation the plan has not projected
+   yet is a quarantined legacy item printed through `operation`. -#}
+{{ plan_frame(program.print) -}}
+{% for item in program.print.body %}{% if item.kind == "legacy" %}{{ operation(program.operations[item.index].operation, program, name ~ "_region_" ~ item.index, prefix, assertion_outputs, source_predicate_outputs) }}{% else %}{{ plan_item(item) }}{% endif %}{% endfor -%}
+{{ plan_outputs(program.print) -}}
 return 0;
 }
 {% endmacro %}
