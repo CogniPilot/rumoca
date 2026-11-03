@@ -66,6 +66,28 @@ numerical bits with collection enabled and disabled and preserve raw inventories
 under
 `target/tensor-expansion-fixtures`. Linux CI uploads that directory from the
 normal workspace suite; no second build or duplicate test run is added.
-The historical private known-open list is not a measured current baseline.
-Current fixture results and their source binding must be reviewed before a new
-known-open manifest or generic expansion ratchet is accepted.
+The fixture gate compares every unforced warning occurrence with
+`crates/rumoca-exec-cranelift/tests/tensor_expansion/known-warnings.tsv`.
+This measured inventory includes both admission probes and definitions, and
+keeps the historical floor of 16. A new fixture, a new or duplicate warning,
+missing collection, an incomplete report or unattributed copy fails the gate.
+Removing a warning also requires removing its manifest entry, with the raw
+before/after evidence reviewed. The raw report is written before comparison
+so a failed gate retains its counterexample. Report-local entry/program indices
+identify diagnostic occurrences; they are not persistent semantic identities.
+
+The initial inventory comes from the successful #556 fixture run. At the
+observed 17/64/128 widths, literal aggregate construction allocates 10 CLIF
+instructions per element and strided row output allocates two. Contiguous row
+output uses bounded code. Map capture packs are outside iteration; its code at
+64 and 128 elements is unchanged. Fold updates at those widths copy no cells
+in this fixture and have unchanged code size. The heuristic nevertheless warns
+on some smaller Map/Fold cases, so those warnings remain in the inventory.
+The external-call-table fixture retains its two warnings at width 64; one
+shape does not establish its growth rate. The existing bounded static matrix
+classification remains unchanged.
+
+This is a regression tripwire over these fixtures, not a proof that arbitrary
+models are expansion-free. It does not promote historical classifications,
+change the emitter's warning predicate, or turn a raw warning into an
+asymptotic or dynamic-cost claim.

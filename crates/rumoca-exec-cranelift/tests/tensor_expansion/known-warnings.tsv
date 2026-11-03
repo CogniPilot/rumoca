@@ -1,0 +1,36 @@
+# Diagnostic warning multiset; not a proof of proportional code growth.
+# Measured source: #556 head c99a1e07, CI run41498825730, artifact13172012120.
+# Tested merge: 5b789f66393bd80eacd5e2cbc8fad4421e266dfb.
+# Archive SHA256: 05cdd9a859951fb87c7aa58c373bf8c640720bb003d850b8789810a78b65bb7f
+# Columns: fixture<TAB>comma-separated report/source occurrence keys; - means none.
+fold-128	-
+fold-16	10:admission-probe:Typed/2/2:Fold:ordinary,32:definition:Typed/6/2:Fold:ordinary
+fold-17	1:admission-probe:Typed/0/1:Fold:ordinary,5:admission-probe:Typed/1/3:UpdateElement:ordinary,10:admission-probe:Typed/2/2:Fold:ordinary,15:admission-probe:Typed/3/4:UpdateElement:ordinary,17:admission-probe:Typed/3/6:UpdateElement:ordinary,23:definition:Typed/4/1:Fold:ordinary,27:definition:Typed/5/3:UpdateElement:ordinary,32:definition:Typed/6/2:Fold:ordinary,37:definition:Typed/7/4:UpdateElement:ordinary,39:definition:Typed/7/6:UpdateElement:ordinary
+fold-64	-
+fused-term-order	-
+literal-128	128:admission-probe:Typed/0/128:ConstructAggregate:ordinary,258:admission-probe:Typed/1/128:ConstructAggregate:ordinary,259:admission-probe:Typed/1/129:ConstructAggregate:ordinary,390:definition:Typed/2/128:ConstructAggregate:ordinary,520:definition:Typed/3/128:ConstructAggregate:ordinary,521:definition:Typed/3/129:ConstructAggregate:ordinary
+literal-16	-
+literal-17	17:admission-probe:Typed/0/17:ConstructAggregate:ordinary,36:admission-probe:Typed/1/17:ConstructAggregate:ordinary,37:admission-probe:Typed/1/18:ConstructAggregate:ordinary,57:definition:Typed/2/17:ConstructAggregate:ordinary,76:definition:Typed/3/17:ConstructAggregate:ordinary,77:definition:Typed/3/18:ConstructAggregate:ordinary
+literal-64	64:admission-probe:Typed/0/64:ConstructAggregate:ordinary,130:admission-probe:Typed/1/64:ConstructAggregate:ordinary,131:admission-probe:Typed/1/65:ConstructAggregate:ordinary,198:definition:Typed/2/64:ConstructAggregate:ordinary,264:definition:Typed/3/64:ConstructAggregate:ordinary,265:definition:Typed/3/65:ConstructAggregate:ordinary
+map-128	-
+map-16	-
+map-17	1:admission-probe:Typed/0/1:Map:ordinary,8:admission-probe:Typed/2/2:Map:ordinary,18:admission-probe:Typed/2/3:Map:ordinary,31:definition:Typed/5/1:Map:ordinary,38:definition:Typed/7/2:Map:ordinary,48:definition:Typed/7/3:Map:ordinary
+map-64	1:admission-probe:Typed/0/1:Map:ordinary,8:admission-probe:Typed/2/2:Map:ordinary,18:admission-probe:Typed/2/3:Map:ordinary,31:definition:Typed/5/1:Map:ordinary,38:definition:Typed/7/2:Map:ordinary,48:definition:Typed/7/3:Map:ordinary
+matrix-static	-
+row-1-128	-
+row-1-16	-
+row-1-17	-
+row-1-64	-
+row-2-128	1:definition:Row:StoreOutputRange:row-scalar-range
+row-2-16	-
+row-2-17	1:definition:Row:StoreOutputRange:row-scalar-range
+row-2-64	1:definition:Row:StoreOutputRange:row-scalar-range
+row-contiguous-128	-
+row-contiguous-16	-
+row-contiguous-17	-
+row-contiguous-64	-
+row-external-call-table	0:definition:Row:PureCall:ordinary,1:definition:Row:StoreOutputRange:row-scalar-range
+row-strided-128	1:definition:Row:StoreOutputRange:row-scalar-range
+row-strided-16	-
+row-strided-17	1:definition:Row:StoreOutputRange:row-scalar-range
+row-strided-64	1:definition:Row:StoreOutputRange:row-scalar-range
