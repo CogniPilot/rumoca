@@ -120,6 +120,7 @@ impl<'v> AstChecker<'v> {
             Stmt::EmitRaw(_) => {}
             Stmt::EmitExpr(e) => self.output(&e.expr),
             Stmt::ForLoop(f) => self.for_loop(f.span(), f),
+            Stmt::IfCond(i) if self.dispatch_tag(&i.expr).is_some() => self.dispatch_chain(i),
             Stmt::IfCond(i) => {
                 self.condition(&i.expr);
                 self.stmts(&i.true_body);
@@ -286,6 +287,77 @@ impl<'v> AstChecker<'v> {
             target: callee.id.to_owned(),
         });
         true
+    }
+
+    /// The declared tag a `path == "variant"` test dispatches on, if any.
+    fn dispatch_tag(&self, expr: &Expr<'_>) -> Option<(String, String)> {
+        let Expr::BinOp(b) = expr else {
+            return None;
+        };
+        if !matches!(b.op, ast::BinOpKind::Eq) {
+            return None;
+        }
+        let (path, variant) = (dotted(&b.left)?, const_str(&b.right)?);
+        self.dispatch
+            .iter()
+            .any(|d| d.path == path)
+            .then_some((path, variant))
+    }
+
+    /// A dispatch chain `{% if tag == "a" %}..{% elif tag == "b" %}..{% else %}`
+    /// must test one declared tag, spell each declared variant exactly once,
+    /// and end in a refusal, `{{ fail("...") }}`: an undeclared or new variant
+    /// can never fall through to another variant's spelling.
+    fn dispatch_chain(&mut self, first: &ast::Spanned<ast::IfCond<'_>>) {
+        let Some((path, _)) = self.dispatch_tag(&first.expr) else {
+            return;
+        };
+        let mut spelled: Vec<String> = Vec::new();
+        let mut node = first;
+        loop {
+            match self.dispatch_tag(&node.expr) {
+                Some((p, variant)) if p == path => {
+                    if spelled.contains(&variant) {
+                        let detail = format!("{path} == {variant:?} is spelled twice");
+                        self.flag(node.span(), Rule::ValueTest, detail);
+                    }
+                    spelled.push(variant);
+                }
+                _ => {
+                    let detail = format!("a dispatch chain on {path} tests something else");
+                    self.flag(node.span(), Rule::ValueTest, detail);
+                }
+            }
+            self.condition(&node.expr);
+            self.stmts(&node.true_body);
+            let rest: Vec<&Stmt<'_>> = node
+                .false_body
+                .iter()
+                .filter(|s| !matches!(s, Stmt::EmitRaw(r) if r.raw.trim().is_empty()))
+                .collect();
+            match rest.as_slice() {
+                [Stmt::IfCond(next)] if self.dispatch_tag(&next.expr).is_some() => node = next,
+                [Stmt::EmitExpr(e)] if is_refusal(&e.expr) => break,
+                _ => {
+                    let detail = format!(
+                        "a dispatch chain on {path} must end in {{% else %}}{{{{ fail(\"...\") }}}}"
+                    );
+                    self.flag(node.span(), Rule::Fallback, detail);
+                    self.stmts(&node.false_body);
+                    break;
+                }
+            }
+        }
+        let declared = self
+            .dispatch
+            .iter()
+            .find(|d| d.path == path)
+            .map(|d| d.variants.clone())
+            .unwrap_or_default();
+        for variant in declared.iter().filter(|v| !spelled.contains(v)) {
+            let detail = format!("declared {path} variant {variant:?} has no spelling");
+            self.flag(first.span(), Rule::ValueTest, detail);
+        }
     }
 
     /// `{% if path == "variant" %}` in a decoded region: dispatch on a declared
@@ -513,6 +585,17 @@ fn is_plain_path(expr: &Expr<'_>) -> bool {
     match expr {
         Expr::Var(v) => v.id != "loop",
         Expr::GetAttr(a) => is_plain_path(&a.expr),
+        _ => false,
+    }
+}
+
+/// `fail("constant")`: the refusal that closes a dispatch chain.
+fn is_refusal(expr: &Expr<'_>) -> bool {
+    match expr {
+        Expr::Call(c) => {
+            matches!(&c.expr, Expr::Var(v) if v.id == "fail")
+                && matches!(c.args.as_slice(), [CallArg::Pos(arg)] if const_str(arg).is_some())
+        }
         _ => false,
     }
 }

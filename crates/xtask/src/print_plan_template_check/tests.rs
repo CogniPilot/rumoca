@@ -902,10 +902,10 @@ fn public_policy_and_cli_entries_reach_the_real_registry() {
 /// A decoded fragment and its helper, in the shape of the plan-only
 /// fragments: dispatch on issued closed tags, reviewed spellings in literal
 /// text, and a registered helper called with issued paths.
-const DECODED: &str = r#"{%- macro name(value) -%}{% if value.space == "slot" %}s{% else %}r{% endif %}{{ value.id }}{%- endmacro %}
+const DECODED: &str = r#"{%- macro name(value) -%}{% if value.space == "slot" %}s{% elif value.space == "register" %}r{% else %}{{ fail("unknown space") }}{% endif %}{{ value.id }}{%- endmacro %}
 {%- macro item(item) -%}{% if item.kind == "copy" %}memcpy({{ name(item.destination) }}, {{ name(item.source) }}, sizeof({{ name(item.destination) }}));
 {% elif item.kind == "fill" %}for (size_t k=0; k<{{ item.extent }}; ++k) r{{ item.destination.id }}[k]=r{{ item.value }}[0];
-{% endif %}{%- endmacro %}
+{% else %}{{ fail("unknown kind") }}{% endif %}{%- endmacro %}
 "#;
 
 const REGISTRY: &str = r#"
@@ -1086,8 +1086,8 @@ fn decoded_helpers_must_be_registered_and_not_recursive() {
     );
     // A registered helper whose own body is not print-only fails through the call.
     let bad_helper = DECODED.replacen(
-        "s{% else %}r{% endif %}",
-        "s{% else %}{{ value.id + 1 }}{% endif %}",
+        "s{% elif value.space == \"register\" %}r{% else %}",
+        "s{% elif value.space == \"register\" %}{{ value.id + 1 }}{% else %}",
         1,
     );
     refused(&bad_helper, Some(REGISTRY), Rule::Arithmetic, "helper body");
@@ -1140,4 +1140,56 @@ fn malformed_or_one_sided_registration_fails_the_gate() {
         let (_, problems) = load_registry(&files(leaked));
         assert!(!problems.is_empty(), "registry fault unreported: {broken}");
     }
+}
+
+#[test]
+fn a_dispatch_chain_spells_each_declared_variant_once_and_then_refuses() {
+    // No refusal: an unknown kind would print nothing instead of failing.
+    let open = DECODED.replacen("{% else %}{{ fail(\"unknown kind\") }}", "", 1);
+    refused(
+        &open,
+        Some(REGISTRY),
+        Rule::Fallback,
+        "chain without refusal",
+    );
+    // A final else that spells a variant: an unknown kind would print it.
+    let fallthrough = DECODED
+        .replacen("{% else %}{{ fail(\"unknown kind\") }}", "", 1)
+        .replacen("{% elif item.kind == \"fill\" %}", "{% else %}", 1);
+    refused(
+        &fallthrough,
+        Some(REGISTRY),
+        Rule::Fallback,
+        "fallthrough spelling",
+    );
+    // A refusal whose message is computed is not a refusal.
+    let computed = DECODED.replacen("fail(\"unknown kind\")", "fail(item.kind)", 1);
+    refused(
+        &computed,
+        Some(REGISTRY),
+        Rule::Fallback,
+        "computed refusal",
+    );
+    // A declared variant without a spelling, and a variant spelled twice.
+    let missing = REGISTRY.replacen("[\"copy\", \"fill\"]", "[\"copy\", \"fill\", \"scale\"]", 1);
+    refused(
+        DECODED,
+        Some(&missing),
+        Rule::ValueTest,
+        "declared variant unspelled",
+    );
+    let twice = DECODED.replacen(
+        "{% elif item.kind == \"fill\" %}",
+        "{% elif item.kind == \"copy\" %}{% elif item.kind == \"fill\" %}",
+        1,
+    );
+    refused(
+        &twice,
+        Some(REGISTRY),
+        Rule::ValueTest,
+        "variant spelled twice",
+    );
+    // A refusal anywhere but the end of a dispatch chain is still a fallback.
+    let stray = DECODED.replacen("memcpy(", "{{ fail(\"x\") }}memcpy(", 1);
+    refused(&stray, Some(REGISTRY), Rule::Fallback, "stray refusal");
 }
