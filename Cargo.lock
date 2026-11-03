@@ -7677,6 +7677,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "lsp-types",
+ "minijinja",
  "num_cpus",
  "rustc-demangle",
  "serde",
