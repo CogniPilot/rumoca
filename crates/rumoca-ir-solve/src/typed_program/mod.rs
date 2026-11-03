@@ -12,8 +12,8 @@ mod types;
 pub use algorithm_block::{
     SolveAlgorithmBlock, SolveAlgorithmBlockConstructionError, SolveAlgorithmBlockDigest,
     SolveAlgorithmBlockDigestError, SolveAlgorithmCodeEntityKind, SolveAlgorithmCodeRef,
-    SolveBlockFunctions, SolveBlockMethod, SolveBlockMethodKind, SolveBlockSlotDeclaration,
-    SolveStatusBinding,
+    SolveBlockCallLevels, SolveBlockFunctions, SolveBlockMethod, SolveBlockMethodKind,
+    SolveBlockSlotDeclaration, SolveStatusBinding,
 };
 pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;
@@ -24,7 +24,8 @@ pub use call::{
     SolvePureCallIdentity, SolvePureCallInputCoordinate, SolvePureCallOutput,
     SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallSite,
     SolvePureCallTable, SolvePureCallTableBuilder, SolvePureCallWireError, SolvePureCallWireScope,
-    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
+    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember, SolveScalarBoundary,
+    SolveScalarBoundaryError, SolveScalarCrossing, SolveScalarInput, SolveScalarOutput,
 };
 pub use demand::{SolveLiveness, SolveOutputDemand, visit_demanded_calls, visit_demanded_reads};
 pub use entry::{
@@ -35,16 +36,21 @@ pub use integer_interval::{
     SolveIntegerInterval, fold_integer_compare, fold_scalar_binary, fold_scalar_unary,
 };
 pub use pass_independence::{IndependentPasses, LaneExactness, SolveIndexForm};
+pub use program::print_plan::{SolveElementAxis, SolveTensorKernel, SolveTensorPart};
 pub use program::{
     MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, ProgramAssertion, ProgramAssignedState,
     ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis,
     SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
     SolveAssertionForwarding, SolveAssertionMessage, SolveAssignedConditional,
     SolveAssignedStateId, SolveAssignedStateOperation, SolveBinaryDirectionalSource,
-    SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator, SolveOperation,
-    SolveProgramConstructionError, SolveProgramRegion, SolveReductionOperator, SolveRegisterId,
-    SolveSlot, SolveSlotAccess, SolveSlotId, SolveSpannedOperation, SolveStorageClass,
-    SolveTensorViewAxis, SolveUnaryDirectionalSource, SolveUnaryOperator, TypedProgram,
+    SolveBinaryOperator, SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveCompareOperator,
+    SolveConversionOperator, SolveConversionToken, SolveDomainCheck, SolveElementOperand,
+    SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel, SolveLiteral, SolveName,
+    SolveNameSpace, SolveOperation, SolveOutputCopy, SolvePrintPlan, SolveProgramConstructionError,
+    SolveProgramRegion, SolveReductionOperator, SolveRegisterFrame, SolveRegisterId,
+    SolveRegisterPlacement, SolveSlot, SolveSlotAccess, SolveSlotId, SolveSlotPlacement,
+    SolveSpannedOperation, SolveStorageClass, SolveStoragePlan, SolveTensorViewAxis,
+    SolveUnaryDirectionalSource, SolveUnaryOperator, SolveUnaryToken, TypedProgram,
     TypedProgramBuilder, index_forms, invariant_guard, promoted_concatenate_dimensions,
 };
 pub use types::{

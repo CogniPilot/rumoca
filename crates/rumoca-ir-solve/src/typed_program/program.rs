@@ -1,8 +1,28 @@
+mod assertions;
+mod assigned_state;
 mod calls;
-pub use calls::{ProgramCall, SolveAssertionForwarding};
 mod construction;
 mod construction_checks;
 mod construction_error;
+mod directional;
+mod entry_interface;
+mod fault_flow;
+mod linear_solve;
+mod loop_flow;
+mod native;
+mod operation_visit;
+mod pass_flow;
+pub(crate) mod print_plan;
+mod read_flow;
+mod storage_class;
+mod storage_plan;
+mod tensor;
+#[cfg(test)]
+mod tests;
+mod value_numbering;
+pub(in crate::typed_program) mod wire;
+
+pub use calls::{ProgramCall, SolveAssertionForwarding};
 use construction_checks::{
     binary_operator_accepts, checked_ordinal, construct_region, declare_interface_slots,
     indices_in_bounds, require_fold_domain, require_map_domain, require_provenance,
@@ -10,36 +30,29 @@ use construction_checks::{
 };
 pub use construction_error::SolveProgramConstructionError;
 
-mod assigned_state;
+pub use assertions::{ProgramAssertion, SolveAssertionMessage};
 use assigned_state::{AssignedStateConstruction, AssignedStateLayout};
 pub use assigned_state::{
     ProgramAssignedState, SolveAssignedConditional, SolveAssignedStateId,
     SolveAssignedStateOperation,
 };
-mod assertions;
-mod directional;
 pub use directional::{
     SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
     SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
 };
-mod entry_interface;
-pub use assertions::{ProgramAssertion, SolveAssertionMessage};
-mod fault_flow;
-mod linear_solve;
-mod loop_flow;
-mod native;
-mod operation_visit;
-mod pass_flow;
-mod read_flow;
-mod storage_class;
-mod tensor;
-mod value_numbering;
+pub use print_plan::{
+    SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
+    SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel,
+    SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveRegisterFrame,
+    SolveUnaryToken,
+};
+pub(super) use storage_plan::DERIVED;
+pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 use value_numbering::ValueKey;
 
 pub use loop_flow::{MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, invariant_guard};
 pub use pass_flow::index_forms;
 pub use tensor::promoted_concatenate_dimensions;
-pub(in crate::typed_program) mod wire;
 
 use std::marker::PhantomData;
 
@@ -519,6 +532,10 @@ pub struct TypedProgram {
     register_types: Box<[SolveValueType]>,
     operations: Box<[SolveSpannedOperation]>,
     assigned_states: AssignedStateLayout,
+    #[serde(serialize_with = "storage_plan::derived")]
+    storage: SolveStoragePlan,
+    #[serde(serialize_with = "storage_plan::derived")]
+    print: SolvePrintPlan,
     #[serde(skip)]
     read_flow: read_flow::ReadFlow,
     #[serde(skip)]
@@ -543,12 +560,16 @@ impl TypedProgram {
         let fault_flow = fault_flow::FaultFlow::of(&operations, &register_types, &slots, &[]);
         let loop_flow = loop_flow::LoopFlow::of(&operations);
         let pass_flow = pass_flow::PassFlow::of(&operations, &fault_flow);
+        let storage = SolveStoragePlan::host(&slots, &register_types, &operations);
+        let print = SolvePrintPlan::of(&slots, &register_types, &operations, &storage);
         let mut program = Self {
             arithmetic,
             slots: slots.into_boxed_slice(),
             register_types: register_types.into_boxed_slice(),
             operations: operations.into_boxed_slice(),
             assigned_states,
+            storage,
+            print,
             read_flow,
             fault_flow,
             loop_flow,
@@ -1921,6 +1942,3 @@ impl<'program> TypedProgramBuilder<'program> {
         });
     }
 }
-
-#[cfg(test)]
-mod tests;

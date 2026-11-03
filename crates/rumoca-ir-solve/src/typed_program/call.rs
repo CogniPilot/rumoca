@@ -1,15 +1,21 @@
 mod assertion_flow;
 mod bound_body;
-pub use bound_body::{BoundSolvePureCallBody, SolveCallValueRole};
 pub(super) mod dependency;
 mod recursion;
+mod scalar_boundary;
 mod sites;
+mod view;
 mod wire_scope;
+
 pub use assertion_flow::{
     AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
 };
+pub use bound_body::{BoundSolvePureCallBody, SolveCallValueRole};
+pub use scalar_boundary::{
+    SolveScalarBoundary, SolveScalarBoundaryError, SolveScalarCrossing, SolveScalarInput,
+    SolveScalarOutput,
+};
 pub use wire_scope::{ScopedSolvePureCallTable, SolvePureCallWireError, SolvePureCallWireScope};
-mod view;
 
 use rumoca_core::Span;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -19,6 +25,7 @@ use std::sync::Arc;
 use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
+pub(super) use recursion::visit_calls;
 pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
 pub use sites::SolveCallSiteCount;
 pub(super) use view::SolvePureCallTableView;
@@ -492,6 +499,12 @@ impl SolvePureCallDirectionalOwner {
         &self.body
     }
 
+    /// How this directional interface crosses the flat binary64 scalar
+    /// boundary.
+    pub fn scalar_boundary(&self) -> Result<SolveScalarBoundary, SolveScalarBoundaryError> {
+        SolveScalarBoundary::of(&self.inputs, &self.outputs)
+    }
+
     fn interface(&self, id: SolvePureCallOwnerId) -> SolvePureCallInterface<'_> {
         SolvePureCallInterface {
             dependencies: &self.dependencies,
@@ -530,6 +543,12 @@ impl SolvePureCallDirectionalOwner {
 }
 
 impl SolvePureCallOwner {
+    /// How this owner's inputs and outputs cross its flat binary64 scalar
+    /// boundary.
+    pub fn scalar_boundary(&self) -> Result<SolveScalarBoundary, SolveScalarBoundaryError> {
+        SolveScalarBoundary::of(&self.inputs, &self.outputs)
+    }
+
     /// The source output corresponding to a primal lane of this owner's
     /// checked directional ABI. Tangent lanes have no source output.
     #[must_use]
@@ -1243,6 +1262,7 @@ mod tests {
     mod integer_tensors;
     mod recursion;
     mod reduction_extrema;
+    mod scalar_boundary;
     mod shared_values;
     mod table_sharing;
     mod value_projections;

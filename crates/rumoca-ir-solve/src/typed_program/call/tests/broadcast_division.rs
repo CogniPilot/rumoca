@@ -62,6 +62,15 @@ fn broadcast_division_directional_preserves_narrow_integer_profile_primal_owner(
                 supports_directional,
                 "Integer [{minimum},{maximum}], extent {extent}, scalar_on_lhs={scalar_on_lhs}"
             );
+            // Binary64 interfaces cross the scalar boundary one crossing per
+            // input and output, primal and directional alike.
+            let primal = owner.scalar_boundary().unwrap();
+            assert_eq!((primal.inputs().len(), primal.outputs().len()), (2, 1));
+            if let Some(directional) = owner.directional() {
+                let tangent = directional.scalar_boundary().unwrap();
+                assert_eq!(tangent.inputs().len(), directional.inputs().len());
+                assert_eq!(tangent.outputs().len(), directional.outputs().len());
+            }
         }
     }
     assert_eq!(
