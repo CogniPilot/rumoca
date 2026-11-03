@@ -1333,9 +1333,11 @@ fn run_lint_policy_checks(root: &Path) -> Result<()> {
     let fmt_root = root.to_path_buf();
     let fmt_check = thread::spawn(move || test_cmd::run_workspace_fmt_check(&fmt_root));
     let policy_checks = thread::spawn(xtask::run_traversal_policy_check);
+    let template_checks = thread::spawn(xtask::run_print_plan_template_check);
 
     join_lint_policy_check("rustfmt", fmt_check)?;
-    join_lint_policy_check("policy checks", policy_checks)
+    join_lint_policy_check("policy checks", policy_checks)?;
+    join_lint_policy_check("print-plan template check", template_checks)
 }
 
 fn join_lint_policy_check(label: &str, handle: JoinHandle<Result<()>>) -> Result<()> {

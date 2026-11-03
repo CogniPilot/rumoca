@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "rumoca-traversal-policy-check"
 path = "src/bin/rumoca-traversal-policy-check.rs"
 
+[[bin]]
+name = "rumoca-print-plan-template-check"
+path = "src/bin/rumoca-print-plan-template-check.rs"
+
 # xtask carries NO `rumoca-*` workspace dependency: it parses args, moves files,
 # and shells out. Compiler-linked work runs on demand through commands in the
 # owning package. The CI arch check enforces this boundary.
@@ -34,6 +38,9 @@ tempfile = { workspace = true }
 ureq = { workspace = true }
 walkdir = { workspace = true }
 syn = { workspace = true }
+# The renderer's own MiniJinja (same locked version and default syntax), for
+# its parser: the print-plan template check reads the real template AST.
+minijinja = { workspace = true, features = ["unstable_machinery"] }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [lints]
