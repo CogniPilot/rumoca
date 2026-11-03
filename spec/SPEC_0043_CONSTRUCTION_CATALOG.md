@@ -63,7 +63,7 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 21,250 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 21,500 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 6,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
 | `dae-total-loc` | 14,250 | 27,750 | Both items above; total follows their sum |
 
@@ -72,6 +72,19 @@ The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-11-02 external-math binding review:** production moves from 21,221
+core + 6,393 wire = 27,614 lines to 21,258 core + 6,393 wire = 27,651.
+The 37 added core lines in `model/external_functions.rs` comprise the
+builtin-language dispatch and one shared scalar Real return-interface proof
+for exp/log10/log/acos. The proof retains the actual argument expression,
+checks the declared result identity and both scalar types/shapes, and reuses
+the existing native binding and wire reconstruction. Review found no duplicate
+per-operation proof, parallel wire format, or obsolete path to remove; the C
+interface proof retains distinct argument/return conventions. The remaining
+code carries the checked external interface, not downstream recovery.
+The derived core ceiling becomes 21,500; wire and total stay 6,500 / 27,750.
+Review triggers and totality-debt ceilings are unchanged.
 
 **2026-10-13 selected-coordinate review:** production measures 21,193 core +
 6,393 wire = 27,586 lines under §1a. Checked array selection, exact source

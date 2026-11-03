@@ -134,6 +134,16 @@ fn xorshift1024star_masks_and_advances_its_index() {
 #[test]
 fn entry_points_identify_their_rows_exactly() {
     for body in NativeBody::ALL {
+        if matches!(
+            body,
+            NativeBody::BuiltinExp
+                | NativeBody::BuiltinLog10
+                | NativeBody::BuiltinLog
+                | NativeBody::BuiltinAcos
+        ) {
+            assert_eq!(NativeBody::from_c_entry_point(body.entry_point()), None);
+            continue;
+        }
         assert_eq!(
             NativeBody::from_c_entry_point(body.entry_point()),
             Some(body)
@@ -237,7 +247,20 @@ fn foreign_state_rows_report_their_foreign_errors() {
 fn foreign_state_rows_thread_their_declared_interface() {
     for body in NativeBody::ALL {
         let Some(access) = body.foreign_state() else {
-            assert_eq!(body.interface().len(), 3);
+            assert_eq!(
+                body.interface().len(),
+                if matches!(
+                    body,
+                    NativeBody::BuiltinExp
+                        | NativeBody::BuiltinLog10
+                        | NativeBody::BuiltinLog
+                        | NativeBody::BuiltinAcos
+                ) {
+                    2
+                } else {
+                    3
+                }
+            );
             continue;
         };
         let cell = Some(access.cell.extent());

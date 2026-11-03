@@ -112,6 +112,7 @@ mod event_iteration_entry;
 mod event_latch_cascade;
 mod event_relation_cascade;
 mod extends_modified_constant_dimensions;
+mod external_builtin_math;
 mod external_call_diagnostics;
 mod final_parameter_modifiers;
 mod fixed_array_element_initialization;
