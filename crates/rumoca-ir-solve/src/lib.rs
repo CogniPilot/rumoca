@@ -129,7 +129,7 @@ pub use tangent_lanes::{
     TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
 };
 pub use tangent_workspace::{
-    SolveTangentSchedule, SolveTangentWorkspace, SolveTangentWorkspaceError,
+    SolveTangentOccurrence, SolveTangentSchedule, SolveTangentWorkspace, SolveTangentWorkspaceError,
 };
 pub use typed_program::*;
 pub use visible::*;

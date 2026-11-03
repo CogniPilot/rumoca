@@ -1,42 +1,56 @@
-//! The workspace of one directional-derivative evaluation, issued from its
-//! checked phase schedule.
+//! The ordered occurrences and workspace of one directional-derivative
+//! evaluation, issued from its checked phase schedule.
 //!
 //! A tangent evaluation of a [`SolveProblem`] keeps one seed column, over
 //! the problem's seed domain (its `y` and `p` scalars and time), and one
-//! column of its state scalars for its whole run, then runs its phases one
-//! after another: the right-hand side,
-//! each simultaneous assignment segment, an optional implicit solve and an
-//! optional consistency check. [`SolveTangentSchedule`] admits exactly that
-//! order, built only from the checked program of each phase; each phase's
-//! demand is read from its program. Because the schedule is sequential, one
-//! scratch region of the largest phase demand serves every phase, and the
-//! implicit solve and the consistency check, the two phases that also need a
-//! private region (each beginning with its own saved seed), share one region
-//! of the larger demand. The issued workspace keeps the schedule it was
-//! issued for (the problem and each phase's program, by identity), so a
-//! consumer refuses a workspace issued for another problem or programs.
+//! column of its state scalars for its whole run, and runs its occurrences
+//! one after another, in exactly this order: an optional implicit solve,
+//! each simultaneous assignment segment, the implicit solve's verification
+//! (present exactly when the solve is), an optional consistency check, and
+//! the right-hand side. [`SolveTangentSchedule`] admits only that order,
+//! built from the checked program of each occurrence; each occurrence's
+//! demand is read from its program. A consumer runs the issued occurrences
+//! in issued order and decides none of it.
+//!
+//! Because the occurrences are sequential, one scratch region of the largest
+//! demand serves all of them, and the implicit solve, its verification and
+//! the consistency check, the occurrences that also need a private region
+//! (each beginning with its own saved seed), share one region of the largest
+//! demand. The issued workspace keeps the schedule it was issued for (the
+//! problem and each occurrence's program, by identity), so a consumer
+//! refuses a workspace issued for another problem or programs.
+
+use serde::Serialize;
 
 use crate::{ScalarProgramBlock, SolveProblem};
 
-/// One phase of a tangent schedule and the program that runs it.
-#[derive(Debug, Clone)]
-enum Phase {
-    Rhs,
-    Assignment { targets: usize },
-    Implicit { unknowns: usize },
+/// One occurrence of a tangent schedule, in issued order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SolveTangentOccurrence {
+    /// Solve the implicit system's `unknowns` targets.
+    ImplicitSolve { unknowns: usize },
+    /// Assign simultaneous segment `segment` of `targets` targets.
+    Assignment { segment: usize, targets: usize },
+    /// Verify the implicit solve's residuals.
+    ImplicitVerification { unknowns: usize },
+    /// Check `rows` consistency rows.
     Consistency { rows: usize },
+    /// Evaluate the right-hand side.
+    Rhs,
 }
 
-/// The checked, sequential phase schedule of one tangent evaluation.
+/// The checked, sequential occurrence schedule of one tangent evaluation.
 #[derive(Debug, Clone)]
 pub struct SolveTangentSchedule<'problem> {
     problem: &'problem SolveProblem,
     seed: usize,
     states: usize,
-    phases: Vec<(Phase, ScalarProgramBlock)>,
+    occurrences: Vec<(SolveTangentOccurrence, ScalarProgramBlock)>,
 }
 
-/// The issued workspace extents, with the schedule they were issued for.
+/// The issued occurrences and workspace extents, with the schedule they were
+/// issued for.
 #[derive(Debug, Clone)]
 pub struct SolveTangentWorkspace<'problem> {
     implicit_matrix_len: usize,
@@ -54,8 +68,10 @@ pub enum SolveTangentWorkspaceError {
     SeedDomain,
     /// An assignment segment's outputs are not exactly its targets in order.
     SegmentCoverage,
-    /// A phase was added after a phase that must follow it, or twice.
-    PhaseOrder,
+    /// An occurrence was added out of order or twice, or the schedule is
+    /// incomplete: no right-hand side, or an implicit solve without exactly
+    /// its verification.
+    OccurrenceOrder,
     ImplicitMatrix,
     ImplicitPivot,
     ImplicitPrivate,
@@ -72,7 +88,7 @@ impl std::fmt::Display for SolveTangentWorkspaceError {
             Self::SegmentCoverage => {
                 "tangent segment does not cover its simultaneous target inventory"
             }
-            Self::PhaseOrder => "tangent phases are not in their sequential order",
+            Self::OccurrenceOrder => "tangent occurrences are not in their sequential order",
             Self::ImplicitMatrix => "implicit matrix extent overflow",
             Self::ImplicitPivot => "implicit pivot extent overflow",
             Self::ImplicitPrivate => "implicit workspace extent overflow",
@@ -85,24 +101,15 @@ impl std::fmt::Display for SolveTangentWorkspaceError {
 
 impl std::error::Error for SolveTangentWorkspaceError {}
 
-impl Phase {
-    /// Phases run in this order; equal ranks may repeat only for segments.
-    const fn rank(&self) -> u8 {
+impl SolveTangentOccurrence {
+    /// Occurrences run in this order; only assignments repeat.
+    const fn rank(self) -> u8 {
         match self {
-            Self::Rhs => 0,
+            Self::ImplicitSolve { .. } => 0,
             Self::Assignment { .. } => 1,
-            Self::Implicit { .. } => 2,
+            Self::ImplicitVerification { .. } => 2,
             Self::Consistency { .. } => 3,
-        }
-    }
-
-    fn same(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Rhs, Self::Rhs) => true,
-            (Self::Assignment { targets: a }, Self::Assignment { targets: b }) => a == b,
-            (Self::Implicit { unknowns: a }, Self::Implicit { unknowns: b }) => a == b,
-            (Self::Consistency { rows: a }, Self::Consistency { rows: b }) => a == b,
-            _ => false,
+            Self::Rhs => 4,
         }
     }
 }
@@ -119,21 +126,28 @@ impl<'problem> SolveTangentSchedule<'problem> {
             .ok_or(SolveTangentWorkspaceError::SeedDomain)
     }
 
-    /// A schedule of `problem` whose first phase is the right-hand side
-    /// `rhs`; its seed and state columns are the problem's own.
-    pub fn new(
-        problem: &'problem SolveProblem,
-        rhs: &ScalarProgramBlock,
-    ) -> Result<Self, SolveTangentWorkspaceError> {
+    /// An empty schedule of `problem`; its seed and state columns are the
+    /// problem's own.
+    pub fn new(problem: &'problem SolveProblem) -> Result<Self, SolveTangentWorkspaceError> {
         Ok(Self {
             problem,
             seed: Self::seed_len(problem)?,
             states: problem.solve_layout.state_scalar_count(),
-            phases: vec![(Phase::Rhs, rhs.clone())],
+            occurrences: Vec::new(),
         })
     }
 
-    /// Add a simultaneous assignment segment of `targets` targets, whose
+    /// The implicit solve of `unknowns` simultaneous targets over the
+    /// residual `program`.
+    pub fn implicit_solve(
+        self,
+        program: &ScalarProgramBlock,
+        unknowns: usize,
+    ) -> Result<Self, SolveTangentWorkspaceError> {
+        self.push(SolveTangentOccurrence::ImplicitSolve { unknowns }, program)
+    }
+
+    /// The next simultaneous assignment segment of `targets` targets, whose
     /// program writes exactly its targets in order.
     pub fn assignment(
         self,
@@ -143,62 +157,101 @@ impl<'problem> SolveTangentSchedule<'problem> {
         if program.output_indices().iter().copied().ne(0..targets) {
             return Err(SolveTangentWorkspaceError::SegmentCoverage);
         }
-        self.push(Phase::Assignment { targets }, program)
+        let segment = self
+            .occurrences
+            .iter()
+            .filter(|(occurrence, _)| {
+                matches!(occurrence, SolveTangentOccurrence::Assignment { .. })
+            })
+            .count();
+        self.push(
+            SolveTangentOccurrence::Assignment { segment, targets },
+            program,
+        )
     }
 
-    /// Add the implicit solve of `unknowns` simultaneous targets.
-    pub fn implicit(
+    /// The verification of the implicit solve, over the solve's own
+    /// residual program.
+    pub fn implicit_verification(
         self,
         program: &ScalarProgramBlock,
-        unknowns: usize,
     ) -> Result<Self, SolveTangentWorkspaceError> {
-        self.push(Phase::Implicit { unknowns }, program)
+        let Some((SolveTangentOccurrence::ImplicitSolve { unknowns }, solved)) =
+            self.occurrences.first()
+        else {
+            return Err(SolveTangentWorkspaceError::OccurrenceOrder);
+        };
+        if !solved.shares_program_owner(program) {
+            return Err(SolveTangentWorkspaceError::OccurrenceOrder);
+        }
+        let unknowns = *unknowns;
+        self.push(
+            SolveTangentOccurrence::ImplicitVerification { unknowns },
+            program,
+        )
     }
 
-    /// Add the consistency check of `rows` checked rows.
+    /// The consistency check of `rows` checked rows.
     pub fn consistency(
         self,
         program: &ScalarProgramBlock,
         rows: usize,
     ) -> Result<Self, SolveTangentWorkspaceError> {
-        self.push(Phase::Consistency { rows }, program)
+        self.push(SolveTangentOccurrence::Consistency { rows }, program)
+    }
+
+    /// The right-hand side, the last occurrence.
+    pub fn rhs(self, program: &ScalarProgramBlock) -> Result<Self, SolveTangentWorkspaceError> {
+        self.push(SolveTangentOccurrence::Rhs, program)
     }
 
     fn push(
         mut self,
-        phase: Phase,
+        occurrence: SolveTangentOccurrence,
         program: &ScalarProgramBlock,
     ) -> Result<Self, SolveTangentWorkspaceError> {
-        let last = self.phases.last().map_or(0, |(last, _)| last.rank());
-        let repeats = matches!(phase, Phase::Assignment { .. });
-        if phase.rank() < last || (phase.rank() == last && !repeats) {
-            return Err(SolveTangentWorkspaceError::PhaseOrder);
+        if let Some((last, _)) = self.occurrences.last() {
+            let repeats = matches!(occurrence, SolveTangentOccurrence::Assignment { .. });
+            if occurrence.rank() < last.rank() || (occurrence.rank() == last.rank() && !repeats) {
+                return Err(SolveTangentWorkspaceError::OccurrenceOrder);
+            }
         }
-        self.phases.push((phase, program.clone()));
+        self.occurrences.push((occurrence, program.clone()));
         Ok(self)
     }
 
-    /// Whether `other` schedules the same problem, phases and programs.
-    fn same(&self, other: &Self) -> bool {
-        std::ptr::eq(self.problem, other.problem)
-            && self.phases.len() == other.phases.len()
-            && self
-                .phases
-                .iter()
-                .zip(&other.phases)
-                .all(|((a, pa), (b, pb))| a.same(b) && pa.shares_program_owner(pb))
+    fn has(&self, rank: u8) -> bool {
+        self.occurrences
+            .iter()
+            .any(|(occurrence, _)| occurrence.rank() == rank)
     }
 
-    /// Issue the workspace this schedule needs.
+    /// Whether `other` schedules the same problem, occurrences and programs.
+    fn same(&self, other: &Self) -> bool {
+        std::ptr::eq(self.problem, other.problem)
+            && self.occurrences.len() == other.occurrences.len()
+            && self
+                .occurrences
+                .iter()
+                .zip(&other.occurrences)
+                .all(|((a, pa), (b, pb))| a == b && pa.shares_program_owner(pb))
+    }
+
+    /// Issue the occurrences and the workspace this schedule needs.
     pub fn issue(self) -> Result<SolveTangentWorkspace<'problem>, SolveTangentWorkspaceError> {
+        let complete = self.has(SolveTangentOccurrence::Rhs.rank()) && self.has(0) == self.has(2);
+        if !complete {
+            return Err(SolveTangentWorkspaceError::OccurrenceOrder);
+        }
         let (mut scratch_len, mut private_len) = (0usize, 0usize);
         let (mut implicit_matrix_len, mut implicit_pivot_len) = (0, 0);
-        for (phase, program) in &self.phases {
+        for (occurrence, program) in &self.occurrences {
             scratch_len = scratch_len.max(program.output_count());
-            match *phase {
-                Phase::Rhs => {}
-                Phase::Assignment { targets } => scratch_len = scratch_len.max(targets),
-                Phase::Implicit { unknowns: n } => {
+            match *occurrence {
+                SolveTangentOccurrence::Assignment { targets, .. } => {
+                    scratch_len = scratch_len.max(targets);
+                }
+                SolveTangentOccurrence::ImplicitSolve { unknowns: n } => {
                     implicit_pivot_len = n
                         .checked_mul(2)
                         .ok_or(SolveTangentWorkspaceError::ImplicitPivot)?;
@@ -212,13 +265,15 @@ impl<'problem> SolveTangentSchedule<'problem> {
                         .ok_or(SolveTangentWorkspaceError::ImplicitPrivate)?;
                     private_len = private_len.max(own);
                 }
-                Phase::Consistency { rows } => {
+                SolveTangentOccurrence::ImplicitVerification { unknowns }
+                | SolveTangentOccurrence::Consistency { rows: unknowns } => {
                     let own = self
                         .seed
-                        .checked_add(rows)
+                        .checked_add(unknowns)
                         .ok_or(SolveTangentWorkspaceError::ConsistencyPrivate)?;
                     private_len = private_len.max(own);
                 }
+                SolveTangentOccurrence::Rhs => {}
             }
         }
         let work_len = self
@@ -251,6 +306,46 @@ impl<'problem> SolveTangentWorkspace<'problem> {
         }
     }
 
+    /// The occurrences to run, in order.
+    pub fn occurrences(&self) -> impl Iterator<Item = SolveTangentOccurrence> + '_ {
+        self.schedule
+            .occurrences
+            .iter()
+            .map(|(occurrence, _)| *occurrence)
+    }
+
+    /// Whether any occurrence reads the seed column.
+    #[must_use]
+    pub const fn uses_seed(&self) -> bool {
+        self.schedule.seed > 0
+    }
+
+    /// Whether the right-hand side writes any state.
+    #[must_use]
+    pub const fn uses_states(&self) -> bool {
+        self.schedule.states > 0
+    }
+
+    /// Whether any occurrence but the right-hand side uses the scratch
+    /// region.
+    #[must_use]
+    pub fn uses_scratch(&self) -> bool {
+        self.occurrences()
+            .any(|occurrence| occurrence != SolveTangentOccurrence::Rhs)
+    }
+
+    /// Whether any occurrence uses the private region.
+    #[must_use]
+    pub const fn uses_private(&self) -> bool {
+        self.private_len > 0
+    }
+
+    /// Whether the implicit solve's pivots are used.
+    #[must_use]
+    pub const fn uses_pivots(&self) -> bool {
+        self.implicit_pivot_len > 0
+    }
+
     /// Elements of the implicit system's dense matrix.
     #[must_use]
     pub const fn implicit_matrix_len(&self) -> usize {
@@ -263,14 +358,14 @@ impl<'problem> SolveTangentWorkspace<'problem> {
         self.implicit_pivot_len
     }
 
-    /// The scratch region every phase reuses in turn.
+    /// The scratch region every occurrence reuses in turn.
     #[must_use]
     pub const fn scratch_len(&self) -> usize {
         self.scratch_len
     }
 
-    /// The private region the implicit solve and the consistency check reuse
-    /// in turn.
+    /// The private region the implicit solve, its verification and the
+    /// consistency check reuse in turn.
     #[must_use]
     pub const fn private_len(&self) -> usize {
         self.private_len

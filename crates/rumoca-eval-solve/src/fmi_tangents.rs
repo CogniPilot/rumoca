@@ -204,7 +204,14 @@ fn tangent_schedule<'component>(
             "tangent plan seed is not its problem's seed domain".into(),
         ));
     }
-    let mut schedule = solve::SolveTangentSchedule::new(problem, rhs).map_err(contract)?;
+    // The only admitted order: implicit solve, segments, the solve's
+    // verification, consistency, right-hand side.
+    let mut schedule = solve::SolveTangentSchedule::new(problem).map_err(contract)?;
+    if let Some(system) = implicit {
+        schedule = schedule
+            .implicit_solve(system.program(), system.targets().len())
+            .map_err(contract)?;
+    }
     for segment in assignments {
         schedule = schedule
             .assignment(segment.program(), segment.targets().len())
@@ -212,7 +219,7 @@ fn tangent_schedule<'component>(
     }
     if let Some(system) = implicit {
         schedule = schedule
-            .implicit(system.program(), system.targets().len())
+            .implicit_verification(system.program())
             .map_err(contract)?;
     }
     if let Some(checks) = consistency {
@@ -220,6 +227,7 @@ fn tangent_schedule<'component>(
             .consistency(checks.program(), checks.rows().len())
             .map_err(contract)?;
     }
+    let schedule = schedule.rhs(rhs).map_err(contract)?;
     Ok(schedule)
 }
 

@@ -101,43 +101,43 @@ static int {{ stem }}_total_tangent(ModelInstance* m, double* seed,
                              double* rhs, double* scratch, double* implicit_work,
                              size_t* implicit_sizes) {
     (void)scratch; (void)implicit_work; (void)implicit_sizes;
-    if (!m{% if tangent.seed_len > 0 %} || !seed{% endif %}{% if tangent.state_len > 0 %} || !rhs{% endif %}{% if tangent.assignments|length > 0 or tangent.implicit.present or tangent.consistency.present %} || !scratch{% endif %}{% if tangent.implicit.present or tangent.consistency.present %} || !implicit_work{% endif %}{% if tangent.implicit.present %} || !implicit_sizes{% endif %}) return -1;
+    if (!m{% if tangent.uses.seed %} || !seed{% endif %}{% if tangent.uses.states %} || !rhs{% endif %}{% if tangent.uses.scratch %} || !scratch{% endif %}{% if tangent.uses.private %} || !implicit_work{% endif %}{% if tangent.uses.pivots %} || !implicit_sizes{% endif %}) return -1;
     for (size_t k=0; k<{{ tangent.seed_len }}; ++k)
         if (!isfinite(seed[k])) return -1;
-{%- if tangent.implicit.present %}
+{#- Each issued occurrence, in issued order. #}
+{%- for occurrence in tangent.occurrences %}
+{%- if occurrence.kind == "implicit_solve" %}
     if ({{ stem }}_implicit_tangent(m, seed, scratch, implicit_work, implicit_sizes) != 0) return -1;
-{%- endif %}
-{%- for segment in tangent.assignments %}
-{%- set segment_id = loop.index0 %}
-{%- for body in segment.plan.programs %}
-    if ({{ stem }}_tangent_assign_{{ segment_id }}_{{ loop.index0 }}(m, seed, scratch) != 0) return -1;
+{%- elif occurrence.kind == "assignment" %}
+{%- for body in tangent.assignments[occurrence.segment].plan.programs %}
+    if ({{ stem }}_tangent_assign_{{ occurrence.segment }}_{{ loop.index0 }}(m, seed, scratch) != 0) return -1;
 {%- endfor %}
     /* Validate the entire simultaneous result before overwriting any seed. */
-    for (size_t k=0; k<{{ segment.targets|length }}; ++k)
+    for (size_t k=0; k<{{ occurrence.targets }}; ++k)
         if (!isfinite(scratch[k])) return -1;
-{%- for target in segment.targets %}
+{%- for target in tangent.assignments[occurrence.segment].targets %}
     seed[{{ target }}] = scratch[{{ loop.index0 }}];
 {%- endfor %}
-{%- endfor %}
-{%- if tangent.implicit.present %}
-    static const size_t implicit_rows[{{ tangent.implicit.n }}] = { {% for row in tangent.implicit.rows %}{{ row }},{% endfor %} };
-    static const size_t implicit_targets[{{ tangent.implicit.n }}] = { {% for target in tangent.implicit.subtract_targets %}{{ target }},{% endfor %} };
+{%- elif occurrence.kind == "implicit_verification" %}
+    static const size_t implicit_rows[{{ occurrence.unknowns }}] = { {% for row in tangent.implicit.rows %}{{ row }},{% endfor %} };
+    static const size_t implicit_targets[{{ occurrence.unknowns }}] = { {% for target in tangent.implicit.subtract_targets %}{{ target }},{% endfor %} };
     static const RmcTangentCheck implicit_check = {
-        {{ tangent.seed_len }}, {{ tangent.implicit.n }}, implicit_rows, implicit_targets,
+        {{ tangent.seed_len }}, {{ occurrence.unknowns }}, implicit_rows, implicit_targets,
         {{ stem }}_tangent_residuals, {{ tangent.implicit.tolerance }}
     };
     if (rmc_verify_tangent(m, seed, scratch, implicit_work, &implicit_check) != 0) return -1;
-{%- endif %}
-{%- if tangent.consistency.present %}
-    static const size_t check_rows[{{ tangent.consistency.rows|length }}] = { {% for row in tangent.consistency.rows %}{{ row }},{% endfor %} };
+{%- elif occurrence.kind == "consistency" %}
+    static const size_t check_rows[{{ occurrence.rows }}] = { {% for row in tangent.consistency.rows %}{{ row }},{% endfor %} };
     static const RmcTangentCheck source_check = {
-        {{ tangent.seed_len }}, {{ tangent.consistency.rows|length }}, check_rows, NULL,
+        {{ tangent.seed_len }}, {{ occurrence.rows }}, check_rows, NULL,
         {{ stem }}_tangent_checks, {{ tangent.consistency.tolerance }}
     };
     if (rmc_verify_tangent(m, seed, scratch, implicit_work, &source_check) != 0) return -1;
-{%- endif %}
+{%- elif occurrence.kind == "rhs" %}
 {%- for body in tangent.rhs.programs %}
     if ({{ stem }}_tangent_rhs_{{ loop.index0 }}(m, seed, rhs) != 0) return -1;
+{%- endfor %}
+{%- endif %}
 {%- endfor %}
     for (size_t k=0; k<{{ tangent.state_len }}; ++k)
         if (!isfinite(rhs[k])) return -1;
