@@ -70,7 +70,7 @@ pub(super) fn instrumented(template: &str, regions: &[Region]) -> String {
         let header = format!("{{%- macro {}(", region.name);
         let start = text.find(&header).expect("registered macro exists");
         let open = start + text[start..].find("-%}").expect("macro header") + 3;
-        text.insert_str(open, &format!("@@R:{}@@", region.name));
+        text.insert_str(open, &marker(&format!("R:{}", region.name), true));
         let end = open + text[open..].find("endmacro").expect("macro end");
         let mut body = text[open..end].to_owned();
         for (path, variants) in &region.tags {
@@ -78,12 +78,24 @@ pub(super) fn instrumented(template: &str, regions: &[Region]) -> String {
                 let test = format!("{path} == \"{variant}\"");
                 let at = body.find(&test).expect("declared variant branch");
                 let close = at + body[at..].find("%}").expect("branch tag") + 2;
-                body.insert_str(close, &format!("@@V:{}:{path}:{variant}@@", region.name));
+                let trims = body[..close].ends_with("-%}");
+                let key = format!("V:{}:{path}:{variant}", region.name);
+                body.insert_str(close, &marker(&key, trims));
             }
         }
         text.replace_range(open..end, &body);
     }
     text
+}
+
+/// A marker printed as an expression that keeps the whitespace control of
+/// the tag it follows: after `-%}` it trims what that tag would have trimmed.
+fn marker(key: &str, trims: bool) -> String {
+    if trims {
+        format!("{{{{- \"@@{key}@@\" -}}}}")
+    } else {
+        format!("{{{{ \"@@{key}@@\" }}}}")
+    }
 }
 
 /// Registered regions no rendering reached, and declared variants no
@@ -106,4 +118,26 @@ pub(super) fn unreached(regions: &[Region], rendered: &str) -> (Vec<String>, Vec
         }
     }
     (unrun, unselected)
+}
+
+/// `text` without the markers `instrumented` inserts.
+pub(super) fn stripped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("@@") {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 2..];
+        let marker = (tail.starts_with("R:") || tail.starts_with("V:"))
+            .then(|| tail.find("@@"))
+            .flatten();
+        match marker {
+            Some(end) => rest = &tail[end + 2..],
+            None => {
+                out.push_str("@@");
+                rest = tail;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }

@@ -1479,6 +1479,36 @@ fn conformance_programs() -> Vec<(solve::TypedProgram, &'static str)> {
 /// so its coverage is partial; a program that selects one removes it here.
 const UNSELECTED: &[&str] = &[];
 
+/// The marked rendering of one program, after checking that it is the
+/// production rendering plus markers only: stripped of its markers it must
+/// equal the production output byte for byte, and decode in full.
+fn marked_rendering(
+    plain: &Printer,
+    marked: &Printer,
+    program: &solve::TypedProgram,
+    name: &str,
+) -> Result<String, String> {
+    let wire = serde_json::to_value(program).unwrap();
+    let production = plain.definition(&wire, name);
+    if production.contains("@@") {
+        return Err(format!(
+            "{name}: production output already holds marker text"
+        ));
+    }
+    let rendered = marked.definition(&wire, name);
+    let output = registry::stripped(&rendered);
+    if output != production {
+        return Err(format!(
+            "{name}: marked rendering is not production plus markers"
+        ));
+    }
+    let findings = check_rendered(plain, program, &wire, name, &output);
+    if !findings.is_empty() {
+        return Err(format!("{name}: {findings:?}"));
+    }
+    Ok(rendered)
+}
+
 /// Registration hands a region's literal text to these decoders, so each
 /// registered region must be rendered by production `definition()`, each
 /// declared variant reached, and that same output decoded in full.
@@ -1487,17 +1517,15 @@ fn every_registered_region_is_rendered_selected_and_decoded() {
     let regions = registry::regions(REGISTRY);
     assert!(regions.len() > 10, "{regions:?}");
     let template = builtin_template("fmi3", "typed_functions.jinja");
+    assert!(
+        !template.contains("@@"),
+        "the template already holds marker text"
+    );
     let marked = Printer::new(registry::instrumented(template, &regions));
     let plain = Printer::builtin();
     let mut rendered = String::new();
     for (program, name) in conformance_programs() {
-        assert_eq!(
-            check(&plain, &program, name),
-            Vec::<String>::new(),
-            "{name}"
-        );
-        let wire = serde_json::to_value(&program).unwrap();
-        rendered.push_str(&marked.definition(&wire, name));
+        rendered.push_str(&marked_rendering(&plain, &marked, &program, name).unwrap());
     }
     let (unrun, unselected) = registry::unreached(&regions, &rendered);
     assert_eq!(
@@ -1506,6 +1534,30 @@ fn every_registered_region_is_rendered_selected_and_decoded() {
         "registered regions never rendered"
     );
     assert_eq!(unselected, UNSELECTED, "declared variants never selected");
+}
+
+/// An instrumentation that changes anything but markers, or production
+/// output that already holds marker text, fails the correspondence check.
+#[test]
+fn a_marked_rendering_must_be_production_plus_markers() {
+    let regions = registry::regions(REGISTRY);
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    let plain = Printer::builtin();
+    let program = tensor_program();
+    let forged = registry::instrumented(template, &regions).replacen(
+        "@@R:tensor_item@@",
+        "@@R:tensor_item@@ ",
+        1,
+    );
+    assert!(marked_rendering(&plain, &Printer::new(forged), &program, "tensor").is_err());
+    let injected = template.replacen(
+        "{%- macro plan_outputs(plan) -%}\n",
+        "{%- macro plan_outputs(plan) -%}\n@@V:x:y:z@@",
+        1,
+    );
+    assert_ne!(injected, template, "anchor");
+    let marked = Printer::new(registry::instrumented(&injected, &regions));
+    assert!(marked_rendering(&Printer::new(injected), &marked, &program, "tensor").is_err());
 }
 
 /// A registered region production never renders, or a declared variant no
