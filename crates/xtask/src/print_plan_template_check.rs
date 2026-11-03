@@ -18,7 +18,7 @@ mod literal_c;
 mod tests;
 
 use anyhow::{Context, Result, bail};
-use minijinja::machinery::ast::Stmt;
+use minijinja::machinery::ast::{Expr, Stmt};
 use minijinja::machinery::{WhitespaceConfig, parse};
 use minijinja::syntax::SyntaxConfig;
 use std::collections::{BTreeMap, BTreeSet};
@@ -501,6 +501,19 @@ fn check_region(
         return Ok(());
     };
     let decoded = registry.iter().find(|r| r.file == file && r.name == name);
+    if decoded.is_some()
+        && let Some((line, column)) = binding_of(std::slice::from_ref(&ast), "fail")
+    {
+        // A decoded chain's refusal must be the environment's own `fail`.
+        report.violations.push(Violation {
+            file: file.to_owned(),
+            line,
+            column,
+            rule: Rule::Composition,
+            detail: "the file binds `fail`, so a dispatch chain's refusal could be shadowed"
+                .to_owned(),
+        });
+    }
     let (roots, mut violations) = macro_roots(file, region);
     if let Some(row) = decoded {
         let declared: Vec<&String> = row.arguments.iter().map(|(a, _)| a).collect();
@@ -589,6 +602,44 @@ fn find_macros<'s, 'a>(stmts: &'s [Stmt<'a>], name: &str, out: &mut Vec<MacroNod
             find_macros(body, name, out);
         }
     }
+}
+
+/// Where `stmts` bind `name`: a macro, a macro or call-block argument, a set
+/// or set-block target, a loop target, or an import alias.
+fn binding_of(stmts: &[Stmt<'_>], name: &str) -> Option<(u16, u16)> {
+    let binds = |expr: &Expr<'_>| match expr {
+        Expr::Var(v) => v.id == name,
+        Expr::List(l) => l
+            .items
+            .iter()
+            .any(|i| matches!(i, Expr::Var(v) if v.id == name)),
+        _ => false,
+    };
+    for stmt in stmts {
+        let span = match stmt {
+            Stmt::Macro(m) if m.name == name || m.args.iter().any(binds) => Some(m.span()),
+            Stmt::CallBlock(c) if c.macro_decl.args.iter().any(binds) => Some(c.span()),
+            Stmt::Set(s) if binds(&s.target) => Some(s.span()),
+            Stmt::SetBlock(s) if binds(&s.target) => Some(s.span()),
+            Stmt::ForLoop(f) if binds(&f.target) => Some(f.span()),
+            Stmt::Import(i) if binds(&i.name) => Some(i.span()),
+            Stmt::FromImport(f)
+                if f.names
+                    .iter()
+                    .any(|(n, alias)| binds(alias.as_ref().unwrap_or(n))) =>
+            {
+                Some(f.span())
+            }
+            _ => None,
+        };
+        if let Some(span) = span {
+            return Some((span.start_line, span.start_col));
+        }
+        if let Some(found) = bodies(stmt).into_iter().find_map(|b| binding_of(b, name)) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn bodies<'s, 'a>(stmt: &'s Stmt<'a>) -> Vec<&'s [Stmt<'a>]> {
