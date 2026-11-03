@@ -908,8 +908,10 @@ use tensor::output_index_overflow;
 pub use tensor::{
     AffineStencilConstStride, AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm,
     AffineStencilLoadStride, ComputeBlock, ComputeNode, ComputeNodeCounts, ComputeOutputImage,
-    ComputeOutputPlacement, ComputeSourceView, ScalarFallback, TensorElementType, TensorLayout,
-    TensorNodeMetadata, TensorOutputMap, TensorOutputMapError, TensorSource,
+    ComputeOutputPlacement, ComputeSourceView, DispatchBounds, NativeDispatchEntry,
+    NativeDispatchError, NativeDispatchFamily, NativeDispatchGeometry, ScalarFallback,
+    TensorElementType, TensorLayout, TensorNodeMetadata, TensorOutputMap, TensorOutputMapError,
+    TensorSource,
 };
 
 #[cfg(test)]

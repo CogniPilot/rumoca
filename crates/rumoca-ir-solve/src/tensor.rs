@@ -1,4 +1,10 @@
+mod dispatch_geometry;
 mod source_view;
+
+pub use dispatch_geometry::{
+    DispatchBounds, NativeDispatchEntry, NativeDispatchError, NativeDispatchFamily,
+    NativeDispatchGeometry,
+};
 
 pub(crate) use source_view::advance_compute_output_cursor;
 pub use source_view::{ComputeOutputImage, ComputeOutputPlacement, ComputeSourceView};
