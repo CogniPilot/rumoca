@@ -30,6 +30,8 @@ impl PerfSession {
 }
 
 fn request_perf_stop(pid: u32) {
+    #[cfg(not(unix))]
+    let _ = pid;
     #[cfg(unix)]
     {
         let _ = Command::new("kill")
