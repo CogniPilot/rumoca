@@ -1,29 +1,11 @@
+mod assertions;
+mod assigned_state;
 mod calls;
-pub use calls::{ProgramCall, SolveAssertionForwarding};
 mod construction;
 mod construction_checks;
 mod construction_error;
-use construction_checks::{
-    binary_operator_accepts, checked_ordinal, construct_region, declare_interface_slots,
-    indices_in_bounds, require_fold_domain, require_map_domain, require_provenance,
-    slice_in_bounds,
-};
-pub use construction_error::SolveProgramConstructionError;
-
-mod assigned_state;
-use assigned_state::{AssignedStateConstruction, AssignedStateLayout};
-pub use assigned_state::{
-    ProgramAssignedState, SolveAssignedConditional, SolveAssignedStateId,
-    SolveAssignedStateOperation,
-};
-mod assertions;
 mod directional;
-pub use directional::{
-    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
-    SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
-};
 mod entry_interface;
-pub use assertions::{ProgramAssertion, SolveAssertionMessage};
 mod fault_flow;
 mod linear_solve;
 mod loop_flow;
@@ -34,6 +16,30 @@ pub(crate) mod print_plan;
 mod read_flow;
 mod storage_class;
 mod storage_plan;
+mod tensor;
+#[cfg(test)]
+mod tests;
+mod value_numbering;
+pub(in crate::typed_program) mod wire;
+
+pub use calls::{ProgramCall, SolveAssertionForwarding};
+use construction_checks::{
+    binary_operator_accepts, checked_ordinal, construct_region, declare_interface_slots,
+    indices_in_bounds, require_fold_domain, require_map_domain, require_provenance,
+    slice_in_bounds,
+};
+pub use construction_error::SolveProgramConstructionError;
+
+pub use assertions::{ProgramAssertion, SolveAssertionMessage};
+use assigned_state::{AssignedStateConstruction, AssignedStateLayout};
+pub use assigned_state::{
+    ProgramAssignedState, SolveAssignedConditional, SolveAssignedStateId,
+    SolveAssignedStateOperation,
+};
+pub use directional::{
+    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
+    SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
+};
 pub use print_plan::{
     SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
     SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel,
@@ -42,14 +48,11 @@ pub use print_plan::{
 };
 pub(super) use storage_plan::DERIVED;
 pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
-mod tensor;
-mod value_numbering;
 use value_numbering::ValueKey;
 
 pub use loop_flow::{MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, invariant_guard};
 pub use pass_flow::index_forms;
 pub use tensor::promoted_concatenate_dimensions;
-pub(in crate::typed_program) mod wire;
 
 use std::marker::PhantomData;
 
@@ -1939,6 +1942,3 @@ impl<'program> TypedProgramBuilder<'program> {
         });
     }
 }
-
-#[cfg(test)]
-mod tests;

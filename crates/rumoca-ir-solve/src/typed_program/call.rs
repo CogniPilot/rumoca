@@ -1,20 +1,21 @@
 mod assertion_flow;
 mod bound_body;
-pub use bound_body::{BoundSolvePureCallBody, SolveCallValueRole};
 pub(super) mod dependency;
 mod recursion;
 mod scalar_boundary;
 mod sites;
+mod view;
+mod wire_scope;
+
+pub use assertion_flow::{
+    AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
+};
+pub use bound_body::{BoundSolvePureCallBody, SolveCallValueRole};
 pub use scalar_boundary::{
     SolveScalarBoundary, SolveScalarBoundaryError, SolveScalarCrossing, SolveScalarInput,
     SolveScalarOutput,
 };
-mod wire_scope;
-pub use assertion_flow::{
-    AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
-};
 pub use wire_scope::{ScopedSolvePureCallTable, SolvePureCallWireError, SolvePureCallWireScope};
-mod view;
 
 use rumoca_core::Span;
 use serde::{Deserialize, Deserializer, Serialize};

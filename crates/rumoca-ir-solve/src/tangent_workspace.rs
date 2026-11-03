@@ -20,6 +20,9 @@
 //! problem and each occurrence's program, by identity), so a consumer
 //! refuses a workspace issued for another problem or programs.
 
+#[cfg(test)]
+mod tests;
+
 use serde::Serialize;
 
 use crate::{ScalarProgramBlock, SolveProblem};
@@ -377,6 +380,3 @@ impl<'problem> SolveTangentWorkspace<'problem> {
         self.work_len
     }
 }
-
-#[cfg(test)]
-mod tests;
