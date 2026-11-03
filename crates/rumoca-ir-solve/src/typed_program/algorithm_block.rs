@@ -23,7 +23,9 @@ use super::{
 use rumoca_core::Span;
 use serde::Serialize;
 
+mod call_levels;
 mod digest;
+pub use call_levels::SolveBlockCallLevels;
 pub use digest::{SolveAlgorithmBlockDigest, SolveAlgorithmBlockDigestError};
 
 /// What kind of checked Algorithm Code entity a Solve identity refines.

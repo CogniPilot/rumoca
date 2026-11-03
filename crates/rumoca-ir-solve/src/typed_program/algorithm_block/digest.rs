@@ -6,8 +6,9 @@
 //!
 //! The digest hashes the block's serde form: slot table, method programs,
 //! function owners, status bindings and provenance byte ranges. The analyses a
-//! program derives from its operations are `serde(skip)` and so not hashed
-//! twice. Pure-call sites serialize as owner ids (`call/wire_scope.rs`), owner
+//! program derives from its operations are `serde(skip)`, and the issued plans
+//! a printer reads from the wire form are marked derived and left out, so
+//! neither is hashed twice. Pure-call sites serialize as owner ids (`call/wire_scope.rs`), owner
 //! identities as their issue index and names as their text, so nothing
 //! process-local reaches the hasher.
 //!
@@ -29,6 +30,7 @@ use serde::ser::{
     SerializeTupleStruct, SerializeTupleVariant,
 };
 
+use super::super::program::DERIVED;
 use super::SolveAlgorithmBlock;
 
 #[cfg(test)]
@@ -255,12 +257,16 @@ impl ser::Serializer for &mut DigestWriter {
         Ok(())
     }
 
-    /// Transparent, except that a source id contributes only its tag.
+    /// Transparent, except that a source id contributes only its tag and a
+    /// value derived from hashed content contributes nothing.
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
         self,
         name: &'static str,
         value: &T,
     ) -> Done {
+        if name == DERIVED {
+            return Ok(());
+        }
         if name == SOURCE_ID {
             self.tagged(Tag::SourceId, &[]);
             return Ok(());

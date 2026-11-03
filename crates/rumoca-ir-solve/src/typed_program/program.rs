@@ -24,7 +24,17 @@ mod loop_flow;
 mod native;
 mod operation_visit;
 mod pass_flow;
+pub(crate) mod print_plan;
 mod read_flow;
+mod storage_plan;
+pub use print_plan::{
+    SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
+    SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel,
+    SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveRegisterFrame,
+    SolveUnaryToken,
+};
+pub(super) use storage_plan::DERIVED;
+pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 mod tensor;
 mod value_numbering;
 use value_numbering::ValueKey;
@@ -512,6 +522,10 @@ pub struct TypedProgram {
     register_types: Box<[SolveValueType]>,
     operations: Box<[SolveSpannedOperation]>,
     assigned_states: AssignedStateLayout,
+    #[serde(serialize_with = "storage_plan::derived")]
+    storage: SolveStoragePlan,
+    #[serde(serialize_with = "storage_plan::derived")]
+    print: SolvePrintPlan,
     #[serde(skip)]
     read_flow: read_flow::ReadFlow,
     #[serde(skip)]
@@ -622,12 +636,16 @@ impl TypedProgram {
         let fault_flow = fault_flow::FaultFlow::of(&operations, &register_types, &slots, &[]);
         let loop_flow = loop_flow::LoopFlow::of(&operations);
         let pass_flow = pass_flow::PassFlow::of(&operations, &fault_flow);
+        let storage = SolveStoragePlan::host(&slots, &register_types, &operations);
+        let print = SolvePrintPlan::of(&slots, &register_types, &operations, &storage);
         let mut program = Self {
             arithmetic,
             slots: slots.into_boxed_slice(),
             register_types: register_types.into_boxed_slice(),
             operations: operations.into_boxed_slice(),
             assigned_states,
+            storage,
+            print,
             read_flow,
             fault_flow,
             loop_flow,
