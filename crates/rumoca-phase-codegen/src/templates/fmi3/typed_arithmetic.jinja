@@ -1,18 +1,11 @@
 {#- Whitespace convention of the typed pure-call partials: a macro that emits
     statements emits complete lines, each ending in a newline, and its caller
     closes the call with `-}}`; a tag alone on a line closes with `-%}`.
-    `integer`, `declaration`, `unary` and `binary` are inline fragments. -#}
+    `integer`, `unary` and `binary` are inline fragments. -#}
 {%- macro integer(value) -%}
 {%- if value|string == "-9223372036854775808" -%}INT64_MIN
 {%- elif value < 0 -%}(-INT64_C({{ -value }}))
 {%- else -%}INT64_C({{ value }}){%- endif -%}
-{%- endmacro %}
-
-{%- macro declaration(name, ty) %}
-{%- if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" %}double
-{%- elif ty.scalar.kind == "integer" %}int64_t
-{%- elif ty.scalar.kind == "boolean" %}bool
-{%- else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %} {{ name }}[{{ ty.scalar_count if ty.scalar_count > 0 else 1 }}]; (void){{ name }};
 {%- endmacro %}
 
 {%- macro copy(dst, src) -%}
@@ -28,17 +21,6 @@ for (size_t k=0; k<{{ ty.scalar_count }}; ++k) if ({{ dst }}[k]<{{ integer(ty.sc
 {%- macro to_integer(dst, expression, ty) -%}
 for (size_t k=0; k<{{ ty.scalar_count }}; ++k) { double v={{ expression }}; if (!isfinite(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) return 1; {{ dst }}[k]=(int64_t)v; }
 {{ domain_check(dst, ty) -}}
-{% endmacro %}
-
-{%- macro import_scalars(dst, src, ty) -%}
-{% if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" -%}
-{{ copy(dst, src) -}}
-{% elif ty.scalar.kind == "integer" -%}
-for (size_t k=0; k<{{ ty.scalar_count }}; ++k) if (trunc({{ src }}[k]) != {{ src }}[k]) return 1;
-{{ to_integer(dst, src ~ "[k]", ty) -}}
-{% elif ty.scalar.kind == "boolean" -%}
-for (size_t k=0; k<{{ ty.scalar_count }}; ++k) { if ({{ src }}[k] != 0.0 && {{ src }}[k] != 1.0) return 1; {{ dst }}[k] = {{ src }}[k] != 0.0; }
-{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: input type") }}{% endif -%}
 {% endmacro %}
 
 {%- macro unary(operator, a, ty) -%}

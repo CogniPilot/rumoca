@@ -3,6 +3,7 @@ mod nocaptures_directional;
 #[cfg(target_os = "linux")]
 mod output_storage;
 mod reductions;
+mod scalar_boundary;
 
 use std::num::NonZeroU64;
 

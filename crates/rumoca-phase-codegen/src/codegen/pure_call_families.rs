@@ -31,6 +31,9 @@ struct OwnerView<'a> {
     outputs: &'a [solve::SolvePureCallOutput],
     body: &'a solve::TypedProgram,
     source_predicate_outputs: BTreeMap<usize, usize>,
+    /// The issued scalar boundary; absent when the interface has none, which
+    /// a printer of the scalar wrapper refuses.
+    scalar: Option<solve::SolveScalarBoundary>,
 }
 
 /// Serialized primal and directional views of one owner.
@@ -162,6 +165,7 @@ fn directional_owner_view(
                     directional.outputs(),
                     true,
                 )?,
+                scalar: directional.scalar_boundary().ok(),
             })
         })
         .transpose()
@@ -182,6 +186,7 @@ fn owner_json(
         outputs: owner.outputs(),
         body: owner.body(),
         source_predicate_outputs: source_predicate_outputs(owner, owner.outputs(), false)?,
+        scalar: owner.scalar_boundary().ok(),
     })?;
     let directional = directional_owner_view(owner)?
         .map(|view| to_json(&view))

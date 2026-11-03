@@ -193,7 +193,7 @@ pub struct SolveDomainCheck {
 }
 
 impl SolveDomainCheck {
-    fn of(value_type: &SolveValueType) -> Option<Self> {
+    pub(in crate::typed_program) fn of(value_type: &SolveValueType) -> Option<Self> {
         match value_type.element_type() {
             SolveScalarType::Integer(domain) if domain != SolveIntegerDomain::FULL => Some(Self {
                 minimum: SolveIntegerLiteral::of(domain.minimum()),

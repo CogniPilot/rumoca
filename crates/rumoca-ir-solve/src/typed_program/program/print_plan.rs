@@ -33,7 +33,7 @@ pub enum SolveElementToken {
 }
 
 impl SolveElementToken {
-    fn of(value_type: &SolveValueType) -> Self {
+    pub(in crate::typed_program) fn of(value_type: &SolveValueType) -> Self {
         match value_type.element_type() {
             SolveScalarType::Real {
                 format: SolveRealFormat::Binary64,

@@ -1,5 +1,5 @@
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
-{%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic %}
+{%- from "fmi-typed-arithmetic.jinja" import integer, copy, arithmetic %}
 {%- from "fmi-typed-tensors.jinja" import tensor %}
 
 {#- A binder's trip count. The template engine's `//` does not floor a negative
@@ -12,7 +12,6 @@
 
 {#- Whether a value of this type is a binary64 array a caller can pass
     through unconverted (nonempty; an empty type keeps its one-element local). -#}
-{%- macro direct(ty) -%}{% if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" and ty.scalar_count > 0 %}1{% endif %}{%- endmacro %}
 {#- The one spelling of each issued element token. -#}
 {%- macro element(token) -%}{% if token == "real64" %}double{% elif token == "int64" %}int64_t{% elif token == "boolean" %}bool{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %}{%- endmacro %}
 {%- macro storage_name(name) -%}{% if name.space == "slot" %}s{% else %}r{% endif %}{{ name.id }}{%- endmacro %}
@@ -115,19 +114,14 @@ for (size_t k=0; k<{{ item.extent }}; ++k) { double v={% if item.token == "real_
 {% if predicates|length > 0 -%}
 RMC_API int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
 (void)in;
-{% for ty in owner.inputs -%}
-{% if not direct(ty) -%}
-{{ declaration("a" ~ loop.index0, ty) }}
-{{ import_scalars("a" ~ loop.index0, "in[" ~ loop.index0 ~ "]", ty) -}}
-{% endif -%}
-{% endfor -%}
+{{ scalar_imports(owner.scalar) -}}
 {% for predicate in predicates %}bool b{{ loop.index0 }}[1]={true}; out[{{ loop.index0 }}]=1.0;{% endfor %}
 {% set output = namespace(predicate=0, args="") -%}
 {% for value in owner.outputs -%}
 {% if value.role.kind == "assertion_predicate" %}{% set output.args = output.args ~ "b" ~ output.predicate ~ "," %}{% set output.predicate = output.predicate + 1 %}
 {% else %}{% set output.args = output.args ~ "NULL," %}{% endif -%}
 {% endfor -%}
-int status=rumoca_pure_{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ output.args }} }, observer);
+int status=rumoca_pure_{{ owner.id }}((const void*[]){ {{ scalar_arguments(owner.scalar) }} }, (void*[]){ {{ output.args }} }, observer);
 if (!status) { {% for predicate in predicates %}out[{{ loop.index0 }}]=(double)b{{ loop.index0 }}[0];{% endfor %} }
 return status;
 }
@@ -264,26 +258,41 @@ return 0;
 }
 {% endmacro %}
 
-{#- Binary64 inputs and outputs pass the caller's arrays straight through;
-    other types convert through local arrays. -#}
+{#- The one spelling of each issued scalar crossing: a direct value is the
+    caller's array; a converted one is an owned local, checked on the way in
+    and widened on the way out. -#}
+{%- macro scalar_local(prefix, index, crossing) -%}{{ element(crossing.element) }} {{ prefix }}{{ index }}[{{ crossing.extent }}]; (void){{ prefix }}{{ index }};{%- endmacro %}
+{%- macro scalar_import(index, crossing) -%}
+{% if crossing.element == "int64" -%}
+for (size_t k=0; k<{{ crossing.extent }}; ++k) if (trunc(in[{{ index }}][k]) != in[{{ index }}][k]) return 1;
+for (size_t k=0; k<{{ crossing.extent }}; ++k) { double v=in[{{ index }}][k]; if (!isfinite(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) return 1; a{{ index }}[k]=(int64_t)v; }
+{% if crossing.domain %}for (size_t k=0; k<{{ crossing.extent }}; ++k) if (a{{ index }}[k]<{{ integer_literal(crossing.domain.minimum) }} || a{{ index }}[k]>{{ integer_literal(crossing.domain.maximum) }}) return 1;
+{% endif -%}
+{% elif crossing.element == "boolean" -%}
+for (size_t k=0; k<{{ crossing.extent }}; ++k) { if (in[{{ index }}][k] != 0.0 && in[{{ index }}][k] != 1.0) return 1; a{{ index }}[k] = in[{{ index }}][k] != 0.0; }
+{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: input type") }}{% endif -%}
+{%- endmacro %}
+{%- macro scalar_imports(boundary) -%}
+{% if not boundary %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif -%}
+{% for item in boundary.inputs -%}
+{% if item.crossing.crossing == "converted" -%}
+{{ scalar_local("a", item.argument, item.crossing) }}
+{{ scalar_import(item.argument, item.crossing) -}}
+{% endif -%}
+{% endfor -%}
+{%- endmacro %}
+{%- macro scalar_arguments(boundary) -%}{% for item in boundary.inputs %}{% if item.crossing.crossing == "direct" %}in[{{ item.argument }}]{% else %}a{{ item.argument }}{% endif %},{% else %}NULL{% endfor %}{%- endmacro %}
+
+{#- The scalar wrapper prints the owner's issued scalar boundary. -#}
 {%- macro wrapper(owner, kind="") -%}
 RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
 (void)in;
 if (!out) return 1;
-{% for ty in owner.inputs -%}
-{% if not direct(ty) -%}
-{{ declaration("a" ~ loop.index0, ty) }}
-{{ import_scalars("a" ~ loop.index0, "in[" ~ loop.index0 ~ "]", ty) -}}
-{% endif -%}
-{% endfor -%}
-{% set offset = namespace(value=0, args="", conversions="") -%}
-{% for output in owner.outputs -%}
-{% if direct(output.value_type) %}{% set offset.args = offset.args ~ "out+" ~ offset.value ~ "," -%}
-{% else %}{{ declaration("b" ~ loop.index0, output.value_type) }}{% set offset.args = offset.args ~ "b" ~ loop.index0 ~ "," %}{% set offset.conversions = offset.conversions ~ "for (size_t k=0; k<" ~ output.value_type.scalar_count ~ "; ++k) out[" ~ offset.value ~ "+k]=(double)b" ~ loop.index0 ~ "[k];\n" %}{% endif -%}
-{% set offset.value = offset.value + output.value_type.scalar_count -%}
-{% endfor %}
-{ int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} }, observer); if (status) return status; }
-{{ offset.conversions }}return 0;
+{{ scalar_imports(owner.scalar) -}}
+{% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "converted" %}{{ scalar_local("b", item.output, item.crossing) }}{% endif %}{% endfor %}
+{ int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {{ scalar_arguments(owner.scalar) }} }, (void*[]){ {% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "direct" %}out+{{ item.offset }}{% else %}b{{ item.output }}{% endif %},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
+{% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "converted" %}for (size_t k=0; k<{{ item.extent }}; ++k) out[{{ item.offset }}+k]=(double)b{{ item.output }}[k];
+{% endif %}{% endfor %}return 0;
 }
 {% endmacro %}
 

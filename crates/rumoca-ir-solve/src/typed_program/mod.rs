@@ -23,7 +23,8 @@ pub use call::{
     SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
     SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
     SolvePureCallWireError, SolvePureCallWireScope, SolveRecursionProfile, SolveRecursiveGroup,
-    SolveRecursiveMember,
+    SolveRecursiveMember, SolveScalarBoundary, SolveScalarBoundaryError, SolveScalarCrossing,
+    SolveScalarInput, SolveScalarOutput,
 };
 pub use demand::{SolveLiveness, SolveOutputDemand, visit_demanded_calls, visit_demanded_reads};
 pub use integer_interval::{
