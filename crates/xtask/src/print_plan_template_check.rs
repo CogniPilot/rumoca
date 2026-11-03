@@ -184,84 +184,201 @@ impl RepoTemplates {
 pub(crate) struct DecodedRegion {
     pub(crate) file: String,
     pub(crate) name: String,
+    pub(crate) consumer: String,
+    pub(crate) decoder: String,
+    /// The macro's arguments, in order, with the issued schema each claims.
+    pub(crate) arguments: Vec<(String, String)>,
     pub(crate) dispatch: Vec<ast_rules::Dispatch>,
 }
 
-/// The registry's regions, and a violation for every malformed row. A
-/// missing registry decodes nothing, so every literal check stays in force.
+/// The registry's regions, and a violation for every malformed entry: a
+/// wrong container or value type is reported, never filtered out. A missing
+/// registry decodes nothing, so every literal check stays in force.
 pub(crate) fn load_registry(source: &dyn TemplateSource) -> (Vec<DecodedRegion>, Vec<Violation>) {
     let Ok(text) = source.read(REGION_REGISTRY) else {
         return (Vec::new(), Vec::new());
     };
-    let flag = |detail: String| Violation {
-        file: REGION_REGISTRY.to_owned(),
-        line: 0,
-        column: 0,
-        rule: Rule::RegionSelection,
-        detail,
+    let mut violations = Vec::new();
+    let mut flag = |detail: String| {
+        violations.push(Violation {
+            file: REGION_REGISTRY.to_owned(),
+            line: 0,
+            column: 0,
+            rule: Rule::RegionSelection,
+            detail,
+        });
     };
     let table: toml::Table = match toml::from_str(&text) {
         Ok(table) => table,
         Err(error) => {
-            return (
-                Vec::new(),
-                vec![flag(format!("unparsable registry: {error}"))],
-            );
+            flag(format!("unparsable registry: {error}"));
+            return (Vec::new(), violations);
         }
     };
     let mut regions: Vec<DecodedRegion> = Vec::new();
-    let mut violations = Vec::new();
-    for row in rows(&table, "region") {
-        let field = |key| str_field(row, key).filter(|v| !v.trim().is_empty());
-        let (Some(file), Some(name), Some(_), Some(_)) = (
-            field("file"),
-            field("macro"),
-            field("consumer"),
-            field("decoder"),
-        ) else {
-            violations.push(flag(
-                "a region row needs file, macro, consumer and decoder".to_owned(),
-            ));
-            continue;
-        };
-        if regions.iter().any(|r| r.file == file && r.name == name) {
-            violations.push(flag(format!("{file} macro {name} is registered twice")));
-            continue;
-        }
-        let mut dispatch: Vec<ast_rules::Dispatch> = Vec::new();
-        for tag in rows(row, "tag") {
-            let path = str_field(tag, "path").unwrap_or_default();
-            let variants: Vec<String> = tag
-                .get("variants")
-                .and_then(toml::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect();
-            let well_formed = !path.is_empty()
-                && path.split('.').all(is_name)
-                && str_field(tag, "schema").is_some_and(|s| !s.is_empty())
-                && !variants.is_empty()
-                && variants.iter().collect::<BTreeSet<_>>().len() == variants.len()
-                && !dispatch.iter().any(|d| d.path == path);
-            if well_formed {
-                dispatch.push(ast_rules::Dispatch {
-                    path: path.to_owned(),
-                    variants,
-                });
+    for key in table.keys().filter(|k| *k != "region") {
+        flag(format!("unknown registry key {key:?}"));
+    }
+    for row in strict_rows(&table, "region", "registry", &mut flag) {
+        if let Some(region) = region_row(row, &mut flag) {
+            if regions
+                .iter()
+                .any(|r| r.file == region.file && r.name == region.name)
+            {
+                flag(format!(
+                    "{} macro {} is registered twice",
+                    region.file, region.name
+                ));
             } else {
-                violations.push(flag(format!(
-                    "{file} macro {name}: a tag needs a new dotted path, a schema and distinct variants"
-                )));
+                regions.push(region);
             }
         }
-        regions.push(DecodedRegion {
-            file: file.to_owned(),
-            name: name.to_owned(),
-            dispatch,
-        });
     }
     (regions, violations)
+}
+
+/// The tables of array `key` in `table`; a non-array value or a non-table
+/// element is reported.
+fn strict_rows<'t>(
+    table: &'t toml::Table,
+    key: &str,
+    owner: &str,
+    flag: &mut dyn FnMut(String),
+) -> Vec<&'t toml::Table> {
+    match table.get(key) {
+        None => Vec::new(),
+        Some(toml::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                let row = item.as_table();
+                if row.is_none() {
+                    flag(format!("{owner}: a {key} entry is not a table"));
+                }
+                row
+            })
+            .collect(),
+        Some(_) => {
+            flag(format!("{owner}: {key} is not an array of tables"));
+            Vec::new()
+        }
+    }
+}
+
+fn unknown_keys(row: &toml::Table, known: &[&str], owner: &str, flag: &mut dyn FnMut(String)) {
+    for key in row.keys().filter(|k| !known.contains(&k.as_str())) {
+        flag(format!("{owner}: unknown key {key:?}"));
+    }
+}
+
+/// A non-empty string field, or a report.
+fn strict_str(
+    row: &toml::Table,
+    key: &str,
+    owner: &str,
+    flag: &mut dyn FnMut(String),
+) -> Option<String> {
+    match row.get(key).and_then(toml::Value::as_str) {
+        Some(value) if !value.trim().is_empty() => Some(value.to_owned()),
+        _ => {
+            flag(format!("{owner}: {key} must be a non-empty string"));
+            None
+        }
+    }
+}
+
+fn region_row(row: &toml::Table, flag: &mut dyn FnMut(String)) -> Option<DecodedRegion> {
+    let file = strict_str(row, "file", "a region", flag);
+    let name = strict_str(row, "macro", "a region", flag);
+    let consumer = strict_str(row, "consumer", "a region", flag);
+    let decoder = strict_str(row, "decoder", "a region", flag);
+    unknown_keys(
+        row,
+        &["file", "macro", "consumer", "decoder", "argument", "tag"],
+        "a region",
+        flag,
+    );
+    let (file, name, consumer, decoder) = (file?, name?, consumer?, decoder?);
+    let owner = format!("{file} macro {name}");
+    let mut arguments: Vec<(String, String)> = Vec::new();
+    for argument in strict_rows(row, "argument", &owner, flag) {
+        unknown_keys(argument, &["name", "schema"], &owner, flag);
+        let (Some(arg), Some(schema)) = (
+            strict_str(argument, "name", &owner, flag),
+            strict_str(argument, "schema", &owner, flag),
+        ) else {
+            continue;
+        };
+        if !is_name(&arg) || arguments.iter().any(|(a, _)| *a == arg) {
+            flag(format!("{owner}: argument {arg:?} is not a new name"));
+        }
+        arguments.push((arg, schema));
+    }
+    let mut dispatch: Vec<ast_rules::Dispatch> = Vec::new();
+    for tag in strict_rows(row, "tag", &owner, flag) {
+        unknown_keys(tag, &["path", "schema", "variants"], &owner, flag);
+        if let Some(d) = tag_row(tag, &arguments, &dispatch, &owner, flag) {
+            dispatch.push(d);
+        }
+    }
+    Some(DecodedRegion {
+        file,
+        name,
+        consumer,
+        decoder,
+        arguments,
+        dispatch,
+    })
+}
+
+/// A tag from a declared argument: a dotted path into it, or the argument
+/// itself when the argument's own schema is the tag's.
+fn tag_row(
+    tag: &toml::Table,
+    arguments: &[(String, String)],
+    taken: &[ast_rules::Dispatch],
+    owner: &str,
+    flag: &mut dyn FnMut(String),
+) -> Option<ast_rules::Dispatch> {
+    let path = strict_str(tag, "path", owner, flag)?;
+    let schema = strict_str(tag, "schema", owner, flag)?;
+    let variants: Vec<String> = match tag.get("variants") {
+        Some(toml::Value::Array(items))
+            if !items.is_empty() && items.iter().all(toml::Value::is_str) =>
+        {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        }
+        _ => {
+            flag(format!(
+                "{owner}: tag {path:?} needs a non-empty array of string variants"
+            ));
+            return None;
+        }
+    };
+    let segments: Vec<&str> = path.split('.').collect();
+    let root = arguments.iter().find(|(a, _)| a == segments[0]);
+    let bound = match (root, segments.len()) {
+        (Some(_), n) if n > 1 => segments.iter().all(|s| is_name(s)),
+        (Some((_, argument_schema)), 1) => *argument_schema == schema,
+        _ => false,
+    };
+    if !bound {
+        flag(format!(
+            "{owner}: tag {path:?} must be a dotted path from a declared argument, or a declared argument of schema {schema}"
+        ));
+        return None;
+    }
+    if variants.iter().collect::<BTreeSet<_>>().len() != variants.len()
+        || taken.iter().any(|d| d.path == path)
+    {
+        flag(format!(
+            "{owner}: tag {path:?} repeats a variant or an earlier tag"
+        ));
+        return None;
+    }
+    Some(ast_rules::Dispatch { path, variants })
 }
 
 fn is_name(part: &str) -> bool {
@@ -385,12 +502,29 @@ fn check_region(
     };
     let decoded = registry.iter().find(|r| r.file == file && r.name == name);
     let (roots, mut violations) = macro_roots(file, region);
+    if let Some(row) = decoded {
+        let declared: Vec<&String> = row.arguments.iter().map(|(a, _)| a).collect();
+        if declared != roots.iter().collect::<Vec<_>>() {
+            violations.push(Violation {
+                file: REGION_REGISTRY.to_owned(),
+                line: 0,
+                column: 0,
+                rule: Rule::RegionSelection,
+                detail: format!(
+                    "{file} macro {name}: registered arguments {declared:?} are not the macro's {roots:?}"
+                ),
+            });
+        }
+    }
     let mut walk = Walk::new(source, language, Some(roots));
     walk.report.violations.append(&mut violations);
     walk.stack.push(file.to_owned());
     walk.report.files.push(format!(
         "{file} (macro {name}{} only; the rest of the file is not covered)",
-        if decoded.is_some() { ", decoded," } else { "" }
+        decoded.map_or_else(String::new, |row| format!(
+            ", decoded by {} for {},",
+            row.decoder, row.consumer
+        ))
     ));
     let mut edges = Vec::new();
     match decoded {

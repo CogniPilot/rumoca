@@ -914,6 +914,9 @@ file = "fmi3/f.jinja"
 macro = "item"
 consumer = "fixture definition"
 decoder = "fixture decoder"
+[[region.argument]]
+name = "item"
+schema = "Body"
 [[region.tag]]
 path = "item.kind"
 schema = "Body"
@@ -924,6 +927,9 @@ file = "fmi3/f.jinja"
 macro = "name"
 consumer = "fixture definition"
 decoder = "fixture decoder"
+[[region.argument]]
+name = "value"
+schema = "Name"
 [[region.tag]]
 path = "value.space"
 schema = "NameSpace"
@@ -1192,4 +1198,78 @@ fn a_dispatch_chain_spells_each_declared_variant_once_and_then_refuses() {
     // A refusal anywhere but the end of a dispatch chain is still a fallback.
     let stray = DECODED.replacen("memcpy(", "{{ fail(\"x\") }}memcpy(", 1);
     refused(&stray, Some(REGISTRY), Rule::Fallback, "stray refusal");
+}
+
+#[test]
+fn malformed_registry_containers_and_values_are_reported_not_filtered() {
+    let region = "[[region]]\nfile=\"fmi3/f.jinja\"\nmacro=\"item\"\nconsumer=\"c\"\ndecoder=\"d\"\n[[region.argument]]\nname=\"item\"\nschema=\"Body\"\n";
+    let cases = [
+        // Review controls: a non-string variant, non-table rows, a bare path.
+        format!("{region}[[region.tag]]\npath=\"item.kind\"\nschema=\"Body\"\nvariants=[\"copy\",\"fill\",7]\n"),
+        "region=[7]\n".to_owned(),
+        "[[region]]\nfile=\"fmi3/f.jinja\"\nmacro=\"item\"\nconsumer=\"c\"\ndecoder=\"d\"\ntag=[7]\n".to_owned(),
+        "[[region]]\nfile=\"fmi3/f.jinja\"\nmacro=\"item\"\nconsumer=\"c\"\ndecoder=\"d\"\n[[region.tag]]\npath=\"item\"\nschema=\"Body\"\nvariants=[\"copy\"]\n".to_owned(),
+        // A region that is not an array, a non-table argument, an unknown key.
+        "region=\"item\"\n".to_owned(),
+        format!("{region}argument=[1]\n"),
+        format!("{region}extra=1\n"),
+        "regions=[]\n".to_owned(),
+        // A tag rooted at no declared argument, and a bare argument of another schema.
+        format!("{region}[[region.tag]]\npath=\"plan.kind\"\nschema=\"Body\"\nvariants=[\"copy\"]\n"),
+        format!("{region}[[region.tag]]\npath=\"item\"\nschema=\"Kind\"\nvariants=[\"copy\"]\n"),
+    ];
+    for registry in &cases {
+        let source = Fixture::new(&[("fmi3/print_plan_regions.toml", registry.as_str())]);
+        let (_, problems) = load_registry(&source);
+        assert!(
+            !problems.is_empty(),
+            "malformed registry accepted: {registry}"
+        );
+    }
+    // A bare argument whose own schema is the tag's is a tag.
+    let bare =
+        format!("{region}[[region.tag]]\npath=\"item\"\nschema=\"Body\"\nvariants=[\"copy\"]\n");
+    let source = Fixture::new(&[("fmi3/print_plan_regions.toml", bare.as_str())]);
+    let (regions, problems) = load_registry(&source);
+    assert_eq!((regions.len(), problems.len()), (1, 0), "{problems:?}");
+}
+
+#[test]
+fn registered_arguments_must_be_the_macros_own() {
+    let renamed = REGISTRY.replacen("name = \"item\"", "name = \"entry\"", 1);
+    refused(
+        DECODED,
+        Some(&renamed),
+        Rule::RegionSelection,
+        "renamed argument",
+    );
+    let missing = REGISTRY.replacen(
+        "[[region.argument]]\nname = \"item\"\nschema = \"Body\"\n",
+        "",
+        1,
+    );
+    refused(
+        DECODED,
+        Some(&missing),
+        Rule::RegionSelection,
+        "undeclared argument",
+    );
+    // Only the argument list differs: an extra declared argument the macro
+    // does not take, with every tag still rooted at a real argument.
+    let extra = REGISTRY.replacen(
+        "[[region.argument]]\nname = \"item\"\nschema = \"Body\"\n",
+        "[[region.argument]]\nname = \"item\"\nschema = \"Body\"\n[[region.argument]]\nname = \"plan\"\nschema = \"Plan\"\n",
+        1,
+    );
+    let source = Fixture::new(&[("fmi3/print_plan_regions.toml", extra.as_str())]);
+    assert!(
+        load_registry(&source).1.is_empty(),
+        "the registry itself is well formed"
+    );
+    refused(
+        DECODED,
+        Some(&extra),
+        Rule::RegionSelection,
+        "extra argument",
+    );
 }
