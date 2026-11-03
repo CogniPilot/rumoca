@@ -4,10 +4,12 @@
 //! pattern, whose column-conflict graph has about N^3/2 edges (1.9 GB peak at
 //! N = 400); a run under a 256 MiB address-space limit aborted.
 
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, lower_correlated_for_simulation_with_overrides};
+#[cfg(target_os = "linux")]
 use tempfile::tempdir;
 
 const CELLS: usize = 400;

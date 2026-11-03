@@ -188,6 +188,15 @@ fn cli_parses_verify_template_runtimes_required_tools_policy() {
 }
 
 #[test]
+fn cli_parses_verify_clippy_job() {
+    let cli = Cli::try_parse_from(["xtask", "verify", "clippy"]).expect("parse verify clippy");
+    match cli.command {
+        Commands::Verify(args) => assert_eq!(args.command, VerifyCommand::Clippy),
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_verify_examples_job() {
     let cli = Cli::try_parse_from(["xtask", "verify", "examples"]).expect("parse verify examples");
     match cli.command {
