@@ -420,15 +420,62 @@ impl<'s> Walk<'s> {
     }
 }
 
-/// The lint gate: every covered template passes.
+/// Artifact templates that pass the strict check without being registered as
+/// covered. Unregistered, the gate would not keep checking them, so a template
+/// that becomes print-only must be added to `COVERED_TEMPLATES`.
+pub(crate) fn uncovered_passes(
+    source: &dyn TemplateSource,
+    artifacts: &[String],
+    covered: &[&str],
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for root in artifacts {
+        if covered.contains(&root.as_str()) {
+            continue;
+        }
+        if check(source, root, Language::of_template(root))?
+            .violations
+            .is_empty()
+        {
+            out.push(root.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// The lint gate: every covered template and macro region passes, and no
+/// artifact template passes without being registered.
 pub(crate) fn run() -> Result<()> {
     let repo = RepoTemplates::load(&repo_root())?;
+    gate(&repo, repo.artifacts(), COVERED_TEMPLATES, COVERED_MACROS)?;
+    println!(
+        "print-plan template check: {} covered template(s) and {} macro region(s) pass; legacy templates are tracked by the migration ledger, not by this gate",
+        COVERED_TEMPLATES.len(),
+        COVERED_MACROS.len()
+    );
+    Ok(())
+}
+
+/// The gate's decision for a set of covered templates and macro regions.
+pub(crate) fn gate(
+    source: &dyn TemplateSource,
+    artifacts: &[String],
+    templates: &[&str],
+    macros: &[(&str, &str, Language)],
+) -> Result<()> {
     let mut failed = Vec::new();
-    for root in COVERED_TEMPLATES {
-        failed.extend(check(&repo, root, Language::of_template(root))?.violations);
+    for root in templates {
+        failed.extend(check(source, root, Language::of_template(root))?.violations);
     }
-    for (file, name, language) in COVERED_MACROS {
-        failed.extend(check_macro(&repo, file, name, *language)?.violations);
+    for (file, name, language) in macros {
+        failed.extend(check_macro(source, file, name, *language)?.violations);
+    }
+    let unregistered = uncovered_passes(source, artifacts, templates)?;
+    if !unregistered.is_empty() {
+        bail!(
+            "print-plan template check: {} pass but are not in COVERED_TEMPLATES; register them so the gate keeps checking them",
+            unregistered.join(", ")
+        );
     }
     if !failed.is_empty() {
         for violation in &failed {
@@ -439,11 +486,6 @@ pub(crate) fn run() -> Result<()> {
             failed.len()
         );
     }
-    println!(
-        "print-plan template check: {} covered template(s) and {} macro region(s) pass; legacy templates are tracked by the migration ledger, not by this gate",
-        COVERED_TEMPLATES.len(),
-        COVERED_MACROS.len()
-    );
     Ok(())
 }
 

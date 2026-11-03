@@ -3,7 +3,8 @@
 //! cites, so they fail if the gate stops recognizing the audited constructs.
 
 use super::{
-    Language, RepoTemplates, Rule, TemplateSource, check, check_macro, literal_c, repo_root,
+    Language, RepoTemplates, Rule, TemplateSource, check, check_macro, gate, literal_c, repo_root,
+    uncovered_passes,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
@@ -63,10 +64,10 @@ fn assert_flags(files: &[(&str, &str)], file: &str, line: u16, rule: Rule) {
 /// issued collection, an encoded string, an issued ABI signature and a call to
 /// an issued runtime function.
 const POSITIVE: &str = r#"/* {{ plan.banner | xml_escape }} */
-{{ plan.signature.return_type }} {{ plan.signature.name }}({{ plan.signature.parameters }})
+{{ plan.signature.return_type }} {{ plan.signature.name }}( {{ plan.signature.parameters }} )
 {
 {%- for decl in plan.frame %}
-    {{ decl.c_type }} {{ decl.name }}{% if decl.is_array %}[{{ decl.extent }}]{% endif %};
+    {{ decl.c_type }} {{ decl.name }} {% if decl.is_array %}[ {{ decl.extent }} ]{% endif %};
 {%- endfor %}
 {%- for op in plan.body %}
 {%- if op.is_copy %}
@@ -74,7 +75,7 @@ const POSITIVE: &str = r#"/* {{ plan.banner | xml_escape }} */
 {%- elif op.is_binary %}
     {{ op.dst }} = {{ op.lhs }} {{ op.operator_token }} {{ op.rhs }};
 {%- elif op.is_runtime_call %}
-    {{ op.status }} = {{ op.runtime_function }}({% for arg in op.args %}{{ arg.name }}{% if not loop.last %}, {% endif %}{% endfor %});
+    {{ op.status }} = {{ op.runtime_function }}({% for arg in op.args %} {{ arg.name }} {% if not loop.last %},{% endif %}{% endfor %});
 {%- endif %}
 {%- endfor %}
     return {{ plan.ok_status }};
@@ -85,13 +86,12 @@ const POSITIVE: &str = r#"/* {{ plan.banner | xml_escape }} */
 fn positive_controls_pass() {
     // `not loop.last` is a Boolean formula; the punctuation marker itself is the only allowed shape.
     let positive = POSITIVE.replace(
-        "{% if not loop.last %}, {% endif %}",
-        "{% if loop.last %}{% else %}, {% endif %}",
+        "{% if not loop.last %},{% endif %}",
+        "{% if loop.last %}{% else %},{% endif %}",
     );
     assert_eq!(rules_of(&[("body.c.jinja", &positive)]), Vec::new());
     // A zero/singleton issued collection and an issued placement print through the same constructs.
-    let empty =
-        "{% for item in plan.items %}{{ item.name }}{% endfor %}{{ plan.placement.offset_token }}";
+    let empty = "{% for item in plan.items %} {{ item.name }} ;{% endfor %} {{ plan.placement.offset_token }}";
     assert_eq!(rules_of(&[("unit.c.jinja", empty)]), Vec::new());
     // Static composition of an approved print-only fragment.
     let root = r#"{% include "frag.jinja" %}"#;
@@ -302,26 +302,99 @@ fn literal_gaussian_elimination_fails_although_its_ast_is_clean() {
 }
 
 #[test]
-fn literal_check_covers_strings_comments_defines_and_spellings() {
+fn literal_c_admits_only_declaration_spelling() {
     let found = |text: &str| literal_c::forbidden_c_tokens(text);
-    assert!(found("/* for each row */ int x; // while ok\n\"for(;;)\" 'x'").is_empty());
-    assert_eq!(found("y = x * 0.5;").len(), 1);
-    assert_eq!(found("y = 1e-12;").len(), 1);
-    assert_eq!(found("y = 0x1p-3;").len(), 1);
-    assert!(found("y = 0xE0;").is_empty());
-    assert_eq!(found("s += a;").len(), 1);
-    assert_eq!(found("#define STEP(k) for (k = 0; k < N; k++)\n").len(), 2);
-    assert!(found("#include <math.h>\n#if FOO > 1\n#endif\nint f(void);").is_empty());
+    for admitted in [
+        "/* for each row */ const double * const * ; // while ok\n\"for(;;)\" 'x'",
+        "( ) [ ] { } , ; = . -> return ;",
+        "#include <math.h>\n#include \"model.h\"\n#ifndef GUARD\n#define GUARD\n#endif\n#pragma once\n",
+        "static inline void ( int32_t * , uint64_t ) ;",
+    ] {
+        assert_eq!(found(admitted), Vec::new(), "{admitted:?}");
+    }
+    for rejected in [
+        "x",
+        "0",
+        "0x1p-3",
+        "1e-12",
+        "0.5",
+        "+",
+        "-",
+        "/",
+        "%",
+        "==",
+        "<",
+        "&",
+        "?",
+        ":",
+        "!",
+        "~",
+        "+=",
+        "++",
+        "sizeof",
+        "for",
+        "while",
+        "a##b",
+        "%:",
+        "<%",
+        "#define STEP(k) k\n",
+        "#if 1\n",
+        "#define N 4\n",
+        "( ) * ( )",
+    ] {
+        assert!(!found(rejected).is_empty(), "{rejected:?} must be rejected");
+    }
     // A printed string constant is literal text too.
-    let printed = "{{ \"while (1) {}\" }}";
     assert_flags(
-        &[("t.c.jinja", printed)],
+        &[("t.c.jinja", "{{ \"while (1) {}\" }}")],
         "t.c.jinja",
         1,
         Rule::LiteralExecutable,
     );
 }
 
+#[test]
+fn a_recursive_algorithm_in_one_clean_text_node_fails() {
+    // Review witness: no loop, accumulation or floating constant, yet a numerical algorithm.
+    let text = "int dot(const int *a, const int *b, unsigned n) { return n ? a[0]*b[0]+dot(a+1,b+1,n-1) : 0; }";
+    let found = rules_of(&[("t.c.jinja", text)]);
+    assert!(
+        !found.is_empty() && found.iter().all(|(_, _, r)| *r == Rule::LiteralExecutable),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn rendered_join_witnesses_fail() {
+    // Review witnesses: each renders and preprocesses to `for(;;)`.
+    let cases: [&[(&str, &str)]; 6] = [
+        &[("t.c.jinja", "void evil(void) { fo\\\nr(;;) {} }")],
+        &[("t.c.jinja", "void evil(void) { f{{ \"o\" }}r(;;) {} }")],
+        &[("t.c.jinja", "void evil(void) { f{# silent #}or(;;) {} }")],
+        &[
+            (
+                "t.c.jinja",
+                "void evil(void) { fo{% include \"tail.jinja\" %} }",
+            ),
+            ("tail.jinja", "r(;;) {}"),
+        ],
+        &[(
+            "t.c.jinja",
+            "void evil(void) { fo{% if plan.flag %}r{% else %}o{% endif %}(;;) {} }",
+        )],
+        &[(
+            "t.c.jinja",
+            "#define CAT(a,b) a##b\nvoid evil(void) { CAT(fo,r)(;;) {} }",
+        )],
+    ];
+    for files in cases {
+        let found = rules_of(files);
+        assert!(
+            found.iter().any(|(_, _, r)| *r == Rule::LiteralExecutable),
+            "{files:?}: {found:?}"
+        );
+    }
+}
 #[test]
 fn a_target_without_a_literal_check_fails_closed() {
     assert_flags(
@@ -410,21 +483,37 @@ fn audit_witnesses_in_the_legacy_templates_fail() {
 
 #[test]
 fn every_legacy_artifact_template_is_outside_the_strict_gate() {
-    // The gate makes no compliance claim for an unmigrated template: each one
-    // the manifests declare either fails the strict check or is covered.
+    // The gate makes no compliance claim for an unmigrated template: none that
+    // the manifests declare passes the strict check without being covered.
     let repo = RepoTemplates::load(&repo_root()).expect("template manifests");
     assert!(
         repo.artifacts().len() > 20,
         "manifests declare the artifact templates"
     );
-    for root in repo.artifacts() {
-        let report = check(&repo, root, Language::of_template(root)).expect("check");
-        let covered = true;
-        assert!(
-            covered || !report.violations.is_empty(),
-            "{root} passes but is not registered as covered"
-        );
-    }
+    let unregistered =
+        uncovered_passes(&repo, repo.artifacts(), super::COVERED_TEMPLATES).expect("check");
+    assert_eq!(unregistered, Vec::<String>::new());
+}
+
+#[test]
+fn a_passing_artifact_must_be_registered_as_covered() {
+    let clean = Fixture::new(&[("model.c.jinja", "int {{ plan.name }};\n")]);
+    let artifacts = vec!["model.c.jinja".to_owned()];
+    assert_eq!(
+        uncovered_passes(&clean, &artifacts, &[]).expect("check"),
+        artifacts
+    );
+    assert!(
+        uncovered_passes(&clean, &artifacts, &["model.c.jinja"])
+            .expect("check")
+            .is_empty()
+    );
+    let legacy = Fixture::new(&[("model.c.jinja", "{{ n * 2 }}")]);
+    assert!(
+        uncovered_passes(&legacy, &artifacts, &[])
+            .expect("check")
+            .is_empty()
+    );
 }
 
 fn region(files: &[(&str, &str)], name: &str) -> Vec<(String, u16, Rule)> {
@@ -446,7 +535,7 @@ fn region_has(files: &[(&str, &str)], name: &str, line: u16, rule: Rule) {
 }
 
 /// A print-only macro inside a file whose other text is legacy executable C.
-const MIXED: &str = r#"{% macro scalar_copy(op) %}{{ op.dst }} = {{ op.src }};{% endmacro %}
+const MIXED: &str = r#"{% macro scalar_copy(op) %} {{ op.dst }} = {{ op.src }};{% endmacro %}
 {% macro legacy_solve(n) %}for (size_t i=0; i<{{ n }}; ++i) s += a[i];{% endmacro %}
 for (size_t c=0; c<{{ program.n }}; ++c) { A[c] -= 0.5; }
 "#;
@@ -546,5 +635,129 @@ fn the_legacy_trip_count_macro_fails_as_a_region() {
         report.files[0].contains("macro trip_count only"),
         "{:?}",
         report.files
+    );
+}
+
+#[test]
+fn literal_text_is_checked_as_it_prints() {
+    // A line splice rebuilds `for` across a backslash-newline.
+    assert_flags(
+        &[("t.c.jinja", "fo\\\nr (;;) {}\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    // A printed string constant joins the literal text beside it.
+    assert_flags(
+        &[("t.c.jinja", "f{{ \"o\" }}r (;;) {}\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    // An issued value glued to literal text or to another value could complete a token.
+    assert_flags(
+        &[("t.c.jinja", "fo{{ op.tail }} (;;) {}\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    assert_flags(
+        &[("t.c.jinja", "x = {{ op.a }}{{ op.b }};\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    assert_flags(
+        &[("t.c.jinja", "x +{{ op.eq }} 1;\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    // An include prints text this check cannot see from the includer.
+    let include = [
+        ("t.c.jinja", "fo{% include \"r.jinja\" %} (;;) {}\n"),
+        ("r.jinja", "r"),
+    ];
+    assert_flags(&include, "t.c.jinja", 1, Rule::LiteralExecutable);
+    // A branch decides which text joins its neighbours.
+    assert_flags(
+        &[("t.c.jinja", "fo{% if plan.flag %}r{% endif %} (;;) {}\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    // A comment opened in one branch could close over code in another.
+    let comment = "{% if plan.flag %}/*{% endif %} for (;;) {} */\n";
+    assert_flags(
+        &[("t.c.jinja", comment)],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    // Trigraphs and the `%:` digraph spell a backslash and a directive.
+    assert_flags(
+        &[("t.c.jinja", "int x; ??/\nint y;\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    assert_flags(
+        &[("t.c.jinja", "%:define LOOP for (;;)\n")],
+        "t.c.jinja",
+        1,
+        Rule::LiteralExecutable,
+    );
+    // A comment around an issued banner stays literal text, and passes.
+    assert_eq!(
+        rules_of(&[("t.c.jinja", "/* {{ plan.banner }} */\nint {{ plan.x }} ;\n")]),
+        Vec::new()
+    );
+}
+
+#[test]
+fn the_gate_fails_on_a_covered_violation_and_on_an_unregistered_pass() {
+    let files = Fixture::new(&[
+        ("clean.c.jinja", "int {{ plan.name }};\n"),
+        ("legacy.c.jinja", "{{ n * 2 }}"),
+    ]);
+    let artifacts = vec!["clean.c.jinja".to_owned(), "legacy.c.jinja".to_owned()];
+    assert!(gate(&files, &artifacts, &["clean.c.jinja"], &[]).is_ok());
+    assert!(
+        gate(&files, &artifacts, &[], &[]).is_err(),
+        "clean.c.jinja passes unregistered"
+    );
+    assert!(
+        gate(
+            &files,
+            &artifacts,
+            &["clean.c.jinja", "legacy.c.jinja"],
+            &[]
+        )
+        .is_err()
+    );
+    let region = [("legacy.c.jinja", "missing_macro", Language::C)];
+    assert!(gate(&files, &artifacts, &["clean.c.jinja"], &region).is_err());
+}
+
+#[test]
+fn each_literal_join_check_fails_on_its_own() {
+    // Each fixture holds only admitted tokens, so only the named check can fail it.
+    let only = |text: &str| {
+        let found = rules_of(&[("t.c.jinja", text)]);
+        assert!(!found.is_empty(), "{text:?}: {found:?}");
+    };
+    only("int{% if plan.flag %} ( {% endif %}\n"); // text ends at a block edge with a token character
+    only("{% if plan.flag %} ( {% endif %}int ;\n"); // text starts at a block edge with a token character
+    only("{% if plan.flag %} /* {% endif %} ;\n"); // a run ends inside a comment
+    only("/* ??= */\n"); // a trigraph, even in a comment
+    only("{{ plan.a }} =\\\n= {{ plan.b }} ;\n"); // a line splice forms `==`
+    only("{{ plan.a }} = {{ plan.b }} {{ \"+\" }} {{ plan.c }} ;\n"); // a printed constant is text
+    only("= {{ plan.a }}{{ plan.b }} ;\n"); // two issued values touch
+    // Admitted text that a line splice breaks passes once spliced.
+    assert_eq!(rules_of(&[("t.c.jinja", "in\\\nt ;\n")]), Vec::new());
+    // Each passes once delimited.
+    assert_eq!(
+        rules_of(&[("t.c.jinja", "int ;{% if plan.flag %} ( {% endif %}\n")]),
+        Vec::new()
     );
 }
