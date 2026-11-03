@@ -1232,19 +1232,17 @@ fn replace_staged_binary(source: &Path, target: &Path) -> Result<()> {
     })?;
     if let Err(error) = fs::rename(&temp_target, target) {
         #[cfg(windows)]
-        {
-            if target.exists() {
-                fs::remove_file(target)
-                    .with_context(|| format!("failed to remove {}", target.display()))?;
-                fs::rename(&temp_target, target).with_context(|| {
-                    format!(
-                        "failed to replace staged binary {} with {}",
-                        temp_target.display(),
-                        target.display()
-                    )
-                })?;
-                return Ok(());
-            }
+        if target.exists() {
+            fs::remove_file(target)
+                .with_context(|| format!("failed to remove {}", target.display()))?;
+            fs::rename(&temp_target, target).with_context(|| {
+                format!(
+                    "failed to replace staged binary {} with {}",
+                    temp_target.display(),
+                    target.display()
+                )
+            })?;
+            return Ok(());
         }
         let _ = fs::remove_file(&temp_target);
         return Err(error).with_context(|| {
