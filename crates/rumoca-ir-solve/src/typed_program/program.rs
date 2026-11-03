@@ -24,7 +24,14 @@ mod loop_flow;
 mod native;
 mod operation_visit;
 mod pass_flow;
+mod print_plan;
 mod read_flow;
+mod storage_plan;
+pub use print_plan::{
+    SolveBodyItem, SolveElementToken, SolveFrameItem, SolveName, SolveNameSpace, SolveOutputCopy,
+    SolvePrintPlan,
+};
+pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 mod tensor;
 mod value_numbering;
 use value_numbering::ValueKey;
@@ -512,6 +519,8 @@ pub struct TypedProgram {
     register_types: Box<[SolveValueType]>,
     operations: Box<[SolveSpannedOperation]>,
     assigned_states: AssignedStateLayout,
+    storage: SolveStoragePlan,
+    print: SolvePrintPlan,
     #[serde(skip)]
     read_flow: read_flow::ReadFlow,
     #[serde(skip)]
@@ -622,12 +631,16 @@ impl TypedProgram {
         let fault_flow = fault_flow::FaultFlow::of(&operations, &register_types, &slots, &[]);
         let loop_flow = loop_flow::LoopFlow::of(&operations);
         let pass_flow = pass_flow::PassFlow::of(&operations, &fault_flow);
+        let storage = SolveStoragePlan::host(&slots, &register_types, &operations);
+        let print = SolvePrintPlan::of(&slots, &register_types, &operations, &storage);
         let mut program = Self {
             arithmetic,
             slots: slots.into_boxed_slice(),
             register_types: register_types.into_boxed_slice(),
             operations: operations.into_boxed_slice(),
             assigned_states,
+            storage,
+            print,
             read_flow,
             fault_flow,
             loop_flow,
@@ -726,6 +739,20 @@ impl TypedProgram {
     pub fn register_moves_at(&self, register: SolveRegisterId, operation: usize) -> bool {
         self.read_flow
             .register_moves_at(register.index(), operation)
+    }
+
+    /// Where each slot and register of this body lives, issued once at
+    /// assembly; emitters print it.
+    #[must_use]
+    pub fn storage_plan(&self) -> &SolveStoragePlan {
+        &self.storage
+    }
+
+    /// The print projection of this body, assembled from its storage plan;
+    /// printers spell it.
+    #[must_use]
+    pub fn print_plan(&self) -> &SolvePrintPlan {
+        &self.print
     }
 
     /// Whether `operation` is the last load of the read-only `slot`, whose

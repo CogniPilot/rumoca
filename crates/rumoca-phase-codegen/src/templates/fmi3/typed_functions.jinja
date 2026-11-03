@@ -13,6 +13,9 @@
 {#- Whether a value of this type is a binary64 array a caller can pass
     through unconverted (nonempty; an empty type keeps its one-element local). -#}
 {%- macro direct(ty) -%}{% if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" and ty.scalar_count > 0 %}1{% endif %}{%- endmacro %}
+{#- The one spelling of each issued element token. -#}
+{%- macro element(token) -%}{% if token == "real64" %}double{% elif token == "int64" %}int64_t{% elif token == "boolean" %}bool{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %}{%- endmacro %}
+{%- macro storage_name(name) -%}{% if name.space == "slot" %}s{% else %}r{% endif %}{{ name.id }}{%- endmacro %}
 {%- macro ctype(ty) -%}{% if ty.scalar.kind == "real" %}double{% elif ty.scalar.kind == "integer" %}int64_t{% else %}bool{% endif %}{%- endmacro %}
 
 {%- macro call(name, inputs, outputs) -%}
@@ -136,44 +139,25 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endfor -%}
 static int {{ name }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer) {
 (void)in; (void)out; (void)observer; (void)rumoca_real64;
-{% set input = namespace(index=0, pointers=[]) -%}
-{% for slot in program.slots -%}
-{% set stored = namespace(value=false) -%}
-{% for issued in program.operations %}{% if issued.operation.operation == "store" and issued.operation.slot == slot.id %}{% set stored.value = true %}{% endif %}{% endfor -%}
-{% if slot.storage == "input" and not stored.value and slot.value_type.scalar_count > 0 -%}
-{#- An input slot the body never writes reads the caller's array. -#}
-const {{ ctype(slot.value_type) }}* s{{ slot.id }} = in[{{ input.index }}]; (void)s{{ slot.id }};
-{% set input.index = input.index + 1 -%}
-{% set input.pointers = input.pointers + [slot.id] -%}
+{# The frame, body and output copies print the body's issued print plan;
+   an operation the plan has not projected yet prints through `operation`. -#}
+{% set plan = program.print -%}
+{% for item in plan.slots -%}
+{% if item.kind == "argument_view" -%}
+const {{ element(item.element) }}* s{{ item.slot }} = in[{{ item.argument }}]; (void)s{{ item.slot }};
+{% elif item.kind == "frame_from_argument" -%}
+{{ element(item.element) }} s{{ item.slot }}[{{ item.extent }}]; (void)s{{ item.slot }};
+memcpy(s{{ item.slot }}, in[{{ item.argument }}], sizeof(s{{ item.slot }}));
 {% else -%}
-{{ declaration("s" ~ slot.id, slot.value_type) }}
-{% if slot.storage == "input" -%}
-memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
-{% set input.index = input.index + 1 -%}
-{% endif -%}
+{{ element(item.element) }} s{{ item.name.id }}[{{ item.extent }}]; (void)s{{ item.name.id }};
 {% endif -%}
 {% endfor -%}
-{#- A register only a load of such an input slot defines reads the slot's
-    array as well (every other operation issues fresh registers). -#}
-{% set written = namespace(ids=[]) -%}
-{% for issued in program.operations -%}
-{% if issued.operation.destination is defined %}{% set written.ids = written.ids + [issued.operation.destination] %}{% endif -%}
-{% if issued.operation.destinations is defined %}{% set written.ids = written.ids + issued.operation.destinations|list %}{% endif -%}
-{% endfor -%}
-{% set alias = namespace(ids=[]) -%}
-{% for issued in program.operations -%}
-{% set op = issued.operation -%}
-{% if op.operation == "load" and op.slot in input.pointers and written.ids|select("equalto", op.destination)|list|length == 1 %}{% set alias.ids = alias.ids + [op.destination] %}{% endif -%}
-{% endfor -%}
-{% for ty in program.register_types %}{% if loop.index0 not in alias.ids %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
-{% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
-{% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
-{% set output = namespace(index=0) -%}
-{% for slot in program.slots -%}
-{% if slot.storage == "output" -%}
-if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
-{% set output.index = output.index + 1 -%}
-{% endif -%}
+{% for item in plan.registers %}{{ element(item.element) }} r{{ item.name.id }}[{{ item.extent }}]; (void)r{{ item.name.id }};{% endfor %}
+{% for item in plan.body %}{% if item.kind == "view" %}const {{ element(item.element) }}* r{{ item.register }} = s{{ item.slot }}; (void)r{{ item.register }};
+{% elif item.kind == "copy" %}memcpy({{ storage_name(item.destination) }}, {{ storage_name(item.source) }}, sizeof({{ storage_name(item.destination) }}));
+{% else %}{{ operation(program.operations[item.index].operation, program, name ~ "_region_" ~ item.index, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
+{% for item in plan.outputs -%}
+if (out[{{ item.output }}]) memcpy(out[{{ item.output }}], s{{ item.slot }}, sizeof(s{{ item.slot }}));
 {% endfor -%}
 return 0;
 }

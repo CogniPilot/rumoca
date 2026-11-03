@@ -10,6 +10,7 @@ mod loop_flow;
 mod native;
 mod pass_flow;
 mod read_flow;
+mod storage_plan;
 mod value_numbering;
 mod zero_result_conditional;
 

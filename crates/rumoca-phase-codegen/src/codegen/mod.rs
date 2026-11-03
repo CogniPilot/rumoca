@@ -40,6 +40,8 @@ mod galec_manifest_template_tests;
 mod lazy_scalar_projection;
 mod me_projection;
 mod native_fmi_renderer;
+#[cfg(test)]
+mod print_plan_conformance_tests;
 mod solve_block_renderer;
 #[cfg(test)]
 mod solve_render_fixture_tests;
