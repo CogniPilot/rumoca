@@ -236,6 +236,8 @@ fn decode_output(line: &str) -> Option<Decoded> {
 
 struct Printer {
     environment: minijinja::Environment<'static>,
+    /// Exact source from which this printer's environment was constructed.
+    functions: String,
 }
 
 impl Printer {
@@ -250,9 +252,12 @@ impl Printer {
                 .expect("built-in template");
         }
         environment
-            .add_template_owned("functions", functions)
+            .add_template_owned("functions", functions.clone())
             .expect("functions template");
-        Self { environment }
+        Self {
+            environment,
+            functions,
+        }
     }
 
     fn builtin() -> Self {
@@ -1488,7 +1493,12 @@ fn marked_rendering(
     marked: &Printer,
     program: &solve::TypedProgram,
     name: &str,
-) -> Result<String, String> {
+) -> Result<registry::Consumed, String> {
+    if plain.functions.contains("@@") {
+        return Err(format!(
+            "{name}: production source already holds marker text"
+        ));
+    }
     let wire = serde_json::to_value(program).unwrap();
     let production = plain.definition(&wire, name);
     if production.contains("@@") {
@@ -1497,17 +1507,22 @@ fn marked_rendering(
         ));
     }
     let rendered = marked.definition(&wire, name);
-    let output = registry::stripped(&rendered, regions);
+    // Build the trusted reference here, not from the caller's marked source
+    // or its claimed keys. It uses the exact plain source, program and name.
+    let trusted = Printer::new(registry::instrumented(&plain.functions, regions));
+    let reference = trusted.definition(&wire, name);
+    let consumed = registry::consume_trusted(&rendered, &reference, regions)?;
+    let output = consumed.output();
     if output != production {
         return Err(format!(
             "{name}: marked rendering is not production plus markers"
         ));
     }
-    let findings = check_rendered(plain, program, &wire, name, &output);
+    let findings = check_rendered(plain, program, &wire, name, output);
     if !findings.is_empty() {
         return Err(format!("{name}: {findings:?}"));
     }
-    Ok(rendered)
+    Ok(consumed)
 }
 
 /// Registration hands a region's literal text to these decoders, so each
@@ -1524,11 +1539,12 @@ fn every_registered_region_is_rendered_selected_and_decoded() {
     );
     let marked = Printer::new(registry::instrumented(template, &regions));
     let plain = Printer::builtin();
-    let mut rendered = String::new();
+    let mut events = Vec::new();
     for (program, name) in conformance_programs() {
-        rendered.push_str(&marked_rendering(&regions, &plain, &marked, &program, name).unwrap());
+        let consumed = marked_rendering(&regions, &plain, &marked, &program, name).unwrap();
+        events.extend_from_slice(consumed.occurrences());
     }
-    let (unrun, unselected) = registry::unreached(&regions, &rendered);
+    let (unrun, unselected) = registry::unreached(&regions, &events);
     assert_eq!(
         unrun,
         Vec::<String>::new(),
@@ -1568,9 +1584,36 @@ fn a_marked_rendering_must_be_production_plus_markers() {
         )
         .is_err()
     );
-    assert_eq!(
-        registry::stripped("a@@R:tensor_item@@b@@R:forged@@c", &regions),
-        "ab@@R:forged@@c"
+    for extra in [
+        "@@R:tensor_item@@@@R:tensor_item@@",
+        "@@R:tensor_item@@@@V:tensor_item:item.kernel.kind:cross@@",
+        "@@R:tensor_item@@@@V:element:token:real64@@",
+    ] {
+        let original = registry::instrumented(template, &regions);
+        let forged = original.replacen("@@R:tensor_item@@", extra, 1);
+        assert_ne!(forged, original, "mutation anchor");
+        assert!(
+            marked_rendering(&regions, &plain, &Printer::new(forged), &program, "tensor").is_err()
+        );
+    }
+    // Mixed has no tensor branch. Copying a known cross-variant key into
+    // its frame marker must not claim a selection that never happened.
+    let original = registry::instrumented(template, &regions);
+    let copied_variant = original.replacen(
+        "@@R:plan_frame@@",
+        "@@R:plan_frame@@@@V:tensor_item:item.kernel.kind:cross@@",
+        1,
+    );
+    assert_ne!(copied_variant, original, "copied variant anchor");
+    assert!(
+        marked_rendering(
+            &regions,
+            &plain,
+            &Printer::new(copied_variant),
+            &mixed_program(),
+            "mixed"
+        )
+        .is_err()
     );
     let injected = template.replacen(
         "{%- macro plan_outputs(plan) -%}\n",
@@ -1601,8 +1644,15 @@ fn an_unrendered_region_or_unselected_variant_fails_the_registry_proof() {
     let regions = registry::regions(&extra);
     let template = builtin_template("fmi3", "typed_functions.jinja");
     let marked = Printer::new(registry::instrumented(template, &regions));
-    let wire = serde_json::to_value(mixed_program()).unwrap();
-    let (unrun, unselected) = registry::unreached(&regions, &marked.definition(&wire, "mixed"));
+    let consumed = marked_rendering(
+        &regions,
+        &Printer::builtin(),
+        &marked,
+        &mixed_program(),
+        "mixed",
+    )
+    .unwrap();
+    let (unrun, unselected) = registry::unreached(&regions, consumed.occurrences());
     assert!(unrun.contains(&"ctype".to_owned()), "{unrun:?}");
     assert!(
         unselected.contains(&"tensor_item:item.kernel.kind:cross".to_owned()),
