@@ -1365,3 +1365,34 @@ fn a_same_id_tensor_substitution_fails_conformance() {
         &check_rendered(&printer, &program, &wire, "tensor", &rendered),
     );
 }
+
+/// Integer diagonals and identities stay legacy items: their fixed spellings
+/// assign through `double`, which does not hold every 64-bit integer (an
+/// element of 2^53+1 would print as 2^53).
+#[test]
+fn integer_diagonals_and_identities_stay_legacy() {
+    let integer = solve::SolveScalarType::Integer(solve::SolveIntegerDomain::FULL);
+    let program = solve::TypedProgram::construct(profile(), |builder| {
+        let v = input(
+            builder,
+            solve::SolveValueType::tensor(integer, vec![2]).unwrap(),
+        )?;
+        let results = [
+            builder.diagonal(v, span())?,
+            builder.identity(integer, 2, span())?,
+        ];
+        for result in results {
+            let slot = builder.declare_slot(
+                solve::SolveValueType::tensor(integer, vec![2, 2]).unwrap(),
+                solve::SolveStorageClass::Output,
+                solve::SolveSlotAccess::ReadWrite,
+                span(),
+            )?;
+            builder.store(slot, result, span())?;
+        }
+        Ok(())
+    })
+    .expect("checked integer tensor program");
+    assert_eq!(tensor_items(&program), Vec::new());
+    assert_eq!(coverage(&program).1, 2);
+}

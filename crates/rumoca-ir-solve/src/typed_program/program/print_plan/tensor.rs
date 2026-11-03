@@ -67,9 +67,9 @@ impl SolveElementAxis {
 pub enum SolveTensorKernel {
     /// `extent` copies of the scalar `value`.
     Fill { value: usize, extent: u32 },
-    /// The `size` by `size` Real identity.
+    /// The `size` by `size` Binary64 identity.
     Identity { size: u32 },
-    /// The `size` by `size` Real matrix with `operand` on its diagonal.
+    /// The `size` by `size` Binary64 matrix with `operand` on its diagonal.
     Diagonal { operand: usize, size: u32 },
     /// For each of `outer` blocks, every part's `width` elements in order.
     Concatenate {
@@ -116,8 +116,23 @@ pub(super) fn tensor_item(
     operation: &SolveOperation,
     register_types: &[SolveValueType],
 ) -> Option<SolveBodyItem> {
+    let (destination, kernel) = construction(operation, register_types)
+        .or_else(|| movement(operation, register_types))
+        .or_else(|| products(operation, register_types))?;
+    Some(SolveBodyItem::Tensor {
+        index,
+        destination: destination.index(),
+        kernel,
+    })
+}
+
+/// Fills, identities and diagonals.
+fn construction<'o>(
+    operation: &'o SolveOperation,
+    register_types: &[SolveValueType],
+) -> Option<(&'o SolveRegisterId, SolveTensorKernel)> {
     let value_type = |register: &SolveRegisterId| register_types.get(register.index());
-    let (destination, kernel) = match operation {
+    Some(match operation {
         SolveOperation::Fill { destination, value } => (
             destination,
             SolveTensorKernel::Fill {
@@ -126,7 +141,7 @@ pub(super) fn tensor_item(
             },
         ),
         SolveOperation::Identity { destination } => {
-            let &[size, columns] = value_type(destination)?.dimensions() else {
+            let &[size, columns] = binary64(value_type(destination)?)?.dimensions() else {
                 return None;
             };
             (size == columns).then_some(())?;
@@ -139,7 +154,7 @@ pub(super) fn tensor_item(
             let &[size] = value_type(operand)?.dimensions() else {
                 return None;
             };
-            (value_type(destination)?.dimensions() == [size, size]).then_some(())?;
+            (binary64(value_type(destination)?)?.dimensions() == [size, size]).then_some(())?;
             (
                 destination,
                 SolveTensorKernel::Diagonal {
@@ -148,6 +163,17 @@ pub(super) fn tensor_item(
                 },
             )
         }
+        _ => return None,
+    })
+}
+
+/// Concatenations, aggregate construction, transposes and static projections.
+fn movement<'o>(
+    operation: &'o SolveOperation,
+    register_types: &[SolveValueType],
+) -> Option<(&'o SolveRegisterId, SolveTensorKernel)> {
+    let value_type = |register: &SolveRegisterId| register_types.get(register.index());
+    Some(match operation {
         SolveOperation::Concatenate {
             destination,
             axis,
@@ -163,21 +189,6 @@ pub(super) fn tensor_item(
             destination,
             construct_aggregate(value_type(destination)?, elements, register_types)?,
         ),
-        SolveOperation::Scale {
-            destination,
-            aggregate,
-            scalar,
-        } => {
-            let destination_type = binary64(value_type(destination)?)?;
-            (
-                destination,
-                SolveTensorKernel::Scale {
-                    aggregate: aggregate.index(),
-                    scalar: scalar.index(),
-                    extent: destination_type.scalar_count(),
-                },
-            )
-        }
         SolveOperation::Transpose {
             destination,
             operand,
@@ -192,6 +203,54 @@ pub(super) fn tensor_item(
                     rows: *rows,
                     columns: *columns,
                     trailing: product(trailing)?,
+                },
+            )
+        }
+        SolveOperation::ProjectElement {
+            destination,
+            aggregate,
+            indices,
+        } => {
+            let shape = value_type(aggregate)?.dimensions();
+            (shape.len() == indices.len()).then_some(())?;
+            let axes = shape
+                .iter()
+                .zip(indices.iter())
+                .map(|(&extent, &coordinate)| {
+                    (coordinate < extent).then_some(SolveElementAxis { extent, coordinate })
+                })
+                .collect::<Option<Box<[_]>>>()?;
+            (
+                destination,
+                SolveTensorKernel::ProjectElement {
+                    aggregate: aggregate.index(),
+                    axes,
+                },
+            )
+        }
+        _ => return None,
+    })
+}
+
+/// Binary64 scaling and matrix and cross products.
+fn products<'o>(
+    operation: &'o SolveOperation,
+    register_types: &[SolveValueType],
+) -> Option<(&'o SolveRegisterId, SolveTensorKernel)> {
+    let value_type = |register: &SolveRegisterId| register_types.get(register.index());
+    Some(match operation {
+        SolveOperation::Scale {
+            destination,
+            aggregate,
+            scalar,
+        } => {
+            let destination_type = binary64(value_type(destination)?)?;
+            (
+                destination,
+                SolveTensorKernel::Scale {
+                    aggregate: aggregate.index(),
+                    scalar: scalar.index(),
+                    extent: destination_type.scalar_count(),
                 },
             )
         }
@@ -236,34 +295,7 @@ pub(super) fn tensor_item(
                 },
             )
         }
-        SolveOperation::ProjectElement {
-            destination,
-            aggregate,
-            indices,
-        } => {
-            let shape = value_type(aggregate)?.dimensions();
-            (shape.len() == indices.len()).then_some(())?;
-            let axes = shape
-                .iter()
-                .zip(indices.iter())
-                .map(|(&extent, &coordinate)| {
-                    (coordinate < extent).then_some(SolveElementAxis { extent, coordinate })
-                })
-                .collect::<Option<Box<[_]>>>()?;
-            (
-                destination,
-                SolveTensorKernel::ProjectElement {
-                    aggregate: aggregate.index(),
-                    axes,
-                },
-            )
-        }
         _ => return None,
-    };
-    Some(SolveBodyItem::Tensor {
-        index,
-        destination: destination.index(),
-        kernel,
     })
 }
 
