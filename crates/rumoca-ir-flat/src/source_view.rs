@@ -1,9 +1,13 @@
 //! Canonical, target-neutral source equation views (SPEC_0041 §7).
 
+mod attributes;
 mod residual;
 #[cfg(test)]
 mod tests;
 
+pub use attributes::{
+    SourceAttributeCatalog, SourceAttributeError, SourceAttributeKind, SourceAttributeValue,
+};
 pub use residual::{SourceEquationPresentation, SourceEquationSides};
 
 use crate::{Equation, EquationOrigin, Model, StructuredEquationFamily};

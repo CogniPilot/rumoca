@@ -278,3 +278,10 @@ file assembly, or escaping for a particular output language.
   graph, and the requirements each catalog row serves.
 - [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md) — maintainability and
   deterministic-collection rules.
+
+The Flat source-attribute catalog borrows a validated finalized Model and
+issues `each` only from known scalar shape on an array occurrence. Exact
+reference occurrence/type facts and canonical array-construction shape algebra
+are reused. Unknown call/selection/compound shapes refuse; they require their
+canonical typecheck facts before the corresponding source consumer can migrate.
+No rendered delimiter/name heuristic or numerical Solve admission is introduced.
