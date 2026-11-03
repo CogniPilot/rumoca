@@ -1526,3 +1526,45 @@ fn an_unrendered_region_or_unselected_variant_fails_the_registry_proof() {
         "mixed selects no tensor kernel: {unselected:?}"
     );
 }
+
+/// Each dispatch chain's closing refusal is the production environment's
+/// `fail`: a plan item, kernel or token outside its declared variants does
+/// not render at all.
+#[test]
+fn an_undeclared_issued_variant_does_not_render() {
+    let printer = Printer::builtin();
+    let render = |wire: &serde_json::Value| {
+        printer.environment.render_str(
+            "{% from 'functions' import definition %}{{ definition(program, name) }}",
+            minijinja::context! { program => wire, name => "mixed" },
+        )
+    };
+    let wire = serde_json::to_value(mixed_program()).unwrap();
+    assert!(render(&wire).is_ok());
+    let position = |wire: &serde_json::Value, kind: &str| {
+        wire["print"]["body"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|item| item["kind"] == kind)
+            .unwrap()
+    };
+    for (field, value) in [
+        ("kind", "scatter"),
+        ("kernel.kind", "fused"),
+        ("kernel.token", "hypot"),
+    ] {
+        let mut changed = wire.clone();
+        let at = position(&wire, "elementwise");
+        let item = &mut changed["print"]["body"][at];
+        match field.split_once('.') {
+            Some((outer, inner)) => item[outer][inner] = value.into(),
+            None => item[field] = value.into(),
+        }
+        let error = render(&changed).expect_err(field);
+        assert!(
+            error.to_string().contains("unsupported-feature"),
+            "{field}: {error}"
+        );
+    }
+}
