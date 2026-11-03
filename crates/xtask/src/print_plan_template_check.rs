@@ -336,7 +336,12 @@ fn region_row(row: &toml::Table, flag: &mut dyn FnMut(String)) -> Option<Decoded
     }
     let mut dispatch: Vec<ast_rules::Dispatch> = Vec::new();
     for tag in strict_rows(row, "tag", &owner, flag) {
-        unknown_keys(tag, &["path", "schema", "variants"], &owner, flag);
+        unknown_keys(
+            tag,
+            &["path", "schema", "variants", "refused"],
+            &owner,
+            flag,
+        );
         if let Some(d) = tag_row(tag, &arguments, &dispatch, &owner, flag) {
             dispatch.push(d);
         }
@@ -378,6 +383,29 @@ fn tag_row(
             return None;
         }
     };
+    // Variants of the schema this region refuses: its chain must not spell
+    // them, so they reach the refusal.
+    let refused: Vec<String> = match tag.get("refused") {
+        None => Vec::new(),
+        Some(toml::Value::Array(items)) if items.iter().all(toml::Value::is_str) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        Some(_) => {
+            flag(format!(
+                "{owner}: tag {path:?} refused must be an array of strings"
+            ));
+            return None;
+        }
+    };
+    if refused.iter().any(|r| variants.contains(r))
+        || refused.iter().collect::<BTreeSet<_>>().len() != refused.len()
+    {
+        flag(format!(
+            "{owner}: tag {path:?} refuses a declared or repeated variant"
+        ));
+        return None;
+    }
     let segments: Vec<&str> = path.split('.').collect();
     let root = arguments.iter().find(|(a, _)| a == segments[0]);
     let bound = match (root, segments.len()) {
@@ -399,7 +427,11 @@ fn tag_row(
         ));
         return None;
     }
-    Some(ast_rules::Dispatch { path, variants })
+    Some(ast_rules::Dispatch {
+        path,
+        variants,
+        refused,
+    })
 }
 
 fn is_name(part: &str) -> bool {

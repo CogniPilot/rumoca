@@ -52,6 +52,8 @@ const PUNCTUATION_LOOP_MARKERS: &[&str] = &["first", "last"];
 pub(crate) struct Dispatch {
     pub(crate) path: String,
     pub(crate) variants: Vec<String>,
+    /// Schema variants the region refuses; no chain may spell them.
+    pub(crate) refused: Vec<String>,
 }
 
 pub(super) struct AstChecker<'v> {
@@ -376,7 +378,10 @@ impl<'v> AstChecker<'v> {
         let Some(tag) = self.dispatch.iter().find(|d| d.path == path) else {
             return false;
         };
-        if !tag.variants.contains(&variant) {
+        if tag.refused.contains(&variant) {
+            let detail = format!("{path} spells refused variant {variant:?}");
+            self.flag(b.span(), Rule::ValueTest, detail);
+        } else if !tag.variants.contains(&variant) {
             let detail = format!("{path} has no declared variant {variant:?}");
             self.flag(b.span(), Rule::ValueTest, detail);
         }

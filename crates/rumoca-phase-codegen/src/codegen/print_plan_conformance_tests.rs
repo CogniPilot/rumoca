@@ -1620,3 +1620,55 @@ fn an_undeclared_issued_variant_does_not_render() {
         );
     }
 }
+
+/// Every variant the registry refuses fails to render through its region:
+/// a 32-bit real element, and a legacy item handed to the plan-only item
+/// fragment (production `definition()` routes legacy items around it).
+#[test]
+fn every_refused_variant_fails_to_render() {
+    let printer = Printer::builtin();
+    let wire = serde_json::to_value(mixed_program()).unwrap();
+    let mut real32 = wire.clone();
+    real32["print"]["slots"][0]["element"] = "real32".into();
+    let legacy = serde_json::json!({ "kind": "legacy", "index": 0, "ledger": "D068" });
+    let probes = [
+        (
+            "element:token:real32",
+            printer.environment.render_str(
+                "{% from 'functions' import definition %}{{ definition(program, name) }}",
+                minijinja::context! { program => real32, name => "mixed" },
+            ),
+        ),
+        (
+            "plan_item:item.kind:legacy",
+            printer.environment.render_str(
+                "{% from 'functions' import plan_item %}{{ plan_item(item) }}",
+                minijinja::context! { item => legacy },
+            ),
+        ),
+    ];
+    let mut declared: Vec<String> = registry::regions(REGISTRY)
+        .iter()
+        .flat_map(|r| {
+            r.refused.iter().flat_map(move |(path, variants)| {
+                variants
+                    .iter()
+                    .map(move |v| format!("{}:{path}:{v}", r.name))
+            })
+        })
+        .collect();
+    declared.sort();
+    let mut probed: Vec<String> = probes.iter().map(|(key, _)| (*key).to_owned()).collect();
+    probed.sort();
+    assert_eq!(
+        declared, probed,
+        "each refused variant needs a render probe"
+    );
+    for (key, result) in probes {
+        let error = result.expect_err(key);
+        assert!(
+            error.to_string().contains("unsupported-feature"),
+            "{key}: {error}"
+        );
+    }
+}

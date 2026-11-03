@@ -21,6 +21,7 @@
 # path = "<argument>.<field>..."   (or the argument itself, when its schema is the tag's)
 # schema = "<the issued Solve IR type the tag belongs to>"
 # variants = ["<each serialized variant>", ...]
+# refused = ["<each variant of the schema this region refuses>", ...]   (optional)
 
 [[region]]
 file = "fmi3/typed_functions.jinja"
@@ -34,6 +35,7 @@ schema = "SolveElementToken"
 path = "token"
 schema = "SolveElementToken"
 variants = ["real64", "int64", "boolean"]
+refused = ["real32"]
 
 [[region]]
 file = "fmi3/typed_functions.jinja"
@@ -128,7 +130,7 @@ name = "token"
 schema = "SolveCheckedToken"
 [[region.argument]]
 name = "d"
-schema = "RegisterId"
+schema = "usize"
 [[region.argument]]
 name = "a"
 schema = "RenderedOperand"
@@ -222,6 +224,7 @@ schema = "SolveBodyItem"
 path = "item.kind"
 schema = "SolveBodyItem"
 variants = ["view", "copy", "constant", "select", "elementwise", "convert", "tensor"]
+refused = ["legacy"]
 [[region.tag]]
 path = "item.value.kind"
 schema = "SolveLiteral"

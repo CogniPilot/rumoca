@@ -1300,3 +1300,37 @@ fn a_decoded_refusal_must_be_the_environment_fail() {
             .any(|(_, r)| *r == Rule::Composition)
     );
 }
+
+#[test]
+fn a_refused_variant_is_never_spelled() {
+    let refusing = REGISTRY.replacen(
+        "variants = [\"copy\", \"fill\"]",
+        "variants = [\"copy\", \"fill\"]\nrefused = [\"legacy\"]",
+        1,
+    );
+    assert_eq!(decoded_region(DECODED, Some(&refusing), "item"), Vec::new());
+    let spelled = DECODED.replacen(
+        "{% else %}{{ fail(\"unknown kind\") }}",
+        "{% elif item.kind == \"legacy\" %}x{% else %}{{ fail(\"unknown kind\") }}",
+        1,
+    );
+    refused(
+        &spelled,
+        Some(&refusing),
+        Rule::ValueTest,
+        "refused variant spelled",
+    );
+    for broken in [
+        "refused = [\"copy\"]",
+        "refused = [\"legacy\", \"legacy\"]",
+        "refused = [7]",
+    ] {
+        let registry = REGISTRY.replacen(
+            "variants = [\"copy\", \"fill\"]",
+            &format!("variants = [\"copy\", \"fill\"]\n{broken}"),
+            1,
+        );
+        let source = Fixture::new(&[("fmi3/print_plan_regions.toml", registry.as_str())]);
+        assert!(!load_registry(&source).1.is_empty(), "{broken}");
+    }
+}

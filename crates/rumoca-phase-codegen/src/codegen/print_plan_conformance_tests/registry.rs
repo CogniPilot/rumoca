@@ -9,6 +9,7 @@
 pub(super) struct Region {
     pub(super) name: String,
     pub(super) tags: Vec<(String, Vec<String>)>,
+    pub(super) refused: Vec<(String, Vec<String>)>,
 }
 
 /// The registry's regions. Every line must be a comment, blank, a table
@@ -42,6 +43,11 @@ pub(super) fn regions(text: &str) -> Vec<Region> {
             ("region", "file" | "consumer" | "decoder")
             | ("argument", "name" | "schema")
             | ("tag", "schema") => {}
+            ("tag", "refused") => {
+                let list = value.trim_start_matches('[').trim_end_matches(']');
+                let refused = list.split(", ").map(unquote).collect();
+                region.refused.push((path.clone(), refused));
+            }
             ("tag", "path") => path = unquote(value),
             ("tag", "variants") => {
                 let list = value.trim_start_matches('[').trim_end_matches(']');
