@@ -65,13 +65,27 @@ valid LOC reductions.
 |---|---|---|---|
 | `dae-core-loc` | 11,000 | 21,500 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 6,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 27,750 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 28,000 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-11-03 source-presentation acknowledgment (#583):** at source head
+`f9661d5c`, the §1a measurement is 21,442 core + 6,393 wire = 27,835
+production lines. The derived ceilings are 21,500 / 6,500 / 28,000; only
+the total row crosses its recorded step. Since source `747fd375`, the
+production increment is 166 core lines: one module declaration, 61 lines in
+`source_view.rs`, and 104 in `source_view/derivative_projection.rs`. These
+carry borrowed equation operands/provenance and checked time-invariant
+source derivative selections from the original DAE owner; they do not add
+numerical differentiation, a wire representation, or a downstream validator.
+The existing reduction owners remain responsible for the module review and
+removal of demonstrated duplication; this acknowledgment does not discharge
+that review or assert a size/performance improvement. Review triggers,
+measurement exclusions and totality-debt ceilings are unchanged.
 
 **2026-11-02 external-math binding review:** production moves from 21,221
 core + 6,393 wire = 27,614 lines to 21,258 core + 6,393 wire = 27,651.
