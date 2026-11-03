@@ -33,6 +33,7 @@ pub use print_plan::{
     SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveRegisterFrame,
     SolveUnaryToken,
 };
+pub(super) use storage_plan::DERIVED;
 pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 mod tensor;
 mod value_numbering;
@@ -521,7 +522,9 @@ pub struct TypedProgram {
     register_types: Box<[SolveValueType]>,
     operations: Box<[SolveSpannedOperation]>,
     assigned_states: AssignedStateLayout,
+    #[serde(serialize_with = "storage_plan::derived")]
     storage: SolveStoragePlan,
+    #[serde(serialize_with = "storage_plan::derived")]
     print: SolvePrintPlan,
     #[serde(skip)]
     read_flow: read_flow::ReadFlow,
