@@ -40,7 +40,19 @@ pub enum SolveRegisterPlacement {
 }
 
 /// The issued placement of every slot and register of one program body.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+/// Only assembly issues one; a caller reads it from
+/// [`TypedProgram::storage_plan`](super::TypedProgram::storage_plan).
+///
+/// ```
+/// fn issued(program: &rumoca_ir_solve::TypedProgram) -> &rumoca_ir_solve::SolveStoragePlan {
+///     program.storage_plan()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// let _: rumoca_ir_solve::SolveStoragePlan = Default::default();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolveStoragePlan {
     slots: Box<[SolveSlotPlacement]>,
     registers: Box<[SolveRegisterPlacement]>,

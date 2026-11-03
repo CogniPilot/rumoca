@@ -178,8 +178,19 @@ impl SolveOutputCopy {
     }
 }
 
-/// The print projection of one program body.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+/// The print projection of one program body. Only assembly issues one; a
+/// caller reads it from [`TypedProgram::print_plan`](super::TypedProgram::print_plan).
+///
+/// ```
+/// fn issued(program: &rumoca_ir_solve::TypedProgram) -> &rumoca_ir_solve::SolvePrintPlan {
+///     program.print_plan()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// let _: rumoca_ir_solve::SolvePrintPlan = Default::default();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePrintPlan {
     slots: Box<[SolveFrameItem]>,
     registers: Box<[SolveFrameItem]>,
