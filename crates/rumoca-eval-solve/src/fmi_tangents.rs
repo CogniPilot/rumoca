@@ -181,45 +181,7 @@ pub struct FmiTangentPlan<'component> {
     rhs: solve::ScalarProgramBlock,
     seed_len: usize,
     consistency: Option<FmiTangentConsistency>,
-    workspace: FmiTangentWorkspace,
-}
-
-/// The tangent workspace a plan issues with itself: seed and state columns,
-/// one scratch region the sequential phases reuse, and one extra region the
-/// implicit solve and the consistency checks reuse in turn. Each owns its
-/// private saved-seed prefix, so the larger extra region serves both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FmiTangentWorkspace {
-    implicit_matrix_len: usize,
-    implicit_pivot_len: usize,
-    scratch_len: usize,
-    work_len: usize,
-}
-
-impl FmiTangentWorkspace {
-    /// Elements of the implicit system's dense matrix.
-    #[must_use]
-    pub const fn implicit_matrix_len(&self) -> usize {
-        self.implicit_matrix_len
-    }
-
-    /// Pivot and row-size entries of the implicit solve.
-    #[must_use]
-    pub const fn implicit_pivot_len(&self) -> usize {
-        self.implicit_pivot_len
-    }
-
-    /// The scratch region shared by the sequential phases.
-    #[must_use]
-    pub const fn scratch_len(&self) -> usize {
-        self.scratch_len
-    }
-
-    /// The whole workspace: seeds, states, scratch and the extra region.
-    #[must_use]
-    pub const fn work_len(&self) -> usize {
-        self.work_len
-    }
+    workspace: solve::SolveTangentWorkspace,
 }
 
 /// Complete derivative coverage for the three equation sets of one C component.
@@ -297,8 +259,9 @@ impl<'component> FmiTangentPlan<'component> {
         )
     }
 
-    /// The one constructor: every plan issues its workspace, and refuses
-    /// when a segment does not cover its targets or an extent overflows.
+    /// The one constructor: every plan carries the workspace Solve IR issues
+    /// for its phases, and refuses when a segment does not cover its targets
+    /// or an extent overflows.
     fn issue(
         component: &'component FmiCCodegenView,
         mode: FmiTangentMode,
@@ -308,9 +271,7 @@ impl<'component> FmiTangentPlan<'component> {
         seed_len: usize,
         consistency: Option<FmiTangentConsistency>,
     ) -> Result<Self, FmiTangentPlanError> {
-        let overflow =
-            |what: &str| FmiTangentPlanError::Contract(format!("{what} extent overflow"));
-        let mut scratch_len = rhs.output_count();
+        let mut segment_targets = Vec::with_capacity(assignments.len());
         for segment in &assignments {
             let outputs = segment.program().output_indices();
             if outputs.len() != segment.targets().len()
@@ -320,33 +281,27 @@ impl<'component> FmiTangentPlan<'component> {
                     "tangent segment does not cover its simultaneous target inventory".into(),
                 ));
             }
-            scratch_len = scratch_len.max(segment.targets().len());
+            segment_targets.push(segment.targets().len());
         }
-        let (mut extra_len, mut implicit_matrix_len, mut implicit_pivot_len) = (0, 0, 0);
-        if let Some(system) = &implicit {
-            let n = system.targets().len();
-            implicit_matrix_len = n
-                .checked_mul(n)
-                .ok_or_else(|| overflow("implicit matrix"))?;
-            implicit_pivot_len = n.checked_mul(2).ok_or_else(|| overflow("implicit pivot"))?;
-            extra_len = seed_len
-                .checked_add(implicit_matrix_len)
-                .and_then(|length| length.checked_add(n))
-                .ok_or_else(|| overflow("implicit workspace"))?;
-            scratch_len = scratch_len.max(system.program().output_count());
-        }
-        if let Some(checks) = &consistency {
-            let checks_extra = seed_len
-                .checked_add(checks.rows().len())
-                .ok_or_else(|| overflow("consistency workspace"))?;
-            extra_len = extra_len.max(checks_extra);
-            scratch_len = scratch_len.max(checks.program().output_count());
-        }
-        let work_len = seed_len
-            .checked_add(component.problem().solve_layout.state_scalar_count())
-            .and_then(|length| length.checked_add(scratch_len))
-            .and_then(|length| length.checked_add(extra_len))
-            .ok_or_else(|| overflow("tangent workspace"))?;
+        let workspace = solve::SolveTangentWorkspace::issue(&solve::SolveTangentDemand {
+            seed: seed_len,
+            states: component.problem().solve_layout.state_scalar_count(),
+            rhs_outputs: rhs.output_count(),
+            segment_targets: &segment_targets,
+            implicit: implicit
+                .as_ref()
+                .map(|system| solve::SolveImplicitTangentDemand {
+                    unknowns: system.targets().len(),
+                    outputs: system.program().output_count(),
+                }),
+            consistency: consistency
+                .as_ref()
+                .map(|checks| solve::SolveConsistencyTangentDemand {
+                    rows: checks.rows().len(),
+                    outputs: checks.program().output_count(),
+                }),
+        })
+        .map_err(|error| FmiTangentPlanError::Contract(error.to_string()))?;
         Ok(Self {
             component,
             mode,
@@ -355,18 +310,13 @@ impl<'component> FmiTangentPlan<'component> {
             rhs,
             seed_len,
             consistency,
-            workspace: FmiTangentWorkspace {
-                implicit_matrix_len,
-                implicit_pivot_len,
-                scratch_len,
-                work_len,
-            },
+            workspace,
         })
     }
 
-    /// The workspace issued with this plan.
+    /// The workspace Solve IR issued for this plan's phases.
     #[must_use]
-    pub const fn workspace(&self) -> FmiTangentWorkspace {
+    pub const fn workspace(&self) -> solve::SolveTangentWorkspace {
         self.workspace
     }
 
