@@ -49,6 +49,10 @@ const PUNCTUATION_LOOP_MARKERS: &[&str] = &["first", "last"];
 pub(super) struct AstChecker<'v> {
     file: String,
     scopes: Vec<String>,
+    /// In a macro region, the macro's arguments: the only names (besides loop
+    /// targets in scope) a path may start from. `None` checks a whole template,
+    /// whose free names are the render context.
+    roots: Option<Vec<String>>,
     violations: &'v mut Vec<Violation>,
     composition: &'v mut Vec<Composition>,
 }
@@ -62,9 +66,15 @@ impl<'v> AstChecker<'v> {
         Self {
             file: file.to_owned(),
             scopes: Vec::new(),
+            roots: None,
             violations,
             composition,
         }
+    }
+
+    pub(super) fn with_roots(mut self, roots: Option<Vec<String>>) -> Self {
+        self.roots = roots;
+        self
     }
 
     fn flag(&mut self, span: Span, rule: Rule, detail: impl Into<String>) {
@@ -247,7 +257,7 @@ impl<'v> AstChecker<'v> {
                     format!("loop used as {role}"),
                 );
             }
-            Expr::Var(_) => {}
+            Expr::Var(v) => self.root(v.span(), v.id),
             Expr::GetAttr(a) => {
                 if let Some(marker) = loop_marker(expr) {
                     self.flag(
@@ -260,6 +270,20 @@ impl<'v> AstChecker<'v> {
                 }
             }
             other => self.forbidden_expr(other),
+        }
+    }
+
+    fn root(&mut self, span: Span, id: &str) {
+        let declared = self
+            .roots
+            .as_ref()
+            .is_none_or(|roots| roots.iter().any(|r| r == id));
+        if !declared && !self.scopes.iter().any(|s| s == id) {
+            self.flag(
+                span,
+                Rule::UndeclaredRoot,
+                format!("{id} is neither an argument of the checked macro nor a loop target"),
+            );
         }
     }
 

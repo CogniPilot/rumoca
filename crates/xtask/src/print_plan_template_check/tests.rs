@@ -2,7 +2,9 @@
 //! controls read the actual legacy templates that the backend-decision audit
 //! cites, so they fail if the gate stops recognizing the audited constructs.
 
-use super::{Language, RepoTemplates, Rule, TemplateSource, check, literal_c, repo_root};
+use super::{
+    Language, RepoTemplates, Rule, TemplateSource, check, check_macro, literal_c, repo_root,
+};
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
 
@@ -423,4 +425,126 @@ fn every_legacy_artifact_template_is_outside_the_strict_gate() {
             "{root} passes but is not registered as covered"
         );
     }
+}
+
+fn region(files: &[(&str, &str)], name: &str) -> Vec<(String, u16, Rule)> {
+    let report =
+        check_macro(&Fixture::new(files), files[0].0, name, Language::C).expect("region check");
+    report
+        .violations
+        .into_iter()
+        .map(|v| (v.file, v.line, v.rule))
+        .collect()
+}
+
+fn region_has(files: &[(&str, &str)], name: &str, line: u16, rule: Rule) {
+    let found = region(files, name);
+    assert!(
+        found.iter().any(|(_, l, r)| *l == line && *r == rule),
+        "expected {rule:?} at line {line}, found {found:?}"
+    );
+}
+
+/// A print-only macro inside a file whose other text is legacy executable C.
+const MIXED: &str = r#"{% macro scalar_copy(op) %}{{ op.dst }} = {{ op.src }};{% endmacro %}
+{% macro legacy_solve(n) %}for (size_t i=0; i<{{ n }}; ++i) s += a[i];{% endmacro %}
+for (size_t c=0; c<{{ program.n }}; ++c) { A[c] -= 0.5; }
+"#;
+
+#[test]
+fn a_macro_region_covers_only_that_macro() {
+    assert_eq!(region(&[("lib.jinja", MIXED)], "scalar_copy"), Vec::new());
+    // The same file as a whole template, and its executable neighbour, still fail.
+    let whole = rules_of(&[("lib.c.jinja", MIXED)]);
+    assert!(
+        whole
+            .iter()
+            .any(|(_, l, r)| *l == 3 && *r == Rule::LiteralExecutable),
+        "{whole:?}"
+    );
+    region_has(
+        &[("lib.jinja", MIXED)],
+        "legacy_solve",
+        2,
+        Rule::LiteralExecutable,
+    );
+    // Executable text inside the selected body, at its edge, is part of the region.
+    let edge = "{% macro copy(op) %}{{ op.dst }} = {{ op.src }}; while (1) {}{% endmacro %}";
+    region_has(&[("lib.jinja", edge)], "copy", 1, Rule::LiteralExecutable);
+}
+
+#[test]
+fn a_macro_region_must_name_exactly_one_macro() {
+    region_has(
+        &[("lib.jinja", MIXED)],
+        "no_such_macro",
+        0,
+        Rule::RegionSelection,
+    );
+    let twice = "{% macro copy(op) %}{{ op.a }}{% endmacro %}\n{% if flag %}{% macro copy(op) %}{{ op.b }}{% endmacro %}{% endif %}";
+    region_has(&[("lib.jinja", twice)], "copy", 2, Rule::RegionSelection);
+}
+
+#[test]
+fn a_macro_region_reads_only_its_arguments_and_loop_targets() {
+    let forged = "{% macro copy(op) %}{{ program.registers }}{% for r in op.regs %}{{ r.name }}{% endfor %}{% endmacro %}";
+    let found = region(&[("lib.jinja", forged)], "copy");
+    assert_eq!(
+        found
+            .iter()
+            .filter(|(_, _, r)| *r == Rule::UndeclaredRoot)
+            .count(),
+        1,
+        "{found:?}"
+    );
+    let caller = "{% macro copy(op) %}{{ caller() }}{% endmacro %}";
+    region_has(&[("lib.jinja", caller)], "copy", 1, Rule::Call);
+    let defaulted = "{% macro copy(op, width=1) %}{{ op.dst }}{% endmacro %}";
+    region_has(&[("lib.jinja", defaulted)], "copy", 1, Rule::Fallback);
+    // An included fragment runs with the region's roots: a forged name there fails too.
+    let root = "{% macro copy(op) %}{% include \"frag.jinja\" %}{% endmacro %}";
+    let files = [
+        ("lib.jinja", root),
+        ("frag.jinja", "{{ op.dst }}{{ program.n }}"),
+    ];
+    let found = region(&files, "copy");
+    assert!(
+        found
+            .iter()
+            .any(|(f, _, r)| f == "frag.jinja" && *r == Rule::UndeclaredRoot),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_macro_region_calls_no_unchecked_callee() {
+    let helper = "{% macro copy(op) %}{{ arithmetic(op) }}{% endmacro %}{% macro arithmetic(op) %}{{ op.a }}{% endmacro %}";
+    region_has(&[("lib.jinja", helper)], "copy", 1, Rule::Call);
+    let recursive = "{% macro walk(n) %}{{ walk(n.child) }}{% endmacro %}";
+    region_has(&[("lib.jinja", recursive)], "walk", 1, Rule::Call);
+}
+
+#[test]
+fn the_legacy_trip_count_macro_fails_as_a_region() {
+    let repo = RepoTemplates::load(&repo_root()).expect("template manifests");
+    let report = check_macro(
+        &repo,
+        "fmi3/typed_functions.jinja",
+        "trip_count",
+        Language::C,
+    )
+    .expect("region");
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.line == 9 && v.rule == Rule::Arithmetic),
+        "D056 inside the trip_count region: {:?}",
+        report.violations
+    );
+    assert!(
+        report.files[0].contains("macro trip_count only"),
+        "{:?}",
+        report.files
+    );
 }

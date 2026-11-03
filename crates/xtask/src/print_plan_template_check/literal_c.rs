@@ -27,12 +27,12 @@ struct Segment<'a> {
 
 pub(super) fn check(
     file: &str,
-    ast: &Stmt<'_>,
+    body: &[Stmt<'_>],
     language: Language,
     violations: &mut Vec<Violation>,
 ) {
     let mut segments = Vec::new();
-    collect(std::slice::from_ref(ast), &mut segments);
+    collect(body, &mut segments);
     match language {
         Language::C => check_c(file, &segments, violations),
         Language::Unsupported => {
