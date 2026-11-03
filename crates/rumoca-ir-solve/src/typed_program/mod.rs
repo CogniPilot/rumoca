@@ -18,8 +18,8 @@ pub use algorithm_block::{
 pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;
 pub use call::{
-    AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
-    ScopedSolvePureCallTable, SolveAssertionLevel, SolveCallSiteCount,
+    AssertionRegionKind, AssertionRegionStep, AssertionSource, BoundSolvePureCallBody,
+    CheckedAssertionFlow, ScopedSolvePureCallTable, SolveAssertionLevel, SolveCallSiteCount,
     SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
     SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
     SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
