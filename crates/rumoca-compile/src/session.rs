@@ -111,7 +111,7 @@ pub use compile_phase_timing::{
 use compile_phase_timing::{maybe_record_compile_phase_timing, notify_compile_phase};
 mod compile_support;
 use compile_support::{
-    compile_model_dae_internal, compile_model_dae_internal_with_options, compile_model_internal,
+    compile_model_dae_internal, compile_model_dae_internal_with_warnings, compile_model_internal,
     compile_model_internal_with_options, compile_phase_result_from_dae,
     dae_model_outcome_from_flat, dae_phase_result_from_dae, diagnostics_from_vec,
     diagnostics_to_anyhow, finalize_strict_compile_report,
@@ -378,6 +378,17 @@ struct DaeModelArtifactData {
     structural_selections: Vec<rumoca_phase_dae::StructuralSelection>,
 }
 
+/// The warnings a successful strict compile already established, kept so the
+/// model's Save diagnostics can report them without instantiating, flattening
+/// and building the DAE a second time: the synthesized inners of its typed
+/// overlay and the structural selections of its DAE artifact.
+#[derive(Debug, Clone)]
+struct StrictCompileWarnings {
+    synthesized_inners: Vec<String>,
+    synthesized_inner_messages: Vec<String>,
+    structural_selections: Vec<rumoca_phase_dae::StructuralSelection>,
+}
+
 #[derive(Debug, Clone)]
 enum DaeModelOutcome {
     Success(Box<DaeModelArtifactData>),
@@ -417,6 +428,8 @@ struct DaeModelArtifact {
 struct SemanticDiagnosticsQueryState {
     dependency_fingerprints_by_mode: IndexMap<SemanticDiagnosticsMode, DependencyFingerprintCache>,
     save_resolution_proofs: LruMap<SemanticDiagnosticsCacheKey, StrictTargetResolution>,
+    /// Kept and invalidated together with `save_resolution_proofs`.
+    save_compile_warnings: LruMap<SemanticDiagnosticsCacheKey, StrictCompileWarnings>,
     interface_artifacts: LruMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
     body_artifacts: LruMap<SemanticDiagnosticsCacheKey, BodySemanticDiagnosticsArtifact>,
     model_stage_artifacts: LruMap<SemanticDiagnosticsCacheKey, SemanticDiagnosticsArtifact>,
@@ -426,12 +439,14 @@ impl SemanticDiagnosticsQueryState {
     fn invalidate_inputs(&mut self) {
         self.dependency_fingerprints_by_mode.clear();
         self.save_resolution_proofs = LruMap::default();
+        self.save_compile_warnings = LruMap::default();
     }
 
     fn invalidate_inputs_for_mode(&mut self, mode: SemanticDiagnosticsMode) {
         self.dependency_fingerprints_by_mode.shift_remove(&mode);
         if mode == SemanticDiagnosticsMode::Save {
             self.save_resolution_proofs = LruMap::default();
+            self.save_compile_warnings = LruMap::default();
         }
     }
 }
