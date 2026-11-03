@@ -7,7 +7,9 @@ use crate::{
 
 mod affine;
 mod bound;
+mod node;
 pub use bound::{ForeignScalarRefinementSource, SourceScalarRefinement};
+pub use node::{SourceNodeRefinementError, SourceNodeScalarRefinement};
 mod dense;
 mod kernel_plan;
 
@@ -68,6 +70,12 @@ fn project_checked_source(block: &ComputeBlock) -> Result<ScalarProgramProjectio
     }
     let mut collector = ScalarProgramCollector::default();
     collector.visit_compute_block(block)?;
+    finish_projection(collector)
+}
+
+fn finish_projection(
+    collector: ScalarProgramCollector,
+) -> Result<ScalarProgramProjection, ScalarizeError> {
     let block = ScalarProgramBlock::with_output_indices(
         collector.rows,
         collector.program_spans,

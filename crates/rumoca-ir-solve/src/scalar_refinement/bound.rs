@@ -28,13 +28,21 @@ impl SourceScalarRefinement<'_> {
         &self,
         source: ComputeSourceView<'_>,
     ) -> Result<&ScalarProgramProjection, ForeignScalarRefinementSource> {
-        if !std::ptr::eq(self.source.source(), source.source()) {
-            return Err(ForeignScalarRefinementSource);
-        }
+        check_source(self.source, source)?;
         Ok(&self.projection)
     }
 
     pub(super) fn into_projection(self) -> ScalarProgramProjection {
         self.projection
     }
+}
+
+pub(super) fn check_source(
+    issued: ComputeSourceView<'_>,
+    expected: ComputeSourceView<'_>,
+) -> Result<(), ForeignScalarRefinementSource> {
+    if !std::ptr::eq(issued.source(), expected.source()) {
+        return Err(ForeignScalarRefinementSource);
+    }
+    Ok(())
 }
