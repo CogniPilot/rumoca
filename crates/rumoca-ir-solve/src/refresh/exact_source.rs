@@ -134,3 +134,18 @@ fn materialize_exact_assignment_program(
         }
     })
 }
+
+impl ContinuousRefreshOwners {
+    /// Retain one original source join per issued assignment, independently of
+    /// how many schedules refer to it. This is a construction-only handover.
+    pub(crate) fn exact_assignment_programs_for_source<'source>(
+        &'source self,
+        source: &'source ComputeBlock,
+    ) -> Result<Box<[BoundExactRefreshAssignment<'source>]>, ContinuousRefreshConstructionError>
+    {
+        self.exact_assignment_programs
+            .iter()
+            .map(|owner| owner.bind_source(source))
+            .collect()
+    }
+}
