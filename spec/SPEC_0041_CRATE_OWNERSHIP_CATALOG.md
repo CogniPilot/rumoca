@@ -228,6 +228,13 @@ process allocator (row in §1).
 
 ### 7. Codegen Target And Command Ownership Catalog (SPEC_0029 §12)
 
+Source-export presentation stays with canonical source IR owners. The borrowed
+`rumoca_ir_flat::source_view::SourceEquationPartition` selects complete regular
+or initial equation rows and checked BinderSubstitution loop bodies. Unsupported
+unmaterialized families, invalid ranges and overlaps refuse before any view is
+returned; zero-point families consume no scalar rows. It does not render text,
+change numerical Solve IR, or authorize a backend migration.
+
 These rules are normative by reference from SPEC_0029 §12.
 
 Target assets follow the same ownership rule. Builtin target discovery embeds
