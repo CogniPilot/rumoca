@@ -192,12 +192,12 @@ fn register_manifest_templates(
     shared: &mut BTreeMap<String, String>,
     artifacts: &mut Vec<String>,
 ) {
-    for row in rows(&table, "partials") {
+    for row in rows(table, "partials") {
         if let (Some(n), Some(t)) = (str_field(row, "name"), str_field(row, "template")) {
             shared.insert(n.to_owned(), format!("{name}/{t}"));
         }
     }
-    for row in rows(&table, "files") {
+    for row in rows(table, "files") {
         let Some(t) = str_field(row, "template") else {
             continue;
         };
