@@ -190,6 +190,9 @@ jobs:
       - name: Run lint gate
         run: cargo xtask verify lint
 
+      - name: Backend migration freeze negative controls
+        run: cargo test -p xtask --lib migration_ledger
+
       - name: Run architecture review scan
         if: github.event_name == 'pull_request'
         run: |
