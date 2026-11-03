@@ -103,17 +103,25 @@ fn borrowed_source_preserves_order_native_ranges_and_sparse_affine_holes() {
                     (
                         4,
                         ComputeOutputImage::Affine {
-                            domain, output_map, ..
+                            domain,
+                            output_map,
+                            invocations,
+                            ..
                         },
                     ) => {
+                        assert_eq!(*invocations, 3);
                         assert_eq!(output_map.output_indices(domain).unwrap(), [8, 6, 4]);
                     }
                     (
                         5,
                         ComputeOutputImage::Affine {
-                            domain, output_map, ..
+                            domain,
+                            output_map,
+                            invocations,
+                            ..
                         },
                     ) => {
+                        assert_eq!(*invocations, 0);
                         assert!(output_map.output_indices(domain).unwrap().is_empty());
                     }
                     _ => panic!("source placement was changed"),
@@ -131,6 +139,31 @@ fn borrowed_source_preserves_order_native_ranges_and_sparse_affine_holes() {
             expected
         );
     }
+}
+
+#[test]
+fn invalid_private_source_handover_is_refused_without_an_assertion() {
+    // Deliberately bypass this module's private constructor for the negative
+    // control. Public callers cannot issue this invalid source capability.
+    let block = ComputeBlock {
+        nodes: vec![map(3, 0, -1)],
+    };
+    let invalid = ComputeSourceView {
+        source: &block,
+        context: "broken handover",
+        output_count: 0,
+    };
+    let bounds = crate::DispatchBounds::construct(1, 1, 10).unwrap();
+    let error = match invalid.native_dispatch_geometry(&bounds) {
+        Ok(_) => panic!("invalid private source was accepted"),
+        Err(error) => error,
+    };
+    assert!(matches!(&error, crate::NativeDispatchError::Source(source)
+        if matches!(source.as_ref(),
+            SolveProblemShapeContractError::TensorOutputMapNegativeIndex {
+                node_index: 0, span: at, ..
+            } if *at == span())));
+    assert!(error.to_string().contains("broken handover"));
 }
 
 #[test]

@@ -537,10 +537,12 @@ fn affine_placement<'source>(
     let count = output_map
         .output_count(domain)
         .map_err(|error| tensor_output_map_error(context, node_index, kind, error, span))?;
+    let invocations = validate_tensor_domain(context, node_index, kind, domain, span)?;
     Ok((
         ComputeOutputImage::Affine {
             domain,
             output_map,
+            invocations,
             kind,
             span,
         },

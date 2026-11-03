@@ -1,6 +1,6 @@
 //! Local invocation geometry, not execution/parallelism or root admission.
 
-use super::{ComputeNode, ComputeSourceView};
+use super::{ComputeNode, ComputeOutputImage, ComputeOutputPlacement, ComputeSourceView};
 use rumoca_core::Span;
 use std::ops::ControlFlow;
 
@@ -102,6 +102,8 @@ impl NativeDispatchGeometry<'_, '_> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum NativeDispatchError {
+    #[error("dispatch source placement refused: {0}")]
+    Source(#[source] Box<super::SolveProblemShapeContractError>),
     #[error("dispatch geometry belongs to another checked compute source")]
     ForeignSource { issued_at: Option<Span> },
     #[error("dispatch geometry belongs to another target resource owner")]
@@ -133,16 +135,14 @@ impl<'source> ComputeSourceView<'source> {
     ) -> Result<NativeDispatchGeometry<'source, 'target>, NativeDispatchError> {
         let mut entries = reserve_entries(self.source().nodes.len())?;
         let flow = self
-            .visit_output_placements(|placement| {
-                match native_entry(placement.node_index(), placement.node(), bounds) {
-                    Ok(entry) => {
-                        entries.push(entry);
-                        ControlFlow::Continue(())
-                    }
-                    Err(error) => ControlFlow::Break(error),
+            .visit_output_placements(|placement| match native_entry(&placement, bounds) {
+                Ok(entry) => {
+                    entries.push(entry);
+                    ControlFlow::Continue(())
                 }
+                Err(error) => ControlFlow::Break(error),
             })
-            .expect("ComputeSourceView checked every original output placement");
+            .map_err(|error| NativeDispatchError::Source(Box::new(error)))?;
         if let ControlFlow::Break(error) = flow {
             return Err(error);
         }
@@ -155,31 +155,37 @@ impl<'source> ComputeSourceView<'source> {
 }
 
 fn native_entry(
-    node_index: usize,
-    node: &ComputeNode,
+    placement: &ComputeOutputPlacement<'_>,
     bounds: &DispatchBounds,
 ) -> Result<NativeDispatchEntry, NativeDispatchError> {
-    let (domain, family, span) = match node {
-        ComputeNode::Map { domain, span, .. } => (domain, NativeDispatchFamily::Map, *span),
-        ComputeNode::AffineStencil { domain, span, .. } => {
-            (domain, NativeDispatchFamily::AffineStencil, *span)
+    let node_index = placement.node_index();
+    let (invocations, family, span) = match (placement.node(), placement.image()) {
+        (ComputeNode::Map { span, .. }, ComputeOutputImage::Affine { invocations, .. }) => {
+            (*invocations, NativeDispatchFamily::Map, *span)
         }
-        ComputeNode::ScalarPrograms(programs) => {
+        (
+            ComputeNode::AffineStencil { span, .. },
+            ComputeOutputImage::Affine { invocations, .. },
+        ) => (*invocations, NativeDispatchFamily::AffineStencil, *span),
+        (ComputeNode::ScalarPrograms(programs), _) => {
             return Err(NativeDispatchError::UnsupportedNode {
                 node_index,
                 span: programs.first_source_span(),
             });
         }
-        ComputeNode::MatMul { span, .. } | ComputeNode::LinSolve { span, .. } => {
+        (
+            ComputeNode::Map { span, .. }
+            | ComputeNode::AffineStencil { span, .. }
+            | ComputeNode::MatMul { span, .. }
+            | ComputeNode::LinSolve { span, .. },
+            _,
+        ) => {
             return Err(NativeDispatchError::UnsupportedNode {
                 node_index,
                 span: Some(*span),
             });
         }
     };
-    let invocations = domain
-        .scalar_count()
-        .expect("ComputeSourceView checked the compact domain");
     // Avoid an overflowing invocations + group_size - 1 intermediate.
     let groups = invocations.div_ceil(bounds.group_size);
     if groups > bounds.max_groups {
