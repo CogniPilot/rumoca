@@ -239,6 +239,10 @@ operands or the complete zero-residual view, retaining span/origin without
 rewriting or evaluating its source AST. The matching
 `DaeView::source_equation_presentation` retains branded expression identities
 and equation provenance without mutating the checked DAE or its wire.
+`DaeView::source_derivative_projection` issues the original derivative-state
+coordinate and ordered source selections only when every subscript is whole,
+constant or parameter. Other indices stay outside `der`; no numerical graph
+is rewritten. Record states remain refused by their existing constructor.
 
 These rules are normative by reference from SPEC_0029 §12.
 

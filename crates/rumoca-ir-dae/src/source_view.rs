@@ -1,5 +1,9 @@
 //! Borrowed canonical DAE source presentation (SPEC_0041 §7).
 
+mod derivative_projection;
+
+pub use derivative_projection::{SourceDerivativeProjection, SourceDerivativeSelection};
+
 use crate::{
     BinaryOperator, DaeProvenance, DaeView, ExprId, ExpressionOperation, ResidualEquationView,
 };
