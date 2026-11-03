@@ -6,3 +6,6 @@ mod traversal_policy_check;
 pub fn run_traversal_policy_check() -> anyhow::Result<()> {
     traversal_policy_check::run()
 }
+
+// Identity only; no migration authorization is issued here.
+pub mod print_boundary_check;
