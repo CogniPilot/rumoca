@@ -4,6 +4,7 @@
 //! validation, or backend policy in the data crate.
 
 mod typed;
+pub(crate) use typed::nested_typed_programs;
 pub use typed::{walk_pure_call_table, walk_typed_program};
 
 use crate::{
