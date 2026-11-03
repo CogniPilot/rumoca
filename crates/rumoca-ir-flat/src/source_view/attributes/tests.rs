@@ -239,3 +239,58 @@ fn source_attributes_empty_array_reference_does_not_become_scalar() {
     assert_eq!(values[0].dimensions(), [0, 2_000_000]);
     assert!(!values[0].each());
 }
+
+#[test]
+fn reviewer_structured_selection_is_not_whole_occurrence_shape() {
+    use rumoca_core::{ComponentRefPart, ComponentReference, DefId, Subscript};
+    let component = ComponentReference::construct(
+        false,
+        span(),
+        vec![ComponentRefPart {
+            ident: "p".into(),
+            span: span(),
+            def_id: DefId::new(22),
+            subs: vec![Subscript::Index {
+                value: 1,
+                span: span(),
+            }],
+        }],
+    )
+    .unwrap();
+    let expression = Expression::VarRef {
+        name: Reference::with_component_reference("p", component)
+            .with_instance_id(InstanceId::new(2)),
+        subscripts: vec![],
+        span: span(),
+    };
+    let model = model(vec![4], expression, vec![4]);
+    assert!(model.validate().is_ok());
+    assert!(matches!(
+        model
+            .source_attributes()
+            .unwrap()
+            .variable(InstanceId::new(1)),
+        Err(SourceAttributeError::UnknownShape { .. })
+    ));
+}
+
+#[test]
+fn reviewer_outer_subscript_is_not_whole_occurrence_shape() {
+    use rumoca_core::Subscript;
+    let expression = Expression::VarRef {
+        name: Reference::new("p").with_instance_id(InstanceId::new(2)),
+        subscripts: vec![Subscript::Index {
+            value: 1,
+            span: span(),
+        }],
+        span: span(),
+    };
+    let model = model(vec![4], expression, vec![4]);
+    assert!(matches!(
+        model
+            .source_attributes()
+            .unwrap()
+            .variable(InstanceId::new(1)),
+        Err(SourceAttributeError::UnknownShape { .. })
+    ));
+}
