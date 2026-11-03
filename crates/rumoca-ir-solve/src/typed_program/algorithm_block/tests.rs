@@ -702,3 +702,14 @@ fn digest_ignores_the_source_path_but_not_the_byte_range() {
     );
     assert_ne!(home, digest(&block(input_at("/home/alice/models/M.mo", 2))));
 }
+
+/// An owner no method calls is at level 1, and the deepest level of a block
+/// with functions is at least 1.
+#[test]
+fn an_uncalled_function_owner_is_at_level_one() {
+    let levels = bound_function_block().call_levels();
+    assert_eq!(levels.levels(), [1]);
+    assert_eq!(levels.level(0), Some(1));
+    assert_eq!(levels.level(1), None);
+    assert_eq!(levels.deepest(), 1);
+}

@@ -164,7 +164,7 @@ pub(super) fn solve_block_value(
             }
         }
     }
-    assign_call_levels(&mut json);
+    record_call_levels(&mut json, &block.call_levels());
     mark_else_chains(&mut json);
     let digest = block
         .digest()
@@ -614,76 +614,27 @@ fn mark_static_offsets(program: &mut serde_json::Map<String, serde_json::Value>)
     }
 }
 
-/// Give every function owner its call `level`: 1 + the deepest level of any
-/// caller, methods being level 0. Calls do not recurse, so every call chain
-/// strictly climbs levels, and frames of one level are never live together:
-/// the header overlays them in one union per level.
-fn assign_call_levels(json: &mut serde_json::Value) {
-    let count = json
-        .pointer("/functions/owners")
-        .and_then(serde_json::Value::as_array)
-        .map_or(0, Vec::len);
-    let callees = |program: &serde_json::Value| {
-        let mut called = Vec::new();
-        find_calls(program, &mut called);
-        called
-    };
-    let roots: Vec<usize> = ["/startup", "/recalibrate", "/do_step"]
-        .iter()
-        .filter_map(|method| json.pointer(method))
-        .flat_map(callees)
-        .collect();
-    let edges: Vec<Vec<usize>> = (0..count)
-        .map(|owner| {
-            // An owner without a body calls nothing.
-            json.pointer(&format!("/functions/owners/{owner}/body"))
-                .map_or_else(Vec::new, callees)
-        })
-        .collect();
-    let mut level = vec![1usize; count];
-    let mut frontier: Vec<(usize, usize)> = roots.into_iter().map(|owner| (owner, 1)).collect();
-    while let Some((owner, depth)) = frontier.pop() {
-        if owner >= count || depth > count || level[owner] > depth {
-            continue;
-        }
-        level[owner] = depth;
-        frontier.extend(edges[owner].iter().map(|callee| (*callee, depth + 1)));
-    }
+/// Record the call level Solve IR issued for every function owner (`level`)
+/// and the deepest one (`function_levels`) in the view the template prints.
+fn record_call_levels(
+    json: &mut serde_json::Value,
+    levels: &rumoca_ir_solve::SolveBlockCallLevels,
+) {
     if let Some(owners) = json
         .pointer_mut("/functions/owners")
         .and_then(serde_json::Value::as_array_mut)
     {
         for (owner, entry) in owners.iter_mut().enumerate() {
-            if let Some(fields) = entry.as_object_mut() {
-                fields.insert("level".to_owned(), serde_json::Value::from(level[owner]));
+            if let (Some(fields), Some(level)) = (entry.as_object_mut(), levels.level(owner)) {
+                fields.insert("level".to_owned(), serde_json::Value::from(level));
             }
         }
     }
     if let Some(fields) = json.as_object_mut() {
-        let deepest = level.iter().copied().max().unwrap_or(0);
         fields.insert(
             "function_levels".to_owned(),
-            serde_json::Value::from(deepest),
+            serde_json::Value::from(levels.deepest()),
         );
-    }
-}
-
-/// The owner of every call operation in a program, nested programs included.
-fn find_calls(value: &serde_json::Value, called: &mut Vec<usize>) {
-    match value {
-        serde_json::Value::Object(fields) => {
-            if fields.get("operation").is_some_and(|kind| kind == "call")
-                && let Some(owner) = fields
-                    .get("owner")
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|id| usize::try_from(id).ok())
-            {
-                called.push(owner);
-            }
-            fields.values().for_each(|field| find_calls(field, called));
-        }
-        serde_json::Value::Array(items) => items.iter().for_each(|item| find_calls(item, called)),
-        _ => {}
     }
 }
 

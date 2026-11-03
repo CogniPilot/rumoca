@@ -11,8 +11,8 @@ mod types;
 pub use algorithm_block::{
     SolveAlgorithmBlock, SolveAlgorithmBlockConstructionError, SolveAlgorithmBlockDigest,
     SolveAlgorithmBlockDigestError, SolveAlgorithmCodeEntityKind, SolveAlgorithmCodeRef,
-    SolveBlockFunctions, SolveBlockMethod, SolveBlockMethodKind, SolveBlockSlotDeclaration,
-    SolveStatusBinding,
+    SolveBlockCallLevels, SolveBlockFunctions, SolveBlockMethod, SolveBlockMethodKind,
+    SolveBlockSlotDeclaration, SolveStatusBinding,
 };
 pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;

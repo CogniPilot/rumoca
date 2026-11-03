@@ -22,6 +22,7 @@ use std::sync::Arc;
 use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
+pub(super) use recursion::visit_calls;
 pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
 pub use sites::SolveCallSiteCount;
 pub(super) use view::SolvePureCallTableView;
