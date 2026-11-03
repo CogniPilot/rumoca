@@ -613,8 +613,8 @@ impl SolvePureCallOwner {
 pub struct SolvePureCallTable {
     arithmetic: SolveArithmeticProfile,
     recursion: SolveRecursionProfile,
-    groups: Box<[SolveRecursiveGroup]>,
-    owners: Box<[SolvePureCallOwner]>,
+    groups: Arc<[SolveRecursiveGroup]>,
+    owners: Arc<[SolvePureCallOwner]>,
     // Only Clone shares this witness. Every checked construction and wire replay
     // starts a fresh lineage; the complete table has no mutation API.
     #[serde(skip)]
@@ -675,8 +675,8 @@ impl Default for SolvePureCallTable {
                 super::types::SolveIntegerDomain::FULL,
             ),
             recursion: SolveRecursionProfile::HOSTED,
-            groups: Box::new([]),
-            owners: Box::new([]),
+            groups: Arc::from([]),
+            owners: Arc::from([]),
             immutable_lineage: Arc::new(()),
         }
     }
@@ -704,7 +704,7 @@ impl SolvePureCallTable {
 
     /// Every SOLVE-C62 recursive owner group, in owner order.
     #[must_use]
-    pub const fn recursive_groups(&self) -> &[SolveRecursiveGroup] {
+    pub fn recursive_groups(&self) -> &[SolveRecursiveGroup] {
         &self.groups
     }
 
@@ -721,7 +721,7 @@ impl SolvePureCallTable {
         SolvePureCallTableView::primal(&self.owners)
     }
 
-    pub const fn owners(&self) -> &[SolvePureCallOwner] {
+    pub fn owners(&self) -> &[SolvePureCallOwner] {
         &self.owners
     }
 
@@ -777,8 +777,8 @@ impl SolvePureCallTableBuilder {
         SolvePureCallTable {
             arithmetic: self.arithmetic,
             recursion: self.recursion,
-            groups: self.groups.into_boxed_slice(),
-            owners: self.owners.into_boxed_slice(),
+            groups: self.groups.into(),
+            owners: self.owners.into(),
             immutable_lineage: Arc::new(()),
         }
     }
@@ -1217,8 +1217,8 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
         Ok(Self {
             arithmetic: wire.arithmetic,
             recursion: wire.recursion,
-            groups: groups.into_boxed_slice(),
-            owners: owners.into_boxed_slice(),
+            groups: groups.into(),
+            owners: owners.into(),
             immutable_lineage: Arc::new(()),
         })
     }
