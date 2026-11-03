@@ -9,7 +9,7 @@
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -90,15 +90,14 @@ impl Package {
         let source = match &self.source {
             Some(source) => source.clone(),
             None => {
-                let relative = Path::new(&self.manifest_path)
-                    .strip_prefix(root)
-                    .map_err(|_| Refusal {
+                let relative = strip_workspace_prefix(Path::new(&self.manifest_path), root)
+                    .ok_or_else(|| Refusal {
                         rule: "external-path-dependency",
                         item: self.id.clone(),
                     })?;
                 if relative
                     .components()
-                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                    .any(|part| !matches!(part, Component::Normal(_)))
                 {
                     return refuse("dependency-path", &self.manifest_path);
                 }
@@ -113,6 +112,41 @@ impl Package {
             version: self.version.clone(),
             source,
         })
+    }
+}
+
+/// Canonical Windows roots may be verbatim while Cargo emits ordinary paths.
+/// Only disk/UNC prefix representation is shared; every other component and
+/// the caller's rejection of parent/root components remain strict.
+fn strip_workspace_prefix<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
+    let mut remaining = path.components();
+    for expected in root.components() {
+        if !matching_component(remaining.next()?, expected) {
+            return None;
+        }
+    }
+    Some(remaining.as_path())
+}
+
+fn matching_component(actual: Component<'_>, expected: Component<'_>) -> bool {
+    if actual == expected {
+        return true;
+    }
+    #[cfg(windows)]
+    if let (Component::Prefix(actual), Component::Prefix(expected)) = (actual, expected) {
+        return ordinary_windows_prefix(actual.kind()) == ordinary_windows_prefix(expected.kind());
+    }
+    false
+}
+
+#[cfg(windows)]
+fn ordinary_windows_prefix(prefix: std::path::Prefix<'_>) -> std::path::Prefix<'_> {
+    use std::path::Prefix;
+
+    match prefix {
+        Prefix::VerbatimDisk(drive) => Prefix::Disk(drive),
+        Prefix::VerbatimUNC(server, share) => Prefix::UNC(server, share),
+        other => other,
     }
 }
 
@@ -135,7 +169,8 @@ pub fn collect(metadata: &str, root: &Path, entry_manifest: &Path) -> Checked<Pr
     let mut identity_keys = BTreeSet::new();
     let mut entry = None;
     for package in metadata.packages {
-        if Path::new(&package.manifest_path) == entry_manifest
+        if strip_workspace_prefix(Path::new(&package.manifest_path), entry_manifest)
+            .is_some_and(|relative| relative.as_os_str().is_empty())
             && entry.replace(package.id.clone()).is_some()
         {
             return refuse("duplicate-entry", "manifest");

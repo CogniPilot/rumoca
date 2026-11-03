@@ -1,3 +1,6 @@
+#[cfg(windows)]
+mod windows_paths;
+
 use super::*;
 use serde_json::{Value, json};
 
@@ -141,6 +144,22 @@ fn dependency_paths_cannot_escape_the_audited_workspace() {
     let mut value = fixture();
     value["packages"][1]["manifest_path"] = json!("/repo/../outside/Cargo.toml");
     assert_eq!(snapshot(&value).unwrap_err().rule, "dependency-path");
+}
+
+#[test]
+fn entry_manifest_requires_the_entire_path_not_a_parent_or_child() {
+    let value = fixture().to_string();
+    for entry in [
+        "/repo/crates/printer",
+        "/repo/crates/printer/Cargo.toml/child",
+    ] {
+        assert_eq!(
+            collect(&value, Path::new("/repo"), Path::new(entry))
+                .unwrap_err()
+                .rule,
+            "missing-entry"
+        );
+    }
 }
 
 #[test]
