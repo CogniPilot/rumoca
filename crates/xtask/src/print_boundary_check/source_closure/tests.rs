@@ -90,7 +90,7 @@ fn a_symlink_in_the_tree_or_an_input_parent_is_not_a_frozen_source() {
     std::os::unix::fs::symlink("entry.rs", temp.path().join("renderer/alias.rs")).unwrap();
     assert_eq!(
         capture(temp.path(), &roots()).unwrap_err().rule,
-        "source-file-kind"
+        "source-symlink"
     );
     std::os::unix::fs::symlink("renderer", temp.path().join("alternate")).unwrap();
     assert_eq!(
@@ -192,4 +192,87 @@ fn a_literal_backslash_name_cannot_alias_a_different_captured_path() {
         capture(tree.path(), &roots()).unwrap_err().rule,
         "source-path-encoding"
     );
+}
+
+#[test]
+fn an_expected_file_list_cannot_issue_complete_directory_coverage() {
+    let tree = fixture();
+    fs::write(tree.path().join("renderer/unexpected.rs"), "new route").unwrap();
+    let expected_only = BTreeSet::from([
+        PathBuf::from("renderer/entry.rs"),
+        PathBuf::from("renderer/helpers/format.rs"),
+    ]);
+    let partial = capture(tree.path(), &expected_only).unwrap();
+    assert_eq!(partial.files().count(), 2);
+    assert_eq!(
+        partial.tree(Path::new("renderer")).unwrap_err().rule(),
+        "source-tree-not-captured"
+    );
+    assert_eq!(
+        partial
+            .tree(Path::new("renderer/entry.rs"))
+            .unwrap_err()
+            .rule(),
+        "source-not-a-directory"
+    );
+    let complete = capture(tree.path(), &roots()).unwrap();
+    let covered = complete.tree(Path::new("renderer")).unwrap();
+    assert_eq!(covered.path(), "renderer");
+    let files = covered
+        .files(&complete)
+        .unwrap()
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 3);
+    assert!(files.contains(&"renderer/unexpected.rs"));
+}
+
+#[test]
+fn a_directory_witness_refuses_a_foreign_structurally_equal_capture() {
+    let tree = fixture();
+    let first = capture(tree.path(), &roots()).unwrap();
+    let second = capture(tree.path(), &roots()).unwrap();
+    assert_eq!(first, second);
+    let covered = first.tree(Path::new("renderer")).unwrap();
+    assert!(covered.files(&first).is_ok());
+    assert_eq!(
+        covered.files(&second).err().unwrap().rule(),
+        "foreign-covered-directory"
+    );
+}
+
+#[test]
+fn complete_subtrees_do_not_imply_parent_or_neighbor_coverage() {
+    let tree = fixture();
+    fs::create_dir(tree.path().join("renderer2")).unwrap();
+    fs::write(tree.path().join("renderer2/foreign.rs"), "neighbor").unwrap();
+    let nested = capture(
+        tree.path(),
+        &BTreeSet::from([PathBuf::from("renderer/helpers")]),
+    )
+    .unwrap();
+    assert!(nested.tree(Path::new("renderer")).is_err());
+    assert_eq!(
+        nested
+            .tree(Path::new("renderer/helpers"))
+            .unwrap()
+            .files(&nested)
+            .unwrap()
+            .count(),
+        1
+    );
+    let all = capture(
+        tree.path(),
+        &BTreeSet::from([PathBuf::from("renderer"), PathBuf::from("renderer2")]),
+    )
+    .unwrap();
+    let names = all
+        .tree(Path::new("renderer"))
+        .unwrap()
+        .files(&all)
+        .unwrap()
+        .map(|(path, _)| path.to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 2);
+    assert!(names.iter().all(|path| path.starts_with("renderer/")));
 }

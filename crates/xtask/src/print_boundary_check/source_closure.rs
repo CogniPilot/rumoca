@@ -37,6 +37,36 @@ pub struct SourceClosure {
     entries: BTreeMap<String, Entry>,
 }
 
+/// A directory enumerated by the complete, unfiltered bounded walk. This is
+/// coverage of the retained capture, not an atomic filesystem or authorization
+/// witness. A list of separately captured files cannot construct this value.
+#[derive(Debug)]
+pub struct CoveredDirectory<'capture> {
+    source: &'capture SourceClosure,
+    path: &'capture str,
+}
+
+impl CoveredDirectory<'_> {
+    pub fn path(&self) -> &str {
+        self.path
+    }
+
+    /// Enumerate every retained descendant, including unexpected new files.
+    /// Structural equality cannot substitute a different capture at consumption.
+    pub fn files<'a>(
+        &'a self,
+        expected: &SourceClosure,
+    ) -> Checked<impl Iterator<Item = (&'a str, CapturedFile<'a>)>> {
+        if !std::ptr::eq(self.source, expected) {
+            return refuse("foreign-covered-directory", self.path);
+        }
+        Ok(self.source.files().filter(move |(path, _)| {
+            path.strip_prefix(self.path)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        }))
+    }
+}
+
 /// A read-only file from the exact bytes hashed during capture. It never
 /// opens the live filesystem and cannot be constructed from a hash/flag.
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +91,15 @@ impl<'a> CapturedFile<'a> {
 }
 
 impl SourceClosure {
+    pub fn tree(&self, path: &Path) -> Checked<CoveredDirectory<'_>> {
+        let key = relative_key(path)?;
+        match self.entries.get_key_value(&key) {
+            Some((path, Entry::Directory)) => Ok(CoveredDirectory { source: self, path }),
+            Some(_) => refuse("source-not-a-directory", key),
+            None => refuse("source-tree-not-captured", key),
+        }
+    }
+
     pub fn file(&self, path: &Path) -> Checked<CapturedFile<'_>> {
         let key = relative_key(path)?;
         match self.entries.get(&key) {
@@ -120,6 +159,9 @@ pub fn capture(root: &Path, inputs: &BTreeSet<PathBuf>) -> Checked<SourceClosure
 
 fn capture_entry(entry: &walkdir::DirEntry, key: &str, total: &mut u64) -> Checked<Entry> {
     let kind = entry.file_type();
+    if kind.is_symlink() {
+        return refuse("source-symlink", key);
+    }
     if kind.is_dir() {
         return Ok(Entry::Directory);
     }
