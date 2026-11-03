@@ -35,14 +35,6 @@ impl PartialEq for EntryCallOccurrenceId<'_> {
     }
 }
 impl Eq for EntryCallOccurrenceId<'_> {}
-impl std::hash::Hash for EntryCallOccurrenceId<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(
-            &(self.program as *const TypedProgram, self.operation_index),
-            state,
-        );
-    }
-}
 
 /// One actual source occurrence, not caller-supplied interface-compatible parts.
 #[derive(Clone, Copy)]
