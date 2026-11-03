@@ -309,7 +309,7 @@ fn literal_c_admits_only_declaration_spelling() {
         "/* for each row */ const double * const * \u{0} ; // while ok\n",
         "\u{0} ( \u{0} ) [ \u{0} ] { \u{0} } , ; \u{0} = \u{0} . \u{0} -> \u{0} ;",
         "return \u{0} ; return ;",
-        "#ifndef GUARD\n#define GUARD\n#endif\n#pragma once\n",
+        "#pragma once\n",
         "static inline void \u{0} ( int32_t * , uint64_t ) ;",
         "unsigned long int \u{0} ; const struct \u{0} * \u{0} ;",
     ] {
@@ -343,6 +343,12 @@ fn literal_c_admits_only_declaration_spelling() {
         "#define STEP(k) k\n",
         "#if 1\n",
         "#define N 4\n",
+        "#define return\n",
+        "#ifndef GUARD\n",
+        "#ifdef GUARD\n",
+        "#define GUARD\n",
+        "#endif\n",
+        "#pragma pack(1)\n",
         "( ) * ( )",
         "int size_t",
         "size_t (",
@@ -808,4 +814,61 @@ fn declaration_words_need_a_declaration_role_and_constants_are_issued() {
     // A declaration printed from issued names passes.
     let declared = "{{ plan.return_type }} {{ plan.name }}( const double * {{ plan.argument }} )\n{\n    return {{ plan.result }};\n}\n";
     assert_eq!(rules_of(&[("t.c.jinja", declared)]), Vec::new());
+}
+
+#[test]
+fn literal_nul_and_bare_defines_are_refused() {
+    let refused = |files: &[(&str, &str)], why: &str| {
+        let found = rules_of(files);
+        assert!(
+            found.iter().any(|(_, _, r)| *r == Rule::LiteralExecutable),
+            "{why}: {found:?}"
+        );
+    };
+    // Review witness: a raw NUL forging the issued-value marker after a type
+    // word, with no plan or issued value in the template.
+    let nul = "void inline size_t\u{0}(void) { (size_t)(); }";
+    refused(&[("t.c.jinja", nul)], "raw NUL");
+    // Review witness: a bare define rewriting a token the decoder reads.
+    let define =
+        "#define return\n{{ plan.type }} {{ plan.name }}( void ) { return {{ plan.value }} ; }\n";
+    refused(&[("t.c.jinja", define)], "bare keyword define");
+    // A guard whose names differ, and a well-formed guard: neither is literal.
+    for guard in [
+        "#ifndef A\n#define B\n{{ plan.decl }} ;\n#endif\n",
+        "#ifndef A\n#define A\n{{ plan.decl }} ;\n#endif\n",
+        "{{ plan.decl }} ;\n#ifndef A\n#define A\n#endif\n",
+    ] {
+        refused(&[("t.c.jinja", guard)], guard);
+    }
+    // The NUL is refused on its own: as the only fault, in a printed string
+    // constant, and in a macro region.
+    let only_nul = rules_of(&[("t.c.jinja", "{{ plan.decl }} ;\u{0}\n")]);
+    assert_eq!(
+        only_nul
+            .iter()
+            .map(|(_, l, r)| (*l, *r))
+            .collect::<Vec<_>>(),
+        vec![(1, Rule::LiteralExecutable), (1, Rule::LiteralExecutable)],
+        "the NUL is flagged and lexed as a rejected byte: {only_nul:?}"
+    );
+    refused(
+        &[("t.c.jinja", "{{ \"\u{0}\" }}")],
+        "NUL in a printed string",
+    );
+    for text in [
+        "{% macro body(op) %} void inline size_t\u{0}(void) { (size_t)(); }{% endmacro %}",
+        "{% macro body(op) %}\n#define return\n{{ op.t }} {{ op.n }}( void ) { return {{ op.v }} ; }\n{% endmacro %}",
+    ] {
+        let found = region(&[("lib.jinja", text)], "body");
+        assert!(
+            found.iter().any(|(_, _, r)| *r == Rule::LiteralExecutable),
+            "{text:?}: {found:?}"
+        );
+    }
+    // `#pragma once` rewrites nothing and stays admitted.
+    assert_eq!(
+        rules_of(&[("t.h.jinja", "#pragma once\n{{ plan.decl }} ;\n")]),
+        Vec::new()
+    );
 }

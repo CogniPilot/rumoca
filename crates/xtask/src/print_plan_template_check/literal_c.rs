@@ -8,9 +8,9 @@
 //! declaration-specifier position (base types, the fixed-width and size type
 //! names, qualifiers, storage classes and tag keywords), `return` before an
 //! issued value, the punctuation of declarations, calls, indexing, member access
-//! and assignment, comments, and include-guard directives. Every other name,
-//! every number, every string or character literal, every include and every
-//! operator must arrive as an issued value. There is no reviewed ABI-fragment
+//! and assignment, comments, and `#pragma once`. Every other name, every
+//! number, every string or character literal, every include, every other
+//! directive and every operator must arrive as an issued value. There is no reviewed ABI-fragment
 //! exemption. A language with no literal check fails closed on any literal text
 //! at all.
 //!
@@ -18,6 +18,8 @@
 //! what is printed, not about each text node alone:
 //! - Literal text and printed string constants that are adjacent in one
 //!   statement list form one run, lexed as one stream after C line splicing.
+//! - Literal text may not contain a NUL byte: the lexer's issued-value marker
+//!   is minted by this check alone, never by literal bytes.
 //! - An issued value or include prints text this check cannot see. It must sit
 //!   between whitespace or delimiters in its own run, so it cannot complete a
 //!   literal token, and two of them may not touch.
@@ -64,7 +66,8 @@ const MULTI_PUNCTUATORS: &[&str] = &[
 const ADMITTED_PUNCTUATION: &[u8] = b"()[]{},;=.";
 /// Delimiters, as `char`s, for the join checks.
 const DELIMITERS: &[char] = &['(', ')', '[', ']', '{', '}', ',', ';'];
-/// An issued value or include in a lexed run: a byte no C text contains.
+/// An issued value or include in a lexed run. Its NUL byte is minted only
+/// here: a NUL in literal text is flagged and lexed as a rejected byte.
 const OPAQUE: &str = " \u{0} ";
 
 pub(super) fn check(
@@ -216,6 +219,17 @@ impl CText<'_, '_> {
             .iter()
             .filter(|p| !matches!(p, Piece::Text { text, .. } if text.is_empty()))
             .collect();
+        for current in &pieces {
+            if let Piece::Text { span, text } = current
+                && let Some(at) = text.find('\0')
+            {
+                self.flag(
+                    position(*span, &text[..at]),
+                    "NUL byte in literal text: only the check itself marks an issued value"
+                        .to_owned(),
+                );
+            }
+        }
         for (index, current) in pieces.iter().enumerate() {
             let before = index.checked_sub(1).map(|i| pieces[i]);
             let after = pieces.get(index + 1).copied();
@@ -263,10 +277,10 @@ impl CText<'_, '_> {
         let mut starts = Vec::with_capacity(pieces.len());
         for p in pieces {
             starts.push(joined.len());
-            joined.push_str(match p {
-                Piece::Text { text, .. } => text,
-                Piece::Opaque { .. } => OPAQUE,
-            });
+            match p {
+                Piece::Text { text, .. } => joined.push_str(&text.replace('\0', "\u{1}")),
+                Piece::Opaque { .. } => joined.push_str(OPAQUE),
+            }
         }
         let locate = |offset: usize| -> (u16, u16) {
             let index = starts.partition_point(|&s| s <= offset).saturating_sub(1);
@@ -650,10 +664,12 @@ impl<'t> Lexer<'t> {
         }
     }
 
-    /// A preprocessor line (already spliced). Only include-guard directives are
-    /// admitted. An include brings in text whose closure no gate here has
-    /// authorized, so a needed header arrives as an issued directive; a macro
-    /// body or a conditional expression would be code the check cannot follow.
+    /// A preprocessor line (already spliced). Only `#pragma once` is admitted:
+    /// it rewrites no token. An include brings in text whose closure no gate
+    /// here has authorized, so a needed header arrives as an issued directive;
+    /// any `#define`, even a bare one, can rewrite the tokens this check and a
+    /// decoder read (`#define return`), and a conditional selects text the
+    /// check cannot follow. An include guard is therefore not literal text.
     fn directive(&mut self) {
         let start = self.at;
         let end = self.text[start..]
@@ -663,14 +679,8 @@ impl<'t> Lexer<'t> {
         let mut words = line.split_whitespace();
         let name = words.next().unwrap_or_default();
         let rest: Vec<&str> = words.collect();
-        let admitted = match name {
-            "ifndef" | "ifdef" | "define" => rest.len() == 1 && is_identifier(rest[0]),
-            "endif" => rest.is_empty(),
-            "pragma" => rest == ["once"],
-            _ => false,
-        };
-        if !admitted {
-            self.reject(start, format!("directive `#{line}` in literal text: only include-guard directives are admitted; includes are issued"));
+        if !(name == "pragma" && rest == ["once"]) {
+            self.reject(start, format!("directive `#{line}` in literal text: only `#pragma once` is admitted; includes and guards are issued"));
         }
         self.at = end;
         if end == self.bytes.len() {
@@ -704,9 +714,4 @@ fn word_role(word: &str, prev: Prev) -> (Option<Prev>, bool) {
     } else {
         (None, false)
     }
-}
-
-fn is_identifier(text: &str) -> bool {
-    text.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
