@@ -34,7 +34,28 @@ const COVERED_TEMPLATES: &[&str] = &[];
 /// legacy: (template, macro name, literal language). Only that macro's body
 /// and its static closure are covered; the rest of the file stays outside the
 /// gate and under the migration ledger's freeze.
-const COVERED_MACROS: &[(&str, &str, Language)] = &[];
+const COVERED_MACROS: &[(&str, &str, Language)] = &[
+    ("fmi3/typed_functions.jinja", "element", Language::C),
+    ("fmi3/typed_functions.jinja", "storage_name", Language::C),
+    ("fmi3/typed_functions.jinja", "operand", Language::C),
+    ("fmi3/typed_functions.jinja", "integer_literal", Language::C),
+    ("fmi3/typed_functions.jinja", "unary_spelling", Language::C),
+    ("fmi3/typed_functions.jinja", "binary_spelling", Language::C),
+    (
+        "fmi3/typed_functions.jinja",
+        "compare_spelling",
+        Language::C,
+    ),
+    ("fmi3/typed_functions.jinja", "checked", Language::C),
+    ("fmi3/typed_functions.jinja", "domain", Language::C),
+    ("fmi3/typed_functions.jinja", "elementwise", Language::C),
+    ("fmi3/typed_functions.jinja", "convert", Language::C),
+    ("fmi3/typed_functions.jinja", "tensor_item", Language::C),
+    ("fmi3/typed_functions.jinja", "slot_frame", Language::C),
+    ("fmi3/typed_functions.jinja", "plan_frame", Language::C),
+    ("fmi3/typed_functions.jinja", "plan_item", Language::C),
+    ("fmi3/typed_functions.jinja", "plan_outputs", Language::C),
+];
 
 const TEMPLATE_DIR: &str = "crates/rumoca-phase-codegen/src/templates";
 

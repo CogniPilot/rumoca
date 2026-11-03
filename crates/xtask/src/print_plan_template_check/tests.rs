@@ -466,19 +466,27 @@ fn audit_witnesses_in_the_legacy_templates_fail() {
         Rule::Arithmetic,
         "D056 span*step arithmetic",
     );
+    // The print plan replaced the audited D059 alias block; its witness is
+    // kept as a fixture, and the current file's remaining namespace mutation
+    // is located by its text rather than a fixed line.
+    let d059 = "{% set written = namespace(ids=[]) -%}\n{% for issued in program.operations -%}\n{% if issued.operation.destination is defined %}{% set written.ids = written.ids + [issued.operation.destination] %}{% endif -%}\n{% endfor -%}\n{% if op.operation == \"load\" and written.ids|select(\"equalto\", op.destination)|list|length == 1 %}x{% endif -%}\n";
+    assert_flags(&[("t.c.jinja", d059)], "t.c.jinja", 1, Rule::Assignment);
+    assert_flags(&[("t.c.jinja", d059)], "t.c.jinja", 5, Rule::Arithmetic);
+    let source = RepoTemplates::load(&repo_root())
+        .expect("template manifests")
+        .read(typed)
+        .expect("typed functions");
+    let namespace_line = source
+        .lines()
+        .position(|line| line.contains("{% set output = namespace(predicate=0"))
+        .expect("observation wrapper namespace") as u16
+        + 1;
     assert_legacy(
         &found,
         typed,
-        158,
+        namespace_line,
         Rule::Assignment,
-        "D059 written-register namespace",
-    );
-    assert_legacy(
-        &found,
-        typed,
-        166,
-        Rule::Arithmetic,
-        "D059 single-store alias test (line 166)",
+        "observation wrapper namespace mutation",
     );
     let tensors = "fmi3/typed_tensors.jinja";
     let found = legacy(tensors);

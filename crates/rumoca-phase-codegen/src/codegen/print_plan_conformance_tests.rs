@@ -13,6 +13,7 @@ use solve::{
 
 use super::codegen_test_support::builtin_template;
 
+mod registry;
 mod scalar;
 mod tensor;
 
@@ -1395,4 +1396,133 @@ fn integer_diagonals_and_identities_stay_legacy() {
     .expect("checked integer tensor program");
     assert_eq!(tensor_items(&program), Vec::new());
     assert_eq!(coverage(&program).1, 2);
+}
+
+/// The scalar spellings the other programs leave unselected: the remaining
+/// unary, binary and comparison tokens and the minimum integer literal.
+fn spelling_program() -> solve::TypedProgram {
+    use solve::{SolveBinaryOperator as B, SolveCompareOperator as C, SolveUnaryOperator as U};
+    let arithmetic = profile();
+    solve::TypedProgram::construct(arithmetic, |builder| {
+        let x = input(builder, real_tensor(vec![2]))?;
+        let y = input(builder, real_tensor(vec![2]))?;
+        let boolean =
+            solve::SolveValueType::tensor(solve::SolveScalarType::Boolean, vec![2]).unwrap();
+        let p = input(builder, boolean.clone())?;
+        let q = input(builder, boolean.clone())?;
+        let real = real_tensor(vec![2]);
+        let mut results = Vec::new();
+        for operator in [
+            U::Truncate,
+            U::Floor,
+            U::Sin,
+            U::Cos,
+            U::Tan,
+            U::Asin,
+            U::Acos,
+            U::Atan,
+            U::Sinh,
+            U::Cosh,
+            U::Tanh,
+            U::Exp,
+            U::Log,
+        ] {
+            results.push((builder.unary(operator, x, span())?, real.clone()));
+        }
+        results.push((builder.unary(U::Not, p, span())?, boolean.clone()));
+        for operator in [B::Add, B::Subtract, B::Divide, B::Atan2, B::Max] {
+            results.push((builder.binary(operator, x, y, span())?, real.clone()));
+        }
+        for operator in [B::Or, B::Max] {
+            results.push((builder.binary(operator, p, q, span())?, boolean.clone()));
+        }
+        for operator in [C::Equal, C::NotEqual, C::GreaterEqual] {
+            results.push((builder.compare(operator, x, y, span())?, boolean.clone()));
+        }
+        let minimum = solve::SolveValue::integer(arithmetic, i64::MIN).unwrap();
+        results.push((
+            builder.constant(minimum, span())?,
+            solve::SolveValueType::scalar(solve::SolveScalarType::integer(arithmetic)),
+        ));
+        for (result, value_type) in results {
+            let slot = builder.declare_slot(
+                value_type,
+                solve::SolveStorageClass::Output,
+                solve::SolveSlotAccess::ReadWrite,
+                span(),
+            )?;
+            builder.store(slot, result, span())?;
+        }
+        Ok(())
+    })
+    .expect("checked spelling program")
+}
+
+/// The decoded-region registry the template check reads.
+const REGISTRY: &str = include_str!("../templates/fmi3/print_plan_regions.toml");
+
+/// Every conformance program, each decoded in full by `check`.
+fn conformance_programs() -> Vec<(solve::TypedProgram, &'static str)> {
+    vec![
+        (mixed_program(), "mixed"),
+        (reduction_program(), "reduction"),
+        (integer_program(), "integer"),
+        (real_program(), "real"),
+        (map_program(), "map"),
+        (tensor_program(), "tensor"),
+        (spelling_program(), "spelling"),
+    ]
+}
+
+/// Declared variants that no conformance program selects yet. Each keeps its
+/// reviewed spelling and decoder entry, but has no executed positive binding,
+/// so its coverage is partial; a program that selects one removes it here.
+const UNSELECTED: &[&str] = &[];
+
+/// Registration hands a region's literal text to these decoders, so each
+/// registered region must be rendered by production `definition()`, each
+/// declared variant reached, and that same output decoded in full.
+#[test]
+fn every_registered_region_is_rendered_selected_and_decoded() {
+    let regions = registry::regions(REGISTRY);
+    assert!(regions.len() > 10, "{regions:?}");
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    let marked = Printer::new(registry::instrumented(template, &regions));
+    let plain = Printer::builtin();
+    let mut rendered = String::new();
+    for (program, name) in conformance_programs() {
+        assert_eq!(
+            check(&plain, &program, name),
+            Vec::<String>::new(),
+            "{name}"
+        );
+        let wire = serde_json::to_value(&program).unwrap();
+        rendered.push_str(&marked.definition(&wire, name));
+    }
+    let (unrun, unselected) = registry::unreached(&regions, &rendered);
+    assert_eq!(
+        unrun,
+        Vec::<String>::new(),
+        "registered regions never rendered"
+    );
+    assert_eq!(unselected, UNSELECTED, "declared variants never selected");
+}
+
+/// A registered region production never renders, or a declared variant no
+/// program selects, is reported by the same proof.
+#[test]
+fn an_unrendered_region_or_unselected_variant_fails_the_registry_proof() {
+    let extra = format!(
+        "{REGISTRY}\n[[region]]\nfile = \"fmi3/typed_functions.jinja\"\nmacro = \"ctype\"\nconsumer = \"c\"\ndecoder = \"d\"\n[[region.argument]]\nname = \"ty\"\nschema = \"SolveValueType\"\n"
+    );
+    let regions = registry::regions(&extra);
+    let template = builtin_template("fmi3", "typed_functions.jinja");
+    let marked = Printer::new(registry::instrumented(template, &regions));
+    let wire = serde_json::to_value(mixed_program()).unwrap();
+    let (unrun, unselected) = registry::unreached(&regions, &marked.definition(&wire, "mixed"));
+    assert!(unrun.contains(&"ctype".to_owned()), "{unrun:?}");
+    assert!(
+        unselected.contains(&"tensor_item:item.kernel.kind:cross".to_owned()),
+        "mixed selects no tensor kernel: {unselected:?}"
+    );
 }

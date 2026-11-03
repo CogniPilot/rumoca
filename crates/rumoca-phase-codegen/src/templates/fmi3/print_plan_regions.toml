@@ -21,3 +21,217 @@
 # path = "<argument>.<field>..."   (or the argument itself, when its schema is the tag's)
 # schema = "<the issued Solve IR type the tag belongs to>"
 # variants = ["<each serialized variant>", ...]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "element"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "token"
+schema = "SolveElementToken"
+[[region.tag]]
+path = "token"
+schema = "SolveElementToken"
+variants = ["real64", "int64", "boolean"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "storage_name"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "name"
+schema = "SolveName"
+[[region.tag]]
+path = "name.space"
+schema = "SolveNameSpace"
+variants = ["slot", "register"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "operand"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "value"
+schema = "SolveElementOperand"
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "integer_literal"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "value"
+schema = "SolveIntegerLiteral"
+[[region.tag]]
+path = "value.sign"
+schema = "SolveIntegerLiteral"
+variants = ["minimum", "negative", "nonnegative"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "unary_spelling"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "token"
+schema = "SolveUnaryToken"
+[[region.argument]]
+name = "a"
+schema = "RenderedOperand"
+[[region.tag]]
+path = "token"
+schema = "SolveUnaryToken"
+variants = ["negate", "not", "sign", "integer_abs", "real_abs", "ceiling", "truncate", "sqrt", "floor", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "log", "log10"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "binary_spelling"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "token"
+schema = "SolveBinaryToken"
+[[region.argument]]
+name = "a"
+schema = "RenderedOperand"
+[[region.argument]]
+name = "b"
+schema = "RenderedOperand"
+[[region.tag]]
+path = "token"
+schema = "SolveBinaryToken"
+variants = ["boolean_min", "boolean_max", "power", "atan2", "real_min", "real_max", "add", "subtract", "multiply", "divide", "and", "or"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "compare_spelling"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "token"
+schema = "SolveCompareOperator"
+[[region.tag]]
+path = "token"
+schema = "SolveCompareOperator"
+variants = ["equal", "not_equal", "less", "less_equal", "greater", "greater_equal"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "checked"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "token"
+schema = "SolveCheckedToken"
+[[region.argument]]
+name = "d"
+schema = "RegisterId"
+[[region.argument]]
+name = "a"
+schema = "RenderedOperand"
+[[region.argument]]
+name = "b"
+schema = "RenderedOperand"
+[[region.tag]]
+path = "token"
+schema = "SolveCheckedToken"
+variants = ["add", "subtract", "multiply", "quotient", "modulo", "remainder", "min", "max"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "domain"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "item"
+schema = "SolveBodyItem"
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "elementwise"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "item"
+schema = "SolveBodyItem"
+[[region.tag]]
+path = "item.kernel.kind"
+schema = "SolveKernel"
+variants = ["unary", "binary", "checked", "compare"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "convert"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "item"
+schema = "SolveBodyItem"
+[[region.tag]]
+path = "item.token"
+schema = "SolveConversionToken"
+variants = ["integer_to_real", "real_to_integer_toward_zero", "real_to_integer_toward_negative_infinity"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "tensor_item"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "item"
+schema = "SolveBodyItem"
+[[region.tag]]
+path = "item.kernel.kind"
+schema = "SolveTensorKernel"
+variants = ["fill", "identity", "diagonal", "concatenate", "construct_aggregate", "scale", "transpose", "matrix_multiply", "cross", "project_element"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "slot_frame"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "item"
+schema = "SolveFrameItem"
+[[region.tag]]
+path = "item.kind"
+schema = "SolveFrameItem"
+variants = ["argument_view", "frame_from_argument", "frame"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "plan_frame"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "plan"
+schema = "SolvePrintPlan"
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "plan_item"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "item"
+schema = "SolveBodyItem"
+[[region.tag]]
+path = "item.kind"
+schema = "SolveBodyItem"
+variants = ["view", "copy", "constant", "select", "elementwise", "convert", "tensor"]
+[[region.tag]]
+path = "item.value.kind"
+schema = "SolveLiteral"
+variants = ["real64", "int64", "boolean"]
+
+[[region]]
+file = "fmi3/typed_functions.jinja"
+macro = "plan_outputs"
+consumer = "fmi3 typed function definition()"
+decoder = "rumoca-phase-codegen print_plan_conformance_tests"
+[[region.argument]]
+name = "plan"
+schema = "SolvePrintPlan"
