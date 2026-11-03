@@ -273,6 +273,23 @@ checked arithmetic/query results; they MUST NOT return target-language
 fragments or perform lowering, name resolution, type repair, target dispatch,
 file assembly, or escaping for a particular output language.
 
+The initial legacy decision freeze is a migration boundary, not compliance:
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| `verify lint` MUST invoke `cargo xtask repo policy backend-migration` | `xtask` | Makes the source freeze blocking |
+| Keep D001–D096 and every covered source hash in `crates/xtask/policy/backend-migration-ledger.json` | migration ledger | Counts alone do not preserve identity |
+| Refuse new, changed, removed or symlinked covered files, including literal template bodies and comments | freeze checker | Moving or relabeling code is not retirement |
+| No baseline update or approval flag may authorize migration | source-bound retirement gate | Requires real issued-plan API authorization and full instruction conformance |
+| Report unresolved groups and partial coverage on success | gate output | Freeze acceptance is not print-only compliance |
+
+The snapshot covers only `crates/rumoca-phase-codegen` at
+`187eee7a8a1b321302747be733678c49ac3bdfa1`, including tests and assets.
+It provides no retirement switch. A successor must integrate the real
+plan/API/conformance checks before replacing this snapshot. Cranelift,
+external helpers and arbitrary template routes are outside this initial
+coverage; no WCET or complete migration claim follows from a pass.
+
 ## References
 
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — owning boundary rules, tier

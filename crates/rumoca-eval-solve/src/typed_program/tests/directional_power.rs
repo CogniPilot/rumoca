@@ -206,7 +206,25 @@ fn broadcast_power_constant_exponent_preserves_zero_tangent_fact_in_map_capture(
                 _ => None,
             })
             .unwrap();
-        assert_eq!(map.1.len(), 3, "constant exponent has no tangent capture");
+        let original_primal = body
+            .operations()
+            .iter()
+            .find_map(|operation| match operation.operation() {
+                SolveOperation::Store { slot, source }
+                    if body.slots()[slot.index()].storage()
+                        == rumoca_ir_solve::SolveStorageClass::Output =>
+                {
+                    Some(*source)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            map.1.len(),
+            4,
+            "base primal/tangent, constant exponent primal, and original result only"
+        );
+        assert_eq!(map.1.last(), Some(&original_primal));
         assert!(!map.0.body().operations().iter().any(|operation| matches!(
             operation.operation(),
             SolveOperation::Unary {

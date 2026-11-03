@@ -7,6 +7,7 @@
 mod assignment_shape;
 mod compact_owner;
 mod dependency;
+mod exact_source;
 mod leaf_dependencies;
 mod materialization;
 mod native_assignment;
@@ -35,6 +36,7 @@ pub use assignment_shape::{
 };
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
+pub use exact_source::BoundExactRefreshAssignment;
 pub use leaf_dependencies::LeafDependencies;
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
@@ -345,7 +347,7 @@ impl ExactRefreshAssignmentProgram {
         &self,
         source: &ComputeBlock,
     ) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
-        materialize_exact_assignment_program(source, self)
+        self.bind_source(source)?.final_scalar_program()
     }
 }
 
@@ -1268,78 +1270,6 @@ fn construct_exact_assignment_program<'a>(
         assignment_shapes: shapes.into_boxed_slice(),
         assignment_y_dependencies,
         assignment_leaf_dependencies: Box::default(),
-    })
-}
-
-fn materialize_exact_assignment_program(
-    block: &ComputeBlock,
-    owner: &ExactRefreshAssignmentProgram,
-) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
-    let source_owner = scalar_source_owner(block, owner.source)?;
-    if source_owner.is_none_or(|source| !source.shares_program_owner(&owner.source_owner)) {
-        return refresh_error(
-            "exact continuous refresh source no longer has its issued owner".to_string(),
-        );
-    }
-    let (source_program, span) = scalar_source_program(block, owner.source)?.ok_or_else(|| {
-        ContinuousRefreshConstructionError {
-            reason: "exact continuous refresh source program is missing".to_string(),
-        }
-    })?;
-    let prefix_len = owner
-        .assignment_shapes
-        .iter()
-        .map(|shape| shape.expr_eval_len())
-        .max()
-        .unwrap_or(0);
-    let prefix =
-        source_program
-            .get(..prefix_len)
-            .ok_or_else(|| ContinuousRefreshConstructionError {
-                reason: "exact continuous refresh assignment prefix exceeds its canonical source"
-                    .to_string(),
-            })?;
-    let mut operations = prefix
-        .iter()
-        .filter(|operation| {
-            !matches!(
-                operation,
-                LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let overflow = || ContinuousRefreshConstructionError {
-        reason: "exact continuous refresh assignment program overflows registers".to_string(),
-    };
-    let mut program = ExactAssignmentProgramBuilder::new(&mut operations).ok_or_else(overflow)?;
-    for store in &owner.assignment_stores {
-        match *store {
-            ExactAssignmentStore::Scalar(index) => {
-                let (src, _) = program
-                    .materialize_guarded(&owner.assignment_shapes[index])
-                    .ok_or_else(overflow)?;
-                program
-                    .push(LinearOp::StoreOutput { src })
-                    .ok_or_else(overflow)?;
-            }
-            ExactAssignmentStore::Range {
-                start,
-                stride,
-                targets,
-            } => program
-                .push_range_output(start, targets.count(), stride)
-                .ok_or_else(overflow)?,
-        }
-    }
-    let provenance = rumoca_core::ProvenanceSpan::new(span, "continuous refresh assignment")
-        .map_err(|error| ContinuousRefreshConstructionError {
-            reason: error.to_string(),
-        })?;
-    ScalarProgramBlock::with_source_span(vec![operations], provenance).map_err(|error| {
-        ContinuousRefreshConstructionError {
-            reason: error.to_string(),
-        }
     })
 }
 

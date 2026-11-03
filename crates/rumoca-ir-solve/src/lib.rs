@@ -45,6 +45,7 @@ mod shape_error;
 mod static_parameters;
 mod storage_run_index;
 mod tangent_lanes;
+mod tangent_workspace;
 mod typed_program;
 mod variable_bounds;
 mod visible;
@@ -126,6 +127,9 @@ pub use static_parameters::ContinuousStaticParameters;
 pub use tangent_lanes::{
     ColoredLaneCall, ColoredTangentPlan, TangentLaneCatalog, TangentLaneError, TangentLaneProgram,
     TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
+};
+pub use tangent_workspace::{
+    SolveTangentOccurrence, SolveTangentSchedule, SolveTangentWorkspace, SolveTangentWorkspaceError,
 };
 pub use typed_program::*;
 pub use visible::*;

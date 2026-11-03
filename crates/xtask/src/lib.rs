@@ -1,3 +1,4 @@
+pub mod migration_ledger;
 pub mod web_assets;
 
 mod traversal_policy_check;

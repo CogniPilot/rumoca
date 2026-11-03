@@ -1,4 +1,4 @@
-//! Compact pointwise lifting of the canonical scalar directional arithmetic.
+//! Compact elementwise lifting of the shared scalar directional arithmetic.
 
 use super::*;
 use rumoca_core::{IndexBinderProvenance, StructuredIndexBinder};
@@ -18,7 +18,14 @@ impl<'program> DirectionalBuilder<'_, 'program> {
             .derive_unary(operator, operand, value_type, provenance);
         }
         let primal = self.builder.unary(operator, operand.primal, provenance)?;
-        let tangent = self.pointwise_unary(operator, operand, primal, value_type, provenance)?;
+        let tangent = tangent_of_unary_source(
+            self.builder,
+            operator,
+            operand,
+            primal,
+            value_type,
+            provenance,
+        )?;
         Ok(Directional { primal, tangent })
     }
 
@@ -42,69 +49,25 @@ impl<'program> DirectionalBuilder<'_, 'program> {
         let primal = self
             .builder
             .binary(operator, lhs.primal, rhs.primal, provenance)?;
-        let tangent = if lhs.tangent.is_none() && rhs.tangent.is_none() {
-            None
-        } else {
-            Some(self.pointwise_binary_tangent(
-                operator,
-                [(lhs, true), (rhs, true)],
-                value_type,
-                provenance,
-            )?)
-        };
+        let tangent = tangent_of_binary_source(
+            self.builder,
+            operator,
+            [lhs, rhs],
+            primal,
+            value_type,
+            provenance,
+        )?;
         Ok(Directional { primal, tangent })
     }
 
-    fn pointwise_unary(
-        &mut self,
-        operator: SolveUnaryOperator,
-        operand: Directional<ProgramRegister<'program>>,
-        primal: ProgramRegister<'program>,
-        value_type: &SolveValueType,
-        provenance: Span,
-    ) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
-        if operand.tangent.is_none() {
-            return Ok(None);
-        }
-        let mut captures = Vec::new();
-        let operand = capture(&mut captures, operand);
-        let primal = capture(
-            &mut captures,
-            Directional {
-                primal,
-                tangent: None,
-            },
-        );
-        let body_type = SolveValueType::scalar(value_type.element_type());
-        let tangent = self.builder.map(
-            tensor_domain(value_type.dimensions()),
-            &captures,
-            body_type.clone(),
-            provenance,
-            |builder, captures, binders, output| {
-                let indices = load_indices(builder, binders, provenance)?;
-                let operand = load_capture(builder, captures, operand, Some(&indices), provenance)?;
-                let primal =
-                    load_capture(builder, captures, primal, Some(&indices), provenance)?.primal;
-                let mut arithmetic = DirectionalArithmetic { builder };
-                let value = arithmetic
-                    .derive_unary_from_primal(operator, operand, primal, &body_type, provenance)?;
-                let tangent = arithmetic.tangent_or_zero(value, &body_type, provenance)?;
-                builder.store(output, tangent, provenance)
-            },
-        )?;
-        Ok(Some(tangent))
-    }
-
-    /// `aggregate op scalar` (or `scalar op aggregate`) under the scalar
-    /// directional arithmetic of `operator`, lifted over the aggregate domain.
+    /// Lift aggregate/scalar directions over their original aggregate primal.
     pub(super) fn pointwise_broadcast(
         &mut self,
         operator: SolveBinaryOperator,
         aggregate: Directional<ProgramRegister<'program>>,
         scalar: Directional<ProgramRegister<'program>>,
         scalar_on_lhs: bool,
-        value_type: &SolveValueType,
+        (primal, value_type): (ProgramRegister<'program>, &SolveValueType),
         provenance: Span,
     ) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
         if aggregate.tangent.is_none() && scalar.tangent.is_none() {
@@ -115,53 +78,152 @@ impl<'program> DirectionalBuilder<'_, 'program> {
         } else {
             [(aggregate, true), (scalar, false)]
         };
-        self.pointwise_binary_tangent(operator, operands, value_type, provenance)
-            .map(Some)
-    }
-
-    /// The elementwise tangent of a tensor binary operation, one scalar
-    /// directional relation per element; each operand is flagged as indexed
-    /// by the domain or as a scalar shared by every element.
-    fn pointwise_binary_tangent(
-        &mut self,
-        operator: SolveBinaryOperator,
-        operands: [(Directional<ProgramRegister<'program>>, bool); 2],
-        value_type: &SolveValueType,
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let mut captures = Vec::new();
-        let [(lhs, lhs_indexed), (rhs, rhs_indexed)] = operands;
-        let lhs = capture(&mut captures, lhs);
-        let rhs = capture(&mut captures, rhs);
-        let body_type = SolveValueType::scalar(value_type.element_type());
-        self.builder.map(
-            tensor_domain(value_type.dimensions()),
-            &captures,
-            body_type.clone(),
+        map_binary_tangent(
+            self.builder,
+            operator,
+            operands,
+            primal,
+            value_type,
             provenance,
-            |builder, captures, binders, output| {
-                let indices = load_indices(builder, binders, provenance)?;
-                let lhs = load_capture(
-                    builder,
-                    captures,
-                    lhs,
-                    lhs_indexed.then_some(indices.as_slice()),
-                    provenance,
-                )?;
-                let rhs = load_capture(
-                    builder,
-                    captures,
-                    rhs,
-                    rhs_indexed.then_some(indices.as_slice()),
-                    provenance,
-                )?;
-                let mut arithmetic = DirectionalArithmetic { builder };
-                let value = arithmetic.derive_binary(operator, lhs, rhs, &body_type, provenance)?;
-                let tangent = arithmetic.tangent_or_zero(value, &body_type, provenance)?;
-                builder.store(output, tangent, provenance)
-            },
         )
+        .map(Some)
     }
+}
+
+/// The existing canonical unary relation, retaining its original source value.
+pub(super) fn tangent_of_unary_source<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    operator: SolveUnaryOperator,
+    operand: Directional<ProgramRegister<'program>>,
+    primal: ProgramRegister<'program>,
+    value_type: &SolveValueType,
+    provenance: Span,
+) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
+    if !pointwise_unary_operator(operator) || value_type.dimensions().is_empty() {
+        return DirectionalArithmetic { builder }
+            .derive_unary_from_primal(operator, operand, primal, value_type, provenance)
+            .map(|value| value.tangent);
+    }
+    if operand.tangent.is_none() {
+        return Ok(None);
+    }
+    let mut captures = Vec::new();
+    let operand = capture(&mut captures, operand);
+    let primal = capture(
+        &mut captures,
+        Directional {
+            primal,
+            tangent: None,
+        },
+    );
+    let body_type = SolveValueType::scalar(value_type.element_type());
+    let tangent = builder.map(
+        tensor_domain(value_type.dimensions()),
+        &captures,
+        body_type.clone(),
+        provenance,
+        |builder, captures, binders, output| {
+            let indices = load_indices(builder, binders, provenance)?;
+            let operand = load_capture(builder, captures, operand, Some(&indices), provenance)?;
+            let primal =
+                load_capture(builder, captures, primal, Some(&indices), provenance)?.primal;
+            let mut arithmetic = DirectionalArithmetic { builder };
+            let value = arithmetic
+                .derive_unary_from_primal(operator, operand, primal, &body_type, provenance)?;
+            let tangent = arithmetic.tangent_or_zero(value, &body_type, provenance)?;
+            builder.store(output, tangent, provenance)
+        },
+    )?;
+    Ok(Some(tangent))
+}
+
+/// The existing canonical binary relation, retaining its original source value.
+pub(super) fn tangent_of_binary_source<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    operator: SolveBinaryOperator,
+    [lhs, rhs]: [Directional<ProgramRegister<'program>>; 2],
+    primal: ProgramRegister<'program>,
+    value_type: &SolveValueType,
+    provenance: Span,
+) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
+    if !pointwise_binary_operator(operator)
+        || value_type.dimensions().is_empty()
+        || !is_real(value_type)
+    {
+        return DirectionalArithmetic { builder }
+            .derive_binary_from_primal(operator, lhs, rhs, primal, value_type, provenance)
+            .map(|value| value.tangent);
+    }
+    if lhs.tangent.is_none() && rhs.tangent.is_none() {
+        return Ok(None);
+    }
+    map_binary_tangent(
+        builder,
+        operator,
+        [(lhs, true), (rhs, true)],
+        primal,
+        value_type,
+        provenance,
+    )
+    .map(Some)
+}
+
+fn map_binary_tangent<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    operator: SolveBinaryOperator,
+    operands: [(Directional<ProgramRegister<'program>>, bool); 2],
+    primal: ProgramRegister<'program>,
+    value_type: &SolveValueType,
+    provenance: Span,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let mut captures = Vec::new();
+    let [(lhs, lhs_indexed), (rhs, rhs_indexed)] = operands;
+    let lhs = capture(&mut captures, lhs);
+    let rhs = capture(&mut captures, rhs);
+    let primal = capture(
+        &mut captures,
+        Directional {
+            primal,
+            tangent: None,
+        },
+    );
+    let body_type = SolveValueType::scalar(value_type.element_type());
+    builder.map(
+        tensor_domain(value_type.dimensions()),
+        &captures,
+        body_type.clone(),
+        provenance,
+        |builder, captures, binders, output| {
+            let indices = load_indices(builder, binders, provenance)?;
+            let lhs = load_capture(
+                builder,
+                captures,
+                lhs,
+                lhs_indexed.then_some(indices.as_slice()),
+                provenance,
+            )?;
+            let rhs = load_capture(
+                builder,
+                captures,
+                rhs,
+                rhs_indexed.then_some(indices.as_slice()),
+                provenance,
+            )?;
+            let direct_primal =
+                load_capture(builder, captures, primal, Some(&indices), provenance)?.primal;
+            let mut arithmetic = DirectionalArithmetic { builder };
+            let value = arithmetic.derive_binary_from_primal(
+                operator,
+                lhs,
+                rhs,
+                direct_primal,
+                &body_type,
+                provenance,
+            )?;
+            let tangent = arithmetic.tangent_or_zero(value, &body_type, provenance)?;
+            builder.store(output, tangent, provenance)
+        },
+    )
 }
 
 /// Unary operators whose aggregate tangent is lifted elementwise.
