@@ -1330,6 +1330,7 @@ fn run_lsp_msl_completion_timings(
 }
 
 fn run_lint_policy_checks(root: &Path) -> Result<()> {
+    xtask::migration_ledger::run(root)?;
     let fmt_root = root.to_path_buf();
     let fmt_check = thread::spawn(move || test_cmd::run_workspace_fmt_check(&fmt_root));
     let policy_checks = thread::spawn(xtask::run_traversal_policy_check);

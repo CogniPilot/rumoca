@@ -859,6 +859,7 @@ fn cli_parses_repo_policy_rust_file_lines() {
         Commands::Repo(args) => match args.command {
             RepoCommand::Policy(args) => match args.command {
                 RepoPolicyCommand::RustFileLines(args) => assert!(args.all_files),
+                other => panic!("expected rust-file-lines, got {other:?}"),
             },
             other => panic!("expected repo policy, got {other:?}"),
         },
@@ -1196,4 +1197,18 @@ fn generic_argument_lists_are_stripped_but_qualified_paths_are_kept() {
     );
     assert_eq!(strip_generic_args("a::g::<fn() -> u8>"), "a::g");
     assert_eq!(strip_generic_args("<a::Thing>::m"), "<a::Thing>::m");
+}
+
+#[test]
+fn cli_parses_repo_policy_backend_migration() {
+    let cli = Cli::try_parse_from(["xtask", "repo", "policy", "backend-migration"])
+        .expect("parse backend migration freeze");
+    assert!(matches!(
+        cli.command,
+        Commands::Repo(crate::RepoArgs {
+            command: RepoCommand::Policy(crate::RepoPolicyArgs {
+                command: RepoPolicyCommand::BackendMigration
+            })
+        })
+    ));
 }
