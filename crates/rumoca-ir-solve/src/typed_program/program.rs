@@ -711,6 +711,28 @@ pub struct TypedProgramBuilder<'program> {
 }
 
 impl<'program> TypedProgramBuilder<'program> {
+    pub(in crate::typed_program) fn bound_call_indices(
+        &self,
+    ) -> Option<(
+        &'program [SolvePureCallOwnerId],
+        &'program [Option<SolvePureCallOwnerId>],
+    )> {
+        self.available_calls.bound_indices()
+    }
+
+    pub(in crate::typed_program) fn bound_call_namespace(
+        &self,
+    ) -> Option<&'program [crate::BoundSolvePureCallBody<'program>]> {
+        self.available_calls.bound_namespace()
+    }
+
+    pub(in crate::typed_program) fn shares_bound_call_namespace(
+        &self,
+        bindings: &[crate::BoundSolvePureCallBody<'_>],
+    ) -> bool {
+        self.available_calls.shares_bound_namespace(bindings)
+    }
+
     pub fn declare_slot(
         &mut self,
         value_type: SolveValueType,

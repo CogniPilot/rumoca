@@ -1,5 +1,7 @@
 use super::recursion::PendingOwner;
-use super::{SolvePureCallInterface, SolvePureCallOwner};
+use super::{
+    BoundSolvePureCallBody, SolvePureCallInterface, SolvePureCallOwner, SolvePureCallOwnerId,
+};
 
 /// A borrowed prefix of already-issued owners, optionally followed by the
 /// reserved members of one recursive group under construction (SOLVE-C62).
@@ -11,6 +13,9 @@ pub(in crate::typed_program) struct SolvePureCallTableView<'owner> {
     owners: &'owner [SolvePureCallOwner],
     pending: &'owner [PendingOwner],
     directional: bool,
+    bound: Option<&'owner [BoundSolvePureCallBody<'owner>]>,
+    bound_original: &'owner [SolvePureCallOwnerId],
+    bound_directional: &'owner [Option<SolvePureCallOwnerId>],
 }
 
 impl<'owner> SolvePureCallTableView<'owner> {
@@ -19,6 +24,9 @@ impl<'owner> SolvePureCallTableView<'owner> {
             owners,
             pending: &[],
             directional: false,
+            bound: None,
+            bound_original: &[],
+            bound_directional: &[],
         }
     }
 
@@ -29,6 +37,9 @@ impl<'owner> SolvePureCallTableView<'owner> {
             owners,
             pending: &[],
             directional: true,
+            bound: None,
+            bound_original: &[],
+            bound_directional: &[],
         }
     }
 
@@ -41,7 +52,50 @@ impl<'owner> SolvePureCallTableView<'owner> {
             owners,
             pending,
             directional: false,
+            bound: None,
+            bound_original: &[],
+            bound_directional: &[],
         }
+    }
+
+    pub(in crate::typed_program) fn bound(
+        bindings: &'owner [BoundSolvePureCallBody<'owner>],
+        original: &'owner [SolvePureCallOwnerId],
+        directional: &'owner [Option<SolvePureCallOwnerId>],
+    ) -> Self {
+        Self {
+            owners: &[],
+            pending: &[],
+            directional: false,
+            bound: Some(bindings),
+            bound_original: original,
+            bound_directional: directional,
+        }
+    }
+
+    pub(in crate::typed_program) fn bound_indices(
+        self,
+    ) -> Option<(
+        &'owner [SolvePureCallOwnerId],
+        &'owner [Option<SolvePureCallOwnerId>],
+    )> {
+        self.bound
+            .map(|_| (self.bound_original, self.bound_directional))
+    }
+
+    pub(in crate::typed_program) fn bound_namespace(
+        self,
+    ) -> Option<&'owner [BoundSolvePureCallBody<'owner>]> {
+        self.bound
+    }
+
+    pub(in crate::typed_program) fn shares_bound_namespace(
+        self,
+        bindings: &[BoundSolvePureCallBody<'_>],
+    ) -> bool {
+        self.bound.is_some_and(|bound| {
+            std::ptr::eq(bound.as_ptr(), bindings.as_ptr()) && bound.len() == bindings.len()
+        })
     }
 
     pub(in crate::typed_program) const fn as_primal(self) -> Self {
@@ -55,6 +109,10 @@ impl<'owner> SolvePureCallTableView<'owner> {
         self,
         index: usize,
     ) -> Option<SolvePureCallInterface<'owner>> {
+        if let Some(bindings) = self.bound {
+            let id = SolvePureCallOwnerId::from_index(u32::try_from(index).ok()?);
+            return bindings.get(index).map(|binding| binding.interface(id));
+        }
         let Some(owner) = self.owners.get(index) else {
             if self.directional {
                 return None;

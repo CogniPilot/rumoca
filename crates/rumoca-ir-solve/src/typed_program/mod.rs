@@ -20,14 +20,17 @@ pub use call::dependency::SolveCallDependency;
 pub use call::{
     AssertionRegionKind, AssertionRegionStep, AssertionSource, BoundSolvePureCallBody,
     CheckedAssertionFlow, ScopedSolvePureCallTable, SolveAssertionLevel, SolveCallSiteCount,
-    SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
-    SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
-    SolvePureCallWireError, SolvePureCallWireScope, SolveRecursionProfile, SolveRecursiveGroup,
-    SolveRecursiveMember,
+    SolveCallValueRole, SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite,
+    SolvePureCallIdentity, SolvePureCallInputCoordinate, SolvePureCallOutput,
+    SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallSite,
+    SolvePureCallTable, SolvePureCallTableBuilder, SolvePureCallWireError, SolvePureCallWireScope,
+    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
 };
 pub use demand::{SolveLiveness, SolveOutputDemand, visit_demanded_calls, visit_demanded_reads};
-pub use entry::TypedProgramEntry;
+pub use entry::{
+    EntryCallCatalog, EntryCallOccurrence, EntryCallOccurrenceId, EntryCallOccurrences,
+    EntryCallTarget, SharedHelperProgramEntry, TypedProgramEntry,
+};
 pub use integer_interval::{
     SolveIntegerInterval, fold_integer_compare, fold_scalar_binary, fold_scalar_unary,
 };

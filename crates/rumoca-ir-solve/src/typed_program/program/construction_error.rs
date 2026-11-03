@@ -16,6 +16,7 @@ pub enum SolveProgramConstructionError {
     InvalidAggregate { provenance: Span },
     InvalidProjection { provenance: Span },
     UnknownCallOwner { provenance: Span },
+    UnavailableDirectionalCall { provenance: Span },
     InvalidCallInterface { provenance: Span },
     RecursiveCall { provenance: Span },
     InvalidRecursiveGroup { provenance: Span },
@@ -48,6 +49,7 @@ impl SolveProgramConstructionError {
             | Self::InvalidAggregate { provenance }
             | Self::InvalidProjection { provenance }
             | Self::UnknownCallOwner { provenance }
+            | Self::UnavailableDirectionalCall { provenance }
             | Self::InvalidCallInterface { provenance }
             | Self::RecursiveCall { provenance }
             | Self::InvalidRecursiveGroup { provenance }
@@ -84,6 +86,9 @@ impl std::fmt::Display for SolveProgramConstructionError {
             Self::TypeMismatch { .. } => "typed program operand or result type mismatch",
             Self::InvalidAggregate { .. } => "typed aggregate shape or element contract is invalid",
             Self::InvalidProjection { .. } => "typed aggregate projection is invalid",
+            Self::UnavailableDirectionalCall { .. } => {
+                "pure-call owner has no issued directional body"
+            }
             Self::UnknownCallOwner { .. } => "pure-call owner was not issued by this table",
             Self::InvalidCallInterface { .. } => "pure-call argument or slot interface is invalid",
             Self::RecursiveCall { .. } => {

@@ -85,6 +85,18 @@ fn cloned_source_shares_binding_but_equal_reconstruction_and_other_form_do_not()
     let source = table.bind_original_body(id, span()).unwrap();
     assert!(source.shares_binding(clone.bind_original_body(id, span()).unwrap()));
     assert!(!source.shares_binding(replay.bind_original_body(id, span()).unwrap()));
+    let mut cache = std::collections::HashMap::new();
+    cache.insert(source, 17);
+    assert_eq!(
+        cache.get(&clone.bind_original_body(id, span()).unwrap()),
+        Some(&17)
+    );
+    assert_eq!(
+        cache.get(&replay.bind_original_body(id, span()).unwrap()),
+        None
+    );
+    assert_eq!(source.recursion_profile(), table.recursion);
+
     assert!(!source.shares_binding(table.bind_directional_body(id, span()).unwrap()));
     assert!(
         !source.shares_binding(
@@ -118,12 +130,10 @@ fn unavailable_directional_body_refuses_eagerly_with_occurrence_span() {
     let id = table.owners()[0].id();
     assert!(table.bind_original_body(id, span()).is_ok());
     assert!(table.owners()[0].directional().is_none());
-    for result in [
-        table.bind_directional_body(id, span()),
-        table.bind_original_body(SolvePureCallOwnerId::LIFECYCLE_METHOD, span()),
-    ] {
-        assert!(
-            matches!(result, Err(SolveProgramConstructionError::UnknownCallOwner { provenance }) if provenance == span())
-        );
-    }
+    assert!(
+        matches!(table.bind_directional_body(id, span()), Err(SolveProgramConstructionError::UnavailableDirectionalCall { provenance }) if provenance == span())
+    );
+    assert!(
+        matches!(table.bind_original_body(SolvePureCallOwnerId::LIFECYCLE_METHOD, span()), Err(SolveProgramConstructionError::UnknownCallOwner { provenance }) if provenance == span())
+    );
 }

@@ -1,6 +1,6 @@
 mod assertion_flow;
 mod bound_body;
-pub use bound_body::BoundSolvePureCallBody;
+pub use bound_body::{BoundSolvePureCallBody, SolveCallValueRole};
 pub(super) mod dependency;
 mod recursion;
 mod sites;

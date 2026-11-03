@@ -1,4 +1,10 @@
 //! Complete numerical entries retain their checked body and original helpers.
+mod shared_helpers;
+pub use shared_helpers::{
+    EntryCallCatalog, EntryCallOccurrence, EntryCallOccurrenceId, EntryCallOccurrences,
+    EntryCallTarget, SharedHelperProgramEntry,
+};
+
 #[cfg(test)]
 mod tests;
 
