@@ -94,9 +94,18 @@ fn source_attributes_reference_shape_comes_from_exact_finalized_occurrence() {
             assert_eq!(values[0].dimensions(), dimensions);
             assert_eq!(values[0].each(), dimensions.is_empty());
         } else {
+            let error = values.expect_err("mismatched occurrence shape must refuse");
+            let diagnostic = error.to_string();
+            assert!(diagnostic.starts_with("source attribute presentation refused: ShapeMismatch"));
+            assert!(diagnostic.contains("variable: InstanceId(1)"));
+            assert!(diagnostic.contains("attribute: Start"));
             assert!(matches!(
-                values,
-                Err(SourceAttributeError::ShapeMismatch { .. })
+                error,
+                SourceAttributeError::ShapeMismatch {
+                    variable,
+                    attribute: SourceAttributeKind::Start,
+                    span: at,
+                } if variable == InstanceId::new(1) && at == span()
             ));
         }
     }
@@ -130,9 +139,23 @@ fn source_attributes_unknown_call_refuses_instead_of_guessing_scalar_or_partial_
     };
     let mut model = model(vec![4], literal(1.0), vec![]);
     model.variables.get_mut(&VarName::new("x")).unwrap().min = Some(call);
-    assert!(
-        matches!(model.source_attributes().unwrap().variable(InstanceId::new(1)), Err(SourceAttributeError::UnknownShape { attribute: SourceAttributeKind::Min, span: at, .. }) if at == span())
-    );
+    let error = model
+        .source_attributes()
+        .unwrap()
+        .variable(InstanceId::new(1))
+        .expect_err("unknown call shape must refuse the entire attribute list");
+    let diagnostic = error.to_string();
+    assert!(diagnostic.starts_with("source attribute presentation refused: UnknownShape"));
+    assert!(diagnostic.contains("variable: InstanceId(1)"));
+    assert!(diagnostic.contains("attribute: Min"));
+    assert!(matches!(
+        error,
+        SourceAttributeError::UnknownShape {
+            variable,
+            attribute: SourceAttributeKind::Min,
+            span: at,
+        } if variable == InstanceId::new(1) && at == span()
+    ));
 }
 
 #[test]
@@ -171,9 +194,16 @@ fn source_attributes_original_order_values_and_wire_are_unchanged() {
             SourceAttributeKind::Nominal
         ]
     );
+    let error = catalog
+        .variable(InstanceId::new(99))
+        .expect_err("missing occurrence must refuse");
+    assert_eq!(
+        error.to_string(),
+        "source attribute presentation refused: MissingVariable(InstanceId(99))"
+    );
     assert!(matches!(
-        catalog.variable(InstanceId::new(99)),
-        Err(SourceAttributeError::MissingVariable(_))
+        error,
+        SourceAttributeError::MissingVariable(variable) if variable == InstanceId::new(99)
     ));
     assert_eq!(serde_json::to_value(&model).unwrap(), before);
 }
