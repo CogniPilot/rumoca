@@ -281,7 +281,7 @@ for (size_t k=0; k<{{ crossing.extent }}; ++k) { if (in[{{ index }}][k] != 0.0 &
 {% endif -%}
 {% endfor -%}
 {%- endmacro %}
-{%- macro scalar_arguments(boundary) -%}{% for item in boundary.inputs %}{% if item.crossing.crossing == "direct" %}in[{{ item.argument }}]{% else %}a{{ item.argument }}{% endif %},{% else %}NULL{% endfor %}{%- endmacro %}
+{%- macro scalar_arguments(boundary) -%}{% for item in boundary.inputs %}{% if item.crossing.crossing == "direct" %}in[{{ item.argument }}]{% elif item.crossing.crossing == "converted" %}a{{ item.argument }}{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: unknown issued crossing") }}{% endif %},{% else %}NULL{% endfor %}{%- endmacro %}
 
 {#- The scalar wrapper prints the owner's issued scalar boundary. -#}
 {%- macro wrapper(owner, kind="") -%}
@@ -290,7 +290,7 @@ RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[]
 if (!out) return 1;
 {{ scalar_imports(owner.scalar) -}}
 {% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "converted" %}{{ scalar_local("b", item.output, item.crossing) }}{% endif %}{% endfor %}
-{ int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {{ scalar_arguments(owner.scalar) }} }, (void*[]){ {% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "direct" %}out+{{ item.offset }}{% else %}b{{ item.output }}{% endif %},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
+{ int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {{ scalar_arguments(owner.scalar) }} }, (void*[]){ {% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "direct" %}out+{{ item.offset }}{% elif item.crossing.crossing == "converted" %}b{{ item.output }}{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: unknown issued crossing") }}{% endif %},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
 {% for item in owner.scalar.outputs %}{% if item.crossing.crossing == "converted" %}for (size_t k=0; k<{{ item.extent }}; ++k) out[{{ item.offset }}+k]=(double)b{{ item.output }}[k];
 {% endif %}{% endfor %}return 0;
 }

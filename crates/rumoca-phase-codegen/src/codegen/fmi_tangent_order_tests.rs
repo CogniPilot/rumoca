@@ -25,6 +25,10 @@ fn marker(kind: &str) -> &'static str {
 }
 
 fn render(occurrences: &[&str]) -> String {
+    try_render(occurrences).expect("total tangent renders")
+}
+
+fn try_render(occurrences: &[&str]) -> Result<String, minijinja::Error> {
     let mut environment = super::create_environment();
     for (name, file) in PARTIALS {
         environment
@@ -56,12 +60,10 @@ fn render(occurrences: &[&str]) -> String {
         "uses": { "seed": true, "states": true, "scratch": true, "private": true, "pivots": true },
         "occurrences": issued,
     });
-    environment
-        .render_str(
-            "{% from 'fmi-total-tangent.jinja' import functions %}{{ functions(tangent, 'rmc') }}",
-            minijinja::context! { tangent => tangent },
-        )
-        .expect("total tangent renders")
+    environment.render_str(
+        "{% from 'fmi-total-tangent.jinja' import functions %}{{ functions(tangent, 'rmc') }}",
+        minijinja::context! { tangent => tangent },
+    )
 }
 
 /// Positions of each occurrence's marker in the printed consumer.
@@ -118,4 +120,14 @@ fn an_unissued_occurrence_is_not_printed() {
     for kind in ["implicit_solve", "implicit_verification", "consistency"] {
         assert!(!text.contains(marker(kind)), "{kind} must not be printed");
     }
+}
+
+/// An occurrence kind the schedule does not issue is refused, not skipped.
+#[test]
+fn an_unknown_occurrence_kind_is_refused() {
+    let error = try_render(&["assignment", "teleport", "rhs"]).expect_err("unknown kind refuses");
+    assert!(
+        error.to_string().contains("unknown issued occurrence"),
+        "{error}"
+    );
 }

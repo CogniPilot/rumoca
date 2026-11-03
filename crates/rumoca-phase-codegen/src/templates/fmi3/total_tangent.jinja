@@ -137,6 +137,7 @@ static int {{ stem }}_total_tangent(ModelInstance* m, double* seed,
 {%- for body in tangent.rhs.programs %}
     if ({{ stem }}_tangent_rhs_{{ loop.index0 }}(m, seed, rhs) != 0) return -1;
 {%- endfor %}
+{%- else %}{{ fail("unsupported-feature:fmi.c.tangent: unknown issued occurrence") }}
 {%- endif %}
 {%- endfor %}
     for (size_t k=0; k<{{ tangent.state_len }}; ++k)

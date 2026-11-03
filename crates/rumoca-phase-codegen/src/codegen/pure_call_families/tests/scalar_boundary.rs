@@ -121,3 +121,28 @@ if (!out) return 1;
 return 0;
 }
 "#;
+
+/// A crossing tag the boundary does not issue is refused, not printed as a
+/// conversion.
+#[test]
+fn an_unknown_crossing_tag_is_refused() {
+    let families = PureCallFamilies::new(&crossing_table()).unwrap();
+    let mut owner = families.owners()[0].clone();
+    owner["scalar"]["inputs"][0]["crossing"]["crossing"] = Json::from("teleport");
+    let mut environment = super::super::super::create_environment();
+    environment
+        .add_template(
+            "wrapper_control",
+            "{% from \"fmi-typed-functions.jinja\" import wrapper %}{{ wrapper(owner) }}",
+        )
+        .unwrap();
+    let error = environment
+        .get_template("wrapper_control")
+        .unwrap()
+        .render(minijinja::context! { owner => owner })
+        .expect_err("unknown crossing refuses");
+    assert!(
+        error.to_string().contains("unknown issued crossing"),
+        "{error}"
+    );
+}
