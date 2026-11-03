@@ -58,3 +58,15 @@ test('persistent install failure remains fatal after bounded retries', () => {
   assert.equal(r.commands.trim().split('\n').length, 7);
   assert.match(r.stdout, /installation failed after bounded retries/);
 });
+
+test('the macOS/Windows clippy step runs after setup-python with its interpreter bound', () => {
+  const workflow = readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
+  const job = workflow.slice(workflow.indexOf('    name: Test (${{ matrix.os }})'));
+  const python = job.indexOf('        id: python\n        uses: actions/setup-python@');
+  const clippy = job.indexOf('      - name: Clippy with warnings denied (macOS and Windows)');
+  assert.ok(python > 0, 'the test job sets up Python with id python');
+  assert.ok(clippy > python, 'clippy runs after Python setup');
+  const step = job.slice(clippy, job.indexOf('\n      - name:', clippy + 1));
+  assert.match(step, /PYO3_PYTHON: \$\{\{ steps\.python\.outputs\.python-path \}\}/);
+  assert.match(step, /run: cargo xtask verify clippy/);
+});

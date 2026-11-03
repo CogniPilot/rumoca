@@ -518,14 +518,6 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
-      # The Lint job's warnings-denied clippy, on the platforms Lint does not
-      # cover, so a platform-only warning (an import used only under a Linux
-      # cfg, say) fails here instead of passing unnoticed.
-      - name: Clippy with warnings denied (macOS and Windows)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: cargo xtask verify clippy
-
       - name: Cache MSL
         uses: actions/cache@v5
         continue-on-error: true
@@ -574,9 +566,22 @@ jobs:
           test -f target/cmm/CMM-a642c381/LieGroups/package.mo
 
       - name: Install Python for mandatory guide CLI and stdio examples
+        id: python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      # The Lint job's warnings-denied clippy, on the platforms Lint does not
+      # cover, so a platform-only warning (an import used only under a Linux
+      # cfg, say) fails here instead of passing unnoticed. All features include
+      # the Python binding, so PyO3 gets this job's interpreter, not the Linux
+      # default in .cargo/config.toml.
+      - name: Clippy with warnings denied (macOS and Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: cargo xtask verify clippy
 
       - name: Resolve owning Git Bash for mandatory guide syntax (Windows)
         if: runner.os == 'Windows'
