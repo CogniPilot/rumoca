@@ -289,7 +289,7 @@ memcpy(s{{ item.slot }}, in[{{ item.argument }}], sizeof(s{{ item.slot }}));
 {% for item in plan.slots -%}
 {{ slot_frame(item) -}}
 {% endfor -%}
-{% for item in plan.registers %}{{ element(item.element) }} r{{ item.name.id }}[{{ item.extent }}]; (void)r{{ item.name.id }};{% endfor %}
+{% for item in plan.registers %}{{ element(item.element) }} r{{ item.register }}[{{ item.extent }}]; (void)r{{ item.register }};{% endfor %}
 {% endmacro %}
 {%- macro plan_item(item) -%}{% if item.kind == "view" %}const {{ element(item.element) }}* r{{ item.register }} = s{{ item.slot }}; (void)r{{ item.register }};
 {% elif item.kind == "copy" %}memcpy({{ storage_name(item.destination) }}, {{ storage_name(item.source) }}, sizeof({{ storage_name(item.destination) }}));

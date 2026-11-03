@@ -449,8 +449,16 @@ impl Cursor<'_, '_> {
         }
     }
 
-    fn registers(&mut self, items: &[Frame]) {
-        let expected: Vec<Decoded> = items.iter().map(expected_frame).collect();
+    fn registers(&mut self, items: &[solve::SolveRegisterFrame]) {
+        let expected: Vec<Decoded> = items
+            .iter()
+            .map(|item| Decoded::Frame {
+                space: Space::Register,
+                id: item.register(),
+                element: item.element(),
+                extent: item.extent(),
+            })
+            .collect();
         let printed = self.line();
         let decoded = printed.as_deref().and_then(declarations).map(|found| {
             found
@@ -985,6 +993,24 @@ fn coverage_reports_projected_and_quarantined_items() {
 fn the_issued_plan_places_views_copies_and_argument_copies() {
     let program = mixed_program();
     let plan = program.print_plan();
+    let registers: &[solve::SolveRegisterFrame] = plan.registers();
+    assert_eq!(
+        registers
+            .iter()
+            .map(|item| (item.register(), item.element(), item.extent()))
+            .collect::<Vec<_>>(),
+        [(1, Element::Real64, 3), (2, Element::Real64, 3)]
+    );
+    let replayed: solve::TypedProgram =
+        serde_json::from_value(serde_json::to_value(&program).unwrap()).unwrap();
+    assert_eq!(replayed.print_plan().registers(), registers);
+    assert_eq!(
+        serde_json::to_value(registers).unwrap(),
+        serde_json::json!([
+            {"register": 1, "element": "real64", "extent": 3},
+            {"register": 2, "element": "real64", "extent": 3}
+        ])
+    );
     assert!(matches!(
         plan.slots(),
         [
@@ -1061,8 +1087,8 @@ fn printing_anything_but_the_plan_fails_conformance() {
         ),
         (
             "extent recomputed in the template",
-            "r{{ item.name.id }}[{{ item.extent }}];",
-            "r{{ item.name.id }}[{{ item.extent + 1 }}];",
+            "r{{ item.register }}[{{ item.extent }}];",
+            "r{{ item.register }}[{{ item.extent + 1 }}];",
         ),
     ];
     let program = mixed_program();
@@ -1218,8 +1244,8 @@ fn a_non_canonical_decimal_spelling_fails_conformance() {
     for (label, original, injected) in [
         (
             "extent 10 printed as 010",
-            "r{{ item.name.id }}[{{ item.extent }}];",
-            "r{{ item.name.id }}[{% if item.extent == 10 %}0{% endif %}{{ item.extent }}];",
+            "r{{ item.register }}[{{ item.extent }}];",
+            "r{{ item.register }}[{% if item.extent == 10 %}0{% endif %}{{ item.extent }}];",
         ),
         (
             "argument 10 printed as 010",

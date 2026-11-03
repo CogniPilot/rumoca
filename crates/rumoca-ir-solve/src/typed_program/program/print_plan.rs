@@ -89,6 +89,40 @@ pub enum SolveFrameItem {
     },
 }
 
+/// An owned register frame array. Only the print-plan owner issues one;
+/// argument views and slot copies cannot appear in the register frame.
+///
+/// ```compile_fail
+/// let _ = rumoca_ir_solve::SolveRegisterFrame {
+///     register: 0,
+///     element: rumoca_ir_solve::SolveElementToken::Real64,
+///     extent: 1,
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SolveRegisterFrame {
+    register: usize,
+    element: SolveElementToken,
+    extent: u32,
+}
+
+impl SolveRegisterFrame {
+    #[must_use]
+    pub const fn register(&self) -> usize {
+        self.register
+    }
+
+    #[must_use]
+    pub const fn element(&self) -> SolveElementToken {
+        self.element
+    }
+
+    #[must_use]
+    pub const fn extent(&self) -> u32 {
+        self.extent
+    }
+}
+
 /// One issued operation of the body, in order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -201,7 +235,7 @@ impl SolveOutputCopy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePrintPlan {
     slots: Box<[SolveFrameItem]>,
-    registers: Box<[SolveFrameItem]>,
+    registers: Box<[SolveRegisterFrame]>,
     body: Box<[SolveBodyItem]>,
     outputs: Box<[SolveOutputCopy]>,
 }
@@ -263,11 +297,8 @@ impl SolvePrintPlan {
             .enumerate()
             .filter_map(|(register, (value_type, placement))| match *placement {
                 SolveRegisterPlacement::View { .. } => None,
-                SolveRegisterPlacement::Frame { extent } => Some(SolveFrameItem::Frame {
-                    name: SolveName {
-                        space: SolveNameSpace::Register,
-                        id: register,
-                    },
+                SolveRegisterPlacement::Frame { extent } => Some(SolveRegisterFrame {
+                    register,
                     element: SolveElementToken::of(value_type),
                     extent,
                 }),
@@ -305,7 +336,7 @@ impl SolvePrintPlan {
 
     /// Owned register declarations, in register order.
     #[must_use]
-    pub fn registers(&self) -> &[SolveFrameItem] {
+    pub fn registers(&self) -> &[SolveRegisterFrame] {
         &self.registers
     }
 

@@ -30,7 +30,8 @@ mod storage_plan;
 pub use print_plan::{
     SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
     SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral, SolveKernel,
-    SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveUnaryToken,
+    SolveLiteral, SolveName, SolveNameSpace, SolveOutputCopy, SolvePrintPlan, SolveRegisterFrame,
+    SolveUnaryToken,
 };
 pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
 mod tensor;

@@ -40,8 +40,8 @@ pub use program::{
     SolveDomainCheck, SolveElementOperand, SolveElementToken, SolveFrameItem, SolveIntegerLiteral,
     SolveKernel, SolveLiteral, SolveName, SolveNameSpace, SolveOperation, SolveOutputCopy,
     SolvePrintPlan, SolveProgramConstructionError, SolveProgramRegion, SolveReductionOperator,
-    SolveRegisterId, SolveRegisterPlacement, SolveSlot, SolveSlotAccess, SolveSlotId,
-    SolveSlotPlacement, SolveSpannedOperation, SolveStorageClass, SolveStoragePlan,
+    SolveRegisterFrame, SolveRegisterId, SolveRegisterPlacement, SolveSlot, SolveSlotAccess,
+    SolveSlotId, SolveSlotPlacement, SolveSpannedOperation, SolveStorageClass, SolveStoragePlan,
     SolveTensorViewAxis, SolveUnaryOperator, SolveUnaryToken, TypedProgram, TypedProgramBuilder,
     index_forms, invariant_guard, promoted_concatenate_dimensions,
 };
