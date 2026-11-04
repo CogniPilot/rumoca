@@ -1,17 +1,20 @@
-use super::*;
-use crate::{SolveRealFormat, SolveTypeConstructionError, SolveValueKind};
-use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
-
 mod assigned_state;
 mod boolean_extrema;
 mod fault_flow;
+mod integer_quotients;
 mod linear_solve;
 mod loop_flow;
 mod native;
 mod pass_flow;
+mod print_plan;
 mod read_flow;
+mod storage_plan;
 mod value_numbering;
 mod zero_result_conditional;
+
+use super::*;
+use crate::{SolveRealFormat, SolveTypeConstructionError, SolveValueKind};
+use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
 fn span(start: usize) -> Span {
     Span::from_offsets(
@@ -705,8 +708,6 @@ fn integer_divide_cannot_bypass_an_explicit_real_conversion() {
     })
     .expect("rejected division leaves the valid typed prefix intact");
 }
-
-mod integer_quotients;
 
 #[test]
 fn integer_quotient_is_integer_only() {

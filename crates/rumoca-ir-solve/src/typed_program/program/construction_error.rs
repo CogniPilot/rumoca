@@ -16,6 +16,7 @@ pub enum SolveProgramConstructionError {
     InvalidAggregate { provenance: Span },
     InvalidProjection { provenance: Span },
     UnknownCallOwner { provenance: Span },
+    UnavailableDirectionalCall { provenance: Span },
     InvalidCallInterface { provenance: Span },
     RecursiveCall { provenance: Span },
     InvalidRecursiveGroup { provenance: Span },
@@ -30,6 +31,7 @@ pub enum SolveProgramConstructionError {
     IncompleteCallOutput { provenance: Span },
     DuplicateCallIdentity { provenance: Span },
     UninitializedSlot { provenance: Span },
+    InvalidEntryInterface { provenance: Span },
 }
 
 impl SolveProgramConstructionError {
@@ -47,6 +49,7 @@ impl SolveProgramConstructionError {
             | Self::InvalidAggregate { provenance }
             | Self::InvalidProjection { provenance }
             | Self::UnknownCallOwner { provenance }
+            | Self::UnavailableDirectionalCall { provenance }
             | Self::InvalidCallInterface { provenance }
             | Self::RecursiveCall { provenance }
             | Self::InvalidRecursiveGroup { provenance }
@@ -60,7 +63,8 @@ impl SolveProgramConstructionError {
             | Self::InvalidTensorAlgebra { provenance }
             | Self::IncompleteCallOutput { provenance }
             | Self::DuplicateCallIdentity { provenance }
-            | Self::UninitializedSlot { provenance } => Some(*provenance),
+            | Self::UninitializedSlot { provenance }
+            | Self::InvalidEntryInterface { provenance } => Some(*provenance),
         }
     }
 }
@@ -68,6 +72,9 @@ impl SolveProgramConstructionError {
 impl std::fmt::Display for SolveProgramConstructionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
+            Self::InvalidEntryInterface { .. } => {
+                "complete entry requires read-only arguments and exactly one store per output"
+            }
             Self::MissingProvenance => "typed program owner is missing exact provenance",
             Self::WireMismatch => "typed program wire does not replay through checked construction",
             Self::IdentityOverflow { .. } => "typed program identity capacity exceeded",
@@ -79,6 +86,9 @@ impl std::fmt::Display for SolveProgramConstructionError {
             Self::TypeMismatch { .. } => "typed program operand or result type mismatch",
             Self::InvalidAggregate { .. } => "typed aggregate shape or element contract is invalid",
             Self::InvalidProjection { .. } => "typed aggregate projection is invalid",
+            Self::UnavailableDirectionalCall { .. } => {
+                "pure-call owner has no issued directional body"
+            }
             Self::UnknownCallOwner { .. } => "pure-call owner was not issued by this table",
             Self::InvalidCallInterface { .. } => "pure-call argument or slot interface is invalid",
             Self::RecursiveCall { .. } => {

@@ -190,6 +190,9 @@ jobs:
       - name: Run lint gate
         run: cargo xtask verify lint
 
+      - name: Backend migration freeze negative controls
+        run: cargo test -p xtask --lib migration_ledger
+
       - name: Run architecture review scan
         if: github.event_name == 'pull_request'
         run: |
@@ -288,8 +291,8 @@ jobs:
           authToken: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.CACHIX_AUTH_TOKEN || '' }}
           skipPush: true
 
-      - name: Nix build the package and required MLIR CPU checks
-        # Build only the reproducible package and focused MLIR CPU checks.
+      - name: Nix build the package, Python vendor and required MLIR CPU checks
+        # Build the reproducible package, Python vendor and focused MLIR CPU checks.
         # Format and clippy are owned by the standalone Format/Lint jobs, and
         # the heavy release MSL artifact bundle is built once by the dedicated
         # `nix-build-msl` producer.
@@ -308,7 +311,12 @@ jobs:
           ulimit -s 1048576
           nix build --print-build-logs \
             .#checks.x86_64-linux.rumoca \
-            .#checks.x86_64-linux.mlir-cpu
+            .#checks.x86_64-linux.mlir-cpu \
+            .#checks.x86_64-linux.python-cargo-deps
+          # A cached fixed-output result can belong to an older lockfile.
+          # Rebuild the staging fetch to verify this source, even on cache hits.
+          nix build --rebuild --print-build-logs \
+            .#checks.x86_64-linux.python-cargo-deps.vendorStaging
 
       - name: Compare humanoid native speed and task fidelity with MuJoCo
         if: github.event_name == 'pull_request'

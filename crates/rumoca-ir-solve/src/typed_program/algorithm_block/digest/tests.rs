@@ -147,3 +147,58 @@ fn a_failing_serialize_impl_is_an_error() {
         "Solve algorithm block cannot be digested: probe"
     );
 }
+
+/// A value marked derived contributes nothing: a struct with a derived field
+/// hashes exactly as the same struct without it.
+#[test]
+fn a_derived_value_is_not_hashed() {
+    #[derive(Serialize)]
+    struct WithDerived {
+        content: u32,
+        #[serde(serialize_with = "derived")]
+        plan: u64,
+    }
+    #[derive(Serialize)]
+    struct ContentOnly {
+        content: u32,
+    }
+    fn derived<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_struct(super::DERIVED, value)
+    }
+    assert_eq!(
+        hash(&WithDerived {
+            content: 7,
+            plan: 1
+        }),
+        hash(&ContentOnly { content: 7 })
+    );
+    assert_eq!(
+        hash(&WithDerived {
+            content: 7,
+            plan: 1
+        }),
+        hash(&WithDerived {
+            content: 7,
+            plan: 2
+        })
+    );
+    assert_ne!(
+        hash(&WithDerived {
+            content: 7,
+            plan: 1
+        }),
+        hash(&WithDerived {
+            content: 8,
+            plan: 1
+        })
+    );
+    // The wire form still carries the derived value.
+    assert_eq!(
+        serde_json::to_value(WithDerived {
+            content: 7,
+            plan: 1
+        })
+        .unwrap(),
+        serde_json::json!({ "content": 7, "plan": 1 })
+    );
+}

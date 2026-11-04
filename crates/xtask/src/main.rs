@@ -453,6 +453,8 @@ struct RepoPolicyArgs {
 enum RepoPolicyCommand {
     /// Check max line count for Rust files (SPEC_0021)
     RustFileLines(CheckRustFileLinesArgs),
+    /// Freeze unresolved backend decisions against the exact 96-row audit
+    BackendMigration,
 }
 
 fn main() -> Result<()> {
@@ -585,6 +587,7 @@ fn cmd_repo(args: RepoArgs) -> Result<()> {
         RepoCommand::Release(args) => release_cmd::cmd_release(args),
         RepoCommand::Policy(args) => match args.command {
             RepoPolicyCommand::RustFileLines(args) => cmd_check_rust_file_lines(args),
+            RepoPolicyCommand::BackendMigration => xtask::migration_ledger::run(&repo_root()),
         },
         RepoCommand::ReviewScan(args) => review_scan_cmd::run(args, &repo_root()),
         RepoCommand::ReviewPacket(args) => review_packet_cmd::run(args, &repo_root()),

@@ -239,7 +239,7 @@
             inherit src;
             cargoRoot = ".";
             name = "rumoca-${rumocaVersion}-cargo-vendor";
-            hash = "sha256-B5PW7S5V39iqq/AXkvvUNdddswMb04Zju4O5AStA5/Y=";
+            hash = "sha256-D7GZE7igduzgburtJkyzezqCRNYfvDzueQRus/JujEk=";
           };
           nativeBuildInputs = [
             rustToolchain
@@ -421,6 +421,7 @@
 
         checks = {
           inherit rumoca;
+          python-cargo-deps = rumocaPython.cargoDeps;
           clippy = craneLib.cargoClippy (
             commonArgs
             // {

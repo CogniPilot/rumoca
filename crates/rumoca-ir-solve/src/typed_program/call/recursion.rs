@@ -343,7 +343,10 @@ fn least_dependencies(
 }
 
 /// Visit every owner a program calls, nested regions included.
-pub(super) fn visit_calls(program: &TypedProgram, visit: &mut impl FnMut(SolvePureCallOwnerId)) {
+pub(in crate::typed_program) fn visit_calls(
+    program: &TypedProgram,
+    visit: &mut impl FnMut(SolvePureCallOwnerId),
+) {
     for operation in program.operations() {
         match operation.operation() {
             SolveOperation::CheckAssertion {

@@ -1,13 +1,21 @@
 mod assertion_flow;
+mod bound_body;
 pub(super) mod dependency;
 mod recursion;
+mod scalar_boundary;
 mod sites;
+mod view;
 mod wire_scope;
+
 pub use assertion_flow::{
     AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
 };
+pub use bound_body::{BoundSolvePureCallBody, SolveCallValueRole};
+pub use scalar_boundary::{
+    SolveScalarBoundary, SolveScalarBoundaryError, SolveScalarCrossing, SolveScalarInput,
+    SolveScalarOutput,
+};
 pub use wire_scope::{ScopedSolvePureCallTable, SolvePureCallWireError, SolvePureCallWireScope};
-mod view;
 
 use rumoca_core::Span;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -17,6 +25,7 @@ use std::sync::Arc;
 use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
+pub(super) use recursion::visit_calls;
 pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
 pub use sites::SolveCallSiteCount;
 pub(super) use view::SolvePureCallTableView;
@@ -490,6 +499,12 @@ impl SolvePureCallDirectionalOwner {
         &self.body
     }
 
+    /// How this directional interface crosses the flat binary64 scalar
+    /// boundary.
+    pub fn scalar_boundary(&self) -> Result<SolveScalarBoundary, SolveScalarBoundaryError> {
+        SolveScalarBoundary::of(&self.inputs, &self.outputs)
+    }
+
     fn interface(&self, id: SolvePureCallOwnerId) -> SolvePureCallInterface<'_> {
         SolvePureCallInterface {
             dependencies: &self.dependencies,
@@ -528,6 +543,12 @@ impl SolvePureCallDirectionalOwner {
 }
 
 impl SolvePureCallOwner {
+    /// How this owner's inputs and outputs cross its flat binary64 scalar
+    /// boundary.
+    pub fn scalar_boundary(&self) -> Result<SolveScalarBoundary, SolveScalarBoundaryError> {
+        SolveScalarBoundary::of(&self.inputs, &self.outputs)
+    }
+
     /// The source output corresponding to a primal lane of this owner's
     /// checked directional ABI. Tangent lanes have no source output.
     #[must_use]
@@ -613,8 +634,8 @@ impl SolvePureCallOwner {
 pub struct SolvePureCallTable {
     arithmetic: SolveArithmeticProfile,
     recursion: SolveRecursionProfile,
-    groups: Box<[SolveRecursiveGroup]>,
-    owners: Box<[SolvePureCallOwner]>,
+    groups: Arc<[SolveRecursiveGroup]>,
+    owners: Arc<[SolvePureCallOwner]>,
     // Only Clone shares this witness. Every checked construction and wire replay
     // starts a fresh lineage; the complete table has no mutation API.
     #[serde(skip)]
@@ -675,8 +696,8 @@ impl Default for SolvePureCallTable {
                 super::types::SolveIntegerDomain::FULL,
             ),
             recursion: SolveRecursionProfile::HOSTED,
-            groups: Box::new([]),
-            owners: Box::new([]),
+            groups: Arc::from([]),
+            owners: Arc::from([]),
             immutable_lineage: Arc::new(()),
         }
     }
@@ -704,7 +725,7 @@ impl SolvePureCallTable {
 
     /// Every SOLVE-C62 recursive owner group, in owner order.
     #[must_use]
-    pub const fn recursive_groups(&self) -> &[SolveRecursiveGroup] {
+    pub fn recursive_groups(&self) -> &[SolveRecursiveGroup] {
         &self.groups
     }
 
@@ -721,7 +742,7 @@ impl SolvePureCallTable {
         SolvePureCallTableView::primal(&self.owners)
     }
 
-    pub const fn owners(&self) -> &[SolvePureCallOwner] {
+    pub fn owners(&self) -> &[SolvePureCallOwner] {
         &self.owners
     }
 
@@ -777,8 +798,8 @@ impl SolvePureCallTableBuilder {
         SolvePureCallTable {
             arithmetic: self.arithmetic,
             recursion: self.recursion,
-            groups: self.groups.into_boxed_slice(),
-            owners: self.owners.into_boxed_slice(),
+            groups: self.groups.into(),
+            owners: self.owners.into(),
             immutable_lineage: Arc::new(()),
         }
     }
@@ -1217,8 +1238,8 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
         Ok(Self {
             arithmetic: wire.arithmetic,
             recursion: wire.recursion,
-            groups: groups.into_boxed_slice(),
-            owners: owners.into_boxed_slice(),
+            groups: groups.into(),
+            owners: owners.into(),
             immutable_lineage: Arc::new(()),
         })
     }
@@ -1241,6 +1262,7 @@ mod tests {
     mod integer_tensors;
     mod recursion;
     mod reduction_extrema;
+    mod scalar_boundary;
     mod shared_values;
     mod table_sharing;
     mod value_projections;
