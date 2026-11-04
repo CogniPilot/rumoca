@@ -130,6 +130,7 @@ mod fmi_total_tangent_owners;
 mod for_eq_array_test;
 mod for_loop_element_derivative_alias;
 mod foreign_library_state;
+mod formal_analysis_reuse;
 mod formal_derivative_stages;
 mod formal_derivatives;
 mod formal_stage_kernels;

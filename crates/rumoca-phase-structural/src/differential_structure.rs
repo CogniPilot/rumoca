@@ -12,6 +12,11 @@ pub use tensor_offsets::{PreferredAdmission, TensorDifferentialOffsets};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ANALYSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 use std::collections::BTreeMap;
 
 use rumoca_core::Span;
@@ -144,6 +149,8 @@ pub(crate) fn analyze_differential_structure_with_order_bounds<'dae>(
     view: dae::DaeView<'dae>,
     order_bounds: &[u32],
 ) -> Result<DifferentialStructure<'dae>, StructuralError> {
+    #[cfg(test)]
+    ANALYSES.with(|count| count.set(count.get() + 1));
     let (variables, bases) = variable_columns(view)?;
     let mut rows = Vec::new();
     let mut spans = Vec::new();

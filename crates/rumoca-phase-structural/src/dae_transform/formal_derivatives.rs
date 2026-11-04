@@ -12,6 +12,8 @@ mod slope_invariance;
 mod stage_reads;
 mod stages;
 mod state_candidates;
+#[cfg(test)]
+mod tests;
 pub(super) use stages::EquationProlongation;
 pub use stages::{FormalDerivativeStage, FormalStageCoordinate, FormalStageEquation};
 pub(super) use state_candidates::SelectedCoordinate;
@@ -89,7 +91,8 @@ impl<'source, 'target> FormalDerivativeView<'_, 'source, 'target> {
 /// offsets are certified again, so the read becomes a dependency its stage
 /// determines. Each round strictly raises a bound and the shared
 /// differentiation profile caps orders, so the refinement terminates; a read
-/// no raise can place is refused.
+/// no raise can place is refused. Withholding a preference changes only tensor
+/// admission, so the source analysis is reused until an order bound rises.
 pub fn construct_formal_derivatives(
     model: &dae::Dae,
 ) -> Result<FormalDerivativeSystem<'_>, StructuralError> {
@@ -97,8 +100,8 @@ pub fn construct_formal_derivatives(
         let invariance = crate::time_invariant::TimeInvariance::derive(source);
         let mut order_bounds = vec![0_u32; source.variables().count()];
         let mut withheld = BTreeSet::new();
+        let mut analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
         loop {
-            let analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
             let offsets = analysis
                 .tensor_offsets_withholding(source, &withheld)?
                 .ok_or_else(|| StructuralError::UnspannedContractViolation {
@@ -147,6 +150,7 @@ pub fn construct_formal_derivatives(
                         .into(),
                 });
             }
+            analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
         }
     })
 }
