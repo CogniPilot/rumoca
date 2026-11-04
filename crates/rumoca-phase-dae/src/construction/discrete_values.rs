@@ -263,6 +263,36 @@ impl<'dae> DiscreteValueStaging<'dae> {
         })
     }
 
+    pub(super) fn record_branch_parent(
+        &mut self,
+        handle: DiscreteValueOwnerHandle,
+        guard: EventGuard<'dae>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let activation = BranchActivation::When {
+            trigger: guard.trigger,
+            guard: guard.condition,
+        };
+        let parent = guard.parent_activation.map(|parent| match parent {
+            ParentActivation::Section => BranchActivation::Always,
+            ParentActivation::When { trigger, guard } => BranchActivation::When { trigger, guard },
+        });
+        for owner in &mut self.owners[handle.first..handle.end] {
+            let target = owner.targets.first().ok_or(
+                dae::DaeConstructionError::EmptyDiscreteValueOwner {
+                    span: guard.branch_provenance.span(),
+                },
+            )?;
+            register_branch_parent(
+                &mut owner.parents,
+                activation,
+                parent,
+                target.index(),
+                guard.branch_provenance,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn when(
         &mut self,
         request: DiscreteWhenAssignment<'dae>,
