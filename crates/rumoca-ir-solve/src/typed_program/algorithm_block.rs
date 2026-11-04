@@ -15,6 +15,11 @@
 //! injective (SOLVE-C38). Operation- and statement-level correlation arrives
 //! with the refinement that produces method bodies.
 
+mod call_levels;
+mod digest;
+#[cfg(test)]
+mod tests;
+
 use super::{
     ProgramSlot, SolveArithmeticProfile, SolveProgramConstructionError, SolvePureCallOwnerId,
     SolvePureCallTable, SolveScalarType, SolveSlotAccess, SolveSlotId, SolveStorageClass,
@@ -23,7 +28,7 @@ use super::{
 use rumoca_core::Span;
 use serde::Serialize;
 
-mod digest;
+pub use call_levels::SolveBlockCallLevels;
 pub use digest::{SolveAlgorithmBlockDigest, SolveAlgorithmBlockDigestError};
 
 /// What kind of checked Algorithm Code entity a Solve identity refines.
@@ -693,9 +698,6 @@ fn require_block_prefix(
         Err(SolveAlgorithmBlockConstructionError::SlotPrefixMismatch { method: kind })
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 /// Every owner of `functions` has exactly one binding, and it names the
 /// owner's canonical status channels: the `signals` Boolean method-local
