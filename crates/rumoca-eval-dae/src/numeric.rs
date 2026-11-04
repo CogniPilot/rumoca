@@ -1,4 +1,5 @@
 mod function_states;
+mod linear_solve;
 mod native_calls;
 mod scalar;
 mod tensor_values;
@@ -1424,11 +1425,7 @@ where
             dae::PureBuiltin::Homotopy => {}
             dae::PureBuiltin::Vector => {}
             dae::PureBuiltin::LinearSolve => {
-                return Err(failure(
-                    NumericEvaluationErrorKind::UnsupportedOperation,
-                    "linear solve requires the Solve tensor execution kernel",
-                    span,
-                ));
+                values = self.linear_solve(arguments, values, span)?;
             }
             dae::PureBuiltin::Transpose => values = transpose_values(&values, result_dimensions),
             B::Diagonal | B::OuterProduct | B::Skew => {

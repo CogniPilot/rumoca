@@ -531,7 +531,8 @@ fn reverse_linear_solve_component(
     }
     let x = solve_linear_system(regs, matrix_start, rhs_start, n)?;
     // Aᵀ μ = dst_adj · e_component.
-    let mut transposed = crate::linear_solve::AugmentedMatrix::zeroed(n)?;
+    let mut transposed = rumoca_core::linear_solve::AugmentedMatrix::zeroed(n)
+        .map_err(crate::linear_solve::allocation_error)?;
     let matrix_base = matrix_start as usize;
     for i in 0..n {
         for j in 0..n {
@@ -540,7 +541,7 @@ fn reverse_linear_solve_component(
         }
         transposed.set(i, n, if i == component { dst_adj } else { 0.0 });
     }
-    if crate::linear_solve::gaussian_eliminate(&mut transposed).is_none() {
+    if rumoca_core::linear_solve::gaussian_eliminate(&mut transposed).is_none() {
         return Err(unsupported(
             "singular matrix in reverse-mode linear-solve VJP (Aᵀ not invertible)",
         ));
