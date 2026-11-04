@@ -502,6 +502,10 @@ jobs:
           if ! rustup target list --toolchain "$toolchain" --installed | grep -qx 'wasm32-unknown-unknown'; then
             rustup target add wasm32-unknown-unknown --toolchain "$toolchain"
           fi
+          # The Lint job runs clippy on Linux only; these runners run it for macOS and Windows.
+          if [ "$RUNNER_OS" != "Linux" ] && ! rustup component list --toolchain "$toolchain" --installed | grep -q '^clippy'; then
+            rustup component add clippy --toolchain "$toolchain"
+          fi
           rustup default "$toolchain"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
@@ -591,9 +595,22 @@ jobs:
           test -f target/cmm/CMM-a642c381/LieGroups/package.mo
 
       - name: Install Python for mandatory guide CLI and stdio examples
+        id: python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      # The Lint job's warnings-denied clippy, on the platforms Lint does not
+      # cover, so a platform-only warning (an import used only under a Linux
+      # cfg, say) fails here instead of passing unnoticed. All features include
+      # the Python binding, so PyO3 gets this job's interpreter, not the Linux
+      # default in .cargo/config.toml.
+      - name: Clippy with warnings denied (macOS and Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: cargo xtask verify clippy
 
       - name: Resolve owning Git Bash for mandatory guide syntax (Windows)
         if: runner.os == 'Windows'

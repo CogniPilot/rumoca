@@ -31,7 +31,9 @@ use rumoca_transport_zenoh::ZenohTransport;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::scheduled_sim::devices::{self, Devices};
+#[cfg(unix)]
+use crate::scheduled_sim::devices;
+use crate::scheduled_sim::devices::Devices;
 
 use crate::scenario_config::{LockstepConfig, ResetConfig, SimulationConfig};
 

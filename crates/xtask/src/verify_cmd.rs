@@ -440,6 +440,8 @@ pub(crate) enum VerifyCommand {
     Architecture,
     /// Rust formatting, traversal policy, and clippy
     Lint,
+    /// The lint gate's warnings-denied clippy alone, for the host platform
+    Clippy,
     /// Required bounded proofs under the repository-pinned Kani toolchain
     Kani(VerifyKaniArgs),
     /// Workspace tests that mirror the main test matrix
@@ -645,6 +647,7 @@ impl VerifySuite {
 pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
+        VerifyCommand::Clippy => test_cmd::run_workspace_clippy(root),
         VerifyCommand::Kani(args) => kani::run(root, &args),
         VerifyCommand::Workspace(args) => args.run(root),
         VerifyCommand::TemplateRuntimes(args) => run_template_runtime_checks(root, args),
