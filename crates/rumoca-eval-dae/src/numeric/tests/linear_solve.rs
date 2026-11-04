@@ -66,39 +66,40 @@ fn linear_solve_singular_initial_values_keep_source_error() {
 
 #[test]
 fn linear_solve_nonfinite_source_values_keep_source_error() {
-    for nonfinite_matrix in [true, false] {
-        let mut sources = SourceMap::new();
-        let source = sources.add("nonfinite.mo", "solve(A,b)");
-        let span = Span::from_offsets(source, 0, 10);
-        let at = DaeProvenance::source(span).unwrap();
-        let dae = Dae::construct(sources, |dae| {
-            dae.expressions(|expressions| {
-                let one = expressions.at(at).literal(DaeLiteral::Real(1.0))?;
-                let zero = expressions.at(at).literal(DaeLiteral::Real(0.0))?;
-                let nonfinite = expressions
-                    .at(at)
-                    .binary(BinaryOperator::Divide, one, zero)?;
-                let row =
-                    expressions
-                        .at(at)
-                        .array([if nonfinite_matrix { nonfinite } else { one }])?;
-                let matrix = expressions.at(at).array([row])?;
-                let rhs =
-                    expressions
-                        .at(at)
-                        .array([if nonfinite_matrix { one } else { nonfinite }])?;
-                expressions
-                    .at(at)
-                    .builtin(PureBuiltin::LinearSolve, [matrix, rhs])?;
-                Ok(())
-            })
+    check_nonfinite_source_error(true);
+    check_nonfinite_source_error(false);
+}
+
+fn check_nonfinite_source_error(nonfinite_matrix: bool) {
+    let mut sources = SourceMap::new();
+    let source = sources.add("nonfinite.mo", "solve(A,b)");
+    let span = Span::from_offsets(source, 0, 10);
+    let at = DaeProvenance::source(span).unwrap();
+    let dae = Dae::construct(sources, |dae| {
+        dae.expressions(|expressions| {
+            let one = expressions.at(at).literal(DaeLiteral::Real(1.0))?;
+            let zero = expressions.at(at).literal(DaeLiteral::Real(0.0))?;
+            let nonfinite = expressions
+                .at(at)
+                .binary(BinaryOperator::Divide, one, zero)?;
+            let row = expressions
+                .at(at)
+                .array([if nonfinite_matrix { nonfinite } else { one }])?;
+            let matrix = expressions.at(at).array([row])?;
+            let rhs = expressions
+                .at(at)
+                .array([if nonfinite_matrix { one } else { nonfinite }])?;
+            expressions
+                .at(at)
+                .builtin(PureBuiltin::LinearSolve, [matrix, rhs])?;
+            Ok(())
         })
-        .unwrap();
-        dae.inspect(|view| {
-            let id = view.expression_id(view.expression_count() - 1).unwrap();
-            let error = NumericEvaluator::new(view).expression(id).unwrap_err();
-            assert_eq!(error.kind(), NumericEvaluationErrorKind::InvalidValue);
-            assert_eq!(error.span(), span);
-        });
-    }
+    })
+    .unwrap();
+    dae.inspect(|view| {
+        let id = view.expression_id(view.expression_count() - 1).unwrap();
+        let error = NumericEvaluator::new(view).expression(id).unwrap_err();
+        assert_eq!(error.kind(), NumericEvaluationErrorKind::InvalidValue);
+        assert_eq!(error.span(), span);
+    });
 }

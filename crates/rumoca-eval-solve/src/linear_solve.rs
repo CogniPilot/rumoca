@@ -10,6 +10,9 @@
 
 use rumoca_core::linear_solve::{AugmentedMatrix, gaussian_eliminate};
 
+#[cfg(test)]
+mod tests;
+
 use crate::tensor_policy::LinearSolveKernel;
 use crate::{EvalSolveError, get};
 use rumoca_ir_solve::StructuralPattern;
