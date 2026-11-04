@@ -33,10 +33,19 @@ export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 prepare() {
   local name="$1" target="$2" kind="$3" selector="$4"
   shift 4
+  local build_status=0
   cargo rustc --locked --jobs "$CARGO_BUILD_JOBS" --profile test \
     --message-format=json "$@" -- \
     -C target-feature=+crt-static -C relocation-model=pic -C link-arg=-static-pie \
-    > "$evidence/$name.cargo.jsonl" 2> "$evidence/$name.build.log"
+    > "$evidence/$name.cargo.jsonl" 2> "$evidence/$name.build.log" || build_status=$?
+  if test "$build_status" -ne 0; then
+    printf '%s static-PIE preparation failed (Cargo exit %s)\n' "$name" "$build_status" >&2
+    # Preserve full redirected files for artifact upload and the original status.
+    tail -n 80 -- "$evidence/$name.build.log" >&2 || true
+    jq -r 'select(.reason == "compiler-message" and .message.level == "error") | .message.rendered // .message.message' \
+      "$evidence/$name.cargo.jsonl" >&2 || true
+    return "$build_status"
+  fi
   local executable
   executable="$(jq -s -er --arg target "$target" --arg kind "$kind" '
     [ .[] | select(.reason == "compiler-artifact")

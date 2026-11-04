@@ -1,4 +1,5 @@
 use super::*;
+use std::fs;
 
 fn fixture() -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("test directory");
