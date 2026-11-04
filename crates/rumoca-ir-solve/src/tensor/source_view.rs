@@ -22,6 +22,8 @@ pub enum ComputeOutputImage<'source> {
     Affine {
         domain: &'source StructuredIndexDomain,
         output_map: &'source TensorOutputMap,
+        /// Cardinality issued by the canonical domain validator.
+        invocations: usize,
         kind: &'static str,
         span: Span,
     },
@@ -112,6 +114,7 @@ impl<'source> ComputeOutputPlacement<'source> {
                 output_map,
                 kind,
                 span,
+                ..
             } => {
                 append_tensor_output_indices(
                     outputs,

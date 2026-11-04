@@ -127,6 +127,7 @@ mod model;
 mod model_event_transactions;
 mod native_table;
 mod provenance;
+pub mod source_view;
 mod temporal;
 
 pub use clocks::{

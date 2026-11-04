@@ -145,6 +145,7 @@ omission. Format-specific omission belongs in an explicit `Serialize` keyed on
 | Checked GALEC executable semantics | `rumoca-eval-galec` | Small explicit interpreter over `rumoca-ir-galec`; no DAE/Solve, lowering, rendering, target, or runtime-host dependencies |
 | Typed Solve program evaluation and `SolveAlgorithmBlock` lifecycle execution (pending: 2026-08-08 plan, M3-4) | `rumoca-eval-solve` | Production reference/scalar fallback; remains independent of GALEC evaluation |
 | Checked scalar-runtime ABI conversion of typed Integer inputs and outputs | `rumoca-eval-solve::{typed_kind_from_scalar, checked_scalar_payload_value}` | Interpreter, event payloads, and native scalar-call adapters share the signed-domain and exact-publication policy; raw typed Int64 interfaces and explicit Integer-to-Real conversion retain their own typed semantics. Cranelift emits equivalent domain/representability checks and reports failure through its existing kernel status ABI. |
+| Local compact native invocation geometry against checked target resource facts | `rumoca-ir-solve::ComputeSourceView::native_dispatch_geometry` | Borrows the exact checked source and resource subproduct; preserves original affine-node order/domain counts and refuses unsupported nodes or target bounds. No scalar fallback, independent-execution/root admission, empty-request ABI or printer policy is issued. |
 | Bounded final-template scalar views of checked Solve tensor programs and pure calls | `rumoca-eval-solve::lower_scalar_ops` | Mechanical scalar fallback for final scalar-template consumers (SPEC_0032 §4); shares the reference evaluator's checked numeric semantics, refuses unrepresentable checked faults, and bounds expansion before allocation. Canonical compiler/native programs retain compact tensor ownership. |
 | Executable reference semantics for differential validation | `rumoca-reference` | Independent definitional interpreter of the Modelica event core; its dependency allowlist, dev-only compiler dependencies, refusal boundary, and the ban on optimizing it are stated by [SPEC_0037 §5](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#5-definitional-semantics) |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
@@ -228,6 +229,22 @@ process allocator (row in §1).
 
 ### 7. Codegen Target And Command Ownership Catalog (SPEC_0029 §12)
 
+Source-export presentation stays with canonical source IR owners. The borrowed
+`rumoca_ir_flat::source_view::SourceEquationPartition` selects complete regular
+or initial equation rows and checked BinderSubstitution loop bodies. Unsupported
+unmaterialized families, invalid ranges and overlaps refuse before any view is
+returned; zero-point families consume no scalar rows. It does not render text,
+change numerical Solve IR, or authorize a backend migration.
+`flat::Equation::source_presentation` issues original ordered subtraction
+operands or the complete zero-residual view, retaining span/origin without
+rewriting or evaluating its source AST. The matching
+`DaeView::source_equation_presentation` retains branded expression identities
+and equation provenance without mutating the checked DAE or its wire.
+`DaeView::source_derivative_projection` issues the original derivative-state
+coordinate and ordered source selections only when every subscript is whole,
+constant or parameter. Other indices stay outside `der`; no numerical graph
+is rewritten. Record states remain refused by their existing constructor.
+
 These rules are normative by reference from SPEC_0029 §12.
 
 Target assets follow the same ownership rule. Builtin target discovery embeds
@@ -279,3 +296,10 @@ coverage; no WCET or complete migration claim follows from a pass.
   graph, and the requirements each catalog row serves.
 - [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md) — maintainability and
   deterministic-collection rules.
+
+The Flat source-attribute catalog borrows a validated finalized Model and
+issues `each` only from known scalar shape on an array occurrence. Exact
+reference occurrence/type facts and canonical array-construction shape algebra
+are reused. Unknown call/selection/compound shapes refuse; they require their
+canonical typecheck facts before the corresponding source consumer can migrate.
+No rendered delimiter/name heuristic or numerical Solve admission is introduced.

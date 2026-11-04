@@ -10,6 +10,7 @@ mod canonical;
 pub mod clocks;
 pub mod connections;
 pub mod name_utils;
+pub mod source_view;
 pub mod visitor;
 mod when_equations;
 
