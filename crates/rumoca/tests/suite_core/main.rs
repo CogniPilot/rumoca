@@ -269,6 +269,7 @@ mod native_linear_solve;
 mod native_lu_inverse;
 mod negative_zero_kink;
 mod nested_class_shadowing_test;
+mod nested_event_branch_ancestry;
 mod nested_loop_conditional;
 mod nested_record_field_projection;
 mod nested_record_function_redeclaration;

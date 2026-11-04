@@ -376,6 +376,9 @@ fn lower_algorithm_statements<'dae>(
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
     statements: &[rumoca_core::Statement],
 ) -> Result<(), dae::DaeConstructionError> {
+    if let (Some(handle), Some(guard)) = (owner.discrete_owner, owner.parent) {
+        discrete_values.record_branch_parent(handle, guard)?;
+    }
     for (index, statement) in statements.iter().enumerate() {
         lower_algorithm_statement(
             construction,
