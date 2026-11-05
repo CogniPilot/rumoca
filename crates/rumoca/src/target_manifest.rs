@@ -562,6 +562,30 @@ fn solve_refinement_error(
     .into()
 }
 
+/// An FMI component refusal: a source diagnostic when the refused construct
+/// has a span, else the plain message. Context alone would print only the
+/// message and drop the location.
+#[cfg(feature = "fmi")]
+fn fmi_component_error(
+    result: &CompilationResult,
+    error: rumoca_sim::SimulationDiagnosticError,
+) -> anyhow::Error {
+    const SUMMARY: &str = "Construct checked FMI component";
+    let Some(span) = error.source_span() else {
+        return anyhow::Error::new(error).context(SUMMARY);
+    };
+    CompilerError::SourceDiagnosticsError {
+        summary: SUMMARY.to_string(),
+        diagnostics: vec![rumoca_core::Diagnostic::error(
+            error.diagnostic_code(),
+            error.to_string(),
+            rumoca_core::PrimaryLabel::new(span).with_message(error.diagnostic_label()),
+        )],
+        source_map: Box::new(source_map(result)),
+    }
+    .into()
+}
+
 fn source_map(result: &CompilationResult) -> SourceMap {
     result.resolved.inner().source_map.clone()
 }
@@ -891,7 +915,7 @@ fn validate_target_requirements(
             #[cfg(feature = "fmi")]
             if manifest.ir == TargetTemplateIr::Fmi {
                 let component = rumoca_sim::lower_fmi_c_export_component(&result.dae)
-                    .context("Construct checked FMI component")?;
+                    .map_err(|error| fmi_component_error(result, error))?;
                 validate_solve_target_capabilities(component.problem(), manifest, capabilities)?;
                 validated.fmi_component = Some(component);
                 return Ok(validated);

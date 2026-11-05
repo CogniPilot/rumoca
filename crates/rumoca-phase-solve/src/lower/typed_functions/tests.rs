@@ -1,6 +1,7 @@
 //! Focused construction and execution tests for the shared typed lowerer.
 
 mod division;
+mod integer_conversion;
 mod integer_power;
 mod partial_product_calls;
 mod partial_products;
