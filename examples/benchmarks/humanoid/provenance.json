@@ -21,7 +21,7 @@
     "compressed_original_sha256": "67c62c959043055e1d8c53b0c29e654f44ec7a3a1bc5a5e08d9543f7b1c9016d",
     "transformation": "Project time,pelvis_x,pelvis_z,phase; preserve all raw row ordering and duplicates; no numeric change."
   },
-  "description": "Frozen spatial-algebra humanoid and original joint-coordinate MuJoCo controller, 2026-10-29. Modelica inputs retain their exact frozen source bytes; generator removes an unused numpy import and a machine-specific import path, and normalizes only its generated-header provenance comment. Numerical generator expressions are unchanged. Reference projects four task columns from the original BDF trace without changing rows or numbers.",
+  "description": "Frozen spatial-algebra humanoid and original joint-coordinate MuJoCo controller, 2026-10-29. Modelica inputs retain their exact frozen source bytes, except that MultiBodyLie/package.mo later gained explanatory comments only, with no equation change; generator removes an unused numpy import and a machine-specific import path, and normalizes only its generated-header provenance comment. Numerical generator expressions are unchanged. Reference projects four task columns from the original BDF trace without changing rows or numbers.",
   "generated_mjcf_sha256": "a9d0303a10224d67ad7b8ee0b3ab5190648e0979894a95d97ae72ded1fcc78e6",
   "reference_gate": "Four seconds, final time >=3.998; min pelvis height >= half reference minimum; final height within 0.05 m; x at 3.5 s within 15 percent; nonzero phase transitions within 2."
 }
