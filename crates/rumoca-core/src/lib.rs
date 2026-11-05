@@ -45,6 +45,7 @@ mod expression_rewriter;
 mod expression_visitor;
 mod generated_function_locals;
 mod ir_primitives;
+pub mod linear_solve;
 mod modelica_builtins;
 pub mod native_body;
 mod source_map;

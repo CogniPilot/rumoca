@@ -13,7 +13,7 @@ use crate::runtime::{
     iterative_solve::{GmresConfig, gmres},
     solve_runtime::{AlgebraicLinearization, AlgebraicSettle, SolveRuntime},
 };
-use rumoca_eval_solve::linear_solve::{AugmentedMatrix, gaussian_eliminate};
+use rumoca_core::linear_solve::{AugmentedMatrix, gaussian_eliminate};
 use rumoca_ir_solve::ScalarSlot;
 
 /// Write `column[row]` into `matrix[row][col]` for every row.

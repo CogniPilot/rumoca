@@ -1,4 +1,5 @@
 mod host_initialization;
+mod linear_solve;
 mod native_initialization;
 
 use rumoca_core::{
