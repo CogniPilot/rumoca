@@ -4,6 +4,28 @@ package MultiBodyLie "MSL MultiBody rewritten on articulated-body connectors (la
   // connection set exactly one component owns the frame's kinematics (World, a joint's child-side frame, a rigid
   // translation's far frame, a free-flight root Body) and receives the flows; every other component defines its flow
   // contributions (f, t, pA, IA) and dv = 0.
+  //
+  // Where the speed comes from. The structural cost advantage over Modelica.Mechanics.MultiBody is articulated-body
+  // elimination (Featherstone, Rigid Body Dynamics Algorithms, 2008, ch. 7), not Lie-group integration: a free-flight
+  // root Body still integrates its quaternion Q as a plain ODE. The Lie-algebraic content is only Featherstone's
+  // spatial-vector bookkeeping (Math.crm is the se(3) ad operator) and each joint's Rodrigues rotation
+  // (Math.axisRotation).
+  //
+  // How it works. Seen from its parent, every subtree answers an imposed spatial acceleration a with the wrench
+  // IA * a + pA, where IA is the subtree's articulated inertia and pA its bias wrench. Frame carries both as flows,
+  // so connect() sums sibling subtrees from the leaves inward. A one-degree-of-freedom joint with motion subspace S has
+  // generalized-force balance S' f = tau; the other wrench components carry constraint reactions. That fixes the
+  // joint's acceleration and removes it from what the parent sees, a rank-one Schur complement (Joints.Revolute, with
+  // IAc and pAc the child subtree's IA and pA):
+  //   U = IAc * S,  D = S * U,  u = tau - S * pAc,  a = (u - U * (ap + c)) / D
+  //   Ia = IAc - U * U' / D,  pa = pAc + Ia * c + U * u / D   (passed to the parent)
+  // Nothing pushes back on a free-flight root, so its acceleration is one 6x6 symmetric positive definite solve
+  // (Parts.Body), and joint accelerations then follow outward. Equation sorting turns these local equations into one
+  // explicit leaf-to-root-to-leaf sweep with constant work per joint. For nonsingular (D > 0), unconstrained tree
+  // dynamics with applied forces (contact enters as applied wrenches, as here) the cost grows linearly with the joint
+  // count; closed kinematic loops and constraint-based contact need additional solves. Modelica.Mechanics.MultiBody
+  // instead keeps the cut forces as unknowns and leaves their elimination to the tool, whose tearing or sparse
+  // elimination determines the cost. No measured speed ranking against it is implied here.
 
   model World "Inertial root with uniform gravity (no animation)"
     parameter Boolean enableAnimation = true "Ignored: no animation";
@@ -279,6 +301,8 @@ package MultiBodyLie "MSL MultiBody rewritten on articulated-body connectors (la
         frame_a.dI = zeros(21);
         frame_a.a = -Math.solveSPD(Is - Math.unpackSym(frame_a.IA), bias - frame_a.pA) "explicit: the whole tree's articulated inertia at the root";
         der(r_0) = v_0;
+        // Plain quaternion ODE: four states for three rotational degrees of freedom, with no norm constraint;
+        // Math.quaternionToT normalises Q only where it builds frame_a.R.T.
         der(Q) = 0.5 * {-Q[2] * w_a[1] - Q[3] * w_a[2] - Q[4] * w_a[3], Q[1] * w_a[1] + Q[3] * w_a[3] - Q[4] * w_a[2], Q[1] * w_a[2] - Q[2] * w_a[3] + Q[4] * w_a[1], Q[1] * w_a[3] + Q[2] * w_a[2] - Q[3] * w_a[1]};
         der(w_a) = aTrue[1:3];
         der(v_0) = a_0;
@@ -422,6 +446,7 @@ package MultiBodyLie "MSL MultiBody rewritten on articulated-body connectors (la
         frame_b.dv = zeros(3);
       end if;
       c = cat(1, cross(Vc[1:3], S[1:3] * w), cross(Vc[4:6], S[1:3] * w)) "crm(Vc) (S w) with S = {+-e, 0}";
+      // Articulated-body step (package header): solve this joint's acceleration and eliminate it from the parent's view.
       U = IAc * S;
       D = S * U;
       u = tau - S * pAc;
