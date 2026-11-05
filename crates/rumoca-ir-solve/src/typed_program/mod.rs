@@ -8,6 +8,7 @@ mod integer_interval;
 mod pass_independence;
 mod program;
 mod target;
+mod target_specialization;
 mod types;
 
 pub use target::{SolveAdmittedFunctionDomain, SolveFunctionTarget, SolveFunctionTargetRefusal};
@@ -61,4 +62,9 @@ pub use program::{
 pub use types::{
     SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,
     SolveTypeConstructionError, SolveValue, SolveValueKind, SolveValueType,
+};
+
+pub use target_specialization::{
+    SolveSpecializationIdentity, SolveTargetLayout, SolveTargetProfile, SolveTargetProfileError,
+    SolveTargetSelection,
 };

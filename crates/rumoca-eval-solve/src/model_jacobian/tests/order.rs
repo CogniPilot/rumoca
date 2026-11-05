@@ -58,6 +58,36 @@ fn canonical_output_request_preserves_the_entire_issued_table() {
 }
 
 #[test]
+fn selected_host_profile_preserves_scalar_table_bits_and_has_its_own_identity() {
+    let model = model(vec![0, 1]);
+    let portable = ModelStateJacobian::construct(&model).unwrap();
+    let mut declared = serde_json::to_value(SolveTargetProfile::current_dense_host()).unwrap();
+    declared["name"] = serde_json::json!("selected-native-test");
+    let selected: SolveTargetProfile = serde_json::from_value(declared).unwrap();
+    let native = ModelStateJacobian::construct_for_target(&model, &selected).unwrap();
+    assert_eq!(
+        serde_json::to_value(portable.table()).unwrap(),
+        serde_json::to_value(native.table()).unwrap(),
+    );
+    assert_eq!(
+        portable.specialization().program(),
+        native.specialization().program()
+    );
+    assert_ne!(
+        portable.specialization().profile(),
+        native.specialization().profile()
+    );
+    for point in [[0.0, -0.0], [0.25, -0.5], [-1.5, 0.75], [2.0, 1.25]] {
+        let portable = evaluate(&portable, point);
+        let native = evaluate(&native, point);
+        assert_eq!(
+            portable.into_iter().map(f64::to_bits).collect::<Vec<_>>(),
+            native.into_iter().map(f64::to_bits).collect::<Vec<_>>(),
+        );
+    }
+}
+
+#[test]
 fn valid_axis_descriptor_does_not_bypass_jacobian_domain_admission() {
     let mut model = model(vec![0, 1]);
     model.problem.events.has_terminal_event = true;

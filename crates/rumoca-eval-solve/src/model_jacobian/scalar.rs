@@ -2,12 +2,17 @@ use super::admission::Program;
 use rumoca_core::Span;
 use rumoca_ir_solve::{
     BinaryOp, LinearOp, ProgramRegister, ProgramSlot, SolveArithmeticProfile, SolveBinaryOperator,
-    SolveFiniteCheck, SolveProgramConstructionError, SolveUnaryOperator, SolveValue,
-    StoredStateJacobianOutputOrder, TypedProgramBuilder, UnaryOp,
+    SolveFiniteCheck, SolveProgramConstructionError, SolveTargetSelection, SolveUnaryOperator,
+    SolveValue, StoredStateJacobianOutputOrder, TypedProgramBuilder, UnaryOp,
 };
 use std::collections::BTreeMap;
 
 type Error = SolveProgramConstructionError;
+
+pub(super) struct Target<'profile> {
+    pub arithmetic: SolveArithmeticProfile,
+    pub selection: SolveTargetSelection<'profile>,
+}
 
 #[derive(Clone)]
 struct Dual<'program> {
@@ -30,9 +35,13 @@ pub(super) fn construct<'program>(
     output: ProgramSlot<'program>,
     programs: &[Program<'_>],
     order: &StoredStateJacobianOutputOrder<'_>,
-    profile: SolveArithmeticProfile,
+    target: Target<'_>,
     span: Span,
 ) -> Result<(), Error> {
+    let Target {
+        arithmetic: profile,
+        selection: target,
+    } = target;
     let states = order.input_labels().len();
     let cells = order.cells();
     let mut construction = Construction {
@@ -58,6 +67,7 @@ pub(super) fn construct<'program>(
     }
     // Preserve canonical source/AD/guard evaluation order. Only the final
     // aggregate's declared placements follow the source-issued output axes.
+    let rumoca_ir_solve::SolveTargetLayout::DenseHostV1 = target.layout();
     let mut values = Vec::with_capacity(cells);
     for row in order.row_coordinates() {
         for column in order.column_coordinates() {

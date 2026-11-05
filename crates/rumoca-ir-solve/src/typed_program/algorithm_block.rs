@@ -17,6 +17,7 @@
 
 mod call_levels;
 mod digest;
+pub(super) use digest::content_digest;
 #[cfg(test)]
 mod tests;
 

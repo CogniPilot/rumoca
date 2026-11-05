@@ -100,10 +100,19 @@ impl SolveAlgorithmBlock {
 fn digest_of<T: ?Sized + Serialize>(
     value: &T,
 ) -> Result<SolveAlgorithmBlockDigest, SolveAlgorithmBlockDigestError> {
+    content_digest(FORMAT_TAG, value).map(SolveAlgorithmBlockDigest)
+}
+
+/// One canonical Solve content encoding, with a domain-specific format tag.
+/// Callers choose a versioned tag; they must not duplicate the serializer.
+pub(in crate::typed_program) fn content_digest<T: ?Sized + Serialize>(
+    format_tag: &[u8],
+    value: &T,
+) -> Result<[u8; 32], SolveAlgorithmBlockDigestError> {
     let mut writer = DigestWriter(blake3::Hasher::new());
-    writer.0.update(FORMAT_TAG);
+    writer.0.update(format_tag);
     value.serialize(&mut writer)?;
-    Ok(SolveAlgorithmBlockDigest(*writer.0.finalize().as_bytes()))
+    Ok(*writer.0.finalize().as_bytes())
 }
 
 /// Leading byte of every encoded value, and the end of every compound.
