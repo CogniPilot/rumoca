@@ -8,8 +8,8 @@
 //! or a finite difference. The only files that may are the AD verification
 //! batteries listed in `VERIFICATION_BATTERIES` with their purpose: a test that
 //! checks the lowered derivatives against a difference taken independently (in
-//! this compiler's primal or under OpenModelica) is the one legitimate use, and
-//! the admission table those batteries are generated from names it.
+//! this compiler's primal or under OpenModelica) is the one legitimate use.
+//! The admission table for generated batteries is listed separately below.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,10 @@ use crate::architecture_hardening_support::workspace_root;
 /// Files that compare AD against an independent difference, with the reason
 /// each may name one. Paths are relative to the workspace root.
 const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
+    (
+        "crates/rumoca-eval-solve/src/model_jacobian/tests.rs",
+        "checked model Jacobian AD against analytic values and independent handwritten-primal differences",
+    ),
     (
         "crates/rumoca-eval-solve/src/reverse/tensor/tests.rs",
         "tensor reverse gradients against independent primal differences",
