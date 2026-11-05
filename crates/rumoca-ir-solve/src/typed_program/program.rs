@@ -1115,6 +1115,13 @@ impl<'program> TypedProgramBuilder<'program> {
         {
             return Err(SolveProgramConstructionError::TypeMismatch { provenance });
         }
+        let key = true_type
+            .dimensions()
+            .is_empty()
+            .then_some(ValueKey::Select(condition.id, if_true.id, if_false.id));
+        if let Some(existing) = self.numbered(key.as_ref()) {
+            return Ok(existing);
+        }
         let destination = self.issue_register(true_type, provenance)?;
         self.push(
             SolveOperation::Select {
@@ -1125,6 +1132,7 @@ impl<'program> TypedProgramBuilder<'program> {
             },
             provenance,
         );
+        self.number(key, destination);
         Ok(destination)
     }
 

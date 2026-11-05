@@ -248,3 +248,84 @@ fn wire_replay_preserves_preexisting_distinct_scalar_load_registers() {
         2
     );
 }
+
+#[test]
+fn scalar_selects_share_one_register_while_tensor_selects_stay_distinct() {
+    let arithmetic = profile();
+    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
+    let program = TypedProgram::construct(arithmetic, |b| {
+        let mut read = |ty: &SolveValueType, at: usize| {
+            let slot = b.declare_slot(
+                ty.clone(),
+                SolveStorageClass::Input,
+                SolveSlotAccess::ReadOnly,
+                span(at),
+            )?;
+            b.load(slot, span(at + 1))
+        };
+        let (x, y) = (read(&real, 80)?, read(&real, 82)?);
+        let (u, v) = (read(&vector, 84)?, read(&vector, 86)?);
+        let condition = b.compare(SolveCompareOperator::Less, x, y, span(88))?;
+        let first = b.select(condition, x, y, span(89))?;
+        let second = b.select(condition, x, y, span(90))?;
+        assert_eq!(first, second);
+        // Swapped branches are a different value.
+        let swapped = b.select(condition, y, x, span(91))?;
+        assert_ne!(first, swapped);
+        let tensor_a = b.select(condition, u, v, span(92))?;
+        let tensor_b = b.select(condition, u, v, span(93))?;
+        assert_ne!(tensor_a, tensor_b);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        program
+            .operations()
+            .iter()
+            .filter(|op| matches!(op.operation(), SolveOperation::Select { .. }))
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn wire_replay_preserves_preexisting_duplicate_scalar_selects() {
+    let arithmetic = profile();
+    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let program = TypedProgram::construct(arithmetic, |b| {
+        b.numbered_values = false;
+        let slot = b.declare_slot(
+            real.clone(),
+            SolveStorageClass::Input,
+            SolveSlotAccess::ReadOnly,
+            span(100),
+        )?;
+        let output = b.declare_slot(
+            real.clone(),
+            SolveStorageClass::Output,
+            SolveSlotAccess::ReadWrite,
+            span(101),
+        )?;
+        let x = b.load(slot, span(102))?;
+        let zero = b.constant(SolveValue::real(arithmetic, 0.0), span(103))?;
+        let condition = b.compare(SolveCompareOperator::Less, x, zero, span(104))?;
+        let first = b.select(condition, x, zero, span(105))?;
+        let second = b.select(condition, x, zero, span(106))?;
+        assert_ne!(first, second);
+        let sum = b.binary(SolveBinaryOperator::Add, first, second, span(107))?;
+        b.store(output, sum, span(108))
+    })
+    .unwrap();
+    let wire = serde_json::to_string(&program).unwrap();
+    let replay: TypedProgram = serde_json::from_str(&wire).unwrap();
+    assert_eq!(replay, program);
+    assert_eq!(
+        replay
+            .operations()
+            .iter()
+            .filter(|op| matches!(op.operation(), SolveOperation::Select { .. }))
+            .count(),
+        2
+    );
+}

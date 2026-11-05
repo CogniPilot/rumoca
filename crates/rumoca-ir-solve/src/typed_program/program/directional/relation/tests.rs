@@ -227,3 +227,47 @@ fn structural_cancellation_and_numeric_zero_never_become_absence() {
     })
     .unwrap();
 }
+
+#[test]
+fn tangent_only_quotient_issues_no_unread_primal_guard() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let mut issued = None;
+    let program = TypedProgram::construct(profile, |b| {
+        let x = input(b)?;
+        let y = input(b)?;
+        let dx = input(b)?;
+        let dy = input(b)?;
+        let quotient =
+            b.scalar_binary_directional_source(SolveBinaryOperator::Divide, [x, y], span())?;
+        issued = Some((x.id, y.id, quotient.primal().id));
+        for tangents in [[Some(dx), None], [None, Some(dy)], [Some(dx), Some(dy)]] {
+            assert!(
+                b.scalar_binary_structural_tangent(quotient, tangents)?
+                    .is_some()
+            );
+            assert!(
+                b.scalar_binary_directional_tangent(quotient, tangents)?
+                    .is_some()
+            );
+        }
+        Ok(())
+    })
+    .unwrap();
+    let (x, y, quotient) = issued.unwrap();
+    // Tangent callers read only the tangent, so the guarded `0/0` primal has no
+    // reader: neither its operand-equals-zero compares nor its selects over the
+    // issued quotient may appear. Finite-partial guards stay, as they compare
+    // `v - v` and select the partial.
+    assert!(
+        !program
+            .operations()
+            .iter()
+            .any(|operation| match operation.operation() {
+                SolveOperation::Compare { lhs, .. } => *lhs == x || *lhs == y,
+                SolveOperation::Select {
+                    if_true, if_false, ..
+                } => *if_true == quotient || *if_false == quotient,
+                _ => false,
+            })
+    );
+}

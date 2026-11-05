@@ -23,6 +23,7 @@ pub(super) enum ValueKey {
     Unary(SolveUnaryOperator, SolveRegisterId),
     Binary(SolveBinaryOperator, SolveRegisterId, SolveRegisterId),
     Compare(SolveCompareOperator, SolveRegisterId, SolveRegisterId),
+    Select(SolveRegisterId, SolveRegisterId, SolveRegisterId),
     Convert(SolveConversionOperator, SolveRegisterId),
     Project(SolveRegisterId, Box<[u32]>),
     ProjectDynamic(SolveRegisterId, Box<[SolveRegisterId]>),
