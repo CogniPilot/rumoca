@@ -222,3 +222,94 @@ fn warm_plans_are_stated_from_the_rows() {
          in a per-model timer."
     ));
 }
+
+#[test]
+fn every_timing_table_names_the_actual_backend_settings_groups() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_inputs(temp.path(), 2, 2, 2);
+    let msl_path = temp.path().join("msl_results.json");
+    let mut msl: Value = serde_json::from_str(&fs::read_to_string(&msl_path).unwrap()).unwrap();
+    msl["model_results"][0]["sim_settings"]["execution"] =
+        serde_json::json!({"engine":"cranelift"});
+    msl["model_results"][1]["sim_settings"]["execution"] =
+        serde_json::json!({"engine":"interpreter"});
+    msl["model_results"][1]["sim_settings"]["integrator"] = "rk45".into();
+    fs::write(&msl_path, msl.to_string()).unwrap();
+    let omc_path = temp.path().join("omc_simulation_reference.json");
+    let mut omc: Value = serde_json::from_str(&fs::read_to_string(&omc_path).unwrap()).unwrap();
+    omc["omc_version"] = "OpenModelica recorded-test-version".into();
+    omc["models"]["A"]["omc_settings"]["cflags"] = "".into();
+    omc["models"]["A"]["omc_settings"]["simflags"] = "".into();
+    omc["models"]["B"]["omc_settings"]["method"] = "cvode".into();
+    omc["models"]["B"]["omc_settings"]["cflags"] = "-O2".into();
+    omc["models"]["B"]["omc_settings"]["simflags"] = "-s=cvode".into();
+    fs::write(&omc_path, omc.to_string()).unwrap();
+    let rendered = render_speed_section(temp.path()).unwrap();
+    assert_eq!(
+        rendered
+            .matches("Recorded execution backends for this table")
+            .count(),
+        5
+    );
+    assert!(rendered.contains("mixed paired groups"));
+    assert!(rendered.contains("Rumoca engine cranelift, solver bdf"));
+    assert!(rendered.contains("Rumoca engine interpreter, solver rk45"));
+    assert!(rendered.contains(
+        "OpenModelica recorded-test-version, solver cvode, cflags -O2, simflags -s=cvode"
+    ));
+    assert!(rendered.contains("solver dassl, cflags (empty), simflags (empty)"));
+    // Existing timings/statistics/cohort remain exact despite metadata changes.
+    assert!(rendered.contains("| Simulation | 2 | 4.1 | 3.0 | **0.73** |"));
+}
+
+#[test]
+fn historical_backend_metadata_is_unrecorded_without_guessing_current_engine() {
+    let rendered = render_with(2, 2, 2);
+    assert!(rendered.contains("Rumoca engine unrecorded, solver bdf"));
+    assert!(
+        rendered.contains(
+            "OpenModelica unrecorded, solver dassl, cflags unrecorded, simflags unrecorded"
+        )
+    );
+    assert!(!rendered.contains("Rumoca engine cranelift"));
+    assert_eq!(backend_label(Some("a|b`c\nd")), "a\\|b\\`c d");
+}
+
+#[test]
+fn slower_table_header_excludes_the_eleventh_hidden_backend() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_inputs(temp.path(), 2, 2, 2);
+    let (base, _) = SpeedInputs::read(temp.path()).unwrap().unwrap().records();
+    let records = (0..11)
+        .map(|index| {
+            let mut record = base[0].clone();
+            let hidden = index == 10;
+            let seconds = if hidden { 3.0 } else { 20.0 + f64::from(index) };
+            record.model_name = format!("Model{index:02}");
+            record.rumoca.front_end = seconds;
+            record.rumoca.sim_build = seconds;
+            record.rumoca.initialization = 1.0;
+            record.rumoca.run = seconds;
+            record.omc.runnable = 1.0;
+            record.omc.simulation = 1.0;
+            record.omc.total = 2.0;
+            record.rumoca_settings.as_mut().unwrap()["execution"] = serde_json::json!({
+                "engine": if hidden { "hidden-wasm" } else { "cranelift" },
+            });
+            record
+        })
+        .collect::<Vec<_>>();
+    let rendered = render_slower_than_omc(&records);
+    // The heading reports the full slower cohort, while the table and its
+    // backend caption both describe the ten displayed rows, in every phase.
+    assert_eq!(rendered.matches("(11 slower)").count(), 3);
+    assert_eq!(
+        rendered
+            .matches("10 model(s): Rumoca engine cranelift")
+            .count(),
+        3
+    );
+    assert!(!rendered.contains("hidden-wasm"));
+    assert!(!rendered.contains("`Model10`"));
+    assert_eq!(rendered.matches("| `Model").count(), 30);
+}

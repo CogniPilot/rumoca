@@ -42,6 +42,10 @@ pub(super) struct OmcPhaseSeconds {
 /// The integration settings OMC reports in `simulationOptions`.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct OmcSimSettings {
+    #[serde(default)]
+    pub(super) cflags: Option<String>,
+    #[serde(default)]
+    pub(super) simflags: Option<String>,
     pub(super) method: Option<String>,
     pub(super) tolerance: Option<f64>,
     pub(super) number_of_intervals: Option<u64>,
@@ -389,6 +393,8 @@ fn parse_simulation_options(options: &str) -> OmcSimSettings {
         let value = value.trim();
         match key.trim() {
             "method" => settings.method = Some(value.to_string()),
+            "cflags" => settings.cflags = Some(value.to_string()),
+            "simflags" => settings.simflags = Some(value.to_string()),
             "tolerance" => settings.tolerance = value.parse().ok(),
             "numberOfIntervals" => settings.number_of_intervals = value.parse().ok(),
             "startTime" => settings.start_time = value.parse().ok(),
@@ -516,6 +522,8 @@ end SimulationResult;"#;
         assert_eq!(
             outcome.settings,
             OmcSimSettings {
+                cflags: Some(String::new()),
+                simflags: Some("-s=a,b".to_string()),
                 method: Some("dassl".to_string()),
                 tolerance: Some(1e-6),
                 number_of_intervals: Some(500),

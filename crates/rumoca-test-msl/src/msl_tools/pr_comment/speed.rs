@@ -65,6 +65,7 @@ struct SpeedRecord {
     omc: OmcSeconds,
     rumoca_settings: Option<Value>,
     omc_settings: Option<Value>,
+    omc_version: Option<String>,
     /// Whether the compile started from the worker's prepared resolution
     /// plan (`strict_plan_warm`), `None` when the row does not record it.
     plan_warm: Option<bool>,
@@ -96,10 +97,10 @@ impl Comparison {
     fn definition(self) -> &'static str {
         match self {
             Self::Total => {
-                "Rumoca = front end + Solve lowering + JIT + initialization + integration; OMC = `timeTotal`."
+                "Rumoca = front end + Solve lowering + engine preparation + initialization + integration; OMC = `timeTotal`."
             }
             Self::Runnable => {
-                "Rumoca = front end + Solve lowering + Cranelift JIT (`compile_seconds + \
+                "Rumoca = front end + Solve lowering + recorded engine preparation (`compile_seconds + \
                  sim_build_seconds`); OMC = `timeTotal - timeSimulation`, which includes \
                  `timeCompile`, the C compiler and linker."
             }
@@ -226,6 +227,7 @@ struct SpeedInputs {
     rumoca: Vec<Value>,
     omc: serde_json::Map<String, Value>,
     omc_timing: Value,
+    omc_version: Option<String>,
     bands: Vec<Value>,
 }
 
@@ -254,6 +256,7 @@ impl SpeedInputs {
             rumoca: rumoca.clone(),
             omc: omc_models.clone(),
             omc_timing: omc.get("timing").cloned().unwrap_or(Value::Null),
+            omc_version: json_str(&omc, "omc_version").map(str::to_string),
             bands: bands.clone(),
         }))
     }
@@ -285,7 +288,13 @@ impl SpeedInputs {
                 other_context += 1;
                 continue;
             }
-            records.extend(speed_record(name, band == "high", rumoca, omc));
+            records.extend(speed_record(
+                name,
+                band == "high",
+                rumoca,
+                omc,
+                self.omc_version.clone(),
+            ));
         }
         (records, other_context)
     }
@@ -311,7 +320,13 @@ impl SpeedInputs {
     }
 }
 
-fn speed_record(name: &str, high: bool, rumoca: &Value, omc: &Value) -> Option<SpeedRecord> {
+fn speed_record(
+    name: &str,
+    high: bool,
+    rumoca: &Value,
+    omc: &Value,
+    omc_version: Option<String>,
+) -> Option<SpeedRecord> {
     if json_str(omc, "status")? != "success" {
         return None;
     }
@@ -343,6 +358,7 @@ fn speed_record(name: &str, high: bool, rumoca: &Value, omc: &Value) -> Option<S
         omc: omc_seconds,
         rumoca_settings: rumoca.get("sim_settings").cloned(),
         omc_settings: omc.get("omc_settings").cloned(),
+        omc_version,
         plan_warm: rumoca.get("strict_plan_warm").and_then(Value::as_bool),
     })
 }
@@ -362,8 +378,59 @@ fn speedups(
     Some((pairs.len(), rumoca, omc, omc / rumoca, median))
 }
 
+/// The exact paired engine/settings groups of the records in this table.
+/// Historical missing fields stay unrecorded; no engine is guessed from a
+/// solver name or from the compiler used for today's executable.
+fn render_backend_header(records: &[SpeedRecord]) -> String {
+    let mut groups = BTreeMap::<String, usize>::new();
+    for record in records {
+        let settings = record.rumoca_settings.as_ref();
+        let engine = settings
+            .and_then(|s| s.get("execution"))
+            .and_then(|e| e.get("engine"));
+        let field = |settings: Option<&Value>, key| {
+            backend_label(settings.and_then(|s| s.get(key)).and_then(Value::as_str))
+        };
+        let pair = format!(
+            "Rumoca engine {}, solver {}; OpenModelica {}, solver {}, cflags {}, simflags {}",
+            backend_label(engine.and_then(Value::as_str)),
+            field(settings, "integrator"),
+            backend_label(record.omc_version.as_deref()),
+            field(record.omc_settings.as_ref(), "method"),
+            field(record.omc_settings.as_ref(), "cflags"),
+            field(record.omc_settings.as_ref(), "simflags"),
+        );
+        *groups.entry(pair).or_default() += 1;
+    }
+    let mut out = String::from("**Recorded execution backends for this table**");
+    if groups.len() > 1 {
+        out.push_str(" (mixed paired groups)");
+    }
+    out.push_str(":\n\n");
+    for (pair, count) in groups {
+        out.push_str(&format!("- {count} model(s): {pair}.\n"));
+    }
+    out.push('\n');
+    out
+}
+
+fn backend_label(value: Option<&str>) -> String {
+    value.map_or_else(
+        || "unrecorded".to_string(),
+        |text| {
+            if text.is_empty() {
+                return "(empty)".to_string();
+            }
+            text.replace(['\n', '\r'], " ")
+                .replace('|', "\\|")
+                .replace('`', "\\`")
+        },
+    )
+}
+
 fn render_aggregate_table(records: &[SpeedRecord]) -> String {
-    let mut out = String::from(
+    let mut out = render_backend_header(records);
+    out.push_str(
         "| Comparison | Models | Rumoca total (s) | OMC total (s) | Throughput speedup (×) | Median per-model speedup (×) |\n\
          |---|--:|--:|--:|--:|--:|\n",
     );
@@ -409,9 +476,10 @@ fn render_high_only_line(records: &[SpeedRecord]) -> String {
 
 fn render_size_table(records: &[SpeedRecord], comparison: Comparison) -> String {
     let mut out = format!(
-        "##### {}\n\n{}\n\n| Scalar eqns | Models | Rumoca median (s) | OMC median (s) | Median speedup (×) |\n|---|--:|--:|--:|--:|\n",
+        "##### {}\n\n{}\n\n{}| Scalar eqns | Models | Rumoca median (s) | OMC median (s) | Median speedup (×) |\n|---|--:|--:|--:|--:|\n",
         comparison.label(),
-        comparison.definition()
+        comparison.definition(),
+        render_backend_header(records),
     );
     for (label, bin) in speed_bins(records) {
         let pairs: Vec<(f64, f64)> = bin.iter().filter_map(|r| comparison.pair(r)).collect();
@@ -451,6 +519,12 @@ fn render_slower_than_omc(records: &[SpeedRecord]) -> String {
             out.push_str("_None._\n");
             continue;
         }
+        let cohort = slower
+            .iter()
+            .take(SLOWER_MODEL_LIMIT)
+            .map(|(record, _)| (*record).clone())
+            .collect::<Vec<_>>();
+        out.push_str(&render_backend_header(&cohort));
         out.push_str(
             "| Model | Scalar eqns | Speedup (×) | Dominant rumoca cost |\n|---|--:|--:|---|\n",
         );

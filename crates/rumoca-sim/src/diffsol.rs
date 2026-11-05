@@ -36,6 +36,7 @@ use crate::{SimError, SimFailureStage};
 pub struct PreparedSimulation {
     opts: rumoca_solver::SimOptions,
     root_location: rumoca_ir_solve::fmi::RootLocationPlan,
+    execution: Option<rumoca_solver::SimExecutionReceipt>,
     retained: RefCell<rumoca_solver::fmi_me::session::MeRetainedComponent>,
 }
 
@@ -78,6 +79,7 @@ pub(crate) fn assess_bdf_capability(
     let prepared = PreparedSimulation {
         opts: opts.clone(),
         root_location: artifact.root_location(),
+        execution: artifact.execution_receipt(),
         retained: RefCell::new(retained),
     };
     let capability = classify_bdf_capability(check_prepared_component(&prepared))?;
@@ -154,6 +156,12 @@ mod auto_selection_tests {
 }
 
 impl PreparedSimulation {
+    /// The execution engine admitted for this exact prepared component.
+    /// Missing historical metadata remains absent rather than inferred.
+    pub fn execution_receipt(&self) -> Option<rumoca_solver::SimExecutionReceipt> {
+        self.execution.clone()
+    }
+
     pub fn backend(&self) -> rumoca_solver::SimBackend {
         rumoca_solver::SimBackend::Diffsol
     }
@@ -254,6 +262,7 @@ fn instantiate_prepared_simulation(
     let prepared = PreparedSimulation {
         opts: opts.clone(),
         root_location: artifact.root_location(),
+        execution: artifact.execution_receipt(),
         retained: RefCell::new(retained),
     };
     Ok(prepared)
@@ -1940,6 +1949,31 @@ end DeclinedEvent;
             1,
             "after ME ownership ends no other owner may retain the execution backend"
         );
+    }
+
+    #[test]
+    fn prepared_simulation_retains_its_admitted_engine_without_guessing() {
+        for policy in [
+            SimExecutionPolicy::Interpreter,
+            SimExecutionPolicy::NativeRequired,
+        ] {
+            let opts = sim_opts(policy);
+            let model = state_fixture(&opts);
+            let receipt = rumoca_solver::SimExecutionReceipt::admission(
+                policy,
+                1,
+                0,
+                rumoca_solver::SimExecutionEngine::Cranelift,
+            );
+            let backend = policy.allows_native().then(|| counting_handle(&model).2);
+            let prepared = instantiate_prepared_simulation(
+                model.artifact().with_execution_receipt(receipt.clone()),
+                &opts,
+                backend,
+            )
+            .expect("the selected engine prepares");
+            assert_eq!(prepared.execution_receipt(), Some(receipt));
+        }
     }
 
     /// The automatic composition gate never constructs a compiled evaluator

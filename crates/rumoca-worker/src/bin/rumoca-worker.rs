@@ -246,6 +246,7 @@ struct SimSettings {
 }
 
 struct WorkerRunOk {
+    execution: Option<rumoca_sim::SimExecutionReceipt>,
     sim_result: SimResult,
     build_timings: BuildSimulationTimings,
     sim_build_seconds: f64,
@@ -996,6 +997,7 @@ fn run_simulation_pipeline(
         Ok(Ok(result)) => {
             progress.event(WorkerProgressPhase::Sim, WorkerProgressEventKind::Completed);
             Ok(WorkerRunOk {
+                execution: build.prepared.execution_receipt(),
                 sim_result: result,
                 build_timings: build.build_timings,
                 sim_build_seconds: build.sim_build_seconds,
@@ -1337,11 +1339,10 @@ fn run_and_classify_simulation(
                 run.sim_run_seconds,
                 run.ic_seconds,
             );
-            row.sim_settings = Some(WorkerSimSettings::recorded(
-                opts,
-                &run.sim_result,
-                rumoca_sim::step_counts(),
-            ));
+            let mut settings =
+                WorkerSimSettings::recorded(opts, &run.sim_result, rumoca_sim::step_counts());
+            settings.execution = run.execution;
+            row.sim_settings = Some(settings);
             if row.sim_status.as_deref() == Some("sim_ok") {
                 match write_sim_trace_artifact(request, &run.sim_result) {
                     Ok(path) => row.sim_trace_file = Some(path),
