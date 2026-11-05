@@ -1695,6 +1695,20 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         else {
             return;
         };
+        // `a.b(c = 1)` modifies `b` of the inherited `a`, also in `extends P.a(a.b(c = 1))`.
+        let Some(reference) = modification.expr.modification_target() else {
+            return;
+        };
+        let path = reference.parts.iter().map(|part| part.ident.text.as_ref());
+        let target_name = match path.clone().next() {
+            Some(first) if target.components.contains_key(first) => first.to_string(),
+            _ => target_name,
+        };
+        let nested_prefix: String = path
+            .skip_while(|part| *part != target_name)
+            .skip(1)
+            .map(|part| format!("{part}."))
+            .collect();
         let Some(comp) = target.components.get_mut(&target_name) else {
             return;
         };
@@ -1715,7 +1729,7 @@ fn merge_nested_extends_modifications(target: &mut InheritedContent, extend: &as
         for (index, nested_mod) in modifications.iter().enumerate() {
             let each = modification.each || each_flags.get(index).copied().unwrap_or(false);
             let final_ = modification.final_ || final_flags.get(index).copied().unwrap_or(false);
-            insert_nested_modification(comp, nested_mod, each, final_);
+            insert_nested_modification(comp, &nested_prefix, nested_mod, each, final_);
         }
     });
 }
@@ -1750,6 +1764,7 @@ fn extend_nested_target_modifications<'a>(
 /// Preserve nested modifier values and their MLS §7.2.5/7.2.6 prefixes together.
 fn insert_nested_modification(
     comp: &mut ast::Component,
+    nested_prefix: &str,
     nested_mod: &ast::Expression,
     each: bool,
     final_: bool,
@@ -1772,6 +1787,7 @@ fn insert_nested_modification(
         }
         _ => return,
     };
+    let name = format!("{nested_prefix}{name}");
     if each {
         comp.each_modifications.insert(name.clone());
     } else {

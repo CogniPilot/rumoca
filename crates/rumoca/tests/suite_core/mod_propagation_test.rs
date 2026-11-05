@@ -1399,6 +1399,144 @@ fn instantiate_test_model(
     (tree, overlay)
 }
 
+/// Which of min and max the instantiated component has.
+fn bounds_of(source: &str, model: &str, component: &str) -> (bool, bool) {
+    let (_tree, overlay) = instantiate_test_model(source, model);
+    let data = find_component(&overlay, component)
+        .unwrap_or_else(|| panic!("{component} should exist in {model}"));
+    (data.min.is_some(), data.max.is_some())
+}
+
+const DOTTED_MODIFIER_LIBRARY: &str = r#"
+    connector Port
+        Real h;
+        flow Real q;
+    end Port;
+
+    model C
+        Port p;
+    end C;
+"#;
+
+/// MLS 3.7 §7.2.4: a qualified name is a syntactic rewriting of the nested
+/// modifier. Losing one is silent, since a bound is not needed to compile.
+#[test]
+fn dotted_modifier_targets_are_the_same_as_nested_ones() {
+    for declaration in [
+        "C c(p(h(min = 0, max = 5)));",
+        "C c(p.h(min = 0, max = 5));",
+        "C c(p(h.min = 0, h.max = 5));",
+        "C c(p.h.min = 0, p.h.max = 5);",
+    ] {
+        let source = format!("{DOTTED_MODIFIER_LIBRARY} model Top {declaration} end Top;");
+        assert_eq!(
+            bounds_of(&source, "Top", "c.p.h"),
+            (true, true),
+            "{declaration}"
+        );
+    }
+}
+
+/// The example of MLS 3.7 §7.2.4, with bounds: attributes and value of one
+/// component, designated by different qualified names.
+#[test]
+fn dotted_modifier_targets_merge_with_a_value_modifier() {
+    let source = r#"
+        model C4
+            Real x;
+        end C4;
+
+        model Top
+            C4 a(final x.min = 0, x.max = 5, x = 3.0);
+        end Top;
+    "#;
+    assert_eq!(bounds_of(source, "Top", "a.x"), (true, true));
+    assert_real_binding(source, "Top", "a.x", "3.0");
+}
+
+fn assert_real_binding(source: &str, model: &str, component: &str, expected: &str) {
+    let (_tree, overlay) = instantiate_test_model(source, model);
+    let data = find_component(&overlay, component)
+        .unwrap_or_else(|| panic!("{component} should exist in {model}"));
+    let Some(ast::Expression::Terminal { token, .. }) = data.binding.as_ref() else {
+        panic!(
+            "{component} should have a literal binding, got {:?}",
+            data.binding
+        );
+    };
+    assert_eq!(token.text.as_ref(), expected);
+}
+
+#[test]
+fn dotted_modifier_targets_in_extends_clauses() {
+    let library = format!(
+        "{DOTTED_MODIFIER_LIBRARY}
+        model E
+            extends C(p.h(min = 0));
+        end E;
+        model Nested
+            extends C(p(h(min = 0)));
+        end Nested;"
+    );
+    for (declaration, expected) in [
+        ("Nested c;", (true, false)),
+        ("E c;", (true, false)),
+        // The instance adds to what the extends clause states
+        ("E c(p.h(max = 5));", (true, true)),
+        ("E c(p(h(max = 5)));", (true, true)),
+    ] {
+        let source = format!("{library} model Top {declaration} end Top;");
+        assert_eq!(
+            bounds_of(&source, "Top", "c.p.h"),
+            expected,
+            "{declaration}"
+        );
+    }
+}
+
+/// A target refers to an inherited component, also when that has the name of
+/// the base class. Through an array of components, `each` applies per element.
+#[test]
+fn dotted_modifier_target_named_like_the_base_class() {
+    let source = r#"
+        package Lib
+            connector Port
+                input Real q;
+            end Port;
+
+            partial model ports
+                parameter Integer n = 0;
+                Port ports[n];
+            end ports;
+        end Lib;
+
+        model E
+            extends Lib.ports(ports.q(each min = 0));
+        end E;
+
+        model Top
+            E c(n = 2);
+        end Top;
+    "#;
+    assert_eq!(bounds_of(source, "Top", "c.ports[1].q"), (true, false));
+    assert_eq!(bounds_of(source, "Top", "c.ports[2].q"), (true, false));
+}
+
+/// A quoted identifier is one name, as all names in Base Modelica are.
+#[test]
+fn quoted_modifier_target_keeps_its_dots() {
+    let source = r#"
+        model Inner
+            Real 'a.b';
+        end Inner;
+
+        model Top
+            Inner c('a.b'(min = 0));
+        end Top;
+    "#;
+    assert_eq!(bounds_of(source, "Top", "c.'a.b'"), (true, false));
+}
+
 /// Helper: Print components matching a predicate.
 fn print_components_matching<F>(overlay: &ast::InstanceOverlay, predicate: F)
 where
