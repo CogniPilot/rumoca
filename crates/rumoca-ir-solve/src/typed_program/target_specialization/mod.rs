@@ -125,11 +125,6 @@ impl SolveTargetProfile {
 }
 
 impl SolveTargetSelection<'_> {
-    #[must_use]
-    pub const fn max_unrolled_operations(&self) -> usize {
-        self.profile.max_unrolled_operations as usize
-    }
-
     /// Whether the selected target's checked native entry accepts map frames.
     /// This is declaration data; compact construction owns any final expansion.
     #[must_use]
