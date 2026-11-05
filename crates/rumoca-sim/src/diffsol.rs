@@ -1,3 +1,5 @@
+mod prepared;
+
 use std::cell::RefCell;
 use std::time::Instant;
 
@@ -36,6 +38,7 @@ use crate::{SimError, SimFailureStage};
 pub struct PreparedSimulation {
     opts: rumoca_solver::SimOptions,
     root_location: rumoca_ir_solve::fmi::RootLocationPlan,
+    execution: Option<rumoca_solver::SimExecutionReceipt>,
     retained: RefCell<rumoca_solver::fmi_me::session::MeRetainedComponent>,
 }
 
@@ -78,6 +81,7 @@ pub(crate) fn assess_bdf_capability(
     let prepared = PreparedSimulation {
         opts: opts.clone(),
         root_location: artifact.root_location(),
+        execution: artifact.execution_receipt(),
         retained: RefCell::new(retained),
     };
     let capability = classify_bdf_capability(check_prepared_component(&prepared))?;
@@ -150,20 +154,6 @@ mod auto_selection_tests {
                 reason: "undefined local sensitivity".to_owned(),
             }
         );
-    }
-}
-
-impl PreparedSimulation {
-    pub fn backend(&self) -> rumoca_solver::SimBackend {
-        rumoca_solver::SimBackend::Diffsol
-    }
-
-    pub fn run(&self) -> Result<rumoca_solver::SimResult, SimError> {
-        simulate_prepared(self)
-    }
-
-    pub fn check_initialization(&self) -> Result<(), SimError> {
-        check_prepared_component(self)
     }
 }
 
@@ -254,6 +244,7 @@ fn instantiate_prepared_simulation(
     let prepared = PreparedSimulation {
         opts: opts.clone(),
         root_location: artifact.root_location(),
+        execution: artifact.execution_receipt(),
         retained: RefCell::new(retained),
     };
     Ok(prepared)
@@ -508,6 +499,8 @@ scheduled_executor_items! {
 /// would be contraband anywhere in `rumoca-solver-diffsol`.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native_policy_tests {
+    mod execution_receipt;
+
     mod heat_seed_work;
     use std::cell::Cell;
     use std::rc::Rc;

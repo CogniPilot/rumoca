@@ -899,6 +899,10 @@ pub struct WorkerModelResult {
 /// report can state what each tool was asked to compute (SPEC_0025).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkerSimSettings {
+    /// The engine admitted by the component that actually ran. Historical
+    /// rows without a receipt stay unrecorded; solver choice is not an engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<rumoca_sim::SimExecutionReceipt>,
     /// The requested solver family (`auto`, `bdf`, or `rk`).
     pub requested_solver: String,
     /// The integration method that actually ran (`bdf`, `rk45`, or none for
@@ -934,6 +938,7 @@ impl WorkerSimSettings {
         };
         let span = (options.t_end - options.t_start).abs();
         Self {
+            execution: None,
             requested_solver: solver.to_string(),
             integrator: counts.integrator.unwrap_or("not recorded").to_string(),
             output_intervals: options.dt.map(|dt| (span / dt).round() as usize),
@@ -1139,6 +1144,27 @@ fn write_json_file<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulation_settings_preserve_recorded_engine_and_old_missing_metadata() {
+        let old = serde_json::json!({
+            "requested_solver":"auto", "integrator":"bdf", "rtol":1e-6, "atol":1e-6,
+            "output_intervals":500, "output_points":501, "steps":3, "events":0,
+        });
+        let mut settings: WorkerSimSettings = serde_json::from_value(old).unwrap();
+        assert_eq!(settings.execution, None);
+        let receipt = rumoca_sim::SimExecutionReceipt::admission(
+            rumoca_sim::SimExecutionPolicy::NativeRequired,
+            1,
+            0,
+            rumoca_sim::SimExecutionEngine::Cranelift,
+        );
+        settings.execution = Some(receipt.clone());
+        let wire = serde_json::to_value(&settings).unwrap();
+        assert_eq!(wire["execution"]["engine"], "cranelift");
+        let recovered: WorkerSimSettings = serde_json::from_value(wire).unwrap();
+        assert_eq!(recovered.execution, Some(receipt));
+    }
 
     #[test]
     fn projection_fallbacks_record_the_worst_rate_over_the_policy_rate() {
