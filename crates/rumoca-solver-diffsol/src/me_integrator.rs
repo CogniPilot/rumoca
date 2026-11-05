@@ -400,7 +400,7 @@ fn build_problem(
             );
             return;
         }
-        jacobian_derivatives.directional_derivative_into(
+        jacobian_derivatives.solver_jacobian_action_into(
             time,
             state.as_slice(),
             seed.as_slice(),

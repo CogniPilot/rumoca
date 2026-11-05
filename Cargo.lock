@@ -4933,6 +4933,7 @@ dependencies = [
  "rumoca-transport-udp",
  "rumoca-transport-websocket",
  "rumoca-transport-zenoh",
+ "self_cell",
  "serde",
  "serde_json",
  "signal-hook",

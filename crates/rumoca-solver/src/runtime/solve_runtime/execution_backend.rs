@@ -1,5 +1,25 @@
 use super::*;
 
+/// One source-bound dense state-Jacobian callable in canonical solver order.
+/// The implementation retains the immutable source and all executable owners.
+pub trait CompiledSolveModelStateJacobian {
+    fn call(
+        &self,
+        state: &[f64],
+        parameters: &[f64],
+        time: f64,
+        out: &mut [f64],
+    ) -> Result<(), crate::RuntimeSolveError>;
+}
+
+/// Unsupported model capability is distinct from a preparation failure.
+/// Only `Unsupported` permits the existing directional implementation.
+#[derive(Clone)]
+pub enum ModelStateJacobianPreparation {
+    Compiled(Rc<dyn CompiledSolveModelStateJacobian>),
+    Unsupported { reason: String },
+}
+
 /// Complete application of an issued colored Jacobian at fresh coordinates.
 pub trait CompiledSolveProjectionJacobian {
     fn call(
@@ -92,6 +112,17 @@ pub trait CompiledSolveEventObservation {
 }
 
 pub trait SolveExecutionBackend {
+    /// Prepare one model product from the runtime's exact immutable owner.
+    /// An error is fatal; it must not be converted to an unsupported capability.
+    fn compile_model_state_jacobian(
+        &self,
+        _source: solve::SolveExecutionSource,
+    ) -> Result<ModelStateJacobianPreparation, String> {
+        Ok(ModelStateJacobianPreparation::Unsupported {
+            reason: "this execution backend has no prepared model state Jacobian".into(),
+        })
+    }
+
     /// Admit the complete model execution context before preparation or calls.
     /// A rejection is fatal; it must never become an interpreted fallback.
     fn validate_model_context(&self, _model: &solve::SolveModel) -> Result<(), String> {

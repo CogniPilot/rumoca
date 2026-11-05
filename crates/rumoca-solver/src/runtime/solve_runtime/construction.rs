@@ -39,6 +39,10 @@ impl SolveRuntime {
                 }
             })?;
         }
+        let model_jacobian = model_jacobian::PreparedModelJacobian::prepare(
+            execution_backend.as_ref(),
+            model_owner.execution_source(),
+        )?;
         let prepare = |pick: fn(&ScalarExecutionInventory) -> &PreparedScalarProgramBlock,
                        block: solve::ScalarProgramBlock| {
             let base = primary.map(|primary| pick(primary.scalar));
@@ -469,6 +473,7 @@ impl SolveRuntime {
             &model.problem.solve_layout.relation_memory_parameter_indices,
         );
         let mut scalar = ScalarExecutionInventory {
+            model_jacobian,
             initial_binding_rows,
             coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
                 &model.artifacts.discrete,

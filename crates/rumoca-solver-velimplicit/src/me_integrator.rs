@@ -158,7 +158,7 @@ impl VelImplicitIntegrator {
             colour
                 .iter()
                 .for_each(|&state_column| seed[state_column] = 1.0);
-            derivatives.directional_derivative_into(time, state, seed, column);
+            derivatives.solver_jacobian_action_into(time, state, seed, column);
             if derivatives.take_discard() {
                 return Err(MeIntegrationError::ComponentDiscard { time });
             }

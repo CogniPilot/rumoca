@@ -4,7 +4,8 @@ mod execution_backend;
 
 pub use execution_backend::{
     CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
-    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, SolveExecutionBackend,
+    CompiledSolveModelStateJacobian, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
+    ModelStateJacobianPreparation, SolveExecutionBackend,
 };
 use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
@@ -87,6 +88,7 @@ mod initial_projection;
 mod initial_relation_memory;
 mod interpreted_schedules;
 mod manifold_execution;
+mod model_jacobian;
 mod model_owner;
 mod scalar_dispatch;
 pub use model_owner::SolveRuntimeModel;
@@ -275,6 +277,7 @@ pub struct SolveRuntime {
 
 #[derive(Clone)]
 struct ScalarExecutionInventory {
+    model_jacobian: model_jacobian::PreparedModelJacobian,
     coupled_event_jvps: coupled_event::CoupledEventJvps,
     implicit_projection_scalar_jacobian_v: DirectionalProgram,
     implicit_scalar_rhs: PrimalProgram,

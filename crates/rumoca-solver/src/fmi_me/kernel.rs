@@ -53,6 +53,12 @@ const ALGEBRAIC_REFRESH_TOL: f64 =
 /// Iteration ceiling for the component's internal algebraic/event fixed points.
 const UPDATE_MAX_ITERS: usize = rumoca_eval_solve::projection_policy::ALGEBRAIC_REFRESH_MAX_ITERS;
 
+#[derive(Clone, Copy)]
+enum JacobianActionProfile {
+    Directional,
+    FiniteModelJacobian,
+}
+
 #[derive(Clone)]
 struct CachedDerivative {
     time: f64,
@@ -598,6 +604,29 @@ impl SolveMeKernel {
         seed: &[f64],
         sensitivity: &mut [f64],
     ) -> Result<(), MeError> {
+        self.get_jacobian_action(JacobianActionProfile::Directional, seed, sensitivity)
+    }
+
+    /// Implicit-solver assembly opts into the finite full-Jacobian product.
+    /// Ordinary FMI directional derivatives retain their original domain.
+    pub(crate) fn get_solver_jacobian_action(
+        &self,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.get_jacobian_action(
+            JacobianActionProfile::FiniteModelJacobian,
+            seed,
+            sensitivity,
+        )
+    }
+
+    fn get_jacobian_action(
+        &self,
+        profile: JacobianActionProfile,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError> {
         self.require_active_lifecycle("get_directional_derivative")?;
         if seed.len() != self.state_count {
             return Err(contract(format!(
@@ -622,6 +651,17 @@ impl SolveMeKernel {
         let time = self.continuous_eval_time();
         let settle = self.numerics_settle();
         self.with_delay_evaluation_params(time, &self.states, |params| {
+            if matches!(profile, JacobianActionProfile::FiniteModelJacobian)
+                && let Some(result) = self.runtime.prepared_finite_state_jacobian_action(
+                    time,
+                    &self.states,
+                    params,
+                    seed,
+                    sensitivity,
+                )
+            {
+                return result.map_err(MeError::from);
+            }
             self.directional_derivative_at_parameters(time, params, settle, seed, sensitivity)
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
