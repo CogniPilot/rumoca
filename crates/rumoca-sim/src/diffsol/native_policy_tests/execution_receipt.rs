@@ -22,5 +22,6 @@ fn prepared_simulation_retains_its_admitted_engine_without_guessing() {
         )
         .expect("the selected engine prepares");
         assert_eq!(prepared.execution_receipt(), Some(receipt));
+        assert_eq!(prepared.backend(), rumoca_solver::SimBackend::Diffsol);
     }
 }
