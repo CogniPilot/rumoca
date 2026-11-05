@@ -179,3 +179,31 @@ fn finite_model_guard_failure_keeps_the_complete_caller_output() {
     code.call(&[1.0, 2.0], &parameters, 0.0, &mut out).unwrap();
     assert!(out.iter().all(|value| *value == 0.0));
 }
+
+#[cfg(feature = "solver-rk45")]
+#[test]
+fn explicit_rk_session_has_no_unrequested_model_jacobian_decline() {
+    let mut compiler = Session::new(SessionConfig::default());
+    compiler
+        .add_document("explicit_receipt.mo", NONLINEAR)
+        .unwrap();
+    let compiled = compiler.compile_model("OwnedJacobian").unwrap();
+    let before = PREPARATIONS.with(std::cell::Cell::get);
+    let mut session = crate::SimulationSession::new(
+        &compiled.dae,
+        crate::SimOptions {
+            solver_mode: rumoca_solver::SimSolverMode::RkLike,
+            t_end: 0.02,
+            dt: Some(0.01),
+            max_wall_seconds: Some(30.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    session.advance_to(0.01).unwrap();
+    assert!(session.execution_receipt().declined.is_empty());
+    session.reset(0.0).unwrap();
+    session.advance_to(0.01).unwrap();
+    assert!(session.execution_receipt().declined.is_empty());
+    assert_eq!(PREPARATIONS.with(std::cell::Cell::get), before);
+}

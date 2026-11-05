@@ -5,7 +5,7 @@ mod execution_backend;
 pub use execution_backend::{
     CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
     CompiledSolveModelStateJacobian, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
-    ModelStateJacobianPreparation, SolveExecutionBackend,
+    ModelStateJacobianPreparation, ModelStateJacobianRequest, SolveExecutionBackend,
 };
 use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
@@ -496,14 +496,20 @@ impl SolveRuntime {
         model: &solve::SolveModel,
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
     ) -> Result<Self, EvalSolveError> {
-        Self::construct(SolveRuntimeModel::copied(model), execution_backend, None)
+        Self::construct(
+            SolveRuntimeModel::copied(model),
+            execution_backend,
+            ModelStateJacobianRequest::FiniteAssembly,
+            None,
+        )
     }
 
     pub(crate) fn new_with_model_owner(
         model: SolveRuntimeModel,
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
+        model_jacobian_request: ModelStateJacobianRequest,
     ) -> Result<Self, EvalSolveError> {
-        Self::construct(model, execution_backend, None)
+        Self::construct(model, execution_backend, model_jacobian_request, None)
     }
 
     /// The runtime of an alternate reduced chart over `model`, sharing this
@@ -513,6 +519,7 @@ impl SolveRuntime {
         Self::construct(
             SolveRuntimeModel::copied(model),
             self.scalar_evaluation()?.scalar.execution_backend.clone(),
+            self.model_state_jacobian_request(),
             Some(self),
         )
     }

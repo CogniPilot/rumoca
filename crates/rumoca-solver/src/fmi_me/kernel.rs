@@ -320,6 +320,7 @@ impl SolveMeKernel {
             start_time: self.time,
             stop_time: self.stop_time,
             executor: self.refresh_executor,
+            model_jacobian_request: self.runtime.model_state_jacobian_request(),
         }
     }
 

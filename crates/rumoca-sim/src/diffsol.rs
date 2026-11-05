@@ -17,6 +17,7 @@ use crate::simulation_session::SessionState;
 
 const BDF_INTEGRATOR: crate::me_backend::IntegratorFactory = crate::me_backend::IntegratorFactory {
     method: "bdf",
+    model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::FiniteAssembly,
     build: rumoca_solver_diffsol::model_exchange_integrator,
 };
 use crate::solve_lowering::{
@@ -72,7 +73,8 @@ pub(crate) fn assess_bdf_capability(
     };
     let retained = rumoca_solver::fmi_me::session::MeRetainedComponent::instantiate(
         artifact.source(),
-        &instance_config("bdf", opts)?,
+        &instance_config("bdf", opts)?
+            .with_model_state_jacobian_request(BDF_INTEGRATOR.model_jacobian_request),
         execution_backend,
     )?;
     let prepared = PreparedSimulation {
@@ -248,7 +250,8 @@ fn instantiate_prepared_simulation(
         rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, execution_backend)?;
     let retained = rumoca_solver::fmi_me::session::MeRetainedComponent::instantiate(
         artifact.source(),
-        &instance_config("bdf", opts)?,
+        &instance_config("bdf", opts)?
+            .with_model_state_jacobian_request(BDF_INTEGRATOR.model_jacobian_request),
         execution_backend,
     )?;
     let prepared = PreparedSimulation {

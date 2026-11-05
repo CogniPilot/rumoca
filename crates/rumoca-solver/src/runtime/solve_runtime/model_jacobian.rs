@@ -5,6 +5,7 @@ mod tests;
 
 #[derive(Clone)]
 pub(super) enum PreparedModelJacobian {
+    NotRequested,
     Compiled {
         code: Rc<dyn CompiledSolveModelStateJacobian>,
         cache: RefCell<JacobianCache>,
@@ -75,7 +76,7 @@ impl PreparedModelJacobian {
     pub(super) fn unsupported_reason(&self) -> Option<&str> {
         match self {
             Self::Unsupported { reason } => Some(reason),
-            Self::Compiled { .. } => None,
+            Self::NotRequested | Self::Compiled { .. } => None,
         }
     }
 
@@ -88,7 +89,7 @@ impl PreparedModelJacobian {
         out: &mut [f64],
     ) -> Option<Result<(), RuntimeSolveError>> {
         match self {
-            Self::Unsupported { .. } => None,
+            Self::NotRequested | Self::Unsupported { .. } => None,
             Self::Compiled { code, cache } => {
                 Some(
                     cache
@@ -169,6 +170,17 @@ impl JacobianCache {
 }
 
 impl SolveRuntime {
+    pub(crate) fn model_state_jacobian_request(&self) -> ModelStateJacobianRequest {
+        match &self.execution {
+            RuntimeExecutionInventory::Scalar(scalar) => match &scalar.model_jacobian {
+                PreparedModelJacobian::NotRequested => ModelStateJacobianRequest::NotRequested,
+                _ => ModelStateJacobianRequest::FiniteAssembly,
+            },
+            #[cfg(feature = "native-wasm")]
+            RuntimeExecutionInventory::Native(_) => ModelStateJacobianRequest::NotRequested,
+        }
+    }
+
     /// Explicit finite full-Jacobian action for implicit-integrator assembly.
     /// General directional APIs never enter this narrower model product.
     pub(crate) fn prepared_finite_state_jacobian_action(

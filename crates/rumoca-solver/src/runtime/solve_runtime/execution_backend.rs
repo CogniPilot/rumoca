@@ -1,5 +1,13 @@
 use super::*;
 
+/// Solver-owned demand for the optional finite full-state Jacobian product.
+/// Not requesting a product is distinct from a backend declining it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelStateJacobianRequest {
+    NotRequested,
+    FiniteAssembly,
+}
+
 /// One source-bound dense state-Jacobian callable in canonical solver order.
 /// The implementation retains the immutable source and all executable owners.
 pub trait CompiledSolveModelStateJacobian {

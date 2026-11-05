@@ -82,11 +82,11 @@ pub use runtime::solve_runtime::{
     CompiledSolveEventTransaction, CompiledSolveExpression, CompiledSolveJacobianExpression,
     CompiledSolveModelStateJacobian, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
     EventTransactionExecution, EventUpdateRowFilter, InitialEventObservation,
-    ModelStateJacobianPreparation, PrecompiledSolveBackend, PrecompiledSolveBackendBuilder,
-    ProgramOutputCommit, ProjectedEventUpdateInput, ProjectedInitialEventInput,
-    ProjectedInitialEventOutcome, ProjectedPostInitialEventInput, ReferenceReverseExecution,
-    ScalarExecutionView, SolveExecutionBackend, SolveRuntime, SolveRuntimeModel,
-    block_residual_split_counts, reset_block_residual_split_counts,
+    ModelStateJacobianPreparation, ModelStateJacobianRequest, PrecompiledSolveBackend,
+    PrecompiledSolveBackendBuilder, ProgramOutputCommit, ProjectedEventUpdateInput,
+    ProjectedInitialEventInput, ProjectedInitialEventOutcome, ProjectedPostInitialEventInput,
+    ReferenceReverseExecution, ScalarExecutionView, SolveExecutionBackend, SolveRuntime,
+    SolveRuntimeModel, block_residual_split_counts, reset_block_residual_split_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{

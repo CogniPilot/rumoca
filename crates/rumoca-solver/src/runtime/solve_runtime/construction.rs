@@ -8,6 +8,7 @@ impl SolveRuntime {
     pub(super) fn construct(
         model_owner: SolveRuntimeModel,
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
+        model_jacobian_request: ModelStateJacobianRequest,
         primary: Option<&SolveRuntime>,
     ) -> Result<Self, EvalSolveError> {
         model_owner
@@ -39,10 +40,17 @@ impl SolveRuntime {
                 }
             })?;
         }
-        let model_jacobian = model_jacobian::PreparedModelJacobian::prepare(
-            execution_backend.as_ref(),
-            model_owner.execution_source(),
-        )?;
+        let model_jacobian = match model_jacobian_request {
+            ModelStateJacobianRequest::NotRequested => {
+                model_jacobian::PreparedModelJacobian::NotRequested
+            }
+            ModelStateJacobianRequest::FiniteAssembly => {
+                model_jacobian::PreparedModelJacobian::prepare(
+                    execution_backend.as_ref(),
+                    model_owner.execution_source(),
+                )?
+            }
+        };
         let prepare = |pick: fn(&ScalarExecutionInventory) -> &PreparedScalarProgramBlock,
                        block: solve::ScalarProgramBlock| {
             let base = primary.map(|primary| pick(primary.scalar));

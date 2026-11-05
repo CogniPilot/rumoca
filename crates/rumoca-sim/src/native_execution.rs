@@ -393,7 +393,6 @@ impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction 
 }
 
 struct CraneliftExecutionBackend {
-    model_jacobian_requested: bool,
     source_calls: rumoca_ir_solve::SolvePureCallTable,
     pure_calls: rumoca_exec_cranelift::CompiledPureCallTable,
     call_cells: std::cell::RefCell<(Vec<u64>, Vec<u64>)>,
@@ -424,12 +423,6 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         source: rumoca_ir_solve::SolveExecutionSource,
     ) -> Result<rumoca_solver::ModelStateJacobianPreparation, String> {
-        if !self.model_jacobian_requested {
-            return Ok(rumoca_solver::ModelStateJacobianPreparation::Unsupported {
-                reason: "the selected explicit solver does not request finite Jacobian assembly"
-                    .into(),
-            });
-        }
         model_jacobian::prepare(source)
     }
 
@@ -597,18 +590,12 @@ pub(crate) fn admitted_native_execution_backend(
     if !execution_receipt(opts, model).is_compiled() {
         return Ok(None);
     }
-    let model_jacobian_requested = opts.solver_mode != rumoca_solver::SimSolverMode::RkLike;
-    let prepared = if model_jacobian_requested {
-        backend(&model.pure_calls)
-    } else {
-        backend_for_jacobian(&model.pure_calls, false)
-    }
-    .map_err(
-        |message| crate::SimulationDiagnosticError::RuntimePreparation {
+    let prepared = backend(&model.pure_calls).map_err(|message| {
+        crate::SimulationDiagnosticError::RuntimePreparation {
             message,
             span: None,
-        },
-    )?;
+        }
+    })?;
     Ok(Some(rumoca_solver::fmi_me::MeExecutionBackend::new(
         prepared,
     )))
@@ -617,17 +604,9 @@ pub(crate) fn admitted_native_execution_backend(
 pub(crate) fn backend(
     table: &rumoca_ir_solve::SolvePureCallTable,
 ) -> Result<Rc<dyn rumoca_solver::SolveExecutionBackend>, String> {
-    backend_for_jacobian(table, true)
-}
-
-fn backend_for_jacobian(
-    table: &rumoca_ir_solve::SolvePureCallTable,
-    model_jacobian_requested: bool,
-) -> Result<Rc<dyn rumoca_solver::SolveExecutionBackend>, String> {
     let pure_calls =
         rumoca_exec_cranelift::compile_pure_call_table(table).map_err(|error| error.to_string())?;
     Ok(Rc::new(CraneliftExecutionBackend {
-        model_jacobian_requested,
         source_calls: table.clone(),
         pure_calls,
         call_cells: Default::default(),
