@@ -41,7 +41,8 @@ pub(super) fn construct<'program>(
             .enumerate()
             .map(|(index, slot)| {
                 let value = builder.load(*slot, span)?;
-                let coordinate = u32::try_from(index).map_err(|_| invalid(span))?;
+                let coordinate = u32::try_from(index)
+                    .map_err(|_| Error::InvalidTensorAlgebra { provenance: span })?;
                 builder.check_finite(value, SolveFiniteCheck::Input { coordinate }, span)?;
                 Ok(value)
             })
@@ -53,7 +54,8 @@ pub(super) fn construct<'program>(
         one: builder.constant(SolveValue::real(profile, 1.0), span)?,
     };
     for (index, program) in programs.iter().enumerate() {
-        let program_index = u32::try_from(index).map_err(|_| invalid(span))?;
+        let program_index =
+            u32::try_from(index).map_err(|_| Error::InvalidTensorAlgebra { provenance: span })?;
         construction.program(builder, program, program_index)?;
     }
     // Preserve canonical source/AD/guard evaluation order. Only the final
@@ -64,14 +66,11 @@ pub(super) fn construct<'program>(
             values.push(construction.matrix[row * states + column].unwrap_or(construction.zero));
         }
     }
-    let width = u32::try_from(states).map_err(|_| invalid(span))?;
+    let width =
+        u32::try_from(states).map_err(|_| Error::InvalidTensorAlgebra { provenance: span })?;
     let value = builder.construct_aggregate(&values, vec![width, width], span)?;
     builder.check_finite(value, SolveFiniteCheck::Derivative, span)?;
     builder.store(output, value, span)
-}
-
-fn invalid(provenance: Span) -> Error {
-    Error::InvalidTensorAlgebra { provenance }
 }
 
 impl<'program> Construction<'program> {
@@ -83,7 +82,10 @@ impl<'program> Construction<'program> {
     }
 
     fn input(&self, index: usize, state: bool, span: Span) -> Result<Dual<'program>, Error> {
-        let primal = *self.inputs.get(index).ok_or_else(|| invalid(span))?;
+        let primal = *self
+            .inputs
+            .get(index)
+            .ok_or(Error::InvalidTensorAlgebra { provenance: span })?;
         if !state {
             return Ok(self.absent(primal));
         }
@@ -104,18 +106,25 @@ impl<'program> Construction<'program> {
         let mut registers = BTreeMap::new();
         let mut ordinal = 0;
         for (index, operation) in program.ops.iter().enumerate() {
-            let operation_index = u32::try_from(index).map_err(|_| invalid(program.span))?;
+            let operation_index =
+                u32::try_from(index).map_err(|_| Error::InvalidTensorAlgebra {
+                    provenance: program.span,
+                })?;
             let check = SolveFiniteCheck::Primal {
                 program: program_index,
                 operation: operation_index,
             };
             if let LinearOp::StoreOutput { src } = operation {
                 let value: &Dual<'program> =
-                    registers.get(src).ok_or_else(|| invalid(program.span))?;
+                    registers.get(src).ok_or(Error::InvalidTensorAlgebra {
+                        provenance: program.span,
+                    })?;
                 let row = *program
                     .outputs
                     .get(ordinal)
-                    .ok_or_else(|| invalid(program.span))?;
+                    .ok_or(Error::InvalidTensorAlgebra {
+                        provenance: program.span,
+                    })?;
                 self.matrix[row * self.states..(row + 1) * self.states]
                     .copy_from_slice(&value.tangents);
                 ordinal += 1;
@@ -126,7 +135,9 @@ impl<'program> Construction<'program> {
             }
         }
         if ordinal != program.outputs.len() {
-            return Err(invalid(program.span));
+            return Err(Error::InvalidTensorAlgebra {
+                provenance: program.span,
+            });
         }
         Ok(())
     }
@@ -138,7 +149,12 @@ impl<'program> Construction<'program> {
         registers: &BTreeMap<u32, Dual<'program>>,
         (span, check): (Span, SolveFiniteCheck),
     ) -> Result<(u32, Dual<'program>), Error> {
-        let read = |index: &u32| registers.get(index).cloned().ok_or_else(|| invalid(span));
+        let read = |index: &u32| {
+            registers
+                .get(index)
+                .cloned()
+                .ok_or(Error::InvalidTensorAlgebra { provenance: span })
+        };
         let result = match *operation {
             LinearOp::Const { dst, value } => (
                 dst,
@@ -165,7 +181,7 @@ impl<'program> Construction<'program> {
                     (span, check),
                 )?,
             ),
-            _ => return Err(invalid(span)),
+            _ => return Err(Error::InvalidTensorAlgebra { provenance: span }),
         };
         if !matches!(operation, LinearOp::Unary { .. } | LinearOp::Binary { .. }) {
             builder.check_finite(result.1.primal, check, span)?;
@@ -236,7 +252,7 @@ fn unary(operator: UnaryOp, span: Span) -> Result<SolveUnaryOperator, Error> {
         UnaryOp::Exp => SolveUnaryOperator::Exp,
         UnaryOp::Log => SolveUnaryOperator::Log,
         UnaryOp::Log10 => SolveUnaryOperator::Log10,
-        _ => return Err(invalid(span)),
+        _ => return Err(Error::InvalidTensorAlgebra { provenance: span }),
     })
 }
 
@@ -247,6 +263,6 @@ fn binary(operator: BinaryOp, span: Span) -> Result<SolveBinaryOperator, Error> 
         BinaryOp::Mul => SolveBinaryOperator::Multiply,
         BinaryOp::Div => SolveBinaryOperator::Divide,
         BinaryOp::Pow => SolveBinaryOperator::Power,
-        _ => return Err(invalid(span)),
+        _ => return Err(Error::InvalidTensorAlgebra { provenance: span }),
     })
 }

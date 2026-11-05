@@ -675,6 +675,8 @@ mod tests {
     fn finite_solver_action_is_explicit_and_does_not_replace_directional_calls() {
         let controller = MeDerivativeController::over_component(Box::new(DistinctJacobianActions));
         let handle = controller.issue_handle();
+        assert_eq!(handle.state_count(), 1);
+        assert!(handle.state_jacobian_columns().is_none());
         let mut out = [42.0];
         handle.solver_jacobian_action_into(0.0, &[1.0], &[1.0], &mut out);
         assert!(out[0].is_nan());
@@ -683,6 +685,8 @@ mod tests {
             Some(MeIntegrationError::DerivativeCapabilityInactive { .. })
         ));
         let _window = controller.activate();
+        handle.derivatives_into(0.0, &[1.0], &mut out);
+        assert_eq!(out, [0.0]);
         handle.directional_derivative_into(0.0, &[1.0], &[2.0], &mut out);
         assert_eq!(out, [4.0]);
         handle.solver_jacobian_action_into(0.0, &[1.0], &[2.0], &mut out);

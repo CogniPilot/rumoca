@@ -205,7 +205,7 @@ mod tests {
             &self,
             _: &solve::ScalarProgramBlock,
         ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
-            Err("not exercised".into())
+            Err("no expression compiler".into())
         }
     }
 
@@ -225,6 +225,25 @@ mod tests {
             entries[0]
                 .reason
                 .contains("no prepared model state Jacobian")
+        );
+    }
+
+    #[test]
+    fn an_expression_decline_is_reported_under_its_own_program() {
+        let log = DeclineLog::default();
+        let backend = RecordingBackend::new(Rc::new(NoModelJacobian), log.clone());
+        let error = match backend.compile_expression(&solve::ScalarProgramBlock::default()) {
+            Ok(_) => panic!("the backend has no expression compiler"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "no expression compiler");
+        assert_eq!(
+            log.snapshot(),
+            vec![SimNativeDecline {
+                program: "expression".into(),
+                reason: "no expression compiler".into(),
+                count: 1,
+            }]
         );
     }
 

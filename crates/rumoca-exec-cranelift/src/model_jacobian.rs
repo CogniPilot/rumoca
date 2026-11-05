@@ -41,9 +41,6 @@ impl<'source> CompiledModelStateJacobian<'source> {
     pub fn state_labels(&self) -> &[String] {
         self.product.state_labels()
     }
-    pub fn source_product(&self) -> &ModelStateJacobian<'source> {
-        &self.product
-    }
 
     /// Dense row-major output in the source product's declared output axes.
     /// State inputs retain canonical solver-state order.

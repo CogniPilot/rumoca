@@ -39,16 +39,10 @@ fn ordered_native_product_uses_requested_axes_and_canonical_state_inputs() {
                 StoredStateJacobianOutputOrder::construct(&model, &row_names, &column_names)
                     .unwrap();
             let graph = ModelStateJacobian::construct_with_output_order(order).unwrap();
+            assert_eq!(graph.output_order().row_labels(), row_names);
+            assert_eq!(graph.output_order().column_labels(), column_names);
             let mut native = CompiledModelStateJacobian::compile(graph).unwrap();
             assert_eq!(native.state_labels(), labels);
-            assert_eq!(
-                native.source_product().output_order().row_labels(),
-                row_names
-            );
-            assert_eq!(
-                native.source_product().output_order().column_labels(),
-                column_names
-            );
             for (state, parameter, time) in [([0.25, -0.5], 1.25, 0.375), ([-1.5, 0.75], -2.0, 2.0)]
             {
                 let mut output = [123.0; 4];
