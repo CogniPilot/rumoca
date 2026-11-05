@@ -10,7 +10,8 @@ use rumoca_core::Span;
 use rumoca_ir_solve::{
     ContinuousNumericalSource, ContinuousNumericalSourceError, SolveModel,
     SolveProgramConstructionError, SolvePureCallIdentity, SolvePureCallOutput, SolvePureCallSite,
-    SolvePureCallTable, SolveScalarType, SolveValueType,
+    SolvePureCallTable, SolveScalarType, SolveValueType, StoredStateJacobianOrderError,
+    StoredStateJacobianOutputOrder,
 };
 use std::num::NonZeroU64;
 
@@ -19,8 +20,9 @@ use std::num::NonZeroU64;
 /// must be finite; original primal failures are diagnosed before AD masking.
 /// Existing canonical local-partial/kink rules and unsupported subset remain.
 ///
-/// No caller-supplied derivative, output permutation or detached helper table
-/// enters this constructor. The model remains immutably borrowed for its life.
+/// No caller-supplied derivative, unchecked output permutation or detached helper
+/// table enters this constructor. Output axes require the model-bound checked
+/// stored-state descriptor; the model remains immutably borrowed for its life.
 ///
 /// ```compile_fail
 /// use rumoca_ir_solve::SolveModel;
@@ -38,7 +40,7 @@ pub struct ModelStateJacobian<'source> {
     site: SolvePureCallSite,
     states: usize,
     parameters: usize,
-    labels: Vec<String>,
+    order: StoredStateJacobianOutputOrder<'source>,
 }
 
 #[derive(Debug)]
@@ -49,6 +51,7 @@ pub enum ModelStateJacobianError {
         span: Option<Span>,
     },
     Construction(SolveProgramConstructionError),
+    OutputOrder(StoredStateJacobianOrderError),
 }
 
 impl std::fmt::Display for ModelStateJacobianError {
@@ -59,6 +62,7 @@ impl std::fmt::Display for ModelStateJacobianError {
                 write!(f, "shared state Jacobian unsupported: {reason}")
             }
             Self::Construction(error) => error.fmt(f),
+            Self::OutputOrder(error) => error.fmt(f),
         }
     }
 }
@@ -71,9 +75,12 @@ impl<'source> ModelStateJacobian<'source> {
     pub fn parameters(&self) -> usize {
         self.parameters
     }
-    /// Both matrix axes use these exact canonical solver-state names.
+    /// Canonical state INPUT order; output axes are declared independently.
     pub fn state_labels(&self) -> &[String] {
-        &self.labels
+        self.order.input_labels()
+    }
+    pub fn output_order(&self) -> &StoredStateJacobianOutputOrder<'source> {
+        &self.order
     }
     pub fn source(&self) -> &ContinuousNumericalSource<'source> {
         &self.source
@@ -94,14 +101,33 @@ impl<'source> ModelStateJacobian<'source> {
         let source = model
             .continuous_numerical_source()
             .map_err(ModelStateJacobianError::Source)?;
+        let order = StoredStateJacobianOutputOrder::canonical(model)
+            .map_err(ModelStateJacobianError::OutputOrder)?;
+        Self::construct_from_source(order, source)
+    }
+
+    /// Construct from one checked stored-coordinate axis request. The exact
+    /// originating model is obtained from the descriptor, never supplied twice.
+    pub fn construct_with_output_order(
+        order: StoredStateJacobianOutputOrder<'source>,
+    ) -> Result<Self, ModelStateJacobianError> {
+        let model = order.source_model();
+        let source = model
+            .continuous_numerical_source()
+            .map_err(ModelStateJacobianError::Source)?;
+        Self::construct_from_source(order, source)
+    }
+
+    fn construct_from_source(
+        order: StoredStateJacobianOutputOrder<'source>,
+        source: ContinuousNumericalSource<'source>,
+    ) -> Result<Self, ModelStateJacobianError> {
+        let model = order.source_model();
         let programs = admission::programs(model, &source)?;
         let states = model.state_scalar_count();
         let parameters = source.layout().p_scalars();
         let profile = source.calls().arithmetic();
         let span = programs[0].span;
-        let cells = states
-            .checked_mul(states)
-            .ok_or_else(|| admission::unsupported("matrix extent overflows", Some(span)))?;
         let width = u32::try_from(states)
             .map_err(|_| admission::unsupported("matrix extent exceeds typed shape", Some(span)))?;
         let input_count = states
@@ -120,13 +146,7 @@ impl<'source> ModelStateJacobian<'source> {
                 span,
                 |builder, inputs, outputs| {
                     scalar::construct(
-                        builder,
-                        inputs,
-                        outputs[0],
-                        &programs,
-                        (states, cells),
-                        profile,
-                        span,
+                        builder, inputs, outputs[0], &programs, &order, profile, span,
                     )
                 },
             )?;
@@ -137,20 +157,13 @@ impl<'source> ModelStateJacobian<'source> {
         let site = issued.ok_or_else(|| {
             admission::unsupported("constructor did not issue its owner", Some(span))
         })?;
-        let labels = (0..states)
-            .map(|index| {
-                model.problem.solver_name(index).ok_or_else(|| {
-                    admission::unsupported("state label missing from canonical layout", Some(span))
-                })
-            })
-            .collect::<Result<_, _>>()?;
         Ok(Self {
             source,
             table,
             site,
             states,
             parameters,
-            labels,
+            order,
         })
     }
 }

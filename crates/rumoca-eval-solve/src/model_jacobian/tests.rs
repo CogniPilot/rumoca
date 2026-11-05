@@ -1,3 +1,5 @@
+mod order;
+
 use super::*;
 use crate::{TypedValue, eval_pure_call_checked};
 use rumoca_core::{ProvenanceSpan, SourceId};

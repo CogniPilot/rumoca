@@ -3,7 +3,7 @@ use rumoca_core::Span;
 use rumoca_ir_solve::{
     BinaryOp, LinearOp, ProgramRegister, ProgramSlot, SolveArithmeticProfile, SolveBinaryOperator,
     SolveFiniteCheck, SolveProgramConstructionError, SolveUnaryOperator, SolveValue,
-    TypedProgramBuilder, UnaryOp,
+    StoredStateJacobianOutputOrder, TypedProgramBuilder, UnaryOp,
 };
 use std::collections::BTreeMap;
 
@@ -29,11 +29,12 @@ pub(super) fn construct<'program>(
     inputs: &[ProgramSlot<'program>],
     output: ProgramSlot<'program>,
     programs: &[Program<'_>],
-    shape: (usize, usize),
+    order: &StoredStateJacobianOutputOrder<'_>,
     profile: SolveArithmeticProfile,
     span: Span,
 ) -> Result<(), Error> {
-    let (states, cells) = shape;
+    let states = order.input_labels().len();
+    let cells = order.cells();
     let mut construction = Construction {
         inputs: inputs
             .iter()
@@ -55,11 +56,14 @@ pub(super) fn construct<'program>(
         let program_index = u32::try_from(index).map_err(|_| invalid(span))?;
         construction.program(builder, program, program_index)?;
     }
-    let values = construction
-        .matrix
-        .into_iter()
-        .map(|value| value.unwrap_or(construction.zero))
-        .collect::<Vec<_>>();
+    // Preserve canonical source/AD/guard evaluation order. Only the final
+    // aggregate's declared placements follow the source-issued output axes.
+    let mut values = Vec::with_capacity(cells);
+    for row in order.row_coordinates() {
+        for column in order.column_coordinates() {
+            values.push(construction.matrix[row * states + column].unwrap_or(construction.zero));
+        }
+    }
     let width = u32::try_from(states).map_err(|_| invalid(span))?;
     let value = builder.construct_aggregate(&values, vec![width, width], span)?;
     builder.check_finite(value, SolveFiniteCheck::Derivative, span)?;

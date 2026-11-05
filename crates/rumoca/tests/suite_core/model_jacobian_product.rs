@@ -1,4 +1,5 @@
 //! Actual Modelica -> Solve -> shared Jacobian -> native product correspondence.
+mod order;
 mod structural;
 
 use rumoca::Compiler;

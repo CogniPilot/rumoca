@@ -45,7 +45,8 @@ impl<'source> CompiledModelStateJacobian<'source> {
         &self.product
     }
 
-    /// Dense row-major output, in the canonical solver-state order on BOTH axes.
+    /// Dense row-major output in the source product's declared output axes.
+    /// State inputs retain canonical solver-state order.
     /// Borrows inputs; explicit IR guards precede a success-only staged commit.
     pub fn eval(
         &mut self,
