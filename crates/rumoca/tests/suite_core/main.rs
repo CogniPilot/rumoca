@@ -293,6 +293,7 @@ mod pipeline_test;
 mod predefined_function_lookup;
 mod prepared_vectors_refresh;
 mod process_allocator_address_space;
+mod protected_composite_connector_flow_sign;
 mod proven_tearing;
 mod public_observation_convergence;
 mod receiver_function_redeclare;

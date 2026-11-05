@@ -1125,6 +1125,66 @@ fn test_process_connections_negates_nested_connector_under_outside_root() {
     );
 }
 
+/// GitHub #598: `is_protected` is inherited from a protected ancestor, and it
+/// must not turn a composite connector's member into an inside connector.
+#[test]
+fn test_process_connections_negates_nested_connector_under_protected_outside_root() {
+    let mut flat = flat::Model::new();
+    for name in ["shaft.composite.flange.tau", "shaft.inertia.flange.tau"] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                flow: true,
+                is_primitive: true,
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_component(ast::InstanceData {
+        instance_id: rumoca_core::InstanceId(1),
+        qualified_name: ast::QualifiedName::from_dotted("shaft.composite"),
+        is_connector_type: true,
+        is_protected: true,
+        ..Default::default()
+    });
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: rumoca_core::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_dotted("shaft"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("shaft.inertia.flange"),
+            b: ast::QualifiedName::from_dotted("shaft.composite.flange"),
+            connector_type: None,
+            span: test_span(),
+            scope: "shaft".to_string(),
+            family: None,
+        }],
+        ..Default::default()
+    });
+
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("protected composite connector connection");
+
+    let flow_origins: Vec<String> = flat
+        .equations
+        .iter()
+        .map(|eq| eq.origin.to_string())
+        .collect();
+    assert!(
+        flow_origins.iter().any(|origin| {
+            origin.contains("-shaft.composite.flange.tau")
+                && origin.contains("shaft.inertia.flange.tau")
+                && !origin.contains("-shaft.inertia.flange.tau")
+        }),
+        "Expected the protected composite member to be negated, got: {:?}",
+        flow_origins
+    );
+}
+
 #[test]
 fn test_interface_path_uses_single_identifier_fallback_when_roots_do_not_match() {
     let mut roots = InterfaceConnectorRootsByScope::default();

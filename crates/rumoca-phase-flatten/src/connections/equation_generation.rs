@@ -1122,13 +1122,17 @@ fn collect_stream_vars_from_conn_path(
     }
 }
 
+/// MLS §9.1.2: every connector element of a component is an outside connector
+/// with respect to that component, whatever its visibility. `is_protected` is
+/// inherited from protected ancestors, so it must not filter these roots: a
+/// composite member such as `composite.flange` has no single-identifier fallback.
 fn collect_interface_connector_roots_by_scope(
     overlay: &ast::InstanceOverlay,
 ) -> InterfaceConnectorRootsByScope {
     let mut result: InterfaceConnectorRootsByScope = IndexMap::default();
 
     for instance in overlay.components.values() {
-        if !instance.is_connector_type || instance.is_protected {
+        if !instance.is_connector_type {
             continue;
         }
         let path = instance.qualified_name.to_component_path();
@@ -1146,8 +1150,8 @@ fn collect_interface_connector_roots_by_scope(
 
 /// Collect flow variables on interface connectors at each scope level (MLS §9.2).
 ///
-/// An interface connector is a public connector-typed component declared directly
-/// in the connection scope. Connection paths can name the connector itself or a
+/// An interface connector is a connector-typed component declared directly in
+/// the connection scope, public or protected. Connection paths can name the connector itself or a
 /// nested connector member below that root, e.g. `plug.pin`.
 fn collect_interface_flow_vars_by_scope(
     connections: &[&ast::InstanceConnection],
