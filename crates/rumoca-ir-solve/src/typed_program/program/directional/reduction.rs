@@ -135,7 +135,7 @@ fn extremum_step<'program>(
         provenance,
     )?;
     let scalar = builder.register_type(lhs.primal, provenance)?.clone();
-    let mut arithmetic = DirectionalArithmetic { builder };
+    let mut arithmetic = DirectionalArithmetic::dense(builder);
     let result = arithmetic.derive_binary(operator, lhs, rhs, &scalar, provenance)?;
     let tangent = arithmetic.tangent_or_zero(result, &scalar, provenance)?;
     builder.store(outputs[0], result.primal, provenance)?;

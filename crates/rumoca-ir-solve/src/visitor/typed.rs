@@ -62,7 +62,8 @@ pub(crate) fn nested_typed_programs(operation: &SolveOperation) -> [Option<&Type
             },
             None,
         ],
-        SolveOperation::AssignedState { .. }
+        SolveOperation::CheckFinite { .. }
+        | SolveOperation::AssignedState { .. }
         | SolveOperation::Constant { .. }
         | SolveOperation::Load { .. }
         | SolveOperation::Store { .. }

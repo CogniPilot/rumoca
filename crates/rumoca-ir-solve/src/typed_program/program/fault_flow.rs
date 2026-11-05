@@ -212,6 +212,7 @@ impl Analysis<'_> {
     fn leaf_class(&mut self, operation: &SolveOperation) -> FaultClass {
         use SolveOperation as O;
         match operation {
+            O::CheckFinite { .. } => FaultClass::MayFault(FaultKind::RealDomain),
             O::Constant { destination, value } => {
                 if let (SolveValueKind::Integer(value), SolveScalarType::Integer(domain)) =
                     (value.kind(), self.scalar(*destination))

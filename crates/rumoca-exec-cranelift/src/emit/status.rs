@@ -18,6 +18,8 @@ const SCALAR_PAYLOAD_FAILURE: i64 = 7;
 const INTEGER_ARITHMETIC_FAILURE: i64 = 8;
 /// A table callback retained its checked source fault in this invocation.
 pub(super) const TABLE_FAILURE: u8 = 10;
+/// An explicit finite-domain guard retained its source/phase/element diagnostic.
+pub(super) const NON_FINITE_FAILURE: u8 = 11;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     if let Some(fault) = super::native_fault::take(status) {
@@ -65,6 +67,9 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
             kind: NativeSourceFault::IntegerArithmetic,
             message: "native Integer arithmetic left the checked target domain".into(),
         }),
+        NON_FINITE_FAILURE => Err(CompileError::Backend(
+            "finite-domain status has no source diagnostic".into(),
+        )),
         TABLE_FAILURE => match super::host_runtime::take_table_fault() {
             Some(error) => Err(CompileError::SourceOperation {
                 kind: NativeSourceFault::ExternalTable,

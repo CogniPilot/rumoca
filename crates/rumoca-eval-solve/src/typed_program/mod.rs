@@ -7,6 +7,7 @@ mod native;
 pub(crate) mod number;
 mod observation;
 mod payload;
+mod shared_entry;
 mod tensor;
 #[cfg(test)]
 mod tests;
@@ -14,7 +15,7 @@ mod tests;
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
-    SolveAlgorithmBlock, SolveBinaryOperator, SolveOperation, SolveProgramRegion,
+    SolveAlgorithmBlock, SolveBinaryOperator, SolveFiniteCheck, SolveOperation, SolveProgramRegion,
     SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat,
     SolveReductionOperator, SolveRegisterId, SolveScalarType, SolveSlotId, SolveStorageClass,
     SolveTensorViewAxis, SolveValue, SolveValueKind, SolveValueType, TypedProgram,
@@ -38,6 +39,7 @@ pub use observation::{
     render_retained_message,
 };
 use payload::Payload;
+pub use shared_entry::eval_shared_entry_checked;
 
 #[cfg(test)]
 thread_local! {
@@ -190,6 +192,11 @@ impl std::error::Error for TypedValueConstructionError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypedProgramEvalError {
+    NonFinite {
+        check: SolveFiniteCheck,
+        element: usize,
+        provenance: Span,
+    },
     AssertionFailed {
         failure: TypedAssertionFailure,
     },
@@ -246,7 +253,8 @@ impl TypedProgramEvalError {
         match self {
             Self::UnknownOwner { .. } | Self::InvalidBlockMethod { .. } => None,
             Self::AssertionFailed { failure } => Some(failure.source_span()),
-            Self::InvalidArgument { provenance, .. }
+            Self::NonFinite { provenance, .. }
+            | Self::InvalidArgument { provenance, .. }
             | Self::InvalidCheckedProgram { provenance, .. }
             | Self::IntegerArithmetic { provenance, .. }
             | Self::InvalidIntegerConversion { provenance }
@@ -261,6 +269,9 @@ impl TypedProgramEvalError {
 impl std::fmt::Display for TypedProgramEvalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NonFinite { check, element, .. } => {
+                write!(formatter, "nonfinite {check:?} element {element}")
+            }
             Self::AssertionFailed { .. } => formatter.write_str("source function assertion failed"),
             Self::LinearSolve { reason, .. } => {
                 write!(formatter, "tensor linear solve failed: {reason}")
@@ -469,16 +480,18 @@ enum AssertionPolicy {
 }
 
 #[derive(Clone, Copy)]
-struct EvaluationMode {
+struct EvaluationMode<'model> {
     direction: Direction,
     policy: AssertionPolicy,
+    entry_plan: Option<&'model rumoca_ir_solve::SharedEntryCallPlan<'model>>,
 }
 
-impl EvaluationMode {
+impl EvaluationMode<'_> {
     const fn primal(policy: AssertionPolicy) -> Self {
         Self {
             direction: Direction::Primal,
             policy,
+            entry_plan: None,
         }
     }
 
@@ -486,6 +499,7 @@ impl EvaluationMode {
         Self {
             direction: Direction::Directional,
             policy,
+            entry_plan: None,
         }
     }
 }
@@ -526,7 +540,7 @@ fn eval_owner_in_scope<'model>(
     table: &'model SolvePureCallTable,
     owner: &'model SolvePureCallOwner,
     arguments: &[TypedValue],
-    mode: EvaluationMode,
+    mode: EvaluationMode<'model>,
     chain: RecursionChain,
     block: Option<&'model SolveAlgorithmBlock>,
 ) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
@@ -614,7 +628,7 @@ fn eval_region<'model>(
     region: &'model SolveProgramRegion,
     arguments: Vec<TypedValue>,
     storage: &mut FrameStorage,
-    mode: EvaluationMode,
+    mode: EvaluationMode<'model>,
     chain: RecursionChain,
     (owner, block): (SolvePureCallOwnerId, Option<&'model SolveAlgorithmBlock>),
 ) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
@@ -666,7 +680,7 @@ fn eval_region_assigned<'model>(
     region: &'model SolveProgramRegion,
     arguments: (Vec<TypedValue>, Vec<Option<TypedValue>>),
     storage: &mut FrameStorage,
-    mode: EvaluationMode,
+    mode: EvaluationMode<'model>,
     chain: RecursionChain,
     (owner, block): (SolvePureCallOwnerId, Option<&'model SolveAlgorithmBlock>),
 ) -> Result<InvocationCompletion<'model, AssignedRegionValues>, TypedProgramEvalError> {
@@ -800,7 +814,7 @@ struct EvalFrame<'model, 'scope> {
     observations: Vec<ObservedAssertion<'model>>,
     table: &'model SolvePureCallTable,
     program: &'model TypedProgram,
-    mode: EvaluationMode,
+    mode: EvaluationMode<'model>,
     chain: RecursionChain,
     storage: &'scope mut FrameStorage,
     /// Index of the operation being evaluated.
@@ -812,7 +826,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         table: &'model SolvePureCallTable,
         program: &'model TypedProgram,
         storage: &'scope mut FrameStorage,
-        mode: EvaluationMode,
+        mode: EvaluationMode<'model>,
         chain: RecursionChain,
         owner: SolvePureCallOwnerId,
     ) -> Self {
@@ -855,6 +869,21 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         match operation {
+            SolveOperation::CheckFinite { operand, check } => {
+                let value = self.read(*operand, provenance)?;
+                if let Some(element) = value.elements().iter().position(|value| match value {
+                    SolveValueKind::Real64(bits) => !f64::from_bits(*bits).is_finite(),
+                    SolveValueKind::Real32(bits) => !f32::from_bits(*bits).is_finite(),
+                    _ => true,
+                }) {
+                    return Err(TypedProgramEvalError::NonFinite {
+                        check: *check,
+                        element,
+                        provenance,
+                    });
+                }
+                Ok(())
+            }
             SolveOperation::AssignedState { operation } => {
                 self.eval_assigned_state(operation, provenance)
             }
@@ -1613,17 +1642,27 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .iter()
             .map(|argument| self.read(*argument, provenance).cloned())
             .collect::<Result<Vec<_>, _>>()?;
-        let called = self
-            .table
-            .owner(owner)
-            .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
-        let chain = self.chain.enter(self.table, owner, provenance)?;
+        let (called, mode) = match self.mode.entry_plan {
+            Some(plan) => shared_entry::resolve_entry_call(
+                plan,
+                self.program,
+                self.operation,
+                provenance,
+                self.mode.policy,
+            )?,
+            None => (
+                self.table
+                    .owner(owner)
+                    .ok_or(TypedProgramEvalError::UnknownOwner { owner })?,
+                self.mode,
+            ),
+        };
+        let chain = self.chain.enter(self.table, called.id(), provenance)?;
         // Status is a primal effect: directional evaluation never carries it.
         let block = self
             .block
-            .filter(|_| matches!(self.mode.direction, Direction::Primal));
-        let completed =
-            eval_owner_in_scope(self.table, called, &arguments, self.mode, chain, block)?;
+            .filter(|_| matches!(mode.direction, Direction::Primal));
+        let completed = eval_owner_in_scope(self.table, called, &arguments, mode, chain, block)?;
         let Some(outputs) = self.accept_completion(completed) else {
             return Ok(());
         };

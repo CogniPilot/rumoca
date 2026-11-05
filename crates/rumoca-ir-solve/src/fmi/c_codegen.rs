@@ -1,5 +1,7 @@
 //! Consuming C profiles retain the checked component and its indicator order.
 
+mod typed_capabilities;
+
 use super::{FmiCodegenView, FmiEventFreeCodegenView, FmiMetadata};
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
@@ -144,6 +146,7 @@ fn admit_kernel(
     validate_initial_values(model)?;
     validate_variables(metadata)?;
     refuse_recursive_groups(&model.pure_calls)?;
+    typed_capabilities::admit(&model.pure_calls)?;
     super::parameter_updates::validate(&model.problem, &model.pure_calls).map_err(FmiCCodegenError)
 }
 

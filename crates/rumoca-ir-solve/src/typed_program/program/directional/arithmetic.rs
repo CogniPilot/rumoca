@@ -4,6 +4,23 @@ use super::*;
 
 pub(super) struct DirectionalArithmetic<'builder, 'program> {
     pub(super) builder: &'builder mut TypedProgramBuilder<'program>,
+    structural: bool,
+}
+
+impl<'builder, 'program> DirectionalArithmetic<'builder, 'program> {
+    pub(super) fn dense(builder: &'builder mut TypedProgramBuilder<'program>) -> Self {
+        Self {
+            builder,
+            structural: false,
+        }
+    }
+
+    pub(super) fn structural(builder: &'builder mut TypedProgramBuilder<'program>) -> Self {
+        Self {
+            builder,
+            structural: true,
+        }
+    }
 }
 
 impl<'program> DirectionalArithmetic<'_, 'program> {
@@ -77,6 +94,12 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         provenance: Span,
     ) -> Result<Directional<ProgramRegister<'program>>, SolveProgramConstructionError> {
         if !is_real(value_type) {
+            return Ok(Directional {
+                primal,
+                tangent: None,
+            });
+        }
+        if self.structural && operand.tangent.is_none() {
             return Ok(Directional {
                 primal,
                 tangent: None,
@@ -289,6 +312,12 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
                 tangent: None,
             });
         }
+        if self.structural && lhs.tangent.is_none() && rhs.tangent.is_none() {
+            return Ok(Directional {
+                primal: direct_primal,
+                tangent: None,
+            });
+        }
         let zero = self.zero(value_type, provenance)?;
         let primal = if operator == SolveBinaryOperator::Divide {
             let denominator_is_zero =
@@ -313,24 +342,34 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         let rhs_tangent = self.tangent_or_zero(rhs, value_type, provenance)?;
         let tangent = match operator {
             SolveBinaryOperator::Add | SolveBinaryOperator::Subtract => {
-                self.builder
-                    .binary(operator, lhs_tangent, rhs_tangent, provenance)?
+                let left = self.present_term(lhs.tangent, lhs_tangent);
+                let right = self.present_term(rhs.tangent, rhs_tangent);
+                self.combine_terms([left, right], operator, zero, provenance)?
             }
             SolveBinaryOperator::Multiply => {
-                let first = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    lhs_tangent,
-                    rhs.primal,
-                    provenance,
-                )?;
-                let second = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    lhs.primal,
-                    rhs_tangent,
-                    provenance,
-                )?;
-                self.builder
-                    .binary(SolveBinaryOperator::Add, first, second, provenance)?
+                let first = self
+                    .present_term(lhs.tangent, lhs_tangent)
+                    .map(|tangent| {
+                        self.builder.binary(
+                            SolveBinaryOperator::Multiply,
+                            tangent,
+                            rhs.primal,
+                            provenance,
+                        )
+                    })
+                    .transpose()?;
+                let second = self
+                    .present_term(rhs.tangent, rhs_tangent)
+                    .map(|tangent| {
+                        self.builder.binary(
+                            SolveBinaryOperator::Multiply,
+                            lhs.primal,
+                            tangent,
+                            provenance,
+                        )
+                    })
+                    .transpose()?;
+                self.combine_terms([first, second], SolveBinaryOperator::Add, zero, provenance)?
             }
             SolveBinaryOperator::Divide => self.derive_quotient(
                 lhs,
@@ -385,27 +424,33 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         (value_type, zero): (&SolveValueType, ProgramRegister<'program>),
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let one = self.constant_like(value_type, 1.0, provenance)?;
-        let lhs_partial =
-            self.builder
-                .binary(SolveBinaryOperator::Divide, one, rhs.primal, provenance)?;
-        let square = self.builder.binary(
-            SolveBinaryOperator::Multiply,
-            rhs.primal,
-            rhs.primal,
-            provenance,
-        )?;
-        let negated = self
-            .builder
-            .unary(SolveUnaryOperator::Negate, lhs.primal, provenance)?;
-        let rhs_partial =
-            self.builder
-                .binary(SolveBinaryOperator::Divide, negated, square, provenance)?;
-        self.sum_of_scaled_partials(
-            [(lhs_tangent, lhs_partial), (rhs_tangent, rhs_partial)],
-            zero,
-            provenance,
-        )
+        let left = if !self.structural || lhs.tangent.is_some() {
+            let one = self.constant_like(value_type, 1.0, provenance)?;
+            let partial =
+                self.builder
+                    .binary(SolveBinaryOperator::Divide, one, rhs.primal, provenance)?;
+            Some(self.scale_by_finite_partial(lhs_tangent, partial, zero, provenance)?)
+        } else {
+            None
+        };
+        let right = if !self.structural || rhs.tangent.is_some() {
+            let square = self.builder.binary(
+                SolveBinaryOperator::Multiply,
+                rhs.primal,
+                rhs.primal,
+                provenance,
+            )?;
+            let negated = self
+                .builder
+                .unary(SolveUnaryOperator::Negate, lhs.primal, provenance)?;
+            let partial =
+                self.builder
+                    .binary(SolveBinaryOperator::Divide, negated, square, provenance)?;
+            Some(self.scale_by_finite_partial(rhs_tangent, partial, zero, provenance)?)
+        } else {
+            None
+        };
+        self.combine_terms([left, right], SolveBinaryOperator::Add, zero, provenance)
     }
 
     /// `atan2(l, r)` under the kink rule of `rumoca_eval_solve::reverse`:
@@ -434,40 +479,59 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         let denominator =
             self.builder
                 .binary(SolveBinaryOperator::Add, lhs_square, rhs_square, provenance)?;
-        let lhs_partial = self.builder.binary(
-            SolveBinaryOperator::Divide,
-            rhs.primal,
-            denominator,
-            provenance,
-        )?;
-        let negated = self
-            .builder
-            .unary(SolveUnaryOperator::Negate, lhs.primal, provenance)?;
-        let rhs_partial = self.builder.binary(
-            SolveBinaryOperator::Divide,
-            negated,
-            denominator,
-            provenance,
-        )?;
-        self.sum_of_scaled_partials(
-            [(lhs_tangent, lhs_partial), (rhs_tangent, rhs_partial)],
-            zero,
-            provenance,
-        )
+        let left = if !self.structural || lhs.tangent.is_some() {
+            let partial = self.builder.binary(
+                SolveBinaryOperator::Divide,
+                rhs.primal,
+                denominator,
+                provenance,
+            )?;
+            Some(self.scale_by_finite_partial(lhs_tangent, partial, zero, provenance)?)
+        } else {
+            None
+        };
+        let right = if !self.structural || rhs.tangent.is_some() {
+            let negated = self
+                .builder
+                .unary(SolveUnaryOperator::Negate, lhs.primal, provenance)?;
+            let partial = self.builder.binary(
+                SolveBinaryOperator::Divide,
+                negated,
+                denominator,
+                provenance,
+            )?;
+            Some(self.scale_by_finite_partial(rhs_tangent, partial, zero, provenance)?)
+        } else {
+            None
+        };
+        self.combine_terms([left, right], SolveBinaryOperator::Add, zero, provenance)
     }
 
-    /// `du_l · ∂l + du_r · ∂r`, each partial zeroed where it is not finite.
-    fn sum_of_scaled_partials(
+    fn present_term(
+        &self,
+        original: Option<ProgramRegister<'program>>,
+        value: ProgramRegister<'program>,
+    ) -> Option<ProgramRegister<'program>> {
+        (!self.structural || original.is_some()).then_some(value)
+    }
+
+    fn combine_terms(
         &mut self,
-        [(lhs_tangent, lhs_partial), (rhs_tangent, rhs_partial)]: [(ProgramRegister<'program>, ProgramRegister<'program>);
-            2],
+        terms: [Option<ProgramRegister<'program>>; 2],
+        operator: SolveBinaryOperator,
         zero: ProgramRegister<'program>,
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let lhs_term = self.scale_by_finite_partial(lhs_tangent, lhs_partial, zero, provenance)?;
-        let rhs_term = self.scale_by_finite_partial(rhs_tangent, rhs_partial, zero, provenance)?;
-        self.builder
-            .binary(SolveBinaryOperator::Add, lhs_term, rhs_term, provenance)
+        match terms {
+            [Some(left), Some(right)] => self.builder.binary(operator, left, right, provenance),
+            [Some(term), None] => Ok(term),
+            [None, Some(term)] if operator == SolveBinaryOperator::Subtract => {
+                self.builder
+                    .unary(SolveUnaryOperator::Negate, term, provenance)
+            }
+            [None, Some(term)] => Ok(term),
+            [None, None] => Ok(zero),
+        }
     }
 
     /// The `pow` kink rule of `rumoca_eval_solve::reverse`: the base partial

@@ -110,3 +110,26 @@ fn issued_fatal_forwarding_remains_refused_by_raw_native_interface() {
         }
     );
 }
+
+#[test]
+fn finite_domain_guard_is_explicitly_refused_by_unimplemented_wasm_target() {
+    let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(profile()));
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(991),
+            vec![real.clone()],
+            vec![solve::SolvePureCallOutput::result(real)],
+            span(991),
+            |b, inputs, outputs| {
+                let value = b.load(inputs[0], span(992))?;
+                b.check_finite(value, solve::SolveFiniteCheck::Derivative, span(993))?;
+                b.store(outputs[0], value, span(994))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        matches!(compile_pure_call_wasm(&table, &table.owners()[0].call_site()), Err(TypedCallCompileError::UnsupportedOperation { opcode: "check_finite", provenance, .. }) if provenance == span(993))
+    );
+}

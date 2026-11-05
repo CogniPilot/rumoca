@@ -10,6 +10,19 @@ use crate::emit::MathImport;
 use rumoca_ir_solve as solve;
 use std::collections::{BTreeMap, BTreeSet};
 
+fn target_refusal(
+    owner: solve::SolvePureCallOwnerId,
+    refusal: solve::SolveFunctionTargetRefusal,
+) -> TypedCallCompileError {
+    TypedCallCompileError::UnsupportedOperation {
+        owner,
+        operation: refusal.operation(),
+        region_path: refusal.region_path().to_vec(),
+        opcode: refusal.opcode(),
+        provenance: refusal.provenance(),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum AssertionMode {
     Standalone,
@@ -164,6 +177,10 @@ impl LinkedOwners {
                 return Err(TypedCallCompileError::SiteMismatch);
             }
             let body = form.body(owner)?;
+            let admitted = solve::SolveFunctionTarget::Wasm
+                .admit_finite_domain(body)
+                .map_err(|refusal| target_refusal(id, refusal))?;
+            let body = admitted.program();
             super::math::collect(body, &mut math_imports);
             collect_calls(body, &mut pending);
         }

@@ -89,6 +89,7 @@ fn operation_kind(operation: &solve::SolveOperation) -> &'static str {
         solve::SolveOperation::AssignedConditional { .. } => "AssignedConditional",
         solve::SolveOperation::AssignedState { .. } => "AssignedState",
         solve::SolveOperation::CheckAssertion { .. } => "CheckAssertion",
+        solve::SolveOperation::CheckFinite { .. } => "CheckFinite",
         solve::SolveOperation::Constant { .. } => "Constant",
         solve::SolveOperation::Load { .. } => "Load",
         solve::SolveOperation::Store { .. } => "Store",

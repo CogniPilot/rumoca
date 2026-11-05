@@ -872,6 +872,7 @@ impl Inliner<'_> {
             SolveOperation::AssignedConditional { .. }
             | SolveOperation::AssignedState { .. }
             | SolveOperation::CheckAssertion { .. }
+            | SolveOperation::CheckFinite { .. }
             | SolveOperation::LinearSolve { .. }
             | SolveOperation::Native { .. } => None,
         }

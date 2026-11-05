@@ -3,6 +3,7 @@ use crate::SolveVariableValueKind;
 
 mod c_profile_refusals;
 mod component_plans;
+mod finite_target_admission;
 mod native_carry;
 mod parameter_profile;
 

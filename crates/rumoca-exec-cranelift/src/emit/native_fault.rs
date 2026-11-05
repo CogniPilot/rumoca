@@ -11,11 +11,19 @@ struct Fault {
     span: Option<rumoca_core::Span>,
 }
 
+type FiniteFault = (
+    rumoca_ir_solve::SolveFiniteCheck,
+    usize,
+    Option<rumoca_core::Span>,
+);
+
 thread_local! {
+    static FINITE_FAULT: RefCell<Option<FiniteFault>> = const { RefCell::new(None) };
     static FAULT: RefCell<Option<Fault>> = const { RefCell::new(None) };
 }
 
 pub(super) fn clear() {
+    FINITE_FAULT.with(|fault| fault.borrow_mut().take());
     FAULT.with(|fault| fault.borrow_mut().take());
 }
 
@@ -31,6 +39,14 @@ pub(super) fn foreign(message: &'static str) {
 }
 
 pub(super) fn take(status: u8) -> Option<CompileError> {
+    if status == super::status::NON_FINITE_FAILURE {
+        let (check, element, span) = FINITE_FAULT.with(|fault| fault.borrow_mut().take())?;
+        return Some(CompileError::NonFinite {
+            check,
+            element,
+            span,
+        });
+    }
     let fault = FAULT.with(|fault| fault.borrow_mut().take())?;
     (status == fault.status).then_some(CompileError::SourceOperation {
         kind: fault.kind,
@@ -77,6 +93,7 @@ unsafe extern "C" fn attach_span(operation: *const SolveSpannedOperation) {
 }
 
 pub(super) fn register(builder: &mut cranelift_jit::JITBuilder) {
+    builder.symbol("rumoca_finite_fault", finite_fault as *const u8);
     builder.symbol("rumoca_index_real_fault", index_real as *const u8);
     builder.symbol("rumoca_index_integer_fault", index_integer as *const u8);
     builder.symbol("rumoca_fault_span", attach_span as *const u8);
@@ -142,5 +159,53 @@ pub(super) fn emit_span(
     let local = super::owned_jit_module::declare_far_call_in_func(module, function, builder.func);
     let source = builder.ins().iconst(pointer, operation as usize as i64);
     builder.ins().call(local, &[source]);
+    Ok(())
+}
+
+unsafe extern "C" fn finite_fault(element: u64, operation: *const SolveSpannedOperation) {
+    // SAFETY: emission supplies the exact operation retained by the compiled table.
+    let Some(source) = (unsafe { operation.as_ref() }) else {
+        return;
+    };
+    let rumoca_ir_solve::SolveOperation::CheckFinite { check, .. } = source.operation() else {
+        return;
+    };
+    FINITE_FAULT.with(|fault| {
+        *fault.borrow_mut() = Some((*check, element as usize, Some(source.provenance())))
+    });
+}
+
+pub(super) fn checked_finite(
+    module: &mut cranelift_jit::JITModule,
+    builder: &mut cranelift_frontend::FunctionBuilder<'_>,
+    valid: cranelift_codegen::ir::Value,
+    element: cranelift_codegen::ir::Value,
+    operation: *const SolveSpannedOperation,
+) -> Result<(), CompileError> {
+    use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
+    use cranelift_module::{Linkage, Module};
+    let pointer = module.target_config().pointer_type();
+    let mut signature = module.make_signature();
+    signature
+        .params
+        .extend([types::I64, pointer].map(AbiParam::new));
+    let function = module
+        .declare_function("rumoca_finite_fault", Linkage::Import, &signature)
+        .map_err(super::to_backend_err)?;
+    let local = super::owned_jit_module::declare_far_call_in_func(module, function, builder.func);
+    let failed = builder.create_block();
+    let passed = builder.create_block();
+    builder.ins().brif(valid, passed, &[], failed, &[]);
+    builder.switch_to_block(failed);
+    builder.seal_block(failed);
+    let source = builder.ins().iconst(pointer, operation as usize as i64);
+    builder.ins().call(local, &[element, source]);
+    let status = builder
+        .ins()
+        .iconst(types::I8, i64::from(super::status::NON_FINITE_FAILURE));
+    scratch::leave(builder);
+    builder.ins().return_(&[status]);
+    builder.switch_to_block(passed);
+    builder.seal_block(passed);
     Ok(())
 }

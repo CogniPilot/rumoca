@@ -18,7 +18,7 @@ pub enum FaultKind {
     SingularSystem,
     /// A Real builtin evaluated off its domain (`sqrt`, `log`, `asin`, ...):
     /// the value is a NaN, not an error, but its derivative is undefined. The
-    /// typed program never raises it; the DAE classification reports it for a
+    /// ordinary typed floating operations never raise it; an explicit finite guard does; the DAE classification reports it for a
     /// selection that must stay differentiable.
     RealDomain,
 }

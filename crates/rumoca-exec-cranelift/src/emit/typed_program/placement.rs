@@ -130,6 +130,21 @@ impl ProgramLowerer<'_, '_> {
 }
 
 impl PlacedSlot {
+    /// Place an input slot on one caller-owned contiguous region.
+    pub(super) fn on_region(
+        builder: &mut cranelift_frontend::FunctionBuilder<'_>,
+        start: u32,
+        cells: PhysicalCells,
+    ) -> Self {
+        let shift = (i64::from(cells.cell) - i64::from(start)) * CELL_BYTES as i64;
+        let adjusted = builder.ins().iadd_imm(cells.root, shift);
+        Self {
+            start,
+            cells,
+            adjusted,
+        }
+    }
+
     /// A slot that stays on its own cells of a frame.
     pub(super) fn on_frame(cells: PhysicalCells) -> Self {
         Self {

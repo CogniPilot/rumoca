@@ -111,6 +111,12 @@ fn typed_directions_refuse_a_foreign_scalar_kind_at_the_original_span() {
             builder
                 .scalar_binary_directional_tangent(binary, [None, Some(wrong)])
                 .unwrap_err(),
+            builder
+                .scalar_unary_structural_tangent(unary, Some(wrong))
+                .unwrap_err(),
+            builder
+                .scalar_binary_structural_tangent(binary, [None, Some(wrong)])
+                .unwrap_err(),
         ] {
             assert_eq!(error.source_span(), Some(span()));
             assert!(matches!(
@@ -144,6 +150,78 @@ fn discrete_relations_have_no_numeric_direction() {
             builder
                 .scalar_binary_directional_tangent(binary, [None, None])?
                 .is_none()
+        );
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn structural_absence_omits_work_while_present_numeric_zero_stays_active() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    TypedProgram::construct(profile, |b| {
+        let x = input(b)?;
+        let p = input(b)?;
+        let zero = b.constant(SolveValue::real(profile, -0.0), span())?;
+        let one = b.constant(SolveValue::real(profile, 1.0), span())?;
+        let unary = b.scalar_unary_directional_source(SolveUnaryOperator::Sin, x, span())?;
+        let before = b.operations.len();
+        assert!(b.scalar_unary_structural_tangent(unary, None)?.is_none());
+        assert_eq!(b.operations.len(), before);
+        assert!(
+            b.scalar_unary_structural_tangent(unary, Some(zero))?
+                .is_some()
+        );
+        assert!(b.operations.len() > before);
+        let product =
+            b.scalar_binary_directional_source(SolveBinaryOperator::Multiply, [x, p], span())?;
+        let before = b.operations.len();
+        assert!(
+            b.scalar_binary_structural_tangent(product, [None, None])?
+                .is_none()
+        );
+        assert_eq!(b.operations.len(), before);
+        assert!(
+            b.scalar_binary_structural_tangent(product, [Some(one), None])?
+                .is_some()
+        );
+        let new_ops = &b.operations[before..];
+        assert_eq!(
+            new_ops
+                .iter()
+                .filter(|op| matches!(
+                    op.operation(),
+                    SolveOperation::Binary {
+                        operator: SolveBinaryOperator::Multiply,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(!new_ops.iter().any(|op| matches!(
+            op.operation(),
+            SolveOperation::Binary {
+                operator: SolveBinaryOperator::Add,
+                ..
+            }
+        )));
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn structural_cancellation_and_numeric_zero_never_become_absence() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    TypedProgram::construct(profile, |b| {
+        let x = input(b)?;
+        let one = b.constant(SolveValue::real(profile, 1.0), span())?;
+        let source =
+            b.scalar_binary_directional_source(SolveBinaryOperator::Subtract, [x, x], span())?;
+        assert!(
+            b.scalar_binary_structural_tangent(source, [Some(one), Some(one)])?
+                .is_some()
         );
         Ok(())
     })

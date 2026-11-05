@@ -18,8 +18,9 @@ mod pointwise;
 mod reduction;
 mod relation;
 pub use relation::{
-    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
-    SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
+    SolveAggregateBinaryDirectionalSource, SolveAggregateDirectionalColumns,
+    SolveAggregateUnaryDirectionalSource, SolveBinaryDirectionalSource,
+    SolveUnaryDirectionalSource,
 };
 
 use arithmetic::DirectionalArithmetic;
@@ -166,6 +167,7 @@ fn program_supports_directional(
         .operations()
         .iter()
         .all(|operation| match operation.operation() {
+            SolveOperation::CheckFinite { .. } => checks_allowed,
             SolveOperation::AssignedState { .. } => true,
             SolveOperation::AssignedConditional { program } => {
                 program_supports_directional(program.if_true().body(), available, checks_allowed)
@@ -488,10 +490,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         value_type: &SolveValueType,
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        DirectionalArithmetic {
-            builder: self.builder,
-        }
-        .zero(value_type, provenance)
+        DirectionalArithmetic::dense(self.builder).zero(value_type, provenance)
     }
 
     fn tangent_or_zero(
@@ -500,10 +499,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         value_type: &SolveValueType,
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        DirectionalArithmetic {
-            builder: self.builder,
-        }
-        .tangent_or_zero(value, value_type, provenance)
+        DirectionalArithmetic::dense(self.builder).tangent_or_zero(value, value_type, provenance)
     }
 
     fn bind_nonreal(
@@ -835,6 +831,10 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 value,
                 axes,
             } => self.derive_update_view(*destination, *aggregate, *value, axes, provenance),
+            SolveOperation::CheckFinite { operand, check } => {
+                let primal = self.get(*operand, provenance)?.primal;
+                self.builder.check_finite(primal, *check, provenance)
+            }
             SolveOperation::CheckAssertion {
                 predicate_output,
                 condition,

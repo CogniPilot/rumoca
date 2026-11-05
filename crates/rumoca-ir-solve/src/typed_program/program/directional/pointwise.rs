@@ -12,10 +12,8 @@ impl<'program> DirectionalBuilder<'_, 'program> {
         provenance: Span,
     ) -> Result<Directional<ProgramRegister<'program>>, SolveProgramConstructionError> {
         if !pointwise_unary_operator(operator) || value_type.dimensions().is_empty() {
-            return DirectionalArithmetic {
-                builder: self.builder,
-            }
-            .derive_unary(operator, operand, value_type, provenance);
+            return DirectionalArithmetic::dense(self.builder)
+                .derive_unary(operator, operand, value_type, provenance);
         }
         let primal = self.builder.unary(operator, operand.primal, provenance)?;
         let tangent = tangent_of_unary_source(
@@ -41,10 +39,8 @@ impl<'program> DirectionalBuilder<'_, 'program> {
             || value_type.dimensions().is_empty()
             || !is_real(value_type)
         {
-            return DirectionalArithmetic {
-                builder: self.builder,
-            }
-            .derive_binary(operator, lhs, rhs, value_type, provenance);
+            return DirectionalArithmetic::dense(self.builder)
+                .derive_binary(operator, lhs, rhs, value_type, provenance);
         }
         let primal = self
             .builder
@@ -100,7 +96,7 @@ pub(super) fn tangent_of_unary_source<'program>(
     provenance: Span,
 ) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
     if !pointwise_unary_operator(operator) || value_type.dimensions().is_empty() {
-        return DirectionalArithmetic { builder }
+        return DirectionalArithmetic::dense(builder)
             .derive_unary_from_primal(operator, operand, primal, value_type, provenance)
             .map(|value| value.tangent);
     }
@@ -127,7 +123,7 @@ pub(super) fn tangent_of_unary_source<'program>(
             let operand = load_capture(builder, captures, operand, Some(&indices), provenance)?;
             let primal =
                 load_capture(builder, captures, primal, Some(&indices), provenance)?.primal;
-            let mut arithmetic = DirectionalArithmetic { builder };
+            let mut arithmetic = DirectionalArithmetic::dense(builder);
             let value = arithmetic
                 .derive_unary_from_primal(operator, operand, primal, &body_type, provenance)?;
             let tangent = arithmetic.tangent_or_zero(value, &body_type, provenance)?;
@@ -150,7 +146,7 @@ pub(super) fn tangent_of_binary_source<'program>(
         || value_type.dimensions().is_empty()
         || !is_real(value_type)
     {
-        return DirectionalArithmetic { builder }
+        return DirectionalArithmetic::dense(builder)
             .derive_binary_from_primal(operator, lhs, rhs, primal, value_type, provenance)
             .map(|value| value.tangent);
     }
@@ -211,7 +207,7 @@ fn map_binary_tangent<'program>(
             )?;
             let direct_primal =
                 load_capture(builder, captures, primal, Some(&indices), provenance)?.primal;
-            let mut arithmetic = DirectionalArithmetic { builder };
+            let mut arithmetic = DirectionalArithmetic::dense(builder);
             let value = arithmetic.derive_binary_from_primal(
                 operator,
                 lhs,

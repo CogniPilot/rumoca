@@ -106,6 +106,16 @@ impl SolvePureCallTable {
 }
 
 impl<'source> BoundSolvePureCallBody<'source> {
+    /// The original source owner retained by this exact bound body.
+    pub fn original_owner(self) -> &'source SolvePureCallOwner {
+        self.owner
+    }
+
+    /// Issued body form; consumers do not select a derivative interpretation.
+    pub fn is_directional(self) -> bool {
+        self.form() == BodyForm::Directional
+    }
+
     pub fn input_roles(self) -> impl Iterator<Item = SolveCallValueRole> + 'source {
         self.owner
             .inputs

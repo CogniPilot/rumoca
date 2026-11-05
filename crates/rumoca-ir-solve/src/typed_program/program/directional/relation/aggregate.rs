@@ -1,8 +1,11 @@
 //! Compact aggregate source relations use the same canonical lifting owner.
 
-use super::super::pointwise::{tangent_of_binary_source, tangent_of_unary_source};
+mod columns;
 #[cfg(test)]
 mod tests;
+
+use super::super::pointwise::{tangent_of_binary_source, tangent_of_unary_source};
+pub use columns::SolveAggregateDirectionalColumns;
 
 use super::*;
 

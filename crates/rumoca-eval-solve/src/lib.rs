@@ -8,6 +8,8 @@
 
 // SPEC_0021 file-size exception - split plan: extract external-table access and the impure random-stream runtime state into eval-solve/src/runtime_state.rs, leaving this file as the row-evaluation facade; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
+pub mod model_jacobian;
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -117,7 +119,7 @@ pub use typed_program::{
     AssertionInvocationEvaluation, AssertionReport, TypedAssertionFailure, TypedProgramEvalError,
     TypedValue, TypedValueConstructionError, eval_algorithm_method, eval_assertion_invocation,
     eval_pure_call, eval_pure_call_checked, eval_pure_call_directional,
-    eval_pure_call_directional_checked, render_retained_message,
+    eval_pure_call_directional_checked, eval_shared_entry_checked, render_retained_message,
 };
 pub use update_rows::{
     UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_value_exact,
