@@ -772,6 +772,12 @@ impl<'a> Emitter<'a> {
         self.record_cells(op);
         self.refine_interval(op);
         match op {
+            O::CheckFinite { .. } => Err(TypedCallCompileError::AdmissionInvariant {
+                owner: self.owner.id(),
+                operation: index,
+                provenance: spanned.provenance(),
+                message: "Solve IR target admission should have refused CheckFinite before emission",
+            }),
             O::AssignedState { operation } => self.assigned_operation(operation),
             O::AssignedConditional { program } => self.assigned_conditional(index, program),
             O::CheckAssertion { .. } => self.assertion_operation(index, spanned),

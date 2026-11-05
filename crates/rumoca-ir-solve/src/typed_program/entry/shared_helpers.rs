@@ -1,8 +1,11 @@
 //! Complete entries issue each helper call against one exact body catalog.
 mod occurrences;
-pub use occurrences::{EntryCallOccurrence, EntryCallOccurrenceId, EntryCallOccurrences};
+mod partitions;
 #[cfg(test)]
 mod tests;
+
+pub use occurrences::{EntryCallOccurrence, EntryCallOccurrenceId, EntryCallOccurrences};
+pub use partitions::{EntryCallPartition, EntryPartitionCall, SharedEntryCallPlan};
 
 use super::*;
 use crate::typed_program::call::SolvePureCallTableView;
@@ -165,6 +168,7 @@ pub struct SharedHelperProgramEntry {
     calls: Arc<SolvePureCallTable>,
     interface: Arc<EntryInterface>,
     choices: Arc<[CalleeChoice]>,
+    provenance: Span,
 }
 
 impl SharedHelperProgramEntry {
@@ -203,7 +207,19 @@ impl SharedHelperProgramEntry {
             calls,
             interface: Arc::new(interface),
             choices,
+            provenance,
         })
+    }
+
+    /// Exact construction provenance, retained even for a slot-free entry.
+    pub fn provenance(&self) -> Span {
+        self.provenance
+    }
+
+    /// Original source namespace. Entry selectors still resolve through the
+    /// issued call partitions, never directly through this table's owner IDs.
+    pub fn calls(&self) -> &SolvePureCallTable {
+        &self.calls
     }
 
     pub fn body(&self) -> &TypedProgram {

@@ -7,9 +7,12 @@
 
 mod checked_observation;
 mod compute_block;
+mod model_jacobian;
 mod selected_program;
 pub use checked_observation::{CompiledEventObservation, compile_event_observation};
 mod emit;
+pub use emit::typed_program::{CompiledCheckedF64Call, CompiledF64Call};
+pub use model_jacobian::CompiledModelStateJacobian;
 mod expansion;
 pub use expansion::{
     EXPANSION_FLOOR, ExpansionCopy, ExpansionEntry, ExpansionReport, ExpansionSource,
@@ -27,6 +30,11 @@ use std::{cell::RefCell, rc::Rc};
 
 #[derive(Debug)]
 pub enum CompileError {
+    NonFinite {
+        check: rumoca_ir_solve::SolveFiniteCheck,
+        element: usize,
+        span: Option<rumoca_core::Span>,
+    },
     Backend(String),
     Input(String),
     MessageFormatting(rumoca_eval_solve::EvalSolveError),
@@ -52,6 +60,9 @@ pub enum NativeSourceFault {
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NonFinite { check, element, .. } => {
+                write!(f, "nonfinite {check:?} element {element}")
+            }
             Self::Backend(msg) => write!(f, "cranelift execution error: {msg}"),
             Self::Input(msg) => write!(f, "invalid input: {msg}"),
             Self::MessageFormatting(error) => std::fmt::Display::fmt(error, f),

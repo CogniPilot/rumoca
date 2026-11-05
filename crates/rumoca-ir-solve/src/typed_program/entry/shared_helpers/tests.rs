@@ -1,3 +1,5 @@
+mod partitions;
+
 use super::*;
 use crate::{
     SolveBinaryOperator, SolveOperation, SolvePureCallIdentity, SolvePureCallOutput,

@@ -1,0 +1,68 @@
+//! Retain the exact source borrow and native owner behind the solver interface.
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use rumoca_eval_solve::model_jacobian::{ModelStateJacobian, ModelStateJacobianError};
+use rumoca_exec_cranelift::CompiledModelStateJacobian;
+use rumoca_ir_solve::SolveExecutionSource;
+use rumoca_solver::{
+    CompiledSolveModelStateJacobian, ModelStateJacobianPreparation, RuntimeSolveError,
+};
+#[cfg(test)]
+mod tests;
+
+self_cell::self_cell! {
+    struct RetainedNativeJacobian {
+        owner: SolveExecutionSource,
+        #[not_covariant]
+        dependent: CompiledModelStateJacobian,
+    }
+}
+
+enum PreparationError {
+    Source(ModelStateJacobianError),
+    Native(rumoca_exec_cranelift::CompileError),
+}
+
+struct NativeJacobian(RefCell<RetainedNativeJacobian>);
+
+impl CompiledSolveModelStateJacobian for NativeJacobian {
+    fn call(
+        &self,
+        state: &[f64],
+        parameters: &[f64],
+        time: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        #[cfg(test)]
+        tests::record_call();
+        self.0
+            .borrow_mut()
+            .with_dependent_mut(|_, code| code.eval(state, parameters, time, out))
+            .map_err(super::compiled_execution_error)
+    }
+}
+
+pub(super) fn prepare(
+    source: SolveExecutionSource,
+) -> Result<ModelStateJacobianPreparation, String> {
+    #[cfg(test)]
+    tests::record_preparation();
+    let result = RetainedNativeJacobian::try_new(source, |source| {
+        let graph =
+            ModelStateJacobian::construct(source.model()).map_err(PreparationError::Source)?;
+        CompiledModelStateJacobian::compile(graph).map_err(PreparationError::Native)
+    });
+    match result {
+        Ok(cell) => Ok(ModelStateJacobianPreparation::Compiled(Rc::new(
+            NativeJacobian(RefCell::new(cell)),
+        ))),
+        Err(PreparationError::Source(ModelStateJacobianError::Unsupported { reason, .. })) => {
+            Ok(ModelStateJacobianPreparation::Unsupported {
+                reason: reason.into(),
+            })
+        }
+        Err(PreparationError::Source(error)) => Err(error.to_string()),
+        Err(PreparationError::Native(error)) => Err(error.to_string()),
+    }
+}

@@ -19,6 +19,7 @@ const INSTANCE_NAME: &str = "rk-like";
 const RK45_INTEGRATOR: crate::me_backend::IntegratorFactory =
     crate::me_backend::IntegratorFactory {
         method: "rk45",
+        model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::NotRequested,
         build: rumoca_solver_rk45::model_exchange_integrator,
     };
 
@@ -42,6 +43,7 @@ const VELIMPLICIT_INSTANCE_NAME: &str = "velimplicit";
 const VELIMPLICIT_INTEGRATOR: crate::me_backend::IntegratorFactory =
     crate::me_backend::IntegratorFactory {
         method: "velimplicit",
+        model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::FiniteAssembly,
         build: velimplicit_integrator,
     };
 

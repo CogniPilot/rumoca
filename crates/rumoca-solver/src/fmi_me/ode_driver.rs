@@ -476,4 +476,34 @@ mod tests {
         assert_eq!(out, [-2.0]);
         assert_eq!(component.state_count(), 1);
     }
+
+    #[test]
+    fn derived_system_solver_jacobian_refusal_latches_through_the_host_handle() {
+        let controller = MeDerivativeController::over_component(Box::new(OdeComponent {
+            system: Rc::new(Decay),
+        }));
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut out = [42.0];
+        handle.solver_jacobian_action_into(0.0, &[1.0], &[1.0], &mut out);
+        assert!(
+            out[0].is_nan(),
+            "the failed request publishes no usable action"
+        );
+        assert!(handle.has_failed());
+        let first = controller
+            .take_error()
+            .expect("the host retains the refusal");
+        let MeIntegrationError::Component(failure) = first else {
+            panic!("expected the derived component's typed refusal");
+        };
+        assert!(
+            matches!(failure.kind(), MeError::DirectionalDerivativeUnavailable { reason }
+            if reason.contains("no second-order linearization"))
+        );
+        assert!(
+            controller.take_error().is_none(),
+            "one failure is latched once"
+        );
+    }
 }

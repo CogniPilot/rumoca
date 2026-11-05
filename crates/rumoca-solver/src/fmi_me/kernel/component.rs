@@ -621,7 +621,11 @@ impl SolveMeKernel {
         execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
         let (model, facts) = Self::resolve_instance_source(source, config)?;
-        let runtime = SolveRuntime::new_with_model_owner(model, execution_backend)?;
+        let runtime = SolveRuntime::new_with_model_owner(
+            model,
+            execution_backend,
+            config.model_jacobian_request,
+        )?;
         Self::finish_instantiation(runtime, facts, config)
     }
 

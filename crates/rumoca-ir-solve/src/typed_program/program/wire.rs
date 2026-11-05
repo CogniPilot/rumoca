@@ -91,6 +91,10 @@ struct AssertionForwardingWire {
 #[derive(Clone, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum SolveOperationWire {
+    CheckFinite {
+        operand: SolveRegisterId,
+        check: SolveFiniteCheck,
+    },
     AssignedState {
         #[serde(rename = "state_operation")]
         operation: AssignedStateOperationWire,
@@ -402,6 +406,10 @@ fn replay_operation<'program>(
 ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
     let at = spanned.provenance;
     let result = match &spanned.operation {
+        SolveOperationWire::CheckFinite { operand, check } => {
+            builder.check_finite(register_at(registers, *operand)?, *check, at)?;
+            return Ok(Vec::new());
+        }
         SolveOperationWire::AssignedState { operation } => {
             return replay_assigned_operation(builder, registers, wire, operation, at);
         }

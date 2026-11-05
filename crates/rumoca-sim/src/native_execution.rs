@@ -1,3 +1,4 @@
+mod model_jacobian;
 #[cfg(test)]
 mod tests;
 
@@ -418,6 +419,13 @@ impl rumoca_eval_solve::PureCallExecution for CraneliftExecutionBackend {
 }
 
 impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
+    fn compile_model_state_jacobian(
+        &self,
+        source: rumoca_ir_solve::SolveExecutionSource,
+    ) -> Result<rumoca_solver::ModelStateJacobianPreparation, String> {
+        model_jacobian::prepare(source)
+    }
+
     fn validate_model_context(&self, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
         if !self.source_calls.shares_table_owner(&model.pure_calls) {
             return Err("native helpers belong to a different canonical call table".into());

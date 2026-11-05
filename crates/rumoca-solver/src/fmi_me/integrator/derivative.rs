@@ -72,6 +72,19 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
         out: &mut [f64],
     ) -> Result<(), MeError>;
 
+    /// Request an action of a finite full Jacobian for matrix assembly.
+    /// Components without that optional product keep their directional base.
+    fn solver_jacobian_action_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        event_boundary: Option<f64>,
+        seed: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.directional_derivative_into(time, states, event_boundary, seed, out)
+    }
+
     /// Whether a failed evaluation is a recoverable trial discard rather than a
     /// failure: a component that switches reduced charts refuses a trial point
     /// its active chart cannot certify, and the plugin retries a smaller step
@@ -126,6 +139,20 @@ impl MeDerivativeComponent for KernelDerivatives {
 
     fn discards_failed_trials(&self) -> bool {
         self.discards_failed_trials
+    }
+
+    fn solver_jacobian_action_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        event_boundary: Option<f64>,
+        seed: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
+        let mut kernel = self.kernel.borrow_mut()?;
+        kernel.set_time(MeTime::new(time, event_boundary))?;
+        kernel.set_continuous_states(states)?;
+        kernel.get_solver_jacobian_action(seed, out)
     }
 
     fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
@@ -230,6 +257,19 @@ impl DerivativeCell {
             .directional_derivative_into(time, states, self.event_boundary.get(), seed, out)
             .map_err(MeIntegrationError::from)
     }
+
+    fn evaluate_solver_jacobian(
+        &self,
+        time: f64,
+        states: &[f64],
+        seed: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), MeIntegrationError> {
+        self.require_active("a finite Jacobian assembly action")?;
+        self.component
+            .solver_jacobian_action_into(time, states, self.event_boundary.get(), seed, out)
+            .map_err(MeIntegrationError::from)
+    }
 }
 
 /// The retained opaque derivative handle a numerical plugin may store.
@@ -273,6 +313,26 @@ impl From<MeDerivativeRefused> for MeIntegrationError {
 }
 
 impl MeDerivativeHandle {
+    /// Action used to assemble an implicit solver's finite Jacobian matrix.
+    /// A source-qualified prepared model product is reused across colors;
+    /// unsupported sources retain the existing directional base with a receipt.
+    /// An admitted product's failure is latched and never interpreted instead.
+    pub fn solver_jacobian_action_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        seed: &[f64],
+        out: &mut [f64],
+    ) {
+        if let Err(error) = self
+            .shared
+            .evaluate_solver_jacobian(time, states, seed, out)
+        {
+            out.fill(f64::NAN);
+            self.shared.fail(error);
+        }
+    }
+
     /// The component's continuous-state width.
     #[must_use]
     pub fn state_count(&self) -> usize {
@@ -559,6 +619,92 @@ pub(in crate::fmi_me) fn detached_handle() -> MeDerivativeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DistinctJacobianActions;
+
+    impl MeDerivativeComponent for DistinctJacobianActions {
+        fn state_count(&self) -> usize {
+            1
+        }
+        fn derivatives_into(
+            &self,
+            _: f64,
+            _: &[f64],
+            _: Option<f64>,
+            out: &mut [f64],
+        ) -> Result<(), MeError> {
+            out[0] = 0.0;
+            Ok(())
+        }
+        fn directional_derivative_into(
+            &self,
+            _: f64,
+            _: &[f64],
+            _: Option<f64>,
+            seed: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), MeError> {
+            out[0] = 2.0 * seed[0];
+            Ok(())
+        }
+        fn solver_jacobian_action_into(
+            &self,
+            time: f64,
+            _: &[f64],
+            _: Option<f64>,
+            seed: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), MeError> {
+            if time < 0.0 {
+                return Err(MeError::Evaluation {
+                    message: "finite model guard".into(),
+                });
+            }
+            out[0] = 3.0 * seed[0];
+            Ok(())
+        }
+        fn discards_failed_trials(&self) -> bool {
+            false
+        }
+        fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
+            None
+        }
+    }
+
+    #[test]
+    fn finite_solver_action_is_explicit_and_does_not_replace_directional_calls() {
+        let controller = MeDerivativeController::over_component(Box::new(DistinctJacobianActions));
+        let handle = controller.issue_handle();
+        assert_eq!(handle.state_count(), 1);
+        assert!(handle.state_jacobian_columns().is_none());
+        let mut out = [42.0];
+        handle.solver_jacobian_action_into(0.0, &[1.0], &[1.0], &mut out);
+        assert!(out[0].is_nan());
+        assert!(matches!(
+            controller.take_error(),
+            Some(MeIntegrationError::DerivativeCapabilityInactive { .. })
+        ));
+        let _window = controller.activate();
+        handle.derivatives_into(0.0, &[1.0], &mut out);
+        assert_eq!(out, [0.0]);
+        handle.directional_derivative_into(0.0, &[1.0], &[2.0], &mut out);
+        assert_eq!(out, [4.0]);
+        handle.solver_jacobian_action_into(0.0, &[1.0], &[2.0], &mut out);
+        assert_eq!(out, [6.0]);
+        assert!(!handle.has_failed());
+    }
+
+    #[test]
+    fn finite_solver_action_fault_is_latched_without_a_directional_retry() {
+        let controller = MeDerivativeController::over_component(Box::new(DistinctJacobianActions));
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut out = [42.0];
+        handle.solver_jacobian_action_into(-1.0, &[1.0], &[1.0], &mut out);
+        assert!(out[0].is_nan());
+        assert!(handle.has_failed());
+        assert!(controller.take_error().is_some());
+    }
 
     fn controller() -> MeDerivativeController {
         MeDerivativeController::over_closure(1, Rc::new(|time, states| vec![time + states[0]]))

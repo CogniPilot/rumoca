@@ -4,7 +4,10 @@
 mod tests;
 
 mod aggregate;
-pub use aggregate::{SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource};
+pub use aggregate::{
+    SolveAggregateBinaryDirectionalSource, SolveAggregateDirectionalColumns,
+    SolveAggregateUnaryDirectionalSource,
+};
 
 use super::*;
 
@@ -98,7 +101,7 @@ impl<'program> TypedProgramBuilder<'program> {
         let ty = self
             .value_type_of(source.primal, source.provenance)?
             .clone();
-        DirectionalArithmetic { builder: self }
+        DirectionalArithmetic::dense(self)
             .derive_unary_from_primal(
                 source.operator,
                 operand,
@@ -121,7 +124,52 @@ impl<'program> TypedProgramBuilder<'program> {
         let ty = self
             .value_type_of(source.primal, source.provenance)?
             .clone();
-        DirectionalArithmetic { builder: self }
+        DirectionalArithmetic::dense(self)
+            .derive_binary_from_primal(
+                source.operator,
+                lhs,
+                rhs,
+                source.primal,
+                &ty,
+                source.provenance,
+            )
+            .map(|value| value.tangent)
+    }
+    /// State-domain structural policy: None is constructor-proved independence,
+    /// never a sampled numeric zero. Original primal guards remain required.
+    pub fn scalar_unary_structural_tangent(
+        &mut self,
+        source: SolveUnaryDirectionalSource<'program>,
+        tangent: Option<ProgramRegister<'program>>,
+    ) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
+        let operand = checked_direction(self, source.operand, tangent, source.provenance)?;
+        let ty = self
+            .value_type_of(source.primal, source.provenance)?
+            .clone();
+        DirectionalArithmetic::structural(self)
+            .derive_unary_from_primal(
+                source.operator,
+                operand,
+                source.primal,
+                &ty,
+                source.provenance,
+            )
+            .map(|value| value.tangent)
+    }
+
+    /// Omit only absent operand contributions in the shared canonical relation.
+    /// Both-present arithmetic retains the dense relation's order/kink policy.
+    pub fn scalar_binary_structural_tangent(
+        &mut self,
+        source: SolveBinaryDirectionalSource<'program>,
+        tangents: [Option<ProgramRegister<'program>>; 2],
+    ) -> Result<Option<ProgramRegister<'program>>, SolveProgramConstructionError> {
+        let lhs = checked_direction(self, source.operands[0], tangents[0], source.provenance)?;
+        let rhs = checked_direction(self, source.operands[1], tangents[1], source.provenance)?;
+        let ty = self
+            .value_type_of(source.primal, source.provenance)?
+            .clone();
+        DirectionalArithmetic::structural(self)
             .derive_binary_from_primal(
                 source.operator,
                 lhs,

@@ -359,7 +359,8 @@ fn unobserved_operation(operation: &SolveOperation) -> bool {
         | SolveOperation::Map { .. }
         | SolveOperation::Fold { .. } => false,
         SolveOperation::Call { .. } => false,
-        SolveOperation::AssignedState { .. }
+        SolveOperation::CheckFinite { .. }
+        | SolveOperation::AssignedState { .. }
         | SolveOperation::Constant { .. }
         | SolveOperation::Load { .. }
         | SolveOperation::Store { .. }

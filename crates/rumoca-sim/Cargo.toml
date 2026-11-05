@@ -76,6 +76,7 @@ rumoca-solver = { workspace = true, features = ["native-wasm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rumoca-exec-cranelift = { workspace = true }
+self_cell = { workspace = true }
 rumoca-codec = { workspace = true, optional = true }
 rumoca-input = { workspace = true, optional = true }
 rumoca-input-keyboard = { workspace = true, optional = true }

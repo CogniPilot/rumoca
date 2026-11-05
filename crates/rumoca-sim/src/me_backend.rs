@@ -20,6 +20,7 @@ use crate::SimError;
 #[derive(Clone, Copy)]
 pub(crate) struct IntegratorFactory {
     pub(crate) method: &'static str,
+    pub(crate) model_jacobian_request: rumoca_solver::ModelStateJacobianRequest,
     pub(crate) build: fn(MeNumericalSetup) -> Box<dyn MeIntegratorBackend + 'static>,
 }
 
@@ -54,7 +55,8 @@ impl BackendSimulationSession {
         let handle = execution_backend.clone();
         let retained = MeRetainedComponent::instantiate(
             artifact.source(),
-            &MeInstanceConfig::open_ended(instance_name, opts.rtol, opts.t_start)?,
+            &MeInstanceConfig::open_ended(instance_name, opts.rtol, opts.t_start)?
+                .with_model_state_jacobian_request(integrator.model_jacobian_request),
             execution_backend,
         )?;
         let options = live_session_options(
@@ -152,7 +154,8 @@ pub(crate) fn simulate_artifact(
     let mut cursor = batch_output_cursor(&options)?;
     let retained = MeRetainedComponent::instantiate(
         artifact.source(),
-        &instance_config(instance_name, opts)?,
+        &instance_config(instance_name, opts)?
+            .with_model_state_jacobian_request(integrator.model_jacobian_request),
         execution_backend,
     )?;
     let host = retained.into_lease(options)?;

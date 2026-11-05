@@ -95,6 +95,13 @@ pub enum TypedCallCompileError {
         opcode: &'static str,
         provenance: Span,
     },
+    /// A checked target-admission obligation was violated inside emission.
+    AdmissionInvariant {
+        owner: solve::SolvePureCallOwnerId,
+        operation: usize,
+        provenance: Span,
+        message: &'static str,
+    },
 }
 
 impl std::fmt::Display for TypedCallCompileError {

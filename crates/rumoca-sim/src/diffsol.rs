@@ -19,6 +19,7 @@ use crate::simulation_session::SessionState;
 
 const BDF_INTEGRATOR: crate::me_backend::IntegratorFactory = crate::me_backend::IntegratorFactory {
     method: "bdf",
+    model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::FiniteAssembly,
     build: rumoca_solver_diffsol::model_exchange_integrator,
 };
 use crate::solve_lowering::{
@@ -75,7 +76,8 @@ pub(crate) fn assess_bdf_capability(
     };
     let retained = rumoca_solver::fmi_me::session::MeRetainedComponent::instantiate(
         artifact.source(),
-        &instance_config("bdf", opts)?,
+        &instance_config("bdf", opts)?
+            .with_model_state_jacobian_request(BDF_INTEGRATOR.model_jacobian_request),
         execution_backend,
     )?;
     let prepared = PreparedSimulation {
@@ -131,31 +133,7 @@ pub(crate) fn select_auto_integrator(
 }
 
 #[cfg(all(test, feature = "solver-diffsol", feature = "solver-rk45"))]
-mod auto_selection_tests {
-    use super::{BdfCapability, classify_bdf_capability};
-    use crate::SimError;
-
-    #[test]
-    fn only_directional_derivative_unavailability_is_a_capability_result() {
-        let ordinary_failure = classify_bdf_capability(Err(SimError::EmptySystem));
-        assert!(matches!(ordinary_failure, Err(SimError::EmptySystem)));
-
-        let unavailable = classify_bdf_capability(Err(SimError::ModelExchangeSession(
-            rumoca_solver::fmi_me::session::MeSessionError::Component(
-                rumoca_solver::fmi_me::MeError::DirectionalDerivativeUnavailable {
-                    reason: "undefined local sensitivity".to_owned(),
-                },
-            ),
-        )))
-        .expect("the one typed capability result selects the explicit host");
-        assert_eq!(
-            unavailable,
-            BdfCapability::InitialLinearizationUnavailable {
-                reason: "undefined local sensitivity".to_owned(),
-            }
-        );
-    }
-}
+mod auto_selection_tests;
 
 pub fn build_simulation(
     dae_model: &dae::Dae,
@@ -238,7 +216,8 @@ fn instantiate_prepared_simulation(
         rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, execution_backend)?;
     let retained = rumoca_solver::fmi_me::session::MeRetainedComponent::instantiate(
         artifact.source(),
-        &instance_config("bdf", opts)?,
+        &instance_config("bdf", opts)?
+            .with_model_state_jacobian_request(BDF_INTEGRATOR.model_jacobian_request),
         execution_backend,
     )?;
     let prepared = PreparedSimulation {

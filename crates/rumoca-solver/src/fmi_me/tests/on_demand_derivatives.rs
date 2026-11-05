@@ -11,7 +11,7 @@ use rumoca_ir_solve as solve;
 use std::{cell::Cell, rc::Rc};
 
 #[derive(Default)]
-struct CountingBackend(Rc<Cell<usize>>);
+struct CountingBackend(Rc<Cell<usize>>, Cell<usize>, bool);
 
 struct Expression {
     prepared: PreparedScalarProgramBlock,
@@ -36,6 +36,19 @@ impl CompiledSolveExpression for Expression {
 }
 
 impl SolveExecutionBackend for CountingBackend {
+    fn compile_model_state_jacobian(
+        &self,
+        _: solve::SolveExecutionSource,
+    ) -> Result<crate::ModelStateJacobianPreparation, String> {
+        self.1.set(self.1.get() + 1);
+        if self.2 {
+            return Err("injected model Jacobian preparation failure".into());
+        }
+        Ok(crate::ModelStateJacobianPreparation::Unsupported {
+            reason: "fixture has no finite model product".into(),
+        })
+    }
+
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
@@ -113,5 +126,101 @@ fn completed_steps_do_not_evaluate_unrequested_derivatives() {
             step + 1,
             "an identical requested point remains cached"
         );
+    }
+}
+
+#[test]
+fn unrequested_model_jacobian_never_reaches_the_backend_or_decline_log() {
+    let model = refresh_owned(harmonic_oscillator());
+    let backend = Rc::new(CountingBackend(Rc::default(), Cell::new(0), true));
+    let handle = MeExecutionBackend::new(backend.clone());
+    let config = fixture_instance_config()
+        .with_model_state_jacobian_request(crate::ModelStateJacobianRequest::NotRequested);
+    let mut retained = crate::fmi_me::session::MeRetainedComponent::instantiate(
+        MeModelSource::fixture(&model),
+        &config,
+        Some(handle.clone()),
+    )
+    .unwrap();
+    retained.reset().unwrap();
+    assert_eq!(backend.1.get(), 0);
+    assert!(handle.declined().is_empty());
+
+    let restarted = config.restarted_at(1.0, Some(2.0)).unwrap();
+    SolveMeKernel::instantiate_with_execution_backend(
+        MeModelSource::fixture(&model),
+        &restarted,
+        Some(handle.clone()),
+    )
+    .unwrap();
+    assert_eq!(backend.1.get(), 0);
+    assert!(handle.declined().is_empty());
+}
+
+#[test]
+fn requested_unsupported_model_jacobian_retains_its_decline() {
+    let model = refresh_owned(harmonic_oscillator());
+    let backend = Rc::new(CountingBackend::default());
+    let handle = MeExecutionBackend::new(backend.clone());
+    SolveMeKernel::instantiate_with_execution_backend(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config()
+            .with_model_state_jacobian_request(crate::ModelStateJacobianRequest::FiniteAssembly),
+        Some(handle.clone()),
+    )
+    .unwrap();
+    assert_eq!(backend.1.get(), 1);
+    let declines = handle.declined();
+    assert_eq!(declines.len(), 1);
+    assert_eq!(declines[0].program, "model_state_jacobian");
+    assert_eq!(declines[0].reason, "fixture has no finite model product");
+    assert_eq!(declines[0].count, 1);
+}
+
+#[test]
+fn requested_model_jacobian_preparation_failure_is_fatal() {
+    let model = refresh_owned(harmonic_oscillator());
+    let backend = Rc::new(CountingBackend(Rc::default(), Cell::new(0), true));
+    let handle = MeExecutionBackend::new(backend.clone());
+    let result = SolveMeKernel::instantiate_with_execution_backend(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config()
+            .with_model_state_jacobian_request(crate::ModelStateJacobianRequest::FiniteAssembly),
+        Some(handle.clone()),
+    );
+    let Err(error) = result else {
+        panic!("requested preparation failure must refuse instantiation");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("injected model Jacobian preparation failure")
+    );
+    assert_eq!(backend.1.get(), 1);
+    assert!(
+        handle.declined().is_empty(),
+        "a fatal fault is not a decline"
+    );
+}
+
+#[test]
+fn alternate_runtime_keeps_the_primary_model_jacobian_demand() {
+    let model = refresh_owned(harmonic_oscillator());
+    for request in [
+        crate::ModelStateJacobianRequest::NotRequested,
+        crate::ModelStateJacobianRequest::FiniteAssembly,
+    ] {
+        let backend = Rc::new(CountingBackend::default());
+        let primary = crate::SolveRuntime::new_with_model_owner(
+            crate::SolveRuntimeModel::copied(&model),
+            Some(backend.clone()),
+            request,
+        )
+        .unwrap();
+        let alternate = primary.new_alternate(&model).unwrap();
+        assert_eq!(primary.model_state_jacobian_request(), request);
+        assert_eq!(alternate.model_state_jacobian_request(), request);
+        let expected = usize::from(request == crate::ModelStateJacobianRequest::FiniteAssembly) * 2;
+        assert_eq!(backend.1.get(), expected);
     }
 }

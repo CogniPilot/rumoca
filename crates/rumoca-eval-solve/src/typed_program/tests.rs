@@ -19,10 +19,13 @@ mod directional_relations;
 mod immutable_payloads;
 mod index_bounds;
 mod linear_solve;
+mod load_numbering;
 mod number_results;
 mod recursion;
 mod reduction_extrema;
 mod scalar_projection;
+mod shared_columns;
+mod shared_entry;
 mod static_integer_capture;
 
 use std::num::NonZeroU64;

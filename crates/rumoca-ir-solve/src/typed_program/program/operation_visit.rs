@@ -17,7 +17,8 @@ impl SolveOperation {
             Self::AssignedState { operation } => visit_assigned_state_inputs(operation, &mut visit),
             Self::Constant { .. } | Self::Load { .. } | Self::Identity { .. } => {}
             Self::Store { source, .. } => visit(*source),
-            Self::Unary { operand, .. }
+            Self::CheckFinite { operand, .. }
+            | Self::Unary { operand, .. }
             | Self::Convert { operand, .. }
             | Self::Transpose { operand, .. }
             | Self::Reduce { operand, .. }
@@ -125,7 +126,7 @@ impl SolveOperation {
                 }
                 _ => {}
             },
-            Self::Store { .. } => {}
+            Self::Store { .. } | Self::CheckFinite { .. } => {}
             Self::Constant { destination, .. }
             | Self::Load { destination, .. }
             | Self::Unary { destination, .. }

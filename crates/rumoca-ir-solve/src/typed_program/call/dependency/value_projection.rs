@@ -61,7 +61,9 @@ pub(in crate::typed_program) fn derive(
     let mut registers = vec![None; body.register_types().len()];
     for spanned in body.operations() {
         match spanned.operation() {
-            SolveOperation::CheckAssertion { .. } => return None,
+            SolveOperation::CheckAssertion { .. } | SolveOperation::CheckFinite { .. } => {
+                return None;
+            }
             SolveOperation::Load { destination, slot } => {
                 registers[destination.index()] = slots[slot.index()].clone();
             }

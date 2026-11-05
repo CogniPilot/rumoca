@@ -613,9 +613,22 @@ pub struct MeInstanceConfig {
     /// Who orders this instance's continuous-time evaluations, which selects
     /// its refresh warm start (Solve IR `RefreshSeedRule`).
     executor: rumoca_ir_solve::RefreshExecutor,
+    model_jacobian_request: crate::ModelStateJacobianRequest,
 }
 
 impl MeInstanceConfig {
+    /// Bind the integrator's demand before any execution product is prepared.
+    /// Generic ME instances retain finite assembly by default; concrete hosts
+    /// select the demand of the integrator they actually instantiate.
+    #[must_use]
+    pub fn with_model_state_jacobian_request(
+        mut self,
+        request: crate::ModelStateJacobianRequest,
+    ) -> Self {
+        self.model_jacobian_request = request;
+        self
+    }
+
     #[must_use]
     pub fn instance_name(&self) -> &str {
         &self.instance_name
@@ -669,6 +682,7 @@ impl MeInstanceConfig {
             start_time,
             stop_time,
             executor: rumoca_ir_solve::RefreshExecutor::IntegratorDriven,
+            model_jacobian_request: crate::ModelStateJacobianRequest::FiniteAssembly,
         })
     }
 

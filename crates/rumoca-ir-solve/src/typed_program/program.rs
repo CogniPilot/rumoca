@@ -7,6 +7,7 @@ mod construction_error;
 mod directional;
 mod entry_interface;
 mod fault_flow;
+mod finite;
 mod linear_solve;
 mod loop_flow;
 mod native;
@@ -37,8 +38,9 @@ pub use assigned_state::{
     SolveAssignedStateOperation,
 };
 pub use directional::{
-    SolveAggregateBinaryDirectionalSource, SolveAggregateUnaryDirectionalSource,
-    SolveBinaryDirectionalSource, SolveUnaryDirectionalSource,
+    SolveAggregateBinaryDirectionalSource, SolveAggregateDirectionalColumns,
+    SolveAggregateUnaryDirectionalSource, SolveBinaryDirectionalSource,
+    SolveUnaryDirectionalSource,
 };
 pub use print_plan::{
     SolveBinaryToken, SolveBodyItem, SolveCheckedToken, SolveConversionToken, SolveDomainCheck,
@@ -248,9 +250,23 @@ pub enum SolveReductionOperator {
     All,
 }
 
+/// The original invocation phase diagnosed by an explicit finite-domain guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum SolveFiniteCheck {
+    Input { coordinate: u32 },
+    Primal { program: u32, operation: u32 },
+    Derivative,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum SolveOperation {
+    /// A compact, ordered Real-domain guard; it has no result or public slot.
+    CheckFinite {
+        operand: SolveRegisterId,
+        check: SolveFiniteCheck,
+    },
     AssignedConditional {
         program: Box<SolveAssignedConditional>,
     },
@@ -844,6 +860,14 @@ impl<'program> TypedProgramBuilder<'program> {
             return Err(SolveProgramConstructionError::UninitializedSlot { provenance });
         }
         let value_type = owned_slot.value_type.clone();
+        // Scalar immutable slots are stable for the complete invocation. Array
+        // values remain distinct because their last reader may reuse payloads.
+        let key = (owned_slot.access == SolveSlotAccess::ReadOnly
+            && value_type.dimensions().is_empty())
+        .then_some(ValueKey::ReadOnlyLoad(slot.id));
+        if let Some(existing) = self.numbered(key.as_ref()) {
+            return Ok(existing);
+        }
         let destination = self.issue_register(value_type, provenance)?;
         self.push(
             SolveOperation::Load {
@@ -852,6 +876,7 @@ impl<'program> TypedProgramBuilder<'program> {
             },
             provenance,
         );
+        self.number(key, destination);
         Ok(destination)
     }
 

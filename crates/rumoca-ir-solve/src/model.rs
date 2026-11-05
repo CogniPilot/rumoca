@@ -7,6 +7,7 @@ mod continuous_source;
 mod event_schedule;
 mod event_transaction;
 mod guarded_assignment;
+mod jacobian_order;
 mod jacobian_outputs;
 mod model_views;
 mod variable_storage;
@@ -26,6 +27,7 @@ pub use event_schedule::{
 };
 pub use event_transaction::*;
 pub use guarded_assignment::{GuardedAssignmentProgram, GuardedAssignmentTargetRange};
+pub use jacobian_order::{StoredStateJacobianOrderError, StoredStateJacobianOutputOrder};
 pub use jacobian_outputs::*;
 pub use variable_storage::{
     SolveLayout, SolveVariableDeclaration, SolveVariableDeclarationError, SolveVariableStorageRole,

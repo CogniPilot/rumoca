@@ -12,6 +12,8 @@ mod assigned_state_tests;
 mod control;
 mod elementwise;
 mod expansion;
+mod f64_call;
+pub use f64_call::{CompiledCheckedF64Call, CompiledF64Call};
 mod flat_map;
 #[cfg(test)]
 mod fold_comparison_tests;
@@ -1111,6 +1113,7 @@ impl ProgramLowerer<'_, '_> {
             return self.lower_fused(operation, destination);
         }
         match operation {
+            solve::SolveOperation::CheckFinite { operand, .. } => self.lower_finite(*operand),
             solve::SolveOperation::AssignedState { operation } => {
                 self.lower_assigned_state(operation)
             }
@@ -1373,6 +1376,31 @@ impl ProgramLowerer<'_, '_> {
                 self.builder.ins().iconst(types::I64, i64::from(value))
             }
         }
+    }
+
+    fn lower_finite(&mut self, operand: solve::SolveRegisterId) -> Result<(), CompileError> {
+        let operand = self.register(operand)?.clone();
+        self.for_each_element(operand.value_type.scalar_count(), |this, index| {
+            let value = this.load_scalar(&operand, index)?;
+            // Finite exactly when value-value compares equal to zero; NaN and
+            // either infinity fail. No fast-math assumptions are introduced.
+            let difference = this.builder.ins().fsub(value, value);
+            let zero = match operand.value_type.element_type() {
+                solve::SolveScalarType::Real {
+                    format: solve::SolveRealFormat::Binary32,
+                    ..
+                } => this.builder.ins().f32const(0.0),
+                _ => this.builder.ins().f64const(0.0),
+            };
+            let finite = this.builder.ins().fcmp(FloatCC::Equal, difference, zero);
+            super::native_fault::checked_finite(
+                this.module,
+                this.builder,
+                finite,
+                index,
+                this.operation,
+            )
+        })
     }
 
     fn lower_unary(

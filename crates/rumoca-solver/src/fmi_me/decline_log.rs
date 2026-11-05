@@ -66,6 +66,17 @@ impl RecordingBackend {
 }
 
 impl SolveExecutionBackend for RecordingBackend {
+    fn compile_model_state_jacobian(
+        &self,
+        source: solve::SolveExecutionSource,
+    ) -> Result<crate::ModelStateJacobianPreparation, String> {
+        let result = self.inner.compile_model_state_jacobian(source)?;
+        if let crate::ModelStateJacobianPreparation::Unsupported { reason } = &result {
+            self.log.record("model_state_jacobian", reason);
+        }
+        Ok(result)
+    }
+
     fn validate_model_context(&self, model: &solve::SolveModel) -> Result<(), String> {
         self.inner.validate_model_context(model)
     }
@@ -186,6 +197,55 @@ impl SolveExecutionBackend for RecordingBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoModelJacobian;
+
+    impl SolveExecutionBackend for NoModelJacobian {
+        fn compile_expression(
+            &self,
+            _: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+            Err("no expression compiler".into())
+        }
+    }
+
+    #[test]
+    fn unsupported_model_jacobian_is_visible_in_the_component_decline_log() {
+        let log = DeclineLog::default();
+        let backend = RecordingBackend::new(Rc::new(NoModelJacobian), log.clone());
+        let source = solve::SolveExecutionSource::new(solve::SolveModel::default());
+        assert!(matches!(
+            backend.compile_model_state_jacobian(source).unwrap(),
+            crate::ModelStateJacobianPreparation::Unsupported { .. }
+        ));
+        let entries = log.snapshot();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].program, "model_state_jacobian");
+        assert!(
+            entries[0]
+                .reason
+                .contains("no prepared model state Jacobian")
+        );
+    }
+
+    #[test]
+    fn an_expression_decline_is_reported_under_its_own_program() {
+        let log = DeclineLog::default();
+        let backend = RecordingBackend::new(Rc::new(NoModelJacobian), log.clone());
+        let error = match backend.compile_expression(&solve::ScalarProgramBlock::default()) {
+            Ok(_) => panic!("the backend has no expression compiler"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "no expression compiler");
+        assert_eq!(
+            log.snapshot(),
+            vec![SimNativeDecline {
+                program: "expression".into(),
+                reason: "no expression compiler".into(),
+                count: 1,
+            }]
+        );
+    }
 
     #[test]
     fn a_declined_request_is_recorded_once_per_reason_with_a_count() {

@@ -6,17 +6,20 @@
 //! second occurrence would only repeat the work, so construction returns the
 //! first occurrence's register. Only operations with a single-cell result are
 //! numbered: array-valued registers are updated in place by their last reader
-//! and must stay distinct.
+//! and must stay distinct. Scalar loads of an immutable slot use that exact
+//! slot identity as their key. Writable slots are never numbered; wire replay
+//! disables numbering and preserves all existing recorded register identities.
 
 use super::{
     SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator, SolveRegisterId,
-    SolveUnaryOperator,
+    SolveSlotId, SolveUnaryOperator,
 };
 use crate::typed_program::types::SolveValue;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum ValueKey {
     Constant(SolveValue),
+    ReadOnlyLoad(SolveSlotId),
     Unary(SolveUnaryOperator, SolveRegisterId),
     Binary(SolveBinaryOperator, SolveRegisterId, SolveRegisterId),
     Compare(SolveCompareOperator, SolveRegisterId, SolveRegisterId),
