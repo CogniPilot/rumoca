@@ -14,7 +14,10 @@ use rumoca_eval_solve::{JacobianEvalInputs, PreparedBlockResidualSplit};
 use rumoca_ir_solve::{self as solve, BlockResidualSplit};
 use rustc_hash::FxHashMap;
 
-use super::{CompiledSolveExpression, CompiledSolveJacobianExpression, SolveExecutionBackend};
+use super::{
+    CompiledProgramsCommitting, CompiledSolveExpression, CompiledSolveJacobianExpression,
+    SolveExecutionBackend,
+};
 use crate::RuntimeSolveError;
 
 /// The prepared splits of one projection block, in residual program order.
@@ -30,6 +33,9 @@ pub(crate) struct BlockSplits {
     values: RefCell<Vec<f64>>,
     /// One split's invariant outputs before they are placed in `values`.
     scratch: RefCell<Vec<f64>>,
+    /// Every split ordinal in order: the programs of one committing sweep of
+    /// the block's dependent parts.
+    sweep_programs: Box<[usize]>,
 }
 
 /// The block's split programs compiled by the execution backend, program
@@ -196,8 +202,10 @@ fn prepared_block_splits(
         .enumerate()
         .map(|(ordinal, (program, _))| (*program, ordinal))
         .collect();
+    let sweep_programs = (0..splits.len()).collect();
     BlockSplits {
         ordinals,
+        sweep_programs,
         splits: splits.into_iter().map(|(_, split)| split).collect(),
         compiled,
         offsets,
@@ -274,6 +282,65 @@ fn compile_block_splits(
         invariant,
         dependent,
     })
+}
+
+#[cfg(test)]
+impl BlockSplits {
+    /// The live-out values of the call in progress.
+    pub(super) fn values_snapshot(&self) -> Vec<f64> {
+        self.values.borrow().clone()
+    }
+
+    /// Hold the live-out values, as a nested evaluation reading them would.
+    pub(super) fn hold_values(&self) -> std::cell::Ref<'_, Vec<f64>> {
+        self.values.borrow()
+    }
+}
+
+/// The committing sweep of each algebraic projection structure's split
+/// dependent parts, aligned with the plan's blocks: bound only when the
+/// structure's issued split selection, over `canonical`'s programs, names
+/// exactly the block's split programs in ordinal order and the block's
+/// compiled dependent programs offer the sweep. A block whose runtime splits
+/// differ (a program kept unsplit for its lazy row plan, or splits dropped on
+/// a failed check) gets none.
+pub(super) fn split_sweeps(
+    structures: &[solve::ColoredJacobianStructure],
+    block_splits: &[Option<Rc<BlockSplits>>],
+    canonical: &solve::ScalarProgramBlock,
+) -> Box<[Option<Rc<dyn CompiledProgramsCommitting>>]> {
+    structures
+        .iter()
+        .zip(block_splits)
+        .map(|(structure, splits)| {
+            let selection = structure.split_residual_evaluation()?;
+            let splits = splits.as_deref()?;
+            let programs = selection.selection().programs();
+            let in_ordinal_order = programs.len() == splits.ordinals.len()
+                && programs.iter().enumerate().all(|(ordinal, entry)| {
+                    splits.ordinals.get(&entry.program()) == Some(&ordinal)
+                });
+            if !in_ordinal_order || !selection.primal_source().shares_program_owner(canonical) {
+                return None;
+            }
+            Rc::clone(&splits.compiled.as_ref()?.dependent).programs_committing()
+        })
+        .collect()
+}
+
+/// Receives each swept dependent part's split ordinal and outputs.
+pub(super) type SplitCommit<'a> = dyn FnMut(usize, &[f64]) -> Result<(), RuntimeSolveError> + 'a;
+
+/// How a committing sweep of a block's dependent parts ended.
+pub(super) enum SplitSweep {
+    /// Nothing ran: the call in progress has no compiled split of this block,
+    /// or its values are in use.
+    Declined,
+    /// Every dependent part committed.
+    Done,
+    /// The dependent part of the ordinal given failed with an error the
+    /// per-program evaluation takes as a decline; every earlier one committed.
+    Resume(usize),
 }
 
 fn split_execution_result(
@@ -394,6 +461,56 @@ impl ScalarExecutionView<'_> {
             }
         };
         Ok(evaluated.then(|| count(|counts| counts.dependent_evaluations += 1)))
+    }
+
+    /// Run every dependent part of plan block `block` as one committing
+    /// `sweep`, in ordinal order, handing each one's outputs to `commit`. The
+    /// sweep declines unless the call in progress has this block's compiled
+    /// split. A compiled execution error or an error of `commit` propagates
+    /// with the earlier parts committed, as the per-program evaluation raises
+    /// it; any other error stops the sweep where the per-program evaluation
+    /// would decline that part to its unsplit program.
+    pub(super) fn sweep_split_dependents(
+        &self,
+        block: usize,
+        sweep: &dyn CompiledProgramsCommitting,
+        point: (&[f64], &[f64], f64),
+        commit: &mut SplitCommit<'_>,
+    ) -> Result<SplitSweep, RuntimeSolveError> {
+        let active = self.scalar.active_split.get();
+        if !active.is_some_and(|active| active.block == block && active.compiled) {
+            return Ok(SplitSweep::Declined);
+        }
+        let Some(Some(splits)) = self.scalar.block_splits.get(block) else {
+            return Ok(SplitSweep::Declined);
+        };
+        let Ok(mut values) = splits.values.try_borrow_mut() else {
+            return Ok(SplitSweep::Declined);
+        };
+        let mut committed = 0;
+        let mut commit_failed = false;
+        let swept = sweep.call_selected_programs_committing(
+            &splits.sweep_programs,
+            point,
+            &mut values,
+            self.model.external_tables.as_slice(),
+            &mut |ordinal, outputs, _seed| {
+                let result = commit(ordinal, outputs);
+                if result.is_ok() {
+                    committed += 1;
+                } else {
+                    commit_failed = true;
+                }
+                result
+            },
+        );
+        count(|counts| counts.dependent_evaluations += committed as u64);
+        match swept {
+            Ok(()) => Ok(SplitSweep::Done),
+            Err(error @ RuntimeSolveError::CompiledExecution { .. }) => Err(error),
+            Err(error) if commit_failed => Err(error),
+            Err(_) => Ok(SplitSweep::Resume(committed)),
+        }
     }
 
     /// Evaluate the single output of residual program `program` through the

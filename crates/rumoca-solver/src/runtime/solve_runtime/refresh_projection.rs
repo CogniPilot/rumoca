@@ -1089,6 +1089,36 @@ impl RefreshProjectionModel<'_> {
         Some((entry, structure.fused_residual_evaluation()?))
     }
 
+    /// Block `block_index`'s split sweep and its issued split selection,
+    /// with the block's plan index, when `selection` is that block's issued
+    /// residual selection and the block issues a fused selection exactly when
+    /// `with_fused`.
+    fn split_sweep(
+        &self,
+        block_index: usize,
+        selection: &solve::ProjectionOutputSelection,
+        with_fused: bool,
+    ) -> Option<(
+        usize,
+        &solve::SplitResidualSelection,
+        &dyn super::CompiledProgramsCommitting,
+    )> {
+        let index = self.block_indices.get(block_index).copied()?;
+        let structure = self
+            .runtime
+            .scalar
+            .continuous_structural
+            .algebraic_projection()
+            .get(index)?;
+        if !std::ptr::eq(structure.residual_output_evaluation()?, selection)
+            || structure.fused_residual_evaluation().is_some() != with_fused
+        {
+            return None;
+        }
+        let sweep = self.runtime.scalar.split_sweeps.get(index)?.as_deref()?;
+        Some((index, structure.split_residual_evaluation()?, sweep))
+    }
+
     /// The fused kernels of plan block `block_index`.
     fn block_kernels(&self, block_index: usize) -> Option<&super::block_kernels::BlockKernels> {
         let index = self.block_indices.get(block_index).copied()?;
