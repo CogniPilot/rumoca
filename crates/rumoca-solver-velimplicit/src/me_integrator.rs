@@ -595,6 +595,38 @@ mod tests {
         assert!((next - 1.0 / 1001.0).abs() < 1.0e-15);
     }
 
+    fn assert_singular_iteration_failure(error: MeIntegrationError) {
+        let MeIntegrationError::Numerical {
+            method,
+            category,
+            detail,
+        } = error
+        else {
+            panic!("expected the integrator's typed linear-algebra failure");
+        };
+        assert_eq!(method, METHOD);
+        assert_eq!(category, MeNumericalFailure::LinearAlgebra);
+        assert_eq!(detail, "the iteration matrix I - h J is singular");
+    }
+
+    #[test]
+    fn a_singular_dense_factor_reports_the_typed_failure_then_recovers() {
+        let mut backend = integrator(2);
+        backend.jacobian = vec![2.0, 0.0, 0.0, 2.0];
+        assert_eq!(
+            backend.iteration_matrix_solver(),
+            IterationMatrixSolver::Dense
+        );
+        // I - h J is exactly zero at h = 0.5, and 0.5 I at h = 0.25.
+        assert_singular_iteration_failure(backend.factor(0.5).expect_err("singular"));
+        assert_eq!(backend.factored_step, None);
+        backend.factor(0.25).expect("a smaller step is regular");
+        assert_eq!(backend.factored_step, Some(0.25));
+        let mut out = [0.0; 2];
+        backend.lu.solve_into(&[1.0, 2.0], &mut out);
+        assert_eq!(out, [2.0, 4.0]);
+    }
+
     #[test]
     fn the_default_is_the_gated_configuration() {
         assert_eq!(
