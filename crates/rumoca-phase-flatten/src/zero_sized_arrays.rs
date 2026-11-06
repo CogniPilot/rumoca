@@ -44,11 +44,19 @@ pub(crate) fn materialize_referenced_zero_sized_array_variables(
             indices: Box::default(),
             kind: flat::InstanceKind::Materialized,
         });
+        // The catalog only holds the types of instantiated declarations.
+        let real = flat.predefined_types.real;
+        if !flat.effective_types.contains_key(&real) {
+            let effective = rumoca_core::EffectiveType::new(real, real, Vec::new())
+                .map_err(|_| FlattenError::internal("scalar Real effective type"))?;
+            flat.effective_types.insert(real, effective);
+        }
         let variable = flat::Variable {
             instance_id,
             name: var_name.clone(),
             component_ref: name.component_ref().cloned(),
             source_span,
+            type_id: real,
             dims,
             variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
             is_primitive: true,
@@ -127,8 +135,15 @@ fn zero_sized_array_dims_for_ref(name: &rumoca_core::Reference, ctx: &Context) -
         name.target_def_id()
             .and_then(|def_id| ctx.target_def_names.get(&def_id))
             .and_then(|target_name| ctx.array_dimensions.get(target_name))
-    })?;
-    (!dims.is_empty() && dims.iter().any(|dim| *dim <= 0)).then(|| dims.clone())
+    });
+    // `q.Q` with `QPort q[0]` is as empty as `q` itself (MLS §10.1).
+    let enclosing =
+        |path: &rumoca_core::VarName| path.enclosing_scope().map(rumoca_core::VarName::new);
+    let parents = std::iter::successors(enclosing(name.var_name()), enclosing);
+    dims.into_iter()
+        .chain(parents.filter_map(|path| ctx.array_dimensions.get(path.as_str())))
+        .find(|dims| dims.iter().any(|dim| *dim <= 0))
+        .cloned()
 }
 
 #[cfg(test)]
