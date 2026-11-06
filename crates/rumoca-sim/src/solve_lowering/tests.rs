@@ -37,6 +37,7 @@ scheduled_executor_items! {
 mod settled_initial_tangent;
 mod structure_report;
 mod tangent_jacobian;
+mod tangent_sweeps;
 #[cfg(feature = "solver-velimplicit")]
 mod velimplicit_batch;
 #[cfg(feature = "solver-velimplicit")]

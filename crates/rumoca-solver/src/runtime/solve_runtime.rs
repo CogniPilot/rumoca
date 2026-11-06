@@ -882,8 +882,21 @@ impl ScalarExecutionView<'_> {
                 )?;
                 Ok(true)
             };
+        // The reference owner declines every sweep, leaving `call`.
+        let mut sweep =
+            |programs: &[usize],
+             seed: &mut [f64],
+             commit: &mut rumoca_eval_solve::DirectionCommit<'_, RuntimeSolveError>| {
+                owner.eval_selected_programs_committing(
+                    programs,
+                    (y, p, t),
+                    seed,
+                    self.row_eval_context(),
+                    commit,
+                )
+            };
         evaluator
-            .eval_through(
+            .eval_through_sweeps(
                 rumoca_eval_solve::TangentPoint {
                     y,
                     p,
@@ -891,6 +904,7 @@ impl ScalarExecutionView<'_> {
                     context: self.row_eval_context(),
                 },
                 &mut call,
+                &mut sweep,
             )
             .map(Some)
     }

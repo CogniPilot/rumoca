@@ -92,6 +92,18 @@ pub struct TornTangentJacobian {
 pub type DirectionCall<'a, E = EvalSolveError> =
     dyn FnMut(usize, &[f64], &mut Vec<f64>) -> Result<bool, E> + 'a;
 
+/// Receives one swept program's outputs and may write the seed the next
+/// program reads: `(program, outputs, seed)`.
+pub type DirectionCommit<'a, E = EvalSolveError> =
+    dyn FnMut(usize, &[f64], &mut [f64]) -> Result<(), E> + 'a;
+
+/// Runs an ordered list of one-direction JVP programs as one committing
+/// sweep: `(programs, seed, commit)`, each program committing before the next
+/// reads the seed. `Ok(false)` declines before any program executes; a
+/// commit's error stops the sweep and is returned unchanged.
+pub type DirectionSweep<'a, E = EvalSolveError> =
+    dyn FnMut(&[usize], &mut [f64], &mut DirectionCommit<'_, E>) -> Result<bool, E> + 'a;
+
 /// The sweep buffers of one [`TornTangentEvaluator`], kept between evaluations
 /// so a sweep allocates and zeroes nothing proportional to the point. `seed`
 /// is element-major, sized to the point times the lane count (one lane for a
@@ -111,6 +123,8 @@ pub struct TornTangentEvaluator {
     programs: Vec<PreparedTangentLaneProgram>,
     /// The JVP rows a one-direction plan evaluates.
     directions: Option<std::rc::Rc<crate::PreparedScalarProgramBlock>>,
+    /// The fresh program lists a one-direction plan sweeps, fixed with it.
+    sweep_lists: sweep::SweepLists,
     /// The sweep buffers, kept between evaluations; see [`LaneBuffers`].
     buffers: RefCell<LaneBuffers>,
 }
@@ -148,10 +162,12 @@ impl TornTangentEvaluator {
             .cloned()
             .map(PreparedTangentLaneProgram::new)
             .collect();
+        let sweep_lists = sweep::SweepLists::new(&plan);
         Ok(Self {
             plan,
             programs,
             directions,
+            sweep_lists,
             buffers: RefCell::new(LaneBuffers::default()),
         })
     }
@@ -181,6 +197,20 @@ impl TornTangentEvaluator {
         point: TangentPoint<'_>,
         call: &mut DirectionCall<'_, E>,
     ) -> Result<Option<TornTangentJacobian>, E> {
+        self.eval_through_sweeps(point, call, &mut |_, _, _| Ok(false))
+    }
+
+    /// [`Self::eval_through`], first offering a one-direction plan's passes
+    /// to `sweep`: one sweep for the step coefficients and one per tear column.
+    /// An owner that declines the first sweep, before any program runs, is
+    /// answered program by program through `call`; once a sweep has run, a
+    /// later decline is an error, never a replay. Values equal `call`'s.
+    pub fn eval_through_sweeps<E: From<EvalSolveError>>(
+        &self,
+        point: TangentPoint<'_>,
+        call: &mut DirectionCall<'_, E>,
+        sweep: &mut DirectionSweep<'_, E>,
+    ) -> Result<Option<TornTangentJacobian>, E> {
         let lanes = if self.directions.is_some() {
             1
         } else {
@@ -193,7 +223,11 @@ impl TornTangentEvaluator {
             seed.resize(point.y.len() * lanes, 0.0);
         }
         let result = match &self.directions {
-            Some(directions) => self.eval_directions(directions, point, call, (seed, out)),
+            Some(directions) => match self.eval_direction_sweeps(&self.sweep_lists, sweep, seed) {
+                Ok(Some(swept)) => Ok(swept),
+                Ok(None) => self.eval_directions(directions, point, call, (seed, out)),
+                Err(error) => Err(error),
+            },
             None => self.eval_lanes_through(point, seed, out).map_err(E::from),
         };
         for &target in self.plan.tear_targets() {
@@ -486,5 +520,6 @@ impl ColoredTangentEvaluator {
     }
 }
 
+mod sweep;
 #[cfg(test)]
 mod tests;
