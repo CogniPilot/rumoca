@@ -13,6 +13,7 @@ mod linear_solve;
 mod loop_flow;
 mod native;
 mod operation_visit;
+pub(super) mod parameter_stage;
 mod pass_flow;
 pub(crate) mod print_plan;
 mod read_flow;
