@@ -290,13 +290,19 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         let direct_primal = self
             .builder
             .binary(operator, lhs.primal, rhs.primal, provenance)?;
-        self.derive_binary_from_primal(operator, lhs, rhs, direct_primal, value_type, provenance)
+        self.derive_binary_relation(
+            operator,
+            [lhs, rhs],
+            direct_primal,
+            value_type,
+            provenance,
+            true,
+        )
     }
 
-    // SPEC_0021: Exception - exhaustive tangent relation over every checked
-    // binary operator, including the scalar AD singular-value guards.
-    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-    #[allow(clippy::too_many_lines)]
+    /// The tangent of an issued binary operation. Its result carries the
+    /// issued `direct_primal`: the guarded `0/0` quotient primal is built only
+    /// by `derive_binary`, the one caller that reads a derived primal.
     pub(super) fn derive_binary_from_primal(
         &mut self,
         operator: SolveBinaryOperator,
@@ -305,6 +311,29 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
         direct_primal: ProgramRegister<'program>,
         value_type: &SolveValueType,
         provenance: Span,
+    ) -> Result<Directional<ProgramRegister<'program>>, SolveProgramConstructionError> {
+        self.derive_binary_relation(
+            operator,
+            [lhs, rhs],
+            direct_primal,
+            value_type,
+            provenance,
+            false,
+        )
+    }
+
+    // SPEC_0021: Exception - exhaustive tangent relation over every checked
+    // binary operator, including the scalar AD singular-value guards.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
+    #[allow(clippy::too_many_lines)]
+    fn derive_binary_relation(
+        &mut self,
+        operator: SolveBinaryOperator,
+        [lhs, rhs]: [Directional<ProgramRegister<'program>>; 2],
+        direct_primal: ProgramRegister<'program>,
+        value_type: &SolveValueType,
+        provenance: Span,
+        guard_quotient: bool,
     ) -> Result<Directional<ProgramRegister<'program>>, SolveProgramConstructionError> {
         if !is_real(value_type) {
             return Ok(Directional {
@@ -319,7 +348,7 @@ impl<'program> DirectionalArithmetic<'_, 'program> {
             });
         }
         let zero = self.zero(value_type, provenance)?;
-        let primal = if operator == SolveBinaryOperator::Divide {
+        let primal = if guard_quotient && operator == SolveBinaryOperator::Divide {
             let denominator_is_zero =
                 self.builder
                     .compare(SolveCompareOperator::Equal, rhs.primal, zero, provenance)?;
