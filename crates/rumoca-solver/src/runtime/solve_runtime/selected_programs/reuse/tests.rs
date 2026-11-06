@@ -478,3 +478,44 @@ fn shared_layout_replacement_preserves_changed_constant_zero_bits() {
     );
     assert_eq!(backend.compiled.get(), 2);
 }
+
+/// A Composite owner sweeps through its prepared programs: the primary
+/// program commits, a failing replacement stops the sweep with that commit
+/// standing, and the recovered sweep commits both outputs in order.
+#[test]
+fn composite_committing_sweep_keeps_earlier_commits_and_recovers() {
+    let backend = Backend {
+        fail_replacement: Rc::new(Cell::new(true)),
+        calls: Rc::new(Cell::new(0)),
+        compiled: Cell::new(0),
+    };
+    let source = sparse_source(20.0);
+    let alternate = sparse_source(99.0);
+    let primary = jacobian(&backend, "primary", &source).unwrap();
+    let composite = BlockReuse::of_programs(Some(&source), &alternate)
+        .jacobian(Some(&primary), &alternate, &mut |source| {
+            jacobian(&backend, "replacement", source)
+        })
+        .unwrap();
+    let sweep = || {
+        let mut commits = Vec::new();
+        let result = composite.call_selected_programs_committing(
+            &[0, 1],
+            (&[], &[], 0.0),
+            &mut [],
+            &[],
+            &mut |program, values, _| {
+                commits.push((program, values.to_vec()));
+                Ok(())
+            },
+        );
+        (result, commits)
+    };
+    let (failed, commits) = sweep();
+    assert!(failed.is_err(), "the replacement program fails the sweep");
+    assert_eq!(commits, [(0, vec![10.0])]);
+    backend.fail_replacement.set(false);
+    let (recovered, commits) = sweep();
+    assert!(recovered.unwrap());
+    assert_eq!(commits, [(0, vec![10.0]), (1, vec![99.0])]);
+}

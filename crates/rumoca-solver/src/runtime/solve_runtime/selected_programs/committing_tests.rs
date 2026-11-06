@@ -305,3 +305,40 @@ impl CompiledSolveJacobianExpression for PreparedOnlyJacobian {
         self.ordinary.call(y, p, t, seed, tables, out)
     }
 }
+
+/// A Shared owner sweeps through its original: the same ordered commits and
+/// seed writes, and the same stop with earlier commits standing.
+#[test]
+fn a_shared_owner_sweeps_through_its_original_with_the_same_commits() {
+    let (original, queries) = prepared_seed_programs();
+    let shared = CompleteJacobian::shared(&original.source, Rc::clone(&original));
+    let sweep = |code: &CompleteJacobian, programs: &[usize]| {
+        let mut seed = [2.0, -3.0];
+        let mut commits = Vec::new();
+        let result = code.call_selected_programs_committing(
+            programs,
+            (&[], &[], 0.0),
+            &mut seed,
+            &[],
+            &mut |program, values, seed| {
+                commits.push((program, values.to_vec()));
+                seed[0] = values[0];
+                Ok(())
+            },
+        );
+        (result.map_err(|error| error.to_string()), commits, seed)
+    };
+    assert_eq!(sweep(&shared, &[1, 0]), sweep(&original, &[1, 0]));
+    let (result, commits, seed) = sweep(&shared, &[1, 2, 0]);
+    assert!(
+        result.is_err(),
+        "the failing program stops the shared sweep"
+    );
+    assert_eq!(commits, [(1, vec![3.0])]);
+    assert_eq!(seed, [3.0, -3.0]);
+    assert_eq!(
+        queries.get(),
+        1,
+        "sharing never queries backend capability again"
+    );
+}
