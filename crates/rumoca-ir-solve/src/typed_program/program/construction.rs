@@ -113,6 +113,7 @@ impl TypedProgram {
             operations: Vec::new(),
             numbering: std::collections::HashMap::new(),
             numbered_values: true,
+            map_body: false,
             arithmetic_facts: arithmetic::ArithmeticFacts::default(),
             assigned_states: AssignedStateConstruction::interface(state_inputs, state_outputs),
             available_calls,

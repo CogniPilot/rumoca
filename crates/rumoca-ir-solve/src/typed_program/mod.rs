@@ -2,6 +2,7 @@
 
 mod algorithm_block;
 mod call;
+mod compact_placement;
 mod demand;
 mod entry;
 mod integer_interval;
@@ -11,6 +12,7 @@ mod target;
 mod target_specialization;
 mod types;
 
+pub use compact_placement::CompactJacobianPlacement;
 pub use target::{SolveAdmittedFunctionDomain, SolveFunctionTarget, SolveFunctionTargetRefusal};
 
 pub use algorithm_block::{

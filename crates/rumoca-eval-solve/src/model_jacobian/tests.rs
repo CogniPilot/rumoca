@@ -1,3 +1,4 @@
+mod compact;
 mod order;
 
 use super::*;

@@ -94,6 +94,8 @@ enum SolveOperationWire {
     CheckFinite {
         operand: SolveRegisterId,
         check: SolveFiniteCheck,
+        #[serde(default)]
+        point: Option<SolveRegisterId>,
     },
     AssignedState {
         #[serde(rename = "state_operation")]
@@ -325,7 +327,7 @@ pub(in crate::typed_program) fn replay_owner_program(
     available_calls: SolvePureCallTableView<'_>,
     assertion_outputs: &[SolvePureCallOutput],
 ) -> Result<TypedProgram, SolveProgramConstructionError> {
-    replay_program_interface(wire, available_calls, assertion_outputs, None)
+    replay_program_interface(wire, available_calls, assertion_outputs, None, false)
 }
 
 fn replay_program_interface(
@@ -333,6 +335,7 @@ fn replay_program_interface(
     available_calls: SolvePureCallTableView<'_>,
     assertion_outputs: &[SolvePureCallOutput],
     region_provenance: Option<Span>,
+    map_body: bool,
 ) -> Result<TypedProgram, SolveProgramConstructionError> {
     if region_provenance.is_none()
         && (!wire.assigned_states.inputs.is_empty() || !wire.assigned_states.outputs.is_empty())
@@ -350,6 +353,7 @@ fn replay_program_interface(
             // A wire names every register it issued, so replay issues each
             // operation exactly as recorded.
             builder.numbered_values = false;
+            builder.map_body = map_body;
             let slots = replay_slots(builder, &wire.slots)?;
             let mut registers = Vec::with_capacity(wire.register_types.len());
             for operation in &wire.operations {
@@ -406,8 +410,31 @@ fn replay_operation<'program>(
 ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
     let at = spanned.provenance;
     let result = match &spanned.operation {
-        SolveOperationWire::CheckFinite { operand, check } => {
-            builder.check_finite(register_at(registers, *operand)?, *check, at)?;
+        SolveOperationWire::CheckFinite {
+            operand,
+            check,
+            point,
+        } => {
+            let operand = register_at(registers, *operand)?;
+            match (*check, point) {
+                (
+                    SolveFiniteCheck::MappedPrimal {
+                        program_base,
+                        point_count,
+                        operation,
+                    },
+                    Some(point),
+                ) => builder.check_finite_mapped(
+                    operand,
+                    program_base,
+                    point_count,
+                    operation,
+                    register_at(registers, *point)?,
+                    at,
+                )?,
+                (check, None) => builder.check_finite(operand, check, at)?,
+                (_, Some(_)) => return Err(SolveProgramConstructionError::WireMismatch),
+            }
             return Ok(Vec::new());
         }
         SolveOperationWire::AssignedState { operation } => {
@@ -573,7 +600,12 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let body = replay_region(body, builder.available_calls, builder.assertion_outputs)?;
+            let body = replay_region_body(
+                body,
+                builder.available_calls,
+                builder.assertion_outputs,
+                true,
+            )?;
             produced(
                 *destination,
                 builder.map_from_region(domain.clone(), &captures, body, at)?,
@@ -1003,11 +1035,22 @@ fn replay_region(
     available_calls: SolvePureCallTableView<'_>,
     assertion_outputs: &[SolvePureCallOutput],
 ) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
+    replay_region_body(wire, available_calls, assertion_outputs, false)
+}
+
+/// Replay one region; only a map's body may issue mapped finite checks.
+fn replay_region_body(
+    wire: &SolveProgramRegionWire,
+    available_calls: SolvePureCallTableView<'_>,
+    assertion_outputs: &[SolvePureCallOutput],
+    map_body: bool,
+) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
     let body = replay_program_interface(
         &wire.body,
         available_calls,
         assertion_outputs,
         Some(wire.provenance),
+        map_body,
     )?;
     construct_region(
         wire.inputs.to_vec(),

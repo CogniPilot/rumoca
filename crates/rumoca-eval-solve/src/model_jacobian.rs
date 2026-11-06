@@ -2,6 +2,7 @@
 //! Unsupported sources refuse before any entry is returned; the existing
 //! general runtime and its algebraic-projection semantics are unchanged.
 mod admission;
+mod compact;
 mod scalar;
 #[cfg(test)]
 mod tests;
@@ -151,10 +152,15 @@ impl<'source> ModelStateJacobian<'source> {
     ) -> Result<Self, ModelStateJacobianError> {
         let model = order.source_model();
         let programs = admission::programs(model, &source)?;
+        // Target step: a selection that cannot execute compact maps expands
+        // them, so the expansion bound is proven before any row is expanded.
+        if !target.admits_nested_map_frames() {
+            admission::check_scalarized_bound(&programs, target.max_unrolled_operations())?;
+        }
         let states = model.state_scalar_count();
         let parameters = source.layout().p_scalars();
         let profile = source.calls().arithmetic();
-        let span = programs[0].span;
+        let span = programs[0].span();
         let width = u32::try_from(states)
             .map_err(|_| admission::unsupported("matrix extent exceeds typed shape", Some(span)))?;
         let input_count = states

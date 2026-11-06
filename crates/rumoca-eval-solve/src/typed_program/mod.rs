@@ -869,20 +869,39 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         match operation {
-            SolveOperation::CheckFinite { operand, check } => {
+            SolveOperation::CheckFinite {
+                operand,
+                check,
+                point,
+            } => {
                 let value = self.read(*operand, provenance)?;
-                if let Some(element) = value.elements().iter().position(|value| match value {
+                let Some(element) = value.elements().iter().position(|value| match value {
                     SolveValueKind::Real64(bits) => !f64::from_bits(*bits).is_finite(),
                     SolveValueKind::Real32(bits) => !f32::from_bits(*bits).is_finite(),
                     _ => true,
-                }) {
-                    return Err(TypedProgramEvalError::NonFinite {
-                        check: *check,
-                        element,
+                }) else {
+                    return Ok(());
+                };
+                // A mapped check reports the scalar identity Solve IR issued
+                // for this point; an unproven point is a malformed program.
+                let point = match point {
+                    Some(point) => match self.read(*point, provenance)?.elements() {
+                        [SolveValueKind::Integer(value)] => u64::try_from(*value).ok().map(Some),
+                        _ => None,
+                    },
+                    None => Some(None),
+                };
+                let check = point.and_then(|point| check.reported(point)).ok_or(
+                    TypedProgramEvalError::InvalidCheckedProgram {
+                        operation: "report mapped finite check",
                         provenance,
-                    });
-                }
-                Ok(())
+                    },
+                )?;
+                Err(TypedProgramEvalError::NonFinite {
+                    check,
+                    element,
+                    provenance,
+                })
             }
             SolveOperation::AssignedState { operation } => {
                 self.eval_assigned_state(operation, provenance)

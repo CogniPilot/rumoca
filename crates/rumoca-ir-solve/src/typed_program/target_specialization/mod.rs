@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, SolvePureCallTable};
 
+mod materialize;
 #[cfg(test)]
 mod tests;
 

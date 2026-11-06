@@ -255,8 +255,20 @@ pub enum SolveReductionOperator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum SolveFiniteCheck {
-    Input { coordinate: u32 },
-    Primal { program: u32, operation: u32 },
+    Input {
+        coordinate: u32,
+    },
+    Primal {
+        program: u32,
+        operation: u32,
+    },
+    /// A primal guard issued once in a compact map body for `point_count`
+    /// scalar programs; see `SolveFiniteCheck::reported` in `finite.rs`.
+    MappedPrimal {
+        program_base: u32,
+        point_count: u32,
+        operation: u32,
+    },
     Derivative,
 }
 
@@ -267,6 +279,9 @@ pub enum SolveOperation {
     CheckFinite {
         operand: SolveRegisterId,
         check: SolveFiniteCheck,
+        /// The integer map-point register of a `MappedPrimal` check only.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        point: Option<SolveRegisterId>,
     },
     AssignedConditional {
         program: Box<SolveAssignedConditional>,
@@ -743,6 +758,8 @@ pub struct TypedProgramBuilder<'program> {
     /// Whether repeated scalar computations share a register; a replayed wire
     /// keeps every recorded register.
     numbered_values: bool,
+    /// Whether this builder is a map body, the only scope that may map a finite check.
+    map_body: bool,
     assigned_states: AssignedStateConstruction,
     available_calls: SolvePureCallTableView<'program>,
     assertion_outputs: &'program [SolvePureCallOutput],
@@ -1156,6 +1173,7 @@ impl<'program> TypedProgramBuilder<'program> {
                 let [output] = outputs else {
                     return Err(SolveProgramConstructionError::InvalidMap { provenance });
                 };
+                builder.map_body = true;
                 build(builder, captures, binders, *output)
             },
         )?;
@@ -1376,6 +1394,10 @@ impl<'program> TypedProgramBuilder<'program> {
             || body.body.arithmetic() != self.arithmetic
             || body.provenance != provenance
         {
+            return Err(SolveProgramConstructionError::InvalidMap { provenance });
+        }
+        // Mapped finite checks need their point proven in `0..point_count`; replay re-proves it.
+        if !fault_flow::mapped_points_bounded(&body, captures.len(), &domain.binders) {
             return Err(SolveProgramConstructionError::InvalidMap { provenance });
         }
         let mut dimensions = domain
