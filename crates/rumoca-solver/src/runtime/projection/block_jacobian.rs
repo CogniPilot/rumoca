@@ -73,7 +73,8 @@ impl BlockJacobian {
 
     /// Whether this matrix is stored in `layout`.
     pub(crate) fn is_stored_in(&self, layout: &CompactPatternLayout) -> bool {
-        matches!(&self.storage, Storage::Compact { layout: own, .. } if **own == *layout)
+        matches!(&self.storage, Storage::Compact { layout: own, .. }
+            if std::ptr::eq(&**own, layout) || **own == *layout)
     }
 
     /// Zero every stored entry, keeping the storage.

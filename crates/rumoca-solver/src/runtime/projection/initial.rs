@@ -1195,13 +1195,12 @@ fn fill_colored_groups(
             *seed_value = 1.0;
             has_dependency |= column_rows[column].iter().any(|&row| selected_rows[row]);
         }
-        let prepared = structure.output_evaluation(color);
         if has_dependency
             && !fill_prepared_algebraic_color(
                 jacobian,
                 block,
                 selected_rows,
-                prepared,
+                (structure, color),
                 seed,
                 group,
                 column_rows,
@@ -1219,11 +1218,12 @@ fn fill_colored_groups(
                 &active_rows,
                 "colored algebraic block Jacobian-vector product",
             )?;
-            for ((row, column), value) in
-                colored_group_entries(group, column_rows, selected_rows).zip(jvp)
-            {
-                jacobian[(row, column)] = value;
-            }
+            store_group_entries(
+                jacobian,
+                structure,
+                (group, column_rows, selected_rows),
+                &mut |ordinal, _| jvp.get(ordinal).copied(),
+            );
         }
         for &column in group.iter() {
             seed[y_indices[column as usize]] = 0.0;
@@ -1236,12 +1236,12 @@ fn fill_prepared_algebraic_color(
     jacobian: &mut BlockJacobian,
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
-    selection: Option<&solve::ProjectionJacobianOutputs>,
+    (structure, color): (&solve::ColoredJacobianStructure, usize),
     seed: &[f64],
     group: &[u32],
     column_rows: &[Vec<usize>],
 ) -> Result<bool, RuntimeSolveError> {
-    let Some(selection) = selection else {
+    let Some(selection) = structure.output_evaluation(color) else {
         return Ok(false);
     };
     let mut values = vec![0.0; block.rows.len()];
@@ -1259,10 +1259,65 @@ fn fill_prepared_algebraic_color(
     )? {
         return Ok(false);
     }
-    for (row, column) in colored_group_entries(group, column_rows, selected_rows) {
-        jacobian[(row, column)] = values[row];
-    }
+    store_group_entries(
+        jacobian,
+        structure,
+        (group, column_rows, selected_rows),
+        &mut |_, row| Some(values[row]),
+    );
     Ok(true)
+}
+
+/// Store `value(ordinal, row)` for each selected entry of `group`, in
+/// [`colored_group_entries`] order, stopping at the first `None`. A matrix in
+/// the structure's compact layout is written through the slots the structure
+/// bound to it; any other matrix is written by coordinate.
+fn store_group_entries(
+    jacobian: &mut BlockJacobian,
+    structure: &solve::ColoredJacobianStructure,
+    (group, column_rows, selected_rows): (&[u32], &[Vec<usize>], &[bool]),
+    value: &mut dyn FnMut(usize, usize) -> Option<f64>,
+) {
+    if jacobian.is_stored_in(structure.compact_layout())
+        && let Some(column_slots) = structure.column_slots()
+    {
+        let entries = group.iter().flat_map(|&column| {
+            let column = column as usize;
+            column_rows[column]
+                .iter()
+                .copied()
+                .zip(column_slots[column].iter().copied())
+        });
+        let values = jacobian.storage_mut();
+        store_selected(entries, selected_rows, value, &mut |_, slot, entry| {
+            values[slot] = entry;
+        });
+        return;
+    }
+    let entries = group.iter().flat_map(|&column| {
+        let column = column as usize;
+        column_rows[column].iter().map(move |&row| (row, column))
+    });
+    store_selected(entries, selected_rows, value, &mut |row, column, entry| {
+        jacobian[(row, column)] = entry;
+    });
+}
+
+/// Write `value(ordinal, row)` to `key` for each selected `(row, key)` entry,
+/// in order, stopping at the first `None`.
+fn store_selected(
+    entries: impl Iterator<Item = (usize, usize)>,
+    selected_rows: &[bool],
+    value: &mut dyn FnMut(usize, usize) -> Option<f64>,
+    write: &mut dyn FnMut(usize, usize, f64),
+) {
+    let selected = entries.filter(|&(row, _)| selected_rows[row]);
+    for (ordinal, (row, key)) in selected.enumerate() {
+        let Some(entry) = value(ordinal, row) else {
+            return;
+        };
+        write(row, key, entry);
+    }
 }
 
 fn colored_group_entries<'a>(
