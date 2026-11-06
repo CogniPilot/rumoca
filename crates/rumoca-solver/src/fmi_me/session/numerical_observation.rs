@@ -1,7 +1,53 @@
 //! Observe existing lifecycle calls without changing their activation or restoration.
 
 use super::*;
-use crate::fmi_me::numerical_observation::{FailureCategory, LifecycleCall};
+use crate::fmi_me::numerical_observation::{FailureCategory, HostWriter, LifecycleCall};
+
+impl MeComponentHost<'_> {
+    /// Attach an optional write-only numerical-settings endpoint before initialization.
+    /// The endpoint supplies no numerical capability and cannot affect the result.
+    pub fn into_session_with_numerical_observation<'lease, 'plugin>(
+        self,
+        backend: Option<Box<dyn MeIntegratorBackend + 'plugin>>,
+        observation: Option<HostWriter>,
+    ) -> Result<MeSimulationSession<'lease, 'plugin>, MeSessionError>
+    where
+        Self: 'lease,
+    {
+        let state_count = self.host.state_count;
+        // ME-ZERO-001's arity rule, decided from the linked component's own
+        // width and the presence of a plugin. It asks the backend nothing: the
+        // thin ME-INT-001 surface has no identity operation to ask
+        let backend: Box<dyn MeIntegratorBackend + 'plugin> = match backend {
+            Some(_) if state_count == 0 => {
+                return Err(MeSessionError::PluginArity {
+                    state_count,
+                    mismatch: MePluginArity::RejectsANumericalPlugin,
+                });
+            }
+            Some(backend) => backend,
+            None if state_count == 0 => Box::new(TimeOnlyIntegrator::new()),
+            None => {
+                return Err(MeSessionError::PluginArity {
+                    state_count,
+                    mismatch: MePluginArity::RequiresANumericalPlugin,
+                });
+            }
+        };
+        let mut session = MeSimulationSession {
+            host: self.host,
+            owned_component: self.owned_component,
+            backend,
+            numerical_observation: observation,
+            scan_workspace: RefCell::new(RootScanWorkspace::default()),
+            deferred: None,
+            snapped_yield: None,
+            lease: PhantomData,
+        };
+        session.start_plugin()?;
+        Ok(session)
+    }
+}
 
 impl MeSimulationSession<'_, '_> {
     pub(super) fn run_observed_lifecycle<T>(
