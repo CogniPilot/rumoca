@@ -10,7 +10,8 @@ use rumoca_core::Span;
 use rumoca_ir_solve::{
     ContinuousNumericalSource, ContinuousNumericalSourceError, SolveModel,
     SolveProgramConstructionError, SolvePureCallIdentity, SolvePureCallOutput, SolvePureCallSite,
-    SolvePureCallTable, SolveScalarType, SolveValueType, StoredStateJacobianOrderError,
+    SolvePureCallTable, SolveScalarType, SolveSpecializationIdentity, SolveTargetProfile,
+    SolveTargetSelection, SolveValueType, StoredStateJacobianOrderError,
     StoredStateJacobianOutputOrder,
 };
 use std::num::NonZeroU64;
@@ -41,6 +42,7 @@ pub struct ModelStateJacobian<'source> {
     states: usize,
     parameters: usize,
     order: StoredStateJacobianOutputOrder<'source>,
+    specialization: SolveSpecializationIdentity,
 }
 
 #[derive(Debug)]
@@ -52,6 +54,7 @@ pub enum ModelStateJacobianError {
     },
     Construction(SolveProgramConstructionError),
     OutputOrder(StoredStateJacobianOrderError),
+    Specialization(rumoca_ir_solve::SolveAlgorithmBlockDigestError),
 }
 
 impl std::fmt::Display for ModelStateJacobianError {
@@ -63,6 +66,7 @@ impl std::fmt::Display for ModelStateJacobianError {
             }
             Self::Construction(error) => error.fmt(f),
             Self::OutputOrder(error) => error.fmt(f),
+            Self::Specialization(error) => error.fmt(f),
         }
     }
 }
@@ -91,6 +95,9 @@ impl<'source> ModelStateJacobian<'source> {
     pub fn call_site(&self) -> &SolvePureCallSite {
         &self.site
     }
+    pub fn specialization(&self) -> &SolveSpecializationIdentity {
+        &self.specialization
+    }
 }
 
 impl<'source> ModelStateJacobian<'source> {
@@ -98,12 +105,21 @@ impl<'source> ModelStateJacobian<'source> {
     /// Supports checked scalar explicit ODE programs with real arithmetic.
     /// Calls, structured nodes, lazy regions, effects and refresh are refused.
     pub fn construct(model: &'source SolveModel) -> Result<Self, ModelStateJacobianError> {
+        Self::construct_for_target(model, &SolveTargetProfile::current_dense_host())
+    }
+
+    /// Target selection precedes only final materialization. Source/AD issue
+    /// order and compact placement facts remain owned by this constructor.
+    pub fn construct_for_target(
+        model: &'source SolveModel,
+        target: &SolveTargetProfile,
+    ) -> Result<Self, ModelStateJacobianError> {
         let source = model
             .continuous_numerical_source()
             .map_err(ModelStateJacobianError::Source)?;
         let order = StoredStateJacobianOutputOrder::canonical(model)
             .map_err(ModelStateJacobianError::OutputOrder)?;
-        Self::construct_from_source(order, source)
+        Self::construct_from_source(order, source, target.select())
     }
 
     /// Construct from one checked stored-coordinate axis request. The exact
@@ -111,16 +127,27 @@ impl<'source> ModelStateJacobian<'source> {
     pub fn construct_with_output_order(
         order: StoredStateJacobianOutputOrder<'source>,
     ) -> Result<Self, ModelStateJacobianError> {
+        Self::construct_with_output_order_for_target(
+            order,
+            &SolveTargetProfile::current_dense_host(),
+        )
+    }
+
+    pub fn construct_with_output_order_for_target(
+        order: StoredStateJacobianOutputOrder<'source>,
+        target: &SolveTargetProfile,
+    ) -> Result<Self, ModelStateJacobianError> {
         let model = order.source_model();
         let source = model
             .continuous_numerical_source()
             .map_err(ModelStateJacobianError::Source)?;
-        Self::construct_from_source(order, source)
+        Self::construct_from_source(order, source, target.select())
     }
 
     fn construct_from_source(
         order: StoredStateJacobianOutputOrder<'source>,
         source: ContinuousNumericalSource<'source>,
+        target: SolveTargetSelection<'_>,
     ) -> Result<Self, ModelStateJacobianError> {
         let model = order.source_model();
         let programs = admission::programs(model, &source)?;
@@ -146,7 +173,16 @@ impl<'source> ModelStateJacobian<'source> {
                 span,
                 |builder, inputs, outputs| {
                     scalar::construct(
-                        builder, inputs, outputs[0], &programs, &order, profile, span,
+                        builder,
+                        inputs,
+                        outputs[0],
+                        &programs,
+                        &order,
+                        scalar::Target {
+                            arithmetic: profile,
+                            selection: target,
+                        },
+                        span,
                     )
                 },
             )?;
@@ -157,6 +193,9 @@ impl<'source> ModelStateJacobian<'source> {
         let site = issued.ok_or_else(|| {
             admission::unsupported("constructor did not issue its owner", Some(span))
         })?;
+        let specialization = target
+            .bind(&table)
+            .map_err(ModelStateJacobianError::Specialization)?;
         Ok(Self {
             source,
             table,
@@ -164,6 +203,7 @@ impl<'source> ModelStateJacobian<'source> {
             states,
             parameters,
             order,
+            specialization,
         })
     }
 }

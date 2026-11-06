@@ -27,7 +27,6 @@ scenario-config = [
     "dep:rumoca-input",
     "dep:rumoca-transport-udp",
     "dep:rumoca-transport-zenoh",
-    "dep:toml",
 ]
 scheduled-sim = [
     "native-solvers",
@@ -59,6 +58,7 @@ rumoca-solver-diffsol = { workspace = true, optional = true }
 rumoca-solver-rk45 = { workspace = true, optional = true }
 rumoca-solver-velimplicit = { workspace = true, optional = true }
 serde = { workspace = true }
+toml = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -87,7 +87,6 @@ rumoca-compile = { workspace = true, optional = true }
 signal-hook = { version = "0.3", optional = true }
 anyhow = { workspace = true, optional = true }
 tiny_http = { version = "0.12", optional = true }
-toml = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
 libc = "0.2"
