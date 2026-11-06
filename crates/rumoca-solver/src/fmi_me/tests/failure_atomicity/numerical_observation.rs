@@ -220,3 +220,38 @@ fn observation_preserves_original_panic_restoration_and_marks_unfinished_call() 
                 && matches!(record.kind, RecordKind::OperationFinished { .. }))
     );
 }
+
+#[test]
+fn reinitialization_fixture_forwards_step_sampling_and_reset_contracts() {
+    use me::MeIntegratorBackend;
+
+    let mut plugin = FailingReinitialization {
+        inner: FaultyPlugin::new(PluginFault::Healthy),
+        exit: InitializeExit::Typed,
+        _observation: None,
+    };
+    let mut states = [f64::NAN];
+    let missing = plugin.sample(0.0, &mut states).unwrap_err();
+    assert!(missing.to_string().contains("no accepted interval"));
+    assert!(states[0].is_nan());
+    let point = me::MeContinuousPoint::new(0.0, vec![4.0], 1).unwrap();
+    plugin.truncate_reset(&point).unwrap();
+    plugin.sample(0.0, &mut states).unwrap();
+    assert_eq!(states, [4.0]);
+    let outside = plugin.sample(0.1, &mut states).unwrap_err();
+    assert!(outside.to_string().contains("outside"));
+    assert_eq!(states, [4.0]);
+    let request = me::MeAdvanceRequest::new(point, None, 0.1, None, None).unwrap();
+    let missing_handle = plugin.advance(&request).unwrap_err();
+    assert!(
+        missing_handle
+            .to_string()
+            .contains("never issued a derivative handle")
+    );
+    plugin.sample(0.0, &mut states).unwrap();
+    assert_eq!(
+        states,
+        [4.0],
+        "failed advance must preserve the reset point"
+    );
+}

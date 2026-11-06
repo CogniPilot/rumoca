@@ -316,3 +316,47 @@ fn located_root_reset_reports_retained_problem_before_history_reinitialization()
         );
     }
 }
+
+#[test]
+fn public_observed_batch_facade_runs_the_same_bdf_result() {
+    let mut compiler =
+        rumoca_compile::compile::Session::new(rumoca_compile::compile::SessionConfig::default());
+    compiler
+        .add_document(
+            "observed_facade.mo",
+            "model ObservedFacade
+ Real x(start=1, fixed=true);
+equation
+ der(x)=-x;
+end ObservedFacade;",
+        )
+        .unwrap();
+    let dae = compiler.compile_model("ObservedFacade").unwrap().dae;
+    let opts = sim_opts(SimExecutionPolicy::Interpreter);
+    let plain = crate::diffsol::build_simulation(&dae, &opts)
+        .unwrap()
+        .run()
+        .unwrap();
+    let collector = SettingsCollector::new(512, 4096).unwrap();
+    let observed = crate::simulate_with_numerical_observation(&dae, &opts, &collector).unwrap();
+    assert_same_result(&observed, &plain);
+    assert_eq!(observed.n_states, 1);
+    assert!(observed.times.len() > 1);
+    assert!(observed.times.last().unwrap() > observed.times.first().unwrap());
+    let snapshot = collector.finish();
+    assert_eq!(snapshot.incomplete, 0);
+    assert_eq!(
+        snapshot
+            .records
+            .iter()
+            .filter(|record| record.kind == RecordKind::Initialized)
+            .count(),
+        2,
+    );
+    assert!(
+        snapshot
+            .records
+            .iter()
+            .any(|record| { record.kind == RecordKind::Parameters(ParameterStage::ProblemStored) })
+    );
+}

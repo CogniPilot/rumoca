@@ -332,3 +332,16 @@ fn real_pre_builder_refusal_records_preparation_without_inventing_builder_or_sol
         ) | RecordKind::Initialized
     )));
 }
+
+#[test]
+fn derivative_only_fixture_writes_every_output_and_counts_calls() {
+    let calls = Rc::new(Cell::new(0));
+    let model = DerivativeOnly(Rc::clone(&calls));
+    assert_eq!(model.width(), 2);
+    for state in [[-0.0, 2.0], [3.0, -4.0]] {
+        let mut out = [f64::NAN; 2];
+        model.derivatives_into(0.0, &state, &mut out).unwrap();
+        assert_eq!(out.map(f64::to_bits), state.map(f64::to_bits));
+    }
+    assert_eq!(calls.get(), 2);
+}

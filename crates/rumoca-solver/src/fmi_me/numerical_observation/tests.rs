@@ -311,3 +311,35 @@ fn impossible_record_or_cell_capacity_refuses_before_any_endpoint_exists() {
     assert!(snapshot.records.is_empty());
     assert!(snapshot.cells.is_empty());
 }
+
+#[test]
+fn unavailable_host_policy_does_not_invent_parameters_or_replace_operation_outcome() {
+    let collector = SettingsCollector::new(16, 16).unwrap();
+    let (host, adapter) = collector
+        .associate(ObservationRoute::ModelExchangeSession)
+        .unwrap();
+    host.unavailable();
+    let operation = host.begin(LifecycleCall::Initialize).unwrap();
+    operation.finish(true);
+    drop((host, adapter));
+    let snapshot = collector.finish();
+    assert_eq!(
+        snapshot.incomplete,
+        IncompleteReason::UnsupportedObservation as u16
+    );
+    assert!(snapshot.cells.is_empty());
+    assert_eq!(
+        snapshot
+            .records
+            .iter()
+            .map(|record| record.kind)
+            .collect::<Vec<_>>(),
+        [
+            RecordKind::InstanceStarted(ObservationRoute::ModelExchangeSession),
+            RecordKind::OperationStarted(LifecycleCall::Initialize),
+            RecordKind::OperationFinished { success: true },
+            RecordKind::HostClosed,
+            RecordKind::AdapterClosed,
+        ],
+    );
+}
