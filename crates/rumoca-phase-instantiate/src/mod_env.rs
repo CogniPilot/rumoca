@@ -145,7 +145,7 @@ fn insert_modifier_value_with_structural_overrides(
     tree: &ast::ClassTree,
     insert_ctx: &ScopedInsertContext<'_>,
 ) -> InstantiateResult<()> {
-    let qn = ast::QualifiedName::from_ident(target_name);
+    let qn = target_path(target_name);
     let (binding_source, binding_source_scope) =
         inherited_modifier_source_metadata(target_name, value_expr, ctx.mod_env()).map_or(
             (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
@@ -347,6 +347,15 @@ fn apply_component_modifier(
     Ok(())
 }
 
+/// `a.b(c = 1)` means `a(b(c = 1))`; a quoted identifier is one name, dots included.
+fn target_path(target_name: &str) -> ast::QualifiedName {
+    if target_name.starts_with('\'') {
+        ast::QualifiedName::from_ident(target_name)
+    } else {
+        ast::QualifiedName::from_dotted(target_name)
+    }
+}
+
 fn apply_nested_class_modifier(
     ctx: &mut InstantiateContext,
     target_name: &str,
@@ -356,7 +365,7 @@ fn apply_nested_class_modifier(
     each_flags: &[bool],
     final_flags: &[bool],
 ) -> InstantiateResult<()> {
-    let prefix = ast::QualifiedName::from_ident(target_name);
+    let prefix = target_path(target_name);
     let nested_ctx = NestedModificationContext {
         effective_components: eval_ctx.effective_components,
         tree: eval_ctx.tree,
@@ -916,7 +925,7 @@ fn process_nested_modifications_recursive(
                 let attr_name = attr_target.to_string();
                 let preserve_source = preserves_source_scoped_attribute(attr_name.as_str());
                 let mut qn = prefix.clone();
-                qn.push(attr_name, Vec::new());
+                qn.parts.extend(target_path(&attr_name).parts);
                 let stored_expr = if preserve_source {
                     value.as_ref().clone()
                 } else {
@@ -951,7 +960,7 @@ fn process_nested_modifications_recursive(
             } => {
                 let target_name = target.to_string();
                 let mut nested_prefix = prefix.clone();
-                nested_prefix.push(target_name, Vec::new());
+                nested_prefix.parts.extend(target_path(&target_name).parts);
                 process_nested_modifications_recursive(
                     ctx,
                     &nested_prefix,
