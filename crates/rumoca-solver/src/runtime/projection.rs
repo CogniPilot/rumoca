@@ -1688,10 +1688,6 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
         self.model.implicit_target(row_idx)
     }
 
-    fn implicit_row_targets(&self) -> Option<&solve::ImplicitRowTargets> {
-        self.model.implicit_row_targets()
-    }
-
     #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         self.model.algebraic_projection_plan()

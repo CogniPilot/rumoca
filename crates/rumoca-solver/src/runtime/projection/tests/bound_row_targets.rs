@@ -80,7 +80,7 @@ fn projected(model: &CountedTargets) -> Vec<f64> {
     };
     project_algebraics_with_plan(
         model,
-        &model.plan,
+        model.algebraic_projection_plan(),
         &mut y,
         args,
         ALGEBRAIC_PROJECTION_MAX_ITERS,
