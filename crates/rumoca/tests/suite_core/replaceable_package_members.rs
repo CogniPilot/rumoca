@@ -780,3 +780,35 @@ fn an_extends_modifier_record_redeclaration_is_the_record_of_the_derived_package
         assert!((column("b.T")[index] - 10.0 * (2.0 + time)).abs() < 1e-8);
     }
 }
+
+const DIMENSION_FROM_PACKAGE: &str = r#"
+package Media
+  partial package Base constant Integer n; end Base;
+  package Fresh extends Base(n = 2); end Fresh;
+  package Salt extends Base(n = 3); end Salt;
+end Media;
+
+model M
+  replaceable package medium = Media.Fresh constrainedby Media.Base;
+  parameter Real c[medium.n] = fill(1, medium.n);
+  Real x = c[1];
+end M;
+
+model Salty
+  M m(redeclare package medium = Media.Salt);
+end Salty;
+"#;
+
+/// A constant of a replaceable package can size an array, whether the package
+/// is the default or a redeclaration.
+#[test]
+fn a_replaceable_package_constant_can_be_a_dimension() {
+    for (model, name, size) in [("M", "c", 2), ("Salty", "m.c", 3)] {
+        let compiled = Compiler::new()
+            .model(model)
+            .compile_str(DIMENSION_FROM_PACKAGE, "Dimension.mo")
+            .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
+        let name = rumoca_core::VarName::new(name);
+        assert_eq!(compiled.flat.variables[&name].dims, vec![size]);
+    }
+}
