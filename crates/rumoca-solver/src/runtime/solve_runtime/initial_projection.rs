@@ -80,6 +80,10 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
             .target_at(row_idx)
     }
 
+    fn implicit_row_targets(&self) -> Option<&solve::ImplicitRowTargets> {
+        Some(&self.runtime.model.problem.continuous.implicit_row_targets)
+    }
+
     #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self

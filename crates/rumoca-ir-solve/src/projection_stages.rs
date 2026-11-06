@@ -13,7 +13,7 @@ use crate::{
     SolveProblemShapeContractError, SolveVariableStorageRun,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 /// Construction inputs; contextual source and layout checks belong to the root.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -58,6 +58,19 @@ impl ProjectionStage {
     }
 }
 
+/// The canonical target of each row position of one scalar block.
+type BlockRowTargets = Box<[Option<ScalarSlot>]>;
+
+/// This owner's scalar blocks bound to the canonical targets of one target
+/// owner. The owner is held weakly: a binding keeps no stage data alive, so a
+/// self-binding or two owners bound to each other form no cycle, and while the
+/// weak handle exists its allocation cannot be reused by another owner.
+#[derive(Debug)]
+struct RowTargetBinding {
+    targets_owner: Weak<ProjectionStageData>,
+    blocks: Box<[BlockRowTargets]>,
+}
+
 #[derive(Debug)]
 struct ProjectionStageData {
     stages: Box<[ProjectionStage]>,
@@ -65,6 +78,8 @@ struct ProjectionStageData {
     row_bound: usize,
     legacy: OnceLock<Vec<AlgebraicProjectionBlock>>,
     legacy_targets: OnceLock<Vec<Option<ScalarSlot>>>,
+    /// The first target owner this catalog was bound to, built on first use.
+    row_targets: OnceLock<RowTargetBinding>,
     /// Fixed with `stages`; every constructor derives it from them.
     index: index::StageIndex,
 }
@@ -106,6 +121,7 @@ impl From<Vec<AlgebraicProjectionBlock>> for ProjectionBlocks {
                 stages,
                 legacy: OnceLock::new(),
                 legacy_targets: OnceLock::new(),
+                row_targets: OnceLock::new(),
             }),
         }
     }
@@ -130,6 +146,7 @@ impl ProjectionBlocks {
                 row_bound,
                 legacy: OnceLock::new(),
                 legacy_targets: OnceLock::new(),
+                row_targets: OnceLock::new(),
             }),
         })
     }
@@ -198,6 +215,7 @@ impl ProjectionBlocks {
                 stages: stages.into_boxed_slice(),
                 legacy: OnceLock::new(),
                 legacy_targets: OnceLock::new(),
+                row_targets: OnceLock::new(),
             }),
         })
     }
@@ -225,6 +243,52 @@ impl ProjectionBlocks {
 
     pub fn scalar_blocks(&self) -> &[AlgebraicProjectionBlock] {
         self.scalar_vec()
+    }
+
+    /// The canonical targets of `block`'s rows, position for position, when
+    /// `block` is one of this owner's scalar block receipts and `targets` is
+    /// the projection target owner this catalog is bound to. The binding is
+    /// built once, by the first query, through [`ImplicitRowTargets::target_at`];
+    /// a query with any other target owner, an explicit target table, or a
+    /// block stored elsewhere answers `None` and keeps the per-row query.
+    pub fn bound_row_targets(
+        &self,
+        block: &AlgebraicProjectionBlock,
+        targets: &ImplicitRowTargets,
+    ) -> Option<&[Option<ScalarSlot>]> {
+        let index = self.scalar_block_index(block)?;
+        let owner = targets.projection_owner()?;
+        let binding = self.data.row_targets.get_or_init(|| RowTargetBinding {
+            targets_owner: Arc::downgrade(&owner.data),
+            blocks: self
+                .scalar_blocks()
+                .iter()
+                .map(|block| {
+                    block
+                        .rows
+                        .iter()
+                        .map(|&row| targets.target_at(row))
+                        .collect()
+                })
+                .collect(),
+        });
+        std::ptr::eq(binding.targets_owner.as_ptr(), Arc::as_ptr(&owner.data))
+            .then(|| binding.blocks.get(index).map(|row_targets| &**row_targets))
+            .flatten()
+    }
+
+    /// The logical index of `block` when it is one of this owner's own scalar
+    /// block receipts, an element of [`Self::scalar_blocks`]. An equal block
+    /// stored anywhere else has no index here, and an owner whose catalog was
+    /// never materialized has none at all.
+    fn scalar_block_index(&self, block: &AlgebraicProjectionBlock) -> Option<usize> {
+        let blocks = self.data.legacy.get()?;
+        let offset = std::ptr::from_ref(block)
+            .addr()
+            .checked_sub(blocks.as_ptr().addr())?;
+        let size = std::mem::size_of::<AlgebraicProjectionBlock>();
+        let index = offset / size;
+        (offset % size == 0 && index < blocks.len()).then_some(index)
     }
 
     fn scalar_vec(&self) -> &Vec<AlgebraicProjectionBlock> {

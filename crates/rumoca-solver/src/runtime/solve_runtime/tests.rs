@@ -388,6 +388,181 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
 }
 
 #[test]
+fn refresh_plan_owners_bind_the_continuous_row_targets() {
+    let blocks: solve::ProjectionBlocks = vec![solve::AlgebraicProjectionBlock {
+        rows: vec![1],
+        y_indices: vec![1],
+        tearing: None,
+        alternate_charts: Vec::new(),
+    }]
+    .into();
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                vec!["x".to_string(), "a".to_string()],
+            ),
+            solve_layout: solve::SolveLayout {
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        derivative_placeholder_row(0),
+                        nonlinear_target_residual_row(1, 0),
+                    ],
+                    "refresh_owner_targets.mo",
+                )),
+                implicit_row_targets: solve::ImplicitRowTargets::from_projection(&blocks),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan { blocks },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![1.0, 1.0].into(),
+        ..Default::default()
+    };
+    let implicit =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("implicit block should prepare");
+    let full = valid_algebraic_refresh_plan(&model, &implicit);
+    let derivative = spanned_block(vec![derivative_placeholder_row(1)], "refresh_owner_rhs.mo");
+    let plan = build_derivative_refresh_plan(&model.problem, &derivative, &implicit, &full)
+        .expect("an unproved owner retains residual projection");
+    let targets = &model.problem.continuous.implicit_row_targets;
+    assert!(!plan.causal_solution_certified);
+    // Uncertified, the value owner is the simultaneous owner itself.
+    assert!(
+        plan.value_projection_plan
+            .blocks
+            .shares_stage_owner(&plan.simultaneous_plan.blocks)
+    );
+    let stage_plans = projection_stage_plans(&plan);
+    assert!(
+        !stage_plans.is_empty(),
+        "the unproved owner retains a projection stage"
+    );
+    for owner in [&plan.value_projection_plan, &plan.simultaneous_plan]
+        .into_iter()
+        .chain(stage_plans)
+        .chain([&full.value_projection_plan, &full.simultaneous_plan])
+    {
+        assert_owner_binds_continuous_targets(owner, targets);
+    }
+    // A decoded plan rebinds against decoded targets, never the originals' receipts.
+    let decoded: solve::RefreshPlan =
+        serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+    let block = &decoded.value_projection_plan.blocks.scalar_blocks()[0];
+    assert!(
+        plan.value_projection_plan
+            .blocks
+            .bound_row_targets(block, targets)
+            .is_none()
+    );
+    assert_eq!(
+        decoded
+            .value_projection_plan
+            .blocks
+            .bound_row_targets(block, targets)
+            .unwrap(),
+        [targets.target_at(1)]
+    );
+}
+
+fn projection_stage_plans(plan: &solve::RefreshPlan) -> Vec<&solve::AlgebraicProjectionPlan> {
+    plan.value_stages
+        .iter()
+        .filter_map(|stage| match stage {
+            solve::RefreshStage::ProjectionBlock { plan, .. } => Some(plan),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every block of a nonempty `owner` binds the targets `target_at` gives.
+fn assert_owner_binds_continuous_targets(
+    owner: &solve::AlgebraicProjectionPlan,
+    targets: &solve::ImplicitRowTargets,
+) {
+    let blocks = owner.blocks.scalar_blocks();
+    assert!(!blocks.is_empty(), "the owner holds blocks to bind");
+    for block in blocks {
+        let bound = owner
+            .blocks
+            .bound_row_targets(block, targets)
+            .expect("every refresh-plan owner binds the continuous targets");
+        let per_row: Vec<_> = block
+            .rows
+            .iter()
+            .map(|&row| targets.target_at(row))
+            .collect();
+        assert_eq!(bound, per_row.as_slice());
+    }
+}
+
+#[test]
+fn certified_refresh_plan_owners_bind_the_continuous_row_targets() {
+    let mut model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                vec!["x".to_string(), "a".to_string(), "b".to_string()],
+            ),
+            solve_layout: solve::SolveLayout {
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                output_scalar_count: 1,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        derivative_placeholder_row(0),
+                        add_assignment_residual_row(1, 0, 2.0),
+                        scale_assignment_residual_row(2, 1, 3.0),
+                    ],
+                    "certified_refresh_owner_targets.mo",
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![1.0, 0.0, 0.0].into(),
+        ..Default::default()
+    };
+    set_causal_test_projection_plan(&mut model);
+    let continuous = &mut model.problem.continuous;
+    continuous.implicit_row_targets =
+        solve::ImplicitRowTargets::from_projection(&continuous.algebraic_projection_plan.blocks);
+    let implicit =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("implicit block should prepare");
+    let plan = valid_algebraic_refresh_plan(&model, &implicit);
+    let targets = &model.problem.continuous.implicit_row_targets;
+    assert!(plan.causal_solution_certified);
+    // The simultaneous owner shares the continuous plan's owner.
+    assert!(
+        plan.simultaneous_plan
+            .blocks
+            .shares_stage_owner(&model.problem.continuous.algebraic_projection_plan.blocks)
+    );
+    assert_owner_binds_continuous_targets(&plan.simultaneous_plan, targets);
+    // Certified, the value owner is a fresh filtered copy. A complete causal
+    // certificate seeds every singleton block exactly, so the copy is empty
+    // and no projection stage is issued.
+    assert!(
+        !plan
+            .value_projection_plan
+            .blocks
+            .shares_stage_owner(&plan.simultaneous_plan.blocks)
+    );
+    assert!(plan.value_projection_plan.blocks.scalar_blocks().is_empty());
+    assert!(projection_stage_plans(&plan).is_empty());
+}
+
+#[test]
 fn derivative_refresh_rejects_missing_owner_without_exact_isolation() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {

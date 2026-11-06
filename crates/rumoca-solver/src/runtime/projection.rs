@@ -127,6 +127,13 @@ pub(crate) trait ImplicitProjectionModel {
     ) -> Result<(), RuntimeSolveError>;
 
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot>;
+
+    /// The implicit row targets [`Self::implicit_target`] reads, when this
+    /// model has them as one owner; a projected plan can then answer a whole
+    /// block's targets from its construction binding instead of per row.
+    fn implicit_row_targets(&self) -> Option<&solve::ImplicitRowTargets> {
+        None
+    }
     #[cfg(test)]
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan;
     /// Return the diagnostic name of the variable one implicit row solves for.
@@ -701,7 +708,12 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             }
             seed[y_index] = value;
         }
-        row_scales.extend(linearization.row_scales(model, block_index, block, seed));
+        row_scales.extend(linearization.row_scales(
+            model,
+            block_index,
+            (block, Some(&plan.blocks)),
+            seed,
+        ));
     }
     seed_linearization::certify_with_refinement(model, plan, y, args, seed, row_scales)
 }
@@ -776,6 +788,7 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                     tolerance: args.tolerance,
                     step_limit,
                     certify_coordinates,
+                    owner: Some(&plan.blocks),
                 },
             );
             model.linked_kernel(KernelRequest::EndBlock)?;
@@ -927,7 +940,7 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     block_index: usize,
-    policy: AlgebraicBlockProjectionPolicy,
+    policy: AlgebraicBlockProjectionPolicy<'_>,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let AlgebraicBlockProjectionPolicy {
         tolerance: tol,
@@ -958,7 +971,14 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         {
             return Ok(update);
         }
-        return affine::project_affine_block(model, y, p, t, block, block_index, tol);
+        return affine::project_affine_block(
+            model,
+            y,
+            (p, t),
+            (block, policy.owner),
+            block_index,
+            tol,
+        );
     }
     // A block with a constructor-provided tearing takes the torn solve ahead of,
     // and instead of, the dense block Newton below: it iterates Newton over the
@@ -1000,12 +1020,13 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     block_index: usize,
-    policy: AlgebraicBlockProjectionPolicy,
+    policy: AlgebraicBlockProjectionPolicy<'_>,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let AlgebraicBlockProjectionPolicy {
         tolerance: tol,
         step_limit,
         certify_coordinates,
+        owner,
     } = policy;
     let mut changed = false;
     let Some(residual) = block_residual_or_seed(model, y, p, t, block, tol, &mut changed)? else {
@@ -1030,7 +1051,8 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
     let jacobian =
         algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices, structure)?;
     let pattern = structure.map(solve::ColoredJacobianStructure::pattern);
-    let (row_scales, variable_scales) = algebraic_block_scales(model, y, block, &jacobian, pattern);
+    let (row_scales, variable_scales) =
+        algebraic_block_scales(model, y, (block, owner), &jacobian, pattern);
     let residual_converged = scaled_residual_converged(&residual, &row_scales, tol);
     if residual_converged && !certify_coordinates {
         return Ok(ProjectionBlockUpdate {
@@ -1599,10 +1621,12 @@ struct ProjectionBlockUpdate {
 }
 
 #[derive(Clone, Copy)]
-struct AlgebraicBlockProjectionPolicy {
+struct AlgebraicBlockProjectionPolicy<'a> {
     tolerance: f64,
     step_limit: StepLimit,
     certify_coordinates: bool,
+    /// The plan owner the block was read from, for its target binding.
+    owner: Option<&'a solve::ProjectionBlocks>,
 }
 
 struct CombinedInitializationProjectionModel<'a, M> {
@@ -1662,6 +1686,10 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
 
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
         self.model.implicit_target(row_idx)
+    }
+
+    fn implicit_row_targets(&self) -> Option<&solve::ImplicitRowTargets> {
+        self.model.implicit_row_targets()
     }
 
     #[cfg(test)]
