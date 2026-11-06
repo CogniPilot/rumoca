@@ -831,9 +831,34 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 value,
                 axes,
             } => self.derive_update_view(*destination, *aggregate, *value, axes, provenance),
-            SolveOperation::CheckFinite { operand, check } => {
+            SolveOperation::CheckFinite {
+                operand,
+                check,
+                point,
+            } => {
                 let primal = self.get(*operand, provenance)?.primal;
-                self.builder.check_finite(primal, *check, provenance)
+                match (*check, point) {
+                    (
+                        SolveFiniteCheck::MappedPrimal {
+                            program_base,
+                            point_count,
+                            operation,
+                        },
+                        Some(point),
+                    ) => {
+                        let point = self.get(*point, provenance)?.primal;
+                        self.builder.check_finite_mapped(
+                            primal,
+                            program_base,
+                            point_count,
+                            operation,
+                            point,
+                            provenance,
+                        )
+                    }
+                    (check, None) => self.builder.check_finite(primal, check, provenance),
+                    (_, Some(_)) => Err(SolveProgramConstructionError::TypeMismatch { provenance }),
+                }
             }
             SolveOperation::CheckAssertion {
                 predicate_output,

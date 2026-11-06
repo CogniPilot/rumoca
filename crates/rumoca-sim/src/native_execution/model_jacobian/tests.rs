@@ -2,6 +2,51 @@ use super::*;
 use rumoca_compile::compile::{Session, SessionConfig};
 use rumoca_ir_solve::SolveModel;
 
+#[test]
+fn declared_native_target_selects_the_checked_scalar_profile() {
+    let profile = selected_profile().unwrap();
+    assert_eq!(profile.name(), "in-process-cranelift");
+    assert!(!profile.select().admits_nested_map_frames());
+    let model = model(NONLINEAR, "OwnedJacobian");
+    let portable = ModelStateJacobian::construct(&model).unwrap();
+    let selected = ModelStateJacobian::construct_for_target(&model, &profile).unwrap();
+    assert_eq!(
+        serde_json::to_value(portable.table()).unwrap(),
+        serde_json::to_value(selected.table()).unwrap()
+    );
+    assert_eq!(
+        portable.specialization().program(),
+        selected.specialization().program()
+    );
+    assert_ne!(
+        portable.specialization().profile(),
+        selected.specialization().profile()
+    );
+}
+
+#[test]
+fn invalid_native_target_declarations_refuse_instead_of_using_host_defaults() {
+    let source = include_str!("../../../targets/cranelift/target.toml");
+    for changed in [
+        source.replacen("version = 1", "version = 2", 1),
+        source.replacen("ir = \"solve\"", "ir = \"dae\"", 1),
+        source.replacen(
+            "name = \"in-process-cranelift\"",
+            "name = \"other-host\"",
+            1,
+        ),
+        source.replace("admits_nested_map_frames = false", ""),
+        source.replace(
+            "max_unrolled_operations = 1024",
+            "max_unrolled_operations = 1025",
+        ),
+        source.replace("[specialization]", "unknown = true\n[specialization]"),
+        format!("{source}\nwcet_budget = 1\n"),
+    ] {
+        assert!(profile_from_target(&changed).is_err(), "{changed}");
+    }
+}
+
 thread_local! {
     static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

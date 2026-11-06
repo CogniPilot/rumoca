@@ -1,0 +1,11 @@
+version = 1
+ir = "solve"
+name = "in-process-cranelift"
+
+[specialization]
+schema_version = 1
+name = "in-process-cranelift"
+layout = "dense-host-v1"
+max_unrolled_passes = 32
+max_unrolled_operations = 1024
+admits_nested_map_frames = false

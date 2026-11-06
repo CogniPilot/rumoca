@@ -1,21 +1,65 @@
-use super::admission::Program;
+use super::admission::{Program, Unit};
 use rumoca_core::Span;
 use rumoca_ir_solve::{
     BinaryOp, LinearOp, ProgramRegister, ProgramSlot, SolveArithmeticProfile, SolveBinaryOperator,
-    SolveFiniteCheck, SolveProgramConstructionError, SolveUnaryOperator, SolveValue,
-    StoredStateJacobianOutputOrder, TypedProgramBuilder, UnaryOp,
+    SolveFiniteCheck, SolveProgramConstructionError, SolveTargetSelection, SolveUnaryOperator,
+    SolveValue, StoredStateJacobianOutputOrder, TypedProgramBuilder, UnaryOp,
 };
 use std::collections::BTreeMap;
 
 type Error = SolveProgramConstructionError;
 
-#[derive(Clone)]
-struct Dual<'program> {
-    primal: ProgramRegister<'program>,
-    tangents: Vec<Option<ProgramRegister<'program>>>,
+pub(super) struct Target<'profile> {
+    pub arithmetic: SolveArithmeticProfile,
+    pub selection: SolveTargetSelection<'profile>,
 }
 
-struct Construction<'program> {
+#[derive(Clone)]
+pub(super) struct Dual<'program> {
+    pub(super) primal: ProgramRegister<'program>,
+    pub(super) tangents: Vec<Option<ProgramRegister<'program>>>,
+}
+
+/// The finite check one source operation issues: its scalar identity, or the
+/// identity of a compact node's operation at the body's point ordinal.
+#[derive(Clone, Copy)]
+pub(super) enum Guard<'program> {
+    Scalar(SolveFiniteCheck),
+    Mapped {
+        program_base: u32,
+        point_count: u32,
+        operation: u32,
+        point: ProgramRegister<'program>,
+    },
+}
+
+impl<'program> Guard<'program> {
+    pub(super) fn issue(
+        self,
+        builder: &mut TypedProgramBuilder<'program>,
+        value: ProgramRegister<'program>,
+        span: Span,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Scalar(check) => builder.check_finite(value, check, span),
+            Self::Mapped {
+                program_base,
+                point_count,
+                operation,
+                point,
+            } => builder.check_finite_mapped(
+                value,
+                program_base,
+                point_count,
+                operation,
+                point,
+                span,
+            ),
+        }
+    }
+}
+
+pub(super) struct Construction<'program> {
     inputs: Vec<ProgramRegister<'program>>,
     matrix: Vec<Option<ProgramRegister<'program>>>,
     states: usize,
@@ -28,11 +72,15 @@ pub(super) fn construct<'program>(
     builder: &mut TypedProgramBuilder<'program>,
     inputs: &[ProgramSlot<'program>],
     output: ProgramSlot<'program>,
-    programs: &[Program<'_>],
+    units: &[Unit<'_>],
     order: &StoredStateJacobianOutputOrder<'_>,
-    profile: SolveArithmeticProfile,
+    target: Target<'_>,
     span: Span,
 ) -> Result<(), Error> {
+    let Target {
+        arithmetic: profile,
+        selection: target,
+    } = target;
     let states = order.input_labels().len();
     let cells = order.cells();
     let mut construction = Construction {
@@ -53,28 +101,95 @@ pub(super) fn construct<'program>(
         zero: builder.constant(SolveValue::real(profile, 0.0), span)?,
         one: builder.constant(SolveValue::real(profile, 1.0), span)?,
     };
-    for (index, program) in programs.iter().enumerate() {
-        let program_index =
-            u32::try_from(index).map_err(|_| Error::InvalidTensorAlgebra { provenance: span })?;
-        construction.program(builder, program, program_index)?;
-    }
-    // Preserve canonical source/AD/guard evaluation order. Only the final
-    // aggregate's declared placements follow the source-issued output axes.
-    let mut values = Vec::with_capacity(cells);
-    for row in order.row_coordinates() {
-        for column in order.column_coordinates() {
-            values.push(construction.matrix[row * states + column].unwrap_or(construction.zero));
+    // Canonical program identities: one per scalar program, one per point of
+    // a compact node, in source order, exactly as the scalarized source
+    // numbers them. Evaluation follows the same order.
+    let mut next_program = 0u32;
+    let mut compact = Vec::new();
+    for unit in units {
+        match unit {
+            Unit::Scalar(program) => {
+                construction.program(builder, program, next_program)?;
+                next_program = next_program
+                    .checked_add(1)
+                    .ok_or(Error::InvalidTensorAlgebra { provenance: span })?;
+            }
+            Unit::Compact(node) => {
+                let count =
+                    u32::try_from(node.rows.len()).map_err(|_| Error::InvalidTensorAlgebra {
+                        provenance: node.node.span,
+                    })?;
+                if target.admits_nested_map_frames() {
+                    compact.push(super::compact::construct(
+                        builder,
+                        &construction,
+                        node,
+                        next_program,
+                    )?);
+                } else {
+                    // The selected target cannot execute a compact map: issue
+                    // the node's scalarized programs, the scalar reference's
+                    // own expansion, under the same program identities.
+                    construction.scalarized(builder, node, next_program)?;
+                }
+                next_program =
+                    next_program
+                        .checked_add(count)
+                        .ok_or(Error::InvalidTensorAlgebra {
+                            provenance: node.node.span,
+                        })?;
+            }
         }
     }
-    let width =
-        u32::try_from(states).map_err(|_| Error::InvalidTensorAlgebra { provenance: span })?;
-    let value = builder.construct_aggregate(&values, vec![width, width], span)?;
+    // Only the final aggregate's declared placements follow the
+    // source-issued output axes.
+    let compact = compact
+        .iter()
+        .map(|(placement, value)| (placement, *value))
+        .collect::<Vec<_>>();
+    let value = target.materialize_model_jacobian(
+        builder,
+        &compact,
+        &construction.matrix,
+        construction.zero,
+        order,
+        span,
+    )?;
     builder.check_finite(value, SolveFiniteCheck::Derivative, span)?;
     builder.store(output, value, span)
 }
 
 impl<'program> Construction<'program> {
-    fn absent(&self, primal: ProgramRegister<'program>) -> Dual<'program> {
+    /// A body construction over `width` node-local seeds; it reads no inputs.
+    pub(super) fn seeded(
+        width: usize,
+        profile: SolveArithmeticProfile,
+        zero: ProgramRegister<'program>,
+        one: ProgramRegister<'program>,
+    ) -> Self {
+        Self {
+            inputs: Vec::new(),
+            matrix: Vec::new(),
+            states: width,
+            profile,
+            zero,
+            one,
+        }
+    }
+
+    pub(super) fn inputs(&self) -> &[ProgramRegister<'program>] {
+        &self.inputs
+    }
+
+    pub(super) const fn states(&self) -> usize {
+        self.states
+    }
+
+    pub(super) const fn profile(&self) -> SolveArithmeticProfile {
+        self.profile
+    }
+
+    pub(super) fn absent(&self, primal: ProgramRegister<'program>) -> Dual<'program> {
         Dual {
             primal,
             tangents: vec![None; self.states],
@@ -97,6 +212,27 @@ impl<'program> Construction<'program> {
         Ok(Dual { primal, tangents })
     }
 
+    /// Issue a compact node's scalarized programs under its point identities
+    /// `program_base + point`, for a target that cannot execute its map.
+    fn scalarized(
+        &mut self,
+        builder: &mut TypedProgramBuilder<'program>,
+        compact: &super::admission::Compact<'_>,
+        program_base: u32,
+    ) -> Result<(), Error> {
+        let span = compact.node.span;
+        let programs = super::admission::scalarized_programs(compact)
+            .map_err(|_| Error::InvalidTensorAlgebra { provenance: span })?;
+        for (point, program) in programs.iter().enumerate() {
+            let index = u32::try_from(point)
+                .ok()
+                .and_then(|point| program_base.checked_add(point))
+                .ok_or(Error::InvalidTensorAlgebra { provenance: span })?;
+            self.program(builder, program, index)?;
+        }
+        Ok(())
+    }
+
     fn program(
         &mut self,
         builder: &mut TypedProgramBuilder<'program>,
@@ -110,10 +246,10 @@ impl<'program> Construction<'program> {
                 u32::try_from(index).map_err(|_| Error::InvalidTensorAlgebra {
                     provenance: program.span,
                 })?;
-            let check = SolveFiniteCheck::Primal {
+            let check = Guard::Scalar(SolveFiniteCheck::Primal {
                 program: program_index,
                 operation: operation_index,
-            };
+            });
             if let LinearOp::StoreOutput { src } = operation {
                 let value: &Dual<'program> =
                     registers.get(src).ok_or(Error::InvalidTensorAlgebra {
@@ -142,12 +278,12 @@ impl<'program> Construction<'program> {
         Ok(())
     }
 
-    fn operation(
+    pub(super) fn operation(
         &self,
         builder: &mut TypedProgramBuilder<'program>,
         operation: &LinearOp,
         registers: &BTreeMap<u32, Dual<'program>>,
-        (span, check): (Span, SolveFiniteCheck),
+        (span, check): (Span, Guard<'program>),
     ) -> Result<(u32, Dual<'program>), Error> {
         let read = |index: &u32| {
             registers
@@ -184,7 +320,7 @@ impl<'program> Construction<'program> {
             _ => return Err(Error::InvalidTensorAlgebra { provenance: span }),
         };
         if !matches!(operation, LinearOp::Unary { .. } | LinearOp::Binary { .. }) {
-            builder.check_finite(result.1.primal, check, span)?;
+            check.issue(builder, result.1.primal, span)?;
         }
         Ok(result)
     }
@@ -194,10 +330,10 @@ impl<'program> Construction<'program> {
         builder: &mut TypedProgramBuilder<'program>,
         operator: SolveUnaryOperator,
         value: Dual<'program>,
-        (span, check): (Span, SolveFiniteCheck),
+        (span, check): (Span, Guard<'program>),
     ) -> Result<Dual<'program>, Error> {
         let source = builder.scalar_unary_directional_source(operator, value.primal, span)?;
-        builder.check_finite(source.primal(), check, span)?;
+        check.issue(builder, source.primal(), span)?;
         let tangents = value
             .tangents
             .iter()
@@ -214,14 +350,14 @@ impl<'program> Construction<'program> {
         builder: &mut TypedProgramBuilder<'program>,
         operator: SolveBinaryOperator,
         values: [Dual<'program>; 2],
-        (span, check): (Span, SolveFiniteCheck),
+        (span, check): (Span, Guard<'program>),
     ) -> Result<Dual<'program>, Error> {
         let source = builder.scalar_binary_directional_source(
             operator,
             [values[0].primal, values[1].primal],
             span,
         )?;
-        builder.check_finite(source.primal(), check, span)?;
+        check.issue(builder, source.primal(), span)?;
         let tangents = values[0]
             .tangents
             .iter()

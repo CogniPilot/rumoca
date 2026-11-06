@@ -132,7 +132,7 @@ fn first_finite_check(
     None
 }
 
-fn regions(operation: &SolveOperation) -> [Option<&TypedProgram>; 2] {
+pub(crate) fn regions(operation: &SolveOperation) -> [Option<&TypedProgram>; 2] {
     match operation {
         SolveOperation::AssignedConditional { program } => [
             Some(program.if_true().body()),

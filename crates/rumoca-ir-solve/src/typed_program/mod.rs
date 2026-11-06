@@ -2,14 +2,17 @@
 
 mod algorithm_block;
 mod call;
+mod compact_placement;
 mod demand;
 mod entry;
 mod integer_interval;
 mod pass_independence;
 mod program;
 mod target;
+mod target_specialization;
 mod types;
 
+pub use compact_placement::CompactJacobianPlacement;
 pub use target::{SolveAdmittedFunctionDomain, SolveFunctionTarget, SolveFunctionTargetRefusal};
 
 pub use algorithm_block::{
@@ -40,6 +43,10 @@ pub use integer_interval::{
     SolveIntegerInterval, fold_integer_compare, fold_scalar_binary, fold_scalar_unary,
 };
 pub use pass_independence::{IndependentPasses, LaneExactness, SolveIndexForm};
+pub use program::parameter_stage::{
+    SolveParameterCallStep, SolveParameterStageCandidate, SolveParameterStageError,
+    SolveParameterStageValue,
+};
 pub use program::print_plan::{SolveElementAxis, SolveTensorKernel, SolveTensorPart};
 pub use program::{
     MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, ProgramAssertion, ProgramAssignedState,
@@ -61,4 +68,9 @@ pub use program::{
 pub use types::{
     SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,
     SolveTypeConstructionError, SolveValue, SolveValueKind, SolveValueType,
+};
+
+pub use target_specialization::{
+    SolveSpecializationIdentity, SolveTargetLayout, SolveTargetProfile, SolveTargetProfileError,
+    SolveTargetSelection,
 };

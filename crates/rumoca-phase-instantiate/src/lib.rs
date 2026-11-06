@@ -124,8 +124,8 @@ use type_lookup::{
     TypeInfo, is_type_compatible_with_def_id, lookup_type_info, resolve_primitive_type_id,
 };
 use type_overrides::{
-    SelectedComponentTypes, TypeOverrideMap, apply_type_override, build_type_override_map,
-    resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
+    DynamicExpressionTargetBatch, SelectedComponentTypes, TypeOverrideMap, apply_type_override,
+    build_type_override_map, resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
     resolve_dynamic_statement_targets, resolve_post_materialization_component_targets,
 };
 
@@ -1382,15 +1382,7 @@ fn instantiate_component(
         is_discrete: is_discrete_type,
     } = type_info;
     let (flow, stream) = component_flow_stream(comp, ctx);
-    let (dims, dims_expr) = resolve_component_shape(
-        tree,
-        comp,
-        ctx,
-        overlay,
-        class_def,
-        scope.effective_components,
-        scope.imports.qualification,
-    )?;
+    let (dims, dims_expr) = resolve_component_shape(tree, comp, ctx, overlay, class_def, &scope)?;
     broadcast_type_attribute_values(&type_attribute_shapes, &dims, &mut attrs);
     let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
@@ -1525,19 +1517,25 @@ fn resolve_component_shape(
     ctx: &InstantiateContext,
     overlay: &ast::InstanceOverlay,
     class_def: Option<&ast::ClassDef>,
-    effective_components: &IndexMap<String, ast::Component>,
-    imports: &[(String, String)],
+    scope: &ComponentInstantiationScope<'_>,
 ) -> InstantiateResult<(Vec<i64>, Vec<ast::Subscript>)> {
     let type_dims =
-        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components)?;
-    let (mut dims, dims_expr) = resolve_component_dimensions(
+        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), scope.effective_components)?;
+    let (mut dims, mut dims_expr) = resolve_component_dimensions(
         comp,
         &type_dims,
         ctx.mod_env(),
-        effective_components,
+        scope.effective_components,
         tree,
-        imports,
+        scope.imports.qualification,
     );
+    // Like the declaration-side bindings and attributes: a member of a
+    // replaceable class is only proved once its selection is known.
+    let selected_component_types = SelectedComponentTypes::default();
+    let mut batch =
+        DynamicExpressionTargetBatch::new(tree, scope.type_overrides, &selected_component_types);
+    batch.transform_subscripts(&mut dims_expr);
+    let dims_expr = batch.finish(dims_expr)?;
     // MLS §10.7: the component loop already established this empty domain.
     // Preserve it even when symbolic extents are deferred for typecheck, and
     // retain dims_expr so that typecheck still verifies the final modifiers.

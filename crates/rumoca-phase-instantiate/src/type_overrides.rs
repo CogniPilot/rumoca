@@ -38,8 +38,8 @@ pub(super) use component_class_overrides::extract_component_class_overrides;
 pub(super) use component_redeclare_validation::validate_component_class_redeclare_target;
 pub(super) use component_type_selection::apply_type_override;
 pub(super) use deferred_references::{
-    SelectedComponentTypes, resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
-    resolve_dynamic_statement_targets,
+    DynamicExpressionTargetBatch, SelectedComponentTypes, resolve_dynamic_equation_targets,
+    resolve_dynamic_expression_targets, resolve_dynamic_statement_targets,
 };
 pub(super) use override_collection::build_type_override_map;
 pub(super) use override_map::TypeOverrideMap;

@@ -46,6 +46,8 @@ pub struct TargetManifest {
     pub readiness_level: Option<u8>,
     pub package: Option<TargetPackage>,
     pub integer: Option<TargetIntegerDomain>,
+    /// Final Solve IR construction profile; templates consume its issued plan.
+    pub specialization: Option<rumoca_ir_solve::SolveTargetProfile>,
     pub fmi_deployment: Option<rumoca_ir_solve::fmi::FmiDeploymentCapabilities>,
     pub completion_message: Option<String>,
     #[serde(alias = "requirements", alias = "requires")]
