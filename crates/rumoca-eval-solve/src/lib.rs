@@ -112,8 +112,9 @@ pub use table_runtime::{
     eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
 pub use tangent_lanes::{
-    ColoredTangentEvaluator, DirectionCall, PreparedLaneCatalog, PreparedTangentLaneProgram,
-    TangentPoint, TornTangentEvaluator, TornTangentJacobian, causal_coefficient_is_finite,
+    ColoredTangentEvaluator, DirectionCall, DirectionCommit, DirectionSweep, PreparedLaneCatalog,
+    PreparedTangentLaneProgram, TangentPoint, TornTangentEvaluator, TornTangentJacobian,
+    causal_coefficient_is_finite,
 };
 pub use typed_program::{
     AssertionInvocationEvaluation, AssertionReport, TypedAssertionFailure, TypedProgramEvalError,

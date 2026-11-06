@@ -90,7 +90,7 @@ pub(super) fn compile_with_roots(
     }
 }
 
-fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveModel {
+pub(super) fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveModel {
     let dae = compile_with_roots(source, model, roots);
     match lower_dae_for_simulation(&dae, &SimOptions::default()) {
         Ok(model) => model,
@@ -99,7 +99,7 @@ fn lower_source(source: &str, model: &str, roots: &[PathBuf]) -> solve::SolveMod
 }
 
 /// Deterministic uniform numbers in `[-1, 1)`.
-struct Random(u64);
+pub(super) struct Random(pub(super) u64);
 
 impl Random {
     fn next(&mut self) -> f64 {
@@ -110,15 +110,15 @@ impl Random {
     }
 }
 
-struct Rows<'a> {
-    model: &'a solve::SolveModel,
+pub(super) struct Rows<'a> {
+    pub(super) model: &'a solve::SolveModel,
     /// The solver-Y JVP rows the runtime projection differentiates.
-    jvp: solve::ScalarProgramBlock,
-    prepared_jvp: PreparedScalarProgramBlock,
+    pub(super) jvp: solve::ScalarProgramBlock,
+    pub(super) prepared_jvp: PreparedScalarProgramBlock,
 }
 
 impl Rows<'_> {
-    fn context(&self) -> RowEvalContext<'_> {
+    pub(super) fn context(&self) -> RowEvalContext<'_> {
         RowEvalContext {
             pure_calls: Some(&self.model.pure_calls),
             external_tables: Some(self.model.external_tables.as_slice()),
@@ -172,7 +172,7 @@ fn assert_close(label: &str, exact: &[f64], reference: &[f64]) {
 
 /// The model start point with every coordinate moved at random, away from the
 /// exact zeros where start values put vector norms and similar kinks.
-fn random_point(model: &solve::SolveModel, random: &mut Random) -> Vec<f64> {
+pub(super) fn random_point(model: &solve::SolveModel, random: &mut Random) -> Vec<f64> {
     model
         .initial_y
         .iter()
@@ -180,7 +180,7 @@ fn random_point(model: &solve::SolveModel, random: &mut Random) -> Vec<f64> {
         .collect()
 }
 
-fn prepared_rows(model: &solve::SolveModel) -> Rows<'_> {
+pub(super) fn prepared_rows(model: &solve::SolveModel) -> Rows<'_> {
     let jvp = to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)
         .expect("scalarize the solver-Y JVP");
     Rows {
@@ -190,7 +190,7 @@ fn prepared_rows(model: &solve::SolveModel) -> Rows<'_> {
     }
 }
 
-fn point<'a>(rows: &'a Rows<'a>, y: &'a [f64]) -> TangentPoint<'a> {
+pub(super) fn point<'a>(rows: &'a Rows<'a>, y: &'a [f64]) -> TangentPoint<'a> {
     TangentPoint {
         y,
         p: &rows.model.parameters,
