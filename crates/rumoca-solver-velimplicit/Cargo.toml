@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = ["sparse-linalg"]
+# Sparse LU of the iteration matrix on the structural pattern (rumoca-solver's
+# shared pattern-keyed LU); dense otherwise.
+sparse-linalg = ["rumoca-solver/sparse-linalg"]
+
 [dependencies]
 # Like rumoca-solver-rk45, this crate implements only the FMI 3 ME
 # numerical-plugin interface (SPEC_0038 §Internal Solver Boundary).

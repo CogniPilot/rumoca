@@ -1,4 +1,8 @@
-use faer::{Col, prelude::Solve};
+use faer::{
+    Col,
+    prelude::Solve,
+    sparse::{SparseColMat, Triplet},
+};
 use nalgebra::DMatrix;
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_solve::{PatternDerivation, PatternProvenance};
@@ -106,7 +110,7 @@ fn retained_sparse_storage_matches_fresh_factors_with_changing_coefficients_and_
             .unwrap();
         let expected = fresh_solution(&matrix, &rhs, &row_scales, &variable_scales, &pattern);
         assert_same_bits(&actual, &expected);
-        let address = cache.system.as_ref().unwrap().workspace.storage.as_ptr() as usize;
+        let address = cache.system.as_ref().unwrap().system.workspace_address();
         assert_eq!(*workspace_address.get_or_insert(address), address);
     }
 }
@@ -277,8 +281,8 @@ fn cloned_successful_cache_owns_independent_numeric_storage() {
         .unwrap();
     let mut cloned = cache.clone();
     assert_ne!(
-        cache.system.as_ref().unwrap().workspace.storage.as_ptr(),
-        cloned.system.as_ref().unwrap().workspace.storage.as_ptr(),
+        cache.system.as_ref().unwrap().system.workspace_address(),
+        cloned.system.as_ref().unwrap().system.workspace_address(),
     );
     let actual = cloned
         .solve_scaled(
@@ -438,4 +442,42 @@ fn dense_factor_guards_match_fresh_rectangular_singular_and_nonfinite_systems() 
         ),
         dense_delta(&identity, &[1.0; 4], (&[1.0; 4], &[1.0; 4]), None),
     );
+}
+
+#[test]
+fn structurally_singular_factor_is_rejected_and_new_pattern_recovers() {
+    let at = PatternProvenance::derived(
+        PatternDerivation::DependencyPropagation,
+        Span::from_offsets(SourceId::from_source_name("RejectedProjection.mo"), 0, 1),
+    )
+    .unwrap();
+    let singular = StructuralPattern::from_row_dependencies(2, 2, &[vec![0], vec![0]], at).unwrap();
+    let mut cache = SparseNewtonCache::default();
+    let source =
+        super::super::BlockJacobian::dense(DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 2.0, 0.0]));
+    let rhs = DVector::from_column_slice(&[1.0, 2.0]);
+    for _ in 0..2 {
+        assert!(
+            cache
+                .solve_scaled(&source, &rhs, &[1.0; 2], &[1.0; 2], &singular)
+                .is_none()
+        );
+        assert!(
+            cache.system.is_some(),
+            "symbolic construction must reach numeric factorization"
+        );
+    }
+    let regular = pattern(2, false);
+    let matrix = matrix(&regular, 4.0);
+    let expected = fresh_solution(&matrix, &rhs, &[1.0; 2], &[1.0; 2], &regular);
+    let actual = cache
+        .solve_scaled(
+            &super::super::BlockJacobian::dense(matrix),
+            &rhs,
+            &[1.0; 2],
+            &[1.0; 2],
+            &regular,
+        )
+        .unwrap();
+    assert_same_bits(&actual, &expected);
 }

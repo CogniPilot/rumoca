@@ -14,6 +14,8 @@ mod compiled_messages;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
 mod function_returns;
+#[cfg(feature = "solver-diffsol")]
+mod g2_projection;
 mod host_initialization;
 mod initial_relation_geometry;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]

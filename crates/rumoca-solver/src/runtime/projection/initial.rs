@@ -251,6 +251,8 @@ pub(super) fn project_initial_variables_by_plan<M: AlgebraicProjectionModel>(
         }
         let mut changed = false;
         for (block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
+            #[cfg(rumoca_qualification)]
+            let _qualification = crate::qualification::enter("initial", t, block_index, iteration);
             let update = project_initial_block(model, y, p, t, block, block_index, tol)?;
             changed |= update.changed;
         }
