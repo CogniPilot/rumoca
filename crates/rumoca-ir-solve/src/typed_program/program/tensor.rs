@@ -21,6 +21,14 @@ impl<'program> TypedProgramBuilder<'program> {
         {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
         }
+        let (lhs, rhs) = if scalar_on_lhs {
+            (scalar, aggregate)
+        } else {
+            (aggregate, scalar)
+        };
+        if let Some(folded) = self.identity_operand(operator, lhs, rhs) {
+            return Ok(folded);
+        }
         let destination = self.issue_register(aggregate_type, provenance)?;
         self.push(
             SolveOperation::BroadcastBinary {
@@ -262,6 +270,11 @@ impl<'program> TypedProgramBuilder<'program> {
             || !aggregate_type.element_type().is_numeric()
         {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
+        }
+        if let Some(folded) =
+            self.identity_operand(SolveBinaryOperator::Multiply, aggregate, scalar)
+        {
+            return Ok(folded);
         }
         let destination = self.issue_register(aggregate_type, provenance)?;
         self.push(

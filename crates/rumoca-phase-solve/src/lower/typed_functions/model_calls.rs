@@ -48,6 +48,13 @@ impl<'dae> PureCallRegistry<'dae> {
         view: dae::DaeView<'dae>,
         expressions: impl IntoIterator<Item = (dae::ExprId<'dae>, Scope)>,
     ) -> Result<RegisteredExpressionCalls<'dae, Scope>, CallLoweringError> {
+        let expressions = expressions.into_iter().collect::<Vec<_>>();
+        super::zero_products::register_selections(
+            &mut self.table,
+            view,
+            expressions.iter().map(|(expression, _)| *expression),
+            &mut self.identities,
+        )?;
         let mut roots = Vec::new();
         let mut seen = HashMap::new();
         let mut conflicts = HashSet::new();

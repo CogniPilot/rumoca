@@ -211,6 +211,13 @@ impl<'dae> GroupPlan<'dae> {
             }
         }
         for (member, function, calls, inventory) in bodies {
+            zero_products::register_selections(
+                table,
+                view,
+                assertions::statement_roots(function.statements(), &|_, _| false),
+                identities,
+            )?;
+
             let interface = FunctionInterface::lower(view, function, arithmetic)?;
             plan.functions.insert(
                 member,
@@ -290,6 +297,7 @@ fn register_group<'dae>(
             span,
         ));
     }
+    let selected_calls = std::sync::Arc::new(identities.selected_calls.clone());
     let registered = &identities.calls;
     let ids =
         table.add_recursive_group(group_members, |ordinal, ids, builder, inputs, outputs| {
@@ -306,6 +314,7 @@ fn register_group<'dae>(
             )?;
             let body = OwnerBody {
                 function: member.function,
+                selected_calls: selected_calls.clone(),
                 interface: &member.interface,
                 callees: callees.into(),
                 inventory: &member.inventory,

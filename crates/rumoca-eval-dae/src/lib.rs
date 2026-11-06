@@ -21,8 +21,9 @@ pub use numeric::{
 };
 pub use projection::{
     CoordinateQuery, LiteralBinding, ProjectionError, PrunedScalarCoordinateProjection,
-    ScalarCoordinateProjectionCache, ZeroCoefficients, for_each_scalar_coordinate,
-    for_each_scalar_coordinate_cached, for_each_scalar_coordinate_filtered_cached,
-    for_each_scalar_coordinate_queried_cached, literal_bindings, multiplication_scalar_pairs,
+    ScalarCoordinateProjectionCache, ZeroCoefficientPattern, ZeroCoefficientPatternView,
+    ZeroCoefficients, for_each_scalar_coordinate, for_each_scalar_coordinate_cached,
+    for_each_scalar_coordinate_filtered_cached, for_each_scalar_coordinate_queried_cached,
+    literal_bindings, literal_tensor_selection, multiplication_scalar_pairs,
 };
 pub use selected_values::for_each_selected_value_expression;

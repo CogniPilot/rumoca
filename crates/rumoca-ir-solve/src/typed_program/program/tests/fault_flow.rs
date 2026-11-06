@@ -75,8 +75,8 @@ fn real_arithmetic_cannot_fault_and_a_store_always_runs() {
             SolveSlotAccess::ReadWrite,
             span(0),
         )?;
-        let one = builder.constant(SolveValue::real(arithmetic, 1.0), span(1))?;
-        let sum = builder.binary(SolveBinaryOperator::Divide, one, one, span(2))?;
+        let zero = builder.constant(SolveValue::real(arithmetic, 0.0), span(1))?;
+        let sum = builder.binary(SolveBinaryOperator::Divide, zero, zero, span(2))?;
         builder.store(output, sum, span(3))
     })
     .unwrap();

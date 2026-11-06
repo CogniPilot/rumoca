@@ -1,3 +1,4 @@
+mod arithmetic;
 mod assigned_state;
 mod boolean_extrema;
 mod fault_flow;

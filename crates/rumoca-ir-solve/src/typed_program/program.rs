@@ -1,3 +1,4 @@
+mod arithmetic;
 mod assertions;
 mod assigned_state;
 mod calls;
@@ -738,6 +739,7 @@ pub struct TypedProgramBuilder<'program> {
     register_types: Vec<SolveValueType>,
     operations: Vec<SolveSpannedOperation>,
     numbering: std::collections::HashMap<ValueKey, SolveRegisterId>,
+    arithmetic_facts: arithmetic::ArithmeticFacts,
     /// Whether repeated scalar computations share a register; a replayed wire
     /// keeps every recorded register.
     numbered_values: bool,
@@ -815,35 +817,6 @@ impl<'program> TypedProgramBuilder<'program> {
         Ok(())
     }
 
-    pub fn constant(
-        &mut self,
-        value: SolveValue,
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        require_provenance(provenance)?;
-        if !value.value_type().belongs_to(self.arithmetic) {
-            return Err(SolveProgramConstructionError::ProfileMismatch { provenance });
-        }
-        let key = value
-            .value_type()
-            .dimensions()
-            .is_empty()
-            .then(|| ValueKey::Constant(value.clone()));
-        if let Some(existing) = self.numbered(key.as_ref()) {
-            return Ok(existing);
-        }
-        let destination = self.issue_register(value.value_type().clone(), provenance)?;
-        self.push(
-            SolveOperation::Constant {
-                destination: destination.id,
-                value,
-            },
-            provenance,
-        );
-        self.number(key, destination);
-        Ok(destination)
-    }
-
     pub fn load(
         &mut self,
         slot: ProgramSlot<'program>,
@@ -906,96 +879,6 @@ impl<'program> TypedProgramBuilder<'program> {
         );
         self.slot_initialized[slot_id.index()] = true;
         Ok(())
-    }
-
-    pub fn unary(
-        &mut self,
-        operator: SolveUnaryOperator,
-        operand: ProgramRegister<'program>,
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        require_provenance(provenance)?;
-        let value_type = self.register_type(operand, provenance)?.clone();
-        let valid = match operator {
-            SolveUnaryOperator::Negate | SolveUnaryOperator::Abs | SolveUnaryOperator::Sign => {
-                value_type.element_type().is_numeric()
-            }
-            SolveUnaryOperator::Not => value_type.element_type() == SolveScalarType::Boolean,
-            SolveUnaryOperator::Sqrt
-            | SolveUnaryOperator::Floor
-            | SolveUnaryOperator::Ceiling
-            | SolveUnaryOperator::Truncate
-            | SolveUnaryOperator::Sin
-            | SolveUnaryOperator::Cos
-            | SolveUnaryOperator::Tan
-            | SolveUnaryOperator::Asin
-            | SolveUnaryOperator::Acos
-            | SolveUnaryOperator::Atan
-            | SolveUnaryOperator::Sinh
-            | SolveUnaryOperator::Cosh
-            | SolveUnaryOperator::Tanh
-            | SolveUnaryOperator::Exp
-            | SolveUnaryOperator::Log
-            | SolveUnaryOperator::Log10 => {
-                matches!(value_type.element_type(), SolveScalarType::Real { .. })
-            }
-        };
-        if !valid {
-            return Err(SolveProgramConstructionError::TypeMismatch { provenance });
-        }
-        let key = value_type
-            .dimensions()
-            .is_empty()
-            .then_some(ValueKey::Unary(operator, operand.id));
-        if let Some(existing) = self.numbered(key.as_ref()) {
-            return Ok(existing);
-        }
-        let destination = self.issue_register(value_type, provenance)?;
-        self.push(
-            SolveOperation::Unary {
-                destination: destination.id,
-                operator,
-                operand: operand.id,
-            },
-            provenance,
-        );
-        self.number(key, destination);
-        Ok(destination)
-    }
-
-    pub fn binary(
-        &mut self,
-        operator: SolveBinaryOperator,
-        lhs: ProgramRegister<'program>,
-        rhs: ProgramRegister<'program>,
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        require_provenance(provenance)?;
-        let lhs_type = self.register_type(lhs, provenance)?.clone();
-        let rhs_type = self.register_type(rhs, provenance)?;
-        let valid_elements = binary_operator_accepts(operator, lhs_type.element_type());
-        if lhs_type != *rhs_type || !valid_elements {
-            return Err(SolveProgramConstructionError::TypeMismatch { provenance });
-        }
-        let key = lhs_type
-            .dimensions()
-            .is_empty()
-            .then_some(ValueKey::Binary(operator, lhs.id, rhs.id));
-        if let Some(existing) = self.numbered(key.as_ref()) {
-            return Ok(existing);
-        }
-        let destination = self.issue_register(lhs_type, provenance)?;
-        self.push(
-            SolveOperation::Binary {
-                destination: destination.id,
-                operator,
-                lhs: lhs.id,
-                rhs: rhs.id,
-            },
-            provenance,
-        );
-        self.number(key, destination);
-        Ok(destination)
     }
 
     pub fn compare(
@@ -1969,6 +1852,7 @@ impl<'program> TypedProgramBuilder<'program> {
     }
 
     fn push(&mut self, operation: SolveOperation, provenance: Span) {
+        self.arithmetic_facts.record(&operation);
         self.operations.push(SolveSpannedOperation {
             operation,
             provenance,

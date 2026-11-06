@@ -2,6 +2,20 @@
 
 use super::*;
 
+mod pattern;
+pub use pattern::{ZeroCoefficientPattern, ZeroCoefficientPatternView};
+
+/// A checked literal/whole tensor selection shared by incidence and typed lowering.
+/// Dynamic, sliced, nonpositive and out-of-range subscripts retain the ordinary
+/// index owner's validation path rather than licensing source-coordinate demand.
+pub fn literal_tensor_selection<'dae>(
+    view: dae::DaeView<'dae>,
+    base: dae::ExprId<'dae>,
+    subscripts: dae::SubscriptsView<'dae>,
+) -> Option<Vec<Option<i64>>> {
+    pattern::literal_pattern_indices(view, base, subscripts)
+}
+
 /// Memoized proofs that one factor of a product is exactly zero.
 ///
 /// Structural incidence omits a Real factor multiplied by such a factor, and
@@ -13,6 +27,8 @@ pub struct ZeroCoefficients<'dae> {
     /// The literal each declaration's own continuous owner binds it to, by
     /// declaration ordinal, computed on first use.
     bindings: Option<Vec<Option<dae::ExprId<'dae>>>>,
+    patterns: HashMap<(dae::ExprId<'dae>, Reach), ZeroCoefficientPattern>,
+    removable: HashMap<dae::ExprId<'dae>, bool>,
     /// The expression each declaration's own continuous owner equates it to,
     /// by declaration ordinal, computed on first use.
     owners: Option<Vec<Option<dae::ExprId<'dae>>>>,
@@ -35,7 +51,7 @@ impl<'dae> ZeroCoefficients<'dae> {
 
     /// Whether `factor` may be omitted from a product whose other factor,
     /// `coefficient`, is proven zero at `scalar`.
-    pub(super) fn omits_coordinate(
+    pub fn omits_coordinate(
         &mut self,
         view: dae::DaeView<'dae>,
         factor: dae::ExprId<'dae>,
@@ -44,7 +60,7 @@ impl<'dae> ZeroCoefficients<'dae> {
     ) -> bool {
         let node = view.expression(factor).unwrap();
         node.value_type().scalar_type() == dae::ScalarType::Real
-            && removable_factor(view, factor)
+            && self.removable_factor(view, factor)
             && self.prove(
                 view,
                 coefficient,
@@ -240,44 +256,65 @@ fn scalar_operands<'dae>(
 
 /// A factor whose omission removes no evaluation effect: literals, coordinate
 /// reads, and their sums, differences, products, arrays, transposes, and
-/// literal-subscript selections. Division, calls, and every other operation
-/// may fail or depend on a domain, so such a factor is never omitted.
-fn removable_factor<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> bool {
-    let Some(node) = view.expression(expression) else {
-        return false;
-    };
-    match node.operation() {
-        dae::ExpressionOperation::Literal(
-            dae::DaeLiteral::Real(_) | dae::DaeLiteral::Integer(_),
-        )
-        | dae::ExpressionOperation::Coordinate(_) => true,
-        dae::ExpressionOperation::Unary {
-            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
-            operand,
-        } => removable_factor(view, operand),
-        dae::ExpressionOperation::Binary {
-            operator:
-                dae::BinaryOperator::Add | dae::BinaryOperator::Subtract | dae::BinaryOperator::Multiply,
-            lhs,
-            rhs,
-        } => removable_factor(view, lhs) && removable_factor(view, rhs),
-        dae::ExpressionOperation::Array(elements)
-        | dae::ExpressionOperation::Builtin {
-            builtin: dae::PureBuiltin::Transpose,
-            arguments: elements,
-        } => elements
-            .iter()
-            .all(|element| removable_factor(view, element)),
-        dae::ExpressionOperation::Index { base, subscripts } => {
-            subscripts.iter().all(|subscript| match subscript {
-                dae::SubscriptView::Index { expression, .. } => {
-                    literal_integer(view, expression).is_some()
-                }
-                dae::SubscriptView::Whole { .. } => true,
-                dae::SubscriptView::Slice { .. } => false,
-            }) && removable_factor(view, base)
+/// range-checked literal-subscript selections. Division, calls, and every other operation
+/// may fail or depend on a domain, so such a factor is never omitted. Checked
+/// Integer arithmetic is likewise retained even under an enclosing Real
+/// conversion: totality is established at every source node, not by root type.
+impl<'dae> ZeroCoefficients<'dae> {
+    fn removable_factor(
+        &mut self,
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> bool {
+        if let Some(&value) = self.removable.get(&expression) {
+            return value;
         }
-        _ => false,
+        let Some(node) = view.expression(expression) else {
+            return false;
+        };
+        let removable = match node.operation() {
+            dae::ExpressionOperation::Literal(
+                dae::DaeLiteral::Real(_) | dae::DaeLiteral::Integer(_),
+            )
+            | dae::ExpressionOperation::Coordinate(_) => true,
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Plus,
+                operand,
+            } => self.removable_factor(view, operand),
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Negate,
+                operand,
+            } => {
+                node.value_type().scalar_type() == dae::ScalarType::Real
+                    && self.removable_factor(view, operand)
+            }
+            dae::ExpressionOperation::Binary {
+                operator:
+                    dae::BinaryOperator::Add
+                    | dae::BinaryOperator::Subtract
+                    | dae::BinaryOperator::Multiply,
+                lhs,
+                rhs,
+            } => {
+                node.value_type().scalar_type() == dae::ScalarType::Real
+                    && self.removable_factor(view, lhs)
+                    && self.removable_factor(view, rhs)
+            }
+            dae::ExpressionOperation::Array(elements)
+            | dae::ExpressionOperation::Builtin {
+                builtin: dae::PureBuiltin::Transpose,
+                arguments: elements,
+            } => elements
+                .iter()
+                .all(|element| self.removable_factor(view, element)),
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                pattern::literal_pattern_indices(view, base, subscripts).is_some()
+                    && self.removable_factor(view, base)
+            }
+            _ => false,
+        };
+        self.removable.insert(expression, removable);
+        removable
     }
 }
 

@@ -345,6 +345,7 @@ impl<'formal> PureCallRegistry<'formal> {
             .collect::<Result<Vec<_>, _>>()?;
         outputs.extend(assertion_slots.iter().map(AssertionSlot::output));
         let residual_outputs = bodies.len();
+        let selected_calls = std::sync::Arc::new(self.identities.selected_calls.clone());
         let identity = self.identities.issue(at)?;
         let owner =
             self.table
@@ -381,6 +382,9 @@ impl<'formal> PureCallRegistry<'formal> {
                         conditional_statements: Default::default(),
                         assigned_values: HashMap::new(),
                         totality: HashMap::new(),
+                        zero_coefficients: Default::default(),
+                        selected_values: Default::default(),
+                        selected_calls: selected_calls.clone(),
                         implied_guards: Vec::new(),
                         eager: EagerScope::default(),
                     };

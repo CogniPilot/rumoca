@@ -16,6 +16,7 @@ mod directional_maximum;
 mod directional_pointwise;
 mod directional_power;
 mod directional_relations;
+mod exact_arithmetic;
 mod immutable_payloads;
 mod index_bounds;
 mod linear_solve;

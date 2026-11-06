@@ -68,6 +68,9 @@ pub(super) fn register_native_call<'dae>(
                 conditional_statements: Default::default(),
                 assigned_values: HashMap::new(),
                 totality: HashMap::new(),
+                zero_coefficients: Default::default(),
+                selected_values: Default::default(),
+                selected_calls: Default::default(),
                 implied_guards: Vec::new(),
                 eager: EagerScope::default(),
             };
