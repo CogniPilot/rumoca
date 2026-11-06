@@ -100,6 +100,14 @@ impl ImplicitRowTargets {
         }
     }
 
+    /// The projection stage owner these targets resolve against, if any.
+    pub(crate) fn projection_owner(&self) -> Option<&ProjectionBlocks> {
+        match &self.kind {
+            TargetSource::Projection(blocks) => Some(blocks),
+            TargetSource::Explicit(_) => None,
+        }
+    }
+
     pub fn shares_projection_owner(&self, blocks: &ProjectionBlocks) -> bool {
         matches!(&self.kind, TargetSource::Projection(source) if source.shares_stage_owner(blocks))
     }
@@ -179,5 +187,241 @@ mod tests {
         assert_eq!(targets.len(), 3);
         assert_eq!(targets.target_at(2), Some(scalar_slot_y(6)));
         assert_eq!(targets.target_at(1), None);
+    }
+
+    fn overlapping_blocks() -> ProjectionBlocks {
+        ProjectionBlocks::from(vec![
+            // Row 1 is claimed here first; row 7 pairs no Y index.
+            AlgebraicProjectionBlock {
+                rows: vec![0, 1, 7],
+                y_indices: vec![5, 6],
+                ..Default::default()
+            },
+            // A later claim on row 1 and a row repeated inside one block.
+            AlgebraicProjectionBlock {
+                rows: vec![1, 3, 3],
+                y_indices: vec![7, 8, 9],
+                ..Default::default()
+            },
+        ])
+    }
+
+    /// A projected plan that is a separate owner over a subset of the blocks,
+    /// as the refresh planner's filtered value plan is.
+    fn filtered_copy(blocks: &ProjectionBlocks) -> ProjectionBlocks {
+        ProjectionBlocks::from(blocks.scalar_blocks()[1..].to_vec())
+    }
+
+    #[test]
+    fn a_projected_owner_binds_the_canonical_targets_of_another_owner() {
+        let canonical = overlapping_blocks();
+        let targets = ImplicitRowTargets::from_projection(&canonical);
+        for projected in [canonical.clone(), filtered_copy(&canonical)] {
+            for block in projected.scalar_blocks() {
+                let bound = projected
+                    .bound_row_targets(block, &targets)
+                    .expect("a receipt of the projected owner binds");
+                let per_row: Vec<_> = block
+                    .rows
+                    .iter()
+                    .map(|&row| targets.target_at(row))
+                    .collect();
+                assert_eq!(bound, per_row.as_slice());
+            }
+        }
+        let copy = filtered_copy(&canonical);
+        assert_eq!(
+            copy.bound_row_targets(&copy.scalar_blocks()[0], &targets)
+                .unwrap(),
+            [
+                Some(scalar_slot_y(6)),
+                Some(scalar_slot_y(8)),
+                Some(scalar_slot_y(8))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_binding_answers_only_its_own_receipts_and_first_target_owner() {
+        let canonical = overlapping_blocks();
+        let targets = ImplicitRowTargets::from_projection(&canonical);
+        let projected = filtered_copy(&canonical);
+        let equal = projected.stages().iter().find_map(|stage| match stage {
+            ProjectionStage::Explicit(block) => Some(block.clone()),
+            ProjectionStage::SingletonDeclarationRun { .. } => None,
+        });
+        // No catalog yet: nothing binds and nothing is materialized.
+        assert!(
+            projected
+                .bound_row_targets(equal.as_ref().unwrap(), &targets)
+                .is_none()
+        );
+        assert!(projected.data.legacy.get().is_none());
+        let receipt = &projected.scalar_blocks()[0];
+        assert!(projected.bound_row_targets(receipt, &targets).is_some());
+        // An equal block stored elsewhere is not a receipt.
+        assert_eq!(equal.as_ref(), Some(receipt));
+        assert!(
+            projected
+                .bound_row_targets(&equal.unwrap(), &targets)
+                .is_none()
+        );
+        // A second, equal target owner is foreign to the first binding.
+        let other_canonical = overlapping_blocks();
+        let other_targets = ImplicitRowTargets::from_projection(&other_canonical);
+        assert!(
+            projected
+                .bound_row_targets(receipt, &other_targets)
+                .is_none()
+        );
+        assert!(projected.bound_row_targets(receipt, &targets).is_some());
+        // Explicit tables never bind.
+        let explicit = ImplicitRowTargets::from(vec![Some(scalar_slot_y(5)); 8]);
+        let fresh = filtered_copy(&canonical);
+        assert!(
+            fresh
+                .bound_row_targets(&fresh.scalar_blocks()[0], &explicit)
+                .is_none()
+        );
+        assert!(fresh.data.row_targets.get().is_none());
+    }
+
+    /// Eight threads query `projected` at once, alternating the two target
+    /// owners; each answer says whether that query was bound.
+    fn race_first_queries(
+        projected: &ProjectionBlocks,
+        receipt: &AlgebraicProjectionBlock,
+        targets: &[ImplicitRowTargets; 2],
+    ) -> Vec<bool> {
+        let query = |index: usize| {
+            projected
+                .bound_row_targets(receipt, &targets[index % 2])
+                .is_some()
+        };
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|index| scope.spawn(move || query(index)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn racing_first_queries_settle_one_target_owner() {
+        let first = overlapping_blocks();
+        let second = overlapping_blocks();
+        let targets = [
+            ImplicitRowTargets::from_projection(&first),
+            ImplicitRowTargets::from_projection(&second),
+        ];
+        let projected = filtered_copy(&first);
+        let receipt = &projected.scalar_blocks()[0];
+        let answers = race_first_queries(&projected, receipt, &targets);
+        let winner = usize::from(projected.bound_row_targets(receipt, &targets[0]).is_none());
+        assert!(
+            projected
+                .bound_row_targets(receipt, &targets[winner])
+                .is_some()
+        );
+        assert!(
+            projected
+                .bound_row_targets(receipt, &targets[1 - winner])
+                .is_none()
+        );
+        for (query, answered) in answers.into_iter().enumerate() {
+            assert_eq!(answered, query % 2 == winner, "query {query}");
+        }
+    }
+
+    #[test]
+    fn bindings_keep_no_owner_alive() {
+        // Self-binding: the projected owner is the target owner.
+        let canonical = overlapping_blocks();
+        let weak = std::sync::Arc::downgrade(&canonical.data);
+        {
+            let targets = ImplicitRowTargets::from_projection(&canonical);
+            assert!(
+                canonical
+                    .bound_row_targets(&canonical.scalar_blocks()[0], &targets)
+                    .is_some()
+            );
+        }
+        drop(canonical);
+        assert!(weak.upgrade().is_none(), "a self-binding must not cycle");
+        // Two owners bound to each other.
+        let (a, b) = (overlapping_blocks(), overlapping_blocks());
+        let (weak_a, weak_b) = (
+            std::sync::Arc::downgrade(&a.data),
+            std::sync::Arc::downgrade(&b.data),
+        );
+        {
+            let (targets_a, targets_b) = (
+                ImplicitRowTargets::from_projection(&a),
+                ImplicitRowTargets::from_projection(&b),
+            );
+            assert!(
+                a.bound_row_targets(&a.scalar_blocks()[0], &targets_b)
+                    .is_some()
+            );
+            assert!(
+                b.bound_row_targets(&b.scalar_blocks()[0], &targets_a)
+                    .is_some()
+            );
+        }
+        drop(a);
+        drop(b);
+        assert!(weak_a.upgrade().is_none() && weak_b.upgrade().is_none());
+        // A dropped target owner never matches again.
+        let projected = filtered_copy(&overlapping_blocks());
+        {
+            let gone = overlapping_blocks();
+            let targets = ImplicitRowTargets::from_projection(&gone);
+            assert!(
+                projected
+                    .bound_row_targets(&projected.scalar_blocks()[0], &targets)
+                    .is_some()
+            );
+        }
+        let later = overlapping_blocks();
+        let later_targets = ImplicitRowTargets::from_projection(&later);
+        assert!(
+            projected
+                .bound_row_targets(&projected.scalar_blocks()[0], &later_targets)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn decoded_owners_bind_against_decoded_targets() {
+        let canonical = overlapping_blocks();
+        let targets = ImplicitRowTargets::from_projection(&canonical);
+        let projected = filtered_copy(&canonical);
+        let before = projected.scalar_blocks()[0].clone();
+        let decoded_canonical: ProjectionBlocks =
+            serde_json::from_str(&serde_json::to_string(&canonical).unwrap()).unwrap();
+        let decoded_targets = ImplicitRowTargets::from_wire(targets.wire(), &decoded_canonical);
+        let decoded_projected: ProjectionBlocks =
+            serde_json::from_str(&serde_json::to_string(&projected).unwrap()).unwrap();
+        let receipt = &decoded_projected.scalar_blocks()[0];
+        assert_eq!(*receipt, before);
+        assert!(
+            decoded_projected
+                .bound_row_targets(&before, &decoded_targets)
+                .is_none()
+        );
+        let per_row: Vec<_> = receipt
+            .rows
+            .iter()
+            .map(|&row| decoded_targets.target_at(row))
+            .collect();
+        assert_eq!(
+            decoded_projected
+                .bound_row_targets(receipt, &decoded_targets)
+                .unwrap(),
+            per_row.as_slice()
+        );
     }
 }

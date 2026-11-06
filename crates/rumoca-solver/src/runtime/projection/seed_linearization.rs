@@ -108,14 +108,17 @@ impl SeedBlockLinearization {
         &self,
         model: &dyn ImplicitProjectionModel,
         block_index: usize,
-        block: &solve::AlgebraicProjectionBlock,
+        (block, owner): (
+            &solve::AlgebraicProjectionBlock,
+            Option<&solve::ProjectionBlocks>,
+        ),
         seed: &[f64],
     ) -> Vec<f64> {
         let structure = model.algebraic_projection_block_structure(block_index);
         algebraic_block_scales(
             model,
             seed,
-            block,
+            (block, owner),
             &self.jacobian,
             structure.map(solve::ColoredJacobianStructure::pattern),
         )
@@ -231,7 +234,12 @@ pub(super) fn certify_with_refinement<M: ImplicitProjectionModel>(
         for (index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
             let linearization = model.algebraic_seed_linearization(index, block, y, args)?;
             refine_direction(model, (index, block), &linearization, y, args, seed)?;
-            row_scales.extend(linearization.row_scales(model, index, block, seed));
+            row_scales.extend(linearization.row_scales(
+                model,
+                index,
+                (block, Some(&plan.blocks)),
+                seed,
+            ));
         }
     }
     unreachable!("bounded refinement returns its final residual check")

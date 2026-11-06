@@ -5,16 +5,18 @@ use super::*;
 pub(super) fn project_affine_block<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    block: &solve::AlgebraicProjectionBlock,
+    (p, t): (&[f64], f64),
+    (block, owner): (
+        &solve::AlgebraicProjectionBlock,
+        Option<&solve::ProjectionBlocks>,
+    ),
     block_index: usize,
     tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     // The solve runs in `y` itself, which it changes only in the block
     // unknowns; they are restored when the block does not settle.
     let incoming = super::block_values(y, &block.y_indices);
-    let settled = settle_affine_block(model, y, (p, t), block, block_index, tol);
+    let settled = settle_affine_block(model, y, (p, t), (block, owner), block_index, tol);
     if !matches!(settled, Ok(true)) {
         super::restore_block_values(y, &block.y_indices, &incoming);
     }
@@ -32,7 +34,10 @@ fn settle_affine_block<M: ImplicitProjectionModel>(
     model: &M,
     candidate: &mut [f64],
     (p, t): (&[f64], f64),
-    block: &solve::AlgebraicProjectionBlock,
+    (block, owner): (
+        &solve::AlgebraicProjectionBlock,
+        Option<&solve::ProjectionBlocks>,
+    ),
     block_index: usize,
     tol: f64,
 ) -> Result<bool, RuntimeSolveError> {
@@ -51,6 +56,7 @@ fn settle_affine_block<M: ImplicitProjectionModel>(
         p,
         t,
         block,
+        owner,
         structure,
     };
     let mut linearization = AffineLinearization::at_origin(model, point, retained)?;
@@ -191,6 +197,8 @@ struct OriginPoint<'a> {
     p: &'a [f64],
     t: f64,
     block: &'a solve::AlgebraicProjectionBlock,
+    /// The plan owner `block` was read from, for its target binding.
+    owner: Option<&'a solve::ProjectionBlocks>,
     structure: Option<&'a solve::ColoredJacobianStructure>,
 }
 
@@ -228,13 +236,14 @@ impl AffineLinearization {
             p,
             t,
             block,
+            owner,
             structure,
         } = point;
         let (jacobian, by_rows) =
             affine_block_jacobian(model, candidate, (p, t), block, structure, storage)?;
         let pattern = structure.map(solve::ColoredJacobianStructure::pattern);
         let (row_scales, variable_scales) =
-            algebraic_block_scales(model, candidate, block, &jacobian, pattern);
+            algebraic_block_scales(model, candidate, (block, owner), &jacobian, pattern);
         let row_magnitudes = jacobian_row_magnitudes(&jacobian, pattern);
         let row_derived = jacobian_row_derived(&jacobian, &variable_scales, pattern);
         // A reuse refills its uncertified rows from reverse gradients, which
@@ -252,7 +261,7 @@ impl AffineLinearization {
             variable_scales,
             row_magnitudes,
             row_derived,
-            fallback_targets: fallback_targets(model, block),
+            fallback_targets: fallback_targets(model, owner, block),
             reuse,
             revision: next_revision(),
             scratch: AffineScratch::default(),

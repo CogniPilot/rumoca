@@ -1,5 +1,6 @@
 mod affine_coordinates;
 mod affine_elimination;
+mod bound_row_targets;
 mod certification;
 mod colored_rows;
 mod column_gradient;
@@ -1468,6 +1469,7 @@ fn project_algebraic_block_rejects_rectangular_inventory() {
             tolerance: 1.0e-12,
             step_limit: StepLimit::None,
             certify_coordinates: false,
+            owner: None,
         },
     )
     .expect_err("rectangular projection inventory must be rejected");
@@ -1501,6 +1503,7 @@ fn project_algebraic_block_rejects_row_outside_residual_vector() {
             tolerance: 1.0e-12,
             step_limit: StepLimit::None,
             certify_coordinates: false,
+            owner: None,
         },
     )
     .expect_err("invalid projection row should bubble a runtime error");

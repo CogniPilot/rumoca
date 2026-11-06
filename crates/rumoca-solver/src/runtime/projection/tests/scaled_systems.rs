@@ -156,7 +156,7 @@ fn projection_scale_expands_to_the_current_coordinate_magnitude() {
     let (row_scales, variable_scales) = algebraic_block_scales(
         &model,
         &[5.0e6],
-        &block,
+        (&block, None),
         &BlockJacobian::dense(jacobian.clone()),
         None,
     );

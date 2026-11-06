@@ -88,8 +88,19 @@ pub(super) fn model_variable_scale<M: ImplicitProjectionModel + ?Sized>(
 /// target, if it has one in solver Y.
 pub(super) fn fallback_targets<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
+    owner: Option<&solve::ProjectionBlocks>,
     block: &solve::AlgebraicProjectionBlock,
 ) -> Vec<Option<usize>> {
+    if let Some(bound) = owner
+        .zip(model.implicit_row_targets())
+        .and_then(|(owner, targets)| owner.bound_row_targets(block, targets))
+    {
+        debug_assert_eq!(bound.len(), block.rows.len());
+        return bound
+            .iter()
+            .map(|slot| slot.and_then(y_index_for_slot))
+            .collect();
+    }
     let mut targets = Vec::with_capacity(block.rows.len());
     for &row in &block.rows {
         targets.push(match model.implicit_target(row) {
@@ -103,7 +114,10 @@ pub(super) fn fallback_targets<M: ImplicitProjectionModel + ?Sized>(
 pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
     model: &M,
     y: &[f64],
-    block: &solve::AlgebraicProjectionBlock,
+    (block, owner): (
+        &solve::AlgebraicProjectionBlock,
+        Option<&solve::ProjectionBlocks>,
+    ),
     jacobian: &BlockJacobian,
     structure: Option<&solve::StructuralPattern>,
 ) -> (Vec<f64>, Vec<f64>) {
@@ -112,7 +126,7 @@ pub(super) fn algebraic_block_scales<M: ImplicitProjectionModel + ?Sized>(
         .iter()
         .map(|&index| model_variable_scale(model, index, y[index]))
         .collect::<Vec<_>>();
-    let fallback_scales = fallback_targets(model, block)
+    let fallback_scales = fallback_targets(model, owner, block)
         .into_iter()
         .enumerate()
         .map(|(offset, target)| {
@@ -195,7 +209,7 @@ pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
             algebraic_block_scales(
                 model,
                 y,
-                block,
+                (block, Some(&plan.blocks)),
                 &jacobian,
                 structure.map(solve::ColoredJacobianStructure::pattern),
             )

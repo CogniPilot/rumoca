@@ -123,10 +123,10 @@ fn origin_bounded_certificate_decides_as_the_full_row_scales() {
             y[index] = (random.unit() - 0.5) * [1.0, 1e3, 1e10][random.choose(3)];
         }
         let (origin_scales, origin_variable_scales) =
-            algebraic_block_scales(&model, &origin_y, &block, &jacobian, None);
+            algebraic_block_scales(&model, &origin_y, (&block, None), &jacobian, None);
         let magnitudes = jacobian_row_magnitudes(&jacobian, None);
         let derived = jacobian_row_derived(&jacobian, &origin_variable_scales, None);
-        let (scales, _) = algebraic_block_scales(&model, &y, &block, &jacobian, None);
+        let (scales, _) = algebraic_block_scales(&model, &y, (&block, None), &jacobian, None);
         let tol = 1e-8;
         let residual = scales
             .iter()
@@ -183,7 +183,7 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
     let jacobian = BlockJacobian::dense(jacobian);
     let (origin_y, y) = (vec![0.0, 0.0], vec![100.0, 0.0]);
     let (origin_scales, origin_variable_scales) =
-        algebraic_block_scales(&model, &origin_y, &block, &jacobian, None);
+        algebraic_block_scales(&model, &origin_y, (&block, None), &jacobian, None);
     assert_eq!(
         5e-324 * 0.5,
         0.0,
@@ -192,7 +192,7 @@ fn an_underflowed_origin_contribution_does_not_bound_the_row_scale() {
     let magnitudes = jacobian_row_magnitudes(&jacobian, None);
     let derived = jacobian_row_derived(&jacobian, &origin_variable_scales, None);
     assert_eq!(derived, [false]);
-    let (scales, _) = algebraic_block_scales(&model, &y, &block, &jacobian, None);
+    let (scales, _) = algebraic_block_scales(&model, &y, (&block, None), &jacobian, None);
     let (residual, tol) = ([1e-12], 1e-8);
     let origin = OriginRowScales {
         jacobian: &jacobian,
@@ -230,7 +230,7 @@ fn certificate_scales(
             .copied()
             .zip(origin_variable_scales.iter().copied())
             .collect(),
-        fallbacks: fallback_targets(model, block)
+        fallbacks: fallback_targets(model, None, block)
             .into_iter()
             .map(|target| {
                 target.map(|index| (index, model_variable_scale(model, index, origin_y[index])))
