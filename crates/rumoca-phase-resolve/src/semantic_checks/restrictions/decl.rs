@@ -6,6 +6,16 @@ use super::{
     ClassContext, first_expression_token, is_input, reference_text, resolve_local_class_path,
 };
 
+/// The names an overloaded operator can have (MLS §14). Any other quoted
+/// identifier is an ordinary name, as every name in Base Modelica is.
+fn is_overloaded_operator_name(name: &str) -> bool {
+    matches!(
+        name,
+        "'constructor'" | "'0'" | "'String'" | "'and'" | "'or'" | "'not'"
+    ) || matches!(name, "'+'" | "'-'" | "'*'" | "'/'" | "'^'")
+        || matches!(name, "'=='" | "'<>'" | "'<'" | "'<='" | "'>'" | "'>='")
+}
+
 /// MLS §7.1.3 / INST-024 (conservative subset): functions may only take part
 /// in inheritance with other functions, and packages only with packages.
 pub(super) fn check_inheritance_compatibility(
@@ -81,7 +91,8 @@ pub(super) fn check_operator_placement(
         .last()
         .is_some_and(|parent| parent.operator_record || parent.class_type == ClassType::Operator);
     let is_operator_item = class.class_type == ClassType::Operator
-        || (class.class_type == ClassType::Function && class.name.text.starts_with('\''));
+        || (class.class_type == ClassType::Function
+            && is_overloaded_operator_name(&class.name.text));
     if is_operator_item && !parent_is_operator_scope {
         diags.push(semantic_error(
             ER092_OPERATOR_PLACEMENT,
@@ -1542,7 +1553,7 @@ fn class_has_annotation(class: &ClassDef, name: &str) -> bool {
 /// MLS §14 / OPREC-005, OPREC-007: two overloads of the same operator with
 /// identical input signatures make every potential call ambiguous.
 pub(super) fn check_ambiguous_operator_overloads(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    if class.class_type != ClassType::Operator && !class.name.text.starts_with('\'') {
+    if class.class_type != ClassType::Operator && !is_overloaded_operator_name(&class.name.text) {
         return;
     }
     if matches!(class.name.text.as_ref(), "'constructor'" | "'0'") {
