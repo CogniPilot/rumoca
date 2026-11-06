@@ -7,5 +7,10 @@
 
 mod linear;
 mod me_integrator;
+#[cfg(feature = "sparse-linalg")]
+mod sparse;
 
-pub use me_integrator::{VelImplicitConfig, model_exchange_integrator};
+pub use me_integrator::{
+    IterationMatrixSolver, VelImplicitConfig, last_iteration_matrix_solver,
+    model_exchange_integrator,
+};

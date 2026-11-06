@@ -17,6 +17,8 @@ use rumoca_eval_solve::tensor_policy::{LinearSolveKernel, select_linear_solve_ke
 pub(crate) struct SeedBlockLinearization {
     solver: SeedSolver,
     jacobian: BlockJacobian,
+    #[cfg(rumoca_qualification)]
+    qualification: (usize, f64),
 }
 
 enum SeedSolver {
@@ -94,7 +96,12 @@ impl SeedBlockLinearization {
             }
             _ => SeedSolver::Dense(jacobian.as_dense().into_owned().lu()),
         };
-        Ok(Self { solver, jacobian })
+        Ok(Self {
+            solver,
+            jacobian,
+            #[cfg(rumoca_qualification)]
+            qualification: (block_index, args.time),
+        })
     }
 
     pub(super) fn row_scales(
@@ -116,6 +123,13 @@ impl SeedBlockLinearization {
     }
 
     pub(super) fn solve(&self, rhs: &DVector<f64>) -> Option<DVector<f64>> {
+        #[cfg(rumoca_qualification)]
+        let _qualification = crate::qualification::enter(
+            "algebraic-seed",
+            self.qualification.1,
+            self.qualification.0,
+            0,
+        );
         let seed = match &self.solver {
             SeedSolver::Dense(factor) => return factor.solve(rhs),
             SeedSolver::Structured(seed) => seed,

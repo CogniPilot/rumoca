@@ -5,6 +5,8 @@ compile_error!("rumoca-solver production builds require the `sparse-linalg` feat
 
 #[cfg(not(kani))]
 pub mod fmi_me;
+#[cfg(rumoca_qualification)]
+mod qualification;
 #[cfg(not(kani))]
 pub mod report_payload;
 #[cfg(not(kani))]
@@ -13,6 +15,8 @@ pub mod runtime;
 mod runtime;
 #[cfg(not(kani))]
 pub mod solver;
+#[cfg(feature = "sparse-linalg")]
+pub mod sparse_lu;
 #[cfg(all(test, not(kani)))]
 mod test_fixtures;
 #[cfg(not(kani))]

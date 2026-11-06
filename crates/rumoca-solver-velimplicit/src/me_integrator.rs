@@ -14,7 +14,12 @@
 //! colour of the component's structural state-Jacobian pattern, and reused for
 //! `jacobian_reuse` steps; it is refreshed after every initialize and
 //! truncate/reset (events, reinit), so a step never crosses a structural change
-//! with a stale matrix. The continuous extension is linear (order 1). A
+//! with a stale matrix. With the `sparse-linalg` feature and a structural
+//! pattern, `I - h J` is factored by `rumoca_solver`'s pattern-keyed sparse LU
+//! on the pattern plus the diagonal, its symbolic analysis computed once per
+//! initialize; without a pattern, or when that structure is rejected, the dense
+//! LU is used. Either refuses a singular `I - h J` the same way.
+//! The continuous extension is linear (order 1). A
 //! component that refuses the accepted start point gets its typed discard back
 //! at once: no evaluation of this method lies elsewhere, so retrying with a
 //! smaller step could not succeed.
@@ -33,8 +38,31 @@ use rumoca_solver::fmi_me::{
 };
 
 use crate::linear::DenseLu;
+#[cfg(feature = "sparse-linalg")]
+use crate::sparse::SparseIterationLu;
 
 const METHOD: &str = "velimplicit";
+
+/// The factorization of `I - h J` an integrator chose at `initialize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IterationMatrixSolver {
+    /// The dense LU of the full `n x n` matrix.
+    Dense,
+    /// The pattern-keyed sparse LU on the structural pattern plus the diagonal.
+    Sparse,
+}
+
+thread_local! {
+    static LAST_SOLVER: std::cell::Cell<Option<IterationMatrixSolver>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The factorization the most recent `initialize` on this thread chose, so a
+/// caller can confirm which path ran rather than infer it.
+#[must_use]
+pub fn last_iteration_matrix_solver() -> Option<IterationMatrixSolver> {
+    LAST_SOLVER.get()
+}
 const CONTINUOUS_EXTENSION_ORDER: u32 = 1;
 
 /// Fixed step and Jacobian reuse of the velocity-implicit plugin.
@@ -44,6 +72,9 @@ pub struct VelImplicitConfig {
     pub step: f64,
     /// Refresh the Jacobian every this many accepted steps (at least 1).
     pub jacobian_reuse: u32,
+    /// Factor `I - h J` with the sparse LU when a structural pattern is known
+    /// (requires the `sparse-linalg` feature; ignored without it).
+    pub sparse_lu: bool,
 }
 
 impl Default for VelImplicitConfig {
@@ -51,6 +82,7 @@ impl Default for VelImplicitConfig {
         Self {
             step: 1.0e-3,
             jacobian_reuse: 200,
+            sparse_lu: true,
         }
     }
 }
@@ -80,6 +112,11 @@ struct VelImplicitIntegrator {
     steps_since_refresh: u32,
     /// Factors of `I - h J` for `factored_step`.
     lu: DenseLu,
+    /// Sparse factors of `I - h J`, used instead of `lu` while present.
+    #[cfg(feature = "sparse-linalg")]
+    sparse: Option<SparseIterationLu>,
+    #[cfg(feature = "sparse-linalg")]
+    sparse_lu: bool,
     factored_step: Option<f64>,
     work: Work,
     accepted_interval: Option<LinearInterval>,
@@ -115,6 +152,10 @@ impl VelImplicitIntegrator {
             jacobian_valid: false,
             steps_since_refresh: 0,
             lu: DenseLu::default(),
+            #[cfg(feature = "sparse-linalg")]
+            sparse: None,
+            #[cfg(feature = "sparse-linalg")]
+            sparse_lu: config.sparse_lu,
             factored_step: None,
             work: Work::default(),
             accepted_interval: None,
@@ -147,12 +188,45 @@ impl VelImplicitIntegrator {
         }
     }
 
+    /// Use the sparse LU for `I - h J` when it is enabled and a structural
+    /// pattern is known and accepted; otherwise keep the dense LU.
+    #[cfg(feature = "sparse-linalg")]
+    fn select_linear_solver(&mut self) {
+        let width = self.width;
+        self.sparse = self
+            .pattern
+            .as_deref()
+            .filter(|_| self.sparse_lu)
+            .and_then(|pattern| SparseIterationLu::new(width, pattern));
+    }
+
+    /// The factorization `factor` uses for `I - h J`.
+    fn iteration_matrix_solver(&self) -> IterationMatrixSolver {
+        #[cfg(feature = "sparse-linalg")]
+        if self.sparse.is_some() {
+            return IterationMatrixSolver::Sparse;
+        }
+        IterationMatrixSolver::Dense
+    }
+
     fn refresh_jacobian(&mut self, time: f64, state: &[f64]) -> Result<(), MeIntegrationError> {
         let width = self.width;
         let derivatives = self.derivatives.as_ref().ok_or_else(missing_handle)?;
         let Work { seed, column, .. } = &mut self.work;
-        self.jacobian.clear();
-        self.jacobian.resize(width * width, 0.0);
+        #[cfg(feature = "sparse-linalg")]
+        let mut sparse = self.sparse.as_mut();
+        #[cfg(feature = "sparse-linalg")]
+        if let Some(sparse) = sparse.as_deref_mut() {
+            sparse.clear();
+        } else {
+            self.jacobian.clear();
+            self.jacobian.resize(width * width, 0.0);
+        }
+        #[cfg(not(feature = "sparse-linalg"))]
+        {
+            self.jacobian.clear();
+            self.jacobian.resize(width * width, 0.0);
+        }
         for colour in &self.colours {
             seed.fill(0.0);
             colour
@@ -164,6 +238,13 @@ impl VelImplicitIntegrator {
             }
             if derivatives.has_failed() {
                 return Err(MeIntegrationError::DerivativeRefused);
+            }
+            #[cfg(feature = "sparse-linalg")]
+            if let Some(sparse) = sparse.as_deref_mut() {
+                colour
+                    .iter()
+                    .for_each(|&state_column| sparse.scatter_column(state_column, column));
+                continue;
             }
             for &state_column in colour {
                 let rows = self
@@ -180,6 +261,14 @@ impl VelImplicitIntegrator {
     }
 
     fn factor(&mut self, step: f64) -> Result<(), MeIntegrationError> {
+        #[cfg(feature = "sparse-linalg")]
+        if let Some(sparse) = self.sparse.as_mut() {
+            if !sparse.factor(step) {
+                return Err(singular_iteration_matrix());
+            }
+            self.factored_step = Some(step);
+            return Ok(());
+        }
         let width = self.width;
         let matrix = &mut self.work.matrix;
         matrix.clear();
@@ -188,11 +277,7 @@ impl VelImplicitIntegrator {
             matrix[diagonal * width + diagonal] += 1.0;
         }
         if !self.lu.factor(matrix, width) {
-            return Err(MeIntegrationError::numerical(
-                METHOD,
-                MeNumericalFailure::LinearAlgebra,
-                "the iteration matrix I - h J is singular",
-            ));
+            return Err(singular_iteration_matrix());
         }
         self.factored_step = Some(step);
         Ok(())
@@ -231,6 +316,12 @@ impl VelImplicitIntegrator {
         for (value, derivative) in rhs.iter_mut().zip(derivative.iter()) {
             *value = step * derivative;
         }
+        #[cfg(feature = "sparse-linalg")]
+        match self.sparse.as_mut() {
+            Some(sparse) => sparse.solve_into(rhs, increment),
+            None => self.lu.solve_into(rhs, increment),
+        }
+        #[cfg(not(feature = "sparse-linalg"))]
         self.lu.solve_into(rhs, increment);
         for ((endpoint, start), delta) in rhs.iter_mut().zip(state).zip(increment.iter()) {
             *endpoint = start + delta;
@@ -288,6 +379,9 @@ impl MeIntegratorBackend for VelImplicitIntegrator {
             })
             .map(<[Vec<usize>]>::to_vec);
         self.colour_columns();
+        #[cfg(feature = "sparse-linalg")]
+        self.select_linear_solver();
+        LAST_SOLVER.set(Some(self.iteration_matrix_solver()));
         for buffer in [
             &mut self.work.derivative,
             &mut self.work.rhs,
@@ -397,6 +491,14 @@ fn missing_handle() -> MeIntegrationError {
     )
 }
 
+fn singular_iteration_matrix() -> MeIntegrationError {
+    MeIntegrationError::numerical(
+        METHOD,
+        MeNumericalFailure::LinearAlgebra,
+        "the iteration matrix I - h J is singular",
+    )
+}
+
 /// `step` clipped to `latest - now` and `max_step`, or `None` when it is not
 /// positive and finite or `now + step` does not advance the coordinate.
 fn representable_step(now: f64, latest: f64, max_step: Option<f64>, step: f64) -> Option<f64> {
@@ -500,7 +602,74 @@ mod tests {
             VelImplicitConfig {
                 step: 1.0e-3,
                 jacobian_reuse: 200,
+                sparse_lu: true,
             }
         );
+    }
+
+    #[cfg(feature = "sparse-linalg")]
+    #[test]
+    fn without_a_pattern_the_dense_lu_is_used() {
+        let mut backend = integrator(3);
+        backend.select_linear_solver();
+        assert_eq!(
+            backend.iteration_matrix_solver(),
+            IterationMatrixSolver::Dense
+        );
+    }
+
+    #[cfg(feature = "sparse-linalg")]
+    #[test]
+    fn a_pattern_selects_the_sparse_lu_unless_disabled() {
+        let mut backend = integrator(3);
+        backend.pattern = Some(vec![vec![0, 1], vec![1], vec![1, 2]]);
+        backend.select_linear_solver();
+        assert_eq!(
+            backend.iteration_matrix_solver(),
+            IterationMatrixSolver::Sparse
+        );
+        backend.sparse_lu = false;
+        backend.select_linear_solver();
+        assert_eq!(
+            backend.iteration_matrix_solver(),
+            IterationMatrixSolver::Dense
+        );
+    }
+
+    #[cfg(feature = "sparse-linalg")]
+    #[test]
+    fn the_sparse_and_dense_steps_agree_on_a_stiff_decay() {
+        // The same 2-state step through both factorizations: x1' = -k x1,
+        // x2' = x1 - x2, pattern {0, 1} in column 0 and {1} in column 1.
+        let pattern = vec![vec![0, 1], vec![1]];
+        let jacobian_columns = [[-1.0e6, 1.0], [0.0, -1.0]];
+        let rhs = [1.0e-3 * -1.0e6, 1.0e-3 * 1.0];
+        let mut sparse = integrator(2);
+        sparse.pattern = Some(pattern);
+        sparse.select_linear_solver();
+        let lu = sparse.sparse.as_mut().expect("sparse selected");
+        lu.clear();
+        for (column, derivative) in jacobian_columns.iter().enumerate() {
+            lu.scatter_column(column, derivative);
+        }
+        sparse.factor(1.0e-3).expect("regular");
+        let mut got = [0.0; 2];
+        sparse
+            .sparse
+            .as_mut()
+            .expect("sparse")
+            .solve_into(&rhs, &mut got);
+        let mut dense = integrator(2);
+        dense.jacobian = vec![-1.0e6, 0.0, 1.0, -1.0];
+        dense.jacobian_valid = true;
+        dense.factor(1.0e-3).expect("regular");
+        let mut want = [0.0; 2];
+        dense.lu.solve_into(&rhs, &mut want);
+        for (got, want) in got.iter().zip(want) {
+            assert!(
+                (got - want).abs() <= 1.0e-14 * want.abs().max(1.0),
+                "{got} vs {want}"
+            );
+        }
     }
 }

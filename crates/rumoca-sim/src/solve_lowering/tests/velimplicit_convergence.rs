@@ -23,7 +23,10 @@ use rumoca_solver::{
         session::MeRetainedComponent,
     },
 };
-use rumoca_solver_velimplicit::{VelImplicitConfig, model_exchange_integrator};
+use rumoca_solver_velimplicit::{
+    IterationMatrixSolver, VelImplicitConfig, last_iteration_matrix_solver,
+    model_exchange_integrator,
+};
 
 use super::{SimOptions, SimSolverMode, compile};
 
@@ -67,13 +70,20 @@ const CASES: [Case; 4] = [
 /// The soft output observations (1/3, 2/3) and the stop time.
 const TIMES: [f64; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];
 
+/// Accepted advances and truncate/resets seen by the recording wrapper.
+#[derive(Default)]
+struct Counts {
+    advances: Cell<usize>,
+    truncations: Cell<usize>,
+}
+
 /// Forwards to the plugin and records, for every sample, the time and the
 /// accepted interval it was drawn from.
 struct SampleRecorder<'a> {
     inner: Box<dyn MeIntegratorBackend>,
     interval: RefCell<(f64, f64)>,
     samples: &'a RefCell<Vec<(f64, f64, f64)>>,
-    truncations: &'a Cell<usize>,
+    counts: &'a Counts,
 }
 
 impl MeIntegratorBackend for SampleRecorder<'_> {
@@ -90,6 +100,7 @@ impl MeIntegratorBackend for SampleRecorder<'_> {
         request: &MeAdvanceRequest,
     ) -> Result<MeStepCandidate, MeIntegrationError> {
         let candidate = self.inner.advance(request)?;
+        self.counts.advances.set(self.counts.advances.get() + 1);
         *self.interval.borrow_mut() = (request.current().time(), candidate.accepted_time());
         Ok(candidate)
     }
@@ -105,7 +116,9 @@ impl MeIntegratorBackend for SampleRecorder<'_> {
     }
 
     fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        self.truncations.set(self.truncations.get() + 1);
+        self.counts
+            .truncations
+            .set(self.counts.truncations.get() + 1);
         self.inner.truncate_reset(point)
     }
 }
@@ -113,14 +126,13 @@ impl MeIntegratorBackend for SampleRecorder<'_> {
 /// `x` at [`TIMES`] with a fixed step `h` and Jacobian reuse `reuse`, plus
 /// the recorded samples.
 fn run(case: &Case, h: f64, reuse: u32) -> (Vec<f64>, Vec<(f64, f64, f64)>) {
-    let truncations = Cell::new(0);
-    let (result, samples) = run_recorded(
-        case.source,
-        case.name,
-        (1.0, 1.0 / 3.0),
-        (h, reuse),
-        &truncations,
-    );
+    let counts = Counts::default();
+    let config = VelImplicitConfig {
+        step: h,
+        jacobian_reuse: reuse,
+        ..VelImplicitConfig::default()
+    };
+    let (result, samples) = run_recorded(case.source, case.name, (1.0, 1.0 / 3.0), config, &counts);
     let x = result
         .names
         .iter()
@@ -141,13 +153,13 @@ fn run(case: &Case, h: f64, reuse: u32) -> (Vec<f64>, Vec<(f64, f64, f64)>) {
 }
 
 /// One batch run of `source` through the recording wrapper, with stop time
-/// and output interval `(t_end, dt)` and step and reuse `(h, reuse)`.
+/// and output interval `(t_end, dt)` and plugin configuration `config`.
 fn run_recorded(
     source: &str,
     name: &str,
     (t_end, dt): (f64, f64),
-    (h, reuse): (f64, u32),
-    truncations: &Cell<usize>,
+    config: VelImplicitConfig,
+    counts: &Counts,
 ) -> (rumoca_solver::SimResult, Vec<(f64, f64, f64)>) {
     let opts = SimOptions {
         execution_policy: SimExecutionPolicy::Interpreter,
@@ -169,19 +181,13 @@ fn run_recorded(
     )
     .unwrap();
     let host = retained.into_lease(options).unwrap();
-    let setup = host.numerical_setup(Some(h)).unwrap();
+    let setup = host.numerical_setup(Some(config.step)).unwrap();
     let samples = RefCell::new(Vec::new());
     let plugin = SampleRecorder {
-        inner: model_exchange_integrator(
-            setup,
-            VelImplicitConfig {
-                step: h,
-                jacobian_reuse: reuse,
-            },
-        ),
+        inner: model_exchange_integrator(setup, config),
         interval: RefCell::new((0.0, 0.0)),
         samples: &samples,
-        truncations,
+        counts,
     };
     // The wrapper declares the plugin's own continuous-extension order.
     assert_eq!(plugin.continuous_extension_order(), Some(1));
@@ -204,10 +210,15 @@ fn a_state_event_truncates_the_recorded_plugin() {
                       reinit(v, -0.8 * pre(v));
                     end when;
                   end Ball;";
-    let truncations = Cell::new(0);
-    let (result, _) = run_recorded(source, "Ball", (0.6, 0.1), (1.0e-3, 200), &truncations);
+    let counts = Counts::default();
+    let config = VelImplicitConfig {
+        step: 1.0e-3,
+        jacobian_reuse: 200,
+        ..VelImplicitConfig::default()
+    };
+    let (result, _) = run_recorded(source, "Ball", (0.6, 0.1), config, &counts);
     assert!(
-        truncations.get() >= 1,
+        counts.truncations.get() >= 1,
         "no truncate/reset reached the plugin"
     );
     assert!((result.times[result.times.len() - 1] - 0.6).abs() < 1.0e-12);
@@ -271,4 +282,110 @@ fn velimplicit_converges_at_first_order_on_manufactured_solutions() {
         .flatten()
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A stiff chain of `n` scalar states, each relaxing onto its predecessor:
+/// `x1' = -k x1`, `xi' = -k (xi - x(i-1))`. Its state Jacobian is lower
+/// bidiagonal, so the sparse LU stores 2n - 1 entries where the dense one
+/// factors n^2.
+fn chain_source(n: usize) -> String {
+    let mut source = format!("model Chain{n}\n");
+    for i in 1..=n {
+        source.push_str(&format!("  Real x{i}(start = 1, fixed = true);\n"));
+    }
+    source.push_str("equation\n  der(x1) = -1000 * x1;\n");
+    for i in 2..=n {
+        source.push_str(&format!("  der(x{i}) = -1000 * (x{i} - x{});\n", i - 1));
+    }
+    source.push_str(&format!("end Chain{n};\n"));
+    source
+}
+
+/// One chain run: final states, accepted advances, truncate/resets, wall time
+/// and the factorization the plugin reported choosing.
+struct ChainRun {
+    finals: Vec<f64>,
+    advances: usize,
+    truncations: usize,
+    elapsed: std::time::Duration,
+    solver: Option<IterationMatrixSolver>,
+}
+
+fn run_chain(n: usize, sparse_lu: bool) -> ChainRun {
+    let counts = Counts::default();
+    let config = VelImplicitConfig {
+        step: 1.0e-3,
+        jacobian_reuse: 50,
+        sparse_lu,
+    };
+    let source = chain_source(n);
+    let start = std::time::Instant::now();
+    let (result, _) = run_recorded(&source, &format!("Chain{n}"), (0.2, 0.1), config, &counts);
+    let elapsed = start.elapsed();
+    let solver = last_iteration_matrix_solver();
+    let last = result.times.len() - 1;
+    let finals = (1..=n)
+        .map(|i| {
+            let column = result
+                .names
+                .iter()
+                .position(|name| *name == format!("x{i}"))
+                .expect("state is recorded");
+            result.data[column][last]
+        })
+        .collect();
+    ChainRun {
+        finals,
+        advances: counts.advances.get(),
+        truncations: counts.truncations.get(),
+        elapsed,
+        solver,
+    }
+}
+
+/// The sparse and dense factorizations of `I - h J` take the same steps,
+/// refresh points and truncations, and agree on the states to roundoff
+/// scale: only the pivot order differs.
+#[test]
+fn the_sparse_and_dense_iteration_matrices_take_identical_steps() {
+    let sparse = run_chain(8, true);
+    let dense = run_chain(8, false);
+    // The comparison only means something if both paths really ran.
+    assert_eq!(sparse.solver, Some(IterationMatrixSolver::Sparse));
+    assert_eq!(dense.solver, Some(IterationMatrixSolver::Dense));
+    assert_eq!(sparse.advances, dense.advances);
+    assert_eq!(sparse.truncations, dense.truncations);
+    for (got, want) in sparse.finals.iter().zip(&dense.finals) {
+        assert!(
+            (got - want).abs() <= 1.0e-12 * want.abs().max(1.0e-300),
+            "{got} vs {want}"
+        );
+    }
+}
+
+/// Dense vs sparse size ladder for the G2 request (8 GiB seat): one JSON line
+/// per size with both wall times, the identical-steps check and the largest
+/// relative state difference. Select this test explicitly with `--exact --nocapture`.
+#[test]
+fn velimplicit_sparse_lu_size_ladder() {
+    for n in [10, 20, 50, 100, 200, 400] {
+        let sparse = run_chain(n, true);
+        let dense = run_chain(n, false);
+        assert_eq!(sparse.solver, Some(IterationMatrixSolver::Sparse));
+        assert_eq!(dense.solver, Some(IterationMatrixSolver::Dense));
+        let difference = sparse
+            .finals
+            .iter()
+            .zip(&dense.finals)
+            .map(|(got, want)| (got - want).abs() / want.abs().max(1.0e-300))
+            .fold(0.0_f64, f64::max);
+        println!(
+            "{{\"n\":{n},\"dense_s\":{:.6},\"sparse_s\":{:.6},\"identical_advances\":{},\"advances\":{},\"max_rel_diff\":{difference:e}}}",
+            dense.elapsed.as_secs_f64(),
+            sparse.elapsed.as_secs_f64(),
+            sparse.advances == dense.advances,
+            dense.advances,
+        );
+        assert_eq!(sparse.advances, dense.advances);
+    }
 }

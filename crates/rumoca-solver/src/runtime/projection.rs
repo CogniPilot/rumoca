@@ -756,6 +756,9 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
         let mut all_settled = true;
         let mut earlier_row_invalidated = false;
         for (block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
+            #[cfg(rumoca_qualification)]
+            let _qualification =
+                crate::qualification::enter("algebraic", args.time, block_index, iteration);
             // One call changes only this block's unknowns: the invariant parts
             // of its residual programs hold for the whole call.
             model.linked_kernel(KernelRequest::BeginBlock {
