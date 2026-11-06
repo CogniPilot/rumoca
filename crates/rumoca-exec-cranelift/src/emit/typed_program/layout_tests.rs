@@ -106,7 +106,15 @@ fn checked_storage_never_aliases_a_read_only_constant_tape_slot() {
 fn checked_storage_reuses_tape_only_after_the_last_use() {
     let arithmetic = arithmetic();
     let program = solve::TypedProgram::construct(arithmetic, |builder| {
-        let first = builder.constant(solve::SolveValue::real(arithmetic, 2.0), span(20))?;
+        // The slot value is unknown to the arithmetic constructor, so this
+        // fixture retains the dependency whose storage lifetime it checks.
+        let source = builder.declare_slot(
+            solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic)),
+            solve::SolveStorageClass::Constant,
+            solve::SolveSlotAccess::ReadOnly,
+            span(20),
+        )?;
+        let first = builder.load(source, span(20))?;
         let live = builder.unary(solve::SolveUnaryOperator::Negate, first, span(21))?;
         let reused = builder.constant(solve::SolveValue::real(arithmetic, 3.0), span(22))?;
         let _result = builder.binary(solve::SolveBinaryOperator::Add, live, reused, span(23))?;
@@ -126,8 +134,21 @@ fn checked_storage_reuses_tape_only_after_the_last_use() {
 fn checked_storage_keeps_same_operation_inputs_and_output_disjoint() {
     let arithmetic = arithmetic();
     let program = solve::TypedProgram::construct(arithmetic, |builder| {
-        let lhs = builder.constant(solve::SolveValue::real(arithmetic, 2.0), span(30))?;
-        let rhs = builder.constant(solve::SolveValue::real(arithmetic, 3.0), span(31))?;
+        let scalar = solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic));
+        let lhs = builder.declare_slot(
+            scalar.clone(),
+            solve::SolveStorageClass::Constant,
+            solve::SolveSlotAccess::ReadOnly,
+            span(30),
+        )?;
+        let rhs = builder.declare_slot(
+            scalar,
+            solve::SolveStorageClass::Constant,
+            solve::SolveSlotAccess::ReadOnly,
+            span(31),
+        )?;
+        let lhs = builder.load(lhs, span(30))?;
+        let rhs = builder.load(rhs, span(31))?;
         let _result = builder.binary(solve::SolveBinaryOperator::Add, lhs, rhs, span(32))?;
         Ok(())
     })
