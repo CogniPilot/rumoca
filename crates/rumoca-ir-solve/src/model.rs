@@ -530,6 +530,9 @@ pub struct JacobianStructure {
     column_rows: std::sync::OnceLock<Vec<Vec<usize>>>,
     /// Compact storage layout shared by every matrix in this pattern.
     compact: std::sync::OnceLock<std::sync::Arc<CompactPatternLayout>>,
+    /// `column_rows` bound to `compact`: per column, each listed row's slot.
+    /// `None` when some listed entry has no slot in the compact layout.
+    column_slots: std::sync::OnceLock<Option<Vec<Box<[usize]>>>>,
 }
 
 impl JacobianStructure {
@@ -538,6 +541,7 @@ impl JacobianStructure {
             pattern,
             column_rows: std::sync::OnceLock::new(),
             compact: std::sync::OnceLock::new(),
+            column_slots: std::sync::OnceLock::new(),
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
             jacobian_application: None,
@@ -588,6 +592,27 @@ impl JacobianStructure {
         self.compact
             .get_or_init(|| std::sync::Arc::new(CompactPatternLayout::of(&self.pattern)))
     }
+
+    /// Per column, the [`Self::compact_layout`] slot of each row that
+    /// [`Self::column_rows`] lists for it, in that order: the coordinate view
+    /// resolved once, so a writer into compact storage performs no search.
+    /// `None` when some listed entry has no compact slot.
+    pub fn column_slots(&self) -> Option<&[Box<[usize]>]> {
+        self.column_slots
+            .get_or_init(|| {
+                let layout = self.compact_layout();
+                self.column_rows()
+                    .iter()
+                    .enumerate()
+                    .map(|(column, rows)| {
+                        rows.iter()
+                            .map(|&row| layout.slot(row, column))
+                            .collect::<Option<Box<[usize]>>>()
+                    })
+                    .collect()
+            })
+            .as_deref()
+    }
 }
 
 /// A projection structure with its coloring obligation completed at construction.
@@ -627,6 +652,10 @@ impl ColoredJacobianStructure {
 
     pub fn compact_layout(&self) -> &std::sync::Arc<CompactPatternLayout> {
         self.structure.compact_layout()
+    }
+
+    pub fn column_slots(&self) -> Option<&[Box<[usize]>]> {
+        self.structure.column_slots()
     }
 
     pub fn output_evaluation(&self, color: usize) -> Option<&ProjectionJacobianOutputs> {

@@ -115,4 +115,23 @@ mod tests {
         assert_eq!(layout.dense_slot(2 * 3), Some(1));
         assert_eq!(layout.row(1).1, &[] as &[usize]);
     }
+
+    #[test]
+    fn column_slots_bind_every_column_row_entry_to_its_compact_slot() {
+        let structure = crate::ColoredJacobianStructure::derived(pattern());
+        let layout = structure.compact_layout();
+        let column_slots = structure
+            .column_slots()
+            .expect("every entry has a compact slot");
+        let column_rows = structure.column_rows();
+        assert_eq!(column_slots.len(), column_rows.len());
+        for (column, (rows, slots)) in column_rows.iter().zip(column_slots).enumerate() {
+            assert_eq!(rows.len(), slots.len());
+            for (&row, &slot) in rows.iter().zip(slots.iter()) {
+                assert_eq!(Some(slot), layout.slot(row, column), "({row}, {column})");
+            }
+        }
+        assert_eq!(&*column_slots[1], &[2]);
+        assert!(std::ptr::eq(structure.compact_layout(), layout));
+    }
 }
