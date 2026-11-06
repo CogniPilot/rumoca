@@ -630,6 +630,9 @@ impl SolveRuntime {
             interpreted_assignment_schedules,
             native_projection_assignments: Default::default(),
             compiled_output_scratch: RefCell::new(Vec::new()),
+            grouped_program_scratch: RefCell::new(Vec::with_capacity(grouped_program_capacity(
+                &model.artifacts.continuous.structural,
+            ))),
         };
         scalar.observation_authority = solve_eval::EventObservationAuthority::derive(
             &model.pure_calls,
@@ -652,4 +655,22 @@ impl SolveRuntime {
         }
         Ok(runtime)
     }
+}
+
+/// The most programs any one issued grouped Jacobian selection names, over
+/// every algebraic projection color and both seed axes: the capacity a grouped
+/// evaluation's enabled-program list can reach.
+fn grouped_program_capacity(structural: &solve::ContinuousStructuralArtifacts) -> usize {
+    structural
+        .algebraic_projection()
+        .iter()
+        .flat_map(|structure| {
+            (0..structure.coloring().groups().len())
+                .filter_map(|color| structure.output_evaluation(color))
+        })
+        .flat_map(|outputs| [outputs.solver_y(), outputs.solver_y_and_parameters()])
+        .flatten()
+        .map(|selection| selection.programs().len())
+        .max()
+        .unwrap_or(0)
 }

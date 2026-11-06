@@ -97,12 +97,15 @@ pub(crate) trait ImplicitProjectionModel {
         .map(Rc::new)
     }
 
-    /// Evaluate construction-issued output groups at one immutable point.
-    /// The mask omits rows already supplied by the reverse Jacobian path.
+    /// Evaluate construction-issued output groups at one point. The seed is
+    /// borrowed mutably only so the group can run as one committing sweep;
+    /// implementations leave every seed entry unchanged. The mask omits rows
+    /// already supplied by the reverse Jacobian path.
     fn eval_implicit_jacobian_v_outputs(
         &self,
         _selection: &solve::ProjectionJacobianOutputs,
-        _inputs: rumoca_eval_solve::JacobianEvalInputs<'_>,
+        _point: (&[f64], &[f64], f64),
+        _seed: &mut [f64],
         _enabled_rows: &[bool],
         _out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {

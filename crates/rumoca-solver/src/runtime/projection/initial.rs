@@ -1237,7 +1237,7 @@ fn fill_prepared_algebraic_color(
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
     (structure, color): (&solve::ColoredJacobianStructure, usize),
-    seed: &[f64],
+    seed: &mut [f64],
     group: &[u32],
     column_rows: &[Vec<usize>],
 ) -> Result<bool, RuntimeSolveError> {
@@ -1245,15 +1245,10 @@ fn fill_prepared_algebraic_color(
         return Ok(false);
     };
     let mut values = vec![0.0; block.rows.len()];
-    let inputs = rumoca_eval_solve::JacobianEvalInputs {
-        y: block.y,
-        p: block.p,
-        t: block.t,
-        seed,
-    };
     if !block.model.eval_implicit_jacobian_v_outputs(
         selection,
-        inputs,
+        (block.y, block.p, block.t),
+        seed,
         selected_rows,
         &mut values,
     )? {

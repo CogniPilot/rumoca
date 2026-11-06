@@ -2,6 +2,7 @@ mod arithmetic;
 mod assigned_state;
 mod boolean_extrema;
 mod fault_flow;
+mod finite_multiply;
 mod integer_quotients;
 mod linear_solve;
 mod loop_flow;

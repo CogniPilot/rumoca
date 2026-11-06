@@ -438,7 +438,8 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     fn eval_implicit_jacobian_v_outputs(
         &self,
         selection: &solve::ProjectionJacobianOutputs,
-        inputs: solve_eval::JacobianEvalInputs<'_>,
+        point: (&[f64], &[f64], f64),
+        seed: &mut [f64],
         enabled_rows: &[bool],
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
@@ -450,7 +451,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         let Some(selection) = selection else {
             return Ok(false);
         };
-        self.eval_grouped_jacobian_outputs(selection, inputs, enabled_rows, out)?;
+        self.eval_grouped_jacobian_outputs(selection, point, seed, enabled_rows, out)?;
         Ok(true)
     }
 

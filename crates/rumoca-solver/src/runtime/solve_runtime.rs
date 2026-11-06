@@ -423,6 +423,12 @@ struct ScalarExecutionInventory {
     interpreted_assignment_schedules: interpreted_schedules::InterpretedSchedules,
     native_projection_assignments: native_projection_assignments::NativeProjectionAssignments,
     compiled_output_scratch: RefCell<Vec<f64>>,
+    /// The enabled programs of one grouped Jacobian evaluation, in selection
+    /// order. Its capacity is reserved at construction for the largest issued
+    /// selection, so collecting the list for an ordinary (non-reentrant)
+    /// evaluation never grows it; a reentrant evaluation nested inside a sweep
+    /// collects into its own unreserved list.
+    grouped_program_scratch: RefCell<Vec<usize>>,
 }
 
 /// Opaque mutable state shared by the evaluators behind one ME component.
