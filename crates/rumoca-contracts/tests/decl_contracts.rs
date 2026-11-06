@@ -821,6 +821,33 @@ fn decl_026_operator_function_outside_operator_record_rejected() {
     );
 }
 
+/// Every name in Base Modelica is quoted: only the names of MLS §14 are operators.
+#[test]
+fn decl_026_quoted_function_names_are_not_operators() {
+    expect_balanced(
+        r#"
+        package 'M'
+            function 'M.f'
+                input Real 'x';
+                output Real 'y';
+            algorithm
+                'y' := 2 * 'x';
+            end 'M.f';
+            function 'M.g'
+                input Real 'x';
+                output Real 'y';
+            algorithm
+                'y' := 3 * 'x';
+            end 'M.g';
+            model 'M'
+                Real 'a' = 'M.f'(1.0) + 'M.g'(1.0);
+            end 'M';
+        end 'M';
+    "#,
+        "'M'.'M'",
+    );
+}
+
 // =============================================================================
 // DECL-029: Operator record cannot extend from any of its enclosing scopes
 // =============================================================================
