@@ -43,6 +43,10 @@ pub use integer_interval::{
     SolveIntegerInterval, fold_integer_compare, fold_scalar_binary, fold_scalar_unary,
 };
 pub use pass_independence::{IndependentPasses, LaneExactness, SolveIndexForm};
+pub use program::parameter_stage::{
+    SolveParameterCallStep, SolveParameterStageCandidate, SolveParameterStageError,
+    SolveParameterStageValue,
+};
 pub use program::print_plan::{SolveElementAxis, SolveTensorKernel, SolveTensorPart};
 pub use program::{
     MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, ProgramAssertion, ProgramAssignedState,
