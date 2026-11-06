@@ -126,6 +126,7 @@ pub use diffsol::{
     PreparedSimulation, build_simulation, build_simulation_with_stage_timing,
     build_simulation_with_stage_timing_and_lowered_model, check_initialization,
     check_prepared_initialization, run_prepared_simulation, simulate, simulate_dae,
+    simulate_with_numerical_observation,
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use error::{SimError, SimFailureStage};

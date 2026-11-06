@@ -67,7 +67,7 @@ impl TrajectoryPlugin {
         setup: rumoca_solver::fmi_me::MeNumericalSetup,
     ) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend> {
         match self {
-            Self::Rk45 => (crate::rk45::integrator_factory().build)(setup),
+            Self::Rk45 => (crate::rk45::integrator_factory().build)(setup, None),
             #[cfg(feature = "solver-diffsol")]
             Self::Bdf => rumoca_solver_diffsol::model_exchange_integrator(setup),
         }

@@ -20,7 +20,7 @@ const RK45_INTEGRATOR: crate::me_backend::IntegratorFactory =
     crate::me_backend::IntegratorFactory {
         method: "rk45",
         model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::NotRequested,
-        build: rumoca_solver_rk45::model_exchange_integrator,
+        build: rk45_integrator,
     };
 
 pub fn simulate(
@@ -30,6 +30,16 @@ pub fn simulate(
     let (artifact, execution_backend) =
         lower_runtime_artifact(dae_model, opts).map_err(diagnostic_sim_error)?;
     simulate_artifact(artifact, opts, execution_backend)
+}
+
+fn rk45_integrator(
+    setup: rumoca_solver::fmi_me::MeNumericalSetup,
+    observation: Option<rumoca_solver::fmi_me::numerical_observation::AdapterWriter>,
+) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static> {
+    if let Some(observation) = observation {
+        observation.unavailable();
+    }
+    rumoca_solver_rk45::model_exchange_integrator(setup)
 }
 
 pub(crate) fn integrator_factory() -> crate::me_backend::IntegratorFactory {
@@ -52,7 +62,11 @@ const VELIMPLICIT_INTEGRATOR: crate::me_backend::IntegratorFactory =
 #[cfg(feature = "solver-velimplicit")]
 fn velimplicit_integrator(
     setup: rumoca_solver::fmi_me::MeNumericalSetup,
+    observation: Option<rumoca_solver::fmi_me::numerical_observation::AdapterWriter>,
 ) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static> {
+    if let Some(observation) = observation {
+        observation.unavailable();
+    }
     rumoca_solver_velimplicit::model_exchange_integrator(
         setup,
         rumoca_solver_velimplicit::VelImplicitConfig::default(),

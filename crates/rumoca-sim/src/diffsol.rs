@@ -9,18 +9,19 @@ scheduled_executor_items! {
 use rumoca_ir_dae as dae;
 
 use crate::BuildSimulationTimings;
+use rumoca_solver::fmi_me::numerical_observation::SettingsCollector;
 scheduled_executor_items! {
     use crate::SimulationSessionApi;
 }
 use crate::me_backend::{
-    BackendSimulationSession, batch_options, instance_config, plugin_for_host,
+    BackendSimulationSession, batch_options, instance_config, plugin_for_host_with_observation,
 };
 use crate::simulation_session::SessionState;
 
 const BDF_INTEGRATOR: crate::me_backend::IntegratorFactory = crate::me_backend::IntegratorFactory {
     method: "bdf",
     model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::FiniteAssembly,
-    build: rumoca_solver_diffsol::model_exchange_integrator,
+    build: rumoca_solver_diffsol::model_exchange_integrator_with_observation,
 };
 use crate::solve_lowering::{
     SimulationDiagnosticError, apply_correlated_simulation_overrides, finish_runtime_fmi_artifact,
@@ -154,8 +155,18 @@ pub fn build_simulation_with_stage_timing(
 pub fn build_simulation_with_stage_timing_and_lowered_model(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
+    begin_stage: impl FnMut(&'static str),
+    observe_lowered_model: impl FnMut(&rumoca_phase_solve::LoweredSolveModel<'_>),
+) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
+    build_simulation_with_observation(dae_model, opts, begin_stage, observe_lowered_model, None)
+}
+
+fn build_simulation_with_observation(
+    dae_model: &dae::Dae,
+    opts: &rumoca_solver::SimOptions,
     mut begin_stage: impl FnMut(&'static str),
     mut observe_lowered_model: impl FnMut(&rumoca_phase_solve::LoweredSolveModel<'_>),
+    observation: Option<&SettingsCollector>,
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
     let param_overrides = tunable_param_overrides(dae_model, opts).map_err(diagnostic_sim_error)?;
     let (mut lowered, solve_timings) =
@@ -176,7 +187,7 @@ pub fn build_simulation_with_stage_timing_and_lowered_model(
     let backend_build_start = Instant::now();
     let (artifact, execution_backend) =
         finish_runtime_fmi_artifact(lowered, opts).map_err(diagnostic_sim_error)?;
-    let prepared = build_simulation_artifact(artifact, opts, execution_backend)
+    let prepared = build_simulation_artifact(artifact, opts, execution_backend, observation)
         .map_err(|error| error.at_stage(SimFailureStage::BackendBuild))?;
     let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
     Ok((
@@ -199,9 +210,13 @@ fn build_simulation_artifact(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&SettingsCollector>,
 ) -> Result<PreparedSimulation, SimError> {
     let prepared = instantiate_prepared_simulation(artifact, opts, execution_backend)?;
-    drop(check_prepared_component(&prepared));
+    drop(check_prepared_component_with_observation(
+        &prepared,
+        observation,
+    ));
     Ok(prepared)
 }
 
@@ -249,6 +264,13 @@ pub(crate) fn simulate_probed(
 }
 
 fn simulate_prepared(prepared: &PreparedSimulation) -> Result<rumoca_solver::SimResult, SimError> {
+    simulate_prepared_with_observation(prepared, None)
+}
+
+fn simulate_prepared_with_observation(
+    prepared: &PreparedSimulation,
+    observation: Option<&SettingsCollector>,
+) -> Result<rumoca_solver::SimResult, SimError> {
     let options = batch_options(&prepared.root_location, &prepared.opts)?;
     let mut cursor = rumoca_solver::fmi_me::driver::batch_output_cursor(&options)?;
     let mut retained =
@@ -263,13 +285,21 @@ fn simulate_prepared(prepared: &PreparedSimulation) -> Result<rumoca_solver::Sim
     if host.is_terminated() {
         return Ok(host.finish());
     }
-    let plugin = plugin_for_host(&host, &prepared.opts, BDF_INTEGRATOR)?;
-    let mut session = host.into_session(plugin)?;
+    let (plugin, host_writer) =
+        plugin_for_host_with_observation(&host, &prepared.opts, BDF_INTEGRATOR, observation)?;
+    let mut session = host.into_session_with_numerical_observation(plugin, host_writer)?;
     session.run_to_stop(&mut cursor)?;
     Ok(session.finish())
 }
 
 fn check_prepared_component(prepared: &PreparedSimulation) -> Result<(), SimError> {
+    check_prepared_component_with_observation(prepared, None)
+}
+
+fn check_prepared_component_with_observation(
+    prepared: &PreparedSimulation,
+    observation: Option<&SettingsCollector>,
+) -> Result<(), SimError> {
     let options = batch_options(&prepared.root_location, &prepared.opts)?;
     let mut retained =
         prepared
@@ -283,8 +313,9 @@ fn check_prepared_component(prepared: &PreparedSimulation) -> Result<(), SimErro
     if host.is_terminated() {
         return Ok(());
     }
-    let plugin = plugin_for_host(&host, &prepared.opts, BDF_INTEGRATOR)?;
-    drop(host.into_session(plugin)?);
+    let (plugin, host_writer) =
+        plugin_for_host_with_observation(&host, &prepared.opts, BDF_INTEGRATOR, observation)?;
+    drop(host.into_session_with_numerical_observation(plugin, host_writer)?);
     Ok(())
 }
 
@@ -310,6 +341,33 @@ pub fn simulate(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
     build_simulation(dae_model, opts)?.run()
+}
+
+/// Observe BDF batch construction and execution through the same numerical path.
+///
+/// The existing warm-up and actual run receive distinct construction associations.
+/// The caller owns the collector and must finalize it after this function returns,
+/// including on an error. This does not certify coordinates or source provenance,
+/// and does not imply observation support for trajectory, live or FMI-LS routes.
+///
+/// The high-level facade exposes this explicit, opt-in batch entry:
+/// ```no_run
+/// use rumoca_solver::fmi_me::numerical_observation::SettingsCollector;
+/// let _entry: fn(
+///     &rumoca_ir_dae::Dae,
+///     &rumoca_sim::SimOptions,
+///     &SettingsCollector,
+/// ) -> Result<rumoca_sim::SimResult, rumoca_sim::SimError> =
+///     rumoca_sim::simulate_with_numerical_observation;
+/// ```
+pub fn simulate_with_numerical_observation(
+    dae_model: &dae::Dae,
+    opts: &rumoca_solver::SimOptions,
+    observation: &SettingsCollector,
+) -> Result<rumoca_solver::SimResult, SimError> {
+    let (prepared, _) =
+        build_simulation_with_observation(dae_model, opts, |_| {}, |_| {}, Some(observation))?;
+    simulate_prepared_with_observation(&prepared, Some(observation))
 }
 
 pub use simulate as simulate_dae;
@@ -479,6 +537,7 @@ scheduled_executor_items! {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native_policy_tests {
     mod execution_receipt;
+    mod numerical_observation;
 
     mod heat_seed_work;
     use std::cell::Cell;
@@ -1663,7 +1722,7 @@ end DeclinedEvent;
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = state_fixture(&opts);
         let (_backend, counters, handle) = counting_handle(&model);
-        let prepared = build_simulation_artifact(model.artifact(), &opts, Some(handle))
+        let prepared = build_simulation_artifact(model.artifact(), &opts, Some(handle), None)
             .expect("native BDF build succeeds");
         let compiles_after_build = counters.compile_counts();
         assert!(
@@ -1749,7 +1808,7 @@ end DeclinedEvent;
         opts: &SimOptions,
     ) -> (rumoca_solver::SimResult, rumoca_solver::SimResult) {
         let (_backend, counters, handle) = counting_handle(model);
-        let unchecked = build_simulation_artifact(model.artifact(), opts, Some(handle))
+        let unchecked = build_simulation_artifact(model.artifact(), opts, Some(handle), None)
             .expect("uncheck-path native BDF build succeeds");
         let first = unchecked.run().expect("first unchecked run succeeds");
         let second = unchecked.run().expect("second unchecked run succeeds");
@@ -1808,8 +1867,9 @@ end DeclinedEvent;
         simulate_artifact(model.artifact(), &opts, Some(one_shot_handle))
             .expect("one-shot native BDF run succeeds");
         let (_build_backend, build_counters, build_handle) = counting_handle(&model);
-        let _prepared = build_simulation_artifact(model.artifact(), &opts, Some(build_handle))
-            .expect("native BDF build succeeds");
+        let _prepared =
+            build_simulation_artifact(model.artifact(), &opts, Some(build_handle), None)
+                .expect("native BDF build succeeds");
         assert_eq!(
             one_shot_counters.compile_counts(),
             build_counters.compile_counts(),
@@ -1852,7 +1912,7 @@ end DeclinedEvent;
         let handle_a = MeExecutionBackend::new(factory.clone() as Rc<dyn SolveExecutionBackend>);
         let handle_b = MeExecutionBackend::new(factory.clone() as Rc<dyn SolveExecutionBackend>);
 
-        let prepared_a = build_simulation_artifact(model_a.artifact(), &opts, Some(handle_a))
+        let prepared_a = build_simulation_artifact(model_a.artifact(), &opts, Some(handle_a), None)
             .expect("first model builds");
         let result_a = prepared_a.run().expect("first model runs");
         let compiles_after_a = counters.compile_counts();
@@ -1861,7 +1921,7 @@ end DeclinedEvent;
             "the first model performed no native compiles — the pin would be vacuous"
         );
 
-        let prepared_b = build_simulation_artifact(model_b.artifact(), &opts, Some(handle_b))
+        let prepared_b = build_simulation_artifact(model_b.artifact(), &opts, Some(handle_b), None)
             .expect("second model builds");
         let result_b = prepared_b.run().expect("second model runs");
         assert!(
@@ -1899,7 +1959,7 @@ end DeclinedEvent;
         let opts = sim_opts(SimExecutionPolicy::Auto);
         let model = state_fixture(&opts);
         let (backend, _counters, handle) = counting_handle(&model);
-        let prepared = build_simulation_artifact(model.artifact(), &opts, Some(handle))
+        let prepared = build_simulation_artifact(model.artifact(), &opts, Some(handle), None)
             .expect("native BDF build succeeds");
         assert!(
             Rc::strong_count(&backend) >= 2,
@@ -1961,7 +2021,7 @@ end DeclinedEvent;
         assert_eq!(one_shot.retained.borrow().lease_count(), 0);
         one_shot.run().expect("zero-state run succeeds");
         assert_eq!(one_shot.retained.borrow().lease_count(), 1);
-        let prepared = build_simulation_artifact(model.artifact(), &opts, None)
+        let prepared = build_simulation_artifact(model.artifact(), &opts, None, None)
             .expect("zero-state simulation builds");
         assert_eq!(prepared.retained.borrow().lease_count(), 1);
         prepared.run().expect("a prepared run repeats");
