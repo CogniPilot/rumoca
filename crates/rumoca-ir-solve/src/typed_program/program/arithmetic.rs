@@ -161,10 +161,23 @@ impl<'program> TypedProgramBuilder<'program> {
         if let Some(folded) = self.fold_binary(operator, lhs, rhs, provenance)? {
             return Ok(folded);
         }
+        // Canonicalize the lookup key only after both Real operands are
+        // finite. The first issued operation keeps its operand order and span;
+        // unknown NaN payload/quieting behavior is never commuted.
+        let (key_lhs, key_rhs) = if operator == SolveBinaryOperator::Multiply
+            && matches!(lhs_type.element_type(), SolveScalarType::Real { .. })
+            && self.arithmetic_facts.finite.contains(&lhs.id)
+            && self.arithmetic_facts.finite.contains(&rhs.id)
+            && lhs.id.index() > rhs.id.index()
+        {
+            (rhs.id, lhs.id)
+        } else {
+            (lhs.id, rhs.id)
+        };
         let key = lhs_type
             .dimensions()
             .is_empty()
-            .then_some(ValueKey::Binary(operator, lhs.id, rhs.id));
+            .then_some(ValueKey::Binary(operator, key_lhs, key_rhs));
         if let Some(existing) = self.numbered(key.as_ref()) {
             return Ok(existing);
         }
