@@ -17,8 +17,8 @@ impl SolveOperation {
             Self::AssignedState { operation } => visit_assigned_state_inputs(operation, &mut visit),
             Self::Constant { .. } | Self::Load { .. } | Self::Identity { .. } => {}
             Self::Store { source, .. } => visit(*source),
-            Self::CheckFinite { operand, .. }
-            | Self::Unary { operand, .. }
+            Self::CheckFinite { operand, point, .. } => visit_finite(*operand, *point, &mut visit),
+            Self::Unary { operand, .. }
             | Self::Convert { operand, .. }
             | Self::Transpose { operand, .. }
             | Self::Reduce { operand, .. }
@@ -215,5 +215,17 @@ fn visit_assigned_state_inputs(
 ) {
     if let SolveAssignedStateOperation::Present { source, .. } = operation {
         visit(*source);
+    }
+}
+
+/// A finite check reads its operand and, for a mapped identity, its point.
+fn visit_finite(
+    operand: SolveRegisterId,
+    point: Option<SolveRegisterId>,
+    visit: &mut impl FnMut(SolveRegisterId),
+) {
+    visit(operand);
+    if let Some(point) = point {
+        visit(point);
     }
 }

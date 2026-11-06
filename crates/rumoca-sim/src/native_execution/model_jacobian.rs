@@ -9,6 +9,8 @@ use rumoca_solver::{
     CompiledSolveModelStateJacobian, ModelStateJacobianPreparation, RuntimeSolveError,
 };
 #[cfg(test)]
+mod compact_tests;
+#[cfg(test)]
 mod tests;
 
 self_cell::self_cell! {

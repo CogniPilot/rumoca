@@ -21,6 +21,7 @@ mod immutable_payloads;
 mod index_bounds;
 mod linear_solve;
 mod load_numbering;
+mod mapped_finite_folds;
 mod number_results;
 mod recursion;
 mod reduction_extrema;

@@ -11,9 +11,9 @@
 //! definition.
 
 use super::{
-    LaneExactness, SolveBinaryOperator, SolveOperation, SolveProgramRegion, SolveRegisterId,
-    SolveScalarType, SolveSlot, SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis,
-    SolveUnaryOperator, SolveValueType,
+    LaneExactness, SolveBinaryOperator, SolveFiniteCheck, SolveOperation, SolveProgramRegion,
+    SolveRegisterId, SolveScalarType, SolveSlot, SolveSpannedOperation, SolveStorageClass,
+    SolveTensorViewAxis, SolveUnaryOperator, SolveValueType,
 };
 use crate::SolveValueKind;
 use crate::fault::{FaultClass, FaultKind};
@@ -449,4 +449,69 @@ fn lane_binary(operator: SolveBinaryOperator, scalar: SolveScalarType) -> bool {
         }
         SolveScalarType::Boolean => matches!(operator, B::And | B::Or),
     }
+}
+
+/// Whether every `MappedPrimal` check of a map body is bounded by that map:
+/// each one sits directly in the body, not in a nested region, and the
+/// interval of its point register, computed from the binder spans alone,
+/// lies in `0..point_count`. Captures are unbounded here, so a point that
+/// depends on a capture is not proven and the map is refused.
+pub(crate) fn mapped_points_bounded(
+    region: &SolveProgramRegion,
+    captures: usize,
+    binders: &[StructuredIndexBinder],
+) -> bool {
+    let body = region.body();
+    let mut inputs: Vec<Interval> = vec![None; captures];
+    for (binder, input) in binders.iter().zip(region.inputs().iter().skip(captures)) {
+        inputs.push(match input.element_type() {
+            SolveScalarType::Integer(integer) => {
+                SolveIntegerInterval::span(integer, binder.lower, binder.upper)
+            }
+            _ => None,
+        });
+    }
+    let mut flow = Analysis {
+        register_types: body.register_types(),
+        slots: body.slots(),
+        intervals: vec![None; body.register_types().len()],
+        slot_intervals: slot_intervals(body.slots(), &inputs),
+    };
+    // Each point's interval is read before its check, exactly as the
+    // straight-line body defines it; the check itself defines nothing.
+    body.operations().iter().all(|spanned| {
+        let bounded = match spanned.operation() {
+            SolveOperation::CheckFinite {
+                check: SolveFiniteCheck::MappedPrimal { point_count, .. },
+                point: Some(point),
+                ..
+            } => flow.intervals[point.index()]
+                .is_some_and(|interval| interval.within(0, i64::from(*point_count) - 1)),
+            SolveOperation::CheckFinite {
+                check: SolveFiniteCheck::MappedPrimal { .. },
+                ..
+            } => false,
+            operation => crate::typed_program::target::regions(operation)
+                .into_iter()
+                .flatten()
+                .all(|child| !contains_mapped_check(child)),
+        };
+        flow.classify(spanned.operation());
+        bounded
+    })
+}
+
+fn contains_mapped_check(program: &crate::typed_program::TypedProgram) -> bool {
+    program
+        .operations()
+        .iter()
+        .any(|spanned| match spanned.operation() {
+            SolveOperation::CheckFinite { check, .. } => {
+                matches!(check, SolveFiniteCheck::MappedPrimal { .. })
+            }
+            operation => crate::typed_program::target::regions(operation)
+                .into_iter()
+                .flatten()
+                .any(contains_mapped_check),
+        })
 }
