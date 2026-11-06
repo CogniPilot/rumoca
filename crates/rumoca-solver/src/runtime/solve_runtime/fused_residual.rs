@@ -53,18 +53,24 @@ impl FusedResidual {
 }
 
 /// The fused residual entry of each algebraic projection structure, aligned
-/// with them; `None` without a backend, for a structure without an issued
-/// fused selection, or when the selection was issued over other programs than
-/// `canonical`.
+/// with them; `None` without a backend, for a block whose residual passes do
+/// not run program by program (`grouped` is false for it), for a structure
+/// without an issued fused selection, or when the selection was issued over
+/// other programs than `canonical`.
 pub(super) fn fused_residuals(
+    grouped: impl Fn(usize) -> bool,
     structures: &[solve::ColoredJacobianStructure],
     (analysis, canonical): (ProgramAnalysis<'_>, &solve::ScalarProgramBlock),
     backend: Option<&dyn SolveExecutionBackend>,
 ) -> Box<[Option<Rc<FusedResidual>>]> {
     structures
         .iter()
-        .map(|structure| {
+        .enumerate()
+        .map(|(index, structure)| {
             let backend = backend?;
+            if !grouped(index) {
+                return None;
+            }
             let fused = structure.fused_residual_evaluation()?;
             if !fused.primal_source().shares_program_owner(canonical) {
                 return None;

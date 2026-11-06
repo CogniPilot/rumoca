@@ -1064,7 +1064,6 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
 }
 
 impl RefreshProjectionModel<'_> {
-    /// The fused kernels of plan block `block_index`.
     /// Block `block_index`'s fused residual entry and its issued selection,
     /// when `selection` is that block's issued residual selection.
     fn fused_residual(
@@ -1089,6 +1088,7 @@ impl RefreshProjectionModel<'_> {
         Some((entry, structure.fused_residual_evaluation()?))
     }
 
+    /// The fused kernels of plan block `block_index`.
     fn block_kernels(&self, block_index: usize) -> Option<&super::block_kernels::BlockKernels> {
         let index = self.block_indices.get(block_index).copied()?;
         self.runtime.scalar.block_kernels.get(index)?.as_deref()

@@ -102,6 +102,53 @@ fn select_pair() -> Vec<solve::LinearOp> {
     ]
 }
 
+/// Rows 2 and 3 as `y[3] - y[2]` when `0 < p[0]`, else `y[2] - y[3]`,
+/// through a select, and `y[2] + y[3]`. The select reads only a parameter
+/// condition, so the block stays affine; every register the condition is
+/// built in is written again later, so no operation can be hoisted and the
+/// program has no split.
+fn affine_select_pair() -> Vec<solve::LinearOp> {
+    use solve::{BinaryOp as B, CompareOp as C, LinearOp as L};
+    vec![
+        L::LoadP { dst: 0, index: 0 },
+        L::Const { dst: 1, value: 0.0 },
+        L::Compare {
+            dst: 2,
+            op: C::Lt,
+            lhs: 1,
+            rhs: 0,
+        },
+        L::LoadY { dst: 0, index: 2 },
+        L::LoadY { dst: 1, index: 3 },
+        L::Binary {
+            dst: 3,
+            op: B::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        L::Binary {
+            dst: 4,
+            op: B::Sub,
+            lhs: 1,
+            rhs: 0,
+        },
+        L::Select {
+            dst: 5,
+            cond: 2,
+            if_true: 4,
+            if_false: 3,
+        },
+        L::Binary {
+            dst: 2,
+            op: B::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        L::StoreOutput { src: 5 },
+        L::StoreOutput { src: 2 },
+    ]
+}
+
 fn rows(derivative: bool) -> Vec<Vec<solve::LinearOp>> {
     vec![
         pair(0, 1, derivative),
@@ -294,6 +341,13 @@ fn residual_pass(runtime: &SolveRuntime) -> Result<[f64; 5], crate::RuntimeSolve
     Ok(out)
 }
 
+/// Whether the runtime's projection treats block 0 as affine, the only kind
+/// of block whose residual runs the grouped pass.
+fn block_is_affine(runtime: &SolveRuntime) -> bool {
+    super::native_projection_jvp::selected_projection(runtime, false)
+        .algebraic_projection_block_is_affine(0)
+}
+
 fn reset(counts: &Counts) {
     for count in [&counts.fused, &counts.pair, &counts.single] {
         count.set(0);
@@ -307,6 +361,7 @@ fn calls(counts: &Counts) -> [usize; 3] {
 #[test]
 fn the_fused_entry_answers_the_unsplit_programs_and_the_split_one_follows() {
     let (runtime, counts) = fused_runtime();
+    assert!(block_is_affine(&runtime));
     let fused = runtime
         .scalar_execution()
         .unwrap()
@@ -386,12 +441,14 @@ fn a_selection_issued_over_other_programs_gets_no_fused_entry() {
         .primal_source()
         .clone();
     let issued = super::super::fused_residual::fused_residuals(
+        |_| true,
         structures,
         (analysis, &canonical),
         Some(&backend),
     );
     assert!(issued[0].is_some(), "the issuing programs get the entry");
     let foreign = super::super::fused_residual::fused_residuals(
+        |_| true,
         structures,
         (analysis, &other),
         Some(&backend),
@@ -401,36 +458,92 @@ fn a_selection_issued_over_other_programs_gets_no_fused_entry() {
         "equal but separately owned programs do not"
     );
     assert!(
-        super::super::fused_residual::fused_residuals(structures, (analysis, &canonical), None)[0]
-            .is_none()
+        super::super::fused_residual::fused_residuals(
+            |_| true,
+            structures,
+            (analysis, &canonical),
+            None
+        )[0]
+        .is_none()
+    );
+    let ungrouped = super::super::fused_residual::fused_residuals(
+        |_| false,
+        structures,
+        (analysis, &canonical),
+        Some(&backend),
+    );
+    assert!(
+        ungrouped[0].is_none(),
+        "a block whose residual does not run program by program gets none"
     );
 }
 
 #[test]
-fn a_lazily_planned_unsplit_program_is_answered_by_the_fused_entry() {
-    let primal = vec![pair(0, 1, false), select_pair(), single(false)];
+fn a_non_affine_block_gets_no_fused_entry() {
+    let model = fused_model_with(vec![pair(0, 1, false), select_pair(), single(false)]);
+    let (runtime, counts) = fused_runtime_with(&model);
+    assert!(
+        !block_is_affine(&runtime),
+        "the select on block unknowns makes the block non-affine"
+    );
+    let scalar = &runtime.scalar_execution().unwrap().scalar;
+    assert!(
+        scalar.continuous_structural.algebraic_projection()[0]
+            .fused_residual_evaluation()
+            .is_some(),
+        "Solve IR still issues the fused selection"
+    );
+    assert!(
+        scalar.fused_residuals[0].is_none(),
+        "no entry is compiled for a block that never runs a grouped residual pass"
+    );
+    reset(&counts);
+    let out = residual_pass(&runtime).unwrap();
+    let expected = [-1.0, 3.0, 2.0, 8.0, 6.5];
+    assert_eq!(out.map(f64::to_bits), expected.map(f64::to_bits));
+    assert_eq!(counts.fused.get(), 0);
+}
+
+#[test]
+fn an_affine_block_answers_a_lazily_planned_program_inside_the_fused_entry() {
+    let primal = vec![pair(0, 1, false), affine_select_pair(), single(false)];
     let block = spanned_block(primal.clone(), "fused_residual.mo");
     assert!(
         solve::BlockResidualSplit::derive(block.program(1).unwrap(), &[0, 1, 2, 3, 4]).is_none(),
-        "the select program reads only block unknowns"
+        "no operation of the select program can be hoisted"
     );
     let (runtime, counts) = fused_runtime_with(&fused_model_with(primal));
+    assert!(
+        block_is_affine(&runtime),
+        "a parameter condition keeps the block affine"
+    );
     let scalar = &runtime.scalar_execution().unwrap().scalar;
     assert!(scalar.implicit_scalar_rhs.source().has_lazy_row_plan(1));
-    let fused = scalar.continuous_structural.algebraic_projection()[0]
+    let programs: Vec<_> = scalar.continuous_structural.algebraic_projection()[0]
         .fused_residual_evaluation()
-        .unwrap();
-    let programs: Vec<_> = fused
+        .unwrap()
         .selection()
         .programs()
         .iter()
         .map(|p| p.program())
         .collect();
     assert_eq!(programs, [0, 1], "the lazily planned program is fused");
+    assert!(scalar.fused_residuals[0].is_some());
     reset(&counts);
     let out = residual_pass(&runtime).unwrap();
-    // |3 - 5| and 3 + 5 replace rows 2 and 3 of the plain fixture.
+    // 0 < 0.5 selects 5 - 3 for row 2.
     let expected = [-1.0, 3.0, 2.0, 8.0, 6.5];
     assert_eq!(out.map(f64::to_bits), expected.map(f64::to_bits));
-    assert_eq!(counts.fused.get(), 1);
+    // Debug builds re-run the whole ordered pass to compare its bits (both
+    // two-output programs and the single one).
+    let compare = if cfg!(debug_assertions) {
+        [0, 2, 1]
+    } else {
+        [0; 3]
+    };
+    assert_eq!(
+        calls(&counts),
+        [1 + compare[0], compare[1], 1 + compare[2]],
+        "one fused call through the grouped pass, the split program once"
+    );
 }

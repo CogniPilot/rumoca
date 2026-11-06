@@ -350,8 +350,23 @@ impl SolveRuntime {
                     .filter(|_| implicit_scalar_rhs.is_compiled()),
             )
             .into();
+        // A block with a fused residual kernel evaluates its whole residual
+        // programs in one call; only the other affine blocks evaluate their
+        // residual program by program, reading splits and fused entries.
+        let grouped_residual = |index| {
+            model
+                .problem
+                .continuous
+                .refresh_owners
+                .algebraic_projection_block_is_affine(index)
+                && !block_kernels
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|kernels| kernels.has_residual())
+        };
         let fused_residuals: Rc<[Option<Rc<fused_residual::FusedResidual>>]> =
             fused_residual::fused_residuals(
+                grouped_residual,
                 continuous_structural.algebraic_projection(),
                 (implicit_scalar_rhs.source(), &implicit_scalar_programs),
                 execution_backend
@@ -360,19 +375,7 @@ impl SolveRuntime {
             )
             .into();
         let block_splits = block_residual_split::block_residual_splits(
-            // A block with a fused residual entry evaluates its whole residual
-            // programs in one call and never reads a split.
-            |index| {
-                model
-                    .problem
-                    .continuous
-                    .refresh_owners
-                    .algebraic_projection_block_is_affine(index)
-                    && !block_kernels
-                        .get(index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|kernels| kernels.has_residual())
-            },
+            grouped_residual,
             &model.problem.continuous.algebraic_projection_plan,
             &continuous_structural,
             implicit_scalar_rhs.source(),
