@@ -478,6 +478,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
         {
             let mut residual = vec![0.0; self.block.rows.len()];
             if self.model.eval_implicit_residual_outputs(
+                self.block_index,
                 selection,
                 y,
                 self.parameters,

@@ -227,7 +227,7 @@ fn grouped_projection_residual_evaluates_shared_outputs_once_at_each_point() {
     let mut selected = [0.0; 2];
     assert!(
         projection
-            .eval_implicit_residual_outputs(selection, &[8.0, -5.0], &[2.0], 1.0, &mut selected)
+            .eval_implicit_residual_outputs(0, selection, &[8.0, -5.0], &[2.0], 1.0, &mut selected)
             .unwrap()
     );
     assert_eq!(selected, [-4.0, 20.0]);

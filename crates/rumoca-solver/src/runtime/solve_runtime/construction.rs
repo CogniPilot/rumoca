@@ -350,6 +350,15 @@ impl SolveRuntime {
                     .filter(|_| implicit_scalar_rhs.is_compiled()),
             )
             .into();
+        let fused_residuals: Rc<[Option<Rc<fused_residual::FusedResidual>>]> =
+            fused_residual::fused_residuals(
+                continuous_structural.algebraic_projection(),
+                (implicit_scalar_rhs.source(), &implicit_scalar_programs),
+                execution_backend
+                    .as_deref()
+                    .filter(|_| implicit_scalar_rhs.is_compiled()),
+            )
+            .into();
         let block_splits = block_residual_split::block_residual_splits(
             // A block with a fused residual entry evaluates its whole residual
             // programs in one call and never reads a split.
@@ -506,6 +515,7 @@ impl SolveRuntime {
             },
             block_splits,
             block_kernels,
+            fused_residuals,
             active_split: std::cell::Cell::new(None),
             split_row_scratch: std::cell::RefCell::new(Vec::new()),
             residual_row_batch: std::cell::RefCell::default(),

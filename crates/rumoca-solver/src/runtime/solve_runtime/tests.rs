@@ -1985,6 +1985,7 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 
 mod chart_composite_fault;
 mod chart_sharing;
+mod fused_residual;
 mod grouped_projection_jvp;
 mod native_projection_assignments;
 pub(super) mod native_projection_jvp;

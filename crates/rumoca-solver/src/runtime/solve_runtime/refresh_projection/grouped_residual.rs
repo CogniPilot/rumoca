@@ -3,12 +3,16 @@
 use super::*;
 
 impl RefreshProjectionModel<'_> {
+    /// The residual of block `block_index` over `selection`, its issued
+    /// residual selection. A fused residual entry is tried first, silently:
+    /// when it answers, the selection's other programs follow in order; when
+    /// it declines, every program runs in order exactly as without it, so the
+    /// first error and every non-finite report are those of that order.
     pub(super) fn eval_grouped_residual_outputs(
         &self,
+        block_index: usize,
         selection: &solve::ProjectionOutputSelection,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
+        point: (&[f64], &[f64], f64),
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         if out.len() != selection.output_len() {
@@ -16,16 +20,80 @@ impl RefreshProjectionModel<'_> {
                 "grouped residual output extent mismatch",
             ));
         }
-        let mut values = self.runtime.scalar.compiled_output_scratch.borrow_mut();
-        for program in selection.programs() {
-            self.eval_residual_program_outputs(program.program(), y, p, t, &mut values)?;
-            if values.len() != program.output_count() {
-                return Err(RuntimeSolveError::solve_ir(
-                    "grouped residual program output count mismatch",
-                ));
-            }
-            self.scatter_residual_program_outputs(program, y, t, &values, out)?;
+        let tables = self.runtime.model.external_tables.as_slice();
+        if let Some((entry, fused)) = self.fused_residual(block_index, selection)
+            && entry.eval(fused, point, tables, out)
+        {
+            self.eval_unfused_residual_programs(selection, fused, point, out)?;
+            #[cfg(debug_assertions)]
+            self.debug_assert_fused_residual_matches(selection, point, out)?;
+            return Ok(());
         }
+        for program in selection.programs() {
+            self.eval_residual_entry(program, point, out)?;
+        }
+        Ok(())
+    }
+
+    /// After a fused residual entry answered `fused`'s programs, evaluate the
+    /// rest of `selection` in its order.
+    fn eval_unfused_residual_programs(
+        &self,
+        selection: &solve::ProjectionOutputSelection,
+        fused: &solve::FusedResidualSelection,
+        point: (&[f64], &[f64], f64),
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let mut fused_programs = fused
+            .selection()
+            .programs()
+            .iter()
+            .map(solve::ProjectionProgramOutputs::program)
+            .peekable();
+        for program in selection.programs() {
+            if fused_programs.next_if_eq(&program.program()).is_none() {
+                self.eval_residual_entry(program, point, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate one program of a residual selection and place its outputs.
+    fn eval_residual_entry(
+        &self,
+        program: &solve::ProjectionProgramOutputs,
+        (y, p, t): (&[f64], &[f64], f64),
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let mut values = self.runtime.scalar.compiled_output_scratch.borrow_mut();
+        self.eval_residual_program_outputs(program.program(), y, p, t, &mut values)?;
+        if values.len() != program.output_count() {
+            return Err(RuntimeSolveError::solve_ir(
+                "grouped residual program output count mismatch",
+            ));
+        }
+        self.scatter_residual_program_outputs(program, y, t, &values, out)
+    }
+
+    /// Debug-only refinement guard: a pass answered by the fused residual
+    /// entry places exactly the bits the program-by-program pass places.
+    #[cfg(debug_assertions)]
+    fn debug_assert_fused_residual_matches(
+        &self,
+        selection: &solve::ProjectionOutputSelection,
+        point: (&[f64], &[f64], f64),
+        out: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let mut reference = out.to_vec();
+        for program in selection.programs() {
+            self.eval_residual_entry(program, point, &mut reference)?;
+        }
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(
+            bits(out),
+            bits(&reference),
+            "a fused residual pass places its programs' residuals bit for bit"
+        );
         Ok(())
     }
 
