@@ -18,6 +18,10 @@ pub(super) struct ArithmeticFacts {
 }
 
 impl ArithmeticFacts {
+    pub(super) fn is_finite(&self, operand: SolveRegisterId) -> bool {
+        self.finite.contains(&operand)
+    }
+
     pub(super) fn record(&mut self, operation: &SolveOperation) {
         match operation {
             SolveOperation::Constant { destination, value } => {
