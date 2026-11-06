@@ -45,6 +45,7 @@ pub(super) type ProjectAlgebraics<'a> =
 
 mod block_kernels;
 mod block_residual_split;
+mod fused_residual;
 mod state_jacobian_memo;
 pub use block_residual_split::{
     BlockResidualSplitCounts, block_residual_split_counts, reset_block_residual_split_counts,
@@ -291,6 +292,9 @@ struct ScalarExecutionInventory {
     block_splits: Rc<[Option<Rc<block_residual_split::BlockSplits>>]>,
     /// Fused kernels of each affine block, aligned with the plan's blocks.
     block_kernels: Rc<[Option<Rc<block_kernels::BlockKernels>>]>,
+    /// Fused residual entries of each algebraic projection structure's
+    /// issued unsplit residual programs, aligned with the plan's blocks.
+    fused_residuals: Rc<[Option<Rc<fused_residual::FusedResidual>>]>,
     /// Invariant values of the block projection call in progress.
     active_split: block_residual_split::ActiveSplitSlot,
     /// Output buffer of a single-row split evaluation.

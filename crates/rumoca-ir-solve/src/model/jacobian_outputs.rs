@@ -5,6 +5,8 @@ mod projection_application;
 mod seed_domain;
 
 #[cfg(test)]
+mod fused_residual_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
@@ -14,6 +16,84 @@ use projection_application::ProjectionJacobianSource;
 
 pub use projection_application::{ProjectionJacobianApplication, ProjectionJacobianColor};
 pub use seed_domain::ProjectionJacobianSeedDomain;
+
+/// The programs of an algebraic block's residual selection that no block
+/// residual split divides over the block's unknowns, for one fused residual
+/// entry over them. The entry writes every output of these programs, program
+/// after program, so program `i`'s outputs start at `bases()[i]`. The other
+/// programs of the residual selection keep their own evaluation.
+#[derive(Clone, Debug)]
+pub struct FusedResidualSelection {
+    selection: ProjectionOutputSelection,
+    bases: Box<[usize]>,
+    output_count: usize,
+    primal_source: ScalarProgramBlock,
+}
+
+impl FusedResidualSelection {
+    /// The unsplit programs of `residual` over `unknowns`, read from
+    /// `primal`; `None` when fewer than two remain, when `residual` names a
+    /// program twice, or when a program's issued output count disagrees with
+    /// `primal`.
+    fn derive(
+        residual: &ProjectionOutputSelection,
+        primal: &ScalarProgramBlock,
+        unknowns: &[usize],
+    ) -> Option<Self> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut programs = Vec::new();
+        for entry in &residual.programs {
+            let ops = primal.program(entry.program)?;
+            if !seen.insert(entry.program)
+                || ScalarProgramBlock::program_output_count(ops) != entry.output_count
+            {
+                return None;
+            }
+            if BlockResidualSplit::derive(ops, unknowns).is_none() {
+                programs.push(entry.clone());
+            }
+        }
+        if programs.len() < 2 {
+            return None;
+        }
+        let mut bases = Vec::with_capacity(programs.len());
+        let mut output_count = 0;
+        for program in &programs {
+            bases.push(output_count);
+            output_count += program.output_count;
+        }
+        Some(Self {
+            selection: ProjectionOutputSelection {
+                output_len: residual.output_len,
+                programs,
+            },
+            bases: bases.into_boxed_slice(),
+            output_count,
+            primal_source: primal.clone(),
+        })
+    }
+
+    /// The fused programs with their placements, in residual selection order.
+    pub const fn selection(&self) -> &ProjectionOutputSelection {
+        &self.selection
+    }
+
+    /// Where each fused program's outputs start in the entry's outputs.
+    pub fn bases(&self) -> &[usize] {
+        &self.bases
+    }
+
+    /// Every output the fused entry writes.
+    pub const fn output_count(&self) -> usize {
+        self.output_count
+    }
+
+    /// The canonical primal programs the selection was derived from; a
+    /// runtime evaluating other programs must not use it.
+    pub const fn primal_source(&self) -> &ScalarProgramBlock {
+        &self.primal_source
+    }
+}
 
 /// One invocation of an existing tensor/scalar program and its selected outputs.
 #[derive(Clone, Debug)]
@@ -160,6 +240,14 @@ impl ContinuousStructuralArtifacts {
                 .collect::<Vec<_>>();
             structure.structure.residual_output_evaluation =
                 primal_outputs.shared_selection(&residual_rows, block.rows.len());
+            structure.structure.fused_residual_evaluation = structure
+                .structure
+                .residual_output_evaluation
+                .as_ref()
+                .and_then(|residual| {
+                    FusedResidualSelection::derive(residual, primal, &block.y_indices)
+                })
+                .map(Box::new);
             structure.structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
             structure.structure.jacobian_application = application_source

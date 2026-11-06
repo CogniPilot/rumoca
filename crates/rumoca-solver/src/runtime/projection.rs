@@ -200,6 +200,7 @@ pub(crate) trait ImplicitProjectionModel {
     /// program. A decline must precede execution and leave `out` unchanged.
     fn eval_implicit_residual_outputs(
         &self,
+        _block_index: usize,
         _selection: &solve::ProjectionOutputSelection,
         _y: &[f64],
         _p: &[f64],

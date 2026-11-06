@@ -414,13 +414,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
 
     fn eval_implicit_residual_outputs(
         &self,
+        block_index: usize,
         selection: &solve::ProjectionOutputSelection,
         y: &[f64],
         p: &[f64],
         t: f64,
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
-        self.eval_grouped_residual_outputs(selection, y, p, t, out)?;
+        self.eval_grouped_residual_outputs(block_index, selection, (y, p, t), out)?;
         Ok(true)
     }
 
@@ -1064,6 +1065,30 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
 }
 
 impl RefreshProjectionModel<'_> {
+    /// Block `block_index`'s fused residual entry and its issued selection,
+    /// when `selection` is that block's issued residual selection.
+    fn fused_residual(
+        &self,
+        block_index: usize,
+        selection: &solve::ProjectionOutputSelection,
+    ) -> Option<(
+        &super::fused_residual::FusedResidual,
+        &solve::FusedResidualSelection,
+    )> {
+        let index = self.block_indices.get(block_index).copied()?;
+        let structure = self
+            .runtime
+            .scalar
+            .continuous_structural
+            .algebraic_projection()
+            .get(index)?;
+        if !std::ptr::eq(structure.residual_output_evaluation()?, selection) {
+            return None;
+        }
+        let entry = self.runtime.scalar.fused_residuals.get(index)?.as_deref()?;
+        Some((entry, structure.fused_residual_evaluation()?))
+    }
+
     /// The fused kernels of plan block `block_index`.
     fn block_kernels(&self, block_index: usize) -> Option<&super::block_kernels::BlockKernels> {
         let index = self.block_indices.get(block_index).copied()?;
