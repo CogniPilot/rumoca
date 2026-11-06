@@ -261,6 +261,9 @@ impl VelImplicitIntegrator {
     }
 
     fn factor(&mut self, step: f64) -> Result<(), MeIntegrationError> {
+        // A failed factorization may already have overwritten the previous
+        // factors, so no step is valid until this one succeeds.
+        self.factored_step = None;
         #[cfg(feature = "sparse-linalg")]
         if let Some(sparse) = self.sparse.as_mut() {
             if !sparse.factor(step) {
@@ -622,6 +625,22 @@ mod tests {
         assert_eq!(backend.factored_step, None);
         backend.factor(0.25).expect("a smaller step is regular");
         assert_eq!(backend.factored_step, Some(0.25));
+        let mut out = [0.0; 2];
+        backend.lu.solve_into(&[1.0, 2.0], &mut out);
+        assert_eq!(out, [2.0, 4.0]);
+    }
+
+    #[test]
+    fn a_failed_factor_forgets_the_previously_factored_step() {
+        let mut backend = integrator(2);
+        backend.jacobian = vec![2.0, 0.0, 0.0, 2.0];
+        backend.factor(0.25).expect("0.5 I is regular");
+        assert_eq!(backend.factored_step, Some(0.25));
+        // The singular attempt overwrites the dense factors before it fails,
+        // so the earlier step must not be reused without refactoring.
+        assert_singular_iteration_failure(backend.factor(0.5).expect_err("singular"));
+        assert_eq!(backend.factored_step, None);
+        backend.factor(0.25).expect("the earlier step refactors");
         let mut out = [0.0; 2];
         backend.lu.solve_into(&[1.0, 2.0], &mut out);
         assert_eq!(out, [2.0, 4.0]);
