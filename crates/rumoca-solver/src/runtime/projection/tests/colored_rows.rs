@@ -317,3 +317,27 @@ fn a_structured_block_jacobian_stores_only_its_pattern_entries() {
     );
     assert_eq!(jacobian.as_dense().into_owned(), expected_jacobian());
 }
+
+#[test]
+fn compact_and_dense_storage_receive_the_same_colored_entries() {
+    let model = ColoredRows::new();
+    let block = &model.plan.blocks.scalar_blocks()[0];
+    let compact = solve::ColoredJacobianStructure::derived(model.structure.pattern().clone());
+    let fill = |storage| {
+        initial::algebraic_block_jacobian_by_rows_in(
+            &model,
+            (&[0.0; 5], &[11.0], 0.0),
+            (&block.rows, &block.y_indices),
+            Some(&compact),
+            storage,
+        )
+        .unwrap()
+        .0
+    };
+    let through_slots = fill(BlockJacobian::compact(compact.compact_layout()));
+    let by_coordinate = fill(BlockJacobian::zeros(3, 3));
+    assert!(through_slots.is_stored_in(compact.compact_layout()));
+    assert!(!by_coordinate.is_stored_in(compact.compact_layout()));
+    assert_eq!(through_slots.as_dense().into_owned(), expected_jacobian());
+    assert_eq!(by_coordinate.as_dense().into_owned(), expected_jacobian());
+}

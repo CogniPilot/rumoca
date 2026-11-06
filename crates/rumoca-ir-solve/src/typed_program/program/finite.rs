@@ -92,6 +92,15 @@ impl<'program> TypedProgramBuilder<'program> {
         ) {
             return Err(SolveProgramConstructionError::TypeMismatch { provenance });
         }
+        // Preserve input/publication checks and mapped admission obligations.
+        // Only a validated ordinary primal check can use this builder's facts;
+        // replay keeps every recorded operation and child regions start fresh.
+        if self.numbered_values
+            && matches!(check, SolveFiniteCheck::Primal { .. })
+            && self.arithmetic_facts.is_finite(operand.id)
+        {
+            return Ok(());
+        }
         self.push(
             SolveOperation::CheckFinite {
                 operand: operand.id,

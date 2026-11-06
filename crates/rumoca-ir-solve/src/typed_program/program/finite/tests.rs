@@ -220,3 +220,218 @@ fn mapped_check_below_a_nested_map_refuses_the_enclosing_map() {
         Err(SolveProgramConstructionError::InvalidMap { provenance: at() })
     );
 }
+
+fn issued_checks(program: &TypedProgram) -> Vec<SolveFiniteCheck> {
+    program
+        .operations()
+        .iter()
+        .filter_map(|op| match op.operation() {
+            SolveOperation::CheckFinite { check, .. } => Some(*check),
+            _ => None,
+        })
+        .collect()
+}
+
+fn loaded_real<'program>(
+    b: &mut TypedProgramBuilder<'program>,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let input = b.declare_slot(
+        SolveValueType::scalar(SolveScalarType::real(b.arithmetic)),
+        SolveStorageClass::Input,
+        SolveSlotAccess::ReadOnly,
+        at(),
+    )?;
+    b.load(input, at())
+}
+
+#[test]
+fn primal_dedup_preserves_input_publication_and_arithmetic_facts() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let program = TypedProgram::construct(profile, |b| {
+        let value = loaded_real(b)?;
+        b.check_finite(value, SolveFiniteCheck::Input { coordinate: 3 }, at())?;
+        b.check_finite(
+            value,
+            SolveFiniteCheck::Primal {
+                program: 2,
+                operation: 7,
+            },
+            at(),
+        )?;
+        let one = b.constant(SolveValue::real(profile, 1.0), at())?;
+        assert_eq!(
+            b.binary(SolveBinaryOperator::Multiply, value, one, at())?,
+            value
+        );
+        b.check_finite(value, SolveFiniteCheck::Derivative, at())
+    })
+    .unwrap();
+    assert_eq!(
+        issued_checks(&program),
+        [
+            SolveFiniteCheck::Input { coordinate: 3 },
+            SolveFiniteCheck::Derivative,
+        ]
+    );
+}
+
+#[test]
+fn first_unknown_primal_check_keeps_its_exact_identity() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let first = SolveFiniteCheck::Primal {
+        program: 4,
+        operation: 9,
+    };
+    let program = TypedProgram::construct(profile, |b| {
+        let value = loaded_real(b)?;
+        b.check_finite(value, first, at())?;
+        b.check_finite(
+            value,
+            SolveFiniteCheck::Primal {
+                program: 5,
+                operation: 0,
+            },
+            at(),
+        )
+    })
+    .unwrap();
+    assert_eq!(issued_checks(&program), [first]);
+}
+
+#[test]
+fn finite_literal_primal_checks_are_omitted_but_nonfinite_checks_remain() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let check = SolveFiniteCheck::Primal {
+        program: 0,
+        operation: 0,
+    };
+    let program = TypedProgram::construct(profile, |b| {
+        for value in [0.0, -0.0, 1.0] {
+            let value = b.constant(SolveValue::real(profile, value), at())?;
+            b.check_finite(value, check, at())?;
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let value = b.constant(SolveValue::real(profile, value), at())?;
+            b.check_finite(value, check, at())?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(issued_checks(&program), [check; 3]);
+}
+
+#[test]
+fn primal_dedup_is_disabled_during_recorded_wire_replay() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let check = SolveFiniteCheck::Primal {
+        program: 0,
+        operation: 0,
+    };
+    let program = TypedProgram::construct(profile, |b| {
+        b.numbered_values = false;
+        let value = loaded_real(b)?;
+        b.check_finite(value, check, at())?;
+        b.check_finite(value, check, at())
+    })
+    .unwrap();
+    let replay: TypedProgram =
+        serde_json::from_value(serde_json::to_value(&program).unwrap()).unwrap();
+    assert_eq!(replay, program);
+    assert_eq!(issued_checks(&replay), [check; 2]);
+}
+
+#[test]
+fn known_finite_primal_check_still_requires_provenance() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    TypedProgram::construct(profile, |b| {
+        let value = b.constant(SolveValue::real(profile, 1.0), at())?;
+        let before = b.operations.len();
+        let check = SolveFiniteCheck::Primal {
+            program: 0,
+            operation: 0,
+        };
+        assert_eq!(
+            b.check_finite(value, check, Span::DUMMY),
+            Err(SolveProgramConstructionError::MissingProvenance)
+        );
+        assert_eq!(b.operations.len(), before);
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn primal_checked_arm<'region>(
+    b: &mut TypedProgramBuilder<'region>,
+    inputs: &[ProgramSlot<'region>],
+    outputs: &[ProgramSlot<'region>],
+) -> Result<(), SolveProgramConstructionError> {
+    let value = b.load(inputs[0], at())?;
+    b.check_finite(
+        value,
+        SolveFiniteCheck::Primal {
+            program: 1,
+            operation: 0,
+        },
+        at(),
+    )?;
+    b.store(outputs[0], value, at())
+}
+
+#[test]
+fn outer_and_sibling_regions_do_not_supply_primal_finite_facts() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let program = TypedProgram::construct(profile, |b| {
+        let value = loaded_real(b)?;
+        b.check_finite(value, SolveFiniteCheck::Input { coordinate: 0 }, at())?;
+        let condition = b.constant(SolveValue::boolean(true), at())?;
+        let result = SolveValueType::scalar(SolveScalarType::real(profile));
+        b.conditional(
+            condition,
+            &[value],
+            vec![result],
+            at(),
+            primal_checked_arm,
+            primal_checked_arm,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    for op in program.operations() {
+        if let SolveOperation::Conditional {
+            if_true, if_false, ..
+        } = op.operation()
+        {
+            assert_eq!(issued_checks(if_true.body()).len(), 1);
+            assert_eq!(issued_checks(if_false.body()).len(), 1);
+        }
+    }
+}
+
+#[test]
+fn later_mapped_check_retains_its_own_point_bound_validation() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let result = TypedProgram::construct(profile, |b| {
+        let value = loaded_real(b)?;
+        b.map(
+            ordinal_domain(&[2]),
+            &[value],
+            SolveValueType::scalar(SolveScalarType::real(profile)),
+            at(),
+            |b, captures, binders, output| {
+                let value = b.load(captures[0], at())?;
+                let k = b.load(binders[0], at())?;
+                let one = integer(b, profile, 1)?;
+                let point = b.binary(SolveBinaryOperator::Subtract, k, one, at())?;
+                b.check_finite_mapped(value, 40, 2, 7, point, at())?;
+                // Same operand and point, but 0..=1 does not fit point_count=1.
+                b.check_finite_mapped(value, 40, 1, 8, point, at())?;
+                b.store(output, value, at())
+            },
+        )?;
+        Ok(())
+    });
+    assert_eq!(
+        result,
+        Err(SolveProgramConstructionError::InvalidMap { provenance: at() })
+    );
+}
