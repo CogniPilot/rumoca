@@ -989,6 +989,28 @@ fn arr_039_empty_array_reduction_identities() {
     assert_eq!(trace.final_value("p"), 1.0, "product over empty array is 1");
 }
 
+/// A field of a zero-sized array of components is as empty as the array.
+#[test]
+fn arr_039_field_of_empty_component_array() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        connector QPort input Real Q; end QPort;
+        model M
+            parameter Integer n = 0;
+            QPort q[n];
+            Real[n] lat = q.Q;
+            Real s = sum(q.Q);
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    assert_eq!(trace.final_value("s"), 0.0, "sum over an empty field is 0");
+}
+
 // =============================================================================
 // ARR-035: If event-generating, expressions inside iterators shall be evaluable
 // =============================================================================
