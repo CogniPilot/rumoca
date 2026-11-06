@@ -125,9 +125,16 @@ fn register_call_body<'dae>(
     )?;
     let scalar_storable =
         facts.body_scalar_storable && callees.values().all(|callee| callee.scalar_storable);
+    let selected_calls = zero_products::register_selections(
+        table,
+        view,
+        assertions::statement_roots(function.statements(), &|_, _| false),
+        identities,
+    )?;
     let body = OwnerBody {
         function,
         interface,
+        selected_calls,
         callees: callees.into(),
         inventory: &facts.assertions,
         layout,
@@ -228,6 +235,7 @@ impl<'dae> FunctionInterface<'dae> {
 /// the owners its nested calls name, and its assertion output layout.
 pub(super) struct OwnerBody<'a, 'dae> {
     pub(super) function: dae::FunctionView<'dae>,
+    pub(super) selected_calls: zero_products::SelectedCalls<'dae>,
     pub(super) interface: &'a FunctionInterface<'dae>,
     pub(super) callees: std::sync::Arc<HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>>,
     /// The statement inventory of the function body: its assertions and the
@@ -313,6 +321,9 @@ impl<'dae> OwnerBody<'_, 'dae> {
             conditional_statements: self.inventory.conditionals.clone(),
             assigned_values: HashMap::new(),
             totality: HashMap::new(),
+            zero_coefficients: Default::default(),
+            selected_values: Default::default(),
+            selected_calls: self.selected_calls.clone(),
             implied_guards: Vec::new(),
             eager: EagerScope::default(),
         };

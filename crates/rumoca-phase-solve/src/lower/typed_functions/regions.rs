@@ -41,6 +41,7 @@ pub(super) struct EnvironmentLayout<'dae> {
 #[derive(Clone)]
 pub(super) struct RegionContext<'dae> {
     pub(super) view: dae::DaeView<'dae>,
+    pub(super) selected_calls: super::zero_products::SelectedCalls<'dae>,
     pub(super) callees: std::sync::Arc<HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>>,
     pub(super) predicate_ranges: std::sync::Arc<HashMap<dae::ExprId<'dae>, Range<usize>>>,
     pub(super) assertion_slots: std::sync::Arc<[AssertionSlot]>,
@@ -230,6 +231,9 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         conditional_statements: context.conditional_statements.clone(),
         assigned_values: HashMap::new(),
         totality: HashMap::new(),
+        zero_coefficients: Default::default(),
+        selected_values: Default::default(),
+        selected_calls: context.selected_calls.clone(),
         implied_guards: Vec::new(),
         eager: EagerScope::default(),
     })
@@ -343,6 +347,7 @@ impl<'dae> ExpressionLowerer<'_, '_, 'dae> {
     pub(super) fn region_context(&self) -> RegionContext<'dae> {
         RegionContext {
             view: self.view,
+            selected_calls: self.selected_calls.clone(),
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),
             assertion_slots: self.assertion_slots.clone(),

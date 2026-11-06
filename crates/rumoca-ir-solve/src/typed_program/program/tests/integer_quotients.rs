@@ -46,7 +46,15 @@ fn integer_quotients_require_integer_operands_and_replay_checked_wire() {
 fn forged_real_integer_quotient_cannot_enter_through_wire() {
     let arithmetic = profile();
     let program = TypedProgram::construct(arithmetic, |b| {
-        let real = b.constant(SolveValue::real(arithmetic, 7.0), span(0))?;
+        // Use an unknown Real so issue-time constant folding cannot remove
+        // the valid Divide operation this negative wire control mutates.
+        let input = b.declare_slot(
+            SolveValueType::scalar(SolveScalarType::real(arithmetic)),
+            SolveStorageClass::Input,
+            SolveSlotAccess::ReadOnly,
+            span(0),
+        )?;
+        let real = b.load(input, span(0))?;
         b.binary(SolveBinaryOperator::Divide, real, real, span(1))?;
         Ok(())
     })

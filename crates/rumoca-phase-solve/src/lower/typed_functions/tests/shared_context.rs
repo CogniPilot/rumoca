@@ -11,6 +11,7 @@ fn nested_region_lowerers_share_one_immutable_owner_context() {
     let model = dae::Dae::construct(sources, |_| Ok(())).unwrap();
     model.inspect(|view| {
         let context = RegionContext {
+            selected_calls: Default::default(),
             view,
             callees: Default::default(),
             predicate_ranges: Default::default(),

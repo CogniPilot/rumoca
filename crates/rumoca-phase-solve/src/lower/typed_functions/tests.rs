@@ -2,6 +2,10 @@
 
 mod division;
 mod integer_power;
+mod partial_product_calls;
+mod partial_products;
+mod tensor_coefficients;
+mod zero_products;
 
 use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, VarName};
 

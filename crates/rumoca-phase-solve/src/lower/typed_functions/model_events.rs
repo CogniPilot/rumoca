@@ -181,6 +181,7 @@ impl<'dae> PureCallRegistry<'dae> {
             )?;
         let (coordinate_inputs, inputs, outputs) =
             event_transaction_interface(view, transaction, coordinate_types, &assertion_slots)?;
+        let selected_calls = std::sync::Arc::new(self.identities.selected_calls.clone());
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,
@@ -229,6 +230,9 @@ impl<'dae> PureCallRegistry<'dae> {
                     conditional_statements: Default::default(),
                     assigned_values: HashMap::new(),
                     totality: HashMap::new(),
+                    zero_coefficients: Default::default(),
+                    selected_values: Default::default(),
+                    selected_calls: selected_calls.clone(),
                     implied_guards: Vec::new(),
                     eager: EagerScope::default(),
                 };

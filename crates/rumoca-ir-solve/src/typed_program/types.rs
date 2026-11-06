@@ -355,6 +355,19 @@ impl SolveValue {
         }
     }
 
+    /// Bitwise Real sign inversion, including raw signaling NaN payloads.
+    pub(crate) fn negated_real(&self) -> Option<Self> {
+        let kind = match self.kind {
+            SolveValueKind::Real32(bits) => SolveValueKind::Real32(bits ^ (1 << 31)),
+            SolveValueKind::Real64(bits) => SolveValueKind::Real64(bits ^ (1 << 63)),
+            _ => return None,
+        };
+        Some(Self {
+            value_type: self.value_type.clone(),
+            kind,
+        })
+    }
+
     pub fn integer(
         profile: SolveArithmeticProfile,
         value: i64,

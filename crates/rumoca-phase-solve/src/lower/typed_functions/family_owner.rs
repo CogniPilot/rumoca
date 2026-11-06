@@ -219,6 +219,12 @@ impl<'dae> PureCallRegistry<'dae> {
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
             .value_type_id();
         let output = lower_primitive_type(view, result_type, arithmetic_profile())?;
+        let selected_calls = super::zero_products::register_selections(
+            &mut self.table,
+            view,
+            [form.rhs],
+            &mut self.identities,
+        )?;
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,
@@ -237,6 +243,7 @@ impl<'dae> PureCallRegistry<'dae> {
                     .collect::<Result<HashMap<_, _>, solve::SolveProgramConstructionError>>()?;
                 let mut lowerer =
                     ExpressionLowerer::for_model_coordinates(view, builder, model_coordinates);
+                lowerer.selected_calls = selected_calls.clone();
                 for (key, binding) in &form.constants {
                     let value = lowerer.expression(*binding)?;
                     lowerer.model_coordinates.insert(*key, value);

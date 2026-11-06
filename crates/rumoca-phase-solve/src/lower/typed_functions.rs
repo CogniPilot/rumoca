@@ -32,6 +32,7 @@ mod scoped_conditionals;
 mod tensor;
 mod total_conditionals;
 mod value_types;
+mod zero_products;
 use value_types::FunctionResultsLayout;
 
 use assertions::{assertion_conditions, nested_calls};
@@ -285,6 +286,7 @@ struct CallRegistration<'dae> {
     /// SOLVE-C70 owners, keyed by the DAE family they lower.
     families: HashMap<dae::ContinuousFamilyId<'dae>, solve::SolvePureCallSite>,
     expressions: HashMap<dae::ExprId<'dae>, expression_owner::RegisteredExactExpression<'dae>>,
+    selected_calls: HashMap<dae::ExprId<'dae>, zero_products::SelectedCall<'dae>>,
     /// Functions whose call SCC was already examined for a SOLVE-C62 group.
     examined_functions: std::collections::HashSet<dae::FunctionId<'dae>>,
     /// What each function contributes to every owner of it, derived once.
@@ -299,6 +301,7 @@ impl CallRegistration<'_> {
             calls: HashMap::new(),
             families: HashMap::new(),
             expressions: HashMap::new(),
+            selected_calls: HashMap::new(),
             examined_functions: std::collections::HashSet::new(),
             function_facts: HashMap::new(),
         }
@@ -372,6 +375,9 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     /// Whether each expression evaluates without failure or effect (see
     /// `total_conditionals`).
     totality: FaultMemo<'dae>,
+    zero_coefficients: rumoca_eval_dae::ZeroCoefficients<'dae>,
+    selected_values: zero_products::SelectedValues<'program, 'dae>,
+    selected_calls: zero_products::SelectedCalls<'dae>,
     /// The tests the early-exit predicate of the fold whose body this is names. A
     /// conditional statement whose guard consists of them is always taken.
     implied_guards: Vec<dae::ExprId<'dae>>,
@@ -410,6 +416,9 @@ impl<'builder, 'program, 'dae> ExpressionLowerer<'builder, 'program, 'dae> {
             conditional_statements: Default::default(),
             assigned_values: HashMap::new(),
             totality: HashMap::new(),
+            zero_coefficients: Default::default(),
+            selected_values: Default::default(),
+            selected_calls: Default::default(),
             implied_guards: Vec::new(),
             eager: EagerScope::default(),
         }
@@ -997,17 +1006,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     return Ok(LoweredValue::empty(node.value_type_id()));
                 }
                 let register = operand.only_register(at)?;
-                let result = match operator {
-                    dae::UnaryOperator::Plus => register,
-                    dae::UnaryOperator::Negate => {
-                        self.builder
-                            .unary(solve::SolveUnaryOperator::Negate, register, at)?
-                    }
-                    dae::UnaryOperator::Not => {
-                        self.builder
-                            .unary(solve::SolveUnaryOperator::Not, register, at)?
-                    }
-                };
+                let result = self.unary_register(operator, register, at)?;
                 LoweredValue::scalar(node.value_type_id(), result)
             }
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
@@ -1701,3 +1700,24 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
 
 #[cfg(test)]
 mod tests;
+
+impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
+    fn unary_register(
+        &mut self,
+        operator: dae::UnaryOperator,
+        register: solve::ProgramRegister<'program>,
+        at: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        match operator {
+            dae::UnaryOperator::Plus => Ok(register),
+            dae::UnaryOperator::Negate => {
+                self.builder
+                    .unary(solve::SolveUnaryOperator::Negate, register, at)
+            }
+            dae::UnaryOperator::Not => {
+                self.builder
+                    .unary(solve::SolveUnaryOperator::Not, register, at)
+            }
+        }
+    }
+}

@@ -1,6 +1,6 @@
 use super::*;
 
-fn guarded_square<'dae>(
+pub(super) fn guarded_square<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
     real: dae::ValueTypeId<'dae>,
     at: dae::DaeProvenance,

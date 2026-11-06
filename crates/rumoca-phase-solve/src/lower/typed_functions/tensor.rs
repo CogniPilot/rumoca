@@ -63,6 +63,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 provenance: at,
             });
         }
+        if let Some(value) = self.proven_zero_product(value_type, operator, lhs, rhs, at)? {
+            return Ok(value);
+        }
         let lhs_lowered = self.expression(lhs)?;
         let rhs_lowered = self.expression(rhs)?;
         // MLS 3.7 §10.6: an element-wise result over a zero-size operand is
@@ -71,22 +74,45 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         if self.is_zero_size(value_type)? {
             return Ok(LoweredValue::empty(value_type));
         }
-        let mut lhs_value = lhs_lowered.only_register(at)?;
-        let mut rhs_value = rhs_lowered.only_register(at)?;
-        let lhs_type = self
-            .view
-            .expression(lhs)
-            .expect("checked lhs resolves")
-            .value_type();
-        let rhs_type = self
-            .view
-            .expression(rhs)
-            .expect("checked rhs resolves")
-            .value_type();
-        if let Some(plan) = literal_power_plan(self.view, operator, lhs, rhs) {
+        let lhs_value = lhs_lowered.only_register(at)?;
+        let rhs_value = rhs_lowered.only_register(at)?;
+        self.binary_operands(value_type, operator, (lhs, rhs), (lhs_value, rhs_value), at)
+    }
+
+    /// Source literal-power planning is shared by whole and selected values.
+    pub(super) fn binary_operands(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        operator: dae::BinaryOperator,
+        source: (dae::ExprId<'dae>, dae::ExprId<'dae>),
+        values: (
+            solve::ProgramRegister<'program>,
+            solve::ProgramRegister<'program>,
+        ),
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let (lhs_value, rhs_value) = values;
+        if let Some(plan) = literal_power_plan(self.view, operator, source.0, source.1) {
             let register = self.repeated_product(lhs_value, plan, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
+        self.binary_registers(value_type, operator, lhs_value, rhs_value, at)
+    }
+
+    /// One arithmetic/type rule for whole tensors and source-selected lanes.
+    /// Selection changes geometry before operand demand, never these rules.
+    // SPEC_0021: Exception - exhaustive binary-operator lowering dispatch.
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn binary_registers(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        operator: dae::BinaryOperator,
+        mut lhs_value: solve::ProgramRegister<'program>,
+        mut rhs_value: solve::ProgramRegister<'program>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let lhs_type = self.builder.value_type_of(lhs_value, at)?.clone();
+        let rhs_type = self.builder.value_type_of(rhs_value, at)?.clone();
         let division = matches!(
             operator,
             dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide
@@ -123,8 +149,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             || power
             || real_result
             || lhs_integer != rhs_integer
-            || lhs_type.scalar_type() == dae::ScalarType::Real
-            || rhs_type.scalar_type() == dae::ScalarType::Real;
+            || matches!(lhs_type.element_type(), solve::SolveScalarType::Real { .. })
+            || matches!(rhs_type.element_type(), solve::SolveScalarType::Real { .. });
         let comparison = matches!(
             operator,
             dae::BinaryOperator::Equal
@@ -134,8 +160,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 | dae::BinaryOperator::Greater
                 | dae::BinaryOperator::GreaterEqual
         );
-        let numeric = lhs_type.scalar_type() != dae::ScalarType::Boolean
-            && rhs_type.scalar_type() != dae::ScalarType::Boolean;
+        let numeric = lhs_type.element_type() != solve::SolveScalarType::Boolean
+            && rhs_type.element_type() != solve::SolveScalarType::Boolean;
         if numeric && (in_real || comparison && lhs_integer != rhs_integer) {
             if lhs_integer {
                 lhs_value = self.builder.convert(
@@ -154,12 +180,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         }
         let register = match operator {
             dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply
-                if lhs_type.is_scalar() && !rhs_type.is_scalar() =>
+                if lhs_type.dimensions().is_empty() && !rhs_type.dimensions().is_empty() =>
             {
                 self.builder.scale(rhs_value, lhs_value, at)
             }
             dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply
-                if !lhs_type.is_scalar() && rhs_type.is_scalar() =>
+                if !lhs_type.dimensions().is_empty() && rhs_type.dimensions().is_empty() =>
             {
                 self.builder.scale(lhs_value, rhs_value, at)
             }
@@ -167,7 +193,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             | dae::BinaryOperator::ElementwiseSubtract
             | dae::BinaryOperator::ElementwiseDivide
             | dae::BinaryOperator::ElementwisePower
-                if !lhs_type.is_scalar() && rhs_type.is_scalar() =>
+                if !lhs_type.dimensions().is_empty() && rhs_type.dimensions().is_empty() =>
             {
                 self.builder.broadcast_binary(
                     binary_operator(operator)?,
@@ -181,7 +207,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             | dae::BinaryOperator::ElementwiseSubtract
             | dae::BinaryOperator::ElementwiseDivide
             | dae::BinaryOperator::ElementwisePower
-                if lhs_type.is_scalar() && !rhs_type.is_scalar() =>
+                if lhs_type.dimensions().is_empty() && !rhs_type.dimensions().is_empty() =>
             {
                 self.builder.broadcast_binary(
                     binary_operator(operator)?,
@@ -191,11 +217,13 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     at,
                 )
             }
-            dae::BinaryOperator::Multiply if !lhs_type.is_scalar() && !rhs_type.is_scalar() => {
+            dae::BinaryOperator::Multiply
+                if !lhs_type.dimensions().is_empty() && !rhs_type.dimensions().is_empty() =>
+            {
                 self.builder.matrix_multiply(lhs_value, rhs_value, at)
             }
             dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide
-                if !lhs_type.is_scalar() && rhs_type.is_scalar() =>
+                if !lhs_type.dimensions().is_empty() && rhs_type.dimensions().is_empty() =>
             {
                 self.builder.broadcast_binary(
                     solve::SolveBinaryOperator::Divide,

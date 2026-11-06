@@ -24,7 +24,9 @@ mod tests;
 mod visited;
 mod zero_coefficients;
 pub use literal_bindings::{LiteralBinding, literal_bindings};
-pub use zero_coefficients::ZeroCoefficients;
+pub use zero_coefficients::{
+    ZeroCoefficientPattern, ZeroCoefficientPatternView, ZeroCoefficients, literal_tensor_selection,
+};
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;

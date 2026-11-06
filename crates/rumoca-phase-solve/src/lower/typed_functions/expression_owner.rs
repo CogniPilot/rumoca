@@ -275,6 +275,7 @@ impl<'dae> PureCallRegistry<'dae> {
         let identity = self.identities.issue(provenance)?;
         let callees = std::sync::Arc::new(callees);
         let predicate_ranges = std::sync::Arc::new(predicate_ranges);
+        let selected_calls = std::sync::Arc::new(self.identities.selected_calls.clone());
         let owner = self.table.add_owner(
             identity,
             inputs,
@@ -282,6 +283,7 @@ impl<'dae> PureCallRegistry<'dae> {
             provenance,
             |builder, inputs, outputs| {
                 let mut lowerer = form.load_inputs(view, builder, inputs, provenance)?;
+                lowerer.selected_calls = selected_calls.clone();
                 lowerer.callees = std::sync::Arc::clone(&callees);
                 lowerer.predicate_ranges = std::sync::Arc::clone(&predicate_ranges);
                 lowerer.predicate_values = vec![None; assertion_slots.len()];
