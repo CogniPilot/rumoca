@@ -115,6 +115,7 @@ impl MeSimulationSession<'_, '_> {
         let Self {
             host,
             backend,
+            numerical_observation,
             scan_workspace,
             owned_component: _,
             deferred: _,
@@ -122,6 +123,7 @@ impl MeSimulationSession<'_, '_> {
             lease: _,
         } = self;
         drop(backend);
+        drop(numerical_observation);
         drop(scan_workspace);
         drop(host);
         Ok(retained)

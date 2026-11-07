@@ -16,6 +16,9 @@
 //! Springer 1993, section II.4. The continuous extension lives in
 //! [`crate::dense_output`] and carries its own citation.
 
+mod numerical_observation;
+
+use rumoca_solver::fmi_me::numerical_observation::{AdapterWriter, SettingsStage};
 use rumoca_solver::fmi_me::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
     MeIntegratorBackend, MeNumericalFailure, MeNumericalSetup, MeStepCandidate,
@@ -37,10 +40,26 @@ const DISCARD_SHRINK: f64 = 0.25;
 pub fn model_exchange_integrator(
     setup: MeNumericalSetup,
 ) -> Box<dyn MeIntegratorBackend + 'static> {
-    Box::new(Rk45Integrator::new(setup))
+    model_exchange_integrator_with_observation(setup, None)
+}
+
+/// Construct the same method with passive, preallocated settings recording.
+#[must_use]
+pub fn model_exchange_integrator_with_observation(
+    setup: MeNumericalSetup,
+    observation: Option<AdapterWriter>,
+) -> Box<dyn MeIntegratorBackend + 'static> {
+    if let Some(writer) = &observation {
+        numerical_observation::record_requested(writer, &setup);
+    }
+    let mut plugin = Rk45Integrator::new(setup);
+    plugin.observation = observation;
+    plugin.record_settings(SettingsStage::Constructed);
+    Box::new(plugin)
 }
 
 struct Rk45Integrator {
+    observation: Option<AdapterWriter>,
     relative_tolerance: f64,
     state_absolute_tolerances: Vec<f64>,
     initial_step: f64,
@@ -87,6 +106,7 @@ impl Rk45Integrator {
             .collect();
         let initial_step = setup.initial_step_hint().unwrap_or(1.0e-3);
         Self {
+            observation: None,
             relative_tolerance: setup.relative_tolerance(),
             state_absolute_tolerances,
             initial_step,
@@ -304,6 +324,9 @@ impl MeIntegratorBackend for Rk45Integrator {
         self.next_step = self.initial_step;
         self.accepted_interval = None;
         self.fsal_time = None;
+        if let Some(writer) = &self.observation {
+            writer.initialized();
+        }
         Ok(())
     }
 
@@ -392,6 +415,7 @@ impl MeIntegratorBackend for Rk45Integrator {
         }
         self.accepted_interval = None;
         self.fsal_time = None;
+        self.record_settings(SettingsStage::RetainedAfterReset);
         Ok(())
     }
 }

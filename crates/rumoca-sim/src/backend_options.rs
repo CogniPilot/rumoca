@@ -1,0 +1,295 @@
+//! Validate concrete immutable options before model work and before cache reuse.
+
+use rumoca_solver::{BackendOptionsError, NumericalBackend, SimOptions, SimSolverMode};
+
+/// Only backend-owned, immutable, value types pass this boundary. No custom
+/// erased implementation supplies validation, effective values or cache keys.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ValidatedOptions {
+    Defaults,
+    #[cfg(feature = "solver-diffsol")]
+    Bdf(rumoca_solver_diffsol::DiffsolOptions),
+    #[cfg(feature = "solver-rk45")]
+    Rk45(rumoca_solver_rk45::Rk45Options),
+    #[cfg(feature = "solver-velimplicit")]
+    VelImplicit(rumoca_solver_velimplicit::VelImplicitConfig),
+}
+
+/// Exact value identity of the validated configuration, including presence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OptionsIdentity {
+    Absent,
+    #[cfg(feature = "solver-diffsol")]
+    Bdf(rumoca_solver_diffsol::DiffsolOptions),
+    #[cfg(feature = "solver-rk45")]
+    Rk45(rumoca_solver_rk45::Rk45Options),
+    #[cfg(feature = "solver-velimplicit")]
+    VelImplicit(rumoca_solver_velimplicit::VelImplicitOptionsKey),
+}
+
+impl ValidatedOptions {
+    pub(crate) fn identity(self) -> OptionsIdentity {
+        match self {
+            Self::Defaults => OptionsIdentity::Absent,
+            #[cfg(feature = "solver-diffsol")]
+            Self::Bdf(options) => OptionsIdentity::Bdf(options),
+            #[cfg(feature = "solver-rk45")]
+            Self::Rk45(options) => OptionsIdentity::Rk45(options),
+            #[cfg(feature = "solver-velimplicit")]
+            Self::VelImplicit(options) => OptionsIdentity::VelImplicit(options.exact_key()),
+        }
+    }
+}
+
+pub(crate) fn validate(options: &SimOptions) -> Result<ValidatedOptions, BackendOptionsError> {
+    let Some(payload) = &options.backend_options else {
+        return Ok(ValidatedOptions::Defaults);
+    };
+    let requested = match options.solver_mode {
+        SimSolverMode::Auto => return Err(BackendOptionsError::CustomAuto),
+        SimSolverMode::Bdf => NumericalBackend::Bdf,
+        SimSolverMode::RkLike => NumericalBackend::Rk45,
+        SimSolverMode::VelImplicit => NumericalBackend::VelImplicit,
+    };
+    if requested != payload.backend() {
+        return Err(BackendOptionsError::BackendMismatch {
+            requested,
+            supplied: payload.backend(),
+        });
+    }
+    match requested {
+        #[cfg(feature = "solver-diffsol")]
+        NumericalBackend::Bdf => concrete(payload).map(ValidatedOptions::Bdf),
+        #[cfg(feature = "solver-rk45")]
+        NumericalBackend::Rk45 => concrete(payload).map(ValidatedOptions::Rk45),
+        #[cfg(feature = "solver-velimplicit")]
+        NumericalBackend::VelImplicit => validate_velimplicit(payload),
+        #[cfg(not(feature = "solver-diffsol"))]
+        backend @ NumericalBackend::Bdf => Err(BackendOptionsError::BackendUnavailable { backend }),
+        #[cfg(not(feature = "solver-rk45"))]
+        backend @ NumericalBackend::Rk45 => {
+            Err(BackendOptionsError::BackendUnavailable { backend })
+        }
+        #[cfg(not(feature = "solver-velimplicit"))]
+        backend @ NumericalBackend::VelImplicit => {
+            Err(BackendOptionsError::BackendUnavailable { backend })
+        }
+    }
+}
+
+fn concrete<T: Copy + 'static>(
+    payload: &rumoca_solver::BackendOptions,
+) -> Result<T, BackendOptionsError> {
+    payload
+        .downcast_ref::<T>()
+        .copied()
+        .ok_or(BackendOptionsError::ConcreteType {
+            backend: payload.backend(),
+        })
+}
+
+#[cfg(feature = "solver-velimplicit")]
+fn validate_velimplicit(
+    payload: &rumoca_solver::BackendOptions,
+) -> Result<ValidatedOptions, BackendOptionsError> {
+    let value: rumoca_solver_velimplicit::VelImplicitConfig = concrete(payload)?;
+    value.validate_request().map(ValidatedOptions::VelImplicit)
+}
+
+/// Bind explicit configuration to the factory actually used, including direct
+/// backend entry points that bypass the public solver-mode dispatcher.
+pub(crate) fn validate_for_backend(
+    options: &SimOptions,
+    actual: NumericalBackend,
+) -> Result<ValidatedOptions, BackendOptionsError> {
+    let value = validate(options)?;
+    if let Some(payload) = &options.backend_options
+        && payload.backend() != actual
+    {
+        return Err(BackendOptionsError::BackendMismatch {
+            requested: actual,
+            supplied: payload.backend(),
+        });
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_solver::BackendOptions;
+
+    #[test]
+    fn absent_options_keep_auto_defaults_but_explicit_payload_does_not() {
+        let mut opts = SimOptions::default();
+        assert_eq!(validate(&opts).unwrap().identity(), OptionsIdentity::Absent);
+        opts.backend_options = Some(BackendOptions::new(NumericalBackend::Bdf, 7_u32));
+        assert_eq!(
+            validate(&opts).unwrap_err(),
+            BackendOptionsError::CustomAuto
+        );
+        opts.solver_mode = SimSolverMode::RkLike;
+        assert!(matches!(
+            validate(&opts),
+            Err(BackendOptionsError::BackendMismatch {
+                requested: NumericalBackend::Rk45,
+                supplied: NumericalBackend::Bdf
+            })
+        ));
+    }
+
+    #[cfg(feature = "solver-rk45")]
+    #[test]
+    fn rk_payload_requires_its_actual_concrete_type_and_actual_factory() {
+        let mut opts = SimOptions {
+            solver_mode: SimSolverMode::RkLike,
+            ..Default::default()
+        };
+        opts.backend_options = Some(BackendOptions::new(NumericalBackend::Rk45, 1_u32));
+        assert_eq!(
+            validate(&opts).unwrap_err(),
+            BackendOptionsError::ConcreteType {
+                backend: NumericalBackend::Rk45
+            }
+        );
+        opts.backend_options = Some(BackendOptions::new(
+            NumericalBackend::Rk45,
+            rumoca_solver_rk45::Rk45Options,
+        ));
+        assert_eq!(
+            validate(&opts).unwrap().identity(),
+            OptionsIdentity::Rk45(rumoca_solver_rk45::Rk45Options)
+        );
+        assert!(matches!(
+            validate_for_backend(&opts, NumericalBackend::Bdf),
+            Err(BackendOptionsError::BackendMismatch { .. })
+        ));
+        assert_eq!(
+            validate_for_backend(&opts, NumericalBackend::Rk45)
+                .unwrap()
+                .identity(),
+            OptionsIdentity::Rk45(rumoca_solver_rk45::Rk45Options)
+        );
+    }
+
+    #[cfg(feature = "solver-diffsol")]
+    #[test]
+    fn bdf_default_presence_and_concrete_schema_are_exact() {
+        let mut opts = SimOptions {
+            solver_mode: SimSolverMode::Bdf,
+            ..Default::default()
+        };
+        let absent = validate(&opts).unwrap().identity();
+        opts.backend_options = Some(BackendOptions::new(
+            NumericalBackend::Bdf,
+            rumoca_solver_diffsol::DiffsolOptions::default(),
+        ));
+        let explicit = validate_for_backend(&opts, NumericalBackend::Bdf)
+            .unwrap()
+            .identity();
+        assert_eq!(
+            explicit,
+            OptionsIdentity::Bdf(rumoca_solver_diffsol::DiffsolOptions::default())
+        );
+        assert_ne!(absent, explicit);
+        opts.backend_options = Some(BackendOptions::new(NumericalBackend::Bdf, 9_u32));
+        assert_eq!(
+            validate(&opts).unwrap_err(),
+            BackendOptionsError::ConcreteType {
+                backend: NumericalBackend::Bdf
+            }
+        );
+    }
+
+    #[cfg(feature = "solver-velimplicit")]
+    #[test]
+    fn velimplicit_rejects_invalid_values_and_keys_every_consumed_field() {
+        let mut opts = SimOptions {
+            solver_mode: SimSolverMode::VelImplicit,
+            ..Default::default()
+        };
+        let original = rumoca_solver_velimplicit::VelImplicitConfig::default();
+        let mut keys = Vec::new();
+        for value in [
+            original,
+            rumoca_solver_velimplicit::VelImplicitConfig {
+                step: f64::from_bits(original.step.to_bits() + 1),
+                ..original
+            },
+            rumoca_solver_velimplicit::VelImplicitConfig {
+                jacobian_reuse: original.jacobian_reuse + 1,
+                ..original
+            },
+            rumoca_solver_velimplicit::VelImplicitConfig {
+                sparse_lu: !original.sparse_lu,
+                ..original
+            },
+        ] {
+            opts.backend_options = Some(BackendOptions::new(NumericalBackend::VelImplicit, value));
+            keys.push(
+                validate_for_backend(&opts, NumericalBackend::VelImplicit)
+                    .unwrap()
+                    .identity(),
+            );
+        }
+        for i in 0..keys.len() {
+            for j in i + 1..keys.len() {
+                assert_ne!(keys[i], keys[j]);
+            }
+        }
+        for step in [0.0, -0.0, -1.0, f64::INFINITY, f64::NAN] {
+            opts.backend_options = Some(BackendOptions::new(
+                NumericalBackend::VelImplicit,
+                rumoca_solver_velimplicit::VelImplicitConfig { step, ..original },
+            ));
+            assert!(matches!(
+                validate(&opts),
+                Err(BackendOptionsError::InvalidValue { field: "step", .. })
+            ));
+        }
+        opts.backend_options = Some(BackendOptions::new(
+            NumericalBackend::VelImplicit,
+            rumoca_solver_velimplicit::VelImplicitConfig {
+                jacobian_reuse: 0,
+                ..original
+            },
+        ));
+        assert!(matches!(
+            validate(&opts),
+            Err(BackendOptionsError::InvalidValue {
+                field: "jacobian_reuse",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "solver-velimplicit")]
+    #[test]
+    fn captured_configuration_is_the_same_immutable_value_for_key_and_factory() {
+        let mut original = rumoca_solver_velimplicit::VelImplicitConfig::default();
+        let captured = original;
+        let payload = BackendOptions::new(NumericalBackend::VelImplicit, original);
+        let opts = SimOptions {
+            solver_mode: SimSolverMode::VelImplicit,
+            backend_options: Some(payload.clone()),
+            ..Default::default()
+        };
+        original.step *= 2.0;
+        original.jacobian_reuse += 1;
+        original.sparse_lu = !original.sparse_lu;
+        assert_ne!(original, captured);
+        drop(payload);
+
+        let keyed = validate(&opts).unwrap();
+        let factory = validate_for_backend(&opts, NumericalBackend::VelImplicit).unwrap();
+        assert_eq!(keyed.identity(), factory.identity());
+        let ValidatedOptions::VelImplicit(consumed) = factory else {
+            panic!("the factory must receive the validated concrete configuration");
+        };
+        assert_eq!(consumed.exact_key(), captured.exact_key());
+        assert_ne!(consumed.exact_key(), original.exact_key());
+        assert_eq!(consumed.step.to_bits(), captured.step.to_bits());
+        assert_eq!(consumed.jacobian_reuse, captured.jacobian_reuse);
+        assert_eq!(consumed.sparse_lu, captured.sparse_lu);
+    }
+}

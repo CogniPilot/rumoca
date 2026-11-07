@@ -13,7 +13,7 @@ use std::thread;
 
 use crate::scenario_config::SimulationConfig;
 use crate::{
-    DiffsolMethod, SimOptions, SimSolverMode, SimulationDiagnosticError, SimulationSession,
+    SimOptions, SimSolverMode, SimulationDiagnosticError, SimulationSession,
 };
 use anyhow::{Context, Result};
 use rumoca_compile::compile::{DaeCompilationResult, Session, SourceRootKind};
@@ -189,7 +189,7 @@ pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError>
         t_end: args.config.sim.t_end,
         dt: Some(args.config.sim.dt),
         solver_mode: args.solver_mode,
-        diffsol_method: DiffsolMethod::Bdf,
+        backend_options: None,
         pacing_mode: args.config.effective_pacing_mode(),
         ..Default::default()
     };

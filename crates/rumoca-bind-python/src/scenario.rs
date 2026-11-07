@@ -17,7 +17,7 @@ use rumoca_compile::scenario::{
 };
 use rumoca_sim::scenario_config::SimulationConfig as ScenarioSimulationConfig;
 use rumoca_sim::{
-    DiffsolMethod, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimulationRequestSummary,
+    SimOptions, SimPacingMode, SimResult, SimSolverMode, SimulationRequestSummary,
     SimulationRunMetrics, simulate_with_diagnostics_auto_nan_trace,
 };
 use serde_json::{Value, json};
@@ -390,7 +390,7 @@ fn sim_options_from_config(config: &ScenarioSimulationConfig) -> ApiResult<(SimO
         t_end: config.sim.t_end,
         dt: Some(config.sim.dt),
         solver_mode,
-        diffsol_method: DiffsolMethod::Bdf,
+        backend_options: None,
         pacing_mode: config.effective_pacing_mode(),
         ..SimOptions::default()
     };
