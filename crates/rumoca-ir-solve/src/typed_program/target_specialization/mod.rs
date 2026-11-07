@@ -49,13 +49,17 @@ struct Declaration {
     admits_nested_map_frames: bool,
     /// The most root operations one issued call partition may hold. Regions
     /// stay atomic and each partition retains one root frame; this bounds
-    /// neither expanded instructions nor frame bytes.
-    max_call_partition_operations: u32,
+    /// neither expanded instructions nor frame bytes. Required by version two;
+    /// absence decodes so a version one file reaches the migration refusal.
+    #[serde(default)]
+    max_call_partition_operations: Option<u32>,
     /// The most bytes of simultaneously live register values the target may
     /// keep in non-memory locals at a program point. Live values beyond it are
     /// placed in explicit workspace cells. A register costs its scalar count
     /// times its element size: binary64 and Integer 8, binary32 4, Boolean 8.
-    local_budget_bytes: u32,
+    /// Required by version two, with no default.
+    #[serde(default)]
+    local_budget_bytes: Option<u32>,
 }
 
 /// The declaration cannot be honored by this specialization implementation.
@@ -88,12 +92,20 @@ impl TryFrom<Declaration> for SolveTargetProfile {
         if value.name.trim().is_empty() {
             return Err(SolveTargetProfileError("empty target specialization name"));
         }
-        if value.max_call_partition_operations == 0 {
+        let Some(max_call_partition_operations) = value.max_call_partition_operations else {
+            return Err(SolveTargetProfileError(
+                "max_call_partition_operations is required",
+            ));
+        };
+        let Some(local_budget_bytes) = value.local_budget_bytes else {
+            return Err(SolveTargetProfileError("local_budget_bytes is required"));
+        };
+        if max_call_partition_operations == 0 {
             return Err(SolveTargetProfileError(
                 "call partition bound must be nonzero",
             ));
         }
-        if value.local_budget_bytes == 0 {
+        if local_budget_bytes == 0 {
             return Err(SolveTargetProfileError("local budget must be positive"));
         }
         if value.max_unrolled_passes as usize != MAX_UNROLLED_PASSES
@@ -110,8 +122,8 @@ impl TryFrom<Declaration> for SolveTargetProfile {
             max_unrolled_passes: value.max_unrolled_passes,
             max_unrolled_operations: value.max_unrolled_operations,
             admits_nested_map_frames: value.admits_nested_map_frames,
-            max_call_partition_operations: value.max_call_partition_operations,
-            local_budget_bytes: value.local_budget_bytes,
+            max_call_partition_operations,
+            local_budget_bytes,
         })
     }
 }

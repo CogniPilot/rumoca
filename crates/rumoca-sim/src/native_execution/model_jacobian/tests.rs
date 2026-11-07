@@ -51,6 +51,16 @@ fn invalid_native_target_declarations_refuse_instead_of_using_host_defaults() {
     }
 }
 
+#[test]
+fn legacy_version_one_target_declaration_reports_the_migration() {
+    let legacy = include_str!("../../../targets/cranelift/target.toml")
+        .replacen("schema_version = 2", "schema_version = 1", 1)
+        .replace("max_call_partition_operations = 256", "")
+        .replace("local_budget_bytes = 1048576", "");
+    let error = profile_from_target(&legacy).unwrap_err();
+    assert!(error.contains("schema_version = 2"), "{error}");
+}
+
 thread_local! {
     static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

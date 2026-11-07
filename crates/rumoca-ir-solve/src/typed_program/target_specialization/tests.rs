@@ -112,13 +112,28 @@ fn version_two_requires_both_resource_declarations() {
     for key in ["max_call_partition_operations", "local_budget_bytes"] {
         let mut declared = declaration("host");
         declared.as_object_mut().unwrap().remove(key);
+        let error = serde_json::from_value::<SolveTargetProfile>(declared).unwrap_err();
         assert!(
-            serde_json::from_value::<SolveTargetProfile>(declared).is_err(),
-            "{key}"
+            error.to_string().contains(&format!("{key} is required")),
+            "{error}"
         );
     }
     let mut legacy = declaration("host");
     legacy["schema_version"] = serde_json::json!(1);
+    let error = serde_json::from_value::<SolveTargetProfile>(legacy).unwrap_err();
+    assert!(error.to_string().contains("schema_version = 2"), "{error}");
+}
+
+#[test]
+fn legacy_version_one_declaration_reaches_the_migration_refusal() {
+    let legacy = serde_json::json!({
+        "schema_version": 1,
+        "name": "host",
+        "layout": "dense-host-v1",
+        "max_unrolled_passes": MAX_UNROLLED_PASSES,
+        "max_unrolled_operations": MAX_UNROLLED_OPERATIONS,
+        "admits_nested_map_frames": false,
+    });
     let error = serde_json::from_value::<SolveTargetProfile>(legacy).unwrap_err();
     assert!(error.to_string().contains("schema_version = 2"), "{error}");
 }
