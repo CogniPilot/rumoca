@@ -68,6 +68,7 @@ pub(crate) mod instance;
 pub mod integrator;
 mod kernel;
 pub(crate) mod lifecycle;
+pub mod numerical_observation;
 pub mod ode_driver;
 /// Host-private root policy. SPEC_0044 §6 makes the scan/location policy, the
 /// root application, and the domain classification host-private with no

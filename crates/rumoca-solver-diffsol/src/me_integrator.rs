@@ -9,6 +9,8 @@
 mod convergence_tests;
 #[cfg(test)]
 mod failure_budget_tests;
+#[cfg(test)]
+mod observation_tests;
 
 use std::{cell::Cell, rc::Rc};
 
@@ -25,6 +27,9 @@ use rumoca_solver::fmi_me::{
 use self_cell::self_cell;
 
 use crate::{LinearSolver, Matrix, Scalar, Vector};
+use rumoca_solver::fmi_me::numerical_observation::{
+    AdapterWriter, SettingField, SettingValue, SettingsStage,
+};
 
 const METHOD: &str = "diffsol-bdf";
 
@@ -78,20 +83,31 @@ self_cell!(
 pub fn model_exchange_integrator(
     setup: MeNumericalSetup,
 ) -> Box<dyn MeIntegratorBackend + 'static> {
-    Box::new(DiffsolBdfIntegrator::new(setup))
+    model_exchange_integrator_with_observation(setup, None)
+}
+
+/// Construct the same numerical method with an optional write-only settings endpoint.
+#[must_use]
+pub fn model_exchange_integrator_with_observation(
+    setup: MeNumericalSetup,
+    observation: Option<AdapterWriter>,
+) -> Box<dyn MeIntegratorBackend + 'static> {
+    Box::new(DiffsolBdfIntegrator::new(setup, observation))
 }
 
 struct DiffsolBdfIntegrator {
     setup: MeNumericalSetup,
+    observation: Option<AdapterWriter>,
     derivatives: Option<Rc<MeDerivativeHandle>>,
     solver: Option<BdfCell>,
     accepted_interval: Option<AcceptedInterval>,
 }
 
 impl DiffsolBdfIntegrator {
-    fn new(setup: MeNumericalSetup) -> Self {
+    fn new(setup: MeNumericalSetup, observation: Option<AdapterWriter>) -> Self {
         Self {
             setup,
+            observation,
             derivatives: None,
             solver: None,
             accepted_interval: None,
@@ -106,12 +122,24 @@ impl DiffsolBdfIntegrator {
     ) -> Result<(), MeIntegrationError> {
         self.require_width(point, derivatives.as_ref(), failure)?;
         let absolute_tolerances = scaled_absolute_tolerances(&self.setup)?;
+        if let Some(observation) = &self.observation {
+            record_diffsol_settings(
+                observation,
+                SettingsStage::Requested,
+                &[
+                    self.setup.relative_tolerance(),
+                    self.setup.initial_step_hint().unwrap_or(1.0e-3),
+                ],
+                &absolute_tolerances,
+            );
+        }
         let problem = build_problem(
             point,
             Rc::clone(&derivatives),
             self.setup.relative_tolerance(),
             absolute_tolerances,
             self.setup.initial_step_hint().unwrap_or(1.0e-3),
+            self.observation.as_ref(),
         )?;
         let initial_derivatives = derivatives
             .derivatives(point.time(), point.states())
@@ -134,6 +162,9 @@ impl DiffsolBdfIntegrator {
         self.derivatives = Some(derivatives);
         self.solver = Some(solver);
         self.accepted_interval = None;
+        if let Some(observation) = &self.observation {
+            observation.initialized();
+        }
         Ok(())
     }
 
@@ -201,6 +232,15 @@ impl DiffsolBdfIntegrator {
         derivatives: Rc<MeDerivativeHandle>,
     ) -> Result<(), MeIntegrationError> {
         self.require_width(point, derivatives.as_ref(), MeNumericalFailure::Reset)?;
+        if let (Some(observation), Some(solver)) = (&self.observation, &self.solver) {
+            let problem = solver.borrow_owner();
+            record_diffsol_settings(
+                observation,
+                SettingsStage::RetainedAfterReset,
+                &[problem.rtol, problem.h0],
+                problem.atol.as_slice(),
+            );
+        }
         let values = derivatives
             .derivatives(point.time(), point.states())
             .map_err(MeIntegrationError::from)?;
@@ -369,6 +409,7 @@ fn build_problem(
     relative_tolerance: f64,
     absolute_tolerances: Vec<f64>,
     initial_step: f64,
+    observation: Option<&AdapterWriter>,
 ) -> Result<BdfProblem, MeIntegrationError> {
     let initial = try_copy(point.states(), "BDF initial point")?;
     if derivatives.state_jacobian_columns().is_none() {
@@ -410,6 +451,14 @@ fn build_problem(
     let initialize: InitialFn = Box::new(move |_parameters, _time, output| {
         output.as_mut_slice().copy_from_slice(&initial);
     });
+    if let Some(observation) = observation {
+        record_diffsol_settings(
+            observation,
+            SettingsStage::ConstructionStarted,
+            &[relative_tolerance, initial_step],
+            &absolute_tolerances,
+        );
+    }
     let mut problem = OdeBuilder::<Matrix>::new()
         .t0(point.time())
         .h0(initial_step)
@@ -422,6 +471,14 @@ fn build_problem(
         .map_err(|error| numerical(MeNumericalFailure::Construction, error));
     if let Ok(problem) = problem.as_mut() {
         problem.ode_options.min_timestep = scaled_step_floor(point.time(), initial_step);
+        if let Some(observation) = observation {
+            record_diffsol_settings(
+                observation,
+                SettingsStage::Constructed,
+                &[problem.rtol, problem.h0],
+                problem.atol.as_slice(),
+            );
+        }
     }
     probing.set(false);
     problem
@@ -509,4 +566,50 @@ fn scaled_absolute_tolerances(setup: &MeNumericalSetup) -> Result<Vec<f64>, MeIn
 
 fn numerical(category: MeNumericalFailure, error: impl std::fmt::Display) -> MeIntegrationError {
     MeIntegrationError::numerical(METHOD, category, error.to_string())
+}
+
+/// BDF owns the schema: two scalar cells (rtol, initial step), then all actual
+/// per-state absolute tolerances. The neutral record never assumes that shape.
+fn record_diffsol_settings(
+    observation: &AdapterWriter,
+    stage: SettingsStage,
+    scalars: &[f64; 2],
+    absolute_tolerances: &[f64],
+) {
+    observation.backend_values(
+        stage,
+        rumoca_solver::NumericalBackend::Bdf,
+        1,
+        scalars,
+        absolute_tolerances,
+    );
+    observation.setting(
+        stage,
+        SettingField::RelativeTolerance,
+        SettingValue::Known(&scalars[..1]),
+    );
+    observation.setting(
+        stage,
+        SettingField::InitialStep,
+        SettingValue::Known(&scalars[1..]),
+    );
+    // The problem uses its complete per-state vector (backend tag 1), not
+    // a retained scalar tolerance. The scalar request stays host-owned.
+    observation.setting(
+        stage,
+        SettingField::ScalarAbsoluteTolerance,
+        SettingValue::NotApplicable,
+    );
+    observation.setting(
+        stage,
+        SettingField::StateAbsoluteTolerances,
+        SettingValue::Known(absolute_tolerances),
+    );
+    // Diffsol stores scaled tolerances, not a separate nominal vector. The
+    // host's complete issued nominals remain in the distinct setup record.
+    observation.setting(
+        stage,
+        SettingField::StateNominals,
+        SettingValue::NotApplicable,
+    );
 }

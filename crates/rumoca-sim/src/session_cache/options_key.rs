@@ -1,6 +1,6 @@
 //! Exact preparation inputs, without source/dependency invalidation policy.
 
-use crate::{DiffsolMethod, SimExecutionPolicy, SimOptions, SimPacingMode, SimSolverMode};
+use crate::{SimExecutionPolicy, SimOptions, SimPacingMode, SimSolverMode};
 
 #[derive(PartialEq, Eq)]
 pub(super) struct OptionsKey {
@@ -9,7 +9,7 @@ pub(super) struct OptionsKey {
     max_wall_seconds: Option<u64>,
     scalarize: bool,
     solver_mode: SimSolverMode,
-    diffsol_method: DiffsolMethod,
+    backend_options: crate::backend_options::OptionsIdentity,
     pacing_mode: SimPacingMode,
     parameters: Vec<(String, u64)>,
     starts: Vec<(String, u64)>,
@@ -19,7 +19,8 @@ pub(super) struct OptionsKey {
 }
 
 impl OptionsKey {
-    pub(super) fn new(options: &SimOptions) -> Self {
+    pub(super) fn new(options: &SimOptions) -> Result<Self, crate::SimulationDiagnosticError> {
+        let validated = crate::backend_options::validate(options)?;
         // Exhaustive: adding a new simulation option requires deciding how it
         // participates, rather than silently reusing an incompatible instance.
         let SimOptions {
@@ -31,7 +32,7 @@ impl OptionsKey {
             scalarize,
             max_wall_seconds,
             solver_mode,
-            diffsol_method,
+            backend_options: _,
             pacing_mode,
             param_overrides,
             start_overrides,
@@ -39,7 +40,7 @@ impl OptionsKey {
             execution_policy,
             checkpoint_budget_bytes,
         } = options;
-        Self {
+        Ok(Self {
             time_and_tolerances: [
                 t_start.to_bits(),
                 t_end.to_bits(),
@@ -50,14 +51,14 @@ impl OptionsKey {
             max_wall_seconds: max_wall_seconds.map(f64::to_bits),
             scalarize: *scalarize,
             solver_mode: *solver_mode,
-            diffsol_method: *diffsol_method,
+            backend_options: validated.identity(),
             pacing_mode: *pacing_mode,
             parameters: value_bits(param_overrides),
             starts: value_bits(start_overrides),
             inputs: value_bits(initial_inputs),
             execution_policy: *execution_policy,
             checkpoint_budget_bytes: *checkpoint_budget_bytes,
-        }
+        })
     }
 }
 

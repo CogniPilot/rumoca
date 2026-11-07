@@ -28,8 +28,7 @@ impl SimSolverMode {
         }
         // The ESDIRK34 / TR-BDF2 names are *implicit* tableaus, not the explicit
         // rk45 backend, so they land in `Bdf` here rather than `RkLike`.
-        // `DiffsolMethod::from_external_name` reports that they are temporarily
-        // unavailable; this classifier only picks the solver family.
+        // Name validation owns their availability; this only picks the family.
         let rk_like = normalized.contains("rungekutta")
             || normalized.starts_with("rk")
             || normalized.contains("dopri")
@@ -48,24 +47,6 @@ impl SimSolverMode {
             _ => (Self::Auto, "auto".to_string()),
         }
     }
-}
-
-/// Which diffsol integrator to construct on the implicit (BDF-family) path.
-///
-/// `SimSolverMode` selects the solver *family* (auto / implicit-BDF /
-/// explicit-RK). Within the implicit family, BDF is the only integrator, so
-/// there is no name-to-tableau mapping to perform: a caller that has resolved a
-/// solver name through [`rumoca_core::canonical_solver_name`] and landed in the
-/// implicit family gets [`Self::Bdf`].
-///
-/// The enum is kept single-variant rather than folded away so the integrator a
-/// run used stays an explicit part of the recorded request.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffsolMethod {
-    /// Variable-order BDF. The only diffsol integrator.
-    #[default]
-    Bdf,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
@@ -268,11 +249,9 @@ pub struct SimOptions {
     pub scalarize: bool,
     pub max_wall_seconds: Option<f64>,
     pub solver_mode: SimSolverMode,
-    /// Integrator to use on the diffsol (BDF-family) path. Ignored when
-    /// `solver_mode` resolves to the explicit rk45 backend. BDF is the only
-    /// remaining choice; the field is kept so the resolved integrator stays an
-    /// explicit part of the request rather than an implicit assumption.
-    pub diffsol_method: DiffsolMethod,
+    /// Optional concrete numerical options; the selected backend validates
+    /// identity and type before construction. Absence uses backend defaults.
+    pub backend_options: Option<crate::BackendOptions>,
     pub pacing_mode: SimPacingMode,
     /// Tunable parameter overrides applied after lowering, keyed by scalar
     /// parameter name (e.g. `"k"`, `"gear.ratio"`). Empty by default — a plain
@@ -310,7 +289,7 @@ impl Default for SimOptions {
             scalarize: true,
             max_wall_seconds: None,
             solver_mode: SimSolverMode::Auto,
-            diffsol_method: DiffsolMethod::Bdf,
+            backend_options: None,
             pacing_mode: SimPacingMode::AsFastAsPossible,
             param_overrides: Vec::new(),
             start_overrides: Vec::new(),
@@ -390,8 +369,8 @@ pub struct SimResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        DiffsolMethod, SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt,
-        SimNativeRefusal, SimOptions, SimPacingMode, SimSolverMode,
+        SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeRefusal, SimOptions,
+        SimPacingMode, SimSolverMode,
     };
 
     #[test]
@@ -450,7 +429,6 @@ mod tests {
     /// to `rumoca_core::canonical_solver_name`, which owns the whole valid set.
     #[test]
     fn the_implicit_family_offers_exactly_one_integrator() {
-        assert_eq!(DiffsolMethod::default(), DiffsolMethod::Bdf);
         for name in ["bdf", ""] {
             assert_eq!(SimSolverMode::from_external_name(name), SimSolverMode::Bdf);
         }
