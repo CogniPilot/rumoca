@@ -55,7 +55,7 @@ impl SimulationSessionCache {
     ) -> Result<SimulationSessionLease, SimulationDiagnosticError> {
         let key = SessionKey {
             dae,
-            options: OptionsKey::new(&options),
+            options: OptionsKey::new(&options)?,
         };
         let (idle, generation) = {
             let mut state = self.0.borrow_mut();

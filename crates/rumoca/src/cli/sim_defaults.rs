@@ -1,6 +1,6 @@
 //! Defaults a direct `rumoca sim` or `rumoca sim bench` run takes from the model.
 
-use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
+use rumoca_sim::{SimOptions, SimSolverMode};
 
 /// The `(t_start, t_end)` window of a direct run. It starts at the model's
 /// `experiment(StartTime)` when finite, else 0. It ends at `--t-end` if given,
@@ -45,7 +45,7 @@ pub(super) fn direct_sim_options(
         t_end: window.1,
         dt,
         solver_mode,
-        diffsol_method: DiffsolMethod::Bdf,
+        backend_options: None,
         ..SimOptions::default()
     };
     if let Some(atol) = atol {

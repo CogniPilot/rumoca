@@ -27,6 +27,11 @@ pub const EX012_SESSION_INVALID_ARGUMENT: &str = "EX012";
 pub enum SimulationDiagnosticError {
     SolveLowering(rumoca_phase_solve::LowerError),
     Solver(String),
+    /// Retain the actual ME/numerical cause and its stage across the facade.
+    #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+    Simulation(crate::SimError),
+    /// Explicit backend options are rejected before model or cache work.
+    BackendOptions(rumoca_solver::BackendOptionsError),
     RuntimePreparation {
         message: String,
         span: Option<rumoca_core::Span>,
@@ -49,6 +54,9 @@ impl SimulationDiagnosticError {
         match self {
             Self::SolveLowering(error) => error.code(),
             Self::Solver(_) => EX001_SOLVER_FAILURE,
+            Self::BackendOptions(_) => EX002_RUNTIME_PREPARATION,
+            #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+            Self::Simulation(_) => EX001_SOLVER_FAILURE,
             Self::RuntimePreparation { .. } => EX002_RUNTIME_PREPARATION,
             Self::InvalidOverride { .. } => EX003_INVALID_OVERRIDE,
         }
@@ -57,7 +65,9 @@ impl SimulationDiagnosticError {
     pub fn diagnostic_label(&self) -> String {
         match self {
             Self::SolveLowering(_) => "Solve lowering failed here".to_string(),
-            Self::Solver(_) | Self::RuntimePreparation { .. } => {
+            #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+            Self::Simulation(_) => "simulation failure originates here".to_string(),
+            Self::Solver(_) | Self::BackendOptions(_) | Self::RuntimePreparation { .. } => {
                 "simulation failure originates here".to_string()
             }
             Self::InvalidOverride { .. } => "override originates here".to_string(),
@@ -81,7 +91,9 @@ impl SimulationDiagnosticError {
     pub fn source_span(&self) -> Option<rumoca_core::Span> {
         match self {
             Self::SolveLowering(error) => error.source_span(),
-            Self::Solver(_) | Self::InvalidOverride { .. } => None,
+            Self::Solver(_) | Self::BackendOptions(_) | Self::InvalidOverride { .. } => None,
+            #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+            Self::Simulation(_) => None,
             Self::RuntimePreparation { span, .. } => *span,
         }
     }
@@ -92,13 +104,42 @@ impl std::fmt::Display for SimulationDiagnosticError {
         match self {
             Self::SolveLowering(error) => write!(f, "{error}"),
             Self::Solver(error) => write!(f, "{error}"),
+            Self::BackendOptions(error) => std::fmt::Display::fmt(error, f),
+            #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+            Self::Simulation(error) => std::fmt::Display::fmt(error, f),
             Self::RuntimePreparation { message, .. } => write!(f, "{message}"),
             Self::InvalidOverride { message } => write!(f, "{message}"),
         }
     }
 }
 
-impl std::error::Error for SimulationDiagnosticError {}
+impl std::error::Error for SimulationDiagnosticError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SolveLowering(error) => Some(error),
+            Self::BackendOptions(error) => Some(error),
+            #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+            Self::Simulation(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+impl From<crate::SimError> for SimulationDiagnosticError {
+    fn from(error: crate::SimError) -> Self {
+        match error {
+            crate::SimError::BackendOptions(error) => Self::BackendOptions(error),
+            error => Self::Simulation(error),
+        }
+    }
+}
+
+impl From<rumoca_solver::BackendOptionsError> for SimulationDiagnosticError {
+    fn from(error: rumoca_solver::BackendOptionsError) -> Self {
+        Self::BackendOptions(error)
+    }
+}
 
 impl From<rumoca_eval_solve::EvalSolveError> for SimulationDiagnosticError {
     fn from(value: rumoca_eval_solve::EvalSolveError) -> Self {

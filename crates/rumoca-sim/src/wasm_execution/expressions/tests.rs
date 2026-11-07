@@ -1,3 +1,4 @@
+#[cfg(feature = "solver-rk45")]
 mod assertion_calls;
 mod authored_models;
 mod conditional_ranges;

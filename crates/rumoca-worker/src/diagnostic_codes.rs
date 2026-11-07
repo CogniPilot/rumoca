@@ -82,7 +82,9 @@ pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
             embedded_diagnostic_code(message)
                 .unwrap_or_else(|| runtime_preparation_code().to_string()),
         ),
-        SimError::RuntimeContract { .. } => Some(runtime_preparation_code().to_string()),
+        SimError::RuntimeContract { .. } | SimError::BackendOptions(_) => {
+            Some(runtime_preparation_code().to_string())
+        }
         SimError::ModelExchangeSession(session) if session.is_timeout() => None,
         // A component failure that carries a delegated code (the ES016 fold of a
         // `noEvent` loop switch) keeps it, as every other surface does.
@@ -116,6 +118,20 @@ pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_backend_options_keep_the_facades_preparation_code() {
+        let cause = rumoca_sim::BackendOptionsError::ConcreteType {
+            backend: rumoca_sim::NumericalBackend::Rk45,
+        };
+        let diagnostic = SimulationDiagnosticError::from(cause.clone());
+        let error = SimError::from(cause);
+        assert_eq!(diagnostic.diagnostic_code(), "EX002");
+        assert_eq!(
+            sim_error_diagnostic_code(&error).as_deref(),
+            Some(diagnostic.diagnostic_code())
+        );
+    }
 
     #[test]
     fn runtime_codes_match_the_canonical_simulation_mapping() {

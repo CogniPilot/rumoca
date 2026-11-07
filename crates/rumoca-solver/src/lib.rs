@@ -4,6 +4,10 @@
 compile_error!("rumoca-solver production builds require the `sparse-linalg` feature");
 
 #[cfg(not(kani))]
+mod backend_options;
+#[cfg(not(kani))]
+pub use backend_options::{BackendOptions, BackendOptionsError, NumericalBackend};
+#[cfg(not(kani))]
 pub mod fmi_me;
 #[cfg(rumoca_qualification)]
 mod qualification;
@@ -114,7 +118,7 @@ pub use runtime::trajectory_objective::{
 };
 #[cfg(not(kani))]
 pub use solver::{
-    DEFAULT_CHECKPOINT_BUDGET_BYTES, DiffsolMethod, MODEL_MESSAGE_CODE, SimBackend, SimDiagnostic,
+    DEFAULT_CHECKPOINT_BUDGET_BYTES, MODEL_MESSAGE_CODE, SimBackend, SimDiagnostic,
     SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
     SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimTermination,
     SimVariableMeta, WARNING_ASSERTION_CODE,
