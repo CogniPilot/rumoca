@@ -16,7 +16,11 @@ fn dae() -> Arc<rumoca_ir_dae::Dae> {
 
 fn options() -> SimOptions {
     SimOptions {
-        solver_mode: SimSolverMode::RkLike,
+        solver_mode: if cfg!(feature = "solver-rk45") {
+            SimSolverMode::RkLike
+        } else {
+            SimSolverMode::Bdf
+        },
         execution_policy: SimExecutionPolicy::Interpreter,
         dt: Some(0.01),
         initial_inputs: vec![("u".into(), 0.0)],
@@ -145,4 +149,139 @@ fn active_session_survives_the_cache_owner() {
     drop(cache);
     assert!((drive(&mut active) - 1.5).abs() < 1e-10);
     drop(active);
+}
+
+#[cfg(feature = "solver-rk45")]
+#[test]
+fn invalid_typed_payload_refuses_without_consuming_the_idle_session() {
+    let cache = SimulationSessionCache::default();
+    let model = dae();
+    drop(cache.acquire(Arc::clone(&model), options()).unwrap());
+    let mut invalid = options();
+    invalid.backend_options = Some(crate::BackendOptions::new(
+        crate::NumericalBackend::Rk45,
+        7_u32,
+    ));
+    assert!(matches!(
+        cache.acquire(Arc::clone(&model), invalid),
+        Err(SimulationDiagnosticError::BackendOptions(
+            crate::BackendOptionsError::ConcreteType {
+                backend: crate::NumericalBackend::Rk45
+            }
+        ))
+    ));
+    let mut reused = cache.acquire(model, options()).unwrap();
+    assert!(reused.preparation_reused());
+    assert_eq!(value(&mut reused, "x"), 1.0);
+    assert!((drive(&mut reused) - 1.5).abs() < 1e-10);
+}
+
+#[cfg(feature = "solver-rk45")]
+#[test]
+fn explicit_backend_default_is_consumed_and_has_its_own_cache_identity() {
+    let cache = SimulationSessionCache::default();
+    let model = dae();
+    let mut absent = cache.acquire(Arc::clone(&model), options()).unwrap();
+    let expected = drive(&mut absent);
+    drop(absent);
+    let mut explicit = options();
+    explicit.backend_options = Some(crate::BackendOptions::new(
+        crate::NumericalBackend::Rk45,
+        rumoca_solver_rk45::Rk45Options,
+    ));
+    let mut configured = cache.acquire(Arc::clone(&model), explicit.clone()).unwrap();
+    assert!(!configured.preparation_reused());
+    assert_eq!(drive(&mut configured).to_bits(), expected.to_bits());
+    drop(configured);
+    let mut reused = cache.acquire(model, explicit).unwrap();
+    assert!(reused.preparation_reused());
+    assert_eq!(drive(&mut reused).to_bits(), expected.to_bits());
+}
+
+#[cfg(feature = "solver-velimplicit")]
+fn velimplicit_options(config: rumoca_solver_velimplicit::VelImplicitConfig) -> SimOptions {
+    SimOptions {
+        solver_mode: SimSolverMode::VelImplicit,
+        backend_options: Some(crate::BackendOptions::new(
+            crate::NumericalBackend::VelImplicit,
+            config,
+        )),
+        dt: Some(0.25),
+        ..options()
+    }
+}
+
+#[cfg(feature = "solver-velimplicit")]
+fn drive_with_step_count(lease: &mut SimulationSessionLease) -> (u64, f64) {
+    rumoca_solver::reset_step_counts();
+    let result = drive(lease);
+    (rumoca_solver::step_counts().solver_steps, result)
+}
+
+#[cfg(feature = "solver-velimplicit")]
+#[test]
+fn configured_step_changes_real_integration_and_exact_cache_replay() {
+    let cache = SimulationSessionCache::default();
+    let model = dae();
+    let coarse = rumoca_solver_velimplicit::VelImplicitConfig {
+        step: 0.03125,
+        ..Default::default()
+    };
+    let fine = rumoca_solver_velimplicit::VelImplicitConfig {
+        step: 0.015625,
+        ..coarse
+    };
+    let mut first = cache
+        .acquire(Arc::clone(&model), velimplicit_options(coarse))
+        .unwrap();
+    assert!(!first.preparation_reused());
+    let (coarse_steps, expected) = drive_with_step_count(&mut first);
+    assert!(coarse_steps > 0);
+    assert!((expected - 1.5).abs() < 1e-10);
+    drop(first);
+
+    let mut changed = cache
+        .acquire(Arc::clone(&model), velimplicit_options(fine))
+        .unwrap();
+    assert!(!changed.preparation_reused());
+    let (fine_steps, actual) = drive_with_step_count(&mut changed);
+    assert!(fine_steps > coarse_steps);
+    assert!((actual - expected).abs() < 1e-10);
+    drop(changed);
+
+    let mut replay = cache.acquire(model, velimplicit_options(fine)).unwrap();
+    assert!(replay.preparation_reused());
+    assert_eq!(value(&mut replay, "x"), 1.0);
+    let (replayed_steps, replayed_value) = drive_with_step_count(&mut replay);
+    assert_eq!(replayed_steps, fine_steps);
+    assert_eq!(replayed_value.to_bits(), actual.to_bits());
+}
+
+#[cfg(feature = "solver-velimplicit")]
+#[test]
+fn invalid_custom_value_preserves_the_existing_prepared_session() {
+    let cache = SimulationSessionCache::default();
+    let model = dae();
+    let valid = rumoca_solver_velimplicit::VelImplicitConfig::default();
+    drop(
+        cache
+            .acquire(Arc::clone(&model), velimplicit_options(valid))
+            .unwrap(),
+    );
+    let invalid = rumoca_solver_velimplicit::VelImplicitConfig {
+        step: f64::NAN,
+        ..valid
+    };
+    assert!(matches!(
+        cache.acquire(Arc::clone(&model), velimplicit_options(invalid)),
+        Err(SimulationDiagnosticError::BackendOptions(
+            crate::BackendOptionsError::InvalidValue {
+                backend: crate::NumericalBackend::VelImplicit,
+                field: "step",
+            }
+        ))
+    ));
+    let mut reused = cache.acquire(model, velimplicit_options(valid)).unwrap();
+    assert!(reused.preparation_reused());
+    assert!((drive(&mut reused) - 1.5).abs() < 1e-10);
 }

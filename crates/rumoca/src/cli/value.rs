@@ -166,7 +166,7 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
         t_end: window.1,
         dt: args.dt,
         solver_mode: solver.into(),
-        diffsol_method: rumoca_sim::DiffsolMethod::Bdf,
+        backend_options: None,
         ..SimOptions::default()
     };
     if let Some(atol) = args.atol {

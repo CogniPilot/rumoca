@@ -5,6 +5,13 @@ use rumoca_compile::compile::{Session, SessionConfig};
 use super::*;
 use crate::{SimOptions, SimSolverMode};
 
+const MODES: &[SimSolverMode] = &[
+    #[cfg(feature = "solver-diffsol")]
+    SimSolverMode::Bdf,
+    #[cfg(feature = "solver-rk45")]
+    SimSolverMode::RkLike,
+];
+
 const PLANT: &str = r#"
 model Plant
   input Real u;
@@ -57,7 +64,7 @@ fn closed_loop_analytic(dt: f64, steps: i32) -> f64 {
 
 #[test]
 fn every_command_has_one_outcome() {
-    for mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+    for &mode in MODES {
         let mut s = session(mode);
         assert_eq!(
             s.apply(SessionCommand::Hello {
@@ -138,7 +145,7 @@ fn every_command_has_one_outcome() {
 
 #[test]
 fn set_inputs_applies_the_whole_frame() {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     let event = s.apply(SessionCommand::SetInputs {
         inputs: vec![("u".into(), 1.0), ("v".into(), -4.0)],
     });
@@ -150,7 +157,7 @@ fn set_inputs_applies_the_whole_frame() {
 
 #[test]
 fn closed_loop_matches_the_sampled_data_solution() {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     for _ in 0..10 {
         let SessionEvent::Value { value, .. } = s.apply(SessionCommand::Get { name: "y".into() })
         else {
@@ -169,7 +176,7 @@ fn closed_loop_matches_the_sampled_data_solution() {
 
 #[test]
 fn rejected_commands_report_typed_codes_and_change_nothing() {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     assert_eq!(
         error_code(s.apply(SessionCommand::Hello {
             protocol_version: SESSION_PROTOCOL_VERSION + 1
@@ -211,7 +218,7 @@ fn rejected_commands_report_typed_codes_and_change_nothing() {
 }
 
 fn run(commands: &str) -> (SessionServeExit, Vec<SessionEvent>) {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     let mut out = Vec::new();
     let exit = serve_session(&mut s, Cursor::new(commands.to_owned()), &mut out).unwrap();
     let events = String::from_utf8(out)
@@ -328,7 +335,7 @@ impl Write for FailingWriter {
 
 #[test]
 fn serve_maps_a_broken_pipe_to_disconnect_and_surfaces_other_write_errors() {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     let exit = serve_session(
         &mut s,
         Cursor::new(String::new()),
@@ -410,7 +417,7 @@ fn wire_forms_are_stable() {
 
 #[test]
 fn non_utf8_and_over_long_lines_are_typed_refusals_and_the_session_continues() {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     let mut input = Vec::new();
     input.extend_from_slice(b"\xff\xfe not utf-8\n");
     input.extend_from_slice(&[b'x'; 100]);
@@ -441,7 +448,7 @@ fn non_utf8_and_over_long_lines_are_typed_refusals_and_the_session_continues() {
 
 #[test]
 fn an_over_long_final_line_without_newline_is_refused_at_end_of_stream() {
-    let mut s = session(SimSolverMode::Bdf);
+    let mut s = session(MODES[0]);
     let mut out = Vec::new();
     let exit = serve_with_line_limit(&mut s, Cursor::new(vec![b'y'; 200]), &mut out, 64).unwrap();
     assert_eq!(exit, SessionServeExit::ParentDisconnected);

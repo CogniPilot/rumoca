@@ -15,13 +15,25 @@ use rumoca_solver::{
 use rumoca_solver::{SimResult, fmi_me::driver::batch_output_cursor};
 
 use crate::SimError;
+use rumoca_solver::fmi_me::numerical_observation::{
+    AdapterWriter, ConstructionPurpose, HostWriter, ObservationRoute, SettingsCollector,
+    SettingsStage,
+};
+
+/// A validated numerical setup composed with optional passive observation.
+pub(crate) type IntegratorBuilder = fn(
+    MeNumericalSetup,
+    crate::backend_options::ValidatedOptions,
+    Option<AdapterWriter>,
+) -> Result<Box<dyn MeIntegratorBackend + 'static>, SimError>;
 
 /// An integrator plugin factory with the method name a run records.
 #[derive(Clone, Copy)]
 pub(crate) struct IntegratorFactory {
     pub(crate) method: &'static str,
+    pub(crate) backend: rumoca_solver::NumericalBackend,
     pub(crate) model_jacobian_request: rumoca_solver::ModelStateJacobianRequest,
-    pub(crate) build: fn(MeNumericalSetup) -> Box<dyn MeIntegratorBackend + 'static>,
+    pub(crate) build: IntegratorBuilder,
 }
 
 pub(crate) struct BackendSimulationSession {
@@ -40,6 +52,7 @@ impl BackendSimulationSession {
         instance_name: &'static str,
         integrator: IntegratorFactory,
     ) -> Result<Self, SimError> {
+        crate::backend_options::validate_for_backend(opts, integrator.backend)?;
         let execution_backend = rumoca_solver::fmi_me::admit_execution_backend(
             opts.execution_policy,
             execution_backend,
@@ -147,7 +160,9 @@ pub(crate) fn simulate_artifact(
     execution_backend: Option<MeExecutionBackend>,
     instance_name: &'static str,
     integrator: IntegratorFactory,
+    observation: Option<&SettingsCollector>,
 ) -> Result<SimResult, SimError> {
+    crate::backend_options::validate_for_backend(opts, integrator.backend)?;
     let execution_backend =
         rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, execution_backend)?;
     let options = batch_options(&artifact.root_location(), opts)?;
@@ -160,10 +175,21 @@ pub(crate) fn simulate_artifact(
     )?;
     let host = retained.into_lease(options)?;
     if host.is_terminated() {
+        if host.state_count() == 0
+            && let Some(collector) = observation
+        {
+            collector.no_numerical_backend(ObservationRoute::ModelExchangeSession);
+        }
         return Ok(host.finish());
     }
-    let plugin = plugin_for_host(&host, opts, integrator)?;
-    let mut session = host.into_session(plugin)?;
+    let (plugin, writer) = plugin_for_host_with_observation(
+        &host,
+        opts,
+        integrator,
+        observation,
+        ConstructionPurpose::SelectedRun,
+    )?;
+    let mut session = host.into_session_with_numerical_observation(plugin, writer)?;
     session.run_to_stop(&mut cursor)?;
     Ok(session.finish())
 }
@@ -180,13 +206,57 @@ pub(crate) fn plugin_for_host(
     opts: &SimOptions,
     integrator: IntegratorFactory,
 ) -> Result<Option<Box<dyn MeIntegratorBackend>>, SimError> {
+    plugin_for_host_with_observation(
+        host,
+        opts,
+        integrator,
+        None,
+        ConstructionPurpose::SelectedRun,
+    )
+    .map(|(plugin, _)| plugin)
+}
+
+/// The constructed plugin and its paired host observation endpoint.
+/// Naming the existing tuple changes no construction, ownership or error ordering.
+type ObservedPlugin = (Option<Box<dyn MeIntegratorBackend>>, Option<HostWriter>);
+
+/// Associate only the actual construction, after the existing setup succeeds.
+pub(crate) fn plugin_for_host_with_observation(
+    host: &rumoca_solver::fmi_me::session::MeComponentHost<'_>,
+    opts: &SimOptions,
+    integrator: IntegratorFactory,
+    observation: Option<&SettingsCollector>,
+    purpose: ConstructionPurpose,
+) -> Result<ObservedPlugin, SimError> {
+    let configured = crate::backend_options::validate_for_backend(opts, integrator.backend)?;
     if host.state_count() == 0 {
         rumoca_solver::note_integrator("none (no continuous states)");
-        return Ok(None);
+        if let Some(collector) = observation {
+            collector.no_numerical_backend(ObservationRoute::ModelExchangeSession);
+        }
+        return Ok((None, None));
     }
     let setup = host.numerical_setup(Some(default_step_size(opts)))?;
+    let endpoints = observation
+        .and_then(|collector| collector.associate(ObservationRoute::ModelExchangeSession));
+    let (host_writer, adapter_writer) = match endpoints {
+        Some((host, adapter)) => {
+            host.issued_setup(&setup);
+            host.construction(
+                integrator.backend,
+                purpose,
+                SettingsStage::ConstructionStarted,
+            );
+            (Some(host), Some(adapter))
+        }
+        None => (None, None),
+    };
     rumoca_solver::note_integrator(integrator.method);
-    Ok(Some((integrator.build)(setup)))
+    let plugin = (integrator.build)(setup, configured, adapter_writer)?;
+    if let Some(writer) = &host_writer {
+        writer.construction(integrator.backend, purpose, SettingsStage::Constructed);
+    }
+    Ok((Some(plugin), host_writer))
 }
 
 pub(crate) fn instance_config(

@@ -239,7 +239,7 @@ fn simulate_failure(source: &str, model: &str) -> String {
         },
     )
     .expect_err("the executed path uses an unassigned value");
-    format!("{error:?}")
+    error.to_string()
 }
 
 #[test]

@@ -33,6 +33,55 @@ If two solvers need the same code, it moves into the shared layer. Solver
 backends implement the integration method and consume resolved input
 values — they must not know about keyboards, gamepads, or transports.
 
+## Numerical Backend Options
+
+`SimOptions::backend_options` carries an optional owned `BackendOptions`
+value. The concrete configuration belongs to the selected backend crate:
+
+| `SimSolverMode` | `NumericalBackend` | Concrete configuration |
+|---|---|---|
+| `Bdf` | `Bdf` | `rumoca_solver_diffsol::DiffsolOptions` |
+| `RkLike` | `Rk45` | `rumoca_solver_rk45::Rk45Options` |
+| `VelImplicit` | `VelImplicit` | `rumoca_solver_velimplicit::VelImplicitConfig` |
+
+Leave the payload absent to use the selected backend's defaults, including
+normal `Auto` selection. An explicit payload requires an explicit solver;
+`Auto` does not distribute custom options among candidate backends. Backend
+identity, concrete type, build availability and configuration values are
+validated before model work or session-cache reuse. A rejected request
+returns a typed `BackendOptionsError` rather than silently choosing another
+configuration.
+
+Cloning `BackendOptions` shares ownership of its captured value. The runtime
+accepts the backend-owned concrete configuration and derives its cache
+identity from that validated value. Absence and an explicitly supplied
+default are distinct requests; callers do not supply cache keys.
+
+## Passive Numerical Observation
+
+`simulate_with_numerical_observation` selects the same numerical path as
+`simulate_with_diagnostics`. The optional `SettingsCollector` records host
+lifecycle facts and settings reported by the selected adapter. Observation
+does not choose a solver or replace a failed integration with a different
+method.
+
+Requested settings and retained settings are separate records. In
+particular, the scalar absolute tolerance and state nominals supplied to a
+backend are different facts from its retained per-state tolerance vector.
+An initial-step setting describes a configured hint or starting value, not
+the first step an adaptive method actually accepts.
+
+Readback distinguishes `Known`, `NotApplicable` and `Unsupported`.
+Unsupported readback or exhausted diagnostic storage makes the snapshot
+incomplete; it does not change the numerical result or manufacture an
+effective setting. Auto capability probes, preparation checks and the
+selected run also have distinct construction labels.
+
+Both facades return `SimulationDiagnosticError`. Backend-option admission
+errors remain typed, and simulation failures retain their `SimError` and
+its existing typed cause when present. Use the error source chain when the
+cause or ME stage matters; formatted text alone is not that contract.
+
 ## Events at Runtime
 
 The DAE hands the runtime explicit metadata: relations (event condition

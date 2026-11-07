@@ -66,6 +66,7 @@ fn compile(source: &str, model: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
 /// action arena holds only `assert`/`terminate`/`reinit`. Counting retained `when` branches
 /// per owner asserts the same property more precisely: it proves both that no chain branch
 /// was dropped and that the branches stayed attached to their own target.
+#[cfg(feature = "solver-rk45")]
 fn when_branch_plan(dae: &rumoca_ir_dae::Dae) -> Vec<(Vec<String>, usize)> {
     dae.inspect(|view| {
         (0..view.discrete_value_owner_count())
@@ -751,6 +752,7 @@ fn checked_event_trigger_does_not_reapply_at_a_branch_guard_root() {
 /// the second branch can fail to run: a condition that never rose at all, and a
 /// condition that rose but was outranked. Only the second is the branch guard.
 #[test]
+#[cfg(feature = "solver-rk45")]
 fn checked_when_elsewhen_runs_its_later_branch_while_the_first_is_still_true() {
     let dae = compile(
         concat!(
@@ -818,6 +820,7 @@ fn checked_when_elsewhen_runs_its_later_branch_while_the_first_is_still_true() {
 }
 
 #[test]
+#[cfg(feature = "solver-rk45")]
 fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
     let dae = compile(
         concat!(
@@ -865,6 +868,7 @@ fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
 }
 
 #[test]
+#[cfg(feature = "solver-rk45")]
 fn checked_when_elsewhen_later_branch_executes_after_first_becomes_false() {
     let dae = compile(
         concat!(
