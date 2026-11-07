@@ -71,6 +71,6 @@ pub use types::{
 };
 
 pub use target_specialization::{
-    SolveSpecializationIdentity, SolveTargetLayout, SolveTargetProfile, SolveTargetProfileError,
-    SolveTargetSelection,
+    SolveMaterializedJacobian, SolveSpecializationIdentity, SolveTargetLayout, SolveTargetProfile,
+    SolveTargetProfileError, SolveTargetSelection,
 };
