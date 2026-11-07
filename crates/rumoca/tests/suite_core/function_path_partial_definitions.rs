@@ -78,7 +78,7 @@ fn simulate(model: &str, source: &str) -> Result<SimResult, String> {
             ..SimOptions::default()
         },
     )
-    .map_err(|error| format!("{error:?}"))
+    .map_err(|error| error.to_string())
 }
 
 fn column<'result>(result: &'result SimResult, name: &str) -> &'result [f64] {
