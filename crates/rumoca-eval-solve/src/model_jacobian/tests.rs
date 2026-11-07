@@ -578,3 +578,86 @@ fn structural_product_register_overwrites_follow_the_reaching_definition() {
     let product = ModelStateJacobian::construct(&restore).unwrap();
     assert_eq!(evaluate(&product, [2.0, 3.0]), vec![1.0, 0.0, 0.0, 0.0]);
 }
+
+/// `der(x0) = c * x1 * x1` with `c = 1.5e308`: the dense cell d/dx0 is the
+/// issued zero, so the partial d/dx1 (dense index 1) is the first guarded
+/// cell. At `x1 = 0.9` the primal is finite and that partial overflows.
+fn scaled_square_product() -> SolveModel {
+    single_expression(vec![
+        LinearOp::LoadY { dst: 1, index: 1 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 1,
+            rhs: 1,
+        },
+        LinearOp::Const {
+            dst: 0,
+            value: 1.5e308,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 2,
+        },
+    ])
+}
+
+/// Directional arguments: each input's primal followed by its tangent.
+fn directional_arguments(product: &ModelStateJacobian<'_>, values: &[f64]) -> Vec<TypedValue> {
+    let inputs = product.call_site().inputs();
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            TypedValue::construct(
+                inputs[index / 2].clone(),
+                vec![SolveValueKind::Real64(value.to_bits())],
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn structural_product_reports_derivative_failure_as_guarded_cell_ordinal() {
+    let source = scaled_square_product();
+    let product = ModelStateJacobian::construct(&source).unwrap();
+    assert_eq!(evaluate(&product, [1.0, 0.5]), vec![0.0, 1.5e308, 0.0, 0.0]);
+    let result = evaluate_checked(&product, [1.0, 0.9]);
+    assert!(
+        matches!(
+            result,
+            Err(crate::TypedProgramEvalError::NonFinite {
+                check: SolveFiniteCheck::Derivative,
+                element: 0,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn structural_directional_body_reports_the_same_guarded_cell_ordinal() {
+    let source = scaled_square_product();
+    let product = ModelStateJacobian::construct(&source).unwrap();
+    let arguments = directional_arguments(&product, &[1.0, 0.0, 0.9, 0.0, 0.0, 0.0]);
+    let result = crate::eval_pure_call_directional_checked(
+        product.table(),
+        product.call_site().owner(),
+        &arguments,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(crate::TypedProgramEvalError::NonFinite {
+                check: SolveFiniteCheck::Derivative,
+                element: 0,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+}
