@@ -1449,14 +1449,20 @@ fn find_array_part(
     let mut current: &IndexMap<String, ast::Component> = parent_components;
 
     for (i, part) in parts.iter().enumerate() {
-        let Some(comp) = current.get(part.ident.text.as_ref()) else {
-            return Ok(None);
+        let class = match current.get(part.ident.text.as_ref()) {
+            Some(comp) => {
+                if !comp.shape.is_empty() || !comp.shape_expr.is_empty() {
+                    return Ok(Some(i));
+                }
+                lookup_class_def(tree, comp)
+            }
+            // MLS §7.2.5 and §10.5.1: a package namespace contributes no
+            // instance coordinate. Follow its resolved identity to the array
+            // declaration, including an import alias; never guess by spelling.
+            None => part.def_id.and_then(|id| tree.get_class_by_def_id(id)),
         };
-        if !comp.shape.is_empty() || !comp.shape_expr.is_empty() {
-            return Ok(Some(i));
-        }
         if i + 1 < parts.len() {
-            let Some(class) = lookup_class_def(tree, comp) else {
+            let Some(class) = class else {
                 return Ok(None);
             };
             let effective = get_effective_components(tree, class)?;

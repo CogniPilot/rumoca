@@ -18,6 +18,7 @@ mod process_allocator;
 mod public_api_surface;
 mod repository_hygiene;
 mod size_and_validation;
+mod solve_plan_port;
 mod solver_backend_boundary;
 mod source_comment_hygiene;
 mod string_hashing;

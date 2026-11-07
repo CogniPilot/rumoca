@@ -50,20 +50,20 @@ pub use program::parameter_stage::{
 pub use program::print_plan::{SolveElementAxis, SolveTensorKernel, SolveTensorPart};
 pub use program::{
     MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, ProgramAssertion, ProgramAssignedState,
-    ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis,
+    ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SOLVE_STATIC_MATRIX_WORK,
     SolveAggregateBinaryDirectionalSource, SolveAggregateDirectionalColumns,
     SolveAggregateUnaryDirectionalSource, SolveAssertionForwarding, SolveAssertionMessage,
     SolveAssignedConditional, SolveAssignedStateId, SolveAssignedStateOperation,
     SolveBinaryDirectionalSource, SolveBinaryOperator, SolveBinaryToken, SolveBodyItem,
     SolveCheckedToken, SolveCompareOperator, SolveConversionOperator, SolveConversionToken,
     SolveDomainCheck, SolveElementOperand, SolveElementToken, SolveFiniteCheck, SolveFrameItem,
-    SolveIntegerLiteral, SolveKernel, SolveLiteral, SolveName, SolveNameSpace, SolveOperation,
-    SolveOutputCopy, SolvePrintPlan, SolveProgramConstructionError, SolveProgramRegion,
-    SolveReductionOperator, SolveRegisterFrame, SolveRegisterId, SolveRegisterPlacement, SolveSlot,
-    SolveSlotAccess, SolveSlotId, SolveSlotPlacement, SolveSpannedOperation, SolveStorageClass,
-    SolveStoragePlan, SolveTensorViewAxis, SolveUnaryDirectionalSource, SolveUnaryOperator,
-    SolveUnaryToken, TypedProgram, TypedProgramBuilder, index_forms, invariant_guard,
-    promoted_concatenate_dimensions,
+    SolveFusedRegister, SolveFusionPlan, SolveIntegerLiteral, SolveKernel, SolveLiteral, SolveName,
+    SolveNameSpace, SolveOperation, SolveOutputCopy, SolvePrintPlan, SolveProgramConstructionError,
+    SolveProgramRegion, SolveReductionOperator, SolveRegisterFrame, SolveRegisterId,
+    SolveRegisterPlacement, SolveSlot, SolveSlotAccess, SolveSlotId, SolveSlotPlacement,
+    SolveSpannedOperation, SolveStorageClass, SolveStoragePlan, SolveTensorViewAxis,
+    SolveUnaryDirectionalSource, SolveUnaryOperator, SolveUnaryToken, TypedProgram,
+    TypedProgramBuilder, index_forms, invariant_guard, promoted_concatenate_dimensions,
 };
 pub use types::{
     SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,
@@ -71,6 +71,6 @@ pub use types::{
 };
 
 pub use target_specialization::{
-    SolveSpecializationIdentity, SolveTargetLayout, SolveTargetProfile, SolveTargetProfileError,
-    SolveTargetSelection,
+    SolveMaterializedJacobian, SolveSpecializationIdentity, SolveTargetLayout, SolveTargetProfile,
+    SolveTargetProfileError, SolveTargetSelection,
 };

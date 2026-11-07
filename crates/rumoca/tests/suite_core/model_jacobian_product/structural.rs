@@ -197,3 +197,60 @@ fn structural_native_absent_state_partial_does_not_evaluate_unrequested_overflow
     assert_eq!(output[y * 2 + x].to_bits(), 0.0_f64.to_bits());
     assert_eq!(output[y * 2 + y], 1.0);
 }
+
+/// Both executors run the constructor's one Derivative guard over the cells it
+/// cannot prove finite, so they report the same check and guarded-cell ordinal.
+#[test]
+fn structural_native_and_interpreter_report_the_same_guarded_derivative_cell() {
+    let model = lower(
+        "model GuardedCell Real x(start=1); Real y(start=1); equation der(x)=1.5e308*y*y; der(y)=y; end GuardedCell;",
+        "GuardedCell",
+    );
+    let mut native = CompiledModelStateJacobian::prepare(&model).unwrap();
+    let y = coordinate(&native, "y");
+    let mut point = [1.0; 2];
+    point[y] = 0.9;
+    let mut out = [0.0; 4];
+    let native_element = match native.eval(&point, &model.parameters, 0.0, &mut out) {
+        Err(CompileError::NonFinite {
+            check: solve::SolveFiniteCheck::Derivative,
+            element,
+            ..
+        }) => element,
+        other => panic!("expected a Derivative failure, got {other:?}"),
+    };
+    let product = rumoca_eval_solve::model_jacobian::ModelStateJacobian::construct(&model).unwrap();
+    let labels = product.state_labels();
+    let inputs = product.call_site().inputs();
+    let arguments = labels
+        .iter()
+        .map(|label| point[coordinate(&native, label)])
+        .chain(model.parameters.iter().copied())
+        .chain([0.0])
+        .zip(inputs)
+        .map(|(value, ty)| {
+            rumoca_eval_solve::TypedValue::construct(
+                ty.clone(),
+                vec![solve::SolveValueKind::Real64(value.to_bits())],
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(arguments.len(), inputs.len());
+    let interpreted = rumoca_eval_solve::eval_pure_call_checked(
+        product.table(),
+        product.call_site().owner(),
+        &arguments,
+    );
+    assert!(
+        matches!(
+            interpreted,
+            Err(rumoca_eval_solve::TypedProgramEvalError::NonFinite {
+                check: solve::SolveFiniteCheck::Derivative,
+                element,
+                ..
+            }) if element == native_element
+        ),
+        "native reported element {native_element}, interpreter reported {interpreted:?}"
+    );
+}
