@@ -36,6 +36,10 @@ fn invalid_native_target_declarations_refuse_instead_of_using_host_defaults() {
             1,
         ),
         source.replace("admits_nested_map_frames = false", ""),
+        source.replace("max_call_partition_operations = 256", ""),
+        source.replace("local_budget_bytes = 1048576", ""),
+        source.replace("local_budget_bytes = 1048576", "local_budget_bytes = 0"),
+        source.replacen("schema_version = 2", "schema_version = 1", 1),
         source.replace(
             "max_unrolled_operations = 1024",
             "max_unrolled_operations = 1025",
@@ -45,6 +49,16 @@ fn invalid_native_target_declarations_refuse_instead_of_using_host_defaults() {
     ] {
         assert!(profile_from_target(&changed).is_err(), "{changed}");
     }
+}
+
+#[test]
+fn legacy_version_one_target_declaration_reports_the_migration() {
+    let legacy = include_str!("../../../targets/cranelift/target.toml")
+        .replacen("schema_version = 2", "schema_version = 1", 1)
+        .replace("max_call_partition_operations = 256", "")
+        .replace("local_budget_bytes = 1048576", "");
+    let error = profile_from_target(&legacy).unwrap_err();
+    assert!(error.contains("schema_version = 2"), "{error}");
 }
 
 thread_local! {

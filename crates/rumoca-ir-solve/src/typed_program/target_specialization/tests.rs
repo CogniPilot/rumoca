@@ -8,12 +8,14 @@ use std::num::NonZeroU64;
 
 fn declaration(name: &str) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "name": name,
         "layout": "dense-host-v1",
         "max_unrolled_passes": MAX_UNROLLED_PASSES,
         "max_unrolled_operations": MAX_UNROLLED_OPERATIONS,
         "admits_nested_map_frames": false,
+        "max_call_partition_operations": 256,
+        "local_budget_bytes": 1_048_576,
     })
 }
 
@@ -47,7 +49,11 @@ fn table(value: f64) -> SolvePureCallTable {
 #[test]
 fn unsupported_profile_choices_refuse_instead_of_using_host_defaults() {
     for (key, value) in [
-        ("schema_version", serde_json::json!(2)),
+        ("schema_version", serde_json::json!(1)),
+        ("schema_version", serde_json::json!(3)),
+        ("max_call_partition_operations", serde_json::json!(0)),
+        ("local_budget_bytes", serde_json::json!(0)),
+        ("local_budget_bytes", serde_json::json!(-1)),
         ("name", serde_json::json!(" ")),
         ("layout", serde_json::json!("sparse")),
         ("max_unrolled_passes", serde_json::json!(33)),
@@ -99,4 +105,52 @@ fn checked_profile_round_trip_retains_its_choices() {
     assert_eq!(original, replay);
     assert_eq!(replay.select().layout(), SolveTargetLayout::DenseHostV1);
     assert!(!replay.select().admits_nested_map_frames());
+}
+
+#[test]
+fn version_two_requires_both_resource_declarations() {
+    for key in ["max_call_partition_operations", "local_budget_bytes"] {
+        let mut declared = declaration("host");
+        declared.as_object_mut().unwrap().remove(key);
+        let error = serde_json::from_value::<SolveTargetProfile>(declared).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("{key} is required")),
+            "{error}"
+        );
+    }
+    let mut legacy = declaration("host");
+    legacy["schema_version"] = serde_json::json!(1);
+    let error = serde_json::from_value::<SolveTargetProfile>(legacy).unwrap_err();
+    assert!(error.to_string().contains("schema_version = 2"), "{error}");
+}
+
+#[test]
+fn legacy_version_one_declaration_reaches_the_migration_refusal() {
+    let legacy = serde_json::json!({
+        "schema_version": 1,
+        "name": "host",
+        "layout": "dense-host-v1",
+        "max_unrolled_passes": MAX_UNROLLED_PASSES,
+        "max_unrolled_operations": MAX_UNROLLED_OPERATIONS,
+        "admits_nested_map_frames": false,
+    });
+    let error = serde_json::from_value::<SolveTargetProfile>(legacy).unwrap_err();
+    assert!(error.to_string().contains("schema_version = 2"), "{error}");
+}
+
+#[test]
+fn resource_declarations_are_selected_as_declared() {
+    let mut declared = declaration("small");
+    declared["max_call_partition_operations"] = serde_json::json!(32);
+    declared["local_budget_bytes"] = serde_json::json!(512);
+    let small: SolveTargetProfile = serde_json::from_value(declared).unwrap();
+    assert_eq!(small.select().max_call_partition_operations(), 32);
+    assert_eq!(small.select().local_budget_bytes(), 512);
+    let host = SolveTargetProfile::current_dense_host();
+    assert_eq!(host.select().max_call_partition_operations(), 256);
+    assert_eq!(host.select().local_budget_bytes(), 1 << 20);
+    assert_eq!(
+        serde_json::from_value::<SolveTargetProfile>(serde_json::to_value(&host).unwrap()).unwrap(),
+        host
+    );
 }
