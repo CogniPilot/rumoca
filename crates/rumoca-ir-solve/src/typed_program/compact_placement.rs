@@ -143,7 +143,8 @@ fn advance_row_major(ordinals: &mut [u32], extents: &[u32]) -> bool {
 /// `zero`, and the one `[n, n]` aggregate follows the order's output axes.
 /// Evaluation order is unchanged; only projections and the aggregate are
 /// issued here. A placement proven over another state domain, and any
-/// overlapping cell, refuse. Reached only through a selected target.
+/// overlapping cell, refuse. Reached only through a selected target. The
+/// aggregate's scalar cells are returned with it, in its row-major order.
 pub(crate) fn materialize_dense_model_jacobian<'program>(
     builder: &mut TypedProgramBuilder<'program>,
     compact: &[(&CompactJacobianPlacement, ProgramRegister<'program>)],
@@ -151,7 +152,10 @@ pub(crate) fn materialize_dense_model_jacobian<'program>(
     zero: ProgramRegister<'program>,
     order: &StoredStateJacobianOutputOrder<'_>,
     provenance: Span,
-) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+) -> Result<
+    (ProgramRegister<'program>, Vec<ProgramRegister<'program>>),
+    SolveProgramConstructionError,
+> {
     let invalid = || SolveProgramConstructionError::InvalidTensorAlgebra { provenance };
     let states = order.input_labels().len();
     if scalar.len() != order.cells() || states.checked_mul(states) != Some(scalar.len()) {
@@ -183,7 +187,8 @@ pub(crate) fn materialize_dense_model_jacobian<'program>(
         }
     }
     let width = u32::try_from(states).map_err(|_| invalid())?;
-    builder.construct_aggregate(&values, vec![width, width], provenance)
+    let value = builder.construct_aggregate(&values, vec![width, width], provenance)?;
+    Ok((value, values))
 }
 
 /// Project one point's partials into their cells; a filled cell refuses.
