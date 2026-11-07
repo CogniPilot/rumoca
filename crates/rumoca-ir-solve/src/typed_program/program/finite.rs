@@ -78,6 +78,38 @@ impl<'program> TypedProgramBuilder<'program> {
         self.push_finite_check(operand, check, Some(point.id), provenance)
     }
 
+    /// Guard the scalar `cells` of one value in their given order, skipping
+    /// each cell this builder already proves finite (a finite literal, or a
+    /// value a dominating check guards). A skipped cell can never fail, so the
+    /// first failing cell is the one the whole value's guard would report;
+    /// the reported element counts guarded cells only. Nothing is issued when
+    /// every cell is proven finite.
+    pub fn check_finite_cells(
+        &mut self,
+        cells: &[ProgramRegister<'program>],
+        check: SolveFiniteCheck,
+        provenance: Span,
+    ) -> Result<(), SolveProgramConstructionError> {
+        if matches!(check, SolveFiniteCheck::MappedPrimal { .. }) {
+            return Err(SolveProgramConstructionError::TypeMismatch { provenance });
+        }
+        let guarded = cells
+            .iter()
+            .copied()
+            .filter(|cell| !(self.numbered_values && self.arithmetic_facts.is_finite(cell.id)))
+            .collect::<Vec<_>>();
+        match guarded.as_slice() {
+            [] => Ok(()),
+            [cell] => self.push_finite_check(*cell, check, None, provenance),
+            cells => {
+                let count = u32::try_from(cells.len())
+                    .map_err(|_| SolveProgramConstructionError::TypeMismatch { provenance })?;
+                let value = self.construct_aggregate(cells, vec![count], provenance)?;
+                self.push_finite_check(value, check, None, provenance)
+            }
+        }
+    }
+
     fn push_finite_check(
         &mut self,
         operand: ProgramRegister<'program>,

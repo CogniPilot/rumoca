@@ -435,3 +435,126 @@ fn later_mapped_check_retains_its_own_point_bound_validation() {
         Err(SolveProgramConstructionError::InvalidMap { provenance: at() })
     );
 }
+
+/// Each issued check with the cells it guards: the elements of the aggregate
+/// issued just before it, or its own operand.
+fn guarded_cells(program: &TypedProgram) -> Vec<(Vec<SolveRegisterId>, SolveFiniteCheck)> {
+    let operations = program.operations();
+    operations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, op)| match op.operation() {
+            SolveOperation::CheckFinite { operand, check, .. } => {
+                let cells = index.checked_sub(1).and_then(|previous| {
+                    match operations[previous].operation() {
+                        SolveOperation::ConstructAggregate {
+                            destination,
+                            elements,
+                        } if destination == operand => Some(elements.to_vec()),
+                        _ => None,
+                    }
+                });
+                Some((cells.unwrap_or_else(|| vec![*operand]), *check))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn cell_guard_skips_literal_and_dominated_cells_and_keeps_order() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let primal = SolveFiniteCheck::Primal {
+        program: 0,
+        operation: 0,
+    };
+    let mut ids = Vec::new();
+    let program = TypedProgram::construct(profile, |b| {
+        let zero = b.constant(SolveValue::real(profile, 0.0), at())?;
+        let one = b.constant(SolveValue::real(profile, 1.0), at())?;
+        let first = loaded_real(b)?;
+        let dominated = loaded_real(b)?;
+        let last = loaded_real(b)?;
+        b.check_finite(dominated, primal, at())?;
+        ids = vec![dominated.id, first.id, last.id];
+        b.check_finite_cells(
+            &[zero, first, one, dominated, zero, last],
+            SolveFiniteCheck::Derivative,
+            at(),
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        guarded_cells(&program),
+        [
+            (vec![ids[0]], primal),
+            (vec![ids[1], ids[2]], SolveFiniteCheck::Derivative),
+        ]
+    );
+}
+
+#[test]
+fn cell_guard_checks_one_unproven_cell_directly_and_none_when_all_are_proven() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let mut id = None;
+    let program = TypedProgram::construct(profile, |b| {
+        let zero = b.constant(SolveValue::real(profile, 0.0), at())?;
+        let only = loaded_real(b)?;
+        id = Some(only.id);
+        b.check_finite_cells(&[zero, only, zero], SolveFiniteCheck::Derivative, at())?;
+        let before = b.operations.len();
+        b.check_finite_cells(&[zero, zero], SolveFiniteCheck::Derivative, at())?;
+        assert_eq!(b.operations.len(), before);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        guarded_cells(&program),
+        [(vec![id.unwrap()], SolveFiniteCheck::Derivative)]
+    );
+    assert!(
+        !program
+            .operations()
+            .iter()
+            .any(|op| matches!(op.operation(), SolveOperation::ConstructAggregate { .. }))
+    );
+}
+
+#[test]
+fn cell_guard_without_value_numbering_keeps_every_cell() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let mut ids = Vec::new();
+    let program = TypedProgram::construct(profile, |b| {
+        b.numbered_values = false;
+        let zero = b.constant(SolveValue::real(profile, 0.0), at())?;
+        let value = loaded_real(b)?;
+        ids = vec![zero.id, value.id];
+        b.check_finite_cells(&[zero, value], SolveFiniteCheck::Derivative, at())
+    })
+    .unwrap();
+    assert_eq!(
+        guarded_cells(&program),
+        [(ids, SolveFiniteCheck::Derivative)]
+    );
+}
+
+#[test]
+fn cell_guard_refuses_a_mapped_identity_without_emitting() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    TypedProgram::construct(profile, |b| {
+        let value = loaded_real(b)?;
+        let before = b.operations.len();
+        let check = SolveFiniteCheck::MappedPrimal {
+            program_base: 0,
+            point_count: 1,
+            operation: 0,
+        };
+        assert_eq!(
+            b.check_finite_cells(&[value], check, at()),
+            Err(SolveProgramConstructionError::TypeMismatch { provenance: at() })
+        );
+        assert_eq!(b.operations.len(), before);
+        Ok(())
+    })
+    .unwrap();
+}
