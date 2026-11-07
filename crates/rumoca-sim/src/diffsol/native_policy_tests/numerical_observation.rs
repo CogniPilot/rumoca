@@ -151,6 +151,50 @@ fn time_only_route_reports_no_backend_as_a_complete_negative_fact() {
 }
 
 #[test]
+fn initial_termination_observation_preserves_both_prepared_paths() {
+    use rumoca_solver::fmi_me::numerical_observation::ObservationRoute;
+
+    let opts = sim_opts(SimExecutionPolicy::Interpreter);
+    for (declaration, equation, states) in [
+        ("Real k;", "k = 2 + time;", 0),
+        ("Real x(start=1, fixed=true);", "der(x) = -x;", 1),
+    ] {
+        let source = format!(
+            "model InitialStop {declaration} equation {equation} \
+             when initial() then terminate(\"initial stop\"); end when; end InitialStop;"
+        );
+        let model = super::lower(&source, "InitialStop", &opts);
+        assert_eq!(model.state_scalar_count(), states);
+        let plain = build_simulation_artifact(model.artifact(), &opts, None, None)
+            .unwrap()
+            .run()
+            .unwrap();
+        let warmup = SettingsCollector::new(64, 64).unwrap();
+        let prepared =
+            build_simulation_artifact(model.artifact(), &opts, None, Some(&warmup)).unwrap();
+        let warmup = warmup.finish();
+        let run = SettingsCollector::new(64, 64).unwrap();
+        let actual = simulate_prepared_with_observation(&prepared, Some(&run)).unwrap();
+        drop(prepared);
+        assert_same_result(&actual, &plain);
+        assert_eq!(actual.n_states, states);
+        assert_eq!(actual.times, [opts.t_start]);
+        let termination = actual.termination.as_ref().unwrap();
+        assert_eq!(termination.time.to_bits(), opts.t_start.to_bits());
+        assert_eq!(termination.message, "initial stop");
+        for snapshot in [warmup, run.finish()] {
+            assert_eq!(snapshot.incomplete, 0);
+            assert!(snapshot.cells.is_empty());
+            // NoNumericalBackend specifically describes a zero-state host.
+            // A stateful host stopped before construction issues no such fact.
+            assert_eq!(snapshot.records.len(), usize::from(states == 0));
+            assert!(snapshot.records.iter().all(|record| record.kind
+                == RecordKind::NoNumericalBackend(ObservationRoute::ModelExchangeSession)));
+        }
+    }
+}
+
+#[test]
 fn actual_bdf_reinitialization_keeps_one_instance_without_reissuing_setup() {
     let opts = sim_opts(SimExecutionPolicy::Interpreter);
     let model = state_fixture(&opts);
