@@ -591,6 +591,33 @@ impl SolvePureCallOwner {
         &self.body
     }
 
+    /// Where each register of this owner's body lives in an assertion
+    /// observation entry. That entry writes the cell of every asserting
+    /// output itself, outside the body's stores, so no register may take an
+    /// asserting output's slot; the alias rules run again without them, and
+    /// a register freed from one may then share another's cells.
+    #[must_use]
+    pub fn observation_aliases(&self) -> super::program::SolveAliasPlan {
+        let predicate_slots = self
+            .outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(output, declared)| {
+                declared
+                    .assertion_level()
+                    .map(|_| self.inputs.len() + output)
+            })
+            .collect::<Vec<_>>();
+        let body = &self.body;
+        super::program::SolveAliasPlan::of(
+            body.slots(),
+            body.register_types(),
+            body.operations(),
+            body.storage_plan().fusion().last_reads(),
+            &predicate_slots,
+        )
+    }
+
     #[must_use]
     pub const fn directional(&self) -> Option<&SolvePureCallDirectionalOwner> {
         self.directional.as_ref()
@@ -1260,6 +1287,7 @@ mod tests {
     mod dependencies;
     mod discrete_broadcast;
     mod integer_tensors;
+    mod observation_aliases;
     mod recursion;
     mod reduction_extrema;
     mod scalar_boundary;
