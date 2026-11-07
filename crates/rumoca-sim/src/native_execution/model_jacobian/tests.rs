@@ -36,6 +36,10 @@ fn invalid_native_target_declarations_refuse_instead_of_using_host_defaults() {
             1,
         ),
         source.replace("admits_nested_map_frames = false", ""),
+        source.replace("max_call_partition_operations = 256", ""),
+        source.replace("local_budget_bytes = 1048576", ""),
+        source.replace("local_budget_bytes = 1048576", "local_budget_bytes = 0"),
+        source.replacen("schema_version = 2", "schema_version = 1", 1),
         source.replace(
             "max_unrolled_operations = 1024",
             "max_unrolled_operations = 1025",
