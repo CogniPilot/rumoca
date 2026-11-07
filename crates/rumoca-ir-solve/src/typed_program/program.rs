@@ -273,6 +273,10 @@ pub enum SolveFiniteCheck {
         point_count: u32,
         operation: u32,
     },
+    /// The model state Jacobian guard. A failure's element is its position among
+    /// the cells the constructor checks: the cells it cannot prove finite, in
+    /// the output's row-major order (see `check_finite_cells`). It is not the
+    /// dense output index.
     Derivative,
 }
 
