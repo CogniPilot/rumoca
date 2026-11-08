@@ -39,7 +39,9 @@ pub use generated::modelica_parser;
 
 pub use components::{ComponentList, TokenList};
 pub use definitions::{Composition, ElementList};
-pub use expressions::{ArraySubscripts, ExpressionList, FunctionCallArguments, ModificationArg};
+pub use expressions::{
+    ArraySubscripts, ExpressionList, FunctionArgumentsTail, FunctionCallArguments, ModificationArg,
+};
 pub use sections::{AlgorithmSection, EquationSection};
 
 /// A parsed comment with its location information

@@ -2304,7 +2304,7 @@ pub struct FunctionArgumentsNamedArguments {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsOptGroupCommaFunctionArgumentsNonFirst {
-    pub function_arguments_non_first: crate::ExpressionList,
+    pub function_arguments_non_first: crate::FunctionArgumentsTail,
 }
 
 ///
@@ -4100,7 +4100,7 @@ pub struct FunctionArgumentsOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsOpt0 {
-    pub function_arguments_non_first: crate::ExpressionList,
+    pub function_arguments_non_first: crate::FunctionArgumentsTail,
 }
 
 ///
@@ -4131,7 +4131,7 @@ pub enum FunctionArgumentsNonFirst {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstOpt {
-    pub function_arguments_non_first: crate::ExpressionList,
+    pub function_arguments_non_first: crate::FunctionArgumentsTail,
 }
 
 ///
