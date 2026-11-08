@@ -2,6 +2,8 @@
 use rumoca_core::{SourceId, Span};
 use rumoca_eval_solve::{TypedValue, eval_pure_call_checked};
 use rumoca_ir_solve::*;
+#[path = "issued_jacobian_product/compact.rs"]
+mod compact;
 
 fn span() -> Span {
     Span::from_offsets(SourceId::from_source_name("IssuedJacobian.mo"), 1, 2)

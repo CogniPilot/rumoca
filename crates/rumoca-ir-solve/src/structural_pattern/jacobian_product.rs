@@ -1,11 +1,13 @@
 //! One source-bound scalar graph and its construction-issued state dependencies.
 //! This staged IR API is not yet consumed by the evaluator/native path. Compact
 //! body receipts and the atomic consumer cutover are separate source slices.
+mod compact;
 mod construction;
 #[cfg(test)]
 mod tests;
 mod value;
 
+pub use compact::{StateJacobianCompactConstruction, StateJacobianCompactInput};
 pub use construction::{StateJacobianProductConstruction, StateJacobianProductInput};
 pub use value::StateJacobianProductValue;
 
@@ -106,7 +108,7 @@ impl<'source> StateJacobianProduct<'source> {
                         span,
                     )?;
                     build(&mut construction)?;
-                    dependencies = Some(construction.finish(&order, span)?);
+                    dependencies = Some(construction.finish(&order, &target.select(), span)?);
                     Ok(())
                 },
             )?;
