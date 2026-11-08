@@ -736,7 +736,7 @@ where
             let _ = self._update_step_size(factor);
             self._jacobian_updates(
                 self.state.h * self.alpha[self.state.order],
-                SolverState::StepSuccess,
+                SolverState::StepSizeTruncated,
             );
         }
         Ok(None)

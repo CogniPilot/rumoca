@@ -1,8 +1,8 @@
 # Diffsol numerical corrections
 
 This directory contains the published `diffsol` 0.13.2 crate, with source
-changes confined to `src/ode_solver/bdf.rs` and
-`src/nonlinear_solver/line_search.rs`. Original authorship and licensing are
+changes confined to `src/ode_solver/bdf.rs`,
+`src/ode_solver/jacobian_update.rs`, and `src/nonlinear_solver/line_search.rs`. Original authorship and licensing are
 preserved in the upstream sources and `LICENSE.txt` (copied from the same
 upstream commit because the published crate omits the repository license file).
 
@@ -132,3 +132,12 @@ regression is `me_integrator/ndf_error_tests.rs` in
 checks an analytically determined first-order correction inside the NDF error
 budget that the sentinel incorrectly rejects. No configured tolerance or
 trace-comparison policy changes, and no DCPM parity claim follows from it.
+
+The corrected order coefficient exposes a separate hard-stop cache defect:
+a shortened final step updates c=h*alpha but could retain the factorization
+of I-c_old*J under the ordinary reuse threshold. A distinct truncation event
+now rebuilds I-c*J while preserving the existing RHS-Jacobian refresh
+schedule and reusing that Jacobian when it is not due for refresh. The existing
+`shortened_bdf_step_preserves_the_stiff_voltage_solution` regression is
+unchanged: it fails with only the order correction and passes when the
+shortened-step matrix is rebuilt. Tolerances and the analytic bound stay fixed.
