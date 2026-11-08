@@ -87,6 +87,10 @@ use crate::simulation_api::{
 };
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::simulation_session_api::WasmSimulationSession;
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+pub use crate::simulation_session_api::prebuilt::{
+    export_prebuilt_artifact, prebuilt_artifact_key,
+};
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots, compile_with_source_roots,
     compile_with_workspace_sources, export_parsed_source_roots_binary,

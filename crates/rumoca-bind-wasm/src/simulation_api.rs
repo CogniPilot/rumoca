@@ -1,3 +1,5 @@
+pub(crate) mod experiment;
+
 use crate::{
     WasmError, compile_requested_model, qualify_input_model_name,
     source_root_api::{load_source_root_sources_in_session, load_workspace_sources_for_simulation},
@@ -236,50 +238,7 @@ pub(crate) fn build_simulation_options(
     dt: f64,
     solver: &str,
 ) -> (SimOptions, String) {
-    let solver_request = if solver.trim().is_empty() {
-        result.experiment_solver.as_deref().unwrap_or(solver)
-    } else {
-        solver
-    };
-    let (solver_mode, solver_label) = parse_wasm_solver_request(solver_request);
-    let defaults = SimOptions::default();
-    let t_start = result
-        .experiment_start_time
-        .filter(|value| value.is_finite())
-        .unwrap_or(defaults.t_start);
-    let mut resolved_t_end = if t_end > 0.0 {
-        t_end
-    } else {
-        result
-            .experiment_stop_time
-            .filter(|value| value.is_finite())
-            .unwrap_or(defaults.t_end)
-    };
-    if resolved_t_end <= t_start {
-        resolved_t_end = t_start + 1.0;
-    }
-    let tolerance = result
-        .experiment_tolerance
-        .filter(|value| value.is_finite() && *value > 0.0);
-    let dt_opt = if dt > 0.0 {
-        Some(dt)
-    } else {
-        result
-            .experiment_interval
-            .filter(|value| value.is_finite() && *value > 0.0)
-    };
-    (
-        SimOptions {
-            t_start,
-            t_end: resolved_t_end,
-            rtol: tolerance.unwrap_or(defaults.rtol),
-            atol: tolerance.unwrap_or(defaults.atol),
-            dt: dt_opt,
-            solver_mode,
-            ..defaults
-        },
-        solver_label,
-    )
+    experiment::SimulationExperiment::from(result).simulation_options(t_end, dt, solver)
 }
 
 fn parse_wasm_solver_request(solver: &str) -> (SimSolverMode, String) {
