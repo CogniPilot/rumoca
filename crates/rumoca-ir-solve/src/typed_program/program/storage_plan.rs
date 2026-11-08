@@ -10,8 +10,16 @@
 //! array, and a register only a load of such a slot defines is a read-only
 //! view of that slot. Everything else is an owned frame array of the
 //! value's scalar count, which a checked value type keeps at least one.
+//!
+//! The plan also carries refinements a target may apply to those frame
+//! registers (see [`SolveFusionPlan`]). They never change a slot or register
+//! placement above, so a target that ignores them stores exactly as before.
+
+mod fusion;
 
 use serde::Serialize;
+
+pub use fusion::{SOLVE_STATIC_MATRIX_WORK, SolveFusedRegister, SolveFusionPlan};
 
 use crate::typed_program::types::SolveValueKind;
 
@@ -75,6 +83,7 @@ pub struct SolveStoragePlan {
     slots: Box<[SolveSlotPlacement]>,
     registers: Box<[SolveRegisterPlacement]>,
     element_offsets: Box<[Option<u32>]>,
+    fusion: SolveFusionPlan,
 }
 
 impl SolveStoragePlan {
@@ -82,6 +91,7 @@ impl SolveStoragePlan {
         slots: &[SolveSlot],
         register_types: &[SolveValueType],
         operations: &[SolveSpannedOperation],
+        last_reads: &[Option<usize>],
     ) -> Self {
         let (stored, writes) = stores_and_writes(slots.len(), register_types.len(), operations);
         let mut inputs = 0;
@@ -130,6 +140,7 @@ impl SolveStoragePlan {
             slots: slot_placements,
             registers,
             element_offsets: element_offsets(register_types, operations),
+            fusion: SolveFusionPlan::of(register_types, operations, last_reads),
         }
     }
 
@@ -149,6 +160,13 @@ impl SolveStoragePlan {
     #[must_use]
     pub fn element_offsets(&self) -> &[Option<u32>] {
         &self.element_offsets
+    }
+
+    /// The registers a target may evaluate inside a later loop instead of
+    /// storing, and the last reads that follow.
+    #[must_use]
+    pub fn fusion(&self) -> &SolveFusionPlan {
+        &self.fusion
     }
 }
 

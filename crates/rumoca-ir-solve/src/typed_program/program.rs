@@ -51,7 +51,10 @@ pub use print_plan::{
     SolveUnaryToken,
 };
 pub(super) use storage_plan::DERIVED;
-pub use storage_plan::{SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan};
+pub use storage_plan::{
+    SOLVE_STATIC_MATRIX_WORK, SolveFusedRegister, SolveFusionPlan, SolveRegisterPlacement,
+    SolveSlotPlacement, SolveStoragePlan,
+};
 use value_numbering::ValueKey;
 
 pub use loop_flow::{MAX_UNROLLED_OPERATIONS, MAX_UNROLLED_PASSES, invariant_guard};
@@ -597,7 +600,12 @@ impl TypedProgram {
         let fault_flow = fault_flow::FaultFlow::of(&operations, &register_types, &slots, &[]);
         let loop_flow = loop_flow::LoopFlow::of(&operations);
         let pass_flow = pass_flow::PassFlow::of(&operations, &fault_flow);
-        let storage = SolveStoragePlan::host(&slots, &register_types, &operations);
+        let storage = SolveStoragePlan::host(
+            &slots,
+            &register_types,
+            &operations,
+            read_flow.register_last_reads(),
+        );
         let print = SolvePrintPlan::of(&slots, &register_types, &operations, &storage);
         let mut program = Self {
             arithmetic,
