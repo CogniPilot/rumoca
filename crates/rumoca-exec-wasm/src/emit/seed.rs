@@ -3,13 +3,14 @@ use super::*;
 
 /// The source's addressable seed run, shared by admission and marshalling.
 /// Indexed reads retain their entire selectable run, never a sampled index.
+/// A zero-count indexed load still reads its clamped base coordinate.
 pub(crate) fn seed_read_range(
     operation: &LinearOp,
     seed_len: usize,
 ) -> Result<Option<std::ops::Range<usize>>, String> {
     let (start, count) = match operation {
         LinearOp::LoadSeed { index, .. } => (*index, 1),
-        LinearOp::LoadIndexedSeed { base, count, .. } => (*base, *count),
+        LinearOp::LoadIndexedSeed { base, count, .. } => (*base, (*count).max(1)),
         LinearOp::TensorLoad {
             seed_start: Some(start),
             count,

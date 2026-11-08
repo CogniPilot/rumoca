@@ -92,6 +92,31 @@ fn indexed_seed_reads_copy_every_selectable_coordinate_each_call() {
 }
 
 #[test]
+fn zero_count_indexed_seed_reads_refresh_the_clamped_base() {
+    let code = compile(
+        vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::LoadIndexedSeed {
+                dst: 1,
+                base: 7,
+                count: 0,
+                index: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ],
+        16,
+    );
+    let mut scratch = vec![37.0; code.scratch_bytes() as usize / 8];
+    let mut seed = vec![0.0; 16];
+    for expected in [-6.0, 9.0] {
+        seed[7] = expected;
+        code.call_directional(&[0.0], &[], 0.0, &seed, &mut scratch)
+            .unwrap();
+        assert_eq!(scratch[0], expected);
+    }
+}
+
+#[test]
 fn tensor_seed_reads_keep_the_packed_tangent_bits() {
     let code = compile(
         vec![
