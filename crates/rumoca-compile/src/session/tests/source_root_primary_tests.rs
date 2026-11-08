@@ -27,6 +27,7 @@ fn assert_foreign_entry_compiles(session: &mut Session) {
     let (plan, _) = session
         .build_resolution_plan_for_strict_compile()
         .expect("build target plan");
+    assert!(plan.completed().is_some(), "combined roots must resolve");
     let closure = session.reachable_model_closure_query(
         plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
