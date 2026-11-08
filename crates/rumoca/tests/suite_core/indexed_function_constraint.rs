@@ -32,6 +32,10 @@ fn constant_index_and_matrix_constructor_maps_preserve_constraint_derivatives() 
             &SimOptions {
                 t_end: 0.1,
                 dt: Some(0.01),
+                // This is an absolute derivative oracle, including a channel
+                // scaled by eight: request accuracy below its 1e-6 bound.
+                rtol: 1e-9,
+                atol: 1e-9,
                 solver_mode,
                 ..Default::default()
             },

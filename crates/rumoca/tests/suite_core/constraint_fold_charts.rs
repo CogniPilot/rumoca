@@ -325,8 +325,15 @@ fn a_split_circle_switches_charts_and_completes_its_revolution_on_the_physical_b
 fn diffsol_retries_a_discarded_trial_past_a_fold() {
     let fast = SPLIT_CIRCLE_CHART.replace("vy(start = 1,", "vy(start = 3,");
     rumoca_solver::fmi_me::reset_trial_discard_count();
-    let result = simulate_with(&fast, "SplitCircleChart", (20.0, 2e-2), SimSolverMode::Bdf)
-        .expect("BDF retries each discarded trial");
+    // Keep the 20-second physical check and a tolerance that still exercises
+    // trial rejection after correcting NDF's accepted-step error coefficient.
+    let result = simulate_with(
+        &fast,
+        "SplitCircleChart",
+        (20.0, 1.9e-2),
+        SimSolverMode::Bdf,
+    )
+    .expect("BDF retries each discarded trial");
     assert!(
         rumoca_solver::fmi_me::trial_discard_count() > 0,
         "a trial reached past a fold"
