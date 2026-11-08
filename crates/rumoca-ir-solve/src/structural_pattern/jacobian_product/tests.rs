@@ -172,3 +172,42 @@ fn output_axes_project_without_changing_canonical_relation() {
     assert!(product.dependencies().contains(1, 1));
     assert!(!product.dependencies().contains(0, 1));
 }
+
+#[test]
+fn copied_output_keeps_its_source_contract_and_direction_presence() {
+    let model = model();
+    let order = StoredStateJacobianOutputOrder::canonical(&model).unwrap();
+    let labels = order.input_labels().to_vec();
+    let product = StateJacobianProduct::construct(
+        model.continuous_numerical_source().unwrap(),
+        order,
+        &SolveTargetProfile::current_dense_host(),
+        span(),
+        |c| {
+            let x = c.read(StateJacobianProductInput::State(1), check())?;
+            let copied = c.copy(&x, check())?;
+            let zero = c.constant(0.0, check())?;
+            c.store_row(0, &copied, span())?;
+            c.store_row(1, &zero, span())
+        },
+    )
+    .unwrap();
+    assert_eq!(product.parameters(), model.problem.layout.p_scalars());
+    assert_eq!(product.state_labels(), labels);
+    assert!(std::ptr::eq(
+        product.source().layout(),
+        &model.problem.layout
+    ));
+    assert!(std::ptr::eq(
+        product.source().coordinates(),
+        &model.problem.solve_layout
+    ));
+    assert_eq!(
+        product.call_site().owner(),
+        product.table().owners()[0].id()
+    );
+    assert_eq!(product.call_site().inputs().len(), 3);
+    assert!(product.canonical_dependencies().contains(0, 1));
+    assert!(!product.canonical_dependencies().contains(0, 0));
+    assert!(!product.canonical_dependencies().contains(1, 1));
+}
