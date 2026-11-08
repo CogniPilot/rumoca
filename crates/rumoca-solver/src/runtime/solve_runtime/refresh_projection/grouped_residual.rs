@@ -1,13 +1,17 @@
 //! Execute complete residual programs selected by the construction owner.
 
 use super::*;
+use crate::runtime::solve_runtime::block_residual_split::SplitSweep;
 
 impl RefreshProjectionModel<'_> {
     /// The residual of block `block_index` over `selection`, its issued
     /// residual selection. A fused residual entry is tried first, silently:
-    /// when it answers, the selection's other programs follow in order; when
-    /// it declines, every program runs in order exactly as without it, so the
-    /// first error and every non-finite report are those of that order.
+    /// when it answers, the selection's other programs follow in order (as one
+    /// committing sweep of their split dependent parts when the block issues
+    /// one); when it declines, every program runs in order exactly as without
+    /// it, so the first error and every non-finite report are those of that
+    /// order. A block without a fused selection whose programs are all split
+    /// runs them as one sweep.
     pub(super) fn eval_grouped_residual_outputs(
         &self,
         block_index: usize,
@@ -24,9 +28,16 @@ impl RefreshProjectionModel<'_> {
         if let Some((entry, fused)) = self.fused_residual(block_index, selection)
             && entry.eval(fused, point, tables, out)
         {
-            self.eval_unfused_residual_programs(selection, fused, point, out)?;
+            if !self.sweep_split_residual_programs(block_index, selection, true, point, out)? {
+                self.eval_unfused_residual_programs(selection, fused, point, out)?;
+            }
             #[cfg(debug_assertions)]
-            self.debug_assert_fused_residual_matches(selection, point, out)?;
+            self.debug_assert_grouped_residual_matches(selection, point, out)?;
+            return Ok(());
+        }
+        if self.sweep_split_residual_programs(block_index, selection, false, point, out)? {
+            #[cfg(debug_assertions)]
+            self.debug_assert_grouped_residual_matches(selection, point, out)?;
             return Ok(());
         }
         for program in selection.programs() {
@@ -58,6 +69,57 @@ impl RefreshProjectionModel<'_> {
         Ok(())
     }
 
+    /// Evaluate the split programs of `selection`, block `block_index`'s
+    /// issued residual selection, as one committing sweep of their dependent
+    /// parts, placing each program's outputs as it commits. `with_fused` says
+    /// whether the fused selection answered the selection's other programs.
+    /// `false`, with nothing evaluated, when the block issues no such sweep or
+    /// the sweep declines. A dependent part the per-program evaluation would
+    /// decline to its unsplit program ends the sweep there, and the remaining
+    /// programs run one at a time from it, as without the sweep.
+    fn sweep_split_residual_programs(
+        &self,
+        block_index: usize,
+        selection: &solve::ProjectionOutputSelection,
+        with_fused: bool,
+        point: (&[f64], &[f64], f64),
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some((index, split, sweep)) = self.split_sweep(block_index, selection, with_fused)
+        else {
+            return Ok(false);
+        };
+        let (y, _, t) = point;
+        let programs = split.selection().programs();
+        let mut next = 0;
+        let outcome =
+            self.runtime
+                .sweep_split_dependents(index, sweep, point, &mut |ordinal, values| {
+                    let entry = programs.get(next).filter(|_| ordinal == next).ok_or(
+                        RuntimeSolveError::solve_ir(
+                            "split residual sweep committed outside its selection order",
+                        ),
+                    )?;
+                    next += 1;
+                    if values.len() != entry.output_count() {
+                        return Err(RuntimeSolveError::solve_ir(
+                            "grouped residual program output count mismatch",
+                        ));
+                    }
+                    self.scatter_residual_program_outputs(entry, y, t, values, out)
+                })?;
+        match outcome {
+            SplitSweep::Declined => Ok(false),
+            SplitSweep::Done => Ok(true),
+            SplitSweep::Resume(ordinal) => {
+                for entry in &programs[ordinal..] {
+                    self.eval_residual_entry(entry, point, out)?;
+                }
+                Ok(true)
+            }
+        }
+    }
+
     /// Evaluate one program of a residual selection and place its outputs.
     fn eval_residual_entry(
         &self,
@@ -76,9 +138,10 @@ impl RefreshProjectionModel<'_> {
     }
 
     /// Debug-only refinement guard: a pass answered by the fused residual
-    /// entry places exactly the bits the program-by-program pass places.
+    /// entry or a split sweep places exactly the bits the program-by-program
+    /// pass places.
     #[cfg(debug_assertions)]
-    fn debug_assert_fused_residual_matches(
+    fn debug_assert_grouped_residual_matches(
         &self,
         selection: &solve::ProjectionOutputSelection,
         point: (&[f64], &[f64], f64),
@@ -92,7 +155,7 @@ impl RefreshProjectionModel<'_> {
         assert_eq!(
             bits(out),
             bits(&reference),
-            "a fused residual pass places its programs' residuals bit for bit"
+            "a fused or swept residual pass places its programs' residuals bit for bit"
         );
         Ok(())
     }
