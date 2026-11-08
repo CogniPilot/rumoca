@@ -1,6 +1,58 @@
 //! Original seed coordinates in the prepared private scratch suffix.
 use super::*;
 
+/// The source's addressable seed run, shared by admission and marshalling.
+/// Indexed reads retain their entire selectable run, never a sampled index.
+/// A zero-count indexed load still reads its clamped base coordinate.
+pub(crate) fn seed_read_range(
+    operation: &LinearOp,
+    seed_len: usize,
+) -> Result<Option<std::ops::Range<usize>>, String> {
+    let (start, count) = match operation {
+        LinearOp::LoadSeed { index, .. } => (*index, 1),
+        LinearOp::LoadIndexedSeed { base, count, .. } => (*base, (*count).max(1)),
+        LinearOp::TensorLoad {
+            seed_start: Some(start),
+            count,
+            ..
+        } => (*start, *count),
+        _ => return Ok(None),
+    };
+    let end = start
+        .checked_add(count)
+        .filter(|end| *end <= seed_len)
+        .ok_or("WASM private source seed exceeds its declared coordinate storage")?;
+    Ok(Some(start..end))
+}
+
+/// The same original rows the emitter admits, including nested regions.
+/// This describes ABI reads only; it changes no numerical program or guard.
+pub(crate) fn private_seed_reads(
+    source: &rumoca_ir_solve::ScalarProgramBlock,
+    seed_len: usize,
+) -> Result<Vec<std::ops::Range<usize>>, String> {
+    let mut reads = Vec::new();
+    conditional::visit_operations(source.programs(), |operation| {
+        if let Some(range) = seed_read_range(operation, seed_len)?
+            && !range.is_empty()
+        {
+            reads.push(range);
+        }
+        Ok(())
+    })?;
+    reads.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in reads {
+        match merged.last_mut() {
+            Some(previous) if range.start <= previous.end => {
+                previous.end = previous.end.max(range.end)
+            }
+            _ => merged.push(range),
+        }
+    }
+    Ok(merged)
+}
+
 impl BodyEmitter<'_> {
     pub(super) fn emit_synthetic_index_slot(
         &mut self,
