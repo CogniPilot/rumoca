@@ -540,7 +540,22 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let argument = arguments.get(0).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
             )?;
-            let value = self.expression(argument)?.only_register(at)?;
+            let lowered = self.expression(argument)?;
+            let source_type = self
+                .view
+                .value_type(lowered.value_type)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+            let value = lowered.only_register(at)?;
+            // One builtin serves both `integer(x)` (MLS 3.7.1: floor of a Real)
+            // and `Integer(e)` (MLS 4.9.5.2: an enumeration's ordinal). An
+            // Integer or enumeration source already holds that Integer value,
+            // since enumerations lower to the profile Integer.
+            if matches!(
+                source_type.scalar_type(),
+                dae::ScalarType::Integer | dae::ScalarType::Enumeration
+            ) {
+                return Ok(LoweredValue::scalar(value_type, value));
+            }
             let register = self.builder.convert(
                 solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
                 value,

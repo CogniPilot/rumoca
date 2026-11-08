@@ -125,6 +125,7 @@ mod fmi_derivative_admission;
 #[cfg(target_os = "linux")]
 mod fmi_event_c_warnings;
 mod fmi_family_map_loops;
+mod fmi_integer_of_enumeration;
 mod fmi_me_host_divergence;
 mod fmi_parameter_folds;
 mod fmi_projection_descriptors;
