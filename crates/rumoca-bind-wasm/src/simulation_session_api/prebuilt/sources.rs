@@ -21,7 +21,9 @@ impl<'de> Visitor<'de> for UniqueSources {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut sources = BTreeMap::new();
         while let Some((path, source)) = map.next_entry::<String, String>()? {
-            if path.contains('\\') || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
+            if path.contains(['\\', ':'])
+                || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+            {
                 return Err(serde::de::Error::custom(
                     "Source paths must be canonical relative paths",
                 ));

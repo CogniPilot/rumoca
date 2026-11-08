@@ -1,7 +1,8 @@
 # Prebuilt simulation sessions
 
 A site can compile a fixed Modelica model at build time and load its DAE in the
-browser. This skips Modelica parsing, resolution, instantiation, flattening and
+browser. This explicit deployment product follows SPEC_0041 §3 and never persists
+or hydrates a compiler session cache. This skips Modelica parsing, resolution, instantiation, flattening and
 DAE construction from source. Loading still checks/reconstructs the serialized
 DAE and performs the normal Solve lowering, kernel generation and simulation
 initialization. It does not promise to remove all of a site's Prepare time.

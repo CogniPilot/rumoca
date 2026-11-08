@@ -120,6 +120,8 @@ import that path.
 | package-membership / namespace state | DAE-IR artifacts |
 | model names, class dependency graphs, dependency fingerprints | solve-IR artifacts |
 
+Explicit application deployment products may transport current-version DAE wire outside session persistence. `rumoca-bind-wasm` adapts this transport: export compiles an explicit complete source set in isolation; load binds its exact sources, model, schema and known clean compiler identity, then consumes DAE-owned checked replay and the existing simulation owner. This grants no typed/DAE/Solve session cache, incremental invalidation policy or fallback reader.
+
 Persisted cache types (parsed `rumoca-ir-ast` artifacts, `rumoca-compile`
 persisted summaries, source maps) are decoded positionally and MUST NOT omit
 fields by value (`skip_serializing_if`): a positional reader cannot detect the

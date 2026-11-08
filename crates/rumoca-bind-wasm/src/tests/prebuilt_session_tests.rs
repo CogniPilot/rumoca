@@ -55,6 +55,7 @@ fn prebuilt_key_covers_complete_sources_model_compiler_and_canonical_paths() {
         r#"{"/A.mo":""}"#,
         r#"{"a//A.mo":""}"#,
         r#"{"a\\A.mo":""}"#,
+        r#"{"C:/A.mo":""}"#,
         r#"{"A.mo":"","A.mo":""}"#,
         r#"{"A.mo":42}"#,
         "[]",
@@ -142,7 +143,10 @@ fn prebuilt_loader_refuses_source_dependency_model_build_and_schema_mismatches()
         (SOURCE.into(), "Prebuilt", "{}".into()),
         (SOURCE.into(), "Prebuilt", sources().replace("u*k", "u+k")),
     ] {
-        assert!(load(&artifact, &source, model, &workspace, "{}").is_err());
+        let error = load(&artifact, &source, model, &workspace, "{}")
+            .err()
+            .unwrap();
+        assert!(error.message().contains("key mismatch"), "{error}");
     }
     for field in [
         "compiler_identity",
