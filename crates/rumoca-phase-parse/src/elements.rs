@@ -16,7 +16,7 @@ fn extract_connection(
     let Some(opt) = &type_prefix.type_prefix_opt else {
         return rumoca_ir_ast::Connection::Empty;
     };
-    match &opt.type_prefix_opt_group {
+    match &*opt.type_prefix_opt_group {
         modelica_grammar_trait::TypePrefixOptGroup::Flow(flow) => {
             rumoca_ir_ast::Connection::Flow(flow.flow.flow.clone().into())
         }
@@ -33,7 +33,7 @@ fn extract_variability(
     let Some(opt) = &type_prefix.type_prefix_opt0 else {
         return rumoca_core::Variability::Empty;
     };
-    match &opt.type_prefix_opt0_group {
+    match &*opt.type_prefix_opt0_group {
         modelica_grammar_trait::TypePrefixOpt0Group::Constant(c) => {
             rumoca_core::Variability::Constant(c.constant.constant.clone().into())
         }
@@ -51,7 +51,7 @@ fn extract_causality(type_prefix: &modelica_grammar_trait::TypePrefix) -> rumoca
     let Some(opt) = &type_prefix.type_prefix_opt1 else {
         return rumoca_core::Causality::Empty;
     };
-    match &opt.type_prefix_opt1_group {
+    match &*opt.type_prefix_opt1_group {
         modelica_grammar_trait::TypePrefixOpt1Group::Input(c) => {
             rumoca_core::Causality::Input(c.input.input.clone().into())
         }
@@ -216,7 +216,7 @@ fn process_import_clause(
     import_clause: &modelica_grammar_trait::ImportClause,
 ) -> rumoca_ir_ast::Import {
     let location = import_clause_location(import_clause);
-    match &import_clause.import_clause_group {
+    match &*import_clause.import_clause_group {
         modelica_grammar_trait::ImportClauseGroup::IdentEquImportClauseOptName(renamed) => {
             let global_scope = renamed.import_clause_opt.is_some();
             rumoca_ir_ast::Import::Renamed {
@@ -240,7 +240,7 @@ fn import_clause_location(
     import_clause: &modelica_grammar_trait::ImportClause,
 ) -> rumoca_core::Location {
     let mut location = import_clause.import.import.location.clone();
-    match &import_clause.import_clause_group {
+    match &*import_clause.import_clause_group {
         modelica_grammar_trait::ImportClauseGroup::IdentEquImportClauseOptName(renamed) => {
             extend_location_end_with_name(&mut location, &renamed.name);
             extend_location_end_with_token(&mut location, &renamed.ident);
@@ -250,13 +250,13 @@ fn import_clause_location(
         ) => {
             extend_location_end_with_name(&mut location, &name_opt.name);
             if let Some(suffix) = &name_opt.import_clause_opt1 {
-                match &suffix.import_clause_opt1_group {
+                match &*suffix.import_clause_opt1_group {
                     modelica_grammar_trait::ImportClauseOpt1Group::DotStar(dot_star) => {
                         extend_location_end_with_token(&mut location, &dot_star.dot_star);
                     }
                     modelica_grammar_trait::ImportClauseOpt1Group::DotImportClauseOpt1GroupGroup(
                         dot_group,
-                    ) => match &dot_group.import_clause_opt1_group_group {
+                    ) => match &*dot_group.import_clause_opt1_group_group {
                         modelica_grammar_trait::ImportClauseOpt1GroupGroup::Star(star) => {
                             extend_location_end_with_token(&mut location, &star.star);
                         }
@@ -315,7 +315,7 @@ fn process_import_suffix(
             global_scope,
         };
     };
-    match &suffix.import_clause_opt1_group {
+    match &*suffix.import_clause_opt1_group {
         modelica_grammar_trait::ImportClauseOpt1Group::DotStar(_) => {
             rumoca_ir_ast::Import::Unqualified {
                 path,
@@ -324,7 +324,7 @@ fn process_import_suffix(
             }
         }
         modelica_grammar_trait::ImportClauseOpt1Group::DotImportClauseOpt1GroupGroup(dot_group) => {
-            match &dot_group.import_clause_opt1_group_group {
+            match &*dot_group.import_clause_opt1_group_group {
                 modelica_grammar_trait::ImportClauseOpt1GroupGroup::Star(_) => {
                     rumoca_ir_ast::Import::Unqualified {
                         path,
@@ -353,7 +353,7 @@ fn process_import_suffix(
 
 /// Helper to extract break name from inheritance modification.
 fn extract_break_name(im: &modelica_grammar_trait::InheritanceModification) -> Option<String> {
-    match &im.inheritance_modification_group {
+    match &*im.inheritance_modification_group {
         modelica_grammar_trait::InheritanceModificationGroup::Ident(ident_group) => {
             Some(ident_group.ident.text.to_string())
         }
@@ -379,7 +379,7 @@ fn extract_extends_mods(
     let mut mods = Vec::new();
     let mut break_names = Vec::new();
 
-    match &list.argument_or_inheritance_modification_list_group {
+    match &*list.argument_or_inheritance_modification_list_group {
         modelica_grammar_trait::ArgumentOrInheritanceModificationListGroup::Argument(arg) => {
             mods.push(rumoca_ir_ast::ExtendModification {
                 expr: arg.argument.expression.clone(),
@@ -398,7 +398,7 @@ fn extract_extends_mods(
     }
 
     for item in &list.argument_or_inheritance_modification_list_list {
-        match &item.argument_or_inheritance_modification_list_list_group {
+        match &*item.argument_or_inheritance_modification_list_list_group {
             modelica_grammar_trait::ArgumentOrInheritanceModificationListListGroup::Argument(
                 arg,
             ) => {
@@ -619,7 +619,7 @@ fn process_replaceable_element(
         .as_ref()
         .and_then(|opt3| opt3.constraining_clause.constraining_clause_opt.as_ref());
 
-    match &repl.element_definition_group_group {
+    match &*repl.element_definition_group_group {
         modelica_grammar_trait::ElementDefinitionGroupGroup::ClassDefinition(class) => {
             let mut nested_class = class.class_definition.clone();
             nested_class.is_final = is_final;
@@ -902,7 +902,7 @@ fn process_element_definition(
     let is_inner = edef.element_definition.element_definition_opt1.is_some();
     let is_outer = edef.element_definition.element_definition_opt2.is_some();
 
-    match &edef.element_definition.element_definition_group {
+    match &*edef.element_definition.element_definition_group {
         modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(class) => {
             process_class_definition(def, class, is_final, is_inner, is_outer, is_redeclare)?;
         }
@@ -1222,7 +1222,7 @@ fn process_component_modification(
     value: &mut rumoca_ir_ast::Component,
     modif: &modelica_grammar_trait::DeclarationOpt0,
 ) -> anyhow::Result<()> {
-    match &modif.modification {
+    match &*modif.modification {
         modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_mod) => {
             if let Some(opt) = &class_mod.class_modification.class_modification_opt {
                 for (idx, arg) in opt.argument_list.args.iter().enumerate() {
@@ -1269,7 +1269,7 @@ fn preserve_component_source_modification(
     modif: &modelica_grammar_trait::DeclarationOpt0,
 ) {
     let modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_mod) =
-        &modif.modification
+        &*modif.modification
     else {
         return;
     };

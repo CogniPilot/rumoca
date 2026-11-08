@@ -970,7 +970,7 @@ pub struct UnsignedRealScientificInt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeClass {
-    pub class: Class,
+    pub class: Box<Class>,
 }
 
 ///
@@ -981,7 +981,7 @@ pub struct ClassTypeClass {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeModel {
-    pub model: Model,
+    pub model: Box<Model>,
 }
 
 ///
@@ -993,7 +993,7 @@ pub struct ClassTypeModel {
 #[derive(Debug, Clone)]
 pub struct ClassTypeClassTypeOptRecord {
     pub class_type_opt: Option<ClassTypeOpt>,
-    pub record: Record,
+    pub record: Box<Record>,
 }
 
 ///
@@ -1004,7 +1004,7 @@ pub struct ClassTypeClassTypeOptRecord {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeBlock {
-    pub block: Block,
+    pub block: Box<Block>,
 }
 
 ///
@@ -1016,7 +1016,7 @@ pub struct ClassTypeBlock {
 #[derive(Debug, Clone)]
 pub struct ClassTypeClassTypeOpt0Connector {
     pub class_type_opt0: Option<ClassTypeOpt0>,
-    pub connector: Connector,
+    pub connector: Box<Connector>,
 }
 
 ///
@@ -1027,7 +1027,7 @@ pub struct ClassTypeClassTypeOpt0Connector {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeType {
-    pub r#type: Type,
+    pub r#type: Box<Type>,
 }
 
 ///
@@ -1038,7 +1038,7 @@ pub struct ClassTypeType {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypePackage {
-    pub package: Package,
+    pub package: Box<Package>,
 }
 
 ///
@@ -1051,7 +1051,7 @@ pub struct ClassTypePackage {
 pub struct ClassTypeClassTypeOpt1ClassTypeOpt2Function {
     pub class_type_opt1: Option<ClassTypeOpt1>,
     pub class_type_opt2: Option<ClassTypeOpt2>,
-    pub function: Function,
+    pub function: Box<Function>,
 }
 
 ///
@@ -1062,7 +1062,7 @@ pub struct ClassTypeClassTypeOpt1ClassTypeOpt2Function {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOperator {
-    pub operator: Operator,
+    pub operator: Box<Operator>,
 }
 
 ///
@@ -1073,7 +1073,7 @@ pub struct ClassTypeOperator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOpt1GroupPure {
-    pub pure: Pure,
+    pub pure: Box<Pure>,
 }
 
 ///
@@ -1084,7 +1084,7 @@ pub struct ClassTypeOpt1GroupPure {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOpt1GroupImpure {
-    pub impure: Impure,
+    pub impure: Box<Impure>,
 }
 
 ///
@@ -1095,7 +1095,7 @@ pub struct ClassTypeOpt1GroupImpure {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassSpecifierLongClassSpecifier {
-    pub long_class_specifier: LongClassSpecifier,
+    pub long_class_specifier: Box<LongClassSpecifier>,
 }
 
 ///
@@ -1106,7 +1106,7 @@ pub struct ClassSpecifierLongClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassSpecifierShortClassSpecifier {
-    pub short_class_specifier: ShortClassSpecifier,
+    pub short_class_specifier: Box<ShortClassSpecifier>,
 }
 
 ///
@@ -1117,7 +1117,7 @@ pub struct ClassSpecifierShortClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassSpecifierDerClassSpecifier {
-    pub der_class_specifier: DerClassSpecifier,
+    pub der_class_specifier: Box<DerClassSpecifier>,
 }
 
 ///
@@ -1128,7 +1128,7 @@ pub struct ClassSpecifierDerClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LongClassSpecifierStandardClassSpecifier {
-    pub standard_class_specifier: StandardClassSpecifier,
+    pub standard_class_specifier: Box<StandardClassSpecifier>,
 }
 
 ///
@@ -1139,7 +1139,7 @@ pub struct LongClassSpecifierStandardClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LongClassSpecifierExtendsClassSpecifier {
-    pub extends_class_specifier: ExtendsClassSpecifier,
+    pub extends_class_specifier: Box<ExtendsClassSpecifier>,
 }
 
 ///
@@ -1203,7 +1203,7 @@ pub struct EnumClassSpecifierGroupColon {}
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BasePrefixOptGroupInput {
-    pub input: Input,
+    pub input: Box<Input>,
 }
 
 ///
@@ -1214,7 +1214,7 @@ pub struct BasePrefixOptGroupInput {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BasePrefixOptGroupOutput {
-    pub output: Output,
+    pub output: Box<Output>,
 }
 
 ///
@@ -1225,7 +1225,7 @@ pub struct BasePrefixOptGroupOutput {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionListGroupPublicElementList {
-    pub public: Public,
+    pub public: Box<Public>,
     pub element_list: crate::ElementList,
 }
 
@@ -1237,7 +1237,7 @@ pub struct CompositionListGroupPublicElementList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionListGroupProtectedElementList {
-    pub protected: Protected,
+    pub protected: Box<Protected>,
     pub element_list: crate::ElementList,
 }
 
@@ -1271,7 +1271,7 @@ pub struct CompositionListGroupAlgorithmSection {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementImportClause {
-    pub import_clause: ImportClause,
+    pub import_clause: Box<ImportClause>,
 }
 
 ///
@@ -1282,7 +1282,7 @@ pub struct ElementImportClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementExtendsClause {
-    pub extends_clause: ExtendsClause,
+    pub extends_clause: Box<ExtendsClause>,
 }
 
 ///
@@ -1293,7 +1293,7 @@ pub struct ElementExtendsClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementElementDefinition {
-    pub element_definition: ElementDefinition,
+    pub element_definition: Box<ElementDefinition>,
 }
 
 ///
@@ -1315,7 +1315,7 @@ pub struct ElementDefinitionGroupClassDefinition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupComponentClause {
-    pub component_clause: ComponentClause,
+    pub component_clause: Box<ComponentClause>,
 }
 
 ///
@@ -1326,8 +1326,8 @@ pub struct ElementDefinitionGroupComponentClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDefinitionOpt3 {
-    pub replaceable: Replaceable,
-    pub element_definition_group_group: ElementDefinitionGroupGroup,
+    pub replaceable: Box<Replaceable>,
+    pub element_definition_group_group: Box<ElementDefinitionGroupGroup>,
     pub element_definition_opt3: Option<ElementDefinitionOpt3>,
 }
 
@@ -1350,7 +1350,7 @@ pub struct ElementDefinitionGroupGroupClassDefinition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupGroupComponentClause {
-    pub component_clause: ComponentClause,
+    pub component_clause: Box<ComponentClause>,
 }
 
 ///
@@ -1399,7 +1399,7 @@ pub struct ImportClauseOpt1GroupDotStar {
 #[derive(Debug, Clone)]
 pub struct ImportClauseOpt1GroupDotImportClauseOpt1GroupGroup {
     pub dot: crate::ParserToken, /* . */
-    pub import_clause_opt1_group_group: ImportClauseOpt1GroupGroup,
+    pub import_clause_opt1_group_group: Box<ImportClauseOpt1GroupGroup>,
 }
 
 ///
@@ -1421,7 +1421,7 @@ pub struct ImportClauseOpt1GroupGroupStar {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseOpt1GroupGroupLBraceImportListRBrace {
-    pub import_list: ImportList,
+    pub import_list: Box<ImportList>,
 }
 
 ///
@@ -1443,7 +1443,7 @@ pub struct ArgumentOrInheritanceModificationListGroupArgument {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListGroupInheritanceModification {
-    pub inheritance_modification: InheritanceModification,
+    pub inheritance_modification: Box<InheritanceModification>,
 }
 
 ///
@@ -1465,7 +1465,7 @@ pub struct ArgumentOrInheritanceModificationListListGroupArgument {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListListGroupInheritanceModification {
-    pub inheritance_modification: InheritanceModification,
+    pub inheritance_modification: Box<InheritanceModification>,
 }
 
 ///
@@ -1476,7 +1476,7 @@ pub struct ArgumentOrInheritanceModificationListListGroupInheritanceModification
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InheritanceModificationGroupConnectEquation {
-    pub connect_equation: ConnectEquation,
+    pub connect_equation: Box<ConnectEquation>,
 }
 
 ///
@@ -1498,7 +1498,7 @@ pub struct InheritanceModificationGroupIdent {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt1GroupInput {
-    pub input: Input,
+    pub input: Box<Input>,
 }
 
 ///
@@ -1509,7 +1509,7 @@ pub struct TypePrefixOpt1GroupInput {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt1GroupOutput {
-    pub output: Output,
+    pub output: Box<Output>,
 }
 
 ///
@@ -1520,7 +1520,7 @@ pub struct TypePrefixOpt1GroupOutput {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt0GroupDiscrete {
-    pub discrete: Discrete,
+    pub discrete: Box<Discrete>,
 }
 
 ///
@@ -1531,7 +1531,7 @@ pub struct TypePrefixOpt0GroupDiscrete {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt0GroupParameter {
-    pub parameter: Parameter,
+    pub parameter: Box<Parameter>,
 }
 
 ///
@@ -1542,7 +1542,7 @@ pub struct TypePrefixOpt0GroupParameter {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt0GroupConstant {
-    pub constant: Constant,
+    pub constant: Box<Constant>,
 }
 
 ///
@@ -1553,7 +1553,7 @@ pub struct TypePrefixOpt0GroupConstant {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOptGroupFlow {
-    pub flow: Flow,
+    pub flow: Box<Flow>,
 }
 
 ///
@@ -1564,7 +1564,7 @@ pub struct TypePrefixOptGroupFlow {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOptGroupStream {
-    pub stream: Stream,
+    pub stream: Box<Stream>,
 }
 
 ///
@@ -1587,7 +1587,7 @@ pub struct ModificationClassModificationModificationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModificationEquModificationExpression {
-    pub modification_expression: ModificationExpression,
+    pub modification_expression: Box<ModificationExpression>,
 }
 
 ///
@@ -1609,7 +1609,7 @@ pub struct ModificationExpressionExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModificationExpressionBreak {
-    pub r#break: Break,
+    pub r#break: Box<Break>,
 }
 
 ///
@@ -1642,7 +1642,7 @@ pub struct ArgumentElementRedeclaration {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableGroupElementModification {
-    pub element_modification: ElementModification,
+    pub element_modification: Box<ElementModification>,
 }
 
 ///
@@ -1653,7 +1653,7 @@ pub struct ElementModificationOrReplaceableGroupElementModification {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableGroupElementReplaceable {
-    pub element_replaceable: ElementReplaceable,
+    pub element_replaceable: Box<ElementReplaceable>,
 }
 
 ///
@@ -1664,7 +1664,7 @@ pub struct ElementModificationOrReplaceableGroupElementReplaceable {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementRedeclarationGroupShortClassDefinition {
-    pub short_class_definition: ShortClassDefinition,
+    pub short_class_definition: Box<ShortClassDefinition>,
 }
 
 ///
@@ -1675,7 +1675,7 @@ pub struct ElementRedeclarationGroupShortClassDefinition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementRedeclarationGroupComponentClause1 {
-    pub component_clause1: ComponentClause1,
+    pub component_clause1: Box<ComponentClause1>,
 }
 
 ///
@@ -1686,7 +1686,7 @@ pub struct ElementRedeclarationGroupComponentClause1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementRedeclarationGroupElementReplaceable {
-    pub element_replaceable: ElementReplaceable,
+    pub element_replaceable: Box<ElementReplaceable>,
 }
 
 ///
@@ -1697,7 +1697,7 @@ pub struct ElementRedeclarationGroupElementReplaceable {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementReplaceableGroupShortClassDefinition {
-    pub short_class_definition: ShortClassDefinition,
+    pub short_class_definition: Box<ShortClassDefinition>,
 }
 
 ///
@@ -1708,7 +1708,7 @@ pub struct ElementReplaceableGroupShortClassDefinition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementReplaceableGroupComponentClause1 {
-    pub component_clause1: ComponentClause1,
+    pub component_clause1: Box<ComponentClause1>,
 }
 
 ///
@@ -1719,7 +1719,7 @@ pub struct ElementReplaceableGroupComponentClause1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SomeEquationOptionSimpleEquation {
-    pub simple_equation: SimpleEquation,
+    pub simple_equation: Box<SimpleEquation>,
 }
 
 ///
@@ -1730,7 +1730,7 @@ pub struct SomeEquationOptionSimpleEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SomeEquationOptionIfEquation {
-    pub if_equation: IfEquation,
+    pub if_equation: Box<IfEquation>,
 }
 
 ///
@@ -1741,7 +1741,7 @@ pub struct SomeEquationOptionIfEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SomeEquationOptionForEquation {
-    pub for_equation: ForEquation,
+    pub for_equation: Box<ForEquation>,
 }
 
 ///
@@ -1752,7 +1752,7 @@ pub struct SomeEquationOptionForEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SomeEquationOptionConnectEquation {
-    pub connect_equation: ConnectEquation,
+    pub connect_equation: Box<ConnectEquation>,
 }
 
 ///
@@ -1763,7 +1763,7 @@ pub struct SomeEquationOptionConnectEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SomeEquationOptionWhenEquation {
-    pub when_equation: WhenEquation,
+    pub when_equation: Box<WhenEquation>,
 }
 
 ///
@@ -1774,7 +1774,7 @@ pub struct SomeEquationOptionWhenEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionComponentStatement {
-    pub component_statement: ComponentStatement,
+    pub component_statement: Box<ComponentStatement>,
 }
 
 ///
@@ -1785,7 +1785,7 @@ pub struct StatementOptionComponentStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionFunctionCallOutputStatement {
-    pub function_call_output_statement: FunctionCallOutputStatement,
+    pub function_call_output_statement: Box<FunctionCallOutputStatement>,
 }
 
 ///
@@ -1796,7 +1796,7 @@ pub struct StatementOptionFunctionCallOutputStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionBreak {
-    pub r#break: Break,
+    pub r#break: Box<Break>,
 }
 
 ///
@@ -1807,7 +1807,7 @@ pub struct StatementOptionBreak {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionReturn {
-    pub r#return: Return,
+    pub r#return: Box<Return>,
 }
 
 ///
@@ -1818,7 +1818,7 @@ pub struct StatementOptionReturn {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionIfStatement {
-    pub if_statement: IfStatement,
+    pub if_statement: Box<IfStatement>,
 }
 
 ///
@@ -1829,7 +1829,7 @@ pub struct StatementOptionIfStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionForStatement {
-    pub for_statement: ForStatement,
+    pub for_statement: Box<ForStatement>,
 }
 
 ///
@@ -1840,7 +1840,7 @@ pub struct StatementOptionForStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionWhileStatement {
-    pub while_statement: WhileStatement,
+    pub while_statement: Box<WhileStatement>,
 }
 
 ///
@@ -1851,7 +1851,7 @@ pub struct StatementOptionWhileStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementOptionWhenStatement {
-    pub when_statement: WhenStatement,
+    pub when_statement: Box<WhenStatement>,
 }
 
 ///
@@ -1884,7 +1884,7 @@ pub struct ComponentStatementGroupFunctionCallArgs {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExpressionSimpleExpression {
-    pub simple_expression: Box<rumoca_ir_ast::Expression>,
+    pub simple_expression: rumoca_ir_ast::Expression,
 }
 
 ///
@@ -2082,7 +2082,7 @@ pub struct FactorListGroupDotCircumflex {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryUnsignedNumber {
-    pub unsigned_number: UnsignedNumber,
+    pub unsigned_number: Box<UnsignedNumber>,
 }
 
 ///
@@ -2104,7 +2104,7 @@ pub struct PrimaryString {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryFalse {
-    pub r#false: False,
+    pub r#false: Box<False>,
 }
 
 ///
@@ -2115,7 +2115,7 @@ pub struct PrimaryFalse {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryTrue {
-    pub r#true: True,
+    pub r#true: Box<True>,
 }
 
 ///
@@ -2126,7 +2126,7 @@ pub struct PrimaryTrue {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryGlobalFunctionCall {
-    pub global_function_call: GlobalFunctionCall,
+    pub global_function_call: Box<GlobalFunctionCall>,
 }
 
 ///
@@ -2137,7 +2137,7 @@ pub struct PrimaryGlobalFunctionCall {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryComponentPrimary {
-    pub component_primary: ComponentPrimary,
+    pub component_primary: Box<ComponentPrimary>,
 }
 
 ///
@@ -2148,7 +2148,7 @@ pub struct PrimaryComponentPrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryOutputPrimary {
-    pub output_primary: OutputPrimary,
+    pub output_primary: Box<OutputPrimary>,
 }
 
 ///
@@ -2159,7 +2159,7 @@ pub struct PrimaryOutputPrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryRangePrimary {
-    pub range_primary: RangePrimary,
+    pub range_primary: Box<RangePrimary>,
 }
 
 ///
@@ -2170,7 +2170,7 @@ pub struct PrimaryRangePrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryArrayPrimary {
-    pub array_primary: ArrayPrimary,
+    pub array_primary: Box<ArrayPrimary>,
 }
 
 ///
@@ -2181,7 +2181,7 @@ pub struct PrimaryArrayPrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrimaryEnd {
-    pub end: End,
+    pub end: Box<End>,
 }
 
 ///
@@ -2214,7 +2214,7 @@ pub struct OutputPrimaryOptGroupDotIdent {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GlobalFunctionCallGroupDer {
-    pub der: Der,
+    pub der: Box<Der>,
 }
 
 ///
@@ -2225,7 +2225,7 @@ pub struct GlobalFunctionCallGroupDer {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GlobalFunctionCallGroupInitial {
-    pub initial: Initial,
+    pub initial: Box<Initial>,
 }
 
 ///
@@ -2236,7 +2236,7 @@ pub struct GlobalFunctionCallGroupInitial {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GlobalFunctionCallGroupPure {
-    pub pure: Pure,
+    pub pure: Box<Pure>,
 }
 
 ///
@@ -2281,7 +2281,7 @@ pub struct FunctionArgumentsExpressionFunctionArgumentsOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0 {
-    pub function_partial_application: FunctionPartialApplication,
+    pub function_partial_application: Box<FunctionPartialApplication>,
     pub function_arguments_opt0: Option<FunctionArgumentsOpt0>,
 }
 
@@ -2293,7 +2293,7 @@ pub struct FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsNamedArguments {
-    pub named_arguments: NamedArguments,
+    pub named_arguments: Box<NamedArguments>,
 }
 
 ///
@@ -2315,8 +2315,8 @@ pub struct FunctionArgumentsOptGroupCommaFunctionArgumentsNonFirst {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsOptGroupForForIndices {
-    pub r#for: For,
-    pub for_indices: ForIndices,
+    pub r#for: Box<For>,
+    pub for_indices: Box<ForIndices>,
 }
 
 ///
@@ -2328,7 +2328,7 @@ pub struct FunctionArgumentsOptGroupForForIndices {
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstFunctionArgumentFunctionArgumentsNonFirstOpt {
     pub function_argument: rumoca_ir_ast::Expression,
-    pub function_arguments_non_first_opt: Option<Box<FunctionArgumentsNonFirstOpt>>,
+    pub function_arguments_non_first_opt: Option<FunctionArgumentsNonFirstOpt>,
 }
 
 ///
@@ -2339,7 +2339,7 @@ pub struct FunctionArgumentsNonFirstFunctionArgumentFunctionArgumentsNonFirstOpt
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstNamedArguments {
-    pub named_arguments: NamedArguments,
+    pub named_arguments: Box<NamedArguments>,
 }
 
 ///
@@ -2350,7 +2350,7 @@ pub struct FunctionArgumentsNonFirstNamedArguments {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsOptGroupCommaArrayArgumentsNonFirst {
-    pub array_arguments_non_first: ArrayArgumentsNonFirst,
+    pub array_arguments_non_first: Box<ArrayArgumentsNonFirst>,
 }
 
 ///
@@ -2361,8 +2361,8 @@ pub struct ArrayArgumentsOptGroupCommaArrayArgumentsNonFirst {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsOptGroupForForIndicesArrayArgumentsOpt0 {
-    pub r#for: For,
-    pub for_indices: ForIndices,
+    pub r#for: Box<For>,
+    pub for_indices: Box<ForIndices>,
     pub array_arguments_opt0: Option<ArrayArgumentsOpt0>,
 }
 
@@ -2443,7 +2443,7 @@ pub struct Algorithm {
 #[derive(Debug, Clone)]
 pub struct AlgorithmSection {
     pub algorithm_section_opt: Option<AlgorithmSectionOpt>,
-    pub algorithm: Algorithm,
+    pub algorithm: Box<Algorithm>,
     pub algorithm_section_list: Vec<AlgorithmSectionList>,
 }
 
@@ -2462,7 +2462,7 @@ pub struct AlgorithmSectionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AlgorithmSectionOpt {
-    pub initial: Initial,
+    pub initial: Box<Initial>,
 }
 
 ///
@@ -2489,8 +2489,8 @@ pub struct Annotation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AnnotationClause {
-    pub annotation: Annotation,
-    pub class_modification: ClassModification,
+    pub annotation: Box<Annotation>,
+    pub class_modification: Box<ClassModification>,
 }
 
 ///
@@ -2528,7 +2528,8 @@ pub struct ArgumentListList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationList {
-    pub argument_or_inheritance_modification_list_group: ArgumentOrInheritanceModificationListGroup,
+    pub argument_or_inheritance_modification_list_group:
+        Box<ArgumentOrInheritanceModificationListGroup>,
     pub argument_or_inheritance_modification_list_list:
         Vec<ArgumentOrInheritanceModificationListList>,
 }
@@ -2550,7 +2551,7 @@ pub enum ArgumentOrInheritanceModificationListGroup {
 #[derive(Debug, Clone)]
 pub struct ArgumentOrInheritanceModificationListList {
     pub argument_or_inheritance_modification_list_list_group:
-        ArgumentOrInheritanceModificationListListGroup,
+        Box<ArgumentOrInheritanceModificationListListGroup>,
 }
 
 ///
@@ -2580,7 +2581,7 @@ pub struct ArithmeticExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArithmeticExpressionList {
-    pub add_operator: AddOperator,
+    pub add_operator: Box<AddOperator>,
     pub term: rumoca_ir_ast::Expression,
 }
 
@@ -2590,7 +2591,7 @@ pub struct ArithmeticExpressionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArithmeticExpressionOpt {
-    pub add_operator: AddOperator,
+    pub add_operator: Box<AddOperator>,
 }
 
 ///
@@ -2609,7 +2610,7 @@ pub struct ArrayArguments {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsOpt {
-    pub array_arguments_opt_group: ArrayArgumentsOptGroup,
+    pub array_arguments_opt_group: Box<ArrayArgumentsOptGroup>,
 }
 
 ///
@@ -2618,7 +2619,7 @@ pub struct ArrayArgumentsOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsOpt0 {
-    pub r#if: If,
+    pub r#if: Box<If>,
     pub expression: rumoca_ir_ast::Expression,
 }
 
@@ -2639,7 +2640,7 @@ pub enum ArrayArgumentsOptGroup {
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsNonFirst {
     pub expression: rumoca_ir_ast::Expression,
-    pub array_arguments_non_first_opt: Option<Box<ArrayArgumentsNonFirstOpt>>,
+    pub array_arguments_non_first_opt: Option<ArrayArgumentsNonFirstOpt>,
 }
 
 ///
@@ -2648,7 +2649,7 @@ pub struct ArrayArgumentsNonFirst {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsNonFirstOpt {
-    pub array_arguments_non_first: ArrayArgumentsNonFirst,
+    pub array_arguments_non_first: Box<ArrayArgumentsNonFirst>,
 }
 
 ///
@@ -2668,7 +2669,7 @@ pub struct ArrayPrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayPrimaryOpt {
-    pub array_arguments: ArrayArguments,
+    pub array_arguments: Box<ArrayArguments>,
 }
 
 ///
@@ -2705,7 +2706,7 @@ pub struct BasePrefix {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BasePrefixOpt {
-    pub base_prefix_opt_group: BasePrefixOptGroup,
+    pub base_prefix_opt_group: Box<BasePrefixOptGroup>,
 }
 
 ///
@@ -2752,8 +2753,8 @@ pub struct Class {
 #[derive(Debug, Clone)]
 pub struct ClassDefinition {
     pub class_definition_opt: Option<ClassDefinitionOpt>,
-    pub class_prefixes: ClassPrefixes,
-    pub class_specifier: ClassSpecifier,
+    pub class_prefixes: Box<ClassPrefixes>,
+    pub class_specifier: Box<ClassSpecifier>,
 }
 
 ///
@@ -2762,7 +2763,7 @@ pub struct ClassDefinition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassDefinitionOpt {
-    pub encapsulated: Encapsulated,
+    pub encapsulated: Box<Encapsulated>,
 }
 
 ///
@@ -2800,7 +2801,7 @@ pub struct ClassOrInheritanceModification {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassOrInheritanceModificationOpt {
-    pub argument_or_inheritance_modification_list: ArgumentOrInheritanceModificationList,
+    pub argument_or_inheritance_modification_list: Box<ArgumentOrInheritanceModificationList>,
 }
 
 ///
@@ -2810,7 +2811,7 @@ pub struct ClassOrInheritanceModificationOpt {
 #[derive(Debug, Clone)]
 pub struct ClassPrefixes {
     pub class_prefixes_opt: Option<ClassPrefixesOpt>,
-    pub class_type: ClassType,
+    pub class_type: Box<ClassType>,
 }
 
 ///
@@ -2819,7 +2820,7 @@ pub struct ClassPrefixes {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassPrefixesOpt {
-    pub partial: Partial,
+    pub partial: Box<Partial>,
 }
 
 ///
@@ -2856,7 +2857,7 @@ pub enum ClassType {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOpt {
-    pub operator: Operator,
+    pub operator: Box<Operator>,
 }
 
 ///
@@ -2865,7 +2866,7 @@ pub struct ClassTypeOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOpt0 {
-    pub expandable: Expandable,
+    pub expandable: Box<Expandable>,
 }
 
 ///
@@ -2874,7 +2875,7 @@ pub struct ClassTypeOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOpt1 {
-    pub class_type_opt1_group: ClassTypeOpt1Group,
+    pub class_type_opt1_group: Box<ClassTypeOpt1Group>,
 }
 
 ///
@@ -2893,7 +2894,7 @@ pub enum ClassTypeOpt1Group {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClassTypeOpt2 {
-    pub operator: Operator,
+    pub operator: Box<Operator>,
 }
 
 ///
@@ -2902,8 +2903,8 @@ pub struct ClassTypeOpt2 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentClause {
-    pub type_prefix: TypePrefix,
-    pub type_specifier: TypeSpecifier,
+    pub type_prefix: Box<TypePrefix>,
+    pub type_specifier: Box<TypeSpecifier>,
     pub component_clause_opt: Option<ComponentClauseOpt>,
     pub component_list: crate::ComponentList,
 }
@@ -2914,9 +2915,9 @@ pub struct ComponentClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentClause1 {
-    pub type_prefix: TypePrefix,
-    pub type_specifier: TypeSpecifier,
-    pub component_declaration1: ComponentDeclaration1,
+    pub type_prefix: Box<TypePrefix>,
+    pub type_specifier: Box<TypeSpecifier>,
+    pub component_declaration1: Box<ComponentDeclaration1>,
 }
 
 ///
@@ -2934,9 +2935,9 @@ pub struct ComponentClauseOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentDeclaration {
-    pub declaration: Declaration,
+    pub declaration: Box<Declaration>,
     pub component_declaration_opt: Option<ComponentDeclarationOpt>,
-    pub description: Description,
+    pub description: Box<Description>,
 }
 
 ///
@@ -2945,8 +2946,8 @@ pub struct ComponentDeclaration {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentDeclaration1 {
-    pub declaration: Declaration,
-    pub description: Description,
+    pub declaration: Box<Declaration>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -2955,7 +2956,7 @@ pub struct ComponentDeclaration1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentDeclarationOpt {
-    pub condition_attribute: ConditionAttribute,
+    pub condition_attribute: Box<ConditionAttribute>,
 }
 
 ///
@@ -2964,7 +2965,7 @@ pub struct ComponentDeclarationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentList {
-    pub component_declaration: ComponentDeclaration,
+    pub component_declaration: Box<ComponentDeclaration>,
     pub component_list_list: Vec<ComponentListList>,
 }
 
@@ -2974,7 +2975,7 @@ pub struct ComponentList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentListList {
-    pub component_declaration: ComponentDeclaration,
+    pub component_declaration: Box<ComponentDeclaration>,
 }
 
 ///
@@ -3069,7 +3070,7 @@ pub struct ComponentReferenceOpt0 {
 #[derive(Debug, Clone)]
 pub struct ComponentStatement {
     pub component_reference: rumoca_ir_ast::ComponentReference,
-    pub component_statement_group: ComponentStatementGroup,
+    pub component_statement_group: Box<ComponentStatementGroup>,
 }
 
 ///
@@ -3100,7 +3101,7 @@ pub struct Composition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionList {
-    pub composition_list_group: CompositionListGroup,
+    pub composition_list_group: Box<CompositionListGroup>,
 }
 
 ///
@@ -3132,7 +3133,7 @@ pub struct CompositionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionOpt0 {
-    pub annotation_clause: AnnotationClause,
+    pub annotation_clause: Box<AnnotationClause>,
 }
 
 ///
@@ -3141,7 +3142,7 @@ pub struct CompositionOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionOpt1 {
-    pub language_specification: LanguageSpecification,
+    pub language_specification: Box<LanguageSpecification>,
 }
 
 ///
@@ -3150,7 +3151,7 @@ pub struct CompositionOpt1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionOpt2 {
-    pub external_function_call: ExternalFunctionCall,
+    pub external_function_call: Box<ExternalFunctionCall>,
 }
 
 ///
@@ -3159,7 +3160,7 @@ pub struct CompositionOpt2 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositionOpt3 {
-    pub annotation_clause: AnnotationClause,
+    pub annotation_clause: Box<AnnotationClause>,
 }
 
 ///
@@ -3223,7 +3224,7 @@ pub struct Constrainedby {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConstrainingClause {
-    pub type_specifier: TypeSpecifier,
+    pub type_specifier: Box<TypeSpecifier>,
     pub constraining_clause_opt: Option<ConstrainingClauseOpt>,
 }
 
@@ -3233,7 +3234,7 @@ pub struct ConstrainingClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConstrainingClauseOpt {
-    pub class_modification: ClassModification,
+    pub class_modification: Box<ClassModification>,
 }
 
 ///
@@ -3262,7 +3263,7 @@ pub struct DeclarationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeclarationOpt0 {
-    pub modification: Modification,
+    pub modification: Box<Modification>,
 }
 
 ///
@@ -3281,11 +3282,11 @@ pub struct Der {
 #[derive(Debug, Clone)]
 pub struct DerClassSpecifier {
     pub ident: rumoca_core::Token,
-    pub der: Der,
-    pub type_specifier: TypeSpecifier,
+    pub der: Box<Der>,
+    pub type_specifier: Box<TypeSpecifier>,
     pub ident0: rumoca_core::Token,
     pub der_class_specifier_list: Vec<DerClassSpecifierList>,
-    pub description: Description,
+    pub description: Box<Description>,
 }
 
 ///
@@ -3313,7 +3314,7 @@ pub struct Description {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DescriptionOpt {
-    pub annotation_clause: AnnotationClause,
+    pub annotation_clause: Box<AnnotationClause>,
 }
 
 ///
@@ -3383,7 +3384,7 @@ pub struct ElementDefinition {
     pub element_definition_opt0: Option<ElementDefinitionOpt0>,
     pub element_definition_opt1: Option<ElementDefinitionOpt1>,
     pub element_definition_opt2: Option<ElementDefinitionOpt2>,
-    pub element_definition_group: ElementDefinitionGroup,
+    pub element_definition_group: Box<ElementDefinitionGroup>,
 }
 
 ///
@@ -3415,7 +3416,7 @@ pub enum ElementDefinitionGroupGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt {
-    pub redeclare: Redeclare,
+    pub redeclare: Box<Redeclare>,
 }
 
 ///
@@ -3424,7 +3425,7 @@ pub struct ElementDefinitionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt0 {
-    pub r#final: Final,
+    pub r#final: Box<Final>,
 }
 
 ///
@@ -3433,7 +3434,7 @@ pub struct ElementDefinitionOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt1 {
-    pub inner: Inner,
+    pub inner: Box<Inner>,
 }
 
 ///
@@ -3442,7 +3443,7 @@ pub struct ElementDefinitionOpt1 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt2 {
-    pub outer: Outer,
+    pub outer: Box<Outer>,
 }
 
 ///
@@ -3451,8 +3452,8 @@ pub struct ElementDefinitionOpt2 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionOpt3 {
-    pub constraining_clause: ConstrainingClause,
-    pub description: Description,
+    pub constraining_clause: Box<ConstrainingClause>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -3470,7 +3471,7 @@ pub struct ElementList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementListList {
-    pub element: Element,
+    pub element: Box<Element>,
 }
 
 ///
@@ -3490,7 +3491,7 @@ pub struct ElementModification {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementModificationOpt {
-    pub modification: Modification,
+    pub modification: Box<Modification>,
 }
 
 ///
@@ -3501,7 +3502,7 @@ pub struct ElementModificationOpt {
 pub struct ElementModificationOrReplaceable {
     pub element_modification_or_replaceable_opt: Option<ElementModificationOrReplaceableOpt>,
     pub element_modification_or_replaceable_opt0: Option<ElementModificationOrReplaceableOpt0>,
-    pub element_modification_or_replaceable_group: ElementModificationOrReplaceableGroup,
+    pub element_modification_or_replaceable_group: Box<ElementModificationOrReplaceableGroup>,
 }
 
 ///
@@ -3520,7 +3521,7 @@ pub enum ElementModificationOrReplaceableGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableOpt {
-    pub each: Each,
+    pub each: Box<Each>,
 }
 
 ///
@@ -3529,7 +3530,7 @@ pub struct ElementModificationOrReplaceableOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementModificationOrReplaceableOpt0 {
-    pub r#final: Final,
+    pub r#final: Box<Final>,
 }
 
 ///
@@ -3538,10 +3539,10 @@ pub struct ElementModificationOrReplaceableOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementRedeclaration {
-    pub redeclare: Redeclare,
+    pub redeclare: Box<Redeclare>,
     pub element_redeclaration_opt: Option<ElementRedeclarationOpt>,
     pub element_redeclaration_opt0: Option<ElementRedeclarationOpt0>,
-    pub element_redeclaration_group: ElementRedeclarationGroup,
+    pub element_redeclaration_group: Box<ElementRedeclarationGroup>,
 }
 
 ///
@@ -3561,7 +3562,7 @@ pub enum ElementRedeclarationGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementRedeclarationOpt {
-    pub each: Each,
+    pub each: Box<Each>,
 }
 
 ///
@@ -3570,7 +3571,7 @@ pub struct ElementRedeclarationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementRedeclarationOpt0 {
-    pub r#final: Final,
+    pub r#final: Box<Final>,
 }
 
 ///
@@ -3579,8 +3580,8 @@ pub struct ElementRedeclarationOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementReplaceable {
-    pub replaceable: Replaceable,
-    pub element_replaceable_group: ElementReplaceableGroup,
+    pub replaceable: Box<Replaceable>,
+    pub element_replaceable_group: Box<ElementReplaceableGroup>,
     pub element_replaceable_opt: Option<ElementReplaceableOpt>,
 }
 
@@ -3600,7 +3601,7 @@ pub enum ElementReplaceableGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementReplaceableOpt {
-    pub constraining_clause: ConstrainingClause,
+    pub constraining_clause: Box<ConstrainingClause>,
 }
 
 ///
@@ -3655,9 +3656,9 @@ pub struct End {
 #[derive(Debug, Clone)]
 pub struct EnumClassSpecifier {
     pub ident: rumoca_core::Token,
-    pub enumeration: Enumeration,
-    pub enum_class_specifier_group: EnumClassSpecifierGroup,
-    pub description: Description,
+    pub enumeration: Box<Enumeration>,
+    pub enum_class_specifier_group: Box<EnumClassSpecifierGroup>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -3676,7 +3677,7 @@ pub enum EnumClassSpecifierGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumClassSpecifierOpt {
-    pub enum_list: EnumList,
+    pub enum_list: Box<EnumList>,
 }
 
 ///
@@ -3685,7 +3686,7 @@ pub struct EnumClassSpecifierOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumList {
-    pub enumeration_literal: EnumerationLiteral,
+    pub enumeration_literal: Box<EnumerationLiteral>,
     pub enum_list_list: Vec<EnumListList>,
 }
 
@@ -3695,7 +3696,7 @@ pub struct EnumList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnumListList {
-    pub enumeration_literal: EnumerationLiteral,
+    pub enumeration_literal: Box<EnumerationLiteral>,
 }
 
 ///
@@ -3714,7 +3715,7 @@ pub struct Enumeration {
 #[derive(Debug, Clone)]
 pub struct EnumerationLiteral {
     pub ident: rumoca_core::Token,
-    pub description: Description,
+    pub description: Box<Description>,
 }
 
 ///
@@ -3752,7 +3753,7 @@ pub struct EquationBlockList {
 #[derive(Debug, Clone)]
 pub struct EquationSection {
     pub equation_section_opt: Option<EquationSectionOpt>,
-    pub equation: Equation,
+    pub equation: Box<Equation>,
     pub equation_section_list: Vec<EquationSectionList>,
 }
 
@@ -3771,7 +3772,7 @@ pub struct EquationSectionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EquationSectionOpt {
-    pub initial: Initial,
+    pub initial: Box<Initial>,
 }
 
 ///
@@ -3840,7 +3841,7 @@ pub struct ExtendsClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendsClassSpecifierOpt {
-    pub class_modification: ClassModification,
+    pub class_modification: Box<ClassModification>,
 }
 
 ///
@@ -3849,8 +3850,8 @@ pub struct ExtendsClassSpecifierOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendsClause {
-    pub extends: Extends,
-    pub type_specifier: TypeSpecifier,
+    pub extends: Box<Extends>,
+    pub type_specifier: Box<TypeSpecifier>,
     pub extends_clause_opt: Option<ExtendsClauseOpt>,
     pub extends_clause_opt0: Option<ExtendsClauseOpt0>,
 }
@@ -3861,7 +3862,7 @@ pub struct ExtendsClause {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendsClauseOpt {
-    pub class_or_inheritance_modification: ClassOrInheritanceModification,
+    pub class_or_inheritance_modification: Box<ClassOrInheritanceModification>,
 }
 
 ///
@@ -3870,7 +3871,7 @@ pub struct ExtendsClauseOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendsClauseOpt0 {
-    pub annotation_clause: AnnotationClause,
+    pub annotation_clause: Box<AnnotationClause>,
 }
 
 ///
@@ -3908,7 +3909,7 @@ pub struct ExternalFunctionCallOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExternalFunctionCallOpt0 {
-    pub expression_list: ExpressionList,
+    pub expression_list: Box<ExpressionList>,
 }
 
 ///
@@ -3927,7 +3928,7 @@ pub struct Factor {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FactorList {
-    pub factor_list_group: FactorListGroup,
+    pub factor_list_group: Box<FactorListGroup>,
     pub primary: rumoca_ir_ast::Expression,
 }
 
@@ -3983,7 +3984,7 @@ pub struct For {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForEquation {
-    pub for_indices: ForIndices,
+    pub for_indices: Box<ForIndices>,
     pub for_equation_list: Vec<ForEquationList>,
 }
 
@@ -4021,7 +4022,7 @@ pub struct ForIndexOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForIndices {
-    pub for_index: ForIndex,
+    pub for_index: Box<ForIndex>,
     pub for_indices_list: Vec<ForIndicesList>,
 }
 
@@ -4031,7 +4032,7 @@ pub struct ForIndices {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForIndicesList {
-    pub for_index: ForIndex,
+    pub for_index: Box<ForIndex>,
 }
 
 ///
@@ -4040,7 +4041,7 @@ pub struct ForIndicesList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForStatement {
-    pub for_indices: ForIndices,
+    pub for_indices: Box<ForIndices>,
     pub for_statement_list: Vec<ForStatementList>,
 }
 
@@ -4091,7 +4092,7 @@ pub enum FunctionArguments {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsOpt {
-    pub function_arguments_opt_group: FunctionArgumentsOptGroup,
+    pub function_arguments_opt_group: Box<FunctionArgumentsOptGroup>,
 }
 
 ///
@@ -4171,8 +4172,8 @@ pub struct FunctionCallOutputStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionPartialApplication {
-    pub function: Function,
-    pub type_specifier: TypeSpecifier,
+    pub function: Box<Function>,
+    pub type_specifier: Box<TypeSpecifier>,
     pub function_partial_application_opt: Option<FunctionPartialApplicationOpt>,
 }
 
@@ -4182,7 +4183,7 @@ pub struct FunctionPartialApplication {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionPartialApplicationOpt {
-    pub named_arguments: NamedArguments,
+    pub named_arguments: Box<NamedArguments>,
 }
 
 ///
@@ -4192,8 +4193,8 @@ pub struct FunctionPartialApplicationOpt {
 #[derive(Debug, Clone)]
 pub struct FunctionPartialClassSpecifier {
     pub ident: rumoca_core::Token,
-    pub function_partial_application: FunctionPartialApplication,
-    pub description: Description,
+    pub function_partial_application: Box<FunctionPartialApplication>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -4202,7 +4203,7 @@ pub struct FunctionPartialClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GlobalFunctionCall {
-    pub global_function_call_group: GlobalFunctionCallGroup,
+    pub global_function_call_group: Box<GlobalFunctionCallGroup>,
     pub function_call_args: crate::FunctionCallArguments,
     pub global_function_call_opt: Option<GlobalFunctionCallOpt>,
 }
@@ -4359,9 +4360,9 @@ pub struct Import {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClause {
-    pub import: Import,
-    pub import_clause_group: ImportClauseGroup,
-    pub description: Description,
+    pub import: Box<Import>,
+    pub import_clause_group: Box<ImportClauseGroup>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -4394,7 +4395,7 @@ pub struct ImportClauseOpt0 {}
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImportClauseOpt1 {
-    pub import_clause_opt1_group: ImportClauseOpt1Group,
+    pub import_clause_opt1_group: Box<ImportClauseOpt1Group>,
 }
 
 ///
@@ -4460,7 +4461,7 @@ pub struct In {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InheritanceModification {
-    pub inheritance_modification_group: InheritanceModificationGroup,
+    pub inheritance_modification_group: Box<InheritanceModificationGroup>,
 }
 
 ///
@@ -4544,7 +4545,7 @@ pub struct LogicalFactor {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LogicalFactorOpt {
-    pub not: Not,
+    pub not: Box<Not>,
 }
 
 ///
@@ -4610,7 +4611,7 @@ pub enum Modification {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModificationOpt {
-    pub modification_expression: ModificationExpression,
+    pub modification_expression: Box<ModificationExpression>,
 }
 
 ///
@@ -4670,8 +4671,8 @@ pub struct NamedArgument {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NamedArguments {
-    pub named_argument: NamedArgument,
-    pub named_arguments_opt: Option<Box<NamedArgumentsOpt>>,
+    pub named_argument: Box<NamedArgument>,
+    pub named_arguments_opt: Option<NamedArgumentsOpt>,
 }
 
 ///
@@ -4680,7 +4681,7 @@ pub struct NamedArguments {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NamedArgumentsOpt {
-    pub named_arguments: NamedArguments,
+    pub named_arguments: Box<NamedArguments>,
 }
 
 ///
@@ -4784,7 +4785,7 @@ pub struct OutputPrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputPrimaryOpt {
-    pub output_primary_opt_group: OutputPrimaryOptGroup,
+    pub output_primary_opt_group: Box<OutputPrimaryOptGroup>,
 }
 
 ///
@@ -4875,7 +4876,7 @@ pub struct Pure {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RangePrimary {
-    pub expression_list: ExpressionList,
+    pub expression_list: Box<ExpressionList>,
     pub range_primary_list: Vec<RangePrimaryList>,
 }
 
@@ -4885,7 +4886,7 @@ pub struct RangePrimary {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RangePrimaryList {
-    pub expression_list: ExpressionList,
+    pub expression_list: Box<ExpressionList>,
 }
 
 ///
@@ -4922,7 +4923,7 @@ pub struct Relation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RelationOpt {
-    pub relational_operator: RelationalOperator,
+    pub relational_operator: Box<RelationalOperator>,
     pub arithmetic_expression: rumoca_ir_ast::Expression,
 }
 
@@ -4964,8 +4965,8 @@ pub struct Return {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ShortClassDefinition {
-    pub class_prefixes: ClassPrefixes,
-    pub short_class_specifier: ShortClassSpecifier,
+    pub class_prefixes: Box<ClassPrefixes>,
+    pub short_class_specifier: Box<ShortClassSpecifier>,
 }
 
 ///
@@ -5033,8 +5034,8 @@ pub struct SimpleExpressionOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SomeEquation {
-    pub some_equation_option: SomeEquationOption,
-    pub description: Description,
+    pub some_equation_option: Box<SomeEquationOption>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -5068,8 +5069,8 @@ pub struct StandardClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Statement {
-    pub statement_option: StatementOption,
-    pub description: Description,
+    pub statement_option: Box<StatementOption>,
+    pub description: Box<Description>,
 }
 
 ///
@@ -5133,7 +5134,7 @@ pub struct StoredDefinitionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StoredDefinitionOpt {
-    pub within: Within,
+    pub within: Box<Within>,
     pub stored_definition_opt1: Option<StoredDefinitionOpt1>,
 }
 
@@ -5143,7 +5144,7 @@ pub struct StoredDefinitionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StoredDefinitionOpt0 {
-    pub r#final: Final,
+    pub r#final: Box<Final>,
 }
 
 ///
@@ -5199,7 +5200,7 @@ pub struct Term {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TermList {
-    pub mul_operator: MulOperator,
+    pub mul_operator: Box<MulOperator>,
     pub factor: rumoca_ir_ast::Expression,
 }
 
@@ -5237,11 +5238,11 @@ pub struct Type {
 #[derive(Debug, Clone)]
 pub struct TypeClassSpecifier {
     pub ident: rumoca_core::Token,
-    pub base_prefix: BasePrefix,
-    pub type_specifier: TypeSpecifier,
+    pub base_prefix: Box<BasePrefix>,
+    pub type_specifier: Box<TypeSpecifier>,
     pub type_class_specifier_opt: Option<TypeClassSpecifierOpt>,
     pub type_class_specifier_opt0: Option<TypeClassSpecifierOpt0>,
-    pub description: Description,
+    pub description: Box<Description>,
 }
 
 ///
@@ -5259,7 +5260,7 @@ pub struct TypeClassSpecifierOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypeClassSpecifierOpt0 {
-    pub class_modification: ClassModification,
+    pub class_modification: Box<ClassModification>,
 }
 
 ///
@@ -5279,7 +5280,7 @@ pub struct TypePrefix {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt {
-    pub type_prefix_opt_group: TypePrefixOptGroup,
+    pub type_prefix_opt_group: Box<TypePrefixOptGroup>,
 }
 
 ///
@@ -5288,7 +5289,7 @@ pub struct TypePrefixOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt0 {
-    pub type_prefix_opt0_group: TypePrefixOpt0Group,
+    pub type_prefix_opt0_group: Box<TypePrefixOpt0Group>,
 }
 
 ///
@@ -5308,7 +5309,7 @@ pub enum TypePrefixOpt0Group {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TypePrefixOpt1 {
-    pub type_prefix_opt1_group: TypePrefixOpt1Group,
+    pub type_prefix_opt1_group: Box<TypePrefixOpt1Group>,
 }
 
 ///
@@ -7215,7 +7216,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#final = pop_item!(self, r#final, Final, context);
-        let stored_definition_opt0_0_built = StoredDefinitionOpt0 { r#final };
+        let stored_definition_opt0_0_built = StoredDefinitionOpt0 {
+            r#final: Box::new(r#final),
+        };
         self.push(
             ASTType::StoredDefinitionOpt0(Some(stored_definition_opt0_0_built)),
             context,
@@ -7252,7 +7255,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, stored_definition_opt1, StoredDefinitionOpt1, context);
         let within = pop_item!(self, within, Within, context);
         let stored_definition_opt_0_built = StoredDefinitionOpt {
-            within,
+            within: Box::new(within),
             stored_definition_opt1,
         };
         self.push(
@@ -7326,8 +7329,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, class_definition_opt, ClassDefinitionOpt, context);
         let class_definition_built = ClassDefinition {
             class_definition_opt,
-            class_prefixes,
-            class_specifier,
+            class_prefixes: Box::new(class_prefixes),
+            class_specifier: Box::new(class_specifier),
         };
         // Calling user action here
         self.user_grammar
@@ -7345,7 +7348,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let encapsulated = pop_item!(self, encapsulated, Encapsulated, context);
-        let class_definition_opt_0_built = ClassDefinitionOpt { encapsulated };
+        let class_definition_opt_0_built = ClassDefinitionOpt {
+            encapsulated: Box::new(encapsulated),
+        };
         self.push(
             ASTType::ClassDefinitionOpt(Some(class_definition_opt_0_built)),
             context,
@@ -7374,7 +7379,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let class = pop_item!(self, class, Class, context);
-        let class_type_0_built = ClassTypeClass { class };
+        let class_type_0_built = ClassTypeClass {
+            class: Box::new(class),
+        };
         let class_type_0_built = ClassType::Class(class_type_0_built);
         // Calling user action here
         self.user_grammar.class_type(&class_type_0_built)?;
@@ -7391,7 +7398,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let model = pop_item!(self, model, Model, context);
-        let class_type_1_built = ClassTypeModel { model };
+        let class_type_1_built = ClassTypeModel {
+            model: Box::new(model),
+        };
         let class_type_1_built = ClassType::Model(class_type_1_built);
         // Calling user action here
         self.user_grammar.class_type(&class_type_1_built)?;
@@ -7415,7 +7424,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_type_opt = pop_item!(self, class_type_opt, ClassTypeOpt, context);
         let class_type_2_built = ClassTypeClassTypeOptRecord {
             class_type_opt,
-            record,
+            record: Box::new(record),
         };
         let class_type_2_built = ClassType::ClassTypeOptRecord(class_type_2_built);
         // Calling user action here
@@ -7433,7 +7442,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let block = pop_item!(self, block, Block, context);
-        let class_type_3_built = ClassTypeBlock { block };
+        let class_type_3_built = ClassTypeBlock {
+            block: Box::new(block),
+        };
         let class_type_3_built = ClassType::Block(class_type_3_built);
         // Calling user action here
         self.user_grammar.class_type(&class_type_3_built)?;
@@ -7457,7 +7468,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_type_opt0 = pop_item!(self, class_type_opt0, ClassTypeOpt0, context);
         let class_type_4_built = ClassTypeClassTypeOpt0Connector {
             class_type_opt0,
-            connector,
+            connector: Box::new(connector),
         };
         let class_type_4_built = ClassType::ClassTypeOpt0Connector(class_type_4_built);
         // Calling user action here
@@ -7475,7 +7486,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#type = pop_item!(self, r#type, Type, context);
-        let class_type_5_built = ClassTypeType { r#type };
+        let class_type_5_built = ClassTypeType {
+            r#type: Box::new(r#type),
+        };
         let class_type_5_built = ClassType::Type(class_type_5_built);
         // Calling user action here
         self.user_grammar.class_type(&class_type_5_built)?;
@@ -7492,7 +7505,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let package = pop_item!(self, package, Package, context);
-        let class_type_6_built = ClassTypePackage { package };
+        let class_type_6_built = ClassTypePackage {
+            package: Box::new(package),
+        };
         let class_type_6_built = ClassType::Package(class_type_6_built);
         // Calling user action here
         self.user_grammar.class_type(&class_type_6_built)?;
@@ -7519,7 +7534,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_type_7_built = ClassTypeClassTypeOpt1ClassTypeOpt2Function {
             class_type_opt1,
             class_type_opt2,
-            function,
+            function: Box::new(function),
         };
         let class_type_7_built = ClassType::ClassTypeOpt1ClassTypeOpt2Function(class_type_7_built);
         // Calling user action here
@@ -7537,7 +7552,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let operator = pop_item!(self, operator, Operator, context);
-        let class_type_8_built = ClassTypeOperator { operator };
+        let class_type_8_built = ClassTypeOperator {
+            operator: Box::new(operator),
+        };
         let class_type_8_built = ClassType::Operator(class_type_8_built);
         // Calling user action here
         self.user_grammar.class_type(&class_type_8_built)?;
@@ -7554,7 +7571,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let operator = pop_item!(self, operator, Operator, context);
-        let class_type_opt2_0_built = ClassTypeOpt2 { operator };
+        let class_type_opt2_0_built = ClassTypeOpt2 {
+            operator: Box::new(operator),
+        };
         self.push(
             ASTType::ClassTypeOpt2(Some(class_type_opt2_0_built)),
             context,
@@ -7585,7 +7604,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_type_opt1_group =
             pop_item!(self, class_type_opt1_group, ClassTypeOpt1Group, context);
         let class_type_opt1_0_built = ClassTypeOpt1 {
-            class_type_opt1_group,
+            class_type_opt1_group: Box::new(class_type_opt1_group),
         };
         self.push(
             ASTType::ClassTypeOpt1(Some(class_type_opt1_0_built)),
@@ -7603,7 +7622,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let pure = pop_item!(self, pure, Pure, context);
-        let class_type_opt1_group_0_built = ClassTypeOpt1GroupPure { pure };
+        let class_type_opt1_group_0_built = ClassTypeOpt1GroupPure {
+            pure: Box::new(pure),
+        };
         let class_type_opt1_group_0_built = ClassTypeOpt1Group::Pure(class_type_opt1_group_0_built);
         self.push(
             ASTType::ClassTypeOpt1Group(class_type_opt1_group_0_built),
@@ -7621,7 +7642,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let impure = pop_item!(self, impure, Impure, context);
-        let class_type_opt1_group_1_built = ClassTypeOpt1GroupImpure { impure };
+        let class_type_opt1_group_1_built = ClassTypeOpt1GroupImpure {
+            impure: Box::new(impure),
+        };
         let class_type_opt1_group_1_built =
             ClassTypeOpt1Group::Impure(class_type_opt1_group_1_built);
         self.push(
@@ -7652,7 +7675,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let expandable = pop_item!(self, expandable, Expandable, context);
-        let class_type_opt0_0_built = ClassTypeOpt0 { expandable };
+        let class_type_opt0_0_built = ClassTypeOpt0 {
+            expandable: Box::new(expandable),
+        };
         self.push(
             ASTType::ClassTypeOpt0(Some(class_type_opt0_0_built)),
             context,
@@ -7681,7 +7706,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let operator = pop_item!(self, operator, Operator, context);
-        let class_type_opt_0_built = ClassTypeOpt { operator };
+        let class_type_opt_0_built = ClassTypeOpt {
+            operator: Box::new(operator),
+        };
         self.push(ASTType::ClassTypeOpt(Some(class_type_opt_0_built)), context);
         Ok(())
     }
@@ -7714,7 +7741,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_prefixes_opt = pop_item!(self, class_prefixes_opt, ClassPrefixesOpt, context);
         let class_prefixes_built = ClassPrefixes {
             class_prefixes_opt,
-            class_type,
+            class_type: Box::new(class_type),
         };
         // Calling user action here
         self.user_grammar.class_prefixes(&class_prefixes_built)?;
@@ -7731,7 +7758,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let partial = pop_item!(self, partial, Partial, context);
-        let class_prefixes_opt_0_built = ClassPrefixesOpt { partial };
+        let class_prefixes_opt_0_built = ClassPrefixesOpt {
+            partial: Box::new(partial),
+        };
         self.push(
             ASTType::ClassPrefixesOpt(Some(class_prefixes_opt_0_built)),
             context,
@@ -7762,7 +7791,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let long_class_specifier =
             pop_item!(self, long_class_specifier, LongClassSpecifier, context);
         let class_specifier_0_built = ClassSpecifierLongClassSpecifier {
-            long_class_specifier,
+            long_class_specifier: Box::new(long_class_specifier),
         };
         let class_specifier_0_built = ClassSpecifier::LongClassSpecifier(class_specifier_0_built);
         // Calling user action here
@@ -7783,7 +7812,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let short_class_specifier =
             pop_item!(self, short_class_specifier, ShortClassSpecifier, context);
         let class_specifier_1_built = ClassSpecifierShortClassSpecifier {
-            short_class_specifier,
+            short_class_specifier: Box::new(short_class_specifier),
         };
         let class_specifier_1_built = ClassSpecifier::ShortClassSpecifier(class_specifier_1_built);
         // Calling user action here
@@ -7803,7 +7832,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let der_class_specifier = pop_item!(self, der_class_specifier, DerClassSpecifier, context);
         let class_specifier_2_built = ClassSpecifierDerClassSpecifier {
-            der_class_specifier,
+            der_class_specifier: Box::new(der_class_specifier),
         };
         let class_specifier_2_built = ClassSpecifier::DerClassSpecifier(class_specifier_2_built);
         // Calling user action here
@@ -7831,7 +7860,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let long_class_specifier_0_built = LongClassSpecifierStandardClassSpecifier {
-            standard_class_specifier,
+            standard_class_specifier: Box::new(standard_class_specifier),
         };
         let long_class_specifier_0_built =
             LongClassSpecifier::StandardClassSpecifier(long_class_specifier_0_built);
@@ -7863,7 +7892,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let long_class_specifier_1_built = LongClassSpecifierExtendsClassSpecifier {
-            extends_class_specifier,
+            extends_class_specifier: Box::new(extends_class_specifier),
         };
         let long_class_specifier_1_built =
             LongClassSpecifier::ExtendsClassSpecifier(long_class_specifier_1_built);
@@ -7987,7 +8016,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let class_modification = pop_item!(self, class_modification, ClassModification, context);
-        let extends_class_specifier_opt_0_built = ExtendsClassSpecifierOpt { class_modification };
+        let extends_class_specifier_opt_0_built = ExtendsClassSpecifierOpt {
+            class_modification: Box::new(class_modification),
+        };
         self.push(
             ASTType::ExtendsClassSpecifierOpt(Some(extends_class_specifier_opt_0_built)),
             context,
@@ -8115,8 +8146,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             ident: (&ident)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            function_partial_application,
-            description,
+            function_partial_application: Box::new(function_partial_application),
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -8165,11 +8196,11 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             ident: (&ident)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            base_prefix,
-            type_specifier,
+            base_prefix: Box::new(base_prefix),
+            type_specifier: Box::new(type_specifier),
             type_class_specifier_opt,
             type_class_specifier_opt0,
-            description,
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -8193,7 +8224,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let class_modification = pop_item!(self, class_modification, ClassModification, context);
-        let type_class_specifier_opt0_0_built = TypeClassSpecifierOpt0 { class_modification };
+        let type_class_specifier_opt0_0_built = TypeClassSpecifierOpt0 {
+            class_modification: Box::new(class_modification),
+        };
         self.push(
             ASTType::TypeClassSpecifierOpt0(Some(type_class_specifier_opt0_0_built)),
             context,
@@ -8276,9 +8309,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             ident: (&ident)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            enumeration,
-            enum_class_specifier_group,
-            description,
+            enumeration: Box::new(enumeration),
+            enum_class_specifier_group: Box::new(enum_class_specifier_group),
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -8346,7 +8379,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let enum_list = pop_item!(self, enum_list, EnumList, context);
-        let enum_class_specifier_opt_0_built = EnumClassSpecifierOpt { enum_list };
+        let enum_class_specifier_opt_0_built = EnumClassSpecifierOpt {
+            enum_list: Box::new(enum_list),
+        };
         self.push(
             ASTType::EnumClassSpecifierOpt(Some(enum_class_specifier_opt_0_built)),
             context,
@@ -8401,13 +8436,13 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             ident: (&ident)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            der,
-            type_specifier,
+            der: Box::new(der),
+            type_specifier: Box::new(type_specifier),
             ident0: (&ident0)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
             der_class_specifier_list,
-            description,
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -8496,7 +8531,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let base_prefix_opt_group =
             pop_item!(self, base_prefix_opt_group, BasePrefixOptGroup, context);
         let base_prefix_opt_0_built = BasePrefixOpt {
-            base_prefix_opt_group,
+            base_prefix_opt_group: Box::new(base_prefix_opt_group),
         };
         self.push(
             ASTType::BasePrefixOpt(Some(base_prefix_opt_0_built)),
@@ -8514,7 +8549,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let input = pop_item!(self, input, Input, context);
-        let base_prefix_opt_group_0_built = BasePrefixOptGroupInput { input };
+        let base_prefix_opt_group_0_built = BasePrefixOptGroupInput {
+            input: Box::new(input),
+        };
         let base_prefix_opt_group_0_built =
             BasePrefixOptGroup::Input(base_prefix_opt_group_0_built);
         self.push(
@@ -8533,7 +8570,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let output = pop_item!(self, output, Output, context);
-        let base_prefix_opt_group_1_built = BasePrefixOptGroupOutput { output };
+        let base_prefix_opt_group_1_built = BasePrefixOptGroupOutput {
+            output: Box::new(output),
+        };
         let base_prefix_opt_group_1_built =
             BasePrefixOptGroup::Output(base_prefix_opt_group_1_built);
         self.push(
@@ -8570,7 +8609,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let enum_list_list = pop_and_reverse_item!(self, enum_list_list, EnumListList, context);
         let enumeration_literal = pop_item!(self, enumeration_literal, EnumerationLiteral, context);
         let enum_list_built = EnumList {
-            enumeration_literal,
+            enumeration_literal: Box::new(enumeration_literal),
             enum_list_list,
         };
         // Calling user action here
@@ -8595,7 +8634,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let mut enum_list_list = pop_item!(self, enum_list_list, EnumListList, context);
         let enumeration_literal = pop_item!(self, enumeration_literal, EnumerationLiteral, context);
         let enum_list_list_0_built = EnumListList {
-            enumeration_literal,
+            enumeration_literal: Box::new(enumeration_literal),
         };
         // Add an element to the vector
         enum_list_list.push(enum_list_list_0_built);
@@ -8634,7 +8673,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             ident: (&ident)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            description,
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -8695,7 +8734,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let composition_list_group =
             pop_item!(self, composition_list_group, CompositionListGroup, context);
         let composition_list_0_built = CompositionList {
-            composition_list_group,
+            composition_list_group: Box::new(composition_list_group),
         };
         // Add an element to the vector
         composition_list.push(composition_list_0_built);
@@ -8718,7 +8757,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let element_list = pop_item!(self, element_list, ElementList, context);
         let public = pop_item!(self, public, Public, context);
         let composition_list_group_0_built = CompositionListGroupPublicElementList {
-            public,
+            public: Box::new(public),
             element_list: (&element_list)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -8747,7 +8786,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let element_list = pop_item!(self, element_list, ElementList, context);
         let protected = pop_item!(self, protected, Protected, context);
         let composition_list_group_1_built = CompositionListGroupProtectedElementList {
-            protected,
+            protected: Box::new(protected),
             element_list: (&element_list)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -8833,7 +8872,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let annotation_clause = pop_item!(self, annotation_clause, AnnotationClause, context);
-        let composition_opt0_0_built = CompositionOpt0 { annotation_clause };
+        let composition_opt0_0_built = CompositionOpt0 {
+            annotation_clause: Box::new(annotation_clause),
+        };
         self.push(
             ASTType::CompositionOpt0(Some(composition_opt0_0_built)),
             context,
@@ -8893,7 +8934,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let annotation_clause = pop_item!(self, annotation_clause, AnnotationClause, context);
-        let composition_opt3_0_built = CompositionOpt3 { annotation_clause };
+        let composition_opt3_0_built = CompositionOpt3 {
+            annotation_clause: Box::new(annotation_clause),
+        };
         self.push(
             ASTType::CompositionOpt3(Some(composition_opt3_0_built)),
             context,
@@ -8924,7 +8967,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let external_function_call =
             pop_item!(self, external_function_call, ExternalFunctionCall, context);
         let composition_opt2_0_built = CompositionOpt2 {
-            external_function_call,
+            external_function_call: Box::new(external_function_call),
         };
         self.push(
             ASTType::CompositionOpt2(Some(composition_opt2_0_built)),
@@ -8956,7 +8999,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let language_specification =
             pop_item!(self, language_specification, LanguageSpecification, context);
         let composition_opt1_0_built = CompositionOpt1 {
-            language_specification,
+            language_specification: Box::new(language_specification),
         };
         self.push(
             ASTType::CompositionOpt1(Some(composition_opt1_0_built)),
@@ -9070,7 +9113,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let expression_list = pop_item!(self, expression_list, ExpressionList, context);
-        let external_function_call_opt0_0_built = ExternalFunctionCallOpt0 { expression_list };
+        let external_function_call_opt0_0_built = ExternalFunctionCallOpt0 {
+            expression_list: Box::new(expression_list),
+        };
         self.push(
             ASTType::ExternalFunctionCallOpt0(Some(external_function_call_opt0_0_built)),
             context,
@@ -9159,7 +9204,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let mut element_list_list = pop_item!(self, element_list_list, ElementListList, context);
         let element = pop_item!(self, element, Element, context);
-        let element_list_list_0_built = ElementListList { element };
+        let element_list_list_0_built = ElementListList {
+            element: Box::new(element),
+        };
         // Add an element to the vector
         element_list_list.push(element_list_list_0_built);
         self.push(ASTType::ElementListList(element_list_list), context);
@@ -9188,7 +9235,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let import_clause = pop_item!(self, import_clause, ImportClause, context);
-        let element_0_built = ElementImportClause { import_clause };
+        let element_0_built = ElementImportClause {
+            import_clause: Box::new(import_clause),
+        };
         let element_0_built = Element::ImportClause(element_0_built);
         // Calling user action here
         self.user_grammar.element(&element_0_built)?;
@@ -9205,7 +9254,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let extends_clause = pop_item!(self, extends_clause, ExtendsClause, context);
-        let element_1_built = ElementExtendsClause { extends_clause };
+        let element_1_built = ElementExtendsClause {
+            extends_clause: Box::new(extends_clause),
+        };
         let element_1_built = Element::ExtendsClause(element_1_built);
         // Calling user action here
         self.user_grammar.element(&element_1_built)?;
@@ -9222,7 +9273,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let element_definition = pop_item!(self, element_definition, ElementDefinition, context);
-        let element_2_built = ElementElementDefinition { element_definition };
+        let element_2_built = ElementElementDefinition {
+            element_definition: Box::new(element_definition),
+        };
         let element_2_built = Element::ElementDefinition(element_2_built);
         // Calling user action here
         self.user_grammar.element(&element_2_built)?;
@@ -9276,7 +9329,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             element_definition_opt0,
             element_definition_opt1,
             element_definition_opt2,
-            element_definition_group,
+            element_definition_group: Box::new(element_definition_group),
         };
         // Calling user action here
         self.user_grammar
@@ -9320,8 +9373,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_clause = pop_item!(self, component_clause, ComponentClause, context);
-        let element_definition_group_1_built =
-            ElementDefinitionGroupComponentClause { component_clause };
+        let element_definition_group_1_built = ElementDefinitionGroupComponentClause {
+            component_clause: Box::new(component_clause),
+        };
         let element_definition_group_1_built =
             ElementDefinitionGroup::ComponentClause(element_definition_group_1_built);
         self.push(
@@ -9359,8 +9413,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let replaceable = pop_item!(self, replaceable, Replaceable, context);
         let element_definition_group_2_built =
             ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDefinitionOpt3 {
-                replaceable,
-                element_definition_group_group,
+                replaceable: Box::new(replaceable),
+                element_definition_group_group: Box::new(element_definition_group_group),
                 element_definition_opt3,
             };
         let element_definition_group_2_built =
@@ -9412,8 +9466,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_clause = pop_item!(self, component_clause, ComponentClause, context);
-        let element_definition_group_group_1_built =
-            ElementDefinitionGroupGroupComponentClause { component_clause };
+        let element_definition_group_group_1_built = ElementDefinitionGroupGroupComponentClause {
+            component_clause: Box::new(component_clause),
+        };
         let element_definition_group_group_1_built =
             ElementDefinitionGroupGroup::ComponentClause(element_definition_group_group_1_built);
         self.push(
@@ -9438,8 +9493,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let description = pop_item!(self, description, Description, context);
         let constraining_clause = pop_item!(self, constraining_clause, ConstrainingClause, context);
         let element_definition_opt3_0_built = ElementDefinitionOpt3 {
-            constraining_clause,
-            description,
+            constraining_clause: Box::new(constraining_clause),
+            description: Box::new(description),
         };
         self.push(
             ASTType::ElementDefinitionOpt3(Some(element_definition_opt3_0_built)),
@@ -9469,7 +9524,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let outer = pop_item!(self, outer, Outer, context);
-        let element_definition_opt2_0_built = ElementDefinitionOpt2 { outer };
+        let element_definition_opt2_0_built = ElementDefinitionOpt2 {
+            outer: Box::new(outer),
+        };
         self.push(
             ASTType::ElementDefinitionOpt2(Some(element_definition_opt2_0_built)),
             context,
@@ -9498,7 +9555,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let inner = pop_item!(self, inner, Inner, context);
-        let element_definition_opt1_0_built = ElementDefinitionOpt1 { inner };
+        let element_definition_opt1_0_built = ElementDefinitionOpt1 {
+            inner: Box::new(inner),
+        };
         self.push(
             ASTType::ElementDefinitionOpt1(Some(element_definition_opt1_0_built)),
             context,
@@ -9527,7 +9586,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#final = pop_item!(self, r#final, Final, context);
-        let element_definition_opt0_0_built = ElementDefinitionOpt0 { r#final };
+        let element_definition_opt0_0_built = ElementDefinitionOpt0 {
+            r#final: Box::new(r#final),
+        };
         self.push(
             ASTType::ElementDefinitionOpt0(Some(element_definition_opt0_0_built)),
             context,
@@ -9556,7 +9617,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let redeclare = pop_item!(self, redeclare, Redeclare, context);
-        let element_definition_opt_0_built = ElementDefinitionOpt { redeclare };
+        let element_definition_opt_0_built = ElementDefinitionOpt {
+            redeclare: Box::new(redeclare),
+        };
         self.push(
             ASTType::ElementDefinitionOpt(Some(element_definition_opt_0_built)),
             context,
@@ -9593,9 +9656,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let import_clause_group = pop_item!(self, import_clause_group, ImportClauseGroup, context);
         let import = pop_item!(self, import, Import, context);
         let import_clause_built = ImportClause {
-            import,
-            import_clause_group,
-            description,
+            import: Box::new(import),
+            import_clause_group: Box::new(import_clause_group),
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar.import_clause(&import_clause_built)?;
@@ -9688,7 +9751,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let import_clause_opt1_0_built = ImportClauseOpt1 {
-            import_clause_opt1_group,
+            import_clause_opt1_group: Box::new(import_clause_opt1_group),
         };
         self.push(
             ASTType::ImportClauseOpt1(Some(import_clause_opt1_0_built)),
@@ -9743,7 +9806,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let import_clause_opt1_group_1_built = ImportClauseOpt1GroupDotImportClauseOpt1GroupGroup {
             dot,
-            import_clause_opt1_group_group,
+            import_clause_opt1_group_group: Box::new(import_clause_opt1_group_group),
         };
         let import_clause_opt1_group_1_built =
             ImportClauseOpt1Group::DotImportClauseOpt1GroupGroup(import_clause_opt1_group_1_built);
@@ -9791,7 +9854,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let import_list = pop_item!(self, import_list, ImportList, context);
         let import_clause_opt1_group_group_1_built =
-            ImportClauseOpt1GroupGroupLBraceImportListRBrace { import_list };
+            ImportClauseOpt1GroupGroupLBraceImportListRBrace {
+                import_list: Box::new(import_list),
+            };
         let import_clause_opt1_group_group_1_built =
             ImportClauseOpt1GroupGroup::LBraceImportListRBrace(
                 import_clause_opt1_group_group_1_built,
@@ -9956,8 +10021,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_specifier = pop_item!(self, type_specifier, TypeSpecifier, context);
         let extends = pop_item!(self, extends, Extends, context);
         let extends_clause_built = ExtendsClause {
-            extends,
-            type_specifier,
+            extends: Box::new(extends),
+            type_specifier: Box::new(type_specifier),
             extends_clause_opt,
             extends_clause_opt0,
         };
@@ -9976,7 +10041,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let annotation_clause = pop_item!(self, annotation_clause, AnnotationClause, context);
-        let extends_clause_opt0_0_built = ExtendsClauseOpt0 { annotation_clause };
+        let extends_clause_opt0_0_built = ExtendsClauseOpt0 {
+            annotation_clause: Box::new(annotation_clause),
+        };
         self.push(
             ASTType::ExtendsClauseOpt0(Some(extends_clause_opt0_0_built)),
             context,
@@ -10014,7 +10081,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let extends_clause_opt_0_built = ExtendsClauseOpt {
-            class_or_inheritance_modification,
+            class_or_inheritance_modification: Box::new(class_or_inheritance_modification),
         };
         self.push(
             ASTType::ExtendsClauseOpt(Some(extends_clause_opt_0_built)),
@@ -10057,7 +10124,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_specifier = pop_item!(self, type_specifier, TypeSpecifier, context);
         self.pop(context);
         let constraining_clause_built = ConstrainingClause {
-            type_specifier,
+            type_specifier: Box::new(type_specifier),
             constraining_clause_opt,
         };
         // Calling user action here
@@ -10079,7 +10146,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let class_modification = pop_item!(self, class_modification, ClassModification, context);
-        let constraining_clause_opt_0_built = ConstrainingClauseOpt { class_modification };
+        let constraining_clause_opt_0_built = ConstrainingClauseOpt {
+            class_modification: Box::new(class_modification),
+        };
         self.push(
             ASTType::ConstrainingClauseOpt(Some(constraining_clause_opt_0_built)),
             context,
@@ -10149,7 +10218,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let class_or_inheritance_modification_opt_0_built = ClassOrInheritanceModificationOpt {
-            argument_or_inheritance_modification_list,
+            argument_or_inheritance_modification_list: Box::new(
+                argument_or_inheritance_modification_list,
+            ),
         };
         self.push(
             ASTType::ClassOrInheritanceModificationOpt(Some(
@@ -10198,7 +10269,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let argument_or_inheritance_modification_list_built =
             ArgumentOrInheritanceModificationList {
-                argument_or_inheritance_modification_list_group,
+                argument_or_inheritance_modification_list_group: Box::new(
+                    argument_or_inheritance_modification_list_group,
+                ),
                 argument_or_inheritance_modification_list_list,
             };
         // Calling user action here
@@ -10265,7 +10338,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let argument_or_inheritance_modification_list_group_1_built =
             ArgumentOrInheritanceModificationListGroupInheritanceModification {
-                inheritance_modification,
+                inheritance_modification: Box::new(inheritance_modification),
             };
         let argument_or_inheritance_modification_list_group_1_built =
             ArgumentOrInheritanceModificationListGroup::InheritanceModification(
@@ -10307,7 +10380,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let argument_or_inheritance_modification_list_list_0_built =
             ArgumentOrInheritanceModificationListList {
-                argument_or_inheritance_modification_list_list_group,
+                argument_or_inheritance_modification_list_list_group: Box::new(
+                    argument_or_inheritance_modification_list_list_group,
+                ),
             };
         // Add an element to the vector
         argument_or_inheritance_modification_list_list
@@ -10371,7 +10446,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let argument_or_inheritance_modification_list_list_group_1_built =
             ArgumentOrInheritanceModificationListListGroupInheritanceModification {
-                inheritance_modification,
+                inheritance_modification: Box::new(inheritance_modification),
             };
         let argument_or_inheritance_modification_list_list_group_1_built =
             ArgumentOrInheritanceModificationListListGroup::InheritanceModification(
@@ -10424,7 +10499,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         self.pop(context);
         let inheritance_modification_built = InheritanceModification {
-            inheritance_modification_group,
+            inheritance_modification_group: Box::new(inheritance_modification_group),
         };
         // Calling user action here
         self.user_grammar
@@ -10448,8 +10523,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let connect_equation = pop_item!(self, connect_equation, ConnectEquation, context);
-        let inheritance_modification_group_0_built =
-            InheritanceModificationGroupConnectEquation { connect_equation };
+        let inheritance_modification_group_0_built = InheritanceModificationGroupConnectEquation {
+            connect_equation: Box::new(connect_equation),
+        };
         let inheritance_modification_group_0_built =
             InheritanceModificationGroup::ConnectEquation(inheritance_modification_group_0_built);
         self.push(
@@ -10502,8 +10578,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_specifier = pop_item!(self, type_specifier, TypeSpecifier, context);
         let type_prefix = pop_item!(self, type_prefix, TypePrefix, context);
         let component_clause_built = ComponentClause {
-            type_prefix,
-            type_specifier,
+            type_prefix: Box::new(type_prefix),
+            type_specifier: Box::new(type_specifier),
             component_clause_opt,
             component_list: (&component_list)
                 .try_into()
@@ -10587,7 +10663,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_prefix_opt1_group =
             pop_item!(self, type_prefix_opt1_group, TypePrefixOpt1Group, context);
         let type_prefix_opt1_0_built = TypePrefixOpt1 {
-            type_prefix_opt1_group,
+            type_prefix_opt1_group: Box::new(type_prefix_opt1_group),
         };
         self.push(
             ASTType::TypePrefixOpt1(Some(type_prefix_opt1_0_built)),
@@ -10605,7 +10681,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let input = pop_item!(self, input, Input, context);
-        let type_prefix_opt1_group_0_built = TypePrefixOpt1GroupInput { input };
+        let type_prefix_opt1_group_0_built = TypePrefixOpt1GroupInput {
+            input: Box::new(input),
+        };
         let type_prefix_opt1_group_0_built =
             TypePrefixOpt1Group::Input(type_prefix_opt1_group_0_built);
         self.push(
@@ -10624,7 +10702,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let output = pop_item!(self, output, Output, context);
-        let type_prefix_opt1_group_1_built = TypePrefixOpt1GroupOutput { output };
+        let type_prefix_opt1_group_1_built = TypePrefixOpt1GroupOutput {
+            output: Box::new(output),
+        };
         let type_prefix_opt1_group_1_built =
             TypePrefixOpt1Group::Output(type_prefix_opt1_group_1_built);
         self.push(
@@ -10657,7 +10737,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_prefix_opt0_group =
             pop_item!(self, type_prefix_opt0_group, TypePrefixOpt0Group, context);
         let type_prefix_opt0_0_built = TypePrefixOpt0 {
-            type_prefix_opt0_group,
+            type_prefix_opt0_group: Box::new(type_prefix_opt0_group),
         };
         self.push(
             ASTType::TypePrefixOpt0(Some(type_prefix_opt0_0_built)),
@@ -10675,7 +10755,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let discrete = pop_item!(self, discrete, Discrete, context);
-        let type_prefix_opt0_group_0_built = TypePrefixOpt0GroupDiscrete { discrete };
+        let type_prefix_opt0_group_0_built = TypePrefixOpt0GroupDiscrete {
+            discrete: Box::new(discrete),
+        };
         let type_prefix_opt0_group_0_built =
             TypePrefixOpt0Group::Discrete(type_prefix_opt0_group_0_built);
         self.push(
@@ -10694,7 +10776,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let parameter = pop_item!(self, parameter, Parameter, context);
-        let type_prefix_opt0_group_1_built = TypePrefixOpt0GroupParameter { parameter };
+        let type_prefix_opt0_group_1_built = TypePrefixOpt0GroupParameter {
+            parameter: Box::new(parameter),
+        };
         let type_prefix_opt0_group_1_built =
             TypePrefixOpt0Group::Parameter(type_prefix_opt0_group_1_built);
         self.push(
@@ -10713,7 +10797,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let constant = pop_item!(self, constant, Constant, context);
-        let type_prefix_opt0_group_2_built = TypePrefixOpt0GroupConstant { constant };
+        let type_prefix_opt0_group_2_built = TypePrefixOpt0GroupConstant {
+            constant: Box::new(constant),
+        };
         let type_prefix_opt0_group_2_built =
             TypePrefixOpt0Group::Constant(type_prefix_opt0_group_2_built);
         self.push(
@@ -10746,7 +10832,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_prefix_opt_group =
             pop_item!(self, type_prefix_opt_group, TypePrefixOptGroup, context);
         let type_prefix_opt_0_built = TypePrefixOpt {
-            type_prefix_opt_group,
+            type_prefix_opt_group: Box::new(type_prefix_opt_group),
         };
         self.push(
             ASTType::TypePrefixOpt(Some(type_prefix_opt_0_built)),
@@ -10764,7 +10850,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let flow = pop_item!(self, flow, Flow, context);
-        let type_prefix_opt_group_0_built = TypePrefixOptGroupFlow { flow };
+        let type_prefix_opt_group_0_built = TypePrefixOptGroupFlow {
+            flow: Box::new(flow),
+        };
         let type_prefix_opt_group_0_built = TypePrefixOptGroup::Flow(type_prefix_opt_group_0_built);
         self.push(
             ASTType::TypePrefixOptGroup(type_prefix_opt_group_0_built),
@@ -10782,7 +10870,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let stream = pop_item!(self, stream, Stream, context);
-        let type_prefix_opt_group_1_built = TypePrefixOptGroupStream { stream };
+        let type_prefix_opt_group_1_built = TypePrefixOptGroupStream {
+            stream: Box::new(stream),
+        };
         let type_prefix_opt_group_1_built =
             TypePrefixOptGroup::Stream(type_prefix_opt_group_1_built);
         self.push(
@@ -10821,7 +10911,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let component_declaration =
             pop_item!(self, component_declaration, ComponentDeclaration, context);
         let component_list_built = ComponentList {
-            component_declaration,
+            component_declaration: Box::new(component_declaration),
             component_list_list,
         };
         // Calling user action here
@@ -10848,7 +10938,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let component_declaration =
             pop_item!(self, component_declaration, ComponentDeclaration, context);
         let component_list_list_0_built = ComponentListList {
-            component_declaration,
+            component_declaration: Box::new(component_declaration),
         };
         // Add an element to the vector
         component_list_list.push(component_list_list_0_built);
@@ -10894,9 +10984,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let declaration = pop_item!(self, declaration, Declaration, context);
         let component_declaration_built = ComponentDeclaration {
-            declaration,
+            declaration: Box::new(declaration),
             component_declaration_opt,
-            description,
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -10921,7 +11011,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let condition_attribute = pop_item!(self, condition_attribute, ConditionAttribute, context);
         let component_declaration_opt_0_built = ComponentDeclarationOpt {
-            condition_attribute,
+            condition_attribute: Box::new(condition_attribute),
         };
         self.push(
             ASTType::ComponentDeclarationOpt(Some(component_declaration_opt_0_built)),
@@ -11009,7 +11099,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let modification = pop_item!(self, modification, Modification, context);
-        let declaration_opt0_0_built = DeclarationOpt0 { modification };
+        let declaration_opt0_0_built = DeclarationOpt0 {
+            modification: Box::new(modification),
+        };
         self.push(
             ASTType::DeclarationOpt0(Some(declaration_opt0_0_built)),
             context,
@@ -11107,7 +11199,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let modification_1_built = ModificationEquModificationExpression {
-            modification_expression,
+            modification_expression: Box::new(modification_expression),
         };
         let modification_1_built = Modification::EquModificationExpression(modification_1_built);
         // Calling user action here
@@ -11135,7 +11227,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let modification_opt_0_built = ModificationOpt {
-            modification_expression,
+            modification_expression: Box::new(modification_expression),
         };
         self.push(
             ASTType::ModificationOpt(Some(modification_opt_0_built)),
@@ -11191,7 +11283,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#break = pop_item!(self, r#break, Break, context);
-        let modification_expression_1_built = ModificationExpressionBreak { r#break };
+        let modification_expression_1_built = ModificationExpressionBreak {
+            r#break: Box::new(r#break),
+        };
         let modification_expression_1_built =
             ModificationExpression::Break(modification_expression_1_built);
         // Calling user action here
@@ -11425,7 +11519,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let element_modification_or_replaceable_built = ElementModificationOrReplaceable {
             element_modification_or_replaceable_opt,
             element_modification_or_replaceable_opt0,
-            element_modification_or_replaceable_group,
+            element_modification_or_replaceable_group: Box::new(
+                element_modification_or_replaceable_group,
+            ),
         };
         // Calling user action here
         self.user_grammar
@@ -11452,7 +11548,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, element_modification, ElementModification, context);
         let element_modification_or_replaceable_group_0_built =
             ElementModificationOrReplaceableGroupElementModification {
-                element_modification,
+                element_modification: Box::new(element_modification),
             };
         let element_modification_or_replaceable_group_0_built =
             ElementModificationOrReplaceableGroup::ElementModification(
@@ -11481,7 +11577,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let element_replaceable = pop_item!(self, element_replaceable, ElementReplaceable, context);
         let element_modification_or_replaceable_group_1_built =
             ElementModificationOrReplaceableGroupElementReplaceable {
-                element_replaceable,
+                element_replaceable: Box::new(element_replaceable),
             };
         let element_modification_or_replaceable_group_1_built =
             ElementModificationOrReplaceableGroup::ElementReplaceable(
@@ -11509,7 +11605,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let r#final = pop_item!(self, r#final, Final, context);
         let element_modification_or_replaceable_opt0_0_built =
-            ElementModificationOrReplaceableOpt0 { r#final };
+            ElementModificationOrReplaceableOpt0 {
+                r#final: Box::new(r#final),
+            };
         self.push(
             ASTType::ElementModificationOrReplaceableOpt0(Some(
                 element_modification_or_replaceable_opt0_0_built,
@@ -11543,8 +11641,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let each = pop_item!(self, each, Each, context);
-        let element_modification_or_replaceable_opt_0_built =
-            ElementModificationOrReplaceableOpt { each };
+        let element_modification_or_replaceable_opt_0_built = ElementModificationOrReplaceableOpt {
+            each: Box::new(each),
+        };
         self.push(
             ASTType::ElementModificationOrReplaceableOpt(Some(
                 element_modification_or_replaceable_opt_0_built,
@@ -11615,7 +11714,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let modification = pop_item!(self, modification, Modification, context);
-        let element_modification_opt_0_built = ElementModificationOpt { modification };
+        let element_modification_opt_0_built = ElementModificationOpt {
+            modification: Box::new(modification),
+        };
         self.push(
             ASTType::ElementModificationOpt(Some(element_modification_opt_0_built)),
             context,
@@ -11669,10 +11770,10 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let redeclare = pop_item!(self, redeclare, Redeclare, context);
         let element_redeclaration_built = ElementRedeclaration {
-            redeclare,
+            redeclare: Box::new(redeclare),
             element_redeclaration_opt,
             element_redeclaration_opt0,
-            element_redeclaration_group,
+            element_redeclaration_group: Box::new(element_redeclaration_group),
         };
         // Calling user action here
         self.user_grammar
@@ -11698,7 +11799,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let short_class_definition =
             pop_item!(self, short_class_definition, ShortClassDefinition, context);
         let element_redeclaration_group_0_built = ElementRedeclarationGroupShortClassDefinition {
-            short_class_definition,
+            short_class_definition: Box::new(short_class_definition),
         };
         let element_redeclaration_group_0_built =
             ElementRedeclarationGroup::ShortClassDefinition(element_redeclaration_group_0_built);
@@ -11721,8 +11822,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_clause1 = pop_item!(self, component_clause1, ComponentClause1, context);
-        let element_redeclaration_group_1_built =
-            ElementRedeclarationGroupComponentClause1 { component_clause1 };
+        let element_redeclaration_group_1_built = ElementRedeclarationGroupComponentClause1 {
+            component_clause1: Box::new(component_clause1),
+        };
         let element_redeclaration_group_1_built =
             ElementRedeclarationGroup::ComponentClause1(element_redeclaration_group_1_built);
         self.push(
@@ -11745,7 +11847,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let element_replaceable = pop_item!(self, element_replaceable, ElementReplaceable, context);
         let element_redeclaration_group_2_built = ElementRedeclarationGroupElementReplaceable {
-            element_replaceable,
+            element_replaceable: Box::new(element_replaceable),
         };
         let element_redeclaration_group_2_built =
             ElementRedeclarationGroup::ElementReplaceable(element_redeclaration_group_2_built);
@@ -11765,7 +11867,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#final = pop_item!(self, r#final, Final, context);
-        let element_redeclaration_opt0_0_built = ElementRedeclarationOpt0 { r#final };
+        let element_redeclaration_opt0_0_built = ElementRedeclarationOpt0 {
+            r#final: Box::new(r#final),
+        };
         self.push(
             ASTType::ElementRedeclarationOpt0(Some(element_redeclaration_opt0_0_built)),
             context,
@@ -11794,7 +11898,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let each = pop_item!(self, each, Each, context);
-        let element_redeclaration_opt_0_built = ElementRedeclarationOpt { each };
+        let element_redeclaration_opt_0_built = ElementRedeclarationOpt {
+            each: Box::new(each),
+        };
         self.push(
             ASTType::ElementRedeclarationOpt(Some(element_redeclaration_opt_0_built)),
             context,
@@ -11841,8 +11947,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let replaceable = pop_item!(self, replaceable, Replaceable, context);
         let element_replaceable_built = ElementReplaceable {
-            replaceable,
-            element_replaceable_group,
+            replaceable: Box::new(replaceable),
+            element_replaceable_group: Box::new(element_replaceable_group),
             element_replaceable_opt,
         };
         // Calling user action here
@@ -11869,7 +11975,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let short_class_definition =
             pop_item!(self, short_class_definition, ShortClassDefinition, context);
         let element_replaceable_group_0_built = ElementReplaceableGroupShortClassDefinition {
-            short_class_definition,
+            short_class_definition: Box::new(short_class_definition),
         };
         let element_replaceable_group_0_built =
             ElementReplaceableGroup::ShortClassDefinition(element_replaceable_group_0_built);
@@ -11892,8 +11998,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_clause1 = pop_item!(self, component_clause1, ComponentClause1, context);
-        let element_replaceable_group_1_built =
-            ElementReplaceableGroupComponentClause1 { component_clause1 };
+        let element_replaceable_group_1_built = ElementReplaceableGroupComponentClause1 {
+            component_clause1: Box::new(component_clause1),
+        };
         let element_replaceable_group_1_built =
             ElementReplaceableGroup::ComponentClause1(element_replaceable_group_1_built);
         self.push(
@@ -11916,7 +12023,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let constraining_clause = pop_item!(self, constraining_clause, ConstrainingClause, context);
         let element_replaceable_opt_0_built = ElementReplaceableOpt {
-            constraining_clause,
+            constraining_clause: Box::new(constraining_clause),
         };
         self.push(
             ASTType::ElementReplaceableOpt(Some(element_replaceable_opt_0_built)),
@@ -11955,9 +12062,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_specifier = pop_item!(self, type_specifier, TypeSpecifier, context);
         let type_prefix = pop_item!(self, type_prefix, TypePrefix, context);
         let component_clause1_built = ComponentClause1 {
-            type_prefix,
-            type_specifier,
-            component_declaration1,
+            type_prefix: Box::new(type_prefix),
+            type_specifier: Box::new(type_specifier),
+            component_declaration1: Box::new(component_declaration1),
         };
         // Calling user action here
         self.user_grammar
@@ -11981,8 +12088,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let description = pop_item!(self, description, Description, context);
         let declaration = pop_item!(self, declaration, Declaration, context);
         let component_declaration1_built = ComponentDeclaration1 {
-            declaration,
-            description,
+            declaration: Box::new(declaration),
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar
@@ -12010,8 +12117,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, short_class_specifier, ShortClassSpecifier, context);
         let class_prefixes = pop_item!(self, class_prefixes, ClassPrefixes, context);
         let short_class_definition_built = ShortClassDefinition {
-            class_prefixes,
-            short_class_specifier,
+            class_prefixes: Box::new(class_prefixes),
+            short_class_specifier: Box::new(short_class_specifier),
         };
         // Calling user action here
         self.user_grammar
@@ -12043,7 +12150,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, equation_section_opt, EquationSectionOpt, context);
         let equation_section_built = EquationSection {
             equation_section_opt,
-            equation,
+            equation: Box::new(equation),
             equation_section_list,
         };
         // Calling user action here
@@ -12105,7 +12212,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let initial = pop_item!(self, initial, Initial, context);
-        let equation_section_opt_0_built = EquationSectionOpt { initial };
+        let equation_section_opt_0_built = EquationSectionOpt {
+            initial: Box::new(initial),
+        };
         self.push(
             ASTType::EquationSectionOpt(Some(equation_section_opt_0_built)),
             context,
@@ -12145,7 +12254,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, algorithm_section_opt, AlgorithmSectionOpt, context);
         let algorithm_section_built = AlgorithmSection {
             algorithm_section_opt,
-            algorithm,
+            algorithm: Box::new(algorithm),
             algorithm_section_list,
         };
         // Calling user action here
@@ -12210,7 +12319,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let initial = pop_item!(self, initial, Initial, context);
-        let algorithm_section_opt_0_built = AlgorithmSectionOpt { initial };
+        let algorithm_section_opt_0_built = AlgorithmSectionOpt {
+            initial: Box::new(initial),
+        };
         self.push(
             ASTType::AlgorithmSectionOpt(Some(algorithm_section_opt_0_built)),
             context,
@@ -12239,7 +12350,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let simple_equation = pop_item!(self, simple_equation, SimpleEquation, context);
-        let some_equation_option_0_built = SomeEquationOptionSimpleEquation { simple_equation };
+        let some_equation_option_0_built = SomeEquationOptionSimpleEquation {
+            simple_equation: Box::new(simple_equation),
+        };
         let some_equation_option_0_built =
             SomeEquationOption::SimpleEquation(some_equation_option_0_built);
         // Calling user action here
@@ -12261,7 +12374,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let if_equation = pop_item!(self, if_equation, IfEquation, context);
-        let some_equation_option_1_built = SomeEquationOptionIfEquation { if_equation };
+        let some_equation_option_1_built = SomeEquationOptionIfEquation {
+            if_equation: Box::new(if_equation),
+        };
         let some_equation_option_1_built =
             SomeEquationOption::IfEquation(some_equation_option_1_built);
         // Calling user action here
@@ -12283,7 +12398,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let for_equation = pop_item!(self, for_equation, ForEquation, context);
-        let some_equation_option_2_built = SomeEquationOptionForEquation { for_equation };
+        let some_equation_option_2_built = SomeEquationOptionForEquation {
+            for_equation: Box::new(for_equation),
+        };
         let some_equation_option_2_built =
             SomeEquationOption::ForEquation(some_equation_option_2_built);
         // Calling user action here
@@ -12305,7 +12422,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let connect_equation = pop_item!(self, connect_equation, ConnectEquation, context);
-        let some_equation_option_3_built = SomeEquationOptionConnectEquation { connect_equation };
+        let some_equation_option_3_built = SomeEquationOptionConnectEquation {
+            connect_equation: Box::new(connect_equation),
+        };
         let some_equation_option_3_built =
             SomeEquationOption::ConnectEquation(some_equation_option_3_built);
         // Calling user action here
@@ -12327,7 +12446,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let when_equation = pop_item!(self, when_equation, WhenEquation, context);
-        let some_equation_option_4_built = SomeEquationOptionWhenEquation { when_equation };
+        let some_equation_option_4_built = SomeEquationOptionWhenEquation {
+            when_equation: Box::new(when_equation),
+        };
         let some_equation_option_4_built =
             SomeEquationOption::WhenEquation(some_equation_option_4_built);
         // Calling user action here
@@ -12419,8 +12540,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let some_equation_option =
             pop_item!(self, some_equation_option, SomeEquationOption, context);
         let some_equation_built = SomeEquation {
-            some_equation_option,
-            description,
+            some_equation_option: Box::new(some_equation_option),
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar.some_equation(&some_equation_built)?;
@@ -12438,7 +12559,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let component_statement = pop_item!(self, component_statement, ComponentStatement, context);
         let statement_option_0_built = StatementOptionComponentStatement {
-            component_statement,
+            component_statement: Box::new(component_statement),
         };
         let statement_option_0_built =
             StatementOption::ComponentStatement(statement_option_0_built);
@@ -12467,7 +12588,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let statement_option_1_built = StatementOptionFunctionCallOutputStatement {
-            function_call_output_statement,
+            function_call_output_statement: Box::new(function_call_output_statement),
         };
         let statement_option_1_built =
             StatementOption::FunctionCallOutputStatement(statement_option_1_built);
@@ -12487,7 +12608,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#break = pop_item!(self, r#break, Break, context);
-        let statement_option_2_built = StatementOptionBreak { r#break };
+        let statement_option_2_built = StatementOptionBreak {
+            r#break: Box::new(r#break),
+        };
         let statement_option_2_built = StatementOption::Break(statement_option_2_built);
         // Calling user action here
         self.user_grammar
@@ -12505,7 +12628,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#return = pop_item!(self, r#return, Return, context);
-        let statement_option_3_built = StatementOptionReturn { r#return };
+        let statement_option_3_built = StatementOptionReturn {
+            r#return: Box::new(r#return),
+        };
         let statement_option_3_built = StatementOption::Return(statement_option_3_built);
         // Calling user action here
         self.user_grammar
@@ -12523,7 +12648,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let if_statement = pop_item!(self, if_statement, IfStatement, context);
-        let statement_option_4_built = StatementOptionIfStatement { if_statement };
+        let statement_option_4_built = StatementOptionIfStatement {
+            if_statement: Box::new(if_statement),
+        };
         let statement_option_4_built = StatementOption::IfStatement(statement_option_4_built);
         // Calling user action here
         self.user_grammar
@@ -12541,7 +12668,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let for_statement = pop_item!(self, for_statement, ForStatement, context);
-        let statement_option_5_built = StatementOptionForStatement { for_statement };
+        let statement_option_5_built = StatementOptionForStatement {
+            for_statement: Box::new(for_statement),
+        };
         let statement_option_5_built = StatementOption::ForStatement(statement_option_5_built);
         // Calling user action here
         self.user_grammar
@@ -12559,7 +12688,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let while_statement = pop_item!(self, while_statement, WhileStatement, context);
-        let statement_option_6_built = StatementOptionWhileStatement { while_statement };
+        let statement_option_6_built = StatementOptionWhileStatement {
+            while_statement: Box::new(while_statement),
+        };
         let statement_option_6_built = StatementOption::WhileStatement(statement_option_6_built);
         // Calling user action here
         self.user_grammar
@@ -12577,7 +12708,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let when_statement = pop_item!(self, when_statement, WhenStatement, context);
-        let statement_option_7_built = StatementOptionWhenStatement { when_statement };
+        let statement_option_7_built = StatementOptionWhenStatement {
+            when_statement: Box::new(when_statement),
+        };
         let statement_option_7_built = StatementOption::WhenStatement(statement_option_7_built);
         // Calling user action here
         self.user_grammar
@@ -12609,7 +12742,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             component_reference: (&component_reference)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            component_statement_group,
+            component_statement_group: Box::new(component_statement_group),
         };
         // Calling user action here
         self.user_grammar
@@ -12730,8 +12863,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let description = pop_item!(self, description, Description, context);
         let statement_option = pop_item!(self, statement_option, StatementOption, context);
         let statement_built = Statement {
-            statement_option,
-            description,
+            statement_option: Box::new(statement_option),
+            description: Box::new(description),
         };
         // Calling user action here
         self.user_grammar.statement(&statement_built)?;
@@ -13219,7 +13352,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let for_indices = pop_item!(self, for_indices, ForIndices, context);
         self.pop(context);
         let for_equation_built = ForEquation {
-            for_indices,
+            for_indices: Box::new(for_indices),
             for_equation_list,
         };
         // Calling user action here
@@ -13291,7 +13424,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let for_indices = pop_item!(self, for_indices, ForIndices, context);
         self.pop(context);
         let for_statement_built = ForStatement {
-            for_indices,
+            for_indices: Box::new(for_indices),
             for_statement_list,
         };
         // Calling user action here
@@ -13358,7 +13491,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, for_indices_list, ForIndicesList, context);
         let for_index = pop_item!(self, for_index, ForIndex, context);
         let for_indices_built = ForIndices {
-            for_index,
+            for_index: Box::new(for_index),
             for_indices_list,
         };
         // Calling user action here
@@ -13382,7 +13515,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let mut for_indices_list = pop_item!(self, for_indices_list, ForIndicesList, context);
         let for_index = pop_item!(self, for_index, ForIndex, context);
-        let for_indices_list_0_built = ForIndicesList { for_index };
+        let for_indices_list_0_built = ForIndicesList {
+            for_index: Box::new(for_index),
+        };
         // Add an element to the vector
         for_indices_list.push(for_indices_list_0_built);
         self.push(ASTType::ForIndicesList(for_indices_list), context);
@@ -13739,11 +13874,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let simple_expression = pop_item!(self, simple_expression, SimpleExpression, context);
         let expression_0_built = ExpressionSimpleExpression {
-            simple_expression: Box::new(
-                (&simple_expression)
-                    .try_into()
-                    .map_err(parol_runtime::ParolError::UserError)?,
-            ),
+            simple_expression: (&simple_expression)
+                .try_into()
+                .map_err(parol_runtime::ParolError::UserError)?,
         };
         let expression_0_built = Expression::SimpleExpression(expression_0_built);
         // Calling user action here
@@ -14158,7 +14291,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let not = pop_item!(self, not, Not, context);
-        let logical_factor_opt_0_built = LogicalFactorOpt { not };
+        let logical_factor_opt_0_built = LogicalFactorOpt { not: Box::new(not) };
         self.push(
             ASTType::LogicalFactorOpt(Some(logical_factor_opt_0_built)),
             context,
@@ -14221,7 +14354,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_item!(self, arithmetic_expression, ArithmeticExpression, context);
         let relational_operator = pop_item!(self, relational_operator, RelationalOperator, context);
         let relation_opt_0_built = RelationOpt {
-            relational_operator,
+            relational_operator: Box::new(relational_operator),
             arithmetic_expression: (&arithmetic_expression)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -14454,7 +14587,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             term: (&term)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            add_operator,
+            add_operator: Box::new(add_operator),
         };
         // Add an element to the vector
         arithmetic_expression_list.push(arithmetic_expression_list_0_built);
@@ -14490,7 +14623,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let add_operator = pop_item!(self, add_operator, AddOperator, context);
-        let arithmetic_expression_opt_0_built = ArithmeticExpressionOpt { add_operator };
+        let arithmetic_expression_opt_0_built = ArithmeticExpressionOpt {
+            add_operator: Box::new(add_operator),
+        };
         self.push(
             ASTType::ArithmeticExpressionOpt(Some(arithmetic_expression_opt_0_built)),
             context,
@@ -14632,7 +14767,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             factor: (&factor)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            mul_operator,
+            mul_operator: Box::new(mul_operator),
         };
         // Add an element to the vector
         term_list.push(term_list_0_built);
@@ -14779,7 +14914,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             primary: (&primary)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            factor_list_group,
+            factor_list_group: Box::new(factor_list_group),
         };
         // Add an element to the vector
         factor_list.push(factor_list_0_built);
@@ -14845,7 +14980,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let unsigned_number = pop_item!(self, unsigned_number, UnsignedNumber, context);
-        let primary_0_built = PrimaryUnsignedNumber { unsigned_number };
+        let primary_0_built = PrimaryUnsignedNumber {
+            unsigned_number: Box::new(unsigned_number),
+        };
         let primary_0_built = Primary::UnsignedNumber(primary_0_built);
         // Calling user action here
         self.user_grammar.primary(&primary_0_built)?;
@@ -14883,7 +15020,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#false = pop_item!(self, r#false, False, context);
-        let primary_2_built = PrimaryFalse { r#false };
+        let primary_2_built = PrimaryFalse {
+            r#false: Box::new(r#false),
+        };
         let primary_2_built = Primary::False(primary_2_built);
         // Calling user action here
         self.user_grammar.primary(&primary_2_built)?;
@@ -14900,7 +15039,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let r#true = pop_item!(self, r#true, True, context);
-        let primary_3_built = PrimaryTrue { r#true };
+        let primary_3_built = PrimaryTrue {
+            r#true: Box::new(r#true),
+        };
         let primary_3_built = Primary::True(primary_3_built);
         // Calling user action here
         self.user_grammar.primary(&primary_3_built)?;
@@ -14919,7 +15060,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let global_function_call =
             pop_item!(self, global_function_call, GlobalFunctionCall, context);
         let primary_4_built = PrimaryGlobalFunctionCall {
-            global_function_call,
+            global_function_call: Box::new(global_function_call),
         };
         let primary_4_built = Primary::GlobalFunctionCall(primary_4_built);
         // Calling user action here
@@ -14937,7 +15078,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let component_primary = pop_item!(self, component_primary, ComponentPrimary, context);
-        let primary_5_built = PrimaryComponentPrimary { component_primary };
+        let primary_5_built = PrimaryComponentPrimary {
+            component_primary: Box::new(component_primary),
+        };
         let primary_5_built = Primary::ComponentPrimary(primary_5_built);
         // Calling user action here
         self.user_grammar.primary(&primary_5_built)?;
@@ -14954,7 +15097,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let output_primary = pop_item!(self, output_primary, OutputPrimary, context);
-        let primary_6_built = PrimaryOutputPrimary { output_primary };
+        let primary_6_built = PrimaryOutputPrimary {
+            output_primary: Box::new(output_primary),
+        };
         let primary_6_built = Primary::OutputPrimary(primary_6_built);
         // Calling user action here
         self.user_grammar.primary(&primary_6_built)?;
@@ -14971,7 +15116,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let range_primary = pop_item!(self, range_primary, RangePrimary, context);
-        let primary_7_built = PrimaryRangePrimary { range_primary };
+        let primary_7_built = PrimaryRangePrimary {
+            range_primary: Box::new(range_primary),
+        };
         let primary_7_built = Primary::RangePrimary(primary_7_built);
         // Calling user action here
         self.user_grammar.primary(&primary_7_built)?;
@@ -14988,7 +15135,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let array_primary = pop_item!(self, array_primary, ArrayPrimary, context);
-        let primary_8_built = PrimaryArrayPrimary { array_primary };
+        let primary_8_built = PrimaryArrayPrimary {
+            array_primary: Box::new(array_primary),
+        };
         let primary_8_built = Primary::ArrayPrimary(primary_8_built);
         // Calling user action here
         self.user_grammar.primary(&primary_8_built)?;
@@ -15005,7 +15154,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let end = pop_item!(self, end, End, context);
-        let primary_9_built = PrimaryEnd { end };
+        let primary_9_built = PrimaryEnd { end: Box::new(end) };
         let primary_9_built = Primary::End(primary_9_built);
         // Calling user action here
         self.user_grammar.primary(&primary_9_built)?;
@@ -15171,7 +15320,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let output_primary_opt_0_built = OutputPrimaryOpt {
-            output_primary_opt_group,
+            output_primary_opt_group: Box::new(output_primary_opt_group),
         };
         self.push(
             ASTType::OutputPrimaryOpt(Some(output_primary_opt_0_built)),
@@ -15260,7 +15409,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, range_primary_list, RangePrimaryList, context);
         let expression_list = pop_item!(self, expression_list, ExpressionList, context);
         let range_primary_built = RangePrimary {
-            expression_list,
+            expression_list: Box::new(expression_list),
             range_primary_list,
         };
         // Calling user action here
@@ -15284,7 +15433,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let mut range_primary_list = pop_item!(self, range_primary_list, RangePrimaryList, context);
         let expression_list = pop_item!(self, expression_list, ExpressionList, context);
-        let range_primary_list_0_built = RangePrimaryList { expression_list };
+        let range_primary_list_0_built = RangePrimaryList {
+            expression_list: Box::new(expression_list),
+        };
         // Add an element to the vector
         range_primary_list.push(range_primary_list_0_built);
         self.push(ASTType::RangePrimaryList(range_primary_list), context);
@@ -15349,7 +15500,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let array_arguments = pop_item!(self, array_arguments, ArrayArguments, context);
-        let array_primary_opt_0_built = ArrayPrimaryOpt { array_arguments };
+        let array_primary_opt_0_built = ArrayPrimaryOpt {
+            array_arguments: Box::new(array_arguments),
+        };
         self.push(
             ASTType::ArrayPrimaryOpt(Some(array_primary_opt_0_built)),
             context,
@@ -15396,7 +15549,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let global_function_call_built = GlobalFunctionCall {
-            global_function_call_group,
+            global_function_call_group: Box::new(global_function_call_group),
             function_call_args: (&function_call_args)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -15421,7 +15574,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let der = pop_item!(self, der, Der, context);
-        let global_function_call_group_0_built = GlobalFunctionCallGroupDer { der };
+        let global_function_call_group_0_built = GlobalFunctionCallGroupDer { der: Box::new(der) };
         let global_function_call_group_0_built =
             GlobalFunctionCallGroup::Der(global_function_call_group_0_built);
         self.push(
@@ -15440,7 +15593,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let initial = pop_item!(self, initial, Initial, context);
-        let global_function_call_group_1_built = GlobalFunctionCallGroupInitial { initial };
+        let global_function_call_group_1_built = GlobalFunctionCallGroupInitial {
+            initial: Box::new(initial),
+        };
         let global_function_call_group_1_built =
             GlobalFunctionCallGroup::Initial(global_function_call_group_1_built);
         self.push(
@@ -15459,7 +15614,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let pure = pop_item!(self, pure, Pure, context);
-        let global_function_call_group_2_built = GlobalFunctionCallGroupPure { pure };
+        let global_function_call_group_2_built = GlobalFunctionCallGroupPure {
+            pure: Box::new(pure),
+        };
         let global_function_call_group_2_built =
             GlobalFunctionCallGroup::Pure(global_function_call_group_2_built);
         self.push(
@@ -16011,7 +16168,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let function_arguments_1_built =
             FunctionArgumentsFunctionPartialApplicationFunctionArgumentsOpt0 {
-                function_partial_application,
+                function_partial_application: Box::new(function_partial_application),
                 function_arguments_opt0,
             };
         let function_arguments_1_built =
@@ -16037,7 +16194,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let named_arguments = pop_item!(self, named_arguments, NamedArguments, context);
-        let function_arguments_2_built = FunctionArgumentsNamedArguments { named_arguments };
+        let function_arguments_2_built = FunctionArgumentsNamedArguments {
+            named_arguments: Box::new(named_arguments),
+        };
         let function_arguments_2_built =
             FunctionArguments::NamedArguments(function_arguments_2_built);
         // Calling user action here
@@ -16110,7 +16269,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let function_arguments_opt_0_built = FunctionArgumentsOpt {
-            function_arguments_opt_group,
+            function_arguments_opt_group: Box::new(function_arguments_opt_group),
         };
         self.push(
             ASTType::FunctionArgumentsOpt(Some(function_arguments_opt_0_built)),
@@ -16168,8 +16327,10 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         trace!("{}", self.trace_item_stack(context));
         let for_indices = pop_item!(self, for_indices, ForIndices, context);
         let r#for = pop_item!(self, r#for, For, context);
-        let function_arguments_opt_group_1_built =
-            FunctionArgumentsOptGroupForForIndices { r#for, for_indices };
+        let function_arguments_opt_group_1_built = FunctionArgumentsOptGroupForForIndices {
+            r#for: Box::new(r#for),
+            for_indices: Box::new(for_indices),
+        };
         let function_arguments_opt_group_1_built =
             FunctionArgumentsOptGroup::ForForIndices(function_arguments_opt_group_1_built);
         self.push(
@@ -16215,7 +16376,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
                 function_argument: (&function_argument)
                     .try_into()
                     .map_err(parol_runtime::ParolError::UserError)?,
-                function_arguments_non_first_opt: function_arguments_non_first_opt.map(Box::new),
+                function_arguments_non_first_opt,
             };
         let function_arguments_non_first_0_built =
             FunctionArgumentsNonFirst::FunctionArgumentFunctionArgumentsNonFirstOpt(
@@ -16243,8 +16404,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let named_arguments = pop_item!(self, named_arguments, NamedArguments, context);
-        let function_arguments_non_first_1_built =
-            FunctionArgumentsNonFirstNamedArguments { named_arguments };
+        let function_arguments_non_first_1_built = FunctionArgumentsNonFirstNamedArguments {
+            named_arguments: Box::new(named_arguments),
+        };
         let function_arguments_non_first_1_built =
             FunctionArgumentsNonFirst::NamedArguments(function_arguments_non_first_1_built);
         // Calling user action here
@@ -16343,7 +16505,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let array_arguments_opt_0_built = ArrayArgumentsOpt {
-            array_arguments_opt_group,
+            array_arguments_opt_group: Box::new(array_arguments_opt_group),
         };
         self.push(
             ASTType::ArrayArgumentsOpt(Some(array_arguments_opt_0_built)),
@@ -16371,7 +16533,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let array_arguments_opt_group_0_built = ArrayArgumentsOptGroupCommaArrayArgumentsNonFirst {
-            array_arguments_non_first,
+            array_arguments_non_first: Box::new(array_arguments_non_first),
         };
         let array_arguments_opt_group_0_built =
             ArrayArgumentsOptGroup::CommaArrayArgumentsNonFirst(array_arguments_opt_group_0_built);
@@ -16401,8 +16563,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let r#for = pop_item!(self, r#for, For, context);
         let array_arguments_opt_group_1_built =
             ArrayArgumentsOptGroupForForIndicesArrayArgumentsOpt0 {
-                r#for,
-                for_indices,
+                r#for: Box::new(r#for),
+                for_indices: Box::new(for_indices),
                 array_arguments_opt0,
             };
         let array_arguments_opt_group_1_built =
@@ -16431,7 +16593,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let expression = pop_item!(self, expression, Expression, context);
         let r#if = pop_item!(self, r#if, If, context);
         let array_arguments_opt0_0_built = ArrayArgumentsOpt0 {
-            r#if,
+            r#if: Box::new(r#if),
             expression: (&expression)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -16490,7 +16652,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             expression: (&expression)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
-            array_arguments_non_first_opt: array_arguments_non_first_opt.map(Box::new),
+            array_arguments_non_first_opt,
         };
         // Calling user action here
         self.user_grammar
@@ -16521,7 +16683,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
             context
         );
         let array_arguments_non_first_opt_0_built = ArrayArgumentsNonFirstOpt {
-            array_arguments_non_first,
+            array_arguments_non_first: Box::new(array_arguments_non_first),
         };
         self.push(
             ASTType::ArrayArgumentsNonFirstOpt(Some(array_arguments_non_first_opt_0_built)),
@@ -16557,8 +16719,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let named_arguments_opt = pop_item!(self, named_arguments_opt, NamedArgumentsOpt, context);
         let named_argument = pop_item!(self, named_argument, NamedArgument, context);
         let named_arguments_built = NamedArguments {
-            named_argument,
-            named_arguments_opt: named_arguments_opt.map(Box::new),
+            named_argument: Box::new(named_argument),
+            named_arguments_opt,
         };
         // Calling user action here
         self.user_grammar.named_arguments(&named_arguments_built)?;
@@ -16579,7 +16741,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let named_arguments = pop_item!(self, named_arguments, NamedArguments, context);
-        let named_arguments_opt_0_built = NamedArgumentsOpt { named_arguments };
+        let named_arguments_opt_0_built = NamedArgumentsOpt {
+            named_arguments: Box::new(named_arguments),
+        };
         self.push(
             ASTType::NamedArgumentsOpt(Some(named_arguments_opt_0_built)),
             context,
@@ -16709,8 +16873,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let type_specifier = pop_item!(self, type_specifier, TypeSpecifier, context);
         let function = pop_item!(self, function, Function, context);
         let function_partial_application_built = FunctionPartialApplication {
-            function,
-            type_specifier,
+            function: Box::new(function),
+            type_specifier: Box::new(type_specifier),
             function_partial_application_opt,
         };
         // Calling user action here
@@ -16735,8 +16899,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let named_arguments = pop_item!(self, named_arguments, NamedArguments, context);
-        let function_partial_application_opt_0_built =
-            FunctionPartialApplicationOpt { named_arguments };
+        let function_partial_application_opt_0_built = FunctionPartialApplicationOpt {
+            named_arguments: Box::new(named_arguments),
+        };
         self.push(
             ASTType::FunctionPartialApplicationOpt(Some(function_partial_application_opt_0_built)),
             context,
@@ -17137,7 +17302,9 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
         let annotation_clause = pop_item!(self, annotation_clause, AnnotationClause, context);
-        let description_opt_0_built = DescriptionOpt { annotation_clause };
+        let description_opt_0_built = DescriptionOpt {
+            annotation_clause: Box::new(annotation_clause),
+        };
         self.push(
             ASTType::DescriptionOpt(Some(description_opt_0_built)),
             context,
@@ -17289,8 +17456,8 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         let class_modification = pop_item!(self, class_modification, ClassModification, context);
         let annotation = pop_item!(self, annotation, Annotation, context);
         let annotation_clause_built = AnnotationClause {
-            annotation,
-            class_modification,
+            annotation: Box::new(annotation),
+            class_modification: Box::new(class_modification),
         };
         // Calling user action here
         self.user_grammar
