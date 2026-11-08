@@ -1,6 +1,6 @@
-//! One source-bound scalar graph and its construction-issued state dependencies.
-//! This staged IR API is not yet consumed by the evaluator/native path. Compact
-//! body receipts and the atomic consumer cutover are separate source slices.
+//! One source-bound graph and its construction-issued state dependencies.
+//! Scalar rows and compact original outputs share this staged IR product;
+//! evaluator/native consumers move in the separate atomic cutover.
 mod compact;
 mod construction;
 #[cfg(test)]

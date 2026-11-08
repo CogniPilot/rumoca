@@ -144,8 +144,11 @@ IR-owned checked data. Its owner closure issues the graph and structural
 presence together, without raw tangent vectors or caller-provided sparse rows.
 Model capability analysis and source-operation traversal stay in
 `rumoca-eval-solve`; the existing evaluator/native path is unchanged until the
-atomic product-consumer cutover. Compact body receipts and residual/coloring
-composition are separate from this scalar construction API.
+atomic product-consumer cutover. The compact body factory owns the actual map
+and its captured source inputs; opaque original-output direction presence,
+local seeds, checked affine columns and the concrete domain issue one private
+receipt. Final target materialization and dependency placement consume that
+same receipt. Residual/coloring composition remains a separate slice.
 Compact Jacobian placement receipts are IR-local checked coordinate data.
 Their affine/stacked relation stays private until a checked body/output join
 binds actual directions. Placement geometry alone does not certify a source

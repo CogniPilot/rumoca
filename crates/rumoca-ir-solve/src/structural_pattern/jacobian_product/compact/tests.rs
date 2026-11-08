@@ -51,58 +51,62 @@ fn actual_output_presence_retains_cancelled_zero_and_omits_unread_seed() {
 
 #[test]
 fn wrong_domain_or_state_owner_refuses_before_body() {
+    assert_wrong_domain(1, 2);
+    assert_wrong_domain(2, 3);
+}
+fn assert_wrong_domain(count: u32, states: usize) {
     let model = model();
-    for (count, states) in [(1, 2), (2, 3)] {
-        let called = std::cell::Cell::new(false);
-        let p = CompactJacobianPlacement::new(vec![2], (0, vec![1]), vec![], states).unwrap();
-        let result = p
-            .with_dependency_receipt(span(), |receipt| {
-                StateJacobianProduct::construct(
-                    model.continuous_numerical_source().unwrap(),
-                    StoredStateJacobianOutputOrder::canonical(&model).unwrap(),
-                    &SolveTargetProfile::current_dense_host(),
-                    span(),
-                    |c| {
-                        c.store_compact(receipt, domain(count), 0, span(), |body| {
-                            called.set(true);
-                            body.constant(0.0, (span(), 0))
-                        })
-                    },
-                )
-            })
-            .unwrap();
-        assert!(result.is_err());
-        assert!(!called.get());
-    }
+    let called = std::cell::Cell::new(false);
+    let p = CompactJacobianPlacement::new(vec![2], (0, vec![1]), vec![], states).unwrap();
+    let result = p
+        .with_dependency_receipt(span(), |receipt| {
+            StateJacobianProduct::construct(
+                model.continuous_numerical_source().unwrap(),
+                StoredStateJacobianOutputOrder::canonical(&model).unwrap(),
+                &SolveTargetProfile::current_dense_host(),
+                span(),
+                |c| {
+                    c.store_compact(receipt, domain(count), 0, span(), |body| {
+                        called.set(true);
+                        body.constant(0.0, (span(), 0))
+                    })
+                },
+            )
+        })
+        .unwrap();
+    assert!(result.is_err());
+    assert!(!called.get());
 }
 
 #[test]
 fn row_ownership_is_complete_even_without_state_directions() {
+    assert_incomplete(false);
+    assert_incomplete(true);
+}
+fn assert_incomplete(duplicate: bool) {
     let model = model();
-    for duplicate in [false, true] {
-        let p = CompactJacobianPlacement::new(vec![1], (0, vec![1]), vec![], 2).unwrap();
-        let result = p
-            .with_dependency_receipt(span(), |receipt| {
-                StateJacobianProduct::construct(
-                    model.continuous_numerical_source().unwrap(),
-                    StoredStateJacobianOutputOrder::canonical(&model).unwrap(),
-                    &SolveTargetProfile::current_dense_host(),
-                    span(),
-                    |c| {
-                        c.store_compact(receipt, domain(1), 0, span(), |b| {
-                            b.constant(0.0, (span(), 0))
-                        })?;
-                        if duplicate {
-                            let z = c.constant(0.0, (span(), SolveFiniteCheck::Derivative))?;
-                            c.store_row(0, &z, span())?;
-                        }
-                        Ok(())
-                    },
-                )
-            })
-            .unwrap();
-        assert!(result.is_err());
-    }
+    let p = CompactJacobianPlacement::new(vec![1], (0, vec![1]), vec![], 2).unwrap();
+    let result = p
+        .with_dependency_receipt(span(), |receipt| {
+            StateJacobianProduct::construct(
+                model.continuous_numerical_source().unwrap(),
+                StoredStateJacobianOutputOrder::canonical(&model).unwrap(),
+                &SolveTargetProfile::current_dense_host(),
+                span(),
+                |c| {
+                    c.store_compact(receipt, domain(1), 0, span(), |b| {
+                        b.constant(0.0, (span(), 0))
+                    })?;
+                    if duplicate {
+                        let z = c.constant(0.0, (span(), SolveFiniteCheck::Derivative))?;
+                        c.store_row(0, &z, span())?;
+                    }
+                    Ok(())
+                },
+            )
+        })
+        .unwrap();
+    assert!(result.is_err());
 }
 
 fn entries(value: &serde_json::Value) -> usize {

@@ -60,17 +60,7 @@ fn mapped(m: &SolveModel, reversed_axes: bool, sqrt: bool) -> StateJacobianProdu
                 order(m, reversed_axes),
                 &SolveTargetProfile::current_dense_host(),
                 span(),
-                |c| {
-                    c.store_compact(receipt, grid(), 40, span(), |b| {
-                        let x = b.read(StateJacobianCompactInput::Seed(0), (span(), 0))?;
-                        let x = b.copy(&x, (span(), 1))?;
-                        if sqrt {
-                            b.unary(SolveUnaryOperator::Sqrt, &x, (span(), 7))
-                        } else {
-                            b.binary(SolveBinaryOperator::Multiply, [&x, &x], (span(), 7))
-                        }
-                    })
-                },
+                |c| c.store_compact(receipt, grid(), 40, span(), |b| mapped_value(b, sqrt)),
             )
         })
         .unwrap()
@@ -150,27 +140,7 @@ fn reversed_grid_graph_and_dependency_axes_agree_with_scalarized_source() {
             [0.5, -1.25, 2.0, 0.75, -3.0, 1.0],
             [-3.0, 0.0, 0.001, 7.5, 2.0, -0.5],
         ] {
-            let got = run(&map, &y).unwrap();
-            assert_eq!(got, run(&scalar, &y).unwrap());
-            for row in 0..6 {
-                for column in 0..6 {
-                    let source_column = if axes { row } else { 5 - row };
-                    let expected = if column == source_column {
-                        2.0 * y[column]
-                    } else {
-                        0.0
-                    };
-                    assert_eq!(f64::from_bits(got[row * 6 + column]), expected);
-                    assert_eq!(
-                        map.dependencies().contains(row as u32, column as u32),
-                        column == source_column
-                    );
-                    assert_eq!(
-                        map.dependencies().contains(row as u32, column as u32),
-                        scalar.dependencies().contains(row as u32, column as u32)
-                    );
-                }
-            }
+            assert_matrix(&map, &scalar, y, axes);
         }
     }
 }
@@ -238,40 +208,44 @@ fn no_state_directions_still_execute_the_primal_body() {
 #[test]
 fn present_numeric_zero_and_absent_direction_remain_distinct() {
     let m = model();
-    let p =
-        CompactJacobianPlacement::new(vec![2], (0, vec![1]), vec![(0, vec![0]), (1, vec![0])], 2)
-            .unwrap();
-    let mut d = grid();
-    d.binders.remove(0);
-    d.binders[0].upper = 2;
     for cancelled in [false, true] {
-        let product = p
-            .with_dependency_receipt(span(), |receipt| {
-                StateJacobianProduct::construct(
-                    m.continuous_numerical_source().unwrap(),
-                    order(&m, false),
-                    &SolveTargetProfile::current_dense_host(),
-                    span(),
-                    |c| {
-                        c.store_compact(receipt, d.clone(), 0, span(), |b| {
-                            let x = b.read(StateJacobianCompactInput::Seed(1), (span(), 0))?;
-                            if cancelled {
-                                b.binary(SolveBinaryOperator::Subtract, [&x, &x], (span(), 1))
-                            } else {
-                                b.copy(&x, (span(), 1))
-                            }
-                        })
-                    },
-                )
-            })
-            .unwrap()
-            .unwrap();
+        let product = cancellation_product(&m, cancelled);
         let one = if cancelled { 0 } else { 1.0_f64.to_bits() };
         assert_eq!(run(&product, &[2.0, 3.0]).unwrap(), vec![0, one, 0, one]);
         for row in 0..2 {
             assert!(product.dependencies().contains(row, 1));
             assert!(!product.dependencies().contains(row, 0));
         }
+    }
+}
+fn cancellation_product(m: &SolveModel, cancelled: bool) -> StateJacobianProduct<'_> {
+    let p =
+        CompactJacobianPlacement::new(vec![2], (0, vec![1]), vec![(0, vec![0]), (1, vec![0])], 2)
+            .unwrap();
+    let mut d = grid();
+    d.binders.remove(0);
+    d.binders[0].upper = 2;
+    p.with_dependency_receipt(span(), |receipt| {
+        StateJacobianProduct::construct(
+            m.continuous_numerical_source().unwrap(),
+            order(m, false),
+            &SolveTargetProfile::current_dense_host(),
+            span(),
+            |c| c.store_compact(receipt, d, 0, span(), |b| cancelled_value(b, cancelled)),
+        )
+    })
+    .unwrap()
+    .unwrap()
+}
+fn cancelled_value<'b>(
+    b: &mut StateJacobianCompactConstruction<'b, '_>,
+    cancelled: bool,
+) -> Result<StateJacobianProductValue<'b>, SolveProgramConstructionError> {
+    let x = b.read(StateJacobianCompactInput::Seed(1), (span(), 0))?;
+    if cancelled {
+        b.binary(SolveBinaryOperator::Subtract, [&x, &x], (span(), 1))
+    } else {
+        b.copy(&x, (span(), 1))
     }
 }
 
@@ -347,4 +321,46 @@ fn parameter_and_time_projection_use_the_same_captured_owner_inputs() {
         })
     ));
     assert_eq!(product.dependencies().nonzero_upper_bound(), Some(0));
+}
+
+fn mapped_value<'b>(
+    b: &mut StateJacobianCompactConstruction<'b, '_>,
+    sqrt: bool,
+) -> Result<StateJacobianProductValue<'b>, SolveProgramConstructionError> {
+    let x = b.read(StateJacobianCompactInput::Seed(0), (span(), 0))?;
+    let x = b.copy(&x, (span(), 1))?;
+    if sqrt {
+        b.unary(SolveUnaryOperator::Sqrt, &x, (span(), 7))
+    } else {
+        b.binary(SolveBinaryOperator::Multiply, [&x, &x], (span(), 7))
+    }
+}
+
+fn assert_matrix(
+    map: &StateJacobianProduct<'_>,
+    scalar: &StateJacobianProduct<'_>,
+    y: [f64; 6],
+    axes: bool,
+) {
+    let got = run(map, &y).unwrap();
+    assert_eq!(got, run(scalar, &y).unwrap());
+    for row in 0..6 {
+        for column in 0..6 {
+            let source_column = if axes { row } else { 5 - row };
+            let expected = if column == source_column {
+                2.0 * y[column]
+            } else {
+                0.0
+            };
+            assert_eq!(f64::from_bits(got[row * 6 + column]), expected);
+            assert_eq!(
+                map.dependencies().contains(row as u32, column as u32),
+                column == source_column
+            );
+            assert_eq!(
+                map.dependencies().contains(row as u32, column as u32),
+                scalar.dependencies().contains(row as u32, column as u32)
+            );
+        }
+    }
 }
