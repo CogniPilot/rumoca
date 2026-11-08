@@ -105,10 +105,12 @@ impl CompiledPrivateProgramWasm {
                 "private program lengths differ from issued layout".into(),
             ));
         }
-        match (self.seed, seed) {
+        match (&self.seed, seed) {
             (Some(storage), Some(seed)) if seed.len() >= storage.count => {
-                scratch[storage.offset..storage.offset + storage.count]
-                    .copy_from_slice(&seed[..storage.count]);
+                for range in &storage.reads {
+                    scratch[storage.offset + range.start..storage.offset + range.end]
+                        .copy_from_slice(&seed[range.clone()]);
+                }
             }
             (None, None) => {}
             _ => {
@@ -254,6 +256,8 @@ fn compile_admitted(
                 (Some(count), Some(offset)) => Some(directional::SeedStorage {
                     offset: offset as usize / 8,
                     count,
+                    reads: crate::emit::private_seed_reads(block, count)
+                        .map_err(WasmCompileError::Backend)?,
                 }),
                 (None, None) => None,
                 _ => {
@@ -394,6 +398,8 @@ fn single(
     }
 }
 
+#[cfg(all(test, feature = "host-engine"))]
+mod seed_copy_tests;
 #[cfg(all(test, feature = "host-engine"))]
 mod shared_module_tests;
 #[cfg(test)]
