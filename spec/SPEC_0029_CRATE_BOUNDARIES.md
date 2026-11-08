@@ -146,6 +146,10 @@ Model capability analysis and source-operation traversal stay in
 `rumoca-eval-solve`; the existing evaluator/native path is unchanged until the
 atomic product-consumer cutover. Compact body receipts and residual/coloring
 composition are separate from this scalar construction API.
+Compact Jacobian placement receipts are IR-local checked coordinate data.
+Their affine/stacked relation stays private until a checked body/output join
+binds actual directions. Placement geometry alone does not certify a source
+derivative. Target materialization remains a consumer of these facts.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
 delegate to Solve lowering or evaluation.
 

@@ -78,7 +78,11 @@ impl SegmentRows {
     }
 
     /// Check the map's own shape against the segment height.
-    fn validate(&self, height: usize, span: Option<Span>) -> Result<(), StructuralPatternError> {
+    pub(super) fn validate(
+        &self,
+        height: usize,
+        span: Option<Span>,
+    ) -> Result<(), StructuralPatternError> {
         let consistent = match self {
             Self::Contiguous { .. } => true,
             Self::Strided {
@@ -158,8 +162,8 @@ fn strided_local(offset: usize, extents: &[u32], strides: &[u32]) -> Option<usiz
 /// `rows` places among the stacked rows, to every column.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct PatternSegment {
-    rows: SegmentRows,
-    pattern: StructuralPattern,
+    pub(super) rows: SegmentRows,
+    pub(super) pattern: StructuralPattern,
 }
 
 #[derive(Deserialize)]
