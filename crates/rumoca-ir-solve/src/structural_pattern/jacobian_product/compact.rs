@@ -141,13 +141,21 @@ fn construct_body<'program>(
     let present = present.ok_or_else(|| invalid(span))?;
     // Only directions present at the actual original output can certify an
     // edge. Numeric zero remains Some and is deliberately retained.
-    let mut filtered = geometry.clone();
-    filtered.columns = geometry
+    let columns = geometry
         .columns
         .iter()
         .zip(present)
-        .filter_map(|(c, p)| p.then_some(c.clone()))
+        .filter_map(|(c, p)| p.then_some((c.base, c.strides.clone())))
         .collect();
+    // The original issued geometry keeps its identity unchanged. A fresh
+    // private geometry derives only the output-present column relation.
+    let filtered = CompactJacobianPlacement::new(
+        geometry.extents.clone(),
+        (geometry.row.base, geometry.row.strides.clone()),
+        columns,
+        geometry.states,
+    )
+    .ok_or_else(|| invalid(span))?;
     let relation = filtered
         .derive_placement_relation(span)
         .map_err(|_| invalid(span))?;
