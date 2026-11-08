@@ -1,10 +1,11 @@
 //! Compile the complete original directional source with private seed storage.
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct SeedStorage {
     pub offset: usize,
     pub count: usize,
+    pub reads: Vec<std::ops::Range<usize>>,
 }
 
 pub fn compile_private_directional_program_wasm(

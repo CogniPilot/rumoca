@@ -287,19 +287,7 @@ fn checked_programs(plan: &Plan, layout: &VarLayout) -> Result<Vec<Vec<LinearOp>
 }
 
 fn directional_operation(operation: &LinearOp, seed_len: usize) -> Result<(), String> {
-    let end = match operation {
-        LinearOp::LoadSeed { index, .. } => index.checked_add(1),
-        LinearOp::LoadIndexedSeed { base, count, .. } => base.checked_add(*count),
-        LinearOp::TensorLoad {
-            seed_start: Some(start),
-            count,
-            ..
-        } => start.checked_add(*count),
-        _ => return Ok(()),
-    };
-    if end.is_none_or(|end| end > seed_len) {
-        return Err("WASM private source seed exceeds its declared coordinate storage".into());
-    }
+    crate::emit::seed_read_range(operation, seed_len)?;
     Ok(())
 }
 

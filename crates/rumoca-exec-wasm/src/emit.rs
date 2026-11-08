@@ -17,6 +17,7 @@ pub(super) use compute::{
 };
 #[cfg(test)]
 pub(super) use compute::{emit_private_directional_module, emit_private_program_module};
+pub(crate) use seed::{private_seed_reads, seed_read_range};
 
 use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
 use std::collections::{BTreeMap, BTreeSet};
