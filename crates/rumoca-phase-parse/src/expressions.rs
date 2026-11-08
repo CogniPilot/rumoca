@@ -11,6 +11,68 @@ use rumoca_core::Span;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+/// Grammar payload for the expression nonterminals.
+///
+/// Boxed so the parser stack item, which is as large as its largest grammar
+/// payload, does not carry whole `Expression` values inline.
+#[derive(Clone, PartialEq)]
+pub struct BoxedExpression(Box<rumoca_ir_ast::Expression>);
+
+impl BoxedExpression {
+    /// The converted expression, by value.
+    pub(crate) fn into_inner(self) -> rumoca_ir_ast::Expression {
+        *self.0
+    }
+}
+
+impl std::ops::Deref for BoxedExpression {
+    type Target = rumoca_ir_ast::Expression;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for BoxedExpression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<BoxedExpression> for rumoca_ir_ast::Expression {
+    fn from(value: BoxedExpression) -> Self {
+        value.into_inner()
+    }
+}
+
+macro_rules! boxed_expression_payload {
+    ($($nonterminal:ident),* $(,)?) => {$(
+        impl TryFrom<&modelica_grammar_trait::$nonterminal> for BoxedExpression {
+            type Error = anyhow::Error;
+
+            fn try_from(
+                ast: &modelica_grammar_trait::$nonterminal,
+            ) -> std::result::Result<Self, Self::Error> {
+                Ok(Self(Box::new(ast.try_into()?)))
+            }
+        }
+    )*};
+}
+
+boxed_expression_payload!(
+    FunctionArgument,
+    Primary,
+    Factor,
+    Term,
+    ArithmeticExpression,
+    Relation,
+    LogicalFactor,
+    LogicalTerm,
+    LogicalExpression,
+    SimpleExpression,
+    Expression,
+);
+
 fn empty_expr(span: Span) -> rumoca_ir_ast::Expression {
     rumoca_ir_ast::Expression::Empty { span }
 }
@@ -105,7 +167,7 @@ fn convert_expression_function_args(
     }
 
     // Regular function arguments
-    let mut args = vec![def.expression.clone()];
+    let mut args = vec![(*def.expression).clone()];
     if let Some(opt) = &def.function_arguments_opt {
         extend_from_non_first(&mut args, &opt.function_arguments_opt_group);
     }
@@ -182,7 +244,7 @@ impl TryFrom<&modelica_grammar_trait::Subscript> for rumoca_ir_ast::Subscript {
                 token: tok.colon.clone().into(),
             }),
             modelica_grammar_trait::Subscript::Expression(expr) => Ok(
-                rumoca_ir_ast::Subscript::Expression(expr.expression.clone()),
+                rumoca_ir_ast::Subscript::Expression((*expr.expression).clone()),
             ),
         }
     }
@@ -234,7 +296,7 @@ fn named_argument_to_expr(
     Ok(rumoca_ir_ast::Expression::NamedArgument {
         span: token_span(&named_arg.ident)?,
         name: named_arg.ident.clone(),
-        value: Arc::new(named_arg.function_argument.clone()),
+        value: Arc::new((*named_arg.function_argument).clone()),
     })
 }
 
@@ -262,7 +324,7 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for rumoca_ir_ast::Expre
     ) -> std::result::Result<Self, Self::Error> {
         match &ast {
             modelica_grammar_trait::FunctionArgument::Expression(expr) => {
-                Ok(expr.expression.clone())
+                Ok((*expr.expression).clone())
             }
             modelica_grammar_trait::FunctionArgument::FunctionPartialApplication(fpa) => {
                 // Convert 'function Foo.Bar(arg=val)' to a function call expression
@@ -397,7 +459,7 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for FunctionArg
                     .as_ref()
                     .map(|opt| opt.function_arguments_non_first.take())
                     .unwrap_or_default();
-                args.push_front(expr.function_argument.clone());
+                args.push_front((*expr.function_argument).clone());
                 args
             }
             modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(named) => {
@@ -562,7 +624,7 @@ fn collect_partial_app_args(
     let mut args = vec![rumoca_ir_ast::Expression::NamedArgument {
         span: token_span(&named_args.named_argument.ident)?,
         name: named_args.named_argument.ident.clone(),
-        value: Arc::new(named_args.named_argument.function_argument.clone()),
+        value: Arc::new((*named_args.named_argument.function_argument).clone()),
     }];
     if let Some(opt) = &named_args.named_arguments_opt {
         args.extend(collect_partial_app_args(&opt.named_arguments)?);
@@ -610,7 +672,7 @@ fn extract_component_mod_args(
             modelica_grammar_trait::Modification::EquModificationExpression(eq_mod) => {
                 match &*eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
-                        (ExpressionList::default(), Some(expr.expression.clone()))
+                        (ExpressionList::default(), Some((*expr.expression).clone()))
                     }
                     modelica_grammar_trait::ModificationExpression::Break(_) => {
                         (ExpressionList::default(), None)
@@ -739,7 +801,7 @@ fn convert_replaceable_component_clause_inner(
                         return Ok(rumoca_ir_ast::Expression::Modification {
                             span: merge_spans(name_ref.span, expr.expression.span()),
                             target: name_ref,
-                            value: Arc::new(expr.expression.clone()),
+                            value: Arc::new((*expr.expression).clone()),
                         });
                     }
                     modelica_grammar_trait::ModificationExpression::Break(_) => {}
@@ -851,7 +913,7 @@ fn convert_element_modification(
                                 op: rumoca_core::OpBinary::Assign,
                                 span: binary_span(&mod_expr, &expr.expression),
                                 lhs: Arc::new(mod_expr),
-                                rhs: Arc::new(expr.expression.clone()),
+                                rhs: Arc::new((*expr.expression).clone()),
                             })
                         }
                         modelica_grammar_trait::ModificationExpression::Break(_) => Ok(mod_expr),
@@ -869,7 +931,7 @@ fn convert_element_modification(
                         Ok(rumoca_ir_ast::Expression::Modification {
                             span: merge_spans(target.span, expr.expression.span()),
                             target,
-                            value: Arc::new(expr.expression.clone()),
+                            value: Arc::new((*expr.expression).clone()),
                         })
                     }
                 }
@@ -999,13 +1061,13 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
     ) -> std::result::Result<Self, Self::Error> {
         let mut v = Vec::new();
         if let Some(opt) = &ast.output_expression_list_opt {
-            v.push(opt.expression.clone());
+            v.push((*opt.expression).clone());
         } else if let Some(first) = ast.output_expression_list_list.first() {
             v.push(empty_expr(token_span(&first.comma)?));
         }
         for expr in &ast.output_expression_list_list {
             let output = match &expr.output_expression_list_opt0 {
-                Some(opt) => opt.expression.clone(),
+                Some(opt) => (*opt.expression).clone(),
                 None => empty_expr(token_span(&expr.comma)?),
             };
             v.push(output);
@@ -1060,9 +1122,9 @@ impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for FunctionCallArgument
 
 /// Convert ExpressionList to Vec<Expression>.
 fn expr_list_to_vec(el: &modelica_grammar_trait::ExpressionList) -> Vec<rumoca_ir_ast::Expression> {
-    let mut elements = vec![el.expression.clone()];
+    let mut elements = vec![(*el.expression).clone()];
     for item in &el.expression_list_list {
-        elements.push(item.expression.clone());
+        elements.push((*item.expression).clone());
     }
     elements
 }
@@ -1308,7 +1370,7 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
 
     fn try_from(ast: &modelica_grammar_trait::Factor) -> std::result::Result<Self, Self::Error> {
         if ast.factor_list.is_empty() {
-            Ok(ast.primary.clone())
+            Ok((*ast.primary).clone())
         } else if ast.factor_list.len() > 1 {
             // Modelica's factor grammar permits at most one exponentiation
             // operator.  The recovery grammar is more permissive, so reject
@@ -1325,11 +1387,11 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
                     rumoca_core::OpBinary::ExpElem
                 }
             };
-            let rhs = ast.factor_list[0].primary.clone();
+            let rhs = (*ast.factor_list[0].primary).clone();
             Ok(rumoca_ir_ast::Expression::Binary {
                 op,
                 span: binary_span(&ast.primary, &rhs),
-                lhs: Arc::new(ast.primary.clone()),
+                lhs: Arc::new((*ast.primary).clone()),
                 rhs: Arc::new(rhs),
             })
         }
@@ -1341,11 +1403,11 @@ impl TryFrom<&modelica_grammar_trait::Term> for rumoca_ir_ast::Expression {
 
     fn try_from(ast: &modelica_grammar_trait::Term) -> std::result::Result<Self, Self::Error> {
         if ast.term_list.is_empty() {
-            return Ok(ast.factor.clone());
+            return Ok((*ast.factor).clone());
         }
-        let mut lhs = ast.factor.clone();
+        let mut lhs = (*ast.factor).clone();
         for factor in &ast.term_list {
-            let rhs = factor.factor.clone();
+            let rhs = (*factor.factor).clone();
             let span = binary_span(&lhs, &rhs);
             lhs = rumoca_ir_ast::Expression::Binary {
                 span,
@@ -1368,14 +1430,14 @@ impl TryFrom<&modelica_grammar_trait::ArithmeticExpression> for rumoca_ir_ast::E
             Some(opt) => rumoca_ir_ast::Expression::Unary {
                 op: add_op_to_unary(&opt.add_operator),
                 span: merge_spans(add_op_span(&opt.add_operator)?, ast.term.span()),
-                rhs: Arc::new(ast.term.clone()),
+                rhs: Arc::new((*ast.term).clone()),
             },
-            None => ast.term.clone(),
+            None => (*ast.term).clone(),
         };
 
         // if has term list, process expressions
         for term in &ast.arithmetic_expression_list {
-            let rhs = term.term.clone();
+            let rhs = (*term.term).clone();
             let span = binary_span(&lhs, &rhs);
             lhs = rumoca_ir_ast::Expression::Binary {
                 span,
@@ -1394,10 +1456,10 @@ impl TryFrom<&modelica_grammar_trait::Relation> for rumoca_ir_ast::Expression {
     fn try_from(ast: &modelica_grammar_trait::Relation) -> std::result::Result<Self, Self::Error> {
         match &ast.relation_opt {
             Some(relation) => {
-                let rhs = relation.arithmetic_expression.clone();
+                let rhs = (*relation.arithmetic_expression).clone();
                 Ok(rumoca_ir_ast::Expression::Binary {
                     span: binary_span(&ast.arithmetic_expression, &rhs),
-                    lhs: Arc::new(ast.arithmetic_expression.clone()),
+                    lhs: Arc::new((*ast.arithmetic_expression).clone()),
                     op: match &*relation.relational_operator {
                         modelica_grammar_trait::RelationalOperator::EquEqu(_) => {
                             rumoca_core::OpBinary::Eq
@@ -1421,7 +1483,7 @@ impl TryFrom<&modelica_grammar_trait::Relation> for rumoca_ir_ast::Expression {
                     rhs: Arc::new(rhs),
                 })
             }
-            None => Ok(ast.arithmetic_expression.clone()),
+            None => Ok((*ast.arithmetic_expression).clone()),
         }
     }
 }
@@ -1439,9 +1501,9 @@ impl TryFrom<&modelica_grammar_trait::LogicalFactor> for rumoca_ir_ast::Expressi
                     token_span(&opt.not.not.clone().into())?,
                     ast.relation.span(),
                 ),
-                rhs: Arc::new(ast.relation.clone()),
+                rhs: Arc::new((*ast.relation).clone()),
             }),
-            None => Ok(ast.relation.clone()),
+            None => Ok((*ast.relation).clone()),
         }
     }
 }
@@ -1453,11 +1515,11 @@ impl TryFrom<&modelica_grammar_trait::LogicalTerm> for rumoca_ir_ast::Expression
         ast: &modelica_grammar_trait::LogicalTerm,
     ) -> std::result::Result<Self, Self::Error> {
         if ast.logical_term_list.is_empty() {
-            Ok(ast.logical_factor.clone())
+            Ok((*ast.logical_factor).clone())
         } else {
-            let mut lhs = ast.logical_factor.clone();
+            let mut lhs = (*ast.logical_factor).clone();
             for term in &ast.logical_term_list {
-                let rhs = term.logical_factor.clone();
+                let rhs = (*term.logical_factor).clone();
                 let span = binary_span(&lhs, &rhs);
                 lhs = rumoca_ir_ast::Expression::Binary {
                     span,
@@ -1478,11 +1540,11 @@ impl TryFrom<&modelica_grammar_trait::LogicalExpression> for rumoca_ir_ast::Expr
         ast: &modelica_grammar_trait::LogicalExpression,
     ) -> std::result::Result<Self, Self::Error> {
         if ast.logical_expression_list.is_empty() {
-            Ok(ast.logical_term.clone())
+            Ok((*ast.logical_term).clone())
         } else {
-            let mut lhs = ast.logical_term.clone();
+            let mut lhs = (*ast.logical_term).clone();
             for term in &ast.logical_expression_list {
-                let rhs = term.logical_term.clone();
+                let rhs = (*term.logical_term).clone();
                 let span = binary_span(&lhs, &rhs);
                 lhs = rumoca_ir_ast::Expression::Binary {
                     span,
@@ -1509,18 +1571,18 @@ impl TryFrom<&modelica_grammar_trait::SimpleExpression> for rumoca_ir_ast::Expre
                         ast.logical_expression.span(),
                         opt0.logical_expression.span(),
                     ),
-                    start: Arc::new(ast.logical_expression.clone()),
-                    step: Some(Arc::new(opt.logical_expression.clone())),
-                    end: Arc::new(opt0.logical_expression.clone()),
+                    start: Arc::new((*ast.logical_expression).clone()),
+                    step: Some(Arc::new((*opt.logical_expression).clone())),
+                    end: Arc::new((*opt0.logical_expression).clone()),
                 }),
                 None => Ok(rumoca_ir_ast::Expression::Range {
                     span: merge_spans(ast.logical_expression.span(), opt.logical_expression.span()),
-                    start: Arc::new(ast.logical_expression.clone()),
+                    start: Arc::new((*ast.logical_expression).clone()),
                     step: None,
-                    end: Arc::new(opt.logical_expression.clone()),
+                    end: Arc::new((*opt.logical_expression).clone()),
                 }),
             },
-            None => Ok(ast.logical_expression.clone()),
+            None => Ok((*ast.logical_expression).clone()),
         }
     }
 }
@@ -1533,7 +1595,7 @@ impl TryFrom<&modelica_grammar_trait::Expression> for rumoca_ir_ast::Expression 
     ) -> std::result::Result<Self, Self::Error> {
         match &ast {
             modelica_grammar_trait::Expression::SimpleExpression(simple_expression) => {
-                Ok(simple_expression.simple_expression.clone())
+                Ok((*simple_expression.simple_expression).clone())
             }
             modelica_grammar_trait::Expression::IfExpression(expr) => {
                 let if_expr = &expr.if_expression;
@@ -1542,19 +1604,19 @@ impl TryFrom<&modelica_grammar_trait::Expression> for rumoca_ir_ast::Expression 
                 let mut branches = Vec::new();
 
                 // The main if branch: condition is expression, result is expression0
-                let condition = if_expr.expression.clone();
-                let then_expr = if_expr.expression0.clone();
+                let condition = (*if_expr.expression).clone();
+                let then_expr = (*if_expr.expression0).clone();
                 branches.push((condition, then_expr));
 
                 // Add any elseif branches from the list
                 for elseif in &if_expr.if_expression_list {
-                    let elseif_cond = elseif.expression.clone();
-                    let elseif_expr = elseif.expression0.clone();
+                    let elseif_cond = (*elseif.expression).clone();
+                    let elseif_expr = (*elseif.expression0).clone();
                     branches.push((elseif_cond, elseif_expr));
                 }
 
                 // The else branch is expression1
-                let else_branch = Arc::new(if_expr.expression1.clone());
+                let else_branch = Arc::new((*if_expr.expression1).clone());
 
                 Ok(rumoca_ir_ast::Expression::If {
                     span: merge_spans(if_expr.expression.span(), else_branch.span()),

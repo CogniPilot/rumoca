@@ -7720,7 +7720,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 54,
         production: &[],
     },
-    // 241 - condition_attribute: if^ /* Clipped */ expression : rumoca_ir_ast::Expression ;
+    // 241 - condition_attribute: if^ /* Clipped */ expression : crate::BoxedExpression ;
     Production {
         lhs: 76,
         production: &[ParseType::N(140), ParseType::N(186)],
@@ -7770,7 +7770,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 225,
         production: &[],
     },
-    // 251 - modification_expression: expression : rumoca_ir_ast::Expression ;
+    // 251 - modification_expression: expression : crate::BoxedExpression ;
     Production {
         lhs: 226,
         production: &[ParseType::N(140)],
@@ -8030,12 +8030,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 269,
         production: &[ParseType::N(304)],
     },
-    // 302 - simple_equation: simple_expression : rumoca_ir_ast::Expression  simple_equationOpt /* Option */;
+    // 302 - simple_equation: simple_expression : crate::BoxedExpression  simple_equationOpt /* Option */;
     Production {
         lhs: 263,
         production: &[ParseType::N(264), ParseType::N(265)],
     },
-    // 303 - simple_equationOpt: '='^ /* Clipped */ expression : rumoca_ir_ast::Expression ;
+    // 303 - simple_equationOpt: '='^ /* Clipped */ expression : crate::BoxedExpression ;
     Production {
         lhs: 264,
         production: &[ParseType::N(140), ParseType::T(73)],
@@ -8095,7 +8095,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 66,
         production: &[ParseType::N(67), ParseType::N(62)],
     },
-    // 315 - component_statementGroup: ':='^ /* Clipped */ expression : rumoca_ir_ast::Expression ;
+    // 315 - component_statementGroup: ':='^ /* Clipped */ expression : crate::BoxedExpression ;
     Production {
         lhs: 67,
         production: &[ParseType::N(140), ParseType::T(83)],
@@ -8122,7 +8122,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 271,
         production: &[ParseType::N(90), ParseType::N(274)],
     },
-    // 319 - equation_block: expression : rumoca_ir_ast::Expression  then^ /* Clipped */ equation_blockList /* Vec */;
+    // 319 - equation_block: expression : crate::BoxedExpression  then^ /* Clipped */ equation_blockList /* Vec */;
     Production {
         lhs: 134,
         production: &[ParseType::N(135), ParseType::N(285), ParseType::N(140)],
@@ -8179,7 +8179,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 189,
         production: &[],
     },
-    // 329 - statement_block: expression : rumoca_ir_ast::Expression  then^ /* Clipped */ statement_blockList /* Vec */;
+    // 329 - statement_block: expression : crate::BoxedExpression  then^ /* Clipped */ statement_blockList /* Vec */;
     Production {
         lhs: 272,
         production: &[ParseType::N(273), ParseType::N(285), ParseType::N(140)],
@@ -8300,7 +8300,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 162,
         production: &[ParseType::N(163), ParseType::N(185)],
     },
-    // 349 - for_indexOpt: in^ /* Clipped */ expression : rumoca_ir_ast::Expression ;
+    // 349 - for_indexOpt: in^ /* Clipped */ expression : crate::BoxedExpression ;
     Production {
         lhs: 163,
         production: &[ParseType::N(140), ParseType::N(208)],
@@ -8310,7 +8310,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 163,
         production: &[],
     },
-    // 351 - while_statement: while^ /* Clipped */ expression : rumoca_ir_ast::Expression  loop^ /* Clipped */ while_statementList /* Vec */ end^ /* Clipped */ while^ /* Clipped */;
+    // 351 - while_statement: while^ /* Clipped */ expression : crate::BoxedExpression  loop^ /* Clipped */ while_statementList /* Vec */ end^ /* Clipped */ while^ /* Clipped */;
     Production {
         lhs: 309,
         production: &[
@@ -8386,7 +8386,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(77),
         ],
     },
-    // 361 - expression: simple_expression : rumoca_ir_ast::Expression ;
+    // 361 - expression: simple_expression : crate::BoxedExpression ;
     Production {
         lhs: 140,
         production: &[ParseType::N(265)],
@@ -8396,7 +8396,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 140,
         production: &[ParseType::N(191)],
     },
-    // 363 - if_expression: if^ /* Clipped */ expression : rumoca_ir_ast::Expression  then^ /* Clipped */ expression : rumoca_ir_ast::Expression  if_expressionList /* Vec */ else^ /* Clipped */ expression : rumoca_ir_ast::Expression ;
+    // 363 - if_expression: if^ /* Clipped */ expression : crate::BoxedExpression  then^ /* Clipped */ expression : crate::BoxedExpression  if_expressionList /* Vec */ else^ /* Clipped */ expression : crate::BoxedExpression ;
     Production {
         lhs: 191,
         production: &[
@@ -8409,7 +8409,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(186),
         ],
     },
-    // 364 - if_expressionList: elseif^ /* Clipped */ expression : rumoca_ir_ast::Expression  then^ /* Clipped */ expression : rumoca_ir_ast::Expression  if_expressionList;
+    // 364 - if_expressionList: elseif^ /* Clipped */ expression : crate::BoxedExpression  then^ /* Clipped */ expression : crate::BoxedExpression  if_expressionList;
     Production {
         lhs: 192,
         production: &[
@@ -8425,17 +8425,17 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 192,
         production: &[],
     },
-    // 366 - simple_expression: logical_expression : rumoca_ir_ast::Expression  simple_expressionOpt /* Option */;
+    // 366 - simple_expression: logical_expression : crate::BoxedExpression  simple_expressionOpt /* Option */;
     Production {
         lhs: 265,
         production: &[ParseType::N(266), ParseType::N(215)],
     },
-    // 367 - simple_expressionOpt: ':'^ /* Clipped */ logical_expression : rumoca_ir_ast::Expression  simple_expressionOpt0 /* Option */;
+    // 367 - simple_expressionOpt: ':'^ /* Clipped */ logical_expression : crate::BoxedExpression  simple_expressionOpt0 /* Option */;
     Production {
         lhs: 266,
         production: &[ParseType::N(267), ParseType::N(215), ParseType::T(76)],
     },
-    // 368 - simple_expressionOpt0: ':'^ /* Clipped */ logical_expression : rumoca_ir_ast::Expression ;
+    // 368 - simple_expressionOpt0: ':'^ /* Clipped */ logical_expression : crate::BoxedExpression ;
     Production {
         lhs: 267,
         production: &[ParseType::N(215), ParseType::T(76)],
@@ -8450,12 +8450,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 266,
         production: &[],
     },
-    // 371 - logical_expression: logical_term : rumoca_ir_ast::Expression  logical_expressionList /* Vec */;
+    // 371 - logical_expression: logical_term : crate::BoxedExpression  logical_expressionList /* Vec */;
     Production {
         lhs: 215,
         production: &[ParseType::N(216), ParseType::N(219)],
     },
-    // 372 - logical_expressionList: or^ /* Clipped */ logical_term : rumoca_ir_ast::Expression  logical_expressionList;
+    // 372 - logical_expressionList: or^ /* Clipped */ logical_term : crate::BoxedExpression  logical_expressionList;
     Production {
         lhs: 216,
         production: &[ParseType::N(216), ParseType::N(219), ParseType::N(235)],
@@ -8465,12 +8465,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 216,
         production: &[],
     },
-    // 374 - logical_term: logical_factor : rumoca_ir_ast::Expression  logical_termList /* Vec */;
+    // 374 - logical_term: logical_factor : crate::BoxedExpression  logical_termList /* Vec */;
     Production {
         lhs: 219,
         production: &[ParseType::N(220), ParseType::N(217)],
     },
-    // 375 - logical_termList: and^ /* Clipped */ logical_factor : rumoca_ir_ast::Expression  logical_termList;
+    // 375 - logical_termList: and^ /* Clipped */ logical_factor : crate::BoxedExpression  logical_termList;
     Production {
         lhs: 220,
         production: &[ParseType::N(220), ParseType::N(217), ParseType::N(5)],
@@ -8480,7 +8480,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 220,
         production: &[],
     },
-    // 377 - logical_factor: logical_factorOpt /* Option */ relation : rumoca_ir_ast::Expression ;
+    // 377 - logical_factor: logical_factorOpt /* Option */ relation : crate::BoxedExpression ;
     Production {
         lhs: 217,
         production: &[ParseType::N(256), ParseType::N(218)],
@@ -8495,12 +8495,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 218,
         production: &[],
     },
-    // 380 - relation: arithmetic_expression : rumoca_ir_ast::Expression  relationOpt /* Option */;
+    // 380 - relation: arithmetic_expression : crate::BoxedExpression  relationOpt /* Option */;
     Production {
         lhs: 256,
         production: &[ParseType::N(257), ParseType::N(15)],
     },
-    // 381 - relationOpt: relational_operator arithmetic_expression : rumoca_ir_ast::Expression ;
+    // 381 - relationOpt: relational_operator arithmetic_expression : crate::BoxedExpression ;
     Production {
         lhs: 257,
         production: &[ParseType::N(15), ParseType::N(258)],
@@ -8540,12 +8540,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 258,
         production: &[ParseType::T(89)],
     },
-    // 389 - arithmetic_expression: arithmetic_expressionOpt /* Option */ term : rumoca_ir_ast::Expression  arithmetic_expressionList /* Vec */;
+    // 389 - arithmetic_expression: arithmetic_expressionOpt /* Option */ term : crate::BoxedExpression  arithmetic_expressionList /* Vec */;
     Production {
         lhs: 15,
         production: &[ParseType::N(16), ParseType::N(283), ParseType::N(17)],
     },
-    // 390 - arithmetic_expressionList: add_operator term : rumoca_ir_ast::Expression  arithmetic_expressionList;
+    // 390 - arithmetic_expressionList: add_operator term : crate::BoxedExpression  arithmetic_expressionList;
     Production {
         lhs: 16,
         production: &[ParseType::N(16), ParseType::N(283), ParseType::N(0)],
@@ -8585,12 +8585,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 0,
         production: &[ParseType::T(93)],
     },
-    // 398 - term: factor : rumoca_ir_ast::Expression  termList /* Vec */;
+    // 398 - term: factor : crate::BoxedExpression  termList /* Vec */;
     Production {
         lhs: 283,
         production: &[ParseType::N(284), ParseType::N(153)],
     },
-    // 399 - termList: mul_operator factor : rumoca_ir_ast::Expression  termList;
+    // 399 - termList: mul_operator factor : crate::BoxedExpression  termList;
     Production {
         lhs: 284,
         production: &[ParseType::N(284), ParseType::N(153), ParseType::N(227)],
@@ -8620,12 +8620,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 227,
         production: &[ParseType::T(95)],
     },
-    // 405 - factor: primary : rumoca_ir_ast::Expression  factorList /* Vec */;
+    // 405 - factor: primary : crate::BoxedExpression  factorList /* Vec */;
     Production {
         lhs: 153,
         production: &[ParseType::N(154), ParseType::N(248)],
     },
-    // 406 - factorList: factorListGroup primary : rumoca_ir_ast::Expression  factorList;
+    // 406 - factorList: factorListGroup primary : crate::BoxedExpression  factorList;
     Production {
         lhs: 154,
         production: &[ParseType::N(154), ParseType::N(248), ParseType::N(155)],
@@ -8925,7 +8925,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 177,
         production: &[],
     },
-    // 463 - function_arguments: expression : rumoca_ir_ast::Expression  function_argumentsOpt /* Option */;
+    // 463 - function_arguments: expression : crate::BoxedExpression  function_argumentsOpt /* Option */;
     Production {
         lhs: 170,
         production: &[ParseType::N(171), ParseType::N(140)],
@@ -8970,7 +8970,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 171,
         production: &[],
     },
-    // 472 - function_arguments_non_first: function_argument : rumoca_ir_ast::Expression  function_arguments_non_firstOpt /* Option */;
+    // 472 - function_arguments_non_first: function_argument : crate::BoxedExpression  function_arguments_non_firstOpt /* Option */;
     Production {
         lhs: 174,
         production: &[ParseType::N(175), ParseType::N(169)],
@@ -8990,7 +8990,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 175,
         production: &[],
     },
-    // 476 - array_arguments: expression : rumoca_ir_ast::Expression  array_argumentsOpt /* Option */;
+    // 476 - array_arguments: expression : crate::BoxedExpression  array_argumentsOpt /* Option */;
     Production {
         lhs: 18,
         production: &[ParseType::N(19), ParseType::N(140)],
@@ -9010,7 +9010,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 21,
         production: &[ParseType::N(20), ParseType::N(164), ParseType::N(159)],
     },
-    // 480 - array_argumentsOpt0: if expression : rumoca_ir_ast::Expression ;
+    // 480 - array_argumentsOpt0: if expression : crate::BoxedExpression ;
     Production {
         lhs: 20,
         production: &[ParseType::N(140), ParseType::N(186)],
@@ -9025,7 +9025,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 19,
         production: &[],
     },
-    // 483 - array_arguments_non_first: expression : rumoca_ir_ast::Expression  array_arguments_non_firstOpt /* Option */;
+    // 483 - array_arguments_non_first: expression : crate::BoxedExpression  array_arguments_non_firstOpt /* Option */;
     Production {
         lhs: 22,
         production: &[ParseType::N(23), ParseType::N(140)],
@@ -9055,7 +9055,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 232,
         production: &[],
     },
-    // 489 - named_argument: ident : rumoca_core::Token  '='^ /* Clipped */ function_argument : rumoca_ir_ast::Expression ;
+    // 489 - named_argument: ident : rumoca_core::Token  '='^ /* Clipped */ function_argument : crate::BoxedExpression ;
     Production {
         lhs: 230,
         production: &[ParseType::N(169), ParseType::T(73), ParseType::N(185)],
@@ -9065,7 +9065,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 169,
         production: &[ParseType::N(179)],
     },
-    // 491 - function_argument: expression : rumoca_ir_ast::Expression ;
+    // 491 - function_argument: expression : crate::BoxedExpression ;
     Production {
         lhs: 169,
         production: &[ParseType::N(140)],
@@ -9106,7 +9106,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 239,
         production: &[],
     },
-    // 498 - output_expression_listOpt0: expression : rumoca_ir_ast::Expression ;
+    // 498 - output_expression_listOpt0: expression : crate::BoxedExpression ;
     Production {
         lhs: 241,
         production: &[ParseType::N(140)],
@@ -9116,7 +9116,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 241,
         production: &[],
     },
-    // 500 - output_expression_listOpt: expression : rumoca_ir_ast::Expression ;
+    // 500 - output_expression_listOpt: expression : crate::BoxedExpression ;
     Production {
         lhs: 240,
         production: &[ParseType::N(140)],
@@ -9126,12 +9126,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 240,
         production: &[],
     },
-    // 502 - expression_list: expression : rumoca_ir_ast::Expression  expression_listList /* Vec */;
+    // 502 - expression_list: expression : crate::BoxedExpression  expression_listList /* Vec */;
     Production {
         lhs: 141,
         production: &[ParseType::N(142), ParseType::N(140)],
     },
-    // 503 - expression_listList: ','^ /* Clipped */ expression : rumoca_ir_ast::Expression  expression_listList;
+    // 503 - expression_listList: ','^ /* Clipped */ expression : crate::BoxedExpression  expression_listList;
     Production {
         lhs: 142,
         production: &[ParseType::N(142), ParseType::N(140), ParseType::T(77)],
@@ -9166,7 +9166,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 282,
         production: &[ParseType::T(76)],
     },
-    // 509 - subscript: expression : rumoca_ir_ast::Expression ;
+    // 509 - subscript: expression : crate::BoxedExpression ;
     Production {
         lhs: 282,
         production: &[ParseType::N(140)],

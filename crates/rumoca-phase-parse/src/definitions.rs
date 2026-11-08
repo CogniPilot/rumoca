@@ -138,7 +138,7 @@ fn collect_named_args(
         span: token_span(&arg.ident)?,
         qualified_display_name: None,
     });
-    let rhs = arg.function_argument.clone();
+    let rhs = (*arg.function_argument).clone();
     mods.push(rumoca_ir_ast::Expression::Binary {
         op: rumoca_core::OpBinary::Assign,
         span: merge_spans(lhs.span(), rhs.span()),
@@ -1222,9 +1222,9 @@ fn extract_external_function(
         // Get the arguments - first expression + additional expressions from list
         if let Some(args_opt) = &ext_call.external_function_call_opt0 {
             let expr_list = &args_opt.expression_list;
-            let mut args = vec![expr_list.expression.clone()];
+            let mut args = vec![(*expr_list.expression).clone()];
             for item in &expr_list.expression_list_list {
-                args.push(item.expression.clone());
+                args.push((*item.expression).clone());
             }
             external.args = args;
         }

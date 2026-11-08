@@ -95,7 +95,7 @@ pub(crate) fn collect_array_elements(
                 comma_args,
             ) => {
                 // Simple array: collect all elements
-                let mut elements = vec![args.expression.clone()];
+                let mut elements = vec![(*args.expression).clone()];
                 collect_array_non_first(&comma_args.array_arguments_non_first, &mut elements);
                 let span = required_expression_list_span(&elements, "array arguments")?;
                 Ok(rumoca_ir_ast::Expression::Array {
@@ -112,10 +112,10 @@ pub(crate) fn collect_array_elements(
                 let filter = for_group
                     .array_arguments_opt0
                     .as_ref()
-                    .map(|opt| Arc::new(opt.expression.clone()));
+                    .map(|opt| Arc::new((*opt.expression).clone()));
                 Ok(rumoca_ir_ast::Expression::ArrayComprehension {
                     span: args.expression.span(),
-                    expr: Arc::new(args.expression.clone()),
+                    expr: Arc::new((*args.expression).clone()),
                     indices,
                     filter,
                 })
@@ -125,7 +125,7 @@ pub(crate) fn collect_array_elements(
         // Single element array
         Ok(rumoca_ir_ast::Expression::Array {
             span: args.expression.span(),
-            elements: vec![args.expression.clone()],
+            elements: vec![(*args.expression).clone()],
             kind: rumoca_core::ArrayConstructor::Array,
         })
     }
@@ -153,7 +153,7 @@ fn convert_for_index(
     index: &modelica_grammar_trait::ForIndex,
 ) -> anyhow::Result<rumoca_ir_ast::ForIndex> {
     let range = match &index.for_index_opt {
-        Some(opt) => opt.expression.clone(),
+        Some(opt) => (*opt.expression).clone(),
         None => rumoca_ir_ast::Expression::Empty {
             span: token_span(&index.ident)?,
         },
@@ -172,7 +172,7 @@ pub(crate) fn collect_array_non_first(
     elements: &mut Vec<rumoca_ir_ast::Expression>,
 ) {
     // Add current element
-    elements.push(args.expression.clone());
+    elements.push((*args.expression).clone());
 
     // Recursively collect remaining elements
     if let Some(opt) = &args.array_arguments_non_first_opt {
