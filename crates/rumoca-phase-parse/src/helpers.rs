@@ -90,7 +90,7 @@ pub(crate) fn collect_array_elements(
 ) -> anyhow::Result<rumoca_ir_ast::Expression> {
     // Check if this is an array comprehension or a simple array
     if let Some(opt) = &args.array_arguments_opt {
-        match &opt.array_arguments_opt_group {
+        match &*opt.array_arguments_opt_group {
             modelica_grammar_trait::ArrayArgumentsOptGroup::CommaArrayArgumentsNonFirst(
                 comma_args,
             ) => {

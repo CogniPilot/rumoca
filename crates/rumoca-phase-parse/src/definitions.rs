@@ -74,7 +74,7 @@ fn extract_causality_from_base_prefix(
     let Some(opt) = &base_prefix.base_prefix_opt else {
         return rumoca_core::Causality::Empty;
     };
-    match &opt.base_prefix_opt_group {
+    match &*opt.base_prefix_opt_group {
         modelica_grammar_trait::BasePrefixOptGroup::Input(inp) => {
             rumoca_core::Causality::Input(inp.input.input.clone().into())
         }
@@ -523,7 +523,7 @@ fn function_purity(class_type: &modelica_grammar_trait::ClassType) -> (bool, boo
     if let modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(f) = class_type {
         if let Some(ref opt1) = f.class_type_opt1 {
             let pure = !matches!(
-                opt1.class_type_opt1_group,
+                *opt1.class_type_opt1_group,
                 modelica_grammar_trait::ClassTypeOpt1Group::Impure(_)
             );
             (pure, true)
@@ -988,9 +988,9 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
     ) -> std::result::Result<Self, Self::Error> {
         let ctx = ClassConversionContext::from_ast(ast);
 
-        match &ast.class_specifier {
+        match &*ast.class_specifier {
             modelica_grammar_trait::ClassSpecifier::LongClassSpecifier(long) => {
-                match &long.long_class_specifier {
+                match &*long.long_class_specifier {
                     modelica_grammar_trait::LongClassSpecifier::StandardClassSpecifier(spec) => {
                         convert_standard_class_specifier(&spec.standard_class_specifier, &ctx)
                     }
@@ -1003,7 +1003,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
                 convert_der_class_specifier(&spec.der_class_specifier, &ctx)
             }
             modelica_grammar_trait::ClassSpecifier::ShortClassSpecifier(short) => {
-                match &short.short_class_specifier {
+                match &*short.short_class_specifier {
                     modelica_grammar_trait::ShortClassSpecifier::EnumClassSpecifier(spec) => {
                         convert_enum_class_specifier(&spec.enum_class_specifier, &ctx)
                     }

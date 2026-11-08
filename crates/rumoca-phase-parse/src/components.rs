@@ -82,9 +82,9 @@ impl TryFrom<&modelica_grammar_trait::ComponentList> for ComponentList {
     fn try_from(
         ast: &modelica_grammar_trait::ComponentList,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut components = vec![ast.component_declaration.clone()];
+        let mut components = vec![(*ast.component_declaration).clone()];
         for comp in &ast.component_list_list {
-            components.push(comp.component_declaration.clone());
+            components.push((*comp.component_declaration).clone());
         }
         Ok(ComponentList { components })
     }

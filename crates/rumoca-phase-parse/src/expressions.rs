@@ -90,7 +90,7 @@ fn extract_for_indices(
     opt: &Option<modelica_grammar_trait::FunctionArgumentsOpt>,
 ) -> Option<&modelica_grammar_trait::FunctionArgumentsOptGroupForForIndices> {
     opt.as_ref()
-        .and_then(|o| match &o.function_arguments_opt_group {
+        .and_then(|o| match &*o.function_arguments_opt_group {
             modelica_grammar_trait::FunctionArgumentsOptGroup::ForForIndices(f) => Some(f),
             _ => None,
         })
@@ -606,9 +606,9 @@ fn extract_component_mod_args(
     decl: &modelica_grammar_trait::Declaration,
 ) -> (ExpressionList, Option<rumoca_ir_ast::Expression>) {
     if let Some(modif) = &decl.declaration_opt0 {
-        match &modif.modification {
+        match &*modif.modification {
             modelica_grammar_trait::Modification::EquModificationExpression(eq_mod) => {
-                match &eq_mod.modification_expression {
+                match &*eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                         (ExpressionList::default(), Some(expr.expression.clone()))
                     }
@@ -732,9 +732,9 @@ fn convert_replaceable_component_clause_inner(
         ast_name_to_comp_ref(&cc1.type_specifier.name, "replaceable component clause")?;
 
     if let Some(modif) = &decl.declaration_opt0 {
-        match &modif.modification {
+        match &*modif.modification {
             modelica_grammar_trait::Modification::EquModificationExpression(eq_mod) => {
-                match &eq_mod.modification_expression {
+                match &*eq_mod.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                         return Ok(rumoca_ir_ast::Expression::Modification {
                             span: merge_spans(name_ref.span, expr.expression.span()),
@@ -789,7 +789,7 @@ fn convert_replaceable_component_clause_inner(
 fn convert_element_replaceable_redecl(
     repl: &modelica_grammar_trait::ElementReplaceable,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
-    match &repl.element_replaceable_group {
+    match &*repl.element_replaceable_group {
         modelica_grammar_trait::ElementReplaceableGroup::ShortClassDefinition(short_def) => {
             convert_short_class_specifier(&short_def.short_class_definition.short_class_specifier)
         }
@@ -804,7 +804,7 @@ fn convert_element_replaceable_redecl(
 fn convert_element_redeclaration(
     redecl: &modelica_grammar_trait::ElementRedeclaration,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
-    match &redecl.element_redeclaration_group {
+    match &*redecl.element_redeclaration_group {
         modelica_grammar_trait::ElementRedeclarationGroup::ShortClassDefinition(short_def) => {
             convert_short_class_specifier(&short_def.short_class_definition.short_class_specifier)
         }
@@ -826,7 +826,7 @@ fn convert_element_modification(
     let target = ast_name_to_comp_ref(&elem.name, "element modification")?;
 
     match &elem.element_modification_opt {
-        Some(opt) => match &opt.modification {
+        Some(opt) => match &*opt.modification {
             modelica_grammar_trait::Modification::ClassModificationModificationOpt(class_modif) => {
                 let arg_list = extract_class_mod_arg_list(&class_modif.class_modification);
                 let span = class_modification_span(
@@ -845,7 +845,7 @@ fn convert_element_modification(
 
                 // If there's also a value assignment (name(mods) = value), wrap in binary
                 if let Some(mod_opt) = &class_modif.modification_opt {
-                    match &mod_opt.modification_expression {
+                    match &*mod_opt.modification_expression {
                         modelica_grammar_trait::ModificationExpression::Expression(expr) => {
                             Ok(rumoca_ir_ast::Expression::Binary {
                                 op: rumoca_core::OpBinary::Assign,
@@ -861,7 +861,7 @@ fn convert_element_modification(
                 }
             }
             modelica_grammar_trait::Modification::EquModificationExpression(modif) => {
-                match &modif.modification_expression {
+                match &*modif.modification_expression {
                     modelica_grammar_trait::ModificationExpression::Break(break_expr) => {
                         Ok(empty_expr(token_span(&break_expr.r#break.r#break)?))
                     }
@@ -889,7 +889,7 @@ fn convert_element_modification(
 fn convert_element_mod_or_replaceable(
     modif: &modelica_grammar_trait::ElementModificationOrReplaceable,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
-    match &modif.element_modification_or_replaceable_group {
+    match &*modif.element_modification_or_replaceable_group {
         modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementModification(
             elem,
         ) => {
@@ -959,7 +959,7 @@ impl TryFrom<&modelica_grammar_trait::Argument> for ModificationArg {
                 let each = emor.element_modification_or_replaceable_opt.is_some();
                 let r#final = emor.element_modification_or_replaceable_opt0.is_some();
                 let replaceable = matches!(
-                    emor.element_modification_or_replaceable_group,
+                    *emor.element_modification_or_replaceable_group,
                     modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementReplaceable(_)
                 );
                 (each, r#final, false, replaceable)
@@ -1136,7 +1136,7 @@ fn convert_output_primary(
     };
 
     if let Some(opt) = &primary.output_primary_opt {
-        match &opt.output_primary_opt_group {
+        match &*opt.output_primary_opt_group {
             modelica_grammar_trait::OutputPrimaryOptGroup::ArraySubscripts(subs) => {
                 Ok(rumoca_ir_ast::Expression::ArrayIndex {
                     span: base.span(),
@@ -1164,7 +1164,7 @@ fn convert_output_primary(
 fn convert_global_function_call(
     gfc: &modelica_grammar_trait::GlobalFunctionCall,
 ) -> anyhow::Result<rumoca_ir_ast::Expression> {
-    let tok = match &gfc.global_function_call_group {
+    let tok = match &*gfc.global_function_call_group {
         modelica_grammar_trait::GlobalFunctionCallGroup::Der(expr) => expr.der.der.clone(),
         modelica_grammar_trait::GlobalFunctionCallGroup::Initial(expr) => {
             expr.initial.initial.clone()
@@ -1234,7 +1234,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                 }
             }
             modelica_grammar_trait::Primary::UnsignedNumber(unsigned_num) => {
-                match &unsigned_num.unsigned_number {
+                match &*unsigned_num.unsigned_number {
                     modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
                         Ok(rumoca_ir_ast::Expression::Terminal {
                             terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
@@ -1317,7 +1317,7 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
                 "multiple exponentiation operators require explicit parentheses"
             ))
         } else {
-            let op = match &ast.factor_list[0].factor_list_group {
+            let op = match &*ast.factor_list[0].factor_list_group {
                 modelica_grammar_trait::FactorListGroup::Circumflex(_) => {
                     rumoca_core::OpBinary::Exp
                 }
@@ -1398,7 +1398,7 @@ impl TryFrom<&modelica_grammar_trait::Relation> for rumoca_ir_ast::Expression {
                 Ok(rumoca_ir_ast::Expression::Binary {
                     span: binary_span(&ast.arithmetic_expression, &rhs),
                     lhs: Arc::new(ast.arithmetic_expression.clone()),
-                    op: match &relation.relational_operator {
+                    op: match &*relation.relational_operator {
                         modelica_grammar_trait::RelationalOperator::EquEqu(_) => {
                             rumoca_core::OpBinary::Eq
                         }
@@ -1533,7 +1533,7 @@ impl TryFrom<&modelica_grammar_trait::Expression> for rumoca_ir_ast::Expression 
     ) -> std::result::Result<Self, Self::Error> {
         match &ast {
             modelica_grammar_trait::Expression::SimpleExpression(simple_expression) => {
-                Ok(simple_expression.simple_expression.as_ref().clone())
+                Ok(simple_expression.simple_expression.clone())
             }
             modelica_grammar_trait::Expression::IfExpression(expr) => {
                 let if_expr = &expr.if_expression;

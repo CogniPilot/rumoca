@@ -115,7 +115,7 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for rumoca_ir_ast::Equation 
     fn try_from(
         ast: &modelica_grammar_trait::SomeEquation,
     ) -> std::result::Result<Self, Self::Error> {
-        match &ast.some_equation_option {
+        match &*ast.some_equation_option {
             modelica_grammar_trait::SomeEquationOption::SimpleEquation(eq) => {
                 convert_simple_equation(&eq.simple_equation)
             }
@@ -211,9 +211,9 @@ impl TryFrom<&modelica_grammar_trait::Statement> for rumoca_ir_ast::Statement {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::Statement) -> std::result::Result<Self, Self::Error> {
-        match &ast.statement_option {
+        match &*ast.statement_option {
             modelica_grammar_trait::StatementOption::ComponentStatement(stmt) => {
-                match &stmt.component_statement.component_statement_group {
+                match &*stmt.component_statement.component_statement_group {
                     modelica_grammar_trait::ComponentStatementGroup::ColonEquExpression(assign) => {
                         Ok(rumoca_ir_ast::Statement::Assignment {
                             comp: stmt.component_statement.component_reference.clone(),

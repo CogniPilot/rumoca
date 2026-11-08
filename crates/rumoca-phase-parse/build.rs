@@ -61,7 +61,6 @@ fn main() {
         .user_type_name("ModelicaGrammar")
         .user_trait_module_name("grammar")
         .trim_parse_tree()
-        .minimize_boxed_types()
         .generate_parser()
     {
         ParolErrorReporter::report_error(&err, par_file).unwrap_or_default();
