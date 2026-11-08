@@ -51,9 +51,11 @@ pub use print_plan::{
     SolveUnaryToken,
 };
 pub(super) use storage_plan::DERIVED;
+#[cfg(test)]
+pub(super) use storage_plan::observation_cascades;
 pub use storage_plan::{
-    SOLVE_STATIC_MATRIX_WORK, SolveFusedRegister, SolveFusionPlan, SolveRegisterPlacement,
-    SolveSlotPlacement, SolveStoragePlan,
+    SOLVE_STATIC_MATRIX_WORK, SolveAliasPlan, SolveFusedRegister, SolveFusionPlan,
+    SolveRegisterHome, SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan,
 };
 use value_numbering::ValueKey;
 
