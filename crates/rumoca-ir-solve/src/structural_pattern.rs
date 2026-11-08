@@ -9,6 +9,7 @@ mod register_dependencies;
 mod register_dependencies_tests;
 mod state_jacobian;
 pub(crate) use register_dependencies::DependencyRegisters;
+mod compact_placement;
 mod tensor_update;
 
 #[cfg(test)]
