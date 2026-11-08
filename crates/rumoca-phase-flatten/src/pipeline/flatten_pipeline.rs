@@ -957,7 +957,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
         ctx.build_parameter_lookup(flat, tree);
     }
     ctx.refresh_enum_parameter_lookup(flat);
-    pre_evaluate_structural_equations(ctx, overlay, tree)?;
+    pre_evaluate_structural_equations(ctx, flat, overlay, tree)?;
 
     // Classify parameter-variability for-equation families now that the
     // parameter/constant key set is stable, so the cheapen gate in equation
