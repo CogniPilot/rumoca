@@ -12,10 +12,11 @@ mod tests;
 /// A clone of the placement retains its identity; reconstruction by shape does
 /// not. Receipt fields and construction are private, and receipts are not wire
 /// values. A future replay must issue a fresh owner and recheck its body join.
-/// ```compile_fail
-/// use rumoca_ir_solve::{CompactJacobianPlacement, CompactJacobianPlacementReceipt};
-/// fn forge<'a>(placement: &'a CompactJacobianPlacement) -> CompactJacobianPlacementReceipt<'a> {
-///     CompactJacobianPlacementReceipt { placement, relation: todo!(), brand: Default::default() }
+/// ```compile_fail,E0451
+/// use rumoca_ir_solve::{CompactJacobianPlacement, CompactJacobianPlacementReceipt, StructuralPattern};
+/// fn forge<'a>(placement: &'a CompactJacobianPlacement, relation: StructuralPattern)
+///     -> CompactJacobianPlacementReceipt<'a> {
+///     CompactJacobianPlacementReceipt { placement, relation, brand: Default::default() }
 /// }
 /// ```
 pub struct CompactJacobianPlacementReceipt<'owner> {
