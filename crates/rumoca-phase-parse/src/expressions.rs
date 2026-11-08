@@ -18,13 +18,6 @@ use std::sync::Arc;
 #[derive(Clone, PartialEq)]
 pub struct BoxedExpression(Box<rumoca_ir_ast::Expression>);
 
-impl BoxedExpression {
-    /// The converted expression, by value.
-    pub(crate) fn into_inner(self) -> rumoca_ir_ast::Expression {
-        *self.0
-    }
-}
-
 impl std::ops::Deref for BoxedExpression {
     type Target = rumoca_ir_ast::Expression;
 
@@ -36,12 +29,6 @@ impl std::ops::Deref for BoxedExpression {
 impl std::fmt::Debug for BoxedExpression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
-    }
-}
-
-impl From<BoxedExpression> for rumoca_ir_ast::Expression {
-    fn from(value: BoxedExpression) -> Self {
-        value.into_inner()
     }
 }
 
