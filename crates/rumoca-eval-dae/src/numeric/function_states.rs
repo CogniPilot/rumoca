@@ -9,6 +9,7 @@ pub(super) struct NumericFunctionFrame<'dae> {
     pub(super) function_entry: bool,
     pub(super) calls: FxHashMap<u32, Vec<SourceValues>>,
     pub(super) folds: FxHashMap<dae::FunctionFoldId<'dae>, Vec<SourceValues>>,
+    comprehension_owner: Option<dae::FunctionId<'dae>>,
     selected: FxHashMap<dae::FunctionConditionalId<'dae>, dae::FunctionBranchView<'dae>>,
 }
 
@@ -26,6 +27,15 @@ impl<'dae> NumericFunctionFrame<'dae> {
             ..Default::default()
         }
     }
+
+    /// A comprehension owns point-local caches, not a new source statement
+    /// scope. Its checked body identifies the invocation whose values it reads.
+    pub(super) fn comprehension_frame(owner: Option<dae::FunctionId<'dae>>) -> Self {
+        Self {
+            comprehension_owner: owner,
+            ..Default::default()
+        }
+    }
 }
 
 impl<'dae, F> NumericEvaluator<'dae, F>
@@ -37,9 +47,19 @@ where
         definition: dae::FunctionDefinitionView<'dae>,
         contains: impl Fn(&NumericFunctionFrame<'dae>) -> bool,
     ) -> Option<&NumericFunctionFrame<'dae>> {
-        let scope = self.scoped_expression_values.last()?.scope?;
-        if scope.relation(definition.id()) != Some(dae::FunctionScopeRelation::Enclosing) {
-            return None;
+        let current = self.scoped_expression_values.last()?;
+        if let Some(owner) = current.comprehension_owner {
+            // Point frames have no source-statement region. Read only values
+            // already executed in this function's live frames; the entry stop
+            // below prevents a recursive call from reaching its caller.
+            if definition.id().function() != owner {
+                return None;
+            }
+        } else {
+            let scope = current.scope?;
+            if scope.relation(definition.id()) != Some(dae::FunctionScopeRelation::Enclosing) {
+                return None;
+            }
         }
         for frame in self.scoped_expression_values.iter().rev().skip(1) {
             if contains(frame) {

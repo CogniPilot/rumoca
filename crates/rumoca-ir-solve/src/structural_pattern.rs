@@ -1,4 +1,9 @@
 // SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (SPEC_0021 follow-up).
+mod jacobian_product;
+pub use jacobian_product::{
+    StateJacobianProduct, StateJacobianProductConstruction, StateJacobianProductConstructionError,
+    StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
+};
 mod register_dependencies;
 #[cfg(test)]
 mod register_dependencies_tests;

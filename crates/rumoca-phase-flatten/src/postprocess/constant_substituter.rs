@@ -108,7 +108,9 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
                     span: *span,
                 })
             }
-            other => self.walk_expression(other),
+            other => self
+                .walk_expression(other)
+                .map(fold_literal_string_relation),
         }
     }
 
@@ -123,6 +125,50 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
             }),
             other => Ok(other.clone()),
         }
+    }
+}
+
+/// MLS §3.4/§3.5: a relation of literal String expressions is Boolean.
+/// Selection/substitution establishes the exact elements first; the shared
+/// interpreter owns operator semantics. Concatenations remain intact outside
+/// the relation, preserving assertion-message operand projections.
+fn fold_literal_string_relation(expression: rumoca_core::Expression) -> rumoca_core::Expression {
+    use rumoca_core::{Expression, Literal};
+    use rumoca_eval_flat::constant::{EvalContext, Value, eval_expr};
+
+    let Expression::Binary { op, lhs, rhs, span } = &expression else {
+        return expression;
+    };
+    if !op.is_relational()
+        || !is_literal_string_expression(lhs)
+        || !is_literal_string_expression(rhs)
+    {
+        return expression;
+    }
+    let Ok(Value::Bool(value)) = eval_expr(&expression, &EvalContext::new()) else {
+        return expression;
+    };
+    Expression::Literal {
+        value: Literal::Boolean(value),
+        span: *span,
+    }
+}
+
+/// Recognize literal-only String syntax without evaluating live reads or calls.
+fn is_literal_string_expression(expression: &rumoca_core::Expression) -> bool {
+    use rumoca_core::{Expression, Literal, OpBinary};
+    match expression {
+        Expression::Literal {
+            value: Literal::String(_),
+            ..
+        } => true,
+        Expression::Binary {
+            op: OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } => is_literal_string_expression(lhs) && is_literal_string_expression(rhs),
+        _ => false,
     }
 }
 

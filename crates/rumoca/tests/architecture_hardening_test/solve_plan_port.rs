@@ -5,28 +5,44 @@ use sha2::{Digest, Sha256};
 
 const DECLARATION: &str = "const MAX_STATIC_MATRIX_WORK: usize = ";
 
-/// The in-process fusion rules the Solve IR storage plan's fusion facts were
-/// ported from, and the sha256 of that file at the port.
-const PORTED_FUSION_RULES: &str = "crates/rumoca-exec-cranelift/src/emit/typed_program/fusion.rs";
-const PORTED_FUSION_RULES_SHA256: &str =
-    "e4ee13326293787d418ed11111872ef8ad8d49a09345732345206085cdc6fe0c";
+/// Each in-process rule file a Solve IR storage-plan table was ported from,
+/// the sha256 of that file at the port, and the port that must be re-reviewed
+/// when it changes.
+const PORTED_RULES: &[(&str, &str, &str)] = &[
+    (
+        "crates/rumoca-exec-cranelift/src/emit/typed_program/fusion.rs",
+        "e4ee13326293787d418ed11111872ef8ad8d49a09345732345206085cdc6fe0c",
+        "storage_plan/fusion.rs",
+    ),
+    (
+        "crates/rumoca-exec-cranelift/src/emit/typed_program/aliasing.rs",
+        "f790b2bd9066efa7ec58f4c3c0d7b3cec443527fb9ca472098864b49c09a4384",
+        "storage_plan/aliases.rs",
+    ),
+    (
+        "crates/rumoca-exec-cranelift/src/emit/typed_program/storage.rs",
+        "74a9486768c023837e54d9427ab11d8e45b8fb03c16f23f0275571277c82471a",
+        "storage_plan/aliases.rs (fold carries)",
+    ),
+];
 
-/// The fusion facts claim the in-process rules unchanged. A change to those
-/// rules must re-review the port in
-/// `rumoca-ir-solve/src/typed_program/program/storage_plan/fusion.rs`.
+/// The storage-plan tables claim the in-process rules unchanged. A change to
+/// a rule file must re-review its port under
+/// `rumoca-ir-solve/src/typed_program/program/`.
 #[test]
-fn the_ported_fusion_rules_are_unchanged_since_the_port() {
-    let path = workspace_root().join(PORTED_FUSION_RULES);
-    let source = fs::read(&path).expect("read the in-process fusion rules");
-    let digest = Sha256::digest(&source)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    assert_eq!(
-        digest, PORTED_FUSION_RULES_SHA256,
-        "{PORTED_FUSION_RULES} changed since the Solve IR fusion facts were ported from it; \
-re-review storage_plan/fusion.rs against it, then record the new sha256 here"
-    );
+fn the_ported_storage_rules_are_unchanged_since_the_port() {
+    for (rules, pinned, port) in PORTED_RULES {
+        let source = fs::read(workspace_root().join(rules)).expect("read an in-process rule file");
+        let digest = Sha256::digest(&source)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            &digest, pinned,
+            "{rules} changed since the Solve IR storage plan was ported from it; \
+re-review {port} against it, then record the new sha256 here"
+        );
+    }
 }
 
 /// Solve IR issues which transposes a host-kernel product reads in place
