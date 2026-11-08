@@ -523,12 +523,13 @@ where
                     )
                 })?;
             self.domain_points.push((domain, point));
-            let scope = self
-                .scoped_expression_values
-                .last()
-                .and_then(|frame| frame.scope);
-            self.scoped_expression_values
-                .push(function_states::NumericFunctionFrame::lexical_frame(scope));
+            let owner = self
+                .view
+                .expression(body)
+                .and_then(|node| node.function_scope());
+            self.scoped_expression_values.push(
+                function_states::NumericFunctionFrame::comprehension_frame(owner),
+            );
             let body_values = self.source_expression(body);
             self.scoped_expression_values.pop();
             self.domain_points.pop();

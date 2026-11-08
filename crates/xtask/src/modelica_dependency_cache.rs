@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 use zip::ZipArchive;
 
 const MANIFEST_FILE: &str = "examples/modelica_dependencies.toml";
@@ -251,20 +252,142 @@ fn revision_marker(spec: &LibrarySpec) -> String {
     format!("{}\nsha256:{}\n", spec.version, spec.sha256)
 }
 
+/// How a pinned dependency archive is downloaded. Only a server error (5xx) or a timeout is tried
+/// again, after a pause that doubles each time; anything else (a 404, a refused connection, a bad
+/// URL) fails at once. Whatever finally arrives is still checked against its pinned SHA-256.
+#[derive(Debug, Clone)]
+struct RetryPolicy {
+    attempts: u32,
+    first_delay: Duration,
+    max_delay: Duration,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            attempts: 4,
+            first_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(16),
+            connect_timeout: Duration::from_secs(30),
+            read_timeout: Duration::from_secs(60),
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// The pause before retry `retry` (1-based): `first_delay`, doubled per retry, at most `max_delay`.
+    fn delay(&self, retry: u32) -> Duration {
+        let factor = 2u32.saturating_pow(retry.saturating_sub(1));
+        self.first_delay.saturating_mul(factor).min(self.max_delay)
+    }
+}
+
+/// Why one download attempt failed: worth another try, or not.
+#[derive(Debug)]
+enum Failure {
+    Retry(anyhow::Error),
+    Fail(anyhow::Error),
+}
+
+impl Failure {
+    fn new(retry: bool, error: anyhow::Error) -> Self {
+        if retry {
+            Self::Retry(error)
+        } else {
+            Self::Fail(error)
+        }
+    }
+}
+
 fn download_to_memory(url: &str) -> Result<Vec<u8>> {
-    let response = ureq::get(url)
-        .call()
-        .map_err(|error| anyhow!("download failed for {url}: {error}"))?;
+    download_with(url, &RetryPolicy::default(), std::thread::sleep)
+}
+
+fn download_with(url: &str, policy: &RetryPolicy, sleep: impl FnMut(Duration)) -> Result<Vec<u8>> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(policy.connect_timeout)
+        .timeout_read(policy.read_timeout)
+        .build();
+    with_retries(policy, sleep, || fetch_once(&agent, url))
+}
+
+/// Runs `attempt` until it succeeds, fails for good, or `policy.attempts` are used up, sleeping
+/// `policy.delay(n)` before retry `n`.
+fn with_retries<T>(
+    policy: &RetryPolicy,
+    mut sleep: impl FnMut(Duration),
+    mut attempt: impl FnMut() -> std::result::Result<T, Failure>,
+) -> Result<T> {
+    let mut tried = 0;
+    loop {
+        tried += 1;
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(Failure::Retry(error)) if tried < policy.attempts => {
+                let pause = policy.delay(tried);
+                eprintln!(
+                    "{error:#}; retrying in {:.1}s (attempt {tried} of {})",
+                    pause.as_secs_f32(),
+                    policy.attempts
+                );
+                sleep(pause);
+            }
+            Err(Failure::Retry(error)) => {
+                return Err(error.context(format!("gave up after {tried} attempts")));
+            }
+            Err(Failure::Fail(error)) => return Err(error),
+        }
+    }
+}
+
+/// One GET of `url` into memory.
+fn fetch_once(agent: &ureq::Agent, url: &str) -> std::result::Result<Vec<u8>, Failure> {
+    let response = match agent.get(url).call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, _)) => {
+            return Err(Failure::new(
+                (500..600).contains(&code),
+                anyhow!("download failed for {url}: HTTP {code}"),
+            ));
+        }
+        Err(error) => {
+            return Err(Failure::new(
+                is_timeout(&error),
+                anyhow!("download failed for {url}: {error}"),
+            ));
+        }
+    };
     let size = response
         .header("content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     let mut data = Vec::with_capacity(size);
-    response
-        .into_reader()
-        .read_to_end(&mut data)
-        .with_context(|| format!("failed to read response body from {url}"))?;
+    if let Err(error) = response.into_reader().read_to_end(&mut data) {
+        return Err(Failure::new(
+            is_timeout(&error),
+            anyhow::Error::new(error).context(format!("failed to read response body from {url}")),
+        ));
+    }
     Ok(data)
+}
+
+/// Whether `error`, or any error beneath it, is an I/O timeout.
+fn is_timeout(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            )
+        }) {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 fn verify_sha256(data: &[u8], expected: &str, label: &str) -> Result<()> {
@@ -437,6 +560,157 @@ mod tests {
             zip_output_relative_path(Path::new("RigidBody/package.mo"), false).as_deref(),
             Some(Path::new("RigidBody/package.mo"))
         );
+    }
+
+    /// What the loopback server does with one connection.
+    #[derive(Clone, Copy)]
+    enum Reply {
+        Status(u16),
+        Body(&'static [u8]),
+        /// Read the request, then never answer while the connection stays open.
+        Stall,
+    }
+
+    /// Answers one connection: reads the request, counts it, then replies as `reply` says. A stalled
+    /// connection is handed back unanswered, to be held open.
+    fn answer(
+        stream: std::net::TcpStream,
+        reply: Reply,
+        seen: &std::sync::atomic::AtomicUsize,
+    ) -> Option<std::net::TcpStream> {
+        use std::io::{BufRead, BufReader, Write};
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+            line.clear();
+        }
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (status, body): (u16, &[u8]) = match reply {
+            Reply::Status(code) => (code, b"error"),
+            Reply::Body(body) => (200, body),
+            Reply::Stall => return Some(stream),
+        };
+        let mut writer = &stream;
+        let header = format!(
+            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = writer
+            .write_all(header.as_bytes())
+            .and_then(|()| writer.write_all(body));
+        None
+    }
+
+    /// Serves `replies` in order, one connection each; returns the URL and the request count.
+    fn serve(replies: Vec<Reply>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}/MSL.zip", listener.local_addr().expect("addr"));
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&count);
+        std::thread::spawn(move || accept_all(&listener, replies, &seen));
+        (url, count)
+    }
+
+    /// Answers one connection per reply, in order, holding stalled connections open until the end.
+    fn accept_all(
+        listener: &std::net::TcpListener,
+        replies: Vec<Reply>,
+        seen: &std::sync::atomic::AtomicUsize,
+    ) {
+        let mut held = Vec::new();
+        for reply in replies {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            held.extend(answer(stream, reply, seen));
+        }
+    }
+
+    fn test_policy() -> RetryPolicy {
+        RetryPolicy {
+            attempts: 3,
+            first_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(40),
+            connect_timeout: Duration::from_secs(5),
+            read_timeout: Duration::from_millis(200),
+        }
+    }
+
+    fn requests(count: &std::sync::atomic::AtomicUsize) -> usize {
+        count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn a_server_error_is_retried_with_a_doubling_pause_until_the_download_arrives() {
+        let (url, count) = serve(vec![
+            Reply::Status(503),
+            Reply::Status(504),
+            Reply::Body(b"zorblat"),
+        ]);
+        let mut pauses = Vec::new();
+        let data =
+            download_with(&url, &test_policy(), |pause| pauses.push(pause)).expect("third try");
+        assert_eq!(data, b"zorblat");
+        assert_eq!(requests(&count), 3);
+        assert_eq!(
+            pauses,
+            [Duration::from_millis(10), Duration::from_millis(20)]
+        );
+    }
+
+    #[test]
+    fn a_timeout_is_retried() {
+        let (url, count) = serve(vec![Reply::Stall, Reply::Body(b"zorblat")]);
+        let data = download_with(&url, &test_policy(), |_| {}).expect("second try");
+        assert_eq!(data, b"zorblat");
+        assert_eq!(requests(&count), 2);
+    }
+
+    #[test]
+    fn a_client_error_or_a_refused_connection_fails_at_once() {
+        let (url, count) = serve(vec![Reply::Status(404), Reply::Body(b"never")]);
+        let mut pauses = 0;
+        let error = download_with(&url, &test_policy(), |_| pauses += 1).expect_err("404");
+        assert!(format!("{error:#}").contains("HTTP 404"), "{error:#}");
+        assert_eq!((requests(&count), pauses), (1, 0));
+        // Nothing listens on a port that was just released: refused, not timed out.
+        let free = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let closed = format!("http://{}/MSL.zip", free.local_addr().expect("addr"));
+        drop(free);
+        let error = download_with(&closed, &test_policy(), |_| pauses += 1).expect_err("refused");
+        assert!(!format!("{error:#}").contains("gave up"), "{error:#}");
+        assert_eq!(pauses, 0);
+    }
+
+    #[test]
+    fn retries_are_bounded() {
+        let (url, count) = serve(vec![Reply::Status(502); 5]);
+        let error = download_with(&url, &test_policy(), |_| {}).expect_err("all 502");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("gave up after 3 attempts") && message.contains("HTTP 502"),
+            "{message}"
+        );
+        assert_eq!(requests(&count), 3);
+    }
+
+    #[test]
+    fn the_default_download_path_fetches_a_ready_server_once() {
+        let (url, count) = serve(vec![Reply::Body(b"zorblat")]);
+        assert_eq!(download_to_memory(&url).expect("download"), b"zorblat");
+        assert_eq!(requests(&count), 1);
+    }
+
+    #[test]
+    fn the_pause_doubles_up_to_its_cap() {
+        let policy = RetryPolicy::default();
+        let secs: Vec<u64> = (1..=5).map(|retry| policy.delay(retry).as_secs()).collect();
+        assert_eq!(secs, [2, 4, 8, 16, 16]);
+        assert_eq!(policy.attempts, 4);
+        assert!(!is_timeout(&std::io::Error::other("not a timeout")));
+        assert!(is_timeout(&std::io::Error::from(
+            std::io::ErrorKind::TimedOut
+        )));
     }
 
     #[test]

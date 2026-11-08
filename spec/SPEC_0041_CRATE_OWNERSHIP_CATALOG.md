@@ -297,6 +297,11 @@ plan/API/conformance checks before replacing this snapshot. Cranelift,
 external helpers and arbitrary template routes are outside this initial
 coverage; no WCET or complete migration claim follows from a pass.
 
+The non-active successor design is DRAFT
+[SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement),
+with its [SPEC_0055](SPEC_0055_BACKEND_RETIREMENT_CATALOG.md) catalog. Neither
+changes this freeze or supplies production retirement authority.
+
 ## References
 
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — owning boundary rules, tier

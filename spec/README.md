@@ -29,11 +29,11 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md) | eFMI/GALEC Algorithm Code Export | target/codegen | ~170 | DRAFT |
 | [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) | Complex Numeric Types in Solve IR | IR | ~196 | DRAFT |
 | [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~316 | DRAFT |
-| [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Verification Architecture for Checkers and Semantics | verification | ~216 | DRAFT |
+| [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Verification Architecture for Checkers and Semantics | verification | ~235 | DRAFT |
 | [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~213 | DRAFT |
 | [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) | Proof-Carrying Structural Sparsity | IR | ~174 | DRAFT |
 | [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) | IR Stage Contract Catalog | architecture | ~333 | REFERENCE |
-| [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) | Crate Ownership Catalog | architecture | ~262 | REFERENCE |
+| [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) | Crate Ownership Catalog | architecture | ~315 | REFERENCE |
 | [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) | GALEC Language and Decision Catalog | target/codegen | ~155 | REFERENCE |
 | [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) | Valid-by-Construction Catalog | IR | ~1715 | REFERENCE |
 | [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~680 | REFERENCE |
@@ -47,10 +47,11 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~94 | PROPOSED |
 | [SPEC_0053](SPEC_0053_CONSTRAINED_STATE_SELECTION.md) | Constrained State Selection | compiler/runtime | ~188 | DRAFT |
 | [SPEC_0054](SPEC_0054_PLAYGROUND_ASSISTANT.md) | Playground Assistant | tooling/web | ~101 | PROPOSED |
+| [SPEC_0055](SPEC_0055_BACKEND_RETIREMENT_CATALOG.md) | Source-Bound Backend Retirement Catalog | verification/architecture | ~102 | REFERENCE |
 
 ### Reference annexes
 
-`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`, and `SPEC_0050` are REFERENCE annexes:
+`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`, `SPEC_0050`, and `SPEC_0055` are REFERENCE annexes:
 they carry the lookup catalogs split out of their parent spec under SPEC_0000
 §3/§3a size budgets. Every row in an annex is normative by reference from the
 parent section that links it (SPEC_0007→0040, SPEC_0029→0041, SPEC_0034→0042,
@@ -61,6 +62,9 @@ by SEV-001/002/007 (grammar and coverage), SEV-011/024 (contract
 classes and element-kind splits), and TRP-042 (the capability profile keyed to
 its rows). Annexes add no rules of their own; edit the parent when the
 requirement itself changes.
+
+`SPEC_0055` maps DRAFT SPEC_0037 §2a. Its proposed joint contract is non-active;
+the implemented SPEC_0041 §7 freeze remains authoritative.
 
 ## Deferred Specifications
 
