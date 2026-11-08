@@ -120,3 +120,15 @@ these fixes, or publication of an explicitly maintained patched dependency.
 These patches have not been submitted upstream. Replace this directory with a
 released dependency only after all direct numerical and source-level
 regressions pass against that release and the complete MSL comparison passes.
+
+The accepted state error test now uses the NDF error coefficient for the
+current order, matching the constructor's one-based coefficient table, the
+predicted-order estimates, and the output/sensitivity error tests. Previously
+it used the preceding index (the order-zero sentinel at order one). This was
+stricter at orders one through three and looser at orders four and five; the
+correction is not a uniform tolerance tightening. The direct public-API
+regression is `me_integrator/ndf_error_tests.rs` in
+`rumoca-solver-diffsol`, which runs in ordinary workspace library tests. It
+checks an analytically determined first-order correction inside the NDF error
+budget that the sentinel incorrectly rejects. No configured tolerance or
+trace-comparison policy changes, and no DCPM parity claim follows from it.
