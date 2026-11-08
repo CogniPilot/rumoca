@@ -139,17 +139,14 @@ entry capability or acquire a phase dependency.
 The private pure-call directional constructor remains an IR-local checked
 construction operation; it issues the call's tangent-relation invariant rather
 than a model artifact or source-language lowering decision.
-The staged stored-state Jacobian product and its opaque direction handles are
-IR-owned checked data. Its owner closure issues the graph and structural
-presence together, without raw tangent vectors or caller-provided sparse rows.
-Model capability analysis and source-operation traversal stay in
-`rumoca-eval-solve`; the existing evaluator/native path is unchanged until the
-atomic product-consumer cutover. Compact body receipts and residual/coloring
-composition are separate from this scalar construction API.
-Compact Jacobian placement receipts are IR-local checked coordinate data.
-Their affine/stacked relation stays private until a checked body/output join
-binds actual directions. Placement geometry alone does not certify a source
-derivative. Target materialization remains a consumer of these facts.
+The staged stored-state Jacobian product and opaque directions are IR-owned checked
+data. Its owner issues graph and structural presence without raw tangents or caller
+sparse rows. Model analysis and source traversal stay in `rumoca-eval-solve`; existing
+evaluator/native behavior changes only at atomic product-consumer cutover. Compact
+body receipts and residual/coloring joins remain separate. IR-local compact placement
+receipts keep affine/stacked relations private until a checked body/output join binds
+actual directions. Geometry alone certifies no source derivative; targets materialize
+these facts.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
 delegate to Solve lowering or evaluation.
 
