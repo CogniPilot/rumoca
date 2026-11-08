@@ -1,6 +1,147 @@
 use super::*;
 use rumoca_core::Span;
 
+fn string_literal(value: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::String(value.to_owned()),
+        span: test_span(),
+    }
+}
+
+fn string_binary(
+    op: rumoca_core::OpBinary,
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span: test_span(),
+    }
+}
+
+#[test]
+fn string_literal_comparisons_fold_to_boolean_at_the_source_span() {
+    use rumoca_core::{Expression, Literal, OpBinary};
+    for (op, lhs, rhs, expected) in [
+        (OpBinary::Eq, "imu", "imu", true),
+        (OpBinary::Eq, "imu", "camera", false),
+        (OpBinary::Neq, "imu", "camera", true),
+        (OpBinary::Neq, "imu", "imu", false),
+    ] {
+        let outer_span = Span::from_offsets(test_span().source, 0, 99);
+        let expression =
+            string_binary(op, string_literal(lhs), string_literal(rhs)).with_span(outer_span);
+        let folded = substitute_known_constants_expr(
+            expression,
+            &Context::new(),
+            &rustc_hash::FxHashSet::default(),
+            &HashSet::new(),
+            "",
+        )
+        .unwrap();
+        assert!(matches!(folded, Expression::Literal {
+            value: Literal::Boolean(value), span,
+        } if value == expected && span == outer_span));
+    }
+}
+
+#[test]
+fn string_constant_element_and_concatenation_fold_before_numeric_lowering() {
+    use rumoca_core::{ArrayConstructor, Expression, Literal, OpBinary, Reference, Subscript};
+    let mut context = Context::new();
+    context.constant_values.insert(
+        "Pkg.names".to_owned(),
+        Expression::Array {
+            elements: vec![string_literal("imu"), string_literal("camera")],
+            kind: ArrayConstructor::Array,
+            span: test_span(),
+        },
+    );
+    let selected = Expression::VarRef {
+        name: Reference::generated("Pkg.names"),
+        subscripts: vec![Subscript::Index {
+            value: 2,
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+    let expression = string_binary(
+        OpBinary::Eq,
+        string_binary(OpBinary::Add, string_literal("head_"), selected),
+        string_literal("head_camera"),
+    );
+    let folded = substitute_known_constants_expr(
+        expression,
+        &context,
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .unwrap();
+    assert!(matches!(
+        folded,
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn string_folding_preserves_live_or_unresolved_reads() {
+    use rumoca_core::{Expression, OpBinary};
+    let concatenation = string_binary(
+        OpBinary::Add,
+        string_literal("prefix: "),
+        string_literal("message"),
+    );
+    let preserved = substitute_known_constants_expr(
+        concatenation.clone(),
+        &Context::new(),
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        preserved, concatenation,
+        "message concatenation keeps its operands"
+    );
+    let mut context = Context::new();
+    context
+        .constant_values
+        .insert("label".to_owned(), string_literal("default"));
+    let expression = string_binary(
+        OpBinary::Eq,
+        generated_var_ref("label"),
+        string_literal("default"),
+    );
+    let live = rustc_hash::FxHashSet::from_iter(["label".to_owned()]);
+    let folded =
+        substitute_known_constants_expr(expression, &context, &live, &HashSet::new(), "").unwrap();
+    assert!(
+        matches!(folded, Expression::Binary { lhs, .. } if matches!(lhs.as_ref(), Expression::VarRef { .. }))
+    );
+    let unknown = string_binary(
+        OpBinary::Eq,
+        generated_var_ref("unknown"),
+        string_literal("default"),
+    );
+    let folded = substitute_known_constants_expr(
+        unknown,
+        &context,
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .unwrap();
+    assert!(
+        matches!(folded, Expression::Binary { lhs, .. } if matches!(lhs.as_ref(), Expression::VarRef { .. }))
+    );
+}
+
 fn test_span() -> Span {
     Span::from_offsets(
         rumoca_core::SourceId::from_source_name("phase_flatten_substitute_constant_source_91.mo"),
