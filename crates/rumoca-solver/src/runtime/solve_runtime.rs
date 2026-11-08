@@ -295,6 +295,9 @@ struct ScalarExecutionInventory {
     /// Fused residual entries of each algebraic projection structure's
     /// issued unsplit residual programs, aligned with the plan's blocks.
     fused_residuals: Rc<[Option<Rc<fused_residual::FusedResidual>>]>,
+    /// Committing sweeps of each algebraic projection structure's issued
+    /// split residual programs, aligned with the plan's blocks.
+    split_sweeps: Rc<[Option<Rc<dyn CompiledProgramsCommitting>>]>,
     /// Invariant values of the block projection call in progress.
     active_split: block_residual_split::ActiveSplitSlot,
     /// Output buffer of a single-row split evaluation.

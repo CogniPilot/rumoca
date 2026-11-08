@@ -22,6 +22,7 @@ mod class_lookup;
 mod component_params;
 mod enum_literal;
 mod function_eval;
+mod indexed_integer;
 mod record_integers;
 mod scoped_condition;
 
@@ -828,10 +829,15 @@ impl AstScalarContext for InstantiateScalarAdapter<'_> {
     }
 
     fn lookup_integer(&self, expr: &ast::Expression, _scope: &str, depth: usize) -> Option<i64> {
-        let ast::Expression::ComponentReference(reference) = expr else {
-            return None;
-        };
-        eval_integer_component_ref(reference, self.env, depth, self.local_ints)
+        match expr {
+            ast::Expression::ComponentReference(reference) => {
+                eval_integer_component_ref(reference, self.env, depth, self.local_ints)
+            }
+            ast::Expression::ArrayIndex {
+                base, subscripts, ..
+            } => indexed_integer::eval_array_index(base, subscripts, self, depth),
+            _ => None,
+        }
     }
 
     /// Fold a Real-valued reference (MLS §4.4.5 parameter expression).
@@ -1127,6 +1133,18 @@ fn eval_integer_component_ref(
     depth: usize,
     local_ints: Option<&FxHashMap<String, i64>>,
 ) -> Option<i64> {
+    if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
+        return indexed_integer::eval_reference(
+            comp_ref,
+            &InstantiateScalarAdapter {
+                env,
+                local_ints,
+                local_bools: None,
+                local_reals: None,
+            },
+            depth,
+        );
+    }
     let recurse = |expr| {
         try_eval_integer_expr_with_depth_and_locals(
             expr,

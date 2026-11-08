@@ -868,6 +868,29 @@ impl Default for InstantiateContext {
     }
 }
 
+fn extract_instance_connections(
+    tree: &ast::ClassTree,
+    effective_components: &IndexMap<String, ast::Component>,
+    ctx: &InstantiateContext,
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    params: &connections::ConnectionParams,
+) -> InstantiateResult<Vec<ast::InstanceConnection>> {
+    let eval = InstantiateEvalCtx {
+        tree,
+        mod_env: ctx.mod_env(),
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    connections::extract_connections_with_evaluator(
+        equations,
+        prefix,
+        params,
+        &tree.source_map,
+        &|expression| rumoca_eval_ast::eval_instantiate::try_eval_integer_expr(&eval, expression),
+    )
+}
+
 /// Instantiate a class and all its components.
 fn instantiate_class(
     tree: &ast::ClassTree,
@@ -969,12 +992,13 @@ fn instantiate_class(
         };
 
         // Extract connections from all equations (including conditional connections)
-        let source_map = &tree.source_map;
-        let connections = connections::extract_connections(
+        let connections = extract_instance_connections(
+            tree,
+            effective_components,
+            ctx,
             all_equations,
             &qualified_name,
             &conn_params,
-            source_map,
         )?;
 
         // MLS §7.3: a reference rooted in a replaceable component (`b.v`) has an
@@ -1906,5 +1930,7 @@ fn active_package_constant_alias(
 mod conditional_outer_tests;
 #[cfg(test)]
 mod conditional_scope_tests;
+#[cfg(test)]
+mod connection_index_tests;
 #[cfg(test)]
 mod tests;

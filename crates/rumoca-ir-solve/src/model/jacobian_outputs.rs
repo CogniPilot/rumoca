@@ -7,6 +7,8 @@ mod seed_domain;
 #[cfg(test)]
 mod fused_residual_tests;
 #[cfg(test)]
+mod split_residual_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
@@ -86,6 +88,74 @@ impl FusedResidualSelection {
     /// Every output the fused entry writes.
     pub const fn output_count(&self) -> usize {
         self.output_count
+    }
+
+    /// The canonical primal programs the selection was derived from; a
+    /// runtime evaluating other programs must not use it.
+    pub const fn primal_source(&self) -> &ScalarProgramBlock {
+        &self.primal_source
+    }
+}
+
+/// The programs of an algebraic block's residual selection that a block
+/// residual split divides over the block's unknowns, in selection order, for
+/// one committing sweep of their dependent parts: entry `i` is the block's
+/// split ordinal `i`. Issued only when these programs and the fused selection
+/// together are the whole residual selection, so the sweep and the fused entry
+/// answer every program in selection order between them.
+#[derive(Clone, Debug)]
+pub struct SplitResidualSelection {
+    selection: ProjectionOutputSelection,
+    primal_source: ScalarProgramBlock,
+}
+
+impl SplitResidualSelection {
+    /// The split programs of `residual` over `unknowns`, read from `primal`;
+    /// `None` when fewer than two remain, when `residual` names a program
+    /// twice, when a program's issued output count disagrees with `primal`, or
+    /// when an unsplit program is not one of `fused`'s.
+    fn derive(
+        residual: &ProjectionOutputSelection,
+        fused: Option<&FusedResidualSelection>,
+        primal: &ScalarProgramBlock,
+        unknowns: &[usize],
+    ) -> Option<Self> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut fused_programs = fused
+            .map(|fused| fused.selection.programs.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| entry.program)
+            .peekable();
+        let mut programs = Vec::new();
+        for entry in &residual.programs {
+            let ops = primal.program(entry.program)?;
+            if !seen.insert(entry.program)
+                || ScalarProgramBlock::program_output_count(ops) != entry.output_count
+            {
+                return None;
+            }
+            if BlockResidualSplit::derive(ops, unknowns).is_some() {
+                programs.push(entry.clone());
+            } else {
+                fused_programs.next_if_eq(&entry.program)?;
+            }
+        }
+        if programs.len() < 2 || fused_programs.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            selection: ProjectionOutputSelection {
+                output_len: residual.output_len,
+                programs,
+            },
+            primal_source: primal.clone(),
+        })
+    }
+
+    /// The split programs with their placements, in residual selection order.
+    pub const fn selection(&self) -> &ProjectionOutputSelection {
+        &self.selection
     }
 
     /// The canonical primal programs the selection was derived from; a
@@ -246,6 +316,19 @@ impl ContinuousStructuralArtifacts {
                 .as_ref()
                 .and_then(|residual| {
                     FusedResidualSelection::derive(residual, primal, &block.y_indices)
+                })
+                .map(Box::new);
+            structure.structure.split_residual_evaluation = structure
+                .structure
+                .residual_output_evaluation
+                .as_ref()
+                .and_then(|residual| {
+                    SplitResidualSelection::derive(
+                        residual,
+                        structure.structure.fused_residual_evaluation.as_deref(),
+                        primal,
+                        &block.y_indices,
+                    )
                 })
                 .map(Box::new);
             structure.structure.output_evaluations =

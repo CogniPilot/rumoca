@@ -25,6 +25,19 @@ impl ConnectionParams {
     }
 }
 
+struct ConnectionEval<'a> {
+    params: &'a ConnectionParams,
+    integer: &'a dyn Fn(&ast::Expression) -> Option<i64>,
+}
+
+impl std::ops::Deref for ConnectionEval<'_> {
+    type Target = ConnectionParams;
+
+    fn deref(&self) -> &Self::Target {
+        self.params
+    }
+}
+
 /// Extract connection statements from a list of equations (MLS §9).
 ///
 /// Recursively extracts `connect(A, B)` from nested structures
@@ -36,6 +49,17 @@ pub fn extract_connections(
     params: &ConnectionParams,
     source_map: &SourceMap,
 ) -> InstantiateResult<Vec<ast::InstanceConnection>> {
+    extract_connections_with_evaluator(equations, prefix, params, source_map, &|_| None)
+}
+
+pub(crate) fn extract_connections_with_evaluator(
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    params: &ConnectionParams,
+    source_map: &SourceMap,
+    integer: &dyn Fn(&ast::Expression) -> Option<i64>,
+) -> InstantiateResult<Vec<ast::InstanceConnection>> {
+    let params = &ConnectionEval { params, integer };
     if connection_params_debug_enabled() {
         let mut ints: Vec<_> = params.integers.iter().collect();
         ints.sort_by(|a, b| a.0.cmp(b.0));
@@ -89,7 +113,7 @@ fn extract_connections_from_equation(
     connections: &mut Vec<ast::InstanceConnection>,
     eq: &ast::Equation,
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionEval<'_>,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
     match eq {
@@ -97,15 +121,18 @@ fn extract_connections_from_equation(
             let span =
                 required_location_to_span(eq.get_location(), source_map, "connect equation")?;
 
+            let lhs = evaluated_connection_reference(lhs, prefix, params)?;
+            let rhs = evaluated_connection_reference(rhs, prefix, params)?;
+
             // Preserve range/slice connects as one authoritative structured
             // family. Flattening derives the scalar union-find view once.
             if let Some(connection) =
-                try_compact_range_subscript_connection(lhs, rhs, prefix, &params.integers, span)?
+                try_compact_range_subscript_connection(&lhs, &rhs, prefix, &params.integers, span)?
             {
                 connections.push(connection);
             } else {
-                let a = component_ref_to_qualified_name(lhs, prefix, &params.integers);
-                let b = component_ref_to_qualified_name(rhs, prefix, &params.integers);
+                let a = component_ref_to_qualified_name(&lhs, prefix, &params.integers)?;
+                let b = component_ref_to_qualified_name(&rhs, prefix, &params.integers)?;
 
                 connections.push(ast::InstanceConnection {
                     a,
@@ -164,7 +191,7 @@ fn extract_connections_from_if_equation(
     cond_blocks: &[rumoca_ir_ast::EquationBlock],
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionEval<'_>,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
     let selected_branch = try_select_branch(cond_blocks, else_block, prefix, params);
@@ -197,7 +224,7 @@ fn extract_connections_from_all_branches(
     cond_blocks: &[rumoca_ir_ast::EquationBlock],
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionEval<'_>,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
     for block in cond_blocks {
@@ -223,7 +250,7 @@ fn extract_connections_from_for_equation(
     indices: &[rumoca_ir_ast::ForIndex],
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionEval<'_>,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
     if !equations_contain_connect(equations) {
@@ -291,7 +318,7 @@ fn try_extract_regular_connection_families(
     indices: &[rumoca_ir_ast::ForIndex],
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionEval<'_>,
     source_map: &SourceMap,
 ) -> InstantiateResult<Option<Vec<ast::InstanceConnection>>> {
     let (indices, equations) = rectangular_connection_body(indices, equations);
@@ -882,88 +909,42 @@ fn substitute_index_in_subscript(
 
 /// Substitute an index variable with a concrete value in an expression.
 fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) -> ast::Expression {
-    match expr {
-        ast::Expression::ComponentReference(cr) => {
-            // Check if this is a simple reference to the index variable
-            if cr.parts.len() == 1
-                && cr.parts[0].subs.is_none()
-                && cr.parts[0].ident.text.as_ref() == var_name
+    use ast::ExpressionTransformer;
+
+    struct IndexSubstitution<'a> {
+        name: &'a str,
+        value: i64,
+    }
+
+    impl ExpressionTransformer for IndexSubstitution<'_> {
+        fn transform_component_reference(
+            &mut self,
+            reference: ast::ComponentReference,
+        ) -> ast::Expression {
+            if reference.parts.len() == 1
+                && reference.parts[0].subs.is_none()
+                && reference.parts[0].ident.text.as_ref() == self.name
             {
-                // Replace with integer literal
-                ast::Expression::Terminal {
+                return ast::Expression::Terminal {
                     terminal_type: ast::TerminalType::UnsignedInteger,
                     token: rumoca_core::Token {
-                        text: std::sync::Arc::from(value.to_string()),
-                        location: cr.parts[0].ident.location.clone(),
+                        text: std::sync::Arc::from(self.value.to_string()),
+                        location: reference.parts[0].ident.location.clone(),
                         token_number: 0,
                         token_type: 0,
                     },
-                    span: cr.span,
-                }
-            } else {
-                // Substitute in subscripts
-                ast::Expression::ComponentReference(substitute_index_in_comp_ref(
-                    cr, var_name, value,
-                ))
+                    span: reference.span,
+                };
             }
+            ast::Expression::ComponentReference(self.transform_component_ref_inner(reference))
         }
-        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
-            op: op.clone(),
-            lhs: std::sync::Arc::new(substitute_index_in_expr(lhs, var_name, value)),
-            rhs: std::sync::Arc::new(substitute_index_in_expr(rhs, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
-            op: op.clone(),
-            rhs: std::sync::Arc::new(substitute_index_in_expr(rhs, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
-            inner: std::sync::Arc::new(substitute_index_in_expr(inner, var_name, value)),
-            span: *span,
-        },
-        ast::Expression::Array {
-            elements,
-            kind,
-            span,
-        } => ast::Expression::Array {
-            elements: elements
-                .iter()
-                .map(|e| substitute_index_in_expr(e, var_name, value))
-                .collect(),
-            kind: *kind,
-            span: *span,
-        },
-        ast::Expression::FunctionCall {
-            comp,
-            args,
-            is_partial_application,
-            span,
-        } => ast::Expression::FunctionCall {
-            comp: substitute_index_in_comp_ref(comp, var_name, value),
-            args: args
-                .iter()
-                .map(|a| substitute_index_in_expr(a, var_name, value))
-                .collect(),
-            is_partial_application: *is_partial_application,
-            span: *span,
-        },
-        ast::Expression::Range {
-            start,
-            step,
-            end,
-            span,
-        } => ast::Expression::Range {
-            start: std::sync::Arc::new(substitute_index_in_expr(start, var_name, value)),
-            step: step
-                .as_ref()
-                .map(|s| std::sync::Arc::new(substitute_index_in_expr(s, var_name, value))),
-            end: std::sync::Arc::new(substitute_index_in_expr(end, var_name, value)),
-            span: *span,
-        },
-        // Other expressions are returned as-is
-        other => other.clone(),
     }
+
+    IndexSubstitution {
+        name: var_name,
+        value,
+    }
+    .transform_expression(expr.clone())
 }
 
 /// Try to select a branch based on parameter values.
@@ -974,7 +955,7 @@ fn try_select_branch(
     cond_blocks: &[rumoca_ir_ast::EquationBlock],
     else_block: &Option<Vec<ast::Equation>>,
     scope: &ast::QualifiedName,
-    params: &ConnectionParams,
+    params: &ConnectionEval<'_>,
 ) -> Option<Vec<ast::Equation>> {
     for block in cond_blocks {
         if let Some(value) = try_eval_bool_expr(&block.cond, &params.bools, &params.integers, scope)
@@ -1093,15 +1074,32 @@ fn component_ref_to_qualified_name(
     comp_ref: &ast::ComponentReference,
     prefix: &ast::QualifiedName,
     int_params: &rustc_hash::FxHashMap<String, i64>,
-) -> ast::QualifiedName {
+) -> InstantiateResult<ast::QualifiedName> {
     let mut qn = prefix.clone();
 
     for part in &comp_ref.parts {
         // Convert subscripts to i64, resolving parameter references via int_params
         let subscripts: Vec<i64> = if let Some(subs) = &part.subs {
-            subs.iter()
-                .filter_map(|sub| subscript_to_i64(sub, int_params, prefix))
-                .collect()
+            // MLS §10.5: evaluated scalar prefixes followed by colons select
+            // the whole remaining array (a[i,:] is the row a[i]). A colon
+            // before a scalar cannot be represented by a QualifiedName prefix.
+            let prefix_len = subs
+                .iter()
+                .position(|sub| matches!(sub, ast::Subscript::Empty | ast::Subscript::Range { .. }))
+                .unwrap_or(subs.len());
+            if !subs[prefix_len..]
+                .iter()
+                .all(|sub| matches!(sub, ast::Subscript::Empty | ast::Subscript::Range { .. }))
+            {
+                return Err(connection_subscript_error(comp_ref));
+            }
+            subs[..prefix_len]
+                .iter()
+                .map(|sub| {
+                    subscript_to_i64(sub, int_params, prefix)
+                        .ok_or_else(|| connection_subscript_error(comp_ref))
+                })
+                .collect::<InstantiateResult<_>>()?
         } else {
             Vec::new()
         };
@@ -1109,7 +1107,49 @@ fn component_ref_to_qualified_name(
         qn.push(part.ident.text.to_string(), subscripts);
     }
 
-    qn
+    Ok(qn)
+}
+
+fn connection_subscript_error(reference: &ast::ComponentReference) -> Box<InstantiateError> {
+    Box::new(InstantiateError::structural_param_error(
+        "connection subscript".to_string(),
+        format!("cannot evaluate subscript in connect endpoint `{reference}`"),
+        reference.span,
+    ))
+}
+
+/// MLS §9.3: only evaluated scalar indices may select connector elements.
+/// Range expressions remain with the existing compact family owner.
+fn evaluated_connection_reference(
+    reference: &ast::ComponentReference,
+    prefix: &ast::QualifiedName,
+    context: &ConnectionEval<'_>,
+) -> InstantiateResult<ast::ComponentReference> {
+    let mut evaluated = reference.clone();
+    for part in &mut evaluated.parts {
+        for subscript in part.subs.as_mut().into_iter().flatten() {
+            let ast::Subscript::Expression(expression) = subscript else {
+                continue;
+            };
+            if matches!(expression, ast::Expression::Range { .. }) {
+                continue;
+            }
+            let value = expr_to_i64_with_params(expression, &context.integers, prefix)
+                .or_else(|| (context.integer)(expression))
+                .ok_or_else(|| connection_subscript_error(reference))?;
+            *expression = ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token: rumoca_core::Token {
+                    text: std::sync::Arc::from(value.to_string()),
+                    location: part.ident.location.clone(),
+                    token_number: 0,
+                    token_type: 0,
+                },
+                span: reference.span,
+            };
+        }
+    }
+    Ok(evaluated)
 }
 
 /// Try to convert a subscript to an i64, resolving parameter references.
@@ -1897,7 +1937,7 @@ mod tests {
         let mut int_params = rustc_hash::FxHashMap::default();
         int_params.insert("cellData.nRC".to_string(), 2);
 
-        let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params);
+        let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params).unwrap();
         assert_eq!(qn.to_flat_string(), "resistor[2].n");
     }
 
@@ -1927,7 +1967,7 @@ mod tests {
         let mut int_params = rustc_hash::FxHashMap::default();
         int_params.insert("cell.cellData.nRC".to_string(), 2);
 
-        let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params);
+        let qn = component_ref_to_qualified_name(&cr, &prefix, &int_params).unwrap();
         assert_eq!(qn.to_flat_string(), "cell.resistor[2].n");
     }
 
