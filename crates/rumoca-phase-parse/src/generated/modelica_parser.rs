@@ -8940,7 +8940,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 170,
         production: &[ParseType::N(231)],
     },
-    // 466 - function_argumentsOpt0: ','^ /* Clipped */ function_arguments_non_first : crate::ExpressionList ;
+    // 466 - function_argumentsOpt0: ','^ /* Clipped */ function_arguments_non_first : crate::FunctionArgumentsTail ;
     Production {
         lhs: 172,
         production: &[ParseType::N(174), ParseType::T(77)],
@@ -8955,7 +8955,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 171,
         production: &[ParseType::N(173)],
     },
-    // 469 - function_argumentsOptGroup: ','^ /* Clipped */ function_arguments_non_first : crate::ExpressionList ;
+    // 469 - function_argumentsOptGroup: ','^ /* Clipped */ function_arguments_non_first : crate::FunctionArgumentsTail ;
     Production {
         lhs: 173,
         production: &[ParseType::N(174), ParseType::T(77)],
@@ -8980,7 +8980,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 174,
         production: &[ParseType::N(231)],
     },
-    // 474 - function_arguments_non_firstOpt: ','^ /* Clipped */ function_arguments_non_first : crate::ExpressionList ;
+    // 474 - function_arguments_non_firstOpt: ','^ /* Clipped */ function_arguments_non_first : crate::FunctionArgumentsTail ;
     Production {
         lhs: 175,
         production: &[ParseType::N(174), ParseType::T(77)],

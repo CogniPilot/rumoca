@@ -6,7 +6,9 @@ use super::helpers::{
 };
 use crate::errors::semantic_error_from_token;
 use crate::generated::modelica_grammar_trait;
+use crate::take_cell::TakeCell;
 use rumoca_core::Span;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 fn empty_expr(span: Span) -> rumoca_ir_ast::Expression {
@@ -79,7 +81,7 @@ fn extend_from_non_first(
     if let modelica_grammar_trait::FunctionArgumentsOptGroup::CommaFunctionArgumentsNonFirst(expr) =
         group
     {
-        args.append(&mut expr.function_arguments_non_first.args.clone());
+        args.extend(expr.function_arguments_non_first.take());
     }
 }
 
@@ -329,7 +331,7 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
 
                 // Collect additional arguments if present
                 if let Some(opt0) = &fpa.function_arguments_opt0 {
-                    args.append(&mut opt0.function_arguments_non_first.args.clone());
+                    args.extend(opt0.function_arguments_non_first.take());
                 }
 
                 let each_flags = vec![false; args.len()];
@@ -362,45 +364,49 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for ExpressionList {
+/// Grammar payload for `function_arguments_non_first`: the arguments after the
+/// first one, consumed exactly once by the enclosing conversion.
+///
+/// The rule is right-recursive (`function_argument [ ',' function_arguments_non_first ]`),
+/// so every level converts one argument plus the tail below it. Moving the tail
+/// out and prepending onto a deque keeps a call with N positional arguments
+/// O(N); copying the tail at each level was O(N^2). Moving out through a shared
+/// reference is sound for the reason given in the `take_cell` module docs.
+#[derive(Debug, Default, Clone)]
+pub struct FunctionArgumentsTail {
+    args: TakeCell<VecDeque<rumoca_ir_ast::Expression>>,
+}
+
+impl FunctionArgumentsTail {
+    /// Move the arguments out, in source order. Callable exactly once.
+    pub(crate) fn take(&self) -> VecDeque<rumoca_ir_ast::Expression> {
+        self.args.take()
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::FunctionArgumentsNonFirst> for FunctionArgumentsTail {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::FunctionArgumentsNonFirst,
     ) -> std::result::Result<Self, Self::Error> {
-        match &ast {
+        let args = match &ast {
             modelica_grammar_trait::FunctionArgumentsNonFirst::FunctionArgumentFunctionArgumentsNonFirstOpt(expr) => {
-                let mut args = vec![expr.function_argument.clone()];
-                if let Some(opt) = &expr.function_arguments_non_first_opt {
-                    args.append(&mut opt.function_arguments_non_first.args.clone());
-                }
-                let each_flags = vec![false; args.len()];
-                let final_flags = vec![false; args.len()];
-                let redeclare_flags = vec![false; args.len()];
-                let replaceable_flags = vec![false; args.len()];
-                Ok(ExpressionList {
-                    args,
-                    each_flags,
-                    final_flags,
-                    redeclare_flags,
-                    replaceable_flags,
-                })
+                let mut args = expr
+                    .function_arguments_non_first_opt
+                    .as_ref()
+                    .map(|opt| opt.function_arguments_non_first.take())
+                    .unwrap_or_default();
+                args.push_front(expr.function_argument.clone());
+                args
             }
             modelica_grammar_trait::FunctionArgumentsNonFirst::NamedArguments(named) => {
-                let args = collect_named_arguments(&named.named_arguments)?;
-                let each_flags = vec![false; args.len()];
-                let final_flags = vec![false; args.len()];
-                let redeclare_flags = vec![false; args.len()];
-                let replaceable_flags = vec![false; args.len()];
-                Ok(ExpressionList {
-                    args,
-                    each_flags,
-                    final_flags,
-                    redeclare_flags,
-                    replaceable_flags,
-                })
+                collect_named_arguments(&named.named_arguments)?.into()
             }
-        }
+        };
+        Ok(Self {
+            args: TakeCell::new(args),
+        })
     }
 }
 

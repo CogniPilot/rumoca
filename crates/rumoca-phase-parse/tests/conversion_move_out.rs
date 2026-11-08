@@ -370,3 +370,77 @@ end Derived;
         "the synthesized inherited extends clause is missing"
     );
 }
+
+fn call_args<'a>(class: &'a ClassDef, component: &str) -> &'a [rumoca_ir_ast::Expression] {
+    match class.components[component].binding.as_ref() {
+        Some(rumoca_ir_ast::Expression::FunctionCall { args, .. }) => args,
+        other => panic!("`{component}` must bind a function call, got {other:?}"),
+    }
+}
+
+fn integer_text(expr: &rumoca_ir_ast::Expression) -> &str {
+    match expr {
+        rumoca_ir_ast::Expression::Terminal { token, .. } => token.text.as_ref(),
+        other => panic!("expected a literal argument, got {other:?}"),
+    }
+}
+
+#[test]
+fn long_positional_argument_list_keeps_every_argument_in_order() {
+    // `function_arguments_non_first` is right-recursive: each level takes its
+    // tail instead of copying it, so a long call stays linear and in order.
+    const COUNT: usize = 3000;
+    let values: Vec<String> = (0..COUNT).map(|i| i.to_string()).collect();
+    let source = format!(
+        "model Wide\n  Real y = zorblat({});\nend Wide;\n",
+        values.join(", ")
+    );
+    let def = parse_to_ast(&source, "wide.mo").expect("source should parse");
+    let args = call_args(nested(&def, &["Wide"]), "y");
+    assert_eq!(args.len(), COUNT, "an argument was lost or duplicated");
+    for (index, arg) in args.iter().enumerate() {
+        assert_eq!(integer_text(arg), values[index], "argument {index} moved");
+    }
+}
+
+#[test]
+fn positional_tail_keeps_trailing_named_arguments_and_partial_application() {
+    let source = r#"
+model Mixed
+  Real y = zorblat(1, 2, 3, gain = 4, bias = 5);
+  Real z = zorblat(function quux(k = 1), 6, 7);
+end Mixed;
+"#;
+    let def = parse_to_ast(source, "mixed.mo").expect("source should parse");
+    let class = nested(&def, &["Mixed"]);
+
+    let y = call_args(class, "y");
+    assert_eq!(y.len(), 5);
+    for (arg, text) in y[..3].iter().zip(["1", "2", "3"]) {
+        assert_eq!(integer_text(arg), text);
+    }
+    for (arg, name) in y[3..].iter().zip(["gain", "bias"]) {
+        match arg {
+            rumoca_ir_ast::Expression::NamedArgument { name: token, .. } => {
+                assert_eq!(token.text.as_ref(), name);
+            }
+            other => panic!("expected named argument `{name}`, got {other:?}"),
+        }
+    }
+
+    let z = call_args(class, "z");
+    assert_eq!(z.len(), 3);
+    assert!(
+        matches!(
+            &z[0],
+            rumoca_ir_ast::Expression::FunctionCall {
+                is_partial_application: true,
+                ..
+            }
+        ),
+        "the partial application must stay first, got {:?}",
+        z[0]
+    );
+    assert_eq!(integer_text(&z[1]), "6");
+    assert_eq!(integer_text(&z[2]), "7");
+}
