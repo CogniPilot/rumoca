@@ -244,27 +244,34 @@ fn present_numeric_zero_and_absent_direction_remain_distinct() {
     let mut d = grid();
     d.binders.remove(0);
     d.binders[0].upper = 2;
-    let product = p
-        .with_dependency_receipt(span(), |receipt| {
-            StateJacobianProduct::construct(
-                m.continuous_numerical_source().unwrap(),
-                order(&m, false),
-                &SolveTargetProfile::current_dense_host(),
-                span(),
-                |c| {
-                    c.store_compact(receipt, d, 0, span(), |b| {
-                        let x = b.read(StateJacobianCompactInput::Seed(1), (span(), 0))?;
-                        b.binary(SolveBinaryOperator::Subtract, [&x, &x], (span(), 1))
-                    })
-                },
-            )
-        })
-        .unwrap()
-        .unwrap();
-    assert_eq!(run(&product, &[2.0, 3.0]).unwrap(), vec![0; 4]);
-    for row in 0..2 {
-        assert!(product.dependencies().contains(row, 1));
-        assert!(!product.dependencies().contains(row, 0));
+    for cancelled in [false, true] {
+        let product = p
+            .with_dependency_receipt(span(), |receipt| {
+                StateJacobianProduct::construct(
+                    m.continuous_numerical_source().unwrap(),
+                    order(&m, false),
+                    &SolveTargetProfile::current_dense_host(),
+                    span(),
+                    |c| {
+                        c.store_compact(receipt, d.clone(), 0, span(), |b| {
+                            let x = b.read(StateJacobianCompactInput::Seed(1), (span(), 0))?;
+                            if cancelled {
+                                b.binary(SolveBinaryOperator::Subtract, [&x, &x], (span(), 1))
+                            } else {
+                                b.copy(&x, (span(), 1))
+                            }
+                        })
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        let one = if cancelled { 0 } else { 1.0_f64.to_bits() };
+        assert_eq!(run(&product, &[2.0, 3.0]).unwrap(), vec![0, one, 0, one]);
+        for row in 0..2 {
+            assert!(product.dependencies().contains(row, 1));
+            assert!(!product.dependencies().contains(row, 0));
+        }
     }
 }
 
