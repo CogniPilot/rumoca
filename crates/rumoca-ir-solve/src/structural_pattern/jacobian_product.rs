@@ -93,7 +93,7 @@ impl<'source> StateJacobianProduct<'source> {
         let mut dependencies = None;
         let table = SolvePureCallTable::construct(profile, |table| {
             let owner = table.add_owner(
-                SolvePureCallIdentity::issued(NonZeroU64::new(1).expect("fixed local identity")),
+                SolvePureCallIdentity::issued(NonZeroU64::MIN),
                 vec![real; count],
                 vec![SolvePureCallOutput::result(matrix)],
                 span,
@@ -140,9 +140,6 @@ impl<'source> StateJacobianProduct<'source> {
     }
     pub fn state_labels(&self) -> &[String] {
         self.order.input_labels()
-    }
-    pub fn output_order(&self) -> &StoredStateJacobianOutputOrder<'source> {
-        &self.order
     }
     pub fn source_model(&self) -> &'source SolveModel {
         self.order.source_model()
