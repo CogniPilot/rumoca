@@ -79,7 +79,7 @@ typedef struct {
     frames of one level are never live together. #}
 {%- for level in range(1, solve_block.function_levels + 1) %}
     union {
-{%- for owner in solve_block.functions.owners %}{% if owner.level == level %}
+{%- for owner in solve_block.functions.owners %}{% if solve_block.call_levels[owner.id] == level %}
         struct {{ c_model }}RumocaGalecFn{{ owner.id }} fn{{ owner.id }};
 {%- endif %}{% endfor %}
     } level{{ level }};

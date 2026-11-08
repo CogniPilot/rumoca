@@ -2,8 +2,8 @@
 //! GALEC C targets emit.
 //!
 //! The layout decision itself — which frames may share storage — is a property
-//! of the call graph, made by the call levels in
-//! `rumoca-phase-codegen/src/codegen/solve_block_renderer.rs`. What is tested
+//! of the call graph, issued by `SolveAlgorithmBlock::call_levels` in
+//! `rumoca-ir-solve`. What is tested
 //! HERE is the thing that property exists to protect: that the generated C
 //! still computes the right numbers. The fixture is built so that an overlay
 //! which put a caller and its callee on the same storage produces a *different
