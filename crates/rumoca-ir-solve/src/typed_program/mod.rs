@@ -12,7 +12,7 @@ mod target;
 mod target_specialization;
 mod types;
 
-pub use compact_placement::CompactJacobianPlacement;
+pub use compact_placement::{CompactJacobianPlacement, CompactJacobianPlacementReceipt};
 pub use target::{SolveAdmittedFunctionDomain, SolveFunctionTarget, SolveFunctionTargetRefusal};
 
 pub use algorithm_block::{

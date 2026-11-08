@@ -139,6 +139,10 @@ entry capability or acquire a phase dependency.
 The private pure-call directional constructor remains an IR-local checked
 construction operation; it issues the call's tangent-relation invariant rather
 than a model artifact or source-language lowering decision.
+Compact Jacobian placement receipts are IR-local checked coordinate data.
+Their affine/stacked relation stays private until a checked body/output join
+binds actual directions. Placement geometry alone does not certify a source
+derivative. Target materialization remains a consumer of these facts.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
 delegate to Solve lowering or evaluation.
 

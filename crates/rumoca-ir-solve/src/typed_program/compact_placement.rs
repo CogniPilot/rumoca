@@ -7,8 +7,10 @@
 //! whether points are expanded; today only the dense host layout exists, and
 //! it expands every placement into the one `[n, n]` aggregate.
 
+mod receipt;
 #[cfg(test)]
 mod tests;
+pub use receipt::CompactJacobianPlacementReceipt;
 
 use super::{ProgramRegister, SolveProgramConstructionError, TypedProgramBuilder};
 use crate::StoredStateJacobianOutputOrder;
@@ -17,8 +19,8 @@ use rumoca_core::Span;
 /// `base + Σ strides[d]·k_d` over a node's 0-based ordinal domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompactAffineIndex {
-    base: i64,
-    strides: Vec<i64>,
+    pub(crate) base: i64,
+    pub(crate) strides: Vec<i64>,
 }
 
 impl CompactAffineIndex {
@@ -55,11 +57,12 @@ impl CompactAffineIndex {
 /// writes row `row(k)`, and its partial `j` writes column `columns[j](k)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactJacobianPlacement {
-    extents: Vec<u32>,
-    row: CompactAffineIndex,
-    columns: Vec<CompactAffineIndex>,
+    pub(crate) extents: Vec<u32>,
+    pub(crate) row: CompactAffineIndex,
+    pub(crate) columns: Vec<CompactAffineIndex>,
     /// The state domain every index was proven against.
-    states: usize,
+    pub(crate) states: usize,
+    identity: std::sync::Arc<()>,
 }
 
 impl CompactJacobianPlacement {
@@ -97,6 +100,7 @@ impl CompactJacobianPlacement {
             row,
             columns,
             states,
+            identity: std::sync::Arc::new(()),
         })
     }
 
