@@ -1304,7 +1304,7 @@ pub struct ElementElementDefinition {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupClassDefinition {
-    pub class_definition: rumoca_ir_ast::ClassDef,
+    pub class_definition: crate::BoxedClassDef,
 }
 
 ///
@@ -1339,7 +1339,7 @@ pub struct ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDe
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementDefinitionGroupGroupClassDefinition {
-    pub class_definition: rumoca_ir_ast::ClassDef,
+    pub class_definition: crate::BoxedClassDef,
 }
 
 ///
@@ -5125,7 +5125,7 @@ pub struct StoredDefinition {
 #[derive(Debug, Clone)]
 pub struct StoredDefinitionList {
     pub stored_definition_opt0: Option<StoredDefinitionOpt0>,
-    pub class_definition: rumoca_ir_ast::ClassDef,
+    pub class_definition: crate::BoxedClassDef,
 }
 
 ///

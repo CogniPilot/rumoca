@@ -6766,7 +6766,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 275,
         production: &[ParseType::N(276), ParseType::N(277)],
     },
-    // 68 - stored_definitionList: stored_definitionOpt0 /* Option */ class_definition : rumoca_ir_ast::ClassDef  ';'^ /* Clipped */ stored_definitionList;
+    // 68 - stored_definitionList: stored_definitionOpt0 /* Option */ class_definition : crate::BoxedClassDef  ';'^ /* Clipped */ stored_definitionList;
     Production {
         lhs: 276,
         production: &[
@@ -7330,7 +7330,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(101),
         ],
     },
-    // 166 - element_definitionGroup: class_definition : rumoca_ir_ast::ClassDef ;
+    // 166 - element_definitionGroup: class_definition : crate::BoxedClassDef ;
     Production {
         lhs: 99,
         production: &[ParseType::N(34)],
@@ -7345,7 +7345,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 99,
         production: &[ParseType::N(105), ParseType::N(100), ParseType::N(259)],
     },
-    // 169 - element_definitionGroupGroup: class_definition : rumoca_ir_ast::ClassDef ;
+    // 169 - element_definitionGroupGroup: class_definition : crate::BoxedClassDef ;
     Production {
         lhs: 100,
         production: &[ParseType::N(34)],

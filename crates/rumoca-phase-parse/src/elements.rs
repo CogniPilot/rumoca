@@ -429,7 +429,7 @@ fn process_class_definition(
     is_outer: bool,
     is_redeclare: bool,
 ) -> anyhow::Result<()> {
-    let mut nested_class = class.class_definition.clone();
+    let mut nested_class = (*class.class_definition).clone();
     nested_class.is_final = is_final;
     nested_class.is_inner = is_inner;
     nested_class.is_outer = is_outer;
@@ -621,7 +621,7 @@ fn process_replaceable_element(
 
     match &*repl.element_definition_group_group {
         modelica_grammar_trait::ElementDefinitionGroupGroup::ClassDefinition(class) => {
-            let mut nested_class = class.class_definition.clone();
+            let mut nested_class = (*class.class_definition).clone();
             nested_class.is_final = is_final;
             nested_class.is_inner = is_inner;
             nested_class.is_outer = is_outer;
