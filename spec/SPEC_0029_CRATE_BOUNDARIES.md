@@ -139,6 +139,13 @@ entry capability or acquire a phase dependency.
 The private pure-call directional constructor remains an IR-local checked
 construction operation; it issues the call's tangent-relation invariant rather
 than a model artifact or source-language lowering decision.
+The staged stored-state Jacobian product and its opaque direction handles are
+IR-owned checked data. Its owner closure issues the graph and structural
+presence together, without raw tangent vectors or caller-provided sparse rows.
+Model capability analysis and source-operation traversal stay in
+`rumoca-eval-solve`; the existing evaluator/native path is unchanged until the
+atomic product-consumer cutover. Compact body receipts and residual/coloring
+composition are separate from this scalar construction API.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
 delegate to Solve lowering or evaluation.
 
