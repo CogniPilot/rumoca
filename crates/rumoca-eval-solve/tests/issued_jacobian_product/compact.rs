@@ -284,8 +284,8 @@ fn parameter_and_time_projection_use_the_same_captured_owner_inputs() {
             ("p".into(), scalar_slot_p(0)),
         ]
         .into(),
-        [("x".into(), vec![2]), ("p".into(), vec![])].into(),
-        [("x".into(), span()), ("p".into(), span())].into(),
+        [("x".into(), vec![2])].into(),
+        [("x".into(), span())].into(),
         2,
         1,
     )
