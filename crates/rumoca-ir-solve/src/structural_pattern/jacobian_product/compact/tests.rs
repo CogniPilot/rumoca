@@ -147,7 +147,9 @@ fn actual_joined_metadata_stays_compact_at_4096_points() {
         })
         .unwrap()
         .unwrap();
-        let count = entries(&serialized.unwrap());
+        let serialized = serialized.unwrap();
+        let count = entries(&serialized);
+        println!("COMPACT_METADATA_POINTS={n} ENTRIES={count} JSON={serialized}");
         assert!(count < 128);
         count
     });

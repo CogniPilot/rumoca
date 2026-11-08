@@ -20,6 +20,12 @@ pub enum StateJacobianCompactInput {
 
 /// A fresh map body's only direction producer. Seed positions refer to the
 /// issued placement's checked affine columns, never to arbitrary registers.
+/// ```compile_fail,E0616
+/// use rumoca_ir_solve::StateJacobianCompactConstruction;
+/// fn raw_builder<'b,'s>(body: StateJacobianCompactConstruction<'b,'s>) {
+///     let _ = body.builder;
+/// }
+/// ```
 pub struct StateJacobianCompactConstruction<'body, 'scope> {
     builder: &'scope mut TypedProgramBuilder<'body>,
     placement: &'scope CompactJacobianPlacement,

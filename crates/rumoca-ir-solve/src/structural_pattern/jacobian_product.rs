@@ -38,6 +38,12 @@ pub enum StateJacobianProductDomain {
 ///     let _ = StateJacobianProduct { dependencies: arbitrary, ..valid };
 /// }
 /// ```
+/// ```compile_fail,E0277
+/// use rumoca_ir_solve::StateJacobianProduct;
+/// fn detach_to_wire(product: StateJacobianProduct<'_>) {
+///     let _ = serde_json::to_value(product);
+/// }
+/// ```
 #[derive(Debug)]
 pub struct StateJacobianProduct<'source> {
     source: ContinuousNumericalSource<'source>,
