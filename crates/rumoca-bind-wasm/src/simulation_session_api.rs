@@ -1,4 +1,5 @@
 mod options;
+pub(crate) mod prebuilt;
 
 use options::InteractiveOptions;
 use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
@@ -87,6 +88,25 @@ impl WasmSimulationSession {
         let mut options = InteractiveOptions::parse(options_json)?;
         let initial_inputs = std::mem::take(&mut options.initial_inputs);
         create_interactive_session(source, model_name, &options, || Ok(initial_inputs))
+    }
+
+    /// Load a current-build artifact without compiling its Modelica sources.
+    /// The explicit source set must match the export exactly; options are
+    /// checked and applied by the same owner as source-created sessions.
+    #[wasm_bindgen(js_name = fromPrebuiltArtifact)]
+    pub fn from_prebuilt_artifact(
+        artifact_json: &str,
+        source: &str,
+        model_name: &str,
+        workspace_sources_json: &str,
+        options_json: &str,
+    ) -> Result<WasmSimulationSession, WasmError> {
+        let options = InteractiveOptions::parse(options_json)?;
+        let payload = prebuilt::load(artifact_json, source, model_name, workspace_sources_json)?;
+        let (opts, _) = payload
+            .experiment
+            .simulation_options(0.0, options.dt, &options.solver);
+        create_session_from_dae(payload.dae, opts, &options, options.initial_inputs.clone())
     }
 
     /// Set an input value by name. Takes effect on the next advance.
@@ -215,20 +235,29 @@ fn create_interactive_session(
     options: &InteractiveOptions,
     initial_inputs: impl FnOnce() -> Result<Vec<(String, f64)>, WasmError>,
 ) -> Result<WasmSimulationSession, WasmError> {
-    let (dae, mut opts) = with_singleton_session(|session| {
+    let (dae, opts) = with_singleton_session(|session| {
         session.update_document("input.mo", source);
         let requested_model = qualify_input_model_name(session, model_name);
         let result = compile_cached_requested_model(session, &requested_model)?;
         let (opts, _) = build_simulation_options(&result, 0.0, options.dt, &options.solver);
         Ok((result.dae, opts))
     })?;
+    create_session_from_dae(dae, opts, options, initial_inputs()?)
+}
+
+fn create_session_from_dae(
+    dae: std::sync::Arc<rumoca_compile::compile::Dae>,
+    mut opts: rumoca_sim::SimOptions,
+    options: &InteractiveOptions,
+    initial_inputs: Vec<(String, f64)>,
+) -> Result<WasmSimulationSession, WasmError> {
     if options.atol.is_finite() && options.atol > 0.0 {
         opts.atol = options.atol;
     }
     if options.rtol.is_finite() && options.rtol > 0.0 {
         opts.rtol = options.rtol;
     }
-    opts.initial_inputs = initial_inputs()?;
+    opts.initial_inputs = initial_inputs;
     opts.execution_policy = options.execution_policy;
     opts.param_overrides = options.param_overrides.clone();
     let session = PREPARED_SESSION_CACHE

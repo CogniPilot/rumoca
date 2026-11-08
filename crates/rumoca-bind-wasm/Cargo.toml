@@ -74,8 +74,8 @@ native-assignments = ["dep:rumoca-sim", "rumoca-sim/native-fmi-ls", "dep:rumoca-
 # once-built product and the existing browser graph does not enable this.
 native-fmi-ls-build = ["native-assignments", "rumoca-sim/native-fmi-ls-build"]
 sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
-sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
-sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]
+sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol", "dep:sha2"]
+sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45", "dep:sha2"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 
 [lints]
