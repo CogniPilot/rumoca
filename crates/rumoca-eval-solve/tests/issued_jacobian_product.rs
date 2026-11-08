@@ -86,12 +86,19 @@ fn cancellation_is_numeric_zero_but_keeps_its_structural_edge() {
         |c| {
             let x = c.read(StateJacobianProductInput::State(0), check(0))?;
             let cancelled = c.binary(SolveBinaryOperator::Subtract, [&x, &x], check(1))?;
+            let copied = c.copy(&cancelled, check(2))?;
             let constant = c.constant(4.0, check(2))?;
-            c.store_row(0, &cancelled, span())?;
+            c.store_row(0, &copied, span())?;
             c.store_row(1, &constant, span())
         },
     )
     .unwrap();
+    assert_eq!(product.parameters(), 0);
+    assert_eq!(product.state_labels().len(), 2);
+    assert!(std::ptr::eq(
+        product.source().layout(),
+        &model.problem.layout
+    ));
     assert!(product.canonical_dependencies().contains(0, 0));
     assert!(!product.canonical_dependencies().contains(1, 0));
     assert_eq!(evaluate(&product, [2.0, 3.0]).unwrap(), vec![0; 4]);
