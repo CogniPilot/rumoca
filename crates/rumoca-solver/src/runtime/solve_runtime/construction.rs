@@ -374,27 +374,28 @@ impl SolveRuntime {
                     .filter(|_| implicit_scalar_rhs.is_compiled()),
             )
             .into();
-        let block_splits = block_residual_split::block_residual_splits(
-            grouped_residual,
-            &model.problem.continuous.algebraic_projection_plan,
-            &continuous_structural,
-            implicit_scalar_rhs.source(),
-            &implicit_scalar_programs,
-            execution_backend.as_deref(),
-            primary.map(|primary| {
-                block_residual_split::SharedSplits::new(
-                    &primary
-                        .runtime
-                        .model
-                        .problem
-                        .continuous
-                        .algebraic_projection_plan,
-                    &primary.scalar.block_splits,
-                    &replaced_rows,
-                )
-            }),
-        )
-        .into();
+        let block_splits: Rc<[Option<Rc<block_residual_split::BlockSplits>>]> =
+            block_residual_split::block_residual_splits(
+                grouped_residual,
+                &model.problem.continuous.algebraic_projection_plan,
+                &continuous_structural,
+                implicit_scalar_rhs.source(),
+                &implicit_scalar_programs,
+                execution_backend.as_deref(),
+                primary.map(|primary| {
+                    block_residual_split::SharedSplits::new(
+                        &primary
+                            .runtime
+                            .model
+                            .problem
+                            .continuous
+                            .algebraic_projection_plan,
+                        &primary.scalar.block_splits,
+                        &replaced_rows,
+                    )
+                }),
+            )
+            .into();
         let state_jacobian_memo = state_jacobian_memo::StateJacobianMemo::certify(
             &derivative_refresh.simultaneous_plan,
             implicit_scalar_rhs.source(),
@@ -516,6 +517,12 @@ impl SolveRuntime {
                     &continuous_structural,
                 )
             },
+            split_sweeps: block_residual_split::split_sweeps(
+                continuous_structural.algebraic_projection(),
+                &block_splits,
+                &implicit_scalar_programs,
+            )
+            .into(),
             block_splits,
             block_kernels,
             fused_residuals,

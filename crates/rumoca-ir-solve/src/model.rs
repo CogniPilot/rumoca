@@ -522,6 +522,7 @@ pub struct JacobianStructure {
     output_evaluations: Box<[ProjectionJacobianOutputs]>,
     residual_output_evaluation: Option<ProjectionOutputSelection>,
     fused_residual_evaluation: Option<Box<FusedResidualSelection>>,
+    split_residual_evaluation: Option<Box<SplitResidualSelection>>,
     jacobian_application: Option<Box<ProjectionJacobianApplication>>,
     affine_elimination: Option<Box<AffineEliminationLayout>>,
     linearization_repeatable: bool,
@@ -546,6 +547,7 @@ impl JacobianStructure {
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
             fused_residual_evaluation: None,
+            split_residual_evaluation: None,
             jacobian_application: None,
             affine_elimination: None,
             linearization_repeatable: false,
@@ -574,6 +576,12 @@ impl JacobianStructure {
     /// The residual selection's unsplit programs, for one fused residual entry.
     pub fn fused_residual_evaluation(&self) -> Option<&FusedResidualSelection> {
         self.fused_residual_evaluation.as_deref()
+    }
+
+    /// The residual selection's split programs, for one committing sweep of
+    /// their dependent parts.
+    pub fn split_residual_evaluation(&self) -> Option<&SplitResidualSelection> {
+        self.split_residual_evaluation.as_deref()
     }
 
     pub const fn affine_elimination(&self) -> Option<&AffineEliminationLayout> {
@@ -675,6 +683,10 @@ impl ColoredJacobianStructure {
 
     pub fn fused_residual_evaluation(&self) -> Option<&FusedResidualSelection> {
         self.structure.fused_residual_evaluation()
+    }
+
+    pub fn split_residual_evaluation(&self) -> Option<&SplitResidualSelection> {
+        self.structure.split_residual_evaluation()
     }
 
     pub const fn affine_elimination(&self) -> Option<&AffineEliminationLayout> {

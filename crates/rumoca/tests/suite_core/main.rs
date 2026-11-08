@@ -35,6 +35,7 @@ mod periodic_clock_session;
 mod reported_bug_runtime;
 mod solve_renderer_without_dae;
 mod solve_residual_scalar;
+mod string_constant_elements;
 
 mod actual_stream_product_events;
 mod additive_torque;
@@ -146,6 +147,7 @@ mod function_branch_integer_conversion;
 mod function_call_extents;
 mod function_call_statement_named_arguments;
 mod function_comprehension_definedness;
+mod function_comprehension_state;
 mod function_conditional_chains;
 mod function_conditional_sequence_test;
 mod function_constant_binding_scope;
