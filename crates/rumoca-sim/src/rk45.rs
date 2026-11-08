@@ -19,21 +19,37 @@ const INSTANCE_NAME: &str = "rk-like";
 const RK45_INTEGRATOR: crate::me_backend::IntegratorFactory =
     crate::me_backend::IntegratorFactory {
         method: "rk45",
+        backend: rumoca_solver::NumericalBackend::Rk45,
         model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::NotRequested,
-        build: rumoca_solver_rk45::model_exchange_integrator,
+        build: rk45_integrator,
     };
 
 pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
+    crate::backend_options::validate(opts)?;
     let (artifact, execution_backend) =
         lower_runtime_artifact(dae_model, opts).map_err(diagnostic_sim_error)?;
     simulate_artifact(artifact, opts, execution_backend)
 }
 
-pub(crate) fn integrator_factory() -> crate::me_backend::IntegratorFactory {
-    RK45_INTEGRATOR
+fn rk45_integrator(
+    setup: rumoca_solver::fmi_me::MeNumericalSetup,
+    options: crate::backend_options::ValidatedOptions,
+    observation: Option<rumoca_solver::fmi_me::numerical_observation::AdapterWriter>,
+) -> Result<Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static>, SimError> {
+    if !matches!(
+        options,
+        crate::backend_options::ValidatedOptions::Defaults
+            | crate::backend_options::ValidatedOptions::Rk45(_)
+    ) {
+        return Err(rumoca_solver::BackendOptionsError::ConcreteType {
+            backend: rumoca_solver::NumericalBackend::Rk45,
+        }
+        .into());
+    }
+    Ok(rumoca_solver_rk45::model_exchange_integrator_with_observation(setup, observation))
 }
 
 #[cfg(feature = "solver-velimplicit")]
@@ -43,6 +59,7 @@ const VELIMPLICIT_INSTANCE_NAME: &str = "velimplicit";
 const VELIMPLICIT_INTEGRATOR: crate::me_backend::IntegratorFactory =
     crate::me_backend::IntegratorFactory {
         method: "velimplicit",
+        backend: rumoca_solver::NumericalBackend::VelImplicit,
         model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::FiniteAssembly,
         build: velimplicit_integrator,
     };
@@ -52,11 +69,27 @@ const VELIMPLICIT_INTEGRATOR: crate::me_backend::IntegratorFactory =
 #[cfg(feature = "solver-velimplicit")]
 fn velimplicit_integrator(
     setup: rumoca_solver::fmi_me::MeNumericalSetup,
-) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static> {
-    rumoca_solver_velimplicit::model_exchange_integrator(
-        setup,
-        rumoca_solver_velimplicit::VelImplicitConfig::default(),
-    )
+    options: crate::backend_options::ValidatedOptions,
+    observation: Option<rumoca_solver::fmi_me::numerical_observation::AdapterWriter>,
+) -> Result<Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static>, SimError> {
+    let config = match options {
+        crate::backend_options::ValidatedOptions::Defaults => {
+            rumoca_solver_velimplicit::VelImplicitConfig::default()
+        }
+        crate::backend_options::ValidatedOptions::VelImplicit(config) => config,
+        _ => {
+            return Err(rumoca_solver::BackendOptionsError::ConcreteType {
+                backend: rumoca_solver::NumericalBackend::VelImplicit,
+            }
+            .into());
+        }
+    };
+    if let Some(observation) = observation {
+        observation.unavailable();
+    }
+    Ok(rumoca_solver_velimplicit::model_exchange_integrator(
+        setup, config,
+    ))
 }
 
 pub use simulate as simulate_dae;
@@ -65,15 +98,33 @@ pub fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
+    simulate_with_observation(dae_model, opts, None)
+}
+
+pub(crate) fn simulate_with_observation(
+    dae_model: &dae::Dae,
+    opts: &rumoca_solver::SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
+) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
+    crate::backend_options::validate(opts)?;
     let (artifact, execution_backend) = lower_runtime_artifact(dae_model, opts)?;
-    simulate_artifact(artifact, opts, execution_backend)
-        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+    simulate_artifact_with_observation(artifact, opts, execution_backend, observation)
+        .map_err(SimulationDiagnosticError::from)
 }
 
 pub(crate) fn simulate_artifact(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+) -> Result<rumoca_solver::SimResult, SimError> {
+    simulate_artifact_with_observation(artifact, opts, execution_backend, None)
+}
+
+pub(crate) fn simulate_artifact_with_observation(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
+    opts: &rumoca_solver::SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<rumoca_solver::SimResult, SimError> {
     let (instance_name, integrator) = integrator_for(opts.solver_mode)?;
     crate::me_backend::simulate_artifact(
@@ -82,6 +133,7 @@ pub(crate) fn simulate_artifact(
         execution_backend,
         instance_name,
         integrator,
+        observation,
     )
 }
 
@@ -95,6 +147,8 @@ fn lower_runtime_artifact(
     ),
     SimulationDiagnosticError,
 > {
+    let (_, factory) = integrator_for(opts.solver_mode).map_err(SimulationDiagnosticError::from)?;
+    crate::backend_options::validate_for_backend(opts, factory.backend)?;
     crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
 }
 
@@ -105,7 +159,11 @@ pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 /// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
 /// for a rejected parameter/start override).
 fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
-    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code()))
+    match err {
+        SimulationDiagnosticError::Simulation(error) => error,
+        SimulationDiagnosticError::BackendOptions(error) => error.into(),
+        error => SimError::SolveIr(format!("[{}] {error}", error.diagnostic_code())),
+    }
 }
 
 pub struct SimulationSession {
@@ -122,6 +180,8 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         mut begin_stage: impl FnMut(&'static str),
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
+        let (instance_name, integrator) = integrator_for(opts.solver_mode)?;
+        crate::backend_options::validate_for_backend(&opts, integrator.backend)?;
         let param_overrides =
             tunable_param_overrides(dae_model, &opts).map_err(diagnostic_sim_error)?;
         let (mut lowered, solve_timings) =
@@ -141,7 +201,6 @@ impl SimulationSession {
         let backend_build_start = Instant::now();
         let (artifact, execution_backend) =
             finish_runtime_fmi_artifact(lowered, &opts).map_err(diagnostic_sim_error)?;
-        let (instance_name, integrator) = integrator_for(opts.solver_mode)?;
         let inner = BackendSimulationSession::new(
             artifact,
             &opts,
@@ -166,6 +225,7 @@ impl SimulationSession {
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
+        crate::backend_options::validate(&opts)?;
         let (artifact, execution_backend) = lower_runtime_artifact(dae_model, &opts)?;
         Self::from_artifact(artifact, opts, execution_backend)
     }
@@ -176,8 +236,8 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let (instance_name, integrator) = integrator_for(opts.solver_mode)
-            .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+        let (instance_name, integrator) =
+            integrator_for(opts.solver_mode).map_err(SimulationDiagnosticError::from)?;
         let inner = BackendSimulationSession::new(
             artifact,
             &opts,
@@ -185,7 +245,7 @@ impl SimulationSession {
             instance_name,
             integrator,
         )
-        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+        .map_err(SimulationDiagnosticError::from)?;
         Ok(Self { inner })
     }
 

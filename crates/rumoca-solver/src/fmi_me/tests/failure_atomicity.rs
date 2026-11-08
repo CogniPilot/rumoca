@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 mod deferred_yields;
 mod input_batches;
+mod numerical_observation;
 
 use rumoca_ir_solve as solve;
 

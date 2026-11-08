@@ -18,6 +18,7 @@ mod host_state;
 mod inputs;
 #[cfg(feature = "native-wasm")]
 mod native_inputs;
+mod numerical_observation;
 mod options;
 mod recovery;
 
@@ -390,37 +391,7 @@ impl MeComponentHost<'_> {
     where
         Self: 'lease,
     {
-        let state_count = self.host.state_count;
-        // ME-ZERO-001's arity rule, decided from the linked component's own
-        // width and the presence of a plugin. It asks the backend nothing: the
-        // thin ME-INT-001 surface has no identity operation to ask
-        let backend: Box<dyn MeIntegratorBackend + 'plugin> = match backend {
-            Some(_) if state_count == 0 => {
-                return Err(MeSessionError::PluginArity {
-                    state_count,
-                    mismatch: MePluginArity::RejectsANumericalPlugin,
-                });
-            }
-            Some(backend) => backend,
-            None if state_count == 0 => Box::new(TimeOnlyIntegrator::new()),
-            None => {
-                return Err(MeSessionError::PluginArity {
-                    state_count,
-                    mismatch: MePluginArity::RequiresANumericalPlugin,
-                });
-            }
-        };
-        let mut session = MeSimulationSession {
-            host: self.host,
-            owned_component: self.owned_component,
-            backend,
-            scan_workspace: RefCell::new(RootScanWorkspace::default()),
-            deferred: None,
-            snapped_yield: None,
-            lease: PhantomData,
-        };
-        session.start_plugin()?;
-        Ok(session)
+        self.into_session_with_numerical_observation(backend, None)
     }
 }
 
@@ -442,6 +413,7 @@ pub struct MeSimulationSession<'lease, 'plugin> {
     host: MeHostState,
     owned_component: Option<MeRetainedComponent>,
     backend: Box<dyn MeIntegratorBackend + 'plugin>,
+    numerical_observation: Option<super::numerical_observation::HostWriter>,
     scan_workspace: RefCell<RootScanWorkspace>,
     /// A live yield served from inside a natural step that is not yet committed
     /// (issue #513): observation cadence must not change the trajectory.
@@ -789,7 +761,10 @@ impl MeSimulationSession<'_, '_> {
     fn truncate_at(&mut self, time: f64, states: &[f64]) -> Result<(), MeSessionError> {
         self.host.adopt_projected_point(time, states)?;
         let point = self.host.checked_point()?;
-        self.run_with_derivatives(|backend| backend.truncate_reset(&point))?;
+        self.run_observed_lifecycle(
+            super::numerical_observation::LifecycleCall::TruncateReset,
+            |backend| backend.truncate_reset(&point),
+        )?;
         self.host.retained_interval = None;
         let completed = self.host.completed_integrator_step()?;
         self.host.refresh_retained_indicators()?;
@@ -870,7 +845,11 @@ impl MeSimulationSession<'_, '_> {
     fn restart_plugin_history(&mut self) -> Result<(), MeSessionError> {
         let point = self.host.checked_point()?;
         let handle = self.host.derivatives.issue_handle();
-        self.run_with_derivatives(|backend| backend.initialize(&point, handle))?;
+        self.record_current_numerical_policy();
+        self.run_observed_lifecycle(
+            super::numerical_observation::LifecycleCall::Initialize,
+            |backend| backend.initialize(&point, handle),
+        )?;
         // A restarted plugin holds no accepted interval, so no left limit can
         // be sampled from one until the next accepted step.
         self.host.retained_interval = None;
@@ -1304,7 +1283,10 @@ impl MeSimulationSession<'_, '_> {
             .adopt_projected_point(accepted.time(), accepted.states())?;
         if projected {
             let point = self.host.checked_point()?;
-            self.run_with_derivatives(|backend| backend.truncate_reset(&point))?;
+            self.run_observed_lifecycle(
+                super::numerical_observation::LifecycleCall::TruncateReset,
+                |backend| backend.truncate_reset(&point),
+            )?;
             self.host.retained_interval = None;
         }
         let reaches_time_event = reached_time_event.is_some();
@@ -1430,7 +1412,10 @@ impl MeSimulationSession<'_, '_> {
         // through the retained capability, so this is an activated host call
         // and the application point is restored on both its exits.
         let point = self.host.checked_point()?;
-        self.run_with_derivatives(|backend| backend.truncate_reset(&point))?;
+        self.run_observed_lifecycle(
+            super::numerical_observation::LifecycleCall::TruncateReset,
+            |backend| backend.truncate_reset(&point),
+        )?;
         self.host.retained_interval = None;
         let completed = self.host.completed_integrator_step()?;
         if completed.terminate_simulation {

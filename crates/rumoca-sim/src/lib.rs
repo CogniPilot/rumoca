@@ -32,17 +32,17 @@ pub mod algorithm_block {
 }
 
 pub use rumoca_solver::{
-    DataSeries, DiffsolMethod, HotpathStatsSnapshot, ObjectiveGradient, ProjectionFallback,
-    ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite, RunningKind, RunningTerm,
-    RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext, SimBackend,
-    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
-    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
-    SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard, TerminalTerm,
-    TimeoutBudget, TimeoutExceeded, TrajectoryObjective, build_simulation_metrics_value,
-    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
-    projection_fallbacks, projection_fallbacks_value, reset_projection_fallbacks,
-    reset_step_counts, run_timeout_result, run_timeout_step, run_timeout_step_result,
-    runtime_progress_snapshot, shared_value_proof_failures, step_counts,
+    BackendOptions, BackendOptionsError, DataSeries, HotpathStatsSnapshot, NumericalBackend,
+    ObjectiveGradient, ProjectionFallback, ProjectionFallbackCounts, ProjectionFallbackReport,
+    ProjectionSite, RunningKind, RunningTerm, RuntimeProgressSnapshot, RuntimeStopSchedule,
+    RuntimeTraceContext, SimBackend, SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt,
+    SimNativeDecline, SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode,
+    SimVariableMeta, SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard,
+    TerminalTerm, TimeoutBudget, TimeoutExceeded, TrajectoryObjective,
+    build_simulation_metrics_value, build_simulation_payload, is_solver_timeout_panic,
+    panic_on_expired_solver_deadline, projection_fallbacks, projection_fallbacks_value,
+    reset_projection_fallbacks, reset_step_counts, run_timeout_result, run_timeout_step,
+    run_timeout_step_result, runtime_progress_snapshot, shared_value_proof_failures, step_counts,
     stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
     trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
@@ -70,6 +70,8 @@ pub mod bulk;
 mod error;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod me_backend;
+#[cfg(all(test, feature = "solver-rk45"))]
+mod numerical_observation_tests;
 pub mod row_eval_trace;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_cache;
@@ -113,6 +115,8 @@ pub mod native_expansion {
 }
 
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod backend_options;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
 #[cfg(all(
@@ -131,6 +135,8 @@ pub use diffsol::{
 pub use error::{SimError, SimFailureStage};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
+#[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
+pub use rk45::{simulate, simulate_dae};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use session_cache::{SimulationSessionCache, SimulationSessionLease};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
@@ -196,12 +202,33 @@ pub fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
+    simulate_with_observation(dae_model, opts, None)
+}
+
+/// Observe the same selected ME numerical path as `simulate_with_diagnostics`.
+/// Unsupported readback affects only snapshot completeness, not integration.
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub fn simulate_with_numerical_observation(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+    observation: &rumoca_solver::fmi_me::numerical_observation::SettingsCollector,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    simulate_with_observation(dae_model, opts, Some(observation))
+}
+
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+fn simulate_with_observation(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    backend_options::validate(opts)?;
     match opts.solver_mode {
-        SimSolverMode::Auto => simulate_with_auto_diagnostics(dae_model, opts),
+        SimSolverMode::Auto => simulate_with_auto_diagnostics(dae_model, opts, observation),
         SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
-            simulate_with_rk45_diagnostics(dae_model, opts)
+            simulate_with_rk45_diagnostics(dae_model, opts, observation)
         }
-        SimSolverMode::Bdf => simulate_with_diffsol_diagnostics(dae_model, opts),
+        SimSolverMode::Bdf => simulate_with_diffsol_diagnostics(dae_model, opts, observation),
     }
 }
 
@@ -219,6 +246,7 @@ pub fn simulate_fmi_component(
     component: rumoca_ir_solve::fmi::FmiComponent,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
+    backend_options::validate(opts)?;
     let execution_backend = native_execution::admitted_native_execution_backend(
         opts,
         component.runtime_view().model(),
@@ -227,11 +255,11 @@ pub fn simulate_fmi_component(
     let artifact =
         rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);
     match opts.solver_mode {
-        SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend),
+        SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend, None),
         SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
-            simulate_artifact_rk45(artifact, opts, execution_backend)
+            simulate_artifact_rk45(artifact, opts, execution_backend, None)
         }
-        SimSolverMode::Bdf => simulate_artifact_diffsol(artifact, opts, execution_backend),
+        SimSolverMode::Bdf => simulate_artifact_diffsol(artifact, opts, execution_backend, None),
     }
 }
 
@@ -240,17 +268,25 @@ fn simulate_artifact_auto(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    match diffsol::select_auto_integrator(&artifact, opts, execution_backend.clone())
-        .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
+    match diffsol::select_auto_integrator_with_observation(
+        &artifact,
+        opts,
+        execution_backend.clone(),
+        observation,
+    )
+    .map_err(SimulationDiagnosticError::from)?
     {
-        diffsol::SelectedAutoIntegrator::Bdf(Some(prepared)) => diffsol::simulate_probed(&prepared)
-            .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+        diffsol::SelectedAutoIntegrator::Bdf(Some(prepared)) => {
+            diffsol::simulate_prepared_with_observation(&prepared, observation)
+                .map_err(SimulationDiagnosticError::from)
+        }
         diffsol::SelectedAutoIntegrator::Bdf(None) => {
-            simulate_artifact_diffsol(artifact, opts, execution_backend)
+            simulate_artifact_diffsol(artifact, opts, execution_backend, observation)
         }
         diffsol::SelectedAutoIntegrator::RkLike => {
-            simulate_artifact_rk45(artifact, opts, execution_backend)
+            simulate_artifact_rk45(artifact, opts, execution_backend, observation)
         }
     }
 }
@@ -260,8 +296,9 @@ fn simulate_artifact_auto(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    simulate_artifact_diffsol(artifact, opts, execution_backend)
+    simulate_artifact_diffsol(artifact, opts, execution_backend, observation)
 }
 
 #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
@@ -269,8 +306,9 @@ fn simulate_artifact_auto(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    simulate_artifact_rk45(artifact, opts, execution_backend)
+    simulate_artifact_rk45(artifact, opts, execution_backend, observation)
 }
 
 #[cfg(feature = "solver-rk45")]
@@ -278,9 +316,10 @@ fn simulate_artifact_rk45(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    rk45::simulate_artifact(artifact, opts, execution_backend)
-        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+    rk45::simulate_artifact_with_observation(artifact, opts, execution_backend, observation)
+        .map_err(SimulationDiagnosticError::from)
 }
 
 #[cfg(all(
@@ -291,6 +330,7 @@ fn simulate_artifact_rk45(
     _artifact: rumoca_solver::fmi_me::MeModelArtifact,
     _opts: &SimOptions,
     _execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    _observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     Err(SimulationDiagnosticError::Solver(
         "rk-like solver requested, but this build does not include the rk45 backend".to_string(),
@@ -302,9 +342,10 @@ fn simulate_artifact_diffsol(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    diffsol::simulate_artifact(artifact, opts, execution_backend)
-        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+    diffsol::simulate_artifact_with_observation(artifact, opts, execution_backend, observation)
+        .map_err(SimulationDiagnosticError::from)
 }
 
 #[cfg(all(
@@ -315,6 +356,7 @@ fn simulate_artifact_diffsol(
     _artifact: rumoca_solver::fmi_me::MeModelArtifact,
     _opts: &SimOptions,
     _execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    _observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     Err(SimulationDiagnosticError::Solver(
         "bdf/diffsol solver requested, but this build does not include the diffsol backend"
@@ -353,26 +395,29 @@ pub fn simulate_with_diagnostics_auto_nan_trace(
 fn simulate_with_auto_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     let (artifact, execution_backend) =
         solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)?;
-    simulate_artifact_auto(artifact, opts, execution_backend)
+    simulate_artifact_auto(artifact, opts, execution_backend, observation)
 }
 
 #[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
 fn simulate_with_auto_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    simulate_with_diffsol_diagnostics(dae_model, opts)
+    simulate_with_diffsol_diagnostics(dae_model, opts, observation)
 }
 
 #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
 fn simulate_with_auto_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    simulate_with_rk45_diagnostics(dae_model, opts)
+    simulate_with_rk45_diagnostics(dae_model, opts, observation)
 }
 
 #[cfg(all(test, not(feature = "solver-diffsol"), feature = "solver-rk45"))]
@@ -448,8 +493,9 @@ mod solver_mode_tests {
 fn simulate_with_rk45_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    rk45::simulate_with_diagnostics(dae_model, opts)
+    rk45::simulate_with_observation(dae_model, opts, observation)
 }
 
 #[cfg(all(
@@ -459,6 +505,7 @@ fn simulate_with_rk45_diagnostics(
 fn simulate_with_rk45_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
+    _observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     Err(SimulationDiagnosticError::Solver(
         "rk-like solver requested, but this build does not include the rk45 backend".to_string(),
@@ -469,8 +516,9 @@ fn simulate_with_rk45_diagnostics(
 fn simulate_with_diffsol_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
+    observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    diffsol::simulate_with_diagnostics(dae_model, opts)
+    diffsol::simulate_with_diagnostics(dae_model, opts, observation)
 }
 
 #[cfg(all(
@@ -480,6 +528,7 @@ fn simulate_with_diffsol_diagnostics(
 fn simulate_with_diffsol_diagnostics(
     _dae_model: &dae::Dae,
     _opts: &SimOptions,
+    _observation: Option<&rumoca_solver::fmi_me::numerical_observation::SettingsCollector>,
 ) -> Result<SimResult, SimulationDiagnosticError> {
     Err(SimulationDiagnosticError::Solver(
         "bdf solver requested, but this build does not include the diffsol backend".to_string(),

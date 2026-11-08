@@ -10,6 +10,8 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 mod me_integrator;
+mod options;
+pub use options::{DiffsolMethod, DiffsolOptions};
 
 use diffsol::{FaerSparseLU, FaerSparseMat, MatrixCommon};
 
@@ -18,4 +20,4 @@ type Vector = <Matrix as MatrixCommon>::V;
 type Scalar = <Matrix as MatrixCommon>::T;
 pub(crate) type LinearSolver = FaerSparseLU<f64>;
 
-pub use me_integrator::model_exchange_integrator;
+pub use me_integrator::{model_exchange_integrator, model_exchange_integrator_with_observation};

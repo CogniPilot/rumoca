@@ -248,7 +248,7 @@ impl ModelFailureBucket {
             SimError::AssertionFailed { .. } => Self::ModelAssertion,
             SimError::Terminated { .. } => Self::ModelTermination,
             SimError::EmptySystem => Self::EmptySystem,
-            SimError::RuntimeContract { .. } => Self::RuntimeContract,
+            SimError::RuntimeContract { .. } | SimError::BackendOptions(_) => Self::RuntimeContract,
             SimError::ModelExchangeSession(session) if session.is_timeout() => Self::Timeout,
             SimError::ModelExchangeSession(session) if session.is_integrator_failure() => {
                 Self::SolverIntegration
@@ -433,6 +433,12 @@ mod tests {
 
     #[test]
     fn sim_buckets_come_from_the_variant_and_the_recorded_stage() {
+        let invalid = SimError::BackendOptions(rumoca_sim::BackendOptionsError::CustomAuto);
+        assert_eq!(
+            ModelFailureBucket::from_sim_error(&invalid, SimFailureStage::Integration),
+            ModelFailureBucket::RuntimeContract,
+            "invalid options are preparation refusal even at an integration call site",
+        );
         let staged = SimError::SolveIr("did not converge".to_string())
             .at_stage(SimFailureStage::ManifoldProjection);
         assert_eq!(

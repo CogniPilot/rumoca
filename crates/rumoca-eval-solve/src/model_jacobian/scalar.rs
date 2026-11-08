@@ -147,7 +147,7 @@ pub(super) fn construct<'program>(
         .iter()
         .map(|(placement, value)| (placement, *value))
         .collect::<Vec<_>>();
-    let value = target.materialize_model_jacobian(
+    let jacobian = target.materialize_model_jacobian(
         builder,
         &compact,
         &construction.matrix,
@@ -155,8 +155,9 @@ pub(super) fn construct<'program>(
         order,
         span,
     )?;
-    builder.check_finite(value, SolveFiniteCheck::Derivative, span)?;
-    builder.store(output, value, span)
+    // Issued constant cells cannot fail; guard the rest in output order.
+    builder.check_finite_cells(&jacobian.cells, SolveFiniteCheck::Derivative, span)?;
+    builder.store(output, jacobian.value, span)
 }
 
 impl<'program> Construction<'program> {

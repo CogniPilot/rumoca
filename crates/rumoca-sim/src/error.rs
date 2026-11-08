@@ -63,6 +63,9 @@ impl From<MeStage> for SimFailureStage {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
+    /// Invalid concrete configuration, before construction/model evaluation.
+    #[error(transparent)]
+    BackendOptions(#[from] rumoca_solver::BackendOptionsError),
     #[error("{backend} backend does not support solver mode {requested:?}")]
     UnsupportedSolverMode {
         backend: &'static str,

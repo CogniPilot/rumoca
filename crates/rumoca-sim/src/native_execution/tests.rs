@@ -661,6 +661,7 @@ fn an_owner_the_execution_admits_is_called_and_its_failure_surfaces() {
     assert_eq!(execution.calls.get(), 1);
 }
 
+#[cfg(feature = "solver-rk45")]
 #[test]
 fn compiled_nested_warning_captures_the_first_actual_loop_frame() {
     let source = r#"
@@ -726,6 +727,7 @@ end NestedWarnings;
     );
 }
 
+#[cfg(feature = "solver-rk45")]
 #[test]
 fn compiled_ordinary_message_numeric_options_are_dynamic_and_failed_only() {
     let source = r#"
@@ -754,6 +756,7 @@ end OrdinaryMessages;
     assert_eq!(native.diagnostics[0].message, "x=   0.05");
 }
 
+#[cfg(feature = "solver-rk45")]
 #[test]
 fn compiled_warning_can_call_an_assertion_free_recursive_value_owner() {
     let source = r#"
