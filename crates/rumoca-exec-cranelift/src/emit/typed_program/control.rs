@@ -340,12 +340,12 @@ impl ProgramLowerer<'_, '_> {
             .iter()
             .map(|capture| {
                 self.register(*capture)
-                    .map(|location| self.physical(location))
+                    .and_then(|location| self.physical(location))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut shared = vec![false; initial.len()];
         for (ordinal, (entry, result)) in initial.iter().zip(destinations).enumerate() {
-            let entry_cells = self.physical(self.register(*entry)?);
+            let entry_cells = self.physical(self.register(*entry)?)?;
             let touched = capture_cells
                 .iter()
                 .any(|cells| cells.overlaps(entry_cells));
@@ -353,7 +353,7 @@ impl ProgramLowerer<'_, '_> {
             if entry_cells.count == 0
                 || touched
                 || duplicated
-                || entry_cells != self.physical(self.register(*result)?)
+                || entry_cells != self.physical(self.register(*result)?)?
             {
                 continue;
             }
