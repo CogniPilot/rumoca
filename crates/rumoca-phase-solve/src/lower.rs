@@ -724,6 +724,7 @@ struct ContinuousAggregateCallCandidate<'dae> {
     call: dae::ExprId<'dae>,
     first_row: usize,
     output_count: usize,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
 }
 
 impl ContinuousAggregateCallCandidate<'_> {
@@ -831,10 +832,14 @@ fn continuous_aggregate_call_candidate<'dae>(
     first_row: usize,
     owner: dae::ContinuousOwnerView<'dae>,
 ) -> Result<Option<ContinuousAggregateCallCandidate<'dae>>, LowerError> {
-    let (expression, output_count) = match owner {
+    let (expression, output_count, occurrence) = match owner {
         dae::ContinuousOwnerView::Residual { equation, .. } => {
             let expression = equation.residual();
-            (expression, scalar_count(context.view, expression))
+            (
+                expression,
+                scalar_count(context.view, expression),
+                equation.occurrence(),
+            )
         }
         dae::ContinuousOwnerView::Structured { family, .. }
             if family.scalar_view() == ComprehensionScalarView::RowMajorProjection
@@ -853,7 +858,7 @@ fn continuous_aggregate_call_candidate<'dae>(
             {
                 return Ok(None);
             }
-            (expression, family.scalar_rows() as usize)
+            (expression, family.scalar_rows() as usize, None)
         }
         _ => return Ok(None),
     };
@@ -879,6 +884,7 @@ fn continuous_aggregate_call_candidate<'dae>(
         call,
         first_row,
         output_count,
+        occurrence,
     }))
 }
 
@@ -979,6 +985,14 @@ fn lower_continuous_aggregate_call_group<'borrow, 'dae>(
         .provenance()
         .span();
     output.residual.push_outputs(program, span, outputs);
+    // One program serves the whole group; it names a component occurrence
+    // only when every owner it serves shares that one (e.g. a tuple call).
+    let shared = first.occurrence.filter(|occurrence| {
+        group
+            .iter()
+            .all(|candidate| candidate.occurrence == Some(*occurrence))
+    });
+    output.residual.tag_last(shared);
     Ok(())
 }
 

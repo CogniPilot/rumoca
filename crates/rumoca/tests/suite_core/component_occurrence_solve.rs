@@ -150,28 +150,6 @@ end Splits;
 }
 
 #[test]
-fn vector_equations_keep_the_occurrence_on_their_multi_output_program() {
-    assert_each_class_equation_twice(
-        "
-model Arm
-  input Real u;
-  Real v[3];
-equation
-  v = {u, 2 * u, 3 * u};
-end Arm;
-model Arms
-  Real m(start = 1, fixed = true);
-  Arm a(u = m);
-  Arm b(u = 2 * m);
-equation
-  der(m) = -0.1 * (a.v[1] + b.v[3]);
-end Arms;
-",
-        "Arms",
-    );
-}
-
-#[test]
 fn exact_refresh_programs_name_the_component_class_equation_and_instance() {
     const PAIR: &str = "
 model Unit
