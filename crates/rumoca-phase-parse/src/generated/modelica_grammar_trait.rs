@@ -1598,7 +1598,7 @@ pub struct ModificationEquModificationExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModificationExpressionExpression {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -1862,7 +1862,7 @@ pub struct StatementOptionWhenStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComponentStatementGroupColonEquExpression {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -1884,7 +1884,7 @@ pub struct ComponentStatementGroupFunctionCallArgs {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExpressionSimpleExpression {
-    pub simple_expression: rumoca_ir_ast::Expression,
+    pub simple_expression: crate::BoxedExpression,
 }
 
 ///
@@ -2269,7 +2269,7 @@ pub struct UnsignedNumberUnsignedReal {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsExpressionFunctionArgumentsOpt {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub function_arguments_opt: Option<FunctionArgumentsOpt>,
 }
 
@@ -2327,7 +2327,7 @@ pub struct FunctionArgumentsOptGroupForForIndices {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentsNonFirstFunctionArgumentFunctionArgumentsNonFirstOpt {
-    pub function_argument: rumoca_ir_ast::Expression,
+    pub function_argument: crate::BoxedExpression,
     pub function_arguments_non_first_opt: Option<FunctionArgumentsNonFirstOpt>,
 }
 
@@ -2385,7 +2385,7 @@ pub struct FunctionArgumentFunctionPartialApplication {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionArgumentExpression {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -2407,7 +2407,7 @@ pub struct SubscriptColon {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SubscriptExpression {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2571,7 +2571,7 @@ pub enum ArgumentOrInheritanceModificationListListGroup {
 #[derive(Debug, Clone)]
 pub struct ArithmeticExpression {
     pub arithmetic_expression_opt: Option<ArithmeticExpressionOpt>,
-    pub term: rumoca_ir_ast::Expression,
+    pub term: crate::BoxedExpression,
     pub arithmetic_expression_list: Vec<ArithmeticExpressionList>,
 }
 
@@ -2582,7 +2582,7 @@ pub struct ArithmeticExpression {
 #[derive(Debug, Clone)]
 pub struct ArithmeticExpressionList {
     pub add_operator: Box<AddOperator>,
-    pub term: rumoca_ir_ast::Expression,
+    pub term: crate::BoxedExpression,
 }
 
 ///
@@ -2600,7 +2600,7 @@ pub struct ArithmeticExpressionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArguments {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub array_arguments_opt: Option<ArrayArgumentsOpt>,
 }
 
@@ -2620,7 +2620,7 @@ pub struct ArrayArgumentsOpt {
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsOpt0 {
     pub r#if: Box<If>,
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -2639,7 +2639,7 @@ pub enum ArrayArgumentsOptGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrayArgumentsNonFirst {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub array_arguments_non_first_opt: Option<ArrayArgumentsNonFirstOpt>,
 }
 
@@ -3169,7 +3169,7 @@ pub struct CompositionOpt3 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConditionAttribute {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -3733,7 +3733,7 @@ pub struct Equation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EquationBlock {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub equation_block_list: Vec<EquationBlockList>,
 }
 
@@ -3800,7 +3800,7 @@ pub enum Expression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExpressionList {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub expression_list_list: Vec<ExpressionListList>,
 }
 
@@ -3810,7 +3810,7 @@ pub struct ExpressionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExpressionListList {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -3918,7 +3918,7 @@ pub struct ExternalFunctionCallOpt0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Factor {
-    pub primary: rumoca_ir_ast::Expression,
+    pub primary: crate::BoxedExpression,
     pub factor_list: Vec<FactorList>,
 }
 
@@ -3929,7 +3929,7 @@ pub struct Factor {
 #[derive(Debug, Clone)]
 pub struct FactorList {
     pub factor_list_group: Box<FactorListGroup>,
-    pub primary: rumoca_ir_ast::Expression,
+    pub primary: crate::BoxedExpression,
 }
 
 ///
@@ -4013,7 +4013,7 @@ pub struct ForIndex {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForIndexOpt {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -4291,10 +4291,10 @@ pub struct IfEquationOptList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfExpression {
-    pub expression: rumoca_ir_ast::Expression,
-    pub expression0: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
+    pub expression0: crate::BoxedExpression,
     pub if_expression_list: Vec<IfExpressionList>,
-    pub expression1: rumoca_ir_ast::Expression,
+    pub expression1: crate::BoxedExpression,
 }
 
 ///
@@ -4303,8 +4303,8 @@ pub struct IfExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfExpressionList {
-    pub expression: rumoca_ir_ast::Expression,
-    pub expression0: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
+    pub expression0: crate::BoxedExpression,
 }
 
 ///
@@ -4516,7 +4516,7 @@ pub struct LanguageSpecification {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LogicalExpression {
-    pub logical_term: rumoca_ir_ast::Expression,
+    pub logical_term: crate::BoxedExpression,
     pub logical_expression_list: Vec<LogicalExpressionList>,
 }
 
@@ -4526,7 +4526,7 @@ pub struct LogicalExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LogicalExpressionList {
-    pub logical_term: rumoca_ir_ast::Expression,
+    pub logical_term: crate::BoxedExpression,
 }
 
 ///
@@ -4536,7 +4536,7 @@ pub struct LogicalExpressionList {
 #[derive(Debug, Clone)]
 pub struct LogicalFactor {
     pub logical_factor_opt: Option<LogicalFactorOpt>,
-    pub relation: rumoca_ir_ast::Expression,
+    pub relation: crate::BoxedExpression,
 }
 
 ///
@@ -4554,7 +4554,7 @@ pub struct LogicalFactorOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LogicalTerm {
-    pub logical_factor: rumoca_ir_ast::Expression,
+    pub logical_factor: crate::BoxedExpression,
     pub logical_term_list: Vec<LogicalTermList>,
 }
 
@@ -4564,7 +4564,7 @@ pub struct LogicalTerm {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LogicalTermList {
-    pub logical_factor: rumoca_ir_ast::Expression,
+    pub logical_factor: crate::BoxedExpression,
 }
 
 ///
@@ -4662,7 +4662,7 @@ pub struct NameList {
 #[derive(Debug, Clone)]
 pub struct NamedArgument {
     pub ident: rumoca_core::Token,
-    pub function_argument: rumoca_ir_ast::Expression,
+    pub function_argument: crate::BoxedExpression,
 }
 
 ///
@@ -4755,7 +4755,7 @@ pub struct OutputExpressionListList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputExpressionListOpt {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -4764,7 +4764,7 @@ pub struct OutputExpressionListOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputExpressionListOpt0 {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -4913,7 +4913,7 @@ pub struct Redeclare {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Relation {
-    pub arithmetic_expression: rumoca_ir_ast::Expression,
+    pub arithmetic_expression: crate::BoxedExpression,
     pub relation_opt: Option<RelationOpt>,
 }
 
@@ -4924,7 +4924,7 @@ pub struct Relation {
 #[derive(Debug, Clone)]
 pub struct RelationOpt {
     pub relational_operator: Box<RelationalOperator>,
-    pub arithmetic_expression: rumoca_ir_ast::Expression,
+    pub arithmetic_expression: crate::BoxedExpression,
 }
 
 ///
@@ -4986,7 +4986,7 @@ pub enum ShortClassSpecifier {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleEquation {
-    pub simple_expression: rumoca_ir_ast::Expression,
+    pub simple_expression: crate::BoxedExpression,
     pub simple_equation_opt: Option<SimpleEquationOpt>,
 }
 
@@ -4996,7 +4996,7 @@ pub struct SimpleEquation {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleEquationOpt {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
 }
 
 ///
@@ -5005,7 +5005,7 @@ pub struct SimpleEquationOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleExpression {
-    pub logical_expression: rumoca_ir_ast::Expression,
+    pub logical_expression: crate::BoxedExpression,
     pub simple_expression_opt: Option<SimpleExpressionOpt>,
 }
 
@@ -5015,7 +5015,7 @@ pub struct SimpleExpression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleExpressionOpt {
-    pub logical_expression: rumoca_ir_ast::Expression,
+    pub logical_expression: crate::BoxedExpression,
     pub simple_expression_opt0: Option<SimpleExpressionOpt0>,
 }
 
@@ -5025,7 +5025,7 @@ pub struct SimpleExpressionOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleExpressionOpt0 {
-    pub logical_expression: rumoca_ir_ast::Expression,
+    pub logical_expression: crate::BoxedExpression,
 }
 
 ///
@@ -5079,7 +5079,7 @@ pub struct Statement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StatementBlock {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub statement_block_list: Vec<StatementBlockList>,
 }
 
@@ -5190,7 +5190,7 @@ pub enum Subscript {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Term {
-    pub factor: rumoca_ir_ast::Expression,
+    pub factor: crate::BoxedExpression,
     pub term_list: Vec<TermList>,
 }
 
@@ -5201,7 +5201,7 @@ pub struct Term {
 #[derive(Debug, Clone)]
 pub struct TermList {
     pub mul_operator: Box<MulOperator>,
-    pub factor: rumoca_ir_ast::Expression,
+    pub factor: crate::BoxedExpression,
 }
 
 ///
@@ -5442,7 +5442,7 @@ pub struct While {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WhileStatement {
-    pub expression: rumoca_ir_ast::Expression,
+    pub expression: crate::BoxedExpression,
     pub while_statement_list: Vec<WhileStatementList>,
 }
 

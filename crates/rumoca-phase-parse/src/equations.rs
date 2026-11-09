@@ -48,7 +48,7 @@ impl TryFrom<&modelica_grammar_trait::EquationBlock> for rumoca_ir_ast::Equation
         ast: &modelica_grammar_trait::EquationBlock,
     ) -> std::result::Result<Self, Self::Error> {
         Ok(rumoca_ir_ast::EquationBlock {
-            cond: ast.expression.clone(),
+            cond: (*ast.expression).clone(),
             eqs: ast
                 .equation_block_list
                 .iter()
@@ -65,7 +65,7 @@ impl TryFrom<&modelica_grammar_trait::StatementBlock> for rumoca_ir_ast::Stateme
         ast: &modelica_grammar_trait::StatementBlock,
     ) -> std::result::Result<Self, Self::Error> {
         Ok(rumoca_ir_ast::StatementBlock {
-            cond: ast.expression.clone(),
+            cond: (*ast.expression).clone(),
             stmts: ast
                 .statement_block_list
                 .iter()
@@ -82,8 +82,8 @@ fn convert_simple_equation(
     // If there's an RHS, it's a simple assignment equation
     if let Some(rhs) = &simple_eq.simple_equation_opt {
         return Ok(rumoca_ir_ast::Equation::Simple {
-            lhs: simple_eq.simple_expression.clone(),
-            rhs: rhs.expression.clone(),
+            lhs: (*simple_eq.simple_expression).clone(),
+            rhs: (*rhs.expression).clone(),
         });
     }
 
@@ -91,7 +91,7 @@ fn convert_simple_equation(
     // See MLS 8.3.6-8.3.8
     let rumoca_ir_ast::Expression::FunctionCall {
         comp, args, span, ..
-    } = &simple_eq.simple_expression
+    } = &*simple_eq.simple_expression
     else {
         return Err(semantic_error_from_expression(
             format!(
@@ -197,7 +197,7 @@ fn required_for_index_range(
     index: &modelica_grammar_trait::ForIndex,
 ) -> anyhow::Result<rumoca_ir_ast::Expression> {
     if let Some(opt) = &index.for_index_opt {
-        return Ok(opt.expression.clone());
+        return Ok((*opt.expression).clone());
     }
 
     let token = index.ident.clone();
@@ -217,7 +217,7 @@ impl TryFrom<&modelica_grammar_trait::Statement> for rumoca_ir_ast::Statement {
                     modelica_grammar_trait::ComponentStatementGroup::ColonEquExpression(assign) => {
                         Ok(rumoca_ir_ast::Statement::Assignment {
                             comp: stmt.component_statement.component_reference.clone(),
-                            value: assign.expression.clone(),
+                            value: (*assign.expression).clone(),
                         })
                     }
                     modelica_grammar_trait::ComponentStatementGroup::FunctionCallArgs(args) => {
@@ -290,7 +290,7 @@ impl TryFrom<&modelica_grammar_trait::Statement> for rumoca_ir_ast::Statement {
 
                 Ok(rumoca_ir_ast::Statement::While(
                     rumoca_ir_ast::StatementBlock {
-                        cond: while_stmt.expression.clone(),
+                        cond: (*while_stmt.expression).clone(),
                         stmts,
                     },
                 ))

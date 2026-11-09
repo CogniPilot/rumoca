@@ -40,7 +40,8 @@ pub use generated::modelica_parser;
 pub use components::{ComponentList, TokenList};
 pub use definitions::{BoxedClassDef, Composition, ElementList};
 pub use expressions::{
-    ArraySubscripts, ExpressionList, FunctionArgumentsTail, FunctionCallArguments, ModificationArg,
+    ArraySubscripts, BoxedExpression, ExpressionList, FunctionArgumentsTail, FunctionCallArguments,
+    ModificationArg,
 };
 pub use sections::{AlgorithmSection, EquationSection};
 

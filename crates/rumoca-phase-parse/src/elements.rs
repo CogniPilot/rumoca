@@ -492,7 +492,7 @@ fn process_single_component(
     let condition = c
         .component_declaration_opt
         .as_ref()
-        .map(|opt| opt.condition_attribute.expression.clone());
+        .map(|opt| (*opt.condition_attribute.expression).clone());
 
     let mut value = rumoca_ir_ast::Component {
         def_id: None,
@@ -1211,7 +1211,7 @@ fn process_mod_expr(
 ) {
     if let modelica_grammar_trait::ModificationExpression::Expression(expr) = mod_expr {
         // Store the binding expression in the dedicated binding field
-        value.binding = Some(expr.expression.clone());
+        value.binding = Some((*expr.expression).clone());
         value.has_explicit_binding = true;
     }
     // 'break' means remove any inherited binding - do nothing
