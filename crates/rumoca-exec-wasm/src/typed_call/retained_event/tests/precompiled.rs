@@ -3,10 +3,17 @@ use super::*;
 #[test]
 fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_inventory() {
     let original = compile();
+    let program = || {
+        original
+            .source()
+            .source()
+            .event_program(s::RetainedAssertionSource::ActionConditions, 0)
+            .unwrap()
+    };
     let wire = super::super::PrecompiledRetainedEvent::from_compiled(&original);
     let bytes = serde_json::to_vec(&wire).unwrap();
     let decoded: super::super::PrecompiledRetainedEvent = serde_json::from_slice(&bytes).unwrap();
-    let replay = decoded.bind(original.source().clone()).unwrap();
+    let replay = decoded.bind(program()).unwrap();
     let model = original.source().source().model();
     let y = [0.0, 2.0];
     let p = vec![0.0; model.problem.layout.p_scalars()];
@@ -29,9 +36,9 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["invocations"] = serde_json::json!([]);
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(original.source().clone()).is_err());
+    assert!(changed.bind(program()).is_err());
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["invocations"][0]["status"] = serde_json::json!(u32::MAX);
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(original.source().clone()).is_err());
+    assert!(changed.bind(program()).is_err());
 }
