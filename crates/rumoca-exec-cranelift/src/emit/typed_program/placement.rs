@@ -554,7 +554,7 @@ fn operands_avoid(
     cells: PhysicalCells,
     register_cells: &dyn Fn(solve::SolveRegisterId) -> Option<PhysicalCells>,
 ) -> bool {
-    super::fusion::leaf_operands(&layout.fused, operation)
+    leaf_operands(&layout.fused, operation)
         .into_iter()
         .all(|operand| {
             Some(operand) == except || register_cells(operand).is_none_or(|on| !on.overlaps(cells))
@@ -568,7 +568,25 @@ fn operands_sit_exactly(
     cells: PhysicalCells,
     register_cells: &dyn Fn(solve::SolveRegisterId) -> Option<PhysicalCells>,
 ) -> bool {
-    super::fusion::leaf_operands(&layout.fused, operation)
+    leaf_operands(&layout.fused, operation)
         .into_iter()
         .all(|operand| register_cells(operand).is_none_or(|on| !on.overlaps(cells) || on == cells))
+}
+
+/// The registers `operation` reads once fused operands are expanded into the
+/// operations they defer, as the issued fusion plan lists them.
+fn leaf_operands(
+    fused: &[Option<solve::SolveOperation>],
+    operation: &solve::SolveOperation,
+) -> Vec<solve::SolveRegisterId> {
+    let mut pending = Vec::new();
+    operation.visit_input_registers(|register| pending.push(register));
+    let mut leaves = Vec::new();
+    while let Some(register) = pending.pop() {
+        match fused.get(register.index()).and_then(Option::as_ref) {
+            Some(deferred) => deferred.visit_input_registers(|operand| pending.push(operand)),
+            None => leaves.push(register),
+        }
+    }
+    leaves
 }

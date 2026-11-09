@@ -105,26 +105,15 @@ impl CompiledPureCallTable {
     }
 }
 
-/// The observation form's cells and the output slots they occupy; empty for
-/// every other form.
+/// The observation form's predicate cells; empty for every other form.
 pub(super) fn observation_cells(
     observation: bool,
-    input_count: usize,
     outputs: &[solve::SolvePureCallOutput],
-) -> Result<ObservationCells, CompileError> {
+) -> Result<Rc<[Option<u32>]>, CompileError> {
     if !observation {
-        return Ok(ObservationCells {
-            cells: Rc::from([]),
-            slots: Vec::new(),
-        });
+        return Ok(Rc::from([]));
     }
-    let cells = predicate_cells(outputs)?;
-    let slots = cells
-        .iter()
-        .enumerate()
-        .filter_map(|(output, cell)| cell.map(|_| input_count + output))
-        .collect();
-    Ok(ObservationCells { cells, slots })
+    predicate_cells(outputs)
 }
 
 pub(super) fn declare_observation(
@@ -144,10 +133,4 @@ pub(super) fn declare_observation(
         )
         .map(Some)
         .map_err(to_backend_err)
-}
-
-/// The predicate cells of an observation form and the output slots holding them.
-pub(super) struct ObservationCells {
-    pub(super) cells: Rc<[Option<u32>]>,
-    pub(super) slots: Vec<usize>,
 }

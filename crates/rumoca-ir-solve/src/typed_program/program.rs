@@ -54,7 +54,7 @@ pub(super) use storage_plan::DERIVED;
 #[cfg(test)]
 pub(super) use storage_plan::observation_cascades;
 pub use storage_plan::{
-    SOLVE_STATIC_MATRIX_WORK, SolveAliasPlan, SolveFusedRegister, SolveFusionPlan,
+    SOLVE_STATIC_MATRIX_WORK, SolveAliasPlan, SolveFrameCells, SolveFusedRegister, SolveFusionPlan,
     SolveRegisterHome, SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan,
 };
 use value_numbering::ValueKey;
@@ -525,6 +525,10 @@ pub struct SolveProgramRegion {
     outputs: Box<[SolveValueType]>,
     body: TypedProgram,
     provenance: Span,
+    /// The input slot the body stores unchanged as its one output, issued
+    /// at construction (see [`Self::broadcast_input`]).
+    #[serde(serialize_with = "storage_plan::derived")]
+    broadcast_input: Option<usize>,
 }
 
 impl SolveProgramRegion {
@@ -546,6 +550,15 @@ impl SolveProgramRegion {
     #[must_use]
     pub const fn provenance(&self) -> Span {
         self.provenance
+    }
+
+    /// The input slot this body repeats: its only operations load input
+    /// slots and store one of them, of the output's type, unchanged as its
+    /// single output. Element `n` of a map over the region is then element
+    /// `n mod width` of the value bound to that slot.
+    #[must_use]
+    pub const fn broadcast_input(&self) -> Option<usize> {
+        self.broadcast_input
     }
 }
 

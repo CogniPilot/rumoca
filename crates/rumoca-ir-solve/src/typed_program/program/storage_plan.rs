@@ -17,6 +17,7 @@
 //! stores exactly as before.
 
 mod aliases;
+mod cells;
 mod fusion;
 
 use serde::Serialize;
@@ -24,6 +25,7 @@ use serde::Serialize;
 #[cfg(test)]
 pub(in crate::typed_program) use aliases::observation_cascades;
 pub use aliases::{SolveAliasPlan, SolveRegisterHome};
+pub use cells::SolveFrameCells;
 pub use fusion::{SOLVE_STATIC_MATRIX_WORK, SolveFusedRegister, SolveFusionPlan};
 
 use crate::typed_program::types::SolveValueKind;
@@ -90,6 +92,7 @@ pub struct SolveStoragePlan {
     element_offsets: Box<[Option<u32>]>,
     fusion: SolveFusionPlan,
     aliases: SolveAliasPlan,
+    cells: SolveFrameCells,
 }
 
 impl SolveStoragePlan {
@@ -145,12 +148,19 @@ impl SolveStoragePlan {
         let fusion = SolveFusionPlan::of(register_types, operations, last_reads);
         let aliases =
             SolveAliasPlan::of(slots, register_types, operations, fusion.last_reads(), &[]);
+        let cells = SolveFrameCells::of(
+            register_types,
+            operations,
+            fusion.last_reads(),
+            aliases.registers(),
+        );
         Self {
             slots: slot_placements,
             registers,
             element_offsets: element_offsets(register_types, operations),
             fusion,
             aliases,
+            cells,
         }
     }
 
@@ -186,6 +196,13 @@ impl SolveStoragePlan {
     #[must_use]
     pub fn aliases(&self) -> &SolveAliasPlan {
         &self.aliases
+    }
+
+    /// The reused frame range of each register homed in the body's own
+    /// cells under [`aliases`](Self::aliases).
+    #[must_use]
+    pub fn cells(&self) -> &SolveFrameCells {
+        &self.cells
     }
 }
 

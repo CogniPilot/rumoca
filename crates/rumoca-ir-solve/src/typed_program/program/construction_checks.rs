@@ -72,12 +72,45 @@ pub(in crate::typed_program) fn construct_region(
         return Err(SolveProgramConstructionError::InvalidRegion { provenance });
     }
     validate_region_body(&body, &inputs, &outputs, provenance)?;
+    let broadcast_input = broadcast_input(&body, inputs.len(), &outputs);
     Ok(SolveProgramRegion {
         inputs: inputs.into_boxed_slice(),
         outputs: outputs.into_boxed_slice(),
         body,
         provenance,
+        broadcast_input,
     })
+}
+
+/// See [`SolveProgramRegion::broadcast_input`]. Slots below `inputs` are the
+/// region's inputs and slot `inputs` its first output.
+fn broadcast_input(
+    body: &TypedProgram,
+    inputs: usize,
+    outputs: &[SolveValueType],
+) -> Option<usize> {
+    let [output] = outputs else {
+        return None;
+    };
+    let mut loaded = Vec::new();
+    let mut stored = None;
+    for issued in body.operations() {
+        match &issued.operation {
+            SolveOperation::Load { destination, slot } if slot.index() < inputs => {
+                loaded.push((*destination, slot.index()));
+            }
+            SolveOperation::Store { slot, source }
+                if slot.index() == inputs && stored.is_none() =>
+            {
+                stored = Some(*source);
+            }
+            _ => return None,
+        }
+    }
+    let (_, slot) = loaded
+        .into_iter()
+        .find(|(register, _)| Some(*register) == stored)?;
+    (body.slots().get(slot)?.value_type() == output).then_some(slot)
 }
 
 fn validate_region_body(

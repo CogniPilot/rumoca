@@ -573,37 +573,6 @@ impl FunctionFoldProgram {
                 .map(|continuation| continuation.ops.as_slice()),
         )
     }
-
-    pub fn register_flow(&self) -> Result<ScalarProgramRegisterFlow, ScalarProgramRegisterError> {
-        let flow = ScalarProgramRegisterFlow::derive_inner(
-            &self.update,
-            Some((
-                self.carried_count,
-                self.domain.binders.len(),
-                self.capture_count,
-            )),
-            None,
-        )?;
-        if flow.register_count() != self.register_count {
-            return Err(ScalarProgramRegisterError::InvalidFunctionFold {
-                op_index: 0,
-                reason: "stored update register count does not match its body",
-            });
-        }
-        if let Some(continuation) = &self.continuation
-            && continuation_register_count(
-                &continuation.ops,
-                self.carried_count,
-                self.capture_count,
-            )? != continuation.register_count
-        {
-            return Err(ScalarProgramRegisterError::InvalidFunctionFold {
-                op_index: 0,
-                reason: "stored continuation register count does not match its region",
-            });
-        }
-        Ok(flow)
-    }
 }
 
 /// The register count of a continuation region over a fold's carried tuple

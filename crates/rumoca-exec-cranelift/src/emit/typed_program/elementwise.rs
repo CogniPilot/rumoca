@@ -1,5 +1,5 @@
 //! Elementwise lowering: the scalar operator forms, fused element trees and
-//! their two-lane binary64 loops (see [`super::fusion`]).
+//! their two-lane binary64 loops (see [`solve::SolveFusionPlan`]).
 
 use super::*;
 
@@ -184,7 +184,7 @@ impl ProgramLowerer<'_, '_> {
         captures: &[solve::SolveRegisterId],
         body: &solve::SolveProgramRegion,
     ) -> Result<bool, CompileError> {
-        let Some(capture) = fusion::broadcast_capture(captures, body) else {
+        let Some(capture) = broadcast_capture(captures, body) else {
             return Ok(false);
         };
         let location = self.register(capture)?;
@@ -199,7 +199,7 @@ impl ProgramLowerer<'_, '_> {
         body: &solve::SolveProgramRegion,
         index: Value,
     ) -> Result<Value, CompileError> {
-        let capture = fusion::broadcast_capture(captures, body)
+        let capture = broadcast_capture(captures, body)
             .ok_or_else(|| CompileError::Backend("fused map is not a broadcast".into()))?;
         let location = self.register(capture)?.clone();
         let width = i64::from(location.value_type.scalar_count());
@@ -421,7 +421,7 @@ impl ProgramLowerer<'_, '_> {
                 index,
             ),
             Op::Map { captures, body, .. } => {
-                let capture = fusion::broadcast_capture(captures, body)
+                let capture = broadcast_capture(captures, body)
                     .ok_or_else(|| CompileError::Backend("fused map is not a broadcast".into()))?;
                 let location = self.register(capture)?.clone();
                 let width = i64::from(location.value_type.scalar_count());
@@ -596,4 +596,13 @@ impl ProgramLowerer<'_, '_> {
             }
         })
     }
+}
+
+/// The capture a map repeats, from its region's issued
+/// [`broadcast_input`](solve::SolveProgramRegion::broadcast_input).
+fn broadcast_capture(
+    captures: &[solve::SolveRegisterId],
+    body: &solve::SolveProgramRegion,
+) -> Option<solve::SolveRegisterId> {
+    captures.get(body.broadcast_input()?).copied()
 }

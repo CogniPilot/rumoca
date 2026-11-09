@@ -618,6 +618,19 @@ impl SolvePureCallOwner {
         )
     }
 
+    /// The reused frame ranges of this owner's body under
+    /// [`observation_aliases`](Self::observation_aliases).
+    #[must_use]
+    pub fn observation_cells(&self) -> super::program::SolveFrameCells {
+        let body = &self.body;
+        super::program::SolveFrameCells::of(
+            body.register_types(),
+            body.operations(),
+            body.storage_plan().fusion().last_reads(),
+            self.observation_aliases().registers(),
+        )
+    }
+
     #[must_use]
     pub const fn directional(&self) -> Option<&SolvePureCallDirectionalOwner> {
         self.directional.as_ref()

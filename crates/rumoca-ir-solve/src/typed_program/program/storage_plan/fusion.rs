@@ -438,38 +438,14 @@ fn extend_operands(operation: &SolveOperation, point: usize, last_reads: &mut [O
     });
 }
 
-/// The capture a map repeats, when its body only stores one capture loaded
-/// unchanged: element `n` of the map is then element `n mod width` of it.
+/// The capture a map repeats, from its region's issued
+/// [`broadcast_input`](SolveProgramRegion::broadcast_input): element `n` of
+/// the map is then element `n mod width` of it.
 fn broadcast_capture(
     captures: &[SolveRegisterId],
     body: &SolveProgramRegion,
 ) -> Option<SolveRegisterId> {
-    let outputs = body.outputs();
-    if outputs.len() != 1 {
-        return None;
-    }
-    let program = body.body();
-    let output_slot = body.inputs().len();
-    let mut loaded = Vec::new();
-    let mut stored = None;
-    for issued in program.operations() {
-        match &issued.operation {
-            SolveOperation::Load { destination, slot } if slot.index() < output_slot => {
-                loaded.push((*destination, slot.index()));
-            }
-            SolveOperation::Store { slot, source }
-                if slot.index() == output_slot && stored.is_none() =>
-            {
-                stored = Some(*source);
-            }
-            _ => return None,
-        }
-    }
-    let (_, slot) = loaded
-        .into_iter()
-        .find(|(register, _)| Some(*register) == stored)?;
-    let capture = *captures.get(slot)?;
-    (program.slots().get(slot)?.value_type() == &outputs[0]).then_some(capture)
+    captures.get(body.broadcast_input()?).copied()
 }
 
 /// Whether `register` is defined by a `sign` of a Real.
