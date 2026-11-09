@@ -700,7 +700,7 @@ mod tests {
         assert!(same_compute_block(&delta.apply(&base).unwrap(), &target));
     }
 
-    fn occurrence_span() -> rumoca_core::Span {
+    fn occurrence_span() -> rumoca_core::ProvenanceSpan {
         rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name("chart_delta_occurrence.mo"),
             0,
@@ -736,7 +736,7 @@ mod tests {
                 (tagged && *value as u32 % 2 == 0).then_some(ComponentOccurrence {
                     class_equation: rumoca_core::ClassEquation {
                         scope: rumoca_core::ScopeId(3),
-                        span,
+                        span: span.span(),
                     },
                     instance: rumoca_core::InstanceId(*value as u32),
                     view: 0,
