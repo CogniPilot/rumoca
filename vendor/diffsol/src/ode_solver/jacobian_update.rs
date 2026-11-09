@@ -2,6 +2,7 @@ use crate::{OdeSolverOptions, Scalar};
 
 pub enum SolverState {
     StepSuccess,
+    StepSizeTruncated,
     FirstConvergenceFail,
     SecondConvergenceFail,
     ErrorTestFail,
@@ -55,6 +56,9 @@ impl<T: Scalar> JacobianUpdate<T> {
                     || (h / self.h_at_last_jacobian_update - T::one()).abs()
                         > self.threshold_to_update_jacobian
             }
+            // A hard stop changes I - c*J even when c changes less than the
+            // ordinary reuse threshold. Rebuild that matrix with cached J.
+            SolverState::StepSizeTruncated => true,
             SolverState::FirstConvergenceFail => true,
             SolverState::SecondConvergenceFail => true,
             SolverState::ErrorTestFail => true,
@@ -64,7 +68,7 @@ impl<T: Scalar> JacobianUpdate<T> {
 
     pub fn check_rhs_jacobian_update(&mut self, h: T, state: &SolverState) -> bool {
         match state {
-            SolverState::StepSuccess => {
+            SolverState::StepSuccess | SolverState::StepSizeTruncated => {
                 self.steps_since_rhs_jacobian_eval >= self.update_rhs_jacobian_after_steps
             }
             SolverState::FirstConvergenceFail => {

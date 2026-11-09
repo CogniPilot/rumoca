@@ -736,7 +736,7 @@ where
             let _ = self._update_step_size(factor);
             self._jacobian_updates(
                 self.state.h * self.alpha[self.state.order],
-                SolverState::StepSuccess,
+                SolverState::StepSizeTruncated,
             );
         }
         Ok(None)
@@ -880,7 +880,7 @@ where
             let atol = &self.ode_problem.atol;
             let rtol = self.ode_problem.rtol;
             error_norm +=
-                self.y_delta.squared_norm(&state.y, atol, rtol) * self.error_const2[order - 1];
+                self.y_delta.squared_norm(&state.y, atol, rtol) * self.error_const2[order];
             ncontrib += 1;
             if output_in_error_control {
                 let rtol = self.ode_problem.out_rtol.unwrap();

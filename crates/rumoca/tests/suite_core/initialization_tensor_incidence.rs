@@ -442,6 +442,10 @@ fn check_trace(source: &str, model: &str, channels: &[(&str, f64)]) {
             &SimOptions {
                 t_end: 0.05,
                 dt: Some(0.01),
+                // The trace oracle is absolute even for scaled algebraics
+                // (for example a(0)=24), so do not use 1e-6 solver defaults.
+                rtol: 1e-9,
+                atol: 1e-9,
                 solver_mode,
                 ..Default::default()
             },

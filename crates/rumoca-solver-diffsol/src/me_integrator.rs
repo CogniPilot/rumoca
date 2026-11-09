@@ -10,6 +10,8 @@ mod convergence_tests;
 #[cfg(test)]
 mod failure_budget_tests;
 #[cfg(test)]
+mod ndf_error_tests;
+#[cfg(test)]
 mod observation_tests;
 
 use std::{cell::Cell, rc::Rc};

@@ -1,8 +1,8 @@
 # Diffsol numerical corrections
 
 This directory contains the published `diffsol` 0.13.2 crate, with source
-changes confined to `src/ode_solver/bdf.rs` and
-`src/nonlinear_solver/line_search.rs`. Original authorship and licensing are
+changes confined to `src/ode_solver/bdf.rs`,
+`src/ode_solver/jacobian_update.rs`, and `src/nonlinear_solver/line_search.rs`. Original authorship and licensing are
 preserved in the upstream sources and `LICENSE.txt` (copied from the same
 upstream commit because the published crate omits the repository license file).
 
@@ -120,3 +120,24 @@ these fixes, or publication of an explicitly maintained patched dependency.
 These patches have not been submitted upstream. Replace this directory with a
 released dependency only after all direct numerical and source-level
 regressions pass against that release and the complete MSL comparison passes.
+
+The accepted state error test now uses the NDF error coefficient for the
+current order, matching the constructor's one-based coefficient table, the
+predicted-order estimates, and the output/sensitivity error tests. Previously
+it used the preceding index (the order-zero sentinel at order one). This was
+stricter at orders one through three and looser at orders four and five; the
+correction is not a uniform tolerance tightening. The direct public-API
+regression is `me_integrator/ndf_error_tests.rs` in
+`rumoca-solver-diffsol`, which runs in ordinary workspace library tests. It
+checks an analytically determined first-order correction inside the NDF error
+budget that the sentinel incorrectly rejects. No configured tolerance or
+trace-comparison policy changes, and no DCPM parity claim follows from it.
+
+The corrected order coefficient exposes a separate hard-stop cache defect:
+a shortened final step updates c=h*alpha but could retain the factorization
+of I-c_old*J under the ordinary reuse threshold. A distinct truncation event
+now rebuilds I-c*J while preserving the existing RHS-Jacobian refresh
+schedule and reusing that Jacobian when it is not due for refresh. The existing
+`shortened_bdf_step_preserves_the_stiff_voltage_solution` regression is
+unchanged: it fails with only the order correction and passes when the
+shortened-step matrix is rebuilt. Tolerances and the analytic bound stay fixed.
