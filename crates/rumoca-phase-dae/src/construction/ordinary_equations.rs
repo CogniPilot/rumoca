@@ -32,7 +32,9 @@ pub(super) fn lower_ordinary_equation<'dae>(
             &equation.residual,
             generation,
         )?;
-        construction.initialization(|system| system.value_equation(owner, residual))?;
+        construction.initialization(|system| {
+            system.component_value_equation(owner, residual, equation.occurrence)
+        })?;
         return Ok(());
     }
     match input.partition(index, equation) {
@@ -49,7 +51,9 @@ pub(super) fn lower_ordinary_equation<'dae>(
                 source,
                 generation,
             )?;
-            construction.continuous(|system| system.value_equation(owner, residual))?;
+            construction.continuous(|system| {
+                system.component_value_equation(owner, residual, equation.occurrence)
+            })?;
         }
         EquationPartition::DiscreteReal { .. } => {
             let residual = lower_equation_expression(

@@ -1909,6 +1909,7 @@ pub enum ExpressionKind {
 pub struct ResidualEquationView<'dae> {
     residual: ExprId<'dae>,
     provenance: DaeProvenance,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
 }
 
 #[derive(Clone, Copy)]
@@ -1959,6 +1960,7 @@ impl<'dae> ResidualEquationView<'dae> {
     view_getters! {
         const fn residual -> ExprId<'dae> = |view| view.residual;
         const fn provenance -> DaeProvenance = |view| view.provenance;
+        const fn occurrence -> Option<rumoca_core::ComponentOccurrence> = |view| view.occurrence;
     }
 }
 
@@ -1966,6 +1968,7 @@ fn residual_equation_view(entry: &ResidualEquationEntry) -> ResidualEquationView
     ResidualEquationView {
         residual: ExprId::from_raw(entry.residual),
         provenance: entry.provenance,
+        occurrence: entry.occurrence,
     }
 }
 

@@ -19,6 +19,9 @@ use crate::{
 pub(crate) struct ResidualEquationEntry {
     pub(crate) residual: u32,
     pub(crate) provenance: DaeProvenance,
+    /// The component class equation this row instantiates (SPEC_0040 FLAT-C08).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) occurrence: Option<rumoca_core::ComponentOccurrence>,
 }
 
 /// Which residual shapes one equation partition admits.
@@ -223,6 +226,25 @@ macro_rules! equation_partitions {
                         self.storage,
                         owner,
                         residual,
+                        None,
+                    )
+                }
+
+                /// [`Self::value_equation`] for an equation instantiated from a
+                /// component class equation: a scalar row records the occurrence;
+                /// an array equation projects to a structured family without it.
+                pub fn component_value_equation(
+                    &mut self,
+                    owner: DaeProvenance,
+                    residual: ExprId<'dae>,
+                    occurrence: Option<rumoca_core::ComponentOccurrence>,
+                ) -> Result<(), DaeConstructionError> {
+                    build_value_equation::<$partition>(
+                        self.source_map,
+                        self.storage,
+                        owner,
+                        residual,
+                        occurrence,
                     )
                 }
 
@@ -532,10 +554,27 @@ pub struct ResidualEquation<'storage, 'dae> {
     owner: DaeProvenance,
     shape: ResidualShape,
     residual: Option<u32>,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
 impl<'dae> ResidualEquation<'_, 'dae> {
+    /// Record the component class equation this row instantiates, at most once.
+    pub fn occurrence(
+        &mut self,
+        occurrence: rumoca_core::ComponentOccurrence,
+    ) -> Result<(), DaeConstructionError> {
+        if self.occurrence.is_some() {
+            return Err(duplicate(
+                "equation component occurrence",
+                self.storage.total_residual_equation_count() as u32,
+                self.owner,
+            ));
+        }
+        self.occurrence = Some(occurrence);
+        Ok(())
+    }
+
     pub fn expressions(&mut self) -> crate::Expressions<'_, 'dae> {
         crate::Expressions {
             source_map: self.source_map,
@@ -643,6 +682,7 @@ fn build_value_equation<'dae, P: StructuredPartition>(
     storage: &mut Storage,
     owner: DaeProvenance,
     residual: ExprId<'dae>,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
 ) -> Result<(), DaeConstructionError> {
     check_provenance(source_map, owner)?;
     storage.expect_closed_expression(residual, owner)?;
@@ -656,7 +696,11 @@ fn build_value_equation<'dae, P: StructuredPartition>(
     }
     if ty.is_scalar() {
         build_residual::<P>(source_map, storage, owner, |equation| {
-            equation.residual(residual)
+            equation.residual(residual)?;
+            match occurrence {
+                Some(occurrence) => equation.occurrence(occurrence),
+                None => Ok(()),
+            }
         })?;
         return Ok(());
     }
@@ -767,6 +811,7 @@ fn build_residual_entry<'dae>(
         owner,
         shape,
         residual: None,
+        occurrence: None,
         marker: PhantomData,
     };
     build(&mut equation)?;
@@ -780,6 +825,7 @@ fn build_residual_entry<'dae>(
     let entry = ResidualEquationEntry {
         residual,
         provenance: owner,
+        occurrence: equation.occurrence,
     };
     Ok(entry)
 }

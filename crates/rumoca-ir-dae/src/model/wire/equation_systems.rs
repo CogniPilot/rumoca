@@ -31,6 +31,8 @@ enum EquationOperationOutput<'storage> {
     Residual {
         residual: u32,
         provenance: DaeProvenance,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
     },
     Structured {
         domain: u32,
@@ -99,6 +101,7 @@ impl<'storage> EquationOperationsOutput<'storage> {
         Ok(EquationOperationOutput::Residual {
             residual: equation.residual,
             provenance: equation.provenance,
+            occurrence: equation.occurrence,
         })
     }
 
@@ -174,10 +177,13 @@ fn reconstruct_continuous_operation<'dae>(
         EquationOperationInput::Residual {
             residual,
             provenance,
+            occurrence,
         } => {
             let residual = mapped(&ids.expressions, *residual, "expression", *provenance)?;
             dae.continuous(|continuous| {
-                continuous.equation(*provenance, |owner| owner.residual(residual))
+                continuous.equation(*provenance, |owner| {
+                    replay_residual(owner, residual, *occurrence)
+                })
             })?;
         }
         EquationOperationInput::Structured {
@@ -207,10 +213,13 @@ fn reconstruct_initialization_operation<'dae>(
         EquationOperationInput::Residual {
             residual,
             provenance,
+            occurrence,
         } => {
             let residual = mapped(&ids.expressions, *residual, "expression", *provenance)?;
             dae.initialization(|initialization| {
-                initialization.equation(*provenance, |owner| owner.residual(residual))
+                initialization.equation(*provenance, |owner| {
+                    replay_residual(owner, residual, *occurrence)
+                })
             })?;
         }
         EquationOperationInput::Structured {
@@ -239,4 +248,17 @@ fn attach_family_bodies<'dae>(
         residuals.body(*body)?;
     }
     Ok(())
+}
+
+/// Replay one residual row with the component occurrence it was issued with.
+fn replay_residual<'dae>(
+    owner: &mut crate::ResidualEquation<'_, 'dae>,
+    residual: ExprId<'dae>,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
+) -> Result<(), DaeConstructionError> {
+    owner.residual(residual)?;
+    match occurrence {
+        Some(occurrence) => owner.occurrence(occurrence),
+        None => Ok(()),
+    }
 }
