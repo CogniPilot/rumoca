@@ -118,7 +118,8 @@ mod browser {
         configure: impl FnOnce(T) -> SimOptions,
     ) -> Result<SimulationSessionLease, SimulationDiagnosticError> {
         let wire = {
-            let _parse = rumoca_core::browser_profile::Span::new("decode_binary_and_checked_replay");
+            let _parse =
+                rumoca_core::browser_profile::Span::new("decode_binary_and_checked_replay");
             let mut reader = rmp_serde::Deserializer::new(Cursor::new(payload));
             let wire = RuntimeWire::<T>::deserialize(&mut reader).map_err(refusal)?;
             if reader.get_ref().position() != payload.len() as u64 {
@@ -131,7 +132,8 @@ mod browser {
         }
         let scope = ProgramScope::load(wire.programs).map_err(refusal)?;
         let prepared = {
-            let _initialization = rumoca_core::browser_profile::Span::new("session_construct_and_init");
+            let _initialization =
+                rumoca_core::browser_profile::Span::new("session_construct_and_init");
             session(wire.component, configure(wire.context))?
         };
         {
