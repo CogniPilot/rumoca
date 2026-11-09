@@ -1,6 +1,8 @@
 //! Mechanical persisted form of the original emitted assignment module.
 use super::*;
 use serde::{Deserialize, Serialize};
+#[cfg(all(test, feature = "host-engine"))]
+mod tests;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

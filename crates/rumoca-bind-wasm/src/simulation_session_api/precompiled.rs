@@ -1,5 +1,7 @@
 //! Current-build full-runtime transport over the common checked FMI/ME owner.
 mod container;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 use super::{InteractiveOptions, configured_options, prebuilt};
 use crate::WasmError;
 use serde::{Deserialize, Serialize};

@@ -2,6 +2,8 @@
 //! No new derivative, storage, backend or numerical decisions.
 use crate::{SimOptions, SimulationDiagnosticError, SimulationSessionLease};
 use serde::{Serialize, de::DeserializeOwned};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 fn refusal(message: impl ToString) -> SimulationDiagnosticError {
     SimulationDiagnosticError::RuntimePreparation {
         message: message.to_string(),
