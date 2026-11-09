@@ -397,45 +397,48 @@ fn checked_f64_scalar_tape_reuse_preserves_guards_and_new_call_values() {
     }
 }
 
+fn check_scalar_forwarding_aggregate_boundary(construct: bool) {
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
+            vec![real(), real()],
+            vec![solve::SolvePureCallOutput::result(real())],
+            at(),
+            |b, inputs, outputs| {
+                let x = b.load(inputs[0], at())?;
+                let y = b.load(inputs[1], at())?;
+                let dead_sum = b.binary(solve::SolveBinaryOperator::Add, x, y, at())?;
+                let dead_product = b.binary(solve::SolveBinaryOperator::Multiply, x, y, at())?;
+                b.check_finite(dead_sum, solve::SolveFiniteCheck::Derivative, at())?;
+                b.check_finite(dead_product, solve::SolveFiniteCheck::Derivative, at())?;
+                // The dead scalar cells can be reused by the aggregate and
+                // projection. Neither write may leave a forwarded old value.
+                let aggregate = if construct {
+                    b.construct_aggregate(&[x], vec![1], at())?
+                } else {
+                    b.fill(x, vec![1], at())?
+                };
+                let selected = b.project_element(aggregate, vec![0], at())?;
+                let result = b.binary(solve::SolveBinaryOperator::Add, selected, y, at())?;
+                b.store(outputs[0], result, at())
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let mut call =
+        CompiledCheckedF64Call::compile(&table, &table.owners()[0].call_site(), &[2]).unwrap();
+    let mut output = [0.0_f64];
+    for input in [[2.0, 3.0], [-7.0, 4.0], [5.0, -3.0]] {
+        call.call(&[&input], &mut output).unwrap();
+        assert_eq!(output[0].to_bits(), (input[0] + input[1]).to_bits());
+    }
+}
+
 #[test]
 fn checked_f64_scalar_forwarding_ends_at_aggregate_and_projection() {
     for construct in [false, true] {
-        let table = solve::SolvePureCallTable::construct(profile(), |table| {
-            table.add_owner(
-                solve::SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
-                vec![real(), real()],
-                vec![solve::SolvePureCallOutput::result(real())],
-                at(),
-                |b, inputs, outputs| {
-                    let x = b.load(inputs[0], at())?;
-                    let y = b.load(inputs[1], at())?;
-                    let dead_sum = b.binary(solve::SolveBinaryOperator::Add, x, y, at())?;
-                    let dead_product =
-                        b.binary(solve::SolveBinaryOperator::Multiply, x, y, at())?;
-                    b.check_finite(dead_sum, solve::SolveFiniteCheck::Derivative, at())?;
-                    b.check_finite(dead_product, solve::SolveFiniteCheck::Derivative, at())?;
-                    // The dead scalar cells can be reused by the aggregate and
-                    // projection. Neither write may leave a forwarded old value.
-                    let aggregate = if construct {
-                        b.construct_aggregate(&[x], vec![1], at())?
-                    } else {
-                        b.fill(x, vec![1], at())?
-                    };
-                    let selected = b.project_element(aggregate, vec![0], at())?;
-                    let result = b.binary(solve::SolveBinaryOperator::Add, selected, y, at())?;
-                    b.store(outputs[0], result, at())
-                },
-            )?;
-            Ok(())
-        })
-        .unwrap();
-        let mut call =
-            CompiledCheckedF64Call::compile(&table, &table.owners()[0].call_site(), &[2]).unwrap();
-        let mut output = [0.0_f64];
-        for input in [[2.0, 3.0], [-7.0, 4.0], [5.0, -3.0]] {
-            call.call(&[&input], &mut output).unwrap();
-            assert_eq!(output[0].to_bits(), (input[0] + input[1]).to_bits());
-        }
+        check_scalar_forwarding_aggregate_boundary(construct);
     }
 }
 
