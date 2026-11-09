@@ -59,7 +59,7 @@ pub(super) fn lower_record_equation<'dae>(
             (coordinate, discrete, _) => define_field_residual(
                 construction,
                 (coordinate, value),
-                (owner, generated),
+                (owner, generated, equation.occurrence),
                 discrete.is_some(),
             )?,
         }
@@ -74,7 +74,11 @@ pub(super) fn lower_record_equation<'dae>(
 fn define_field_residual<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     (coordinate, value): (Coordinate<'dae>, dae::ExprId<'dae>),
-    (owner, generated): (dae::DaeProvenance, dae::DaeProvenance),
+    (owner, generated, occurrence): (
+        dae::DaeProvenance,
+        dae::DaeProvenance,
+        Option<rumoca_core::ComponentOccurrence>,
+    ),
     model_equation: bool,
 ) -> Result<(), dae::DaeConstructionError> {
     let lhs = construction
@@ -86,7 +90,9 @@ fn define_field_residual<'dae>(
     })?;
     match coordinate {
         _ if !model_equation => {
-            construction.initialization(|system| system.value_equation(owner, residual))?;
+            construction.initialization(|system| {
+                system.component_value_equation(owner, residual, occurrence)
+            })?;
         }
         Coordinate::DiscreteReal(_) => {
             construction.discrete(|system| {
@@ -94,7 +100,9 @@ fn define_field_residual<'dae>(
             })?;
         }
         _ => {
-            construction.continuous(|system| system.value_equation(owner, residual))?;
+            construction.continuous(|system| {
+                system.component_value_equation(owner, residual, occurrence)
+            })?;
         }
     }
     Ok(())

@@ -536,7 +536,7 @@ fn lower_continuous<'dae>(
                         row,
                         equation.residual(),
                         0..count,
-                        equation.provenance().span(),
+                        (equation.provenance().span(), equation.occurrence()),
                     )?
                 {
                     row = checked_ordinal_add(
@@ -1334,7 +1334,7 @@ fn lower_continuous_family<'dae>(
                 row,
                 body,
                 scalars,
-                family.provenance().span(),
+                (family.provenance().span(), None),
             )? {
                 return checked_ordinal_add(
                     row,
@@ -1432,7 +1432,7 @@ fn lower_algebraic_scalar_outputs<'dae>(
     first_row: usize,
     expression: dae::ExprId<'dae>,
     scalars: impl IntoIterator<Item = usize>,
-    span: Span,
+    (span, occurrence): (Span, Option<rumoca_core::ComponentOccurrence>),
 ) -> Result<bool, LowerError> {
     let scalars = scalars.into_iter().collect::<Vec<_>>();
     let mut rows = Vec::with_capacity(scalars.len());
@@ -1463,6 +1463,7 @@ fn lower_algebraic_scalar_outputs<'dae>(
         Err(error) => return Err(error),
     };
     output.residual.push_outputs(program, span, rows);
+    output.residual.tag_last(occurrence);
     Ok(true)
 }
 

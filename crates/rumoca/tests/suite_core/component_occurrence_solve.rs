@@ -38,6 +38,110 @@ fn instances_by_class_equation(
     seen
 }
 
+/// Occurrences of every exact refresh program of `model`.
+fn exact_refresh_occurrences(model: &solve::SolveModel) -> Vec<ComponentOccurrence> {
+    let owners = &model.problem.continuous.refresh_owners;
+    owners
+        .exact_assignment_schedules()
+        .iter()
+        .flat_map(|schedule| schedule.program_ids().iter().copied())
+        .filter_map(|id| owners.exact_assignment_program(id))
+        .filter_map(solve::ExactRefreshAssignmentProgram::source_occurrence)
+        .collect()
+}
+
+/// A component instantiated twice whose equations take the given DAE route.
+fn assert_each_class_equation_twice(source: &str, model: &str) {
+    let seen = instances_by_class_equation(exact_refresh_occurrences(&lower(source, model)));
+    assert!(
+        !seen.is_empty(),
+        "{model}: exact refresh programs carry occurrences"
+    );
+    assert!(
+        seen.values().all(|instances| instances.len() == 2),
+        "{model}: each component class equation is seen once per instance: {seen:?}"
+    );
+}
+
+#[test]
+fn record_equations_keep_the_occurrence_on_every_field_row() {
+    assert_each_class_equation_twice(
+        "
+record Frame
+  Real x;
+  Real y;
+end Frame;
+model Link
+  input Real u;
+  Frame f;
+equation
+  f = Frame(x = u, y = 2 * u);
+end Link;
+model Links
+  Real m(start = 1, fixed = true);
+  Link a(u = m);
+  Link b(u = 2 * m);
+equation
+  der(m) = -0.1 * (a.f.x + b.f.y);
+end Links;
+",
+        "Links",
+    );
+}
+
+#[test]
+fn tuple_call_equations_keep_the_occurrence_on_every_receiver() {
+    assert_each_class_equation_twice(
+        "
+function twice
+  input Real a;
+  output Real x;
+  output Real y;
+algorithm
+  x := a;
+  y := 2 * a;
+end twice;
+model Split
+  input Real u;
+  Real p;
+  Real q;
+equation
+  (p, q) = twice(u);
+end Split;
+model Splits
+  Real m(start = 1, fixed = true);
+  Split a(u = m);
+  Split b(u = 2 * m);
+equation
+  der(m) = -0.1 * (a.p + b.q);
+end Splits;
+",
+        "Splits",
+    );
+}
+
+#[test]
+fn vector_equations_keep_the_occurrence_on_their_multi_output_program() {
+    assert_each_class_equation_twice(
+        "
+model Arm
+  input Real u;
+  Real v[3];
+equation
+  v = {u, 2 * u, 3 * u};
+end Arm;
+model Arms
+  Real m(start = 1, fixed = true);
+  Arm a(u = m);
+  Arm b(u = 2 * m);
+equation
+  der(m) = -0.1 * (a.v[1] + b.v[3]);
+end Arms;
+",
+        "Arms",
+    );
+}
+
 #[test]
 fn exact_refresh_programs_name_the_component_class_equation_and_instance() {
     const PAIR: &str = "

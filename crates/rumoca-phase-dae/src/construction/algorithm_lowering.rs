@@ -181,6 +181,7 @@ fn lower_algorithm_plan<'dae>(
                     name: comp,
                     arguments: args,
                     provenance: dae::DaeProvenance::source(*span)?,
+                    occurrence: None,
                 },
                 plan,
                 owner_provenance,
