@@ -733,7 +733,7 @@ mod tests {
         let occurrences = values
             .iter()
             .map(|value| {
-                (tagged && *value as u32 % 2 == 0).then_some(ComponentOccurrence {
+                (tagged && (*value as u32).is_multiple_of(2)).then_some(ComponentOccurrence {
                     class_equation: rumoca_core::ClassEquation {
                         scope: rumoca_core::ScopeId(3),
                         span: span.span(),
