@@ -32,7 +32,7 @@ impl PrecompiledRetainedEvent {
         let bytes = self.artifact.scratch_bytes();
         if self.version != 1
             || self.source_key != key
-            || bytes % 8 != 0
+            || !bytes.is_multiple_of(8)
             || bytes > crate::CheckedNativeWasmCapacityPolicy::default().public_scratch_bytes()
             || self.artifact.module_bytes().len() > (8 << 20)
         {
@@ -53,8 +53,8 @@ impl PrecompiledRetainedEvent {
             ));
         }
         let range = |start: u32, count: u32| {
-            start % 8 == 0
-                && count % 8 == 0
+            start.is_multiple_of(8)
+                && count.is_multiple_of(8)
                 && start.checked_add(count).is_some_and(|end| end <= bytes)
         };
         for storage in &self.invocations {
@@ -70,26 +70,27 @@ impl PrecompiledRetainedEvent {
                     "precompiled event invocation differs".into(),
                 ));
             }
-            if let Some(carrier) = &storage.carrier {
-                let extent = carrier
-                    .capacity
-                    .checked_mul(carrier.stride)
-                    .and_then(|n| n.checked_add(8));
-                if carrier.range.base != 2
-                    || carrier.range.offset % 8 != 0
-                    || carrier.stride < 8
-                    || carrier.stride % 8 != 0
-                    || extent != Some(carrier.range.bytes)
-                    || carrier
-                        .range
-                        .offset
-                        .checked_add(carrier.range.bytes)
-                        .is_none_or(|end| end > storage.scratch_bytes)
-                {
-                    return Err(WasmCompileError::Input(
-                        "precompiled event carrier extent differs".into(),
-                    ));
-                }
+            let Some(carrier) = &storage.carrier else {
+                continue;
+            };
+            let extent = carrier
+                .capacity
+                .checked_mul(carrier.stride)
+                .and_then(|n| n.checked_add(8));
+            if carrier.range.base != 2
+                || !carrier.range.offset.is_multiple_of(8)
+                || carrier.stride < 8
+                || !carrier.stride.is_multiple_of(8)
+                || extent != Some(carrier.range.bytes)
+                || carrier
+                    .range
+                    .offset
+                    .checked_add(carrier.range.bytes)
+                    .is_none_or(|end| end > storage.scratch_bytes)
+            {
+                return Err(WasmCompileError::Input(
+                    "precompiled event carrier extent differs".into(),
+                ));
             }
         }
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
