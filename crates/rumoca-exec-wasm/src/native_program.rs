@@ -71,6 +71,23 @@ impl CompiledNativeCallProgramWasm {
     pub fn gather_faults(&self) -> &[NativeGatherFault] {
         &self.gather_faults
     }
+    pub fn math_imports(&self) -> &[&'static str] {
+        &self.math_imports
+    }
+}
+
+#[cfg(any(
+    test,
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(feature = "host-engine", not(target_arch = "wasm32")),
+    all(
+        feature = "fixed-native-guest-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )
+))]
+impl CompiledNativeCallProgramWasm {
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         self.entry_status_error(status, &self.gather_faults, &self.linear_solve_faults)
     }
@@ -95,10 +112,6 @@ impl CompiledNativeCallProgramWasm {
             return WasmCompileError::LinearSolveSource(fault.clone());
         }
         WasmCompileError::Backend(format!("native entry failure status {status}"))
-    }
-
-    pub fn math_imports(&self) -> &[&'static str] {
-        &self.math_imports
     }
 }
 

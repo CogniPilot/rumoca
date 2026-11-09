@@ -106,6 +106,10 @@ impl PrecompiledPrivatePrograms {
                     "precompiled private module extent differs".into(),
                 ));
             }
+            #[cfg(any(
+                all(target_arch = "wasm32", target_os = "unknown"),
+                all(feature = "host-engine", not(target_arch = "wasm32"))
+            ))]
             let exports = entries
                 .iter()
                 .map(|(_, entry)| entry.export.as_str())
