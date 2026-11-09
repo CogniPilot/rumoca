@@ -70,4 +70,9 @@ impl ScalarProgramBlock {
     pub fn program_occurrence(&self, row: usize) -> Option<ComponentOccurrence> {
         self.data.program_occurrences.get(row).copied().flatten()
     }
+
+    /// One occurrence per program, or empty when none was recorded.
+    pub(crate) fn program_occurrences(&self) -> &[Option<ComponentOccurrence>] {
+        &self.data.program_occurrences
+    }
 }
