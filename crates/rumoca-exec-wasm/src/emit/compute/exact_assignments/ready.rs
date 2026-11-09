@@ -91,7 +91,15 @@ impl Ready {
         let mut module = Module::new();
         let types = call_program::add_types(&mut module);
         let catalog = add_import_section(&mut module, &ready.imports, &types);
-        let emitted = super::emit_programs(&catalog, &ready, layout, true, 0..1, seed)?;
+        let emitted = super::emit_programs(
+            &catalog,
+            &ready,
+            layout,
+            true,
+            0..1,
+            seed,
+            super::Placement::STANDALONE,
+        )?;
         Ok((ready, emitted, linked))
     }
 

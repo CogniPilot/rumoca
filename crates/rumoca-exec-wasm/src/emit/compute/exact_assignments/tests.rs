@@ -37,6 +37,7 @@ fn artifact(sinusoid: bool) -> CompiledNativeCallProgramWasm {
         Ready::private(&block, &layout, &calls).unwrap(),
         &layout,
         true,
+        &[],
     )
     .unwrap()
 }

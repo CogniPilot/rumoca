@@ -19,10 +19,12 @@ pub(crate) fn emit_exact_assignment_module(
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
+    let chunks = schedule.chunks().collect::<Vec<_>>();
     emit_module(
         Ready::new(source, owners, schedule, layout, table)?,
         layout,
         false,
+        &chunks,
     )
 }
 
@@ -34,7 +36,7 @@ pub(crate) fn emit_private_program_module(
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
-    emit_module(Ready::private(block, layout, table)?, layout, true)
+    emit_module(Ready::private(block, layout, table)?, layout, true, &[])
 }
 
 pub(crate) fn emit_event_program_module(
@@ -49,7 +51,7 @@ pub(crate) fn emit_event_program_module(
 > {
     let ready = Ready::event(source, layout)?;
     let records = ready.observations.clone();
-    emit_module(ready, layout, true).map(|artifact| (artifact, records))
+    emit_module(ready, layout, true, &[]).map(|artifact| (artifact, records))
 }
 
 #[cfg(test)]
@@ -63,7 +65,7 @@ pub(crate) fn emit_private_directional_module(
     let seed_offset = ready
         .seed_offset
         .ok_or("directional entry has no issued seed storage")?;
-    emit_module(ready, layout, true).map(|artifact| (artifact, seed_offset))
+    emit_module(ready, layout, true, &[]).map(|artifact| (artifact, seed_offset))
 }
 
 pub(crate) use ready::AdmissionCache;
@@ -181,6 +183,7 @@ fn emit_private_group(
                 true,
                 entry..entry + 1,
                 seed_offset,
+                Placement::STANDALONE,
             )
             .map(|function| (function, seed_offset))
         })
@@ -267,7 +270,11 @@ fn emit_module(
     ready: Ready,
     layout: &VarLayout,
     private: bool,
+    chunks: &[std::ops::Range<usize>],
 ) -> Result<CompiledNativeCallProgramWasm, String> {
+    if !private && chunks.len() > 1 && ready.observations.is_empty() {
+        return emit_chunked_module(ready, layout, chunks);
+    }
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
     let mut catalog = add_import_section(&mut module, &ready.imports, &types);
@@ -335,7 +342,128 @@ fn emit_function(
         private,
         0..ready.plan.programs.len(),
         ready.seed_offset,
+        Placement::STANDALONE,
     )
+}
+
+/// Where a function's programs sit in their schedule: the ordinal of its first
+/// program, and the source fault statuses earlier functions already issued.
+#[derive(Clone, Copy)]
+struct Placement {
+    kernel_base: usize,
+    status_offset: u32,
+}
+
+impl Placement {
+    /// Ordinals and statuses local to the function, as for a standalone module.
+    const STANDALONE: Self = Self {
+        kernel_base: 0,
+        status_offset: 0,
+    };
+}
+
+/// One function per issued chunk, called in order by `eval_assignments`, which
+/// returns the first nonzero status. Programs keep their schedule ordinals and
+/// their source fault statuses, so a chunked module reports exactly what the
+/// single function would.
+fn emit_chunked_module(
+    ready: Ready,
+    layout: &VarLayout,
+    chunks: &[std::ops::Range<usize>],
+) -> Result<CompiledNativeCallProgramWasm, String> {
+    let mut module = Module::new();
+    let types = call_program::add_types(&mut module);
+    let mut catalog = add_import_section(&mut module, &ready.imports, &types);
+    let first_chunk = catalog
+        .eval_function_index
+        .checked_add(
+            u32::try_from(ready.bodies.len()).map_err(|_| "WASM exact helper count overflow")?,
+        )
+        .ok_or("WASM exact chunk index overflow")?;
+    catalog.eval_function_index = first_chunk
+        .checked_add(u32::try_from(chunks.len()).map_err(|_| "WASM exact chunk count overflow")?)
+        .ok_or("WASM exact entry index overflow")?;
+    let mut functions = FunctionSection::new();
+    for _ in ready.bodies.iter() {
+        functions.function(3);
+    }
+    for _ in chunks {
+        functions.function(types.eval_type);
+    }
+    functions.function(types.eval_type);
+    module.section(&functions);
+    ready.arena.add_memory(&mut module);
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export(
+        "eval_assignments",
+        ExportKind::Func,
+        catalog.eval_function_index,
+    );
+    module.section(&exports);
+    let mut gather_faults = Vec::new();
+    let mut linear_solve_faults = Vec::new();
+    let mut bodies = Vec::with_capacity(chunks.len());
+    for range in chunks {
+        let status_offset = gather_faults
+            .len()
+            .checked_add(linear_solve_faults.len())
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or("WASM exact chunk status overflow")?;
+        let mut emitted = emit_programs(
+            &catalog,
+            &ready,
+            layout,
+            false,
+            range.clone(),
+            ready.seed_offset,
+            Placement {
+                kernel_base: range.start,
+                status_offset,
+            },
+        )?;
+        gather_faults.append(&mut emitted.gather_faults);
+        linear_solve_faults.append(&mut emitted.linear_solve_faults);
+        bodies.push(emitted.function);
+    }
+    let mut entry = Function::new([(1, ValType::I32)]);
+    for chunk in 0..chunks.len() {
+        let target = u32::try_from(chunk)
+            .ok()
+            .and_then(|n| first_chunk.checked_add(n))
+            .ok_or("WASM exact chunk index overflow")?;
+        for argument in 0..LOCAL_BASE {
+            entry.instruction(&Instruction::LocalGet(argument));
+        }
+        entry.instruction(&Instruction::Call(target));
+        entry.instruction(&Instruction::LocalTee(LOCAL_BASE));
+        entry.instruction(&Instruction::If(BlockType::Empty));
+        entry.instruction(&Instruction::LocalGet(LOCAL_BASE));
+        entry.instruction(&Instruction::Return);
+        entry.instruction(&Instruction::End);
+    }
+    entry.instruction(&Instruction::I32Const(0));
+    entry.instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    for body in ready.bodies.iter() {
+        code.function(body);
+    }
+    for body in &bodies {
+        code.function(body);
+    }
+    code.function(&entry);
+    module.section(&code);
+    Ok(CompiledNativeCallProgramWasm {
+        bytes: module.finish(),
+        capacity_policy: crate::CheckedNativeWasmCapacityPolicy::default(),
+        scratch_bytes: ready.calls.view().bytes,
+        scratch_report: ready.scratch_report,
+        faults: ready.faults,
+        gather_faults,
+        linear_solve_faults,
+        math_imports: ready.imports.iter().map(|import| import.symbol()).collect(),
+        carried: Default::default(),
+    })
 }
 
 fn emit_programs(
@@ -345,6 +473,7 @@ fn emit_programs(
     private: bool,
     programs: std::ops::Range<usize>,
     seed_offset: Option<u32>,
+    placement: Placement,
 ) -> Result<EmittedFunction, String> {
     let mut locals = ready.arena.locals();
     locals.extend([(2, ValType::I32), (1, ValType::I64)]);
@@ -369,6 +498,7 @@ fn emit_programs(
         u32::try_from(ready.faults.len())
             .ok()
             .and_then(|n| n.checked_add(3))
+            .and_then(|n| n.checked_add(placement.status_offset))
             .ok_or("exact gather status overflow")?,
     );
     emitter.begin_exact_schedule(layout)?;
@@ -376,8 +506,8 @@ fn emit_programs(
     emitter.root_program_cursor = programs.start;
     let end = programs.end;
     for (kernel, program) in ready.plan.programs[programs].iter().enumerate() {
-        // Ordinals are local to the function, as for a standalone module.
-        emitter.kernel_ordinal = kernel;
+        // Ordinals count from the function's place in its schedule.
+        emitter.kernel_ordinal = placement.kernel_base + kernel;
         emitter.push(Instruction::LocalGet(SEED_PTR_PARAM));
         emitter.push(Instruction::LocalSet(OUT_PTR_PARAM));
         let outputs = (0..program.block.stored_output_count()).collect::<Vec<_>>();

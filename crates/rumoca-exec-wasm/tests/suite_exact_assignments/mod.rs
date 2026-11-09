@@ -31,6 +31,35 @@ fn sparse_tuple_and_later_dependency_preserve_canonical_bits_and_source_order() 
 }
 
 #[test]
+fn a_schedule_over_the_chunk_budget_runs_as_several_functions_with_canonical_bits() {
+    let fixture = fixture::long_chain(solve::EXACT_ASSIGNMENT_CHUNK_OPS * 3 / 4);
+    assert_eq!(
+        fixture.schedule().chunks().collect::<Vec<_>>(),
+        vec![0..1, 1..2]
+    );
+    let compiled = fixture.compile().unwrap();
+    let defined = wasmparser::Parser::new(0)
+        .parse_all(compiled.module_bytes())
+        .filter_map(Result::ok)
+        .filter(|payload| matches!(payload, wasmparser::Payload::CodeSectionEntry(_)))
+        .count();
+    assert!(
+        defined >= 3,
+        "two chunk functions plus the entry: {defined}"
+    );
+    let mut runner = runner::Runner::new(&compiled, &fixture.layout);
+    for value in [0., -0., 2.5, -5., f64::MIN_POSITIVE] {
+        let y = [value, 9., -0., 11., 13., 17.];
+        let p = [0.25];
+        let mut expected = y;
+        fixture.canonical(&mut expected, &p).unwrap();
+        let (status, actual) = runner.run(&y, &p);
+        assert_eq!(status, 0);
+        assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
+    }
+}
+
+#[test]
 fn late_source_fault_keeps_prior_tuple_commits_then_recovers_without_input_mutation() {
     let fixture = fixture::late_fault();
     let compiled = fixture.compile().unwrap();

@@ -288,6 +288,47 @@ impl Fixture {
     }
 }
 
+/// Two dependent programs, each a chain of `length` additions:
+/// `y[1] := y[0] + length * p[0]`, then `y[2] := y[1] + length * p[0]`.
+pub(super) fn long_chain(length: usize) -> Fixture {
+    let chain = |input: usize, target: usize| {
+        let mut ops = vec![
+            solve::LinearOp::LoadY {
+                dst: 0,
+                index: input,
+            },
+            solve::LinearOp::LoadP { dst: 1, index: 0 },
+        ];
+        let mut last = 0;
+        for step in 0..length {
+            let dst = u32::try_from(step + 2).unwrap();
+            ops.push(binary(dst, solve::BinaryOp::Add, last, 1));
+            last = dst;
+        }
+        let eval_len = ops.len();
+        ops.extend([
+            solve::LinearOp::LoadY {
+                dst: last + 1,
+                index: target,
+            },
+            binary(last + 2, solve::BinaryOp::Sub, last + 1, last),
+            solve::LinearOp::StoreOutput { src: last + 2 },
+        ]);
+        (ops, last, eval_len)
+    };
+    let (first, first_reg, first_len) = chain(0, 1);
+    let (second, second_reg, second_len) = chain(1, 2);
+    assemble(
+        vec![first, second],
+        vec![
+            row(0, 0, 0, 1, first_reg, first_len),
+            row(1, 0, 1, 2, second_reg, second_len),
+        ],
+        solve::SolvePureCallTable::builder(arithmetic()).finish(),
+        1,
+    )
+}
+
 fn binary(dst: u32, op: solve::BinaryOp, lhs: u32, rhs: u32) -> solve::LinearOp {
     solve::LinearOp::Binary { dst, op, lhs, rhs }
 }

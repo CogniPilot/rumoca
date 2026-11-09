@@ -5,6 +5,7 @@
 // `refresh/exact_assignment.rs`, leaving plan identity, stages, and validation
 // here.
 mod assignment_shape;
+mod chunks;
 mod compact_owner;
 mod dependency;
 mod exact_source;
@@ -295,7 +296,11 @@ pub struct ExactRefreshAssignmentProgramId(u32);
 pub struct ExactRefreshAssignmentSchedule {
     sequence_id: RefreshSequenceId,
     program_ids: Box<[ExactRefreshAssignmentProgramId]>,
+    /// Exclusive ends of the schedule's function chunks, issued with it.
+    chunk_ends: Box<[usize]>,
 }
+
+pub use chunks::EXACT_ASSIGNMENT_CHUNK_OPS;
 
 impl ExactRefreshAssignmentSchedule {
     pub const fn sequence_id(&self) -> RefreshSequenceId {
@@ -304,6 +309,13 @@ impl ExactRefreshAssignmentSchedule {
 
     pub fn program_ids(&self) -> &[ExactRefreshAssignmentProgramId] {
         &self.program_ids
+    }
+
+    /// Consecutive ranges of `program_ids` a backend emits as one function each.
+    pub fn chunks(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+        self.chunk_ends
+            .iter()
+            .scan(0, |start, &end| Some(std::mem::replace(start, end)..end))
     }
 }
 
@@ -1662,9 +1674,11 @@ fn append_exact_assignment_schedule<'a>(
         }
         position = end;
     }
+    let chunk_ends = chunks::chunk_ends(block, programs, &program_ids)?;
     schedules.push(ExactRefreshAssignmentSchedule {
         sequence_id,
         program_ids: program_ids.into_boxed_slice(),
+        chunk_ends,
     });
     Ok(())
 }
