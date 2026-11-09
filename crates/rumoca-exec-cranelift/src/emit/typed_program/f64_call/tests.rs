@@ -315,3 +315,165 @@ fn checked_f64_tensor_guard_reports_first_element_and_commits_whole_values() {
         [-0.0_f64, 5.0, 6.0, 7.0].map(f64::to_bits)
     );
 }
+
+#[test]
+fn checked_f64_scalar_tape_reuse_preserves_guards_and_new_call_values() {
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
+            vec![real(), real()],
+            vec![solve::SolvePureCallOutput::result(real())],
+            at(),
+            |b, inputs, outputs| {
+                let x = b.load(inputs[0], at())?;
+                let y = b.load(inputs[1], at())?;
+                let product = b.binary(solve::SolveBinaryOperator::Multiply, x, y, at())?;
+                b.check_finite(
+                    product,
+                    solve::SolveFiniteCheck::Primal {
+                        program: 0,
+                        operation: 2,
+                    },
+                    at(),
+                )?;
+                let sum = b.binary(solve::SolveBinaryOperator::Add, product, x, at())?;
+                b.check_finite(
+                    sum,
+                    solve::SolveFiniteCheck::Primal {
+                        program: 0,
+                        operation: 4,
+                    },
+                    at(),
+                )?;
+                let shifted = b.binary(solve::SolveBinaryOperator::Subtract, sum, y, at())?;
+                b.check_finite(
+                    shifted,
+                    solve::SolveFiniteCheck::Primal {
+                        program: 0,
+                        operation: 6,
+                    },
+                    at(),
+                )?;
+                let result = b.binary(solve::SolveBinaryOperator::Multiply, shifted, x, at())?;
+                b.store(outputs[0], result, at())
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let mut call =
+        CompiledCheckedF64Call::compile(&table, &table.owners()[0].call_site(), &[2]).unwrap();
+    let mut output = [42.0_f64];
+    for input in [
+        [2.0, 3.0],
+        [-5.0, 4.0],
+        [-0.0, 0.0],
+        [f64::MAX, 2.0],
+        [7.0, -2.0],
+    ] {
+        let before = output[0].to_bits();
+        let result = call.call(&[&input], &mut output);
+        let product = input[0] * input[1];
+        if product.is_finite() {
+            result.unwrap();
+            assert_eq!(
+                output[0].to_bits(),
+                (((product + input[0]) - input[1]) * input[0]).to_bits()
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(CompileError::NonFinite {
+                    check: solve::SolveFiniteCheck::Primal {
+                        program: 0,
+                        operation: 2
+                    },
+                    element: 0,
+                    ..
+                })
+            ));
+            assert_eq!(output[0].to_bits(), before);
+        }
+    }
+}
+
+fn check_scalar_forwarding_aggregate_boundary(construct: bool) {
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
+            vec![real(), real()],
+            vec![solve::SolvePureCallOutput::result(real())],
+            at(),
+            |b, inputs, outputs| {
+                let x = b.load(inputs[0], at())?;
+                let y = b.load(inputs[1], at())?;
+                let dead_sum = b.binary(solve::SolveBinaryOperator::Add, x, y, at())?;
+                let dead_product = b.binary(solve::SolveBinaryOperator::Multiply, x, y, at())?;
+                b.check_finite(dead_sum, solve::SolveFiniteCheck::Derivative, at())?;
+                b.check_finite(dead_product, solve::SolveFiniteCheck::Derivative, at())?;
+                // The dead scalar cells can be reused by the aggregate and
+                // projection. Neither write may leave a forwarded old value.
+                let aggregate = if construct {
+                    b.construct_aggregate(&[x], vec![1], at())?
+                } else {
+                    b.fill(x, vec![1], at())?
+                };
+                let selected = b.project_element(aggregate, vec![0], at())?;
+                let result = b.binary(solve::SolveBinaryOperator::Add, selected, y, at())?;
+                b.store(outputs[0], result, at())
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let mut call =
+        CompiledCheckedF64Call::compile(&table, &table.owners()[0].call_site(), &[2]).unwrap();
+    let mut output = [0.0_f64];
+    for input in [[2.0, 3.0], [-7.0, 4.0], [5.0, -3.0]] {
+        call.call(&[&input], &mut output).unwrap();
+        assert_eq!(output[0].to_bits(), (input[0] + input[1]).to_bits());
+    }
+}
+
+#[test]
+fn checked_f64_scalar_forwarding_ends_at_aggregate_and_projection() {
+    for construct in [false, true] {
+        check_scalar_forwarding_aggregate_boundary(construct);
+    }
+}
+
+#[test]
+fn checked_f64_large_aggregate_guard_preserves_first_fault_and_publication() {
+    let tensor = solve::SolveValueType::tensor(real().element_type(), vec![20]).unwrap();
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(NonZeroU64::new(1).unwrap()),
+            vec![tensor.clone()],
+            vec![solve::SolvePureCallOutput::result(tensor)],
+            at(),
+            |b, inputs, outputs| {
+                let value = b.load(inputs[0], at())?;
+                b.store(outputs[0], value, at())?;
+                b.check_finite(value, solve::SolveFiniteCheck::Derivative, at())
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let mut call =
+        CompiledCheckedF64Call::compile(&table, &table.owners()[0].call_site(), &[20]).unwrap();
+    let mut input = [1.0_f64; 20];
+    input[17] = f64::NAN;
+    input[19] = f64::INFINITY;
+    let sentinel = f64::from_bits(0x7ff8_1234_5678_9abc);
+    let mut output = [sentinel; 20];
+    assert!(matches!(
+        call.call(&[&input], &mut output),
+        Err(CompileError::NonFinite { element: 17, .. })
+    ));
+    assert_eq!(output.map(f64::to_bits), [sentinel.to_bits(); 20]);
+    input[17] = -0.0;
+    input[19] = 2.0;
+    call.call(&[&input], &mut output).unwrap();
+    assert_eq!(output.map(f64::to_bits), input.map(f64::to_bits));
+}

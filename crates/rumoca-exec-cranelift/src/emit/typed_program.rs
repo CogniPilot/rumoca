@@ -39,6 +39,7 @@ mod pointwise_abs_tests;
 mod pointwise_power_tests;
 #[cfg(test)]
 mod reduction_maximum_tests;
+mod scalar_forwarding;
 mod storage;
 mod support;
 mod tensor;
@@ -723,6 +724,7 @@ impl TableCompiler {
                 ProgramLayout::new(program, (input_count, outputs.len()), &predicate_slots)?;
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
             let mut lowerer = ProgramLowerer {
+                scalar_forwarding: None,
                 emission: self.emission,
                 builder: &mut builder,
                 module: &mut self.module,
@@ -1045,6 +1047,7 @@ fn cell_pointer(
 }
 
 struct ProgramLowerer<'a, 'b> {
+    scalar_forwarding: Option<scalar_forwarding::ScalarForwarding>,
     emission: Emission,
     builder: &'a mut FunctionBuilder<'b>,
     module: &'a mut JITModule,
@@ -1729,6 +1732,15 @@ impl ProgramLowerer<'_, '_> {
         base: Value,
         index: Value,
     ) -> Result<Value, CompileError> {
+        if location.base == StorageBase::Tape
+            && base == self.tape
+            && let Some(value) = self
+                .scalar_forwarding
+                .as_ref()
+                .and_then(|cache| cache.get(location.cell))
+        {
+            return Ok(value);
+        }
         let address = self.cell_address(base, location.cell, index);
         Ok(self.builder.ins().load(
             scalar_cranelift_type(location.value_type.element_type()),
@@ -1756,6 +1768,12 @@ impl ProgramLowerer<'_, '_> {
     ) -> Result<(), CompileError> {
         let address = self.cell_address(base, location.cell, index);
         self.builder.ins().store(self.flags, value, address, 0);
+        if location.base == StorageBase::Tape
+            && base == self.tape
+            && let Some(cache) = self.scalar_forwarding.as_mut()
+        {
+            cache.put(location.cell, value);
+        }
         Ok(())
     }
 

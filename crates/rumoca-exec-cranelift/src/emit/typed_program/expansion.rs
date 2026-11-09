@@ -12,6 +12,9 @@ impl ProgramLowerer<'_, '_> {
         (program, ordinal): (Option<usize>, usize),
         original: &solve::TypedProgram,
     ) -> Result<(), CompileError> {
+        if let Some(cache) = self.scalar_forwarding.as_mut() {
+            cache.prepare(operation.operation(), original);
+        }
         if program.is_none() {
             return self.lower_operation(operation.operation());
         }
