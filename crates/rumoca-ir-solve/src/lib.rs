@@ -240,8 +240,10 @@ impl<'de> Deserialize<'de> for ScalarProgramBlock {
         D: serde::Deserializer<'de>,
     {
         let wire = ScalarProgramBlockWire::deserialize(deserializer)?;
-        Self::construct(wire.programs, wire.program_spans, wire.output_placements)
-            .and_then(|block| block.with_program_occurrences(wire.program_occurrences))
+        let block = Self::construct(wire.programs, wire.program_spans, wire.output_placements)
+            .map_err(serde::de::Error::custom)?;
+        block
+            .with_program_occurrences(wire.program_occurrences)
             .map_err(serde::de::Error::custom)
     }
 }

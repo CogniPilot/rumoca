@@ -2129,13 +2129,12 @@ impl ScalarRows {
     }
 
     pub(super) fn into_scalar_block(self) -> Result<solve::ScalarProgramBlock, LowerError> {
-        solve::ScalarProgramBlock::with_program_output_placements(
+        let block = solve::ScalarProgramBlock::with_program_output_placements(
             self.programs,
             self.spans,
             self.output_placements,
-        )
-        .and_then(|block| block.with_program_occurrences(self.occurrences))
-        .map_err(Into::into)
+        )?;
+        Ok(block.with_program_occurrences(self.occurrences)?)
     }
 
     pub(super) fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
