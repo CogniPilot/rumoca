@@ -14,6 +14,7 @@ pub(super) fn run_builtin_call_semantic_checks(def: &StoredDefinition) -> Vec<Di
     let mut visitor = BuiltinCallVisitor {
         def,
         class_path: Vec::new(),
+        loop_indices: Vec::new(),
         in_function: false,
         diags: &mut diags,
     };
@@ -21,14 +22,53 @@ pub(super) fn run_builtin_call_semantic_checks(def: &StoredDefinition) -> Vec<Di
     diags
 }
 
+/// A lexically scoped loop index and whether its range is fixed (parameter-valued).
+struct LoopIndex {
+    name: String,
+    is_fixed: bool,
+}
+
 struct BuiltinCallVisitor<'a> {
     def: &'a StoredDefinition,
     class_path: Vec<String>,
+    loop_indices: Vec<LoopIndex>,
     in_function: bool,
     diags: &'a mut Vec<Diagnostic>,
 }
 
 impl ast::Visitor for BuiltinCallVisitor<'_> {
+    fn enter_scope(&mut self, scope: ast::VisitScope<'_>) -> std::ops::ControlFlow<()> {
+        match scope {
+            ast::VisitScope::ForEquation(indices)
+            | ast::VisitScope::ForStatement(indices)
+            | ast::VisitScope::ArrayComprehension(indices) => {
+                for index in indices {
+                    // MLS §8.3.2 / §11.2.2: a fixed range gives a fixed loop index.
+                    let is_fixed = self.range_is_fixed(&index.range);
+                    self.loop_indices.push(LoopIndex {
+                        name: index.ident.text.to_string(),
+                        is_fixed,
+                    });
+                }
+            }
+            ast::VisitScope::Class(_) => {}
+        }
+        Continue(())
+    }
+
+    fn exit_scope(&mut self, scope: ast::VisitScope<'_>) -> std::ops::ControlFlow<()> {
+        match scope {
+            ast::VisitScope::ForEquation(indices)
+            | ast::VisitScope::ForStatement(indices)
+            | ast::VisitScope::ArrayComprehension(indices) => {
+                self.loop_indices
+                    .truncate(self.loop_indices.len().saturating_sub(indices.len()));
+            }
+            ast::VisitScope::Class(_) => {}
+        }
+        Continue(())
+    }
+
     fn visit_class_def(&mut self, class: &ClassDef) -> std::ops::ControlFlow<()> {
         let previous_in_function = self.in_function;
 
@@ -111,6 +151,11 @@ impl ast::Visitor for BuiltinCallVisitor<'_> {
 }
 
 impl BuiltinCallVisitor<'_> {
+    fn range_is_fixed(&self, expr: &Expression) -> bool {
+        self.current_class()
+            .is_some_and(|class| is_parameter_expression_in_scope(expr, class, &self.loop_indices))
+    }
+
     fn current_class(&self) -> Option<&ClassDef> {
         let (first, rest) = self.class_path.split_first()?;
         let mut current = self.def.classes.get(first)?;
@@ -131,7 +176,9 @@ impl BuiltinCallVisitor<'_> {
                 return;
             };
             match args {
-                [_, delay_time] if !is_parameter_expression(delay_time, class) => {
+                [_, delay_time]
+                    if !is_parameter_expression_in_scope(delay_time, class, &self.loop_indices) =>
+                {
                     Some(semantic_error(
                         ER055_DELAY_PARAMETER_EXPRESSION,
                         "delay() time argument must be a parameter expression when delayMax is omitted (MLS §3.7)",
@@ -144,7 +191,9 @@ impl BuiltinCallVisitor<'_> {
                         ),
                     ))
                 }
-                [_, _, delay_max] if !is_parameter_expression(delay_max, class) => {
+                [_, _, delay_max]
+                    if !is_parameter_expression_in_scope(delay_max, class, &self.loop_indices) =>
+                {
                     Some(semantic_error(
                         ER055_DELAY_PARAMETER_EXPRESSION,
                         "delay() delayMax argument must be a parameter expression (MLS §3.7)",
@@ -325,18 +374,29 @@ fn component_reference_targets_array(
 }
 
 pub(super) fn is_parameter_expression(expr: &Expression, class: &ClassDef) -> bool {
+    is_parameter_expression_in_scope(expr, class, &[])
+}
+
+fn is_parameter_expression_in_scope(
+    expr: &Expression,
+    class: &ClassDef,
+    loop_indices: &[LoopIndex],
+) -> bool {
     rumoca_ir_ast::collect_component_refs(expr)
         .into_iter()
         .all(|cref| match cref.parts.as_slice() {
-            [part] => class
-                .components
-                .get(part.ident.text.as_ref())
-                .is_some_and(|component| {
+            [part] => {
+                let name = part.ident.text.as_ref();
+                if let Some(index) = loop_indices.iter().rev().find(|index| index.name == name) {
+                    return index.is_fixed;
+                }
+                class.components.get(name).is_some_and(|component| {
                     matches!(
                         component.variability,
                         Variability::Parameter(_) | Variability::Constant(_)
                     )
-                }),
+                })
+            }
             _ => false,
         })
 }
