@@ -1,11 +1,13 @@
-//! One source-bound scalar graph and its construction-issued state dependencies.
-//! This staged IR API is not yet consumed by the evaluator/native path. Compact
-//! body receipts and the atomic consumer cutover are separate source slices.
+//! One source-bound graph and its construction-issued state dependencies.
+//! Scalar rows and compact original outputs share this staged IR product;
+//! evaluator/native consumers move in the separate atomic cutover.
+mod compact;
 mod construction;
 #[cfg(test)]
 mod tests;
 mod value;
 
+pub use compact::{StateJacobianCompactConstruction, StateJacobianCompactInput};
 pub use construction::{StateJacobianProductConstruction, StateJacobianProductInput};
 pub use value::StateJacobianProductValue;
 
@@ -34,6 +36,12 @@ pub enum StateJacobianProductDomain {
 /// use rumoca_ir_solve::{StateJacobianProduct, StructuralPattern};
 /// fn replace_pattern<'s>(valid: StateJacobianProduct<'s>, arbitrary: StructuralPattern) {
 ///     let _ = StateJacobianProduct { dependencies: arbitrary, ..valid };
+/// }
+/// ```
+/// ```compile_fail,E0277
+/// use rumoca_ir_solve::StateJacobianProduct;
+/// fn detach_to_wire(product: StateJacobianProduct<'_>) {
+///     let _ = serde_json::to_value(product);
 /// }
 /// ```
 #[derive(Debug)]
@@ -106,7 +114,7 @@ impl<'source> StateJacobianProduct<'source> {
                         span,
                     )?;
                     build(&mut construction)?;
-                    dependencies = Some(construction.finish(&order, span)?);
+                    dependencies = Some(construction.finish(&order, &target.select(), span)?);
                     Ok(())
                 },
             )?;

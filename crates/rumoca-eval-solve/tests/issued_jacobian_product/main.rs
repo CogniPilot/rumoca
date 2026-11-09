@@ -1,4 +1,6 @@
 //! Public consumer controls for the staged IR data API, without runtime cutover.
+mod compact;
+
 use rumoca_core::{SourceId, Span};
 use rumoca_eval_solve::{TypedValue, eval_pure_call_checked};
 use rumoca_ir_solve::*;

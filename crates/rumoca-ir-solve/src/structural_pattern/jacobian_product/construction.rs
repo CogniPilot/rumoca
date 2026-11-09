@@ -22,12 +22,13 @@ pub enum StateJacobianProductInput {
 /// cannot substitute a raw tangent vector or clear an active direction.
 pub struct StateJacobianProductConstruction<'program, 'scope> {
     pub(super) builder: &'scope mut TypedProgramBuilder<'program>,
-    inputs: Vec<ProgramRegister<'program>>,
+    pub(super) inputs: Vec<ProgramRegister<'program>>,
     matrix: Vec<Option<ProgramRegister<'program>>>,
     claimed: Vec<bool>,
     rows_written: usize,
     pub(super) states: usize,
-    parameters: usize,
+    pub(super) parameters: usize,
+    pub(super) compact: Vec<super::compact::BodyReceipt<'program>>,
     pub(super) profile: SolveArithmeticProfile,
     zero: ProgramRegister<'program>,
     one: ProgramRegister<'program>,
@@ -66,6 +67,7 @@ impl<'program, 'scope> StateJacobianProductConstruction<'program, 'scope> {
             rows_written: 0,
             states,
             parameters,
+            compact: Vec::new(),
             profile,
             zero,
             one,
@@ -136,25 +138,78 @@ impl<'program, 'scope> StateJacobianProductConstruction<'program, 'scope> {
     pub(super) fn finish(
         self,
         order: &StoredStateJacobianOutputOrder<'_>,
+        target: &crate::SolveTargetSelection<'_>,
         span: Span,
     ) -> Result<Result<StructuralPattern, StructuralPatternError>, Error> {
-        if self.rows_written != self.states {
+        let written = self
+            .compact
+            .iter()
+            .try_fold(self.rows_written, |n, c| n.checked_add(c.points));
+        if written != Some(self.states) {
             return Err(invalid(span));
         }
-        let dependencies = issue_dependencies(self.states, &self.matrix, span);
-        let mut values = Vec::with_capacity(self.matrix.len());
-        for row in order.row_coordinates() {
-            for column in order.column_coordinates() {
-                values.push(self.matrix[row * self.states + column].unwrap_or(self.zero));
-            }
-        }
-        let width = u32::try_from(self.states).map_err(|_| invalid(span))?;
-        let value = self
-            .builder
-            .construct_aggregate(&values, vec![width, width], span)?;
+        let dependencies = self.dependencies(span);
+        // Dense expansion is requested only here by the chosen target. Both
+        // projections come from the same retained construction-issued receipt.
+        let compact = self
+            .compact
+            .iter()
+            .map(|c| (&c.placement, c.value))
+            .collect::<Vec<_>>();
+        let value = target
+            .materialize_model_jacobian(
+                self.builder,
+                &compact,
+                &self.matrix,
+                self.zero,
+                order,
+                span,
+            )?
+            .value;
         self.builder
             .check_finite(value, SolveFiniteCheck::Derivative, span)?;
         self.builder.store(self.output, value, span)?;
         Ok(dependencies)
+    }
+
+    fn dependencies(&self, span: Span) -> Result<StructuralPattern, StructuralPatternError> {
+        use super::super::{
+            PatternDerivation, PatternProvenance, PatternRepresentation,
+            stacked::{PatternSegment, SegmentRows},
+        };
+        if self.compact.is_empty() {
+            return issue_dependencies(self.states, &self.matrix, span);
+        }
+        let provenance =
+            PatternProvenance::derived(PatternDerivation::DependencyPropagation, span)?;
+        let mut segments = Vec::new();
+        for (row, &claimed) in self.claimed.iter().enumerate() {
+            if !claimed {
+                continue;
+            }
+            let columns = self.matrix[row * self.states..(row + 1) * self.states]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| v.is_some().then_some(i))
+                .collect();
+            let pattern = StructuralPattern::from_checked_row_dependencies(
+                1,
+                self.states,
+                &[columns],
+                provenance,
+            )?;
+            segments.push(PatternSegment {
+                rows: SegmentRows::Contiguous { start: row as u32 },
+                pattern,
+            });
+        }
+        for receipt in &self.compact {
+            if let PatternRepresentation::Stacked { segments: children } =
+                &receipt.relation.owner.representation
+            {
+                segments.extend(children.iter().cloned());
+            }
+        }
+        StructuralPattern::checked_stacked(self.states, self.states, segments, provenance)
     }
 }

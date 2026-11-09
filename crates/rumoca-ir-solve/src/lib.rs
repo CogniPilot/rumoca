@@ -879,7 +879,8 @@ pub use register_versions::{
 };
 pub use structural_pattern::{
     ColoredStructuralPattern, ColumnColoring, PatternDerivation, PatternProvenance,
-    StateJacobianProduct, StateJacobianProductConstruction, StateJacobianProductConstructionError,
+    StateJacobianCompactConstruction, StateJacobianCompactInput, StateJacobianProduct,
+    StateJacobianProductConstruction, StateJacobianProductConstructionError,
     StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
     StructuralPattern, StructuralPatternError, StructuralPatternView,
 };

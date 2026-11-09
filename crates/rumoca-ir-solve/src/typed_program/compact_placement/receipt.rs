@@ -51,6 +51,10 @@ impl CompactJacobianPlacement {
 }
 
 impl CompactJacobianPlacementReceipt<'_> {
+    pub(crate) fn placement(&self) -> &CompactJacobianPlacement {
+        self.placement
+    }
+
     pub fn state_count(&self) -> u32 {
         self.relation().rows()
     }

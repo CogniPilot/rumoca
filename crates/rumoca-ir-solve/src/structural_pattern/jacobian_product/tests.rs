@@ -2,11 +2,11 @@ use super::*;
 use crate::*;
 use rumoca_core::SourceId;
 
-fn span() -> Span {
+pub(super) fn span() -> Span {
     Span::from_offsets(SourceId::from_source_name("JacobianProduct.mo"), 1, 2)
 }
 
-fn model() -> SolveModel {
+pub(super) fn model() -> SolveModel {
     SolveModel {
         problem: SolveProblem {
             layout: VarLayout::from_parts_with_shapes_and_spans(
