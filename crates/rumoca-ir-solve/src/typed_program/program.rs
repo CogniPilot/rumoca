@@ -55,7 +55,8 @@ pub(super) use storage_plan::DERIVED;
 pub(super) use storage_plan::observation_cascades;
 pub use storage_plan::{
     SOLVE_STATIC_MATRIX_WORK, SolveAliasPlan, SolveFrameCells, SolveFusedRegister, SolveFusionPlan,
-    SolveRegisterHome, SolveRegisterPlacement, SolveSlotPlacement, SolveStoragePlan,
+    SolveRegisterHome, SolveRegisterPlacement, SolveScalarLifetime, SolveSlotPlacement,
+    SolveStoragePlan,
 };
 use value_numbering::ValueKey;
 

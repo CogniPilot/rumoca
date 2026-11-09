@@ -108,8 +108,8 @@ impl ProgramLowerer<'_, '_> {
         self.copy_assigned_between(
             source,
             destination,
-            self.base(&source.presence),
-            self.base(&destination.presence),
+            self.base(&source.presence)?,
+            self.base(&destination.presence)?,
         )
     }
 
@@ -165,7 +165,7 @@ impl ProgramLowerer<'_, '_> {
                 source,
                 &destination,
                 output,
-                self.base(&destination.presence),
+                self.base(&destination.presence)?,
             )?;
         }
         Ok(())
@@ -228,7 +228,7 @@ impl ProgramLowerer<'_, '_> {
         destination: &AssignedLocation,
         pointer: Value,
     ) -> Result<(), CompileError> {
-        self.copy_assigned_between(source, destination, self.base(&source.presence), pointer)
+        self.copy_assigned_between(source, destination, self.base(&source.presence)?, pointer)
     }
 
     fn copy_assigned_between(

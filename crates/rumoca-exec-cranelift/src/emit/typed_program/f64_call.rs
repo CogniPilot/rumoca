@@ -301,6 +301,7 @@ impl TableCompiler {
             slots,
         )?;
         let mut lowerer = ProgramLowerer {
+            scalar_values: vec![None; layout.registers.len()],
             scalar_forwarding: Some(scalar_forwarding::ScalarForwarding::default()),
             emission: Emission::Define,
             builder: &mut builder,

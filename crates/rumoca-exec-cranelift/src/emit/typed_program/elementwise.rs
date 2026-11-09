@@ -160,7 +160,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.ins().brif(in_range, body, &[], exit, &[]);
         self.builder.switch_to_block(body);
         let value = self.pair_value(operation, index)?;
-        let base = self.base(destination);
+        let base = self.base(destination)?;
         let address = self.cell_address(base, destination.cell, index);
         self.builder.ins().store(self.flags, value, address, 0);
         let next = self.builder.ins().iadd_imm(index, 2);
@@ -204,7 +204,7 @@ impl ProgramLowerer<'_, '_> {
         let location = self.register(capture)?.clone();
         let width = i64::from(location.value_type.scalar_count());
         let element = self.builder.ins().urem_imm(index, width);
-        let base = self.base(&location);
+        let base = self.base(&location)?;
         let address = self.cell_address(base, location.cell, element);
         Ok(self
             .builder
@@ -225,7 +225,7 @@ impl ProgramLowerer<'_, '_> {
             None => {}
         }
         let location = self.register(register)?.clone();
-        let base = self.base(&location);
+        let base = self.base(&location)?;
         let address = self.cell_address(base, location.cell, index);
         Ok(self
             .builder

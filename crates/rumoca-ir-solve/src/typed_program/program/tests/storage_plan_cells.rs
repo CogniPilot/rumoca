@@ -31,10 +31,19 @@ fn a_dead_registers_range_is_reused() {
             SolveSlotAccess::ReadWrite,
             1,
         )?;
+        let local = scalar_slot(
+            builder,
+            SolveStorageClass::MethodLocal,
+            SolveSlotAccess::ReadWrite,
+            1,
+        )?;
         let x = builder.load(input, span(2))?;
         let a = builder.binary(SolveBinaryOperator::Add, x, x, span(3))?;
+        builder.store(local, a, span(3))?;
         let b = builder.binary(SolveBinaryOperator::Multiply, a, a, span(4))?;
+        builder.store(local, b, span(4))?;
         let c = builder.binary(SolveBinaryOperator::Add, b, x, span(5))?;
+        builder.store(local, c, span(5))?;
         let d = builder.binary(SolveBinaryOperator::Add, c, x, span(6))?;
         builder.store(output, d, span(7))
     })
@@ -65,9 +74,17 @@ fn adjacent_free_ranges_merge() {
             SolveSlotAccess::ReadWrite,
             1,
         )?;
+        let local = scalar_slot(
+            builder,
+            SolveStorageClass::MethodLocal,
+            SolveSlotAccess::ReadWrite,
+            1,
+        )?;
         let x = builder.load(input, span(2))?;
         let a = builder.binary(SolveBinaryOperator::Add, x, x, span(3))?;
+        builder.store(local, a, span(3))?;
         let b = builder.binary(SolveBinaryOperator::Multiply, x, x, span(4))?;
+        builder.store(local, b, span(4))?;
         let c = builder.binary(SolveBinaryOperator::Add, a, b, span(5))?;
         let pair = builder.fill(c, vec![2], span(6))?;
         let sum = builder.reduce(SolveReductionOperator::Sum, pair, span(7))?;
@@ -111,7 +128,7 @@ fn a_register_sharing_cells_shares_its_roots_range() {
         program.slots(),
         program.register_types(),
         program.operations(),
-        program.storage_plan().fusion().last_reads(),
+        program.storage_plan().fusion(),
         &[1],
     );
     assert_eq!(

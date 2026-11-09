@@ -39,6 +39,8 @@ mod pointwise_power_tests;
 #[cfg(test)]
 mod reduction_maximum_tests;
 mod scalar_forwarding;
+#[cfg(test)]
+mod scalar_lifetime_tests;
 mod support;
 mod tensor;
 #[cfg(test)]
@@ -728,6 +730,7 @@ impl TableCompiler {
             };
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
             let mut lowerer = ProgramLowerer {
+                scalar_values: vec![None; layout.registers.len()],
                 scalar_forwarding: None,
                 emission: self.emission,
                 builder: &mut builder,
@@ -883,6 +886,7 @@ enum StorageBase {
     Input,
     Output,
     Tape,
+    Scalar,
 }
 
 #[derive(Clone)]
@@ -941,6 +945,7 @@ fn cell_pointer(
 }
 
 struct ProgramLowerer<'a, 'b> {
+    scalar_values: Vec<Option<Value>>,
     scalar_forwarding: Option<scalar_forwarding::ScalarForwarding>,
     emission: Emission,
     builder: &'a mut FunctionBuilder<'b>,
@@ -1238,15 +1243,20 @@ impl ProgramLowerer<'_, '_> {
             .ok_or_else(|| CompileError::Backend("typed register layout is missing".into()))
     }
 
-    fn base(&self, location: &ValueLocation) -> Value {
+    fn base(&self, location: &ValueLocation) -> Result<Value, CompileError> {
         let (placed, base) = match location.base {
             StorageBase::Input => (self.input_placement.as_deref(), self.input),
             StorageBase::Output => (self.output_placement.as_deref(), self.output),
-            StorageBase::Tape => return self.tape,
+            StorageBase::Tape => return Ok(self.tape),
+            StorageBase::Scalar => {
+                return Err(CompileError::Backend(
+                    "issued scalar home has no memory base".into(),
+                ));
+            }
         };
-        placed
+        Ok(placed
             .and_then(|slots| placement::placed_slot(slots, location.cell))
-            .map_or(base, |slot| slot.adjusted)
+            .map_or(base, |slot| slot.adjusted))
     }
 
     fn lower_constant(
@@ -1506,10 +1516,21 @@ impl ProgramLowerer<'_, '_> {
         source: &ValueLocation,
         destination: &ValueLocation,
     ) -> Result<(), CompileError> {
+        if source.base == StorageBase::Scalar || destination.base == StorageBase::Scalar {
+            if source.value_type != destination.value_type || source.value_type.scalar_count() != 1
+            {
+                return Err(CompileError::Backend(
+                    "issued scalar copy type mismatch".into(),
+                ));
+            }
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            let value = self.load_scalar(source, zero)?;
+            return self.store_scalar(destination, zero, value);
+        }
         // A placed region can hold a source and its destination on the same
         // cells under different bases; copying them onto themselves is a no-op.
         if source.value_type == destination.value_type
-            && self.physical(source) == self.physical(destination)
+            && self.physical(source)? == self.physical(destination)?
         {
             crate::expansion::moved(
                 0,
@@ -1521,8 +1542,8 @@ impl ProgramLowerer<'_, '_> {
         self.copy_between_bases(
             source,
             destination,
-            self.base(source),
-            self.base(destination),
+            self.base(source)?,
+            self.base(destination)?,
         )
     }
 
@@ -1617,7 +1638,17 @@ impl ProgramLowerer<'_, '_> {
         location: &ValueLocation,
         index: Value,
     ) -> Result<Value, CompileError> {
-        self.load_scalar_from(location, self.base(location), index)
+        if location.base == StorageBase::Scalar {
+            return self
+                .scalar_values
+                .get(location.cell as usize)
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    CompileError::Backend("issued scalar read has no dominating definition".into())
+                });
+        }
+        self.load_scalar_from(location, self.base(location)?, index)
     }
 
     fn load_scalar_from(
@@ -1626,6 +1657,11 @@ impl ProgramLowerer<'_, '_> {
         base: Value,
         index: Value,
     ) -> Result<Value, CompileError> {
+        if location.base == StorageBase::Scalar {
+            return Err(CompileError::Backend(
+                "issued scalar home cannot be loaded through a memory base".into(),
+            ));
+        }
         if location.base == StorageBase::Tape
             && base == self.tape
             && let Some(value) = self
@@ -1650,7 +1686,15 @@ impl ProgramLowerer<'_, '_> {
         index: Value,
         value: Value,
     ) -> Result<(), CompileError> {
-        self.store_scalar_to(location, self.base(location), index, value)
+        if location.base == StorageBase::Scalar {
+            let slot = self
+                .scalar_values
+                .get_mut(location.cell as usize)
+                .ok_or_else(|| CompileError::Backend("issued scalar ordinal is missing".into()))?;
+            *slot = Some(value);
+            return Ok(());
+        }
+        self.store_scalar_to(location, self.base(location)?, index, value)
     }
 
     fn store_scalar_to(
@@ -1660,6 +1704,11 @@ impl ProgramLowerer<'_, '_> {
         index: Value,
         value: Value,
     ) -> Result<(), CompileError> {
+        if location.base == StorageBase::Scalar {
+            return Err(CompileError::Backend(
+                "issued scalar home cannot be stored through a memory base".into(),
+            ));
+        }
         let address = self.cell_address(base, location.cell, index);
         self.builder.ins().store(self.flags, value, address, 0);
         if location.base == StorageBase::Tape

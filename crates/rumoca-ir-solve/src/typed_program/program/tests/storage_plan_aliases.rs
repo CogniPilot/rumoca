@@ -90,7 +90,7 @@ fn an_unaliased_output_slot_frees_its_store_for_a_consumed_update() {
         program.slots(),
         program.register_types(),
         program.operations(),
-        program.storage_plan().fusion().last_reads(),
+        program.storage_plan().fusion(),
         &[1],
     );
     let homes = freed.registers();

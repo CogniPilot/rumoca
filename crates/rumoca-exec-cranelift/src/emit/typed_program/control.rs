@@ -467,7 +467,7 @@ impl ProgramLowerer<'_, '_> {
                 cell,
                 value_type: location.value_type.clone(),
             };
-            let base = self.base(&location);
+            let base = self.base(&location)?;
             let (source, target, source_base, target_base) = if into_frame {
                 (&location, &slot, base, frame)
             } else {
@@ -693,6 +693,7 @@ impl ProgramLowerer<'_, '_> {
         )?;
         let tape = create_tape(self.builder, self.pointer_type, layout.tape_cells)?;
         let mut nested = ProgramLowerer {
+            scalar_values: vec![None; layout.registers.len()],
             scalar_forwarding: None,
             emission: self.emission,
             builder: self.builder,
@@ -771,7 +772,7 @@ impl ProgramLowerer<'_, '_> {
                 cell,
                 value_type: source.value_type.clone(),
             };
-            self.copy_between_bases(&source, &destination, self.base(&source), pointer)?;
+            self.copy_between_bases(&source, &destination, self.base(&source)?, pointer)?;
             cell = checked_cells(
                 cell,
                 source.value_type.scalar_count(),
@@ -794,7 +795,7 @@ impl ProgramLowerer<'_, '_> {
                 cell,
                 value_type: destination.value_type.clone(),
             };
-            self.copy_between_bases(&source, &destination, pointer, self.base(&destination))?;
+            self.copy_between_bases(&source, &destination, pointer, self.base(&destination)?)?;
             cell = checked_cells(
                 cell,
                 destination.value_type.scalar_count(),
@@ -868,7 +869,7 @@ impl ProgramLowerer<'_, '_> {
                 .builder
                 .ins()
                 .imul_imm(ordinal, i64::from(output_cells));
-            let base = self.base(destination);
+            let base = self.base(destination)?;
             let target = self.cell_address(base, destination.cell, target);
             let bytes = self
                 .builder

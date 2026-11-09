@@ -14,6 +14,7 @@ mod storage_plan;
 mod storage_plan_aliases;
 mod storage_plan_cells;
 mod storage_plan_fusion;
+mod storage_plan_scalar;
 mod value_numbering;
 mod zero_result_conditional;
 
