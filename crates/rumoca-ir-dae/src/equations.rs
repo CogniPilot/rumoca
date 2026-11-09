@@ -20,7 +20,6 @@ pub(crate) struct ResidualEquationEntry {
     pub(crate) residual: u32,
     pub(crate) provenance: DaeProvenance,
     /// The component class equation this row instantiates (SPEC_0040 FLAT-C08).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) occurrence: Option<rumoca_core::ComponentOccurrence>,
 }
 

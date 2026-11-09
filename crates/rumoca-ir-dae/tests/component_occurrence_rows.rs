@@ -1,5 +1,6 @@
 //! A residual row keeps the component occurrence it was constructed with,
-//! through the wire and back, and a row without one serializes unchanged.
+//! through the JSON and binary wires and back, and a row without one keeps its
+//! JSON bytes unchanged.
 
 use rumoca_core::{ClassEquation, ComponentOccurrence, InstanceId, ScopeId, SourceMap, Span};
 use rumoca_ir_dae::{Dae, DaeLiteral, DaeProvenance};
@@ -60,6 +61,27 @@ fn rows_without_an_occurrence_serialize_without_the_field() {
         assert_eq!(view.continuous_equation(0).unwrap().occurrence(), None);
         assert_eq!(view.initialization_equation(0).unwrap().occurrence(), None);
     });
+}
+
+#[test]
+fn positional_binary_wire_keeps_the_field_with_and_without_an_occurrence() {
+    for with_occurrence in [true, false] {
+        let (dae, span) = rows(with_occurrence);
+        let binary = bincode::serialize(&dae).unwrap();
+        let decoded: Dae = bincode::deserialize(&binary).expect("binary rows replay");
+        assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+        decoded.inspect(|view| {
+            let expected = |instance| with_occurrence.then(|| occurrence(span, instance));
+            assert_eq!(
+                view.continuous_equation(0).unwrap().occurrence(),
+                expected(7)
+            );
+            assert_eq!(
+                view.initialization_equation(0).unwrap().occurrence(),
+                expected(8)
+            );
+        });
+    }
 }
 
 #[test]
