@@ -327,7 +327,7 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
             }
 
             def.classes
-                .insert(class_name.to_string(), class.class_definition.clone());
+                .insert(class_name.to_string(), (*class.class_definition).clone());
         }
         def.within = ast.stored_definition_opt.as_ref().map(|within_clause| {
             within_clause
@@ -980,6 +980,31 @@ fn convert_der_class_specifier(
     })
 }
 
+/// Grammar payload for `class_definition`.
+///
+/// Boxed so the parser stack item, which is as large as its largest grammar
+/// payload, does not carry a whole `ClassDef` inline.
+#[derive(Debug, Default, Clone)]
+pub struct BoxedClassDef(Box<rumoca_ir_ast::ClassDef>);
+
+impl std::ops::Deref for BoxedClassDef {
+    type Target = rumoca_ir_ast::ClassDef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl TryFrom<&modelica_grammar_trait::ClassDefinition> for BoxedClassDef {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ast: &modelica_grammar_trait::ClassDefinition,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(Self(Box::new(ast.try_into()?)))
+    }
+}
+
 impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassDef {
     type Error = anyhow::Error;
 
@@ -1051,22 +1076,23 @@ pub(crate) struct CompositionPayload {
 ///
 /// Moving the payload out through a shared reference is sound because parol
 /// pops each nonterminal payload once, converts it once, and drops it; see the
-/// `take_cell` module docs.
+/// `take_cell` module docs. The payload is boxed so the parser stack item,
+/// which is as large as its largest grammar payload, stays small.
 #[derive(Debug, Default, Clone)]
 pub struct Composition {
-    payload: TakeCell<CompositionPayload>,
+    payload: TakeCell<Box<CompositionPayload>>,
 }
 
 impl Composition {
     pub(crate) fn new(payload: CompositionPayload) -> Self {
         Self {
-            payload: TakeCell::new(payload),
+            payload: TakeCell::new(Box::new(payload)),
         }
     }
 
     /// Move the class body out. Callable exactly once.
     pub(crate) fn take(&self) -> CompositionPayload {
-        self.payload.take()
+        *self.payload.take()
     }
 }
 

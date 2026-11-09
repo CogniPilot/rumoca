@@ -38,7 +38,7 @@ pub use generated::modelica_grammar_trait as grammar_trait;
 pub use generated::modelica_parser;
 
 pub use components::{ComponentList, TokenList};
-pub use definitions::{Composition, ElementList};
+pub use definitions::{BoxedClassDef, Composition, ElementList};
 pub use expressions::{
     ArraySubscripts, ExpressionList, FunctionArgumentsTail, FunctionCallArguments, ModificationArg,
 };
