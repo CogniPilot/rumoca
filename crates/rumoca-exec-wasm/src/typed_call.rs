@@ -42,7 +42,11 @@ use rumoca_core::Span;
 use rumoca_ir_solve as solve;
 
 /// Positive return codes index this source-bound fault inventory; zero is success.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum TypedCallFaultKind {
     InvalidBuffer,
     InvalidInput,
@@ -54,7 +58,11 @@ pub enum TypedCallFaultKind {
     ObservationIntegrity,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct TypedCallFault {
     pub status: u32,
     pub owner: solve::SolvePureCallOwnerId,

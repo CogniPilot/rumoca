@@ -11,7 +11,7 @@ homepage.workspace = true
 default = ["native-solvers"]
 native-solvers = ["solver-diffsol", "solver-rk45", "solver-velimplicit"]
 fmi = []
-precompiled-runtime = ["fmi", "dep:rumoca-exec-wasm", "rumoca-exec-wasm/precompiled-programs"]
+precompiled-runtime = ["dep:rmp-serde", "fmi", "dep:rumoca-exec-wasm", "rumoca-exec-wasm/precompiled-programs"]
 native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
 native-fmi-ls-build = ["native-fmi-ls", "rumoca-exec-wasm/fixed-native-guest-build", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
 tracing = ["rumoca-phase-solve/tracing"]
@@ -43,7 +43,7 @@ viewer-web = ["scheduled-sim", "dep:rumoca-transport-websocket", "dep:tiny_http"
 process-control = ["dep:signal-hook"]
 
 [dependencies]
-rmp-serde = { workspace = true }
+rmp-serde = { workspace = true, optional = true }
 rumoca-core = { workspace = true }
 indexmap = { workspace = true }
 rumoca-ir-dae = { workspace = true }

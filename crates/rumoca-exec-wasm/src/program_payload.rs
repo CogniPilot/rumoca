@@ -6,10 +6,14 @@ use crate::{
 
 /// Mechanical runtime payload of the module already emitted for this batch.
 /// Scheduling, storage, operation order and budgets remain with the issuer.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(feature = "precompiled-programs", serde(deny_unknown_fields))]
 pub(crate) struct ProgramPayload {
-    #[serde(with = "serde_bytes")]
+    #[cfg_attr(feature = "precompiled-programs", serde(with = "serde_bytes"))]
     bytes: Vec<u8>,
     scratch_bytes: u32,
     faults: Vec<TypedCallFault>,

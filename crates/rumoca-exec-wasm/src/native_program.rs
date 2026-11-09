@@ -4,7 +4,11 @@ use rumoca_ir_solve::{NativeRefreshAssignmentSchedule, SolvePureCallTable, VarLa
 
 /// A checked address failure in a model scalar program, without a function owner.
 /// Kernel/program ordinals refer to the emitted construction-issued value schedule.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct NativeGatherFault {
     pub status: u32,
     pub kind: crate::TypedCallFaultKind,
@@ -17,7 +21,11 @@ pub struct NativeGatherFault {
 }
 
 /// One failure of an original dense component, issued with its source program.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct NativeLinearSolveFault {
     pub status: u32,
     pub size: usize,

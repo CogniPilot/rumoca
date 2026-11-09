@@ -11,7 +11,11 @@ mod artifact;
 pub use artifact::PrecompiledRetainedEvent;
 use std::cell::RefCell;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(crate) struct InvocationStorage {
     pub path: Vec<(usize, usize)>,
     pub operation: usize,

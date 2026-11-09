@@ -1,7 +1,11 @@
 //! Compile the complete original directional source with private seed storage.
 use super::*;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(super) struct SeedStorage {
     pub offset: usize,
     pub count: usize,

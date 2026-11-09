@@ -14,6 +14,10 @@ use rumoca_ir_solve::{
 pub struct CompiledExactAssignmentWasm {
     artifact: crate::program_payload::ProgramPayload,
     gather_faults: Vec<crate::NativeGatherFault>,
+    #[cfg(any(
+        feature = "precompiled-programs",
+        all(target_arch = "wasm32", target_os = "unknown")
+    ))]
     linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
     #[cfg(feature = "precompiled-programs")]
     source_key: String,
@@ -94,6 +98,10 @@ pub fn compile_exact_assignment_schedule_wasm(
     let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
     Ok(CompiledExactAssignmentWasm {
         gather_faults: artifact.gather_faults.clone(),
+        #[cfg(any(
+            feature = "precompiled-programs",
+            all(target_arch = "wasm32", target_os = "unknown")
+        ))]
         linear_solve_faults: artifact.linear_solve_faults.clone(),
         artifact: artifact.into(),
         #[cfg(feature = "precompiled-programs")]
