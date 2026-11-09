@@ -12,6 +12,7 @@ mod print_plan;
 mod read_flow;
 mod storage_plan;
 mod storage_plan_aliases;
+mod storage_plan_cells;
 mod storage_plan_fusion;
 mod value_numbering;
 mod zero_result_conditional;

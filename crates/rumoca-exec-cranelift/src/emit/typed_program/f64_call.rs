@@ -290,7 +290,7 @@ impl TableCompiler {
         let layout = ProgramLayout::new(
             owner.body(),
             (owner.inputs().len(), owner.outputs().len()),
-            &[],
+            IssuedHomes::of(owner.body()),
         )?;
         let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
         let placement = region_placement(

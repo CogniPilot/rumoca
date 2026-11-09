@@ -23,11 +23,19 @@ impl ProgramLowerer<'_, '_> {
         let outputs = self.placed_slots(destinations)?;
         let input_cells = placement::slot_cells(&inputs);
         let output_cells = placement::slot_cells(&outputs);
-        let mut layout = ProgramLayout::new(program, (shape.inputs, shape.outputs), &[])?;
+        let mut layout = ProgramLayout::new(
+            program,
+            (shape.inputs, shape.outputs),
+            IssuedHomes::of(program),
+        )?;
         placement::relocate_updates_onto_placed(shape, &mut layout, &input_cells, &output_cells);
         let mut direct = placement::placement_is_safe(shape, &layout, &input_cells, &output_cells)?;
         if !direct {
-            layout = ProgramLayout::new(program, (shape.inputs, shape.outputs), &[])?;
+            layout = ProgramLayout::new(
+                program,
+                (shape.inputs, shape.outputs),
+                IssuedHomes::of(program),
+            )?;
             direct = placement::placement_is_safe(shape, &layout, &input_cells, &output_cells)?;
         }
         let output_tape = if direct {

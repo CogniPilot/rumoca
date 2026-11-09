@@ -70,3 +70,42 @@ fn an_observation_entry_never_aliases_a_predicate_slot() {
     // The result output is not a predicate and keeps its alias.
     assert_eq!(observation[1], SolveRegisterHome::OutputSlot { slot: 2 });
 }
+
+/// A computed predicate must have private cells in the observation form:
+/// its output is published by the assertion protocol, not a register alias.
+#[test]
+fn a_computed_observation_predicate_has_its_own_frame_cells() {
+    let real = SolveValueType::scalar(SolveScalarType::real(profile()));
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(921),
+            vec![real],
+            vec![SolvePureCallOutput::assertion_predicate()],
+            span(921),
+            |builder, inputs, outputs| {
+                let x = builder.load(inputs[0], span(922))?;
+                let zero = builder.constant(SolveValue::real(profile(), 0.0), span(923))?;
+                let positive =
+                    builder.compare(crate::SolveCompareOperator::Greater, x, zero, span(924))?;
+                builder.store(outputs[0], positive, span(925))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = table.owners().first().unwrap();
+    let body = owner.body();
+    let SolveOperation::Store { source, .. } = body.operations().last().unwrap().operation() else {
+        panic!("the fixture ends by storing its predicate")
+    };
+    assert_eq!(
+        body.storage_plan().aliases().registers()[source.index()],
+        SolveRegisterHome::OutputSlot { slot: 1 }
+    );
+    assert_eq!(body.storage_plan().cells().offsets()[source.index()], None);
+    let aliases = owner.observation_aliases();
+    assert_eq!(aliases.registers()[source.index()], SolveRegisterHome::Own);
+    let cells = owner.observation_cells();
+    let offset = cells.offsets()[source.index()].expect("private predicate cells");
+    assert!(offset < cells.extent());
+}

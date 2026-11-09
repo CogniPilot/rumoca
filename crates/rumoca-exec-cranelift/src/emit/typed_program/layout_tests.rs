@@ -43,7 +43,7 @@ fn checked_storage_forwards_one_functional_update_without_mutating_input() {
     })
     .unwrap();
 
-    let layout = ProgramLayout::new(&program, (1, 1), &[]).unwrap();
+    let layout = ProgramLayout::new(&program, (1, 1), IssuedHomes::of(&program)).unwrap();
     let solve::SolveOperation::Load {
         destination: aggregate,
         ..
@@ -87,7 +87,7 @@ fn checked_storage_never_aliases_a_read_only_constant_tape_slot() {
     })
     .unwrap();
 
-    let layout = ProgramLayout::new(&program, (0, 0), &[]).unwrap();
+    let layout = ProgramLayout::new(&program, (0, 0), IssuedHomes::of(&program)).unwrap();
     let solve::SolveOperation::Load {
         destination: aggregate,
         slot,
@@ -122,7 +122,7 @@ fn checked_storage_reuses_tape_only_after_the_last_use() {
     })
     .unwrap();
 
-    let layout = ProgramLayout::new(&program, (0, 0), &[]).unwrap();
+    let layout = ProgramLayout::new(&program, (0, 0), IssuedHomes::of(&program)).unwrap();
     let first = &layout.registers[0];
     let live = &layout.registers[1];
     let reused = &layout.registers[2];
@@ -154,7 +154,7 @@ fn checked_storage_keeps_same_operation_inputs_and_output_disjoint() {
     })
     .unwrap();
 
-    let layout = ProgramLayout::new(&program, (0, 0), &[]).unwrap();
+    let layout = ProgramLayout::new(&program, (0, 0), IssuedHomes::of(&program)).unwrap();
     let cells = layout
         .registers
         .iter()

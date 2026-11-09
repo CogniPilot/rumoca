@@ -1,47 +1,97 @@
 //! Solve IR plan facts ported from the in-process target stay tied to it.
 
 use super::*;
-use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
 const DECLARATION: &str = "const MAX_STATIC_MATRIX_WORK: usize = ";
 
-/// Each in-process rule file a Solve IR storage-plan table was ported from,
-/// the sha256 of that file at the port, and the port that must be re-reviewed
-/// when it changes.
-const PORTED_RULES: &[(&str, &str, &str)] = &[
-    (
-        "crates/rumoca-exec-cranelift/src/emit/typed_program/fusion.rs",
-        "e4ee13326293787d418ed11111872ef8ad8d49a09345732345206085cdc6fe0c",
-        "storage_plan/fusion.rs",
-    ),
-    (
-        "crates/rumoca-exec-cranelift/src/emit/typed_program/aliasing.rs",
-        "f790b2bd9066efa7ec58f4c3c0d7b3cec443527fb9ca472098864b49c09a4384",
-        "storage_plan/aliases.rs",
-    ),
-    (
-        "crates/rumoca-exec-cranelift/src/emit/typed_program/storage.rs",
-        "74a9486768c023837e54d9427ab11d8e45b8fb03c16f23f0275571277c82471a",
-        "storage_plan/aliases.rs (fold carries)",
-    ),
+/// The in-process rule files the Solve IR storage plan was ported from. The
+/// target now reads the issued plan, so none of them may return.
+const RETIRED_RULE_FILES: &[&str] = &[
+    "crates/rumoca-exec-cranelift/src/emit/typed_program/fusion.rs",
+    "crates/rumoca-exec-cranelift/src/emit/typed_program/aliasing.rs",
+    "crates/rumoca-exec-cranelift/src/emit/typed_program/storage.rs",
 ];
 
-/// The storage-plan tables claim the in-process rules unchanged. A change to
-/// a rule file must re-review its port under
-/// `rumoca-ir-solve/src/typed_program/program/`.
+/// The decisions those files made. Each now lives only under
+/// `rumoca-ir-solve/src/typed_program/program/storage_plan/`, and a map's
+/// repeated capture on its region.
+const RETIRED_DECISIONS: &[&str] = &[
+    "fn register_flow(",
+    "fn alias_read_only_loads(",
+    "fn alias_final_output_stores(",
+    "fn alias_consumed_functional_updates(",
+    "fn alias_consumed_fold_carries(",
+    "fn compact_register_tape(",
+    "fn single_use_consumers(",
+    "fn recompute_cheap_producers(",
+    "fn fuse_product_transposes(",
+    "fn sign_definition(",
+];
+
+/// The in-process target lays typed programs out from the issued storage
+/// plan; the fusion, alias and frame-cell decisions it was ported from stay
+/// retired.
 #[test]
-fn the_ported_storage_rules_are_unchanged_since_the_port() {
-    for (rules, pinned, port) in PORTED_RULES {
-        let source = fs::read(workspace_root().join(rules)).expect("read an in-process rule file");
-        let digest = Sha256::digest(&source)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        assert_eq!(
-            &digest, pinned,
-            "{rules} changed since the Solve IR storage plan was ported from it; \
-re-review {port} against it, then record the new sha256 here"
+fn the_ported_storage_rules_stay_retired_from_the_in_process_target() {
+    let root = workspace_root();
+    for file in RETIRED_RULE_FILES {
+        assert!(
+            !root.join(file).exists(),
+            "{file} returned; the Solve IR storage plan issues its decisions"
         );
+    }
+    let mut sources = Vec::new();
+    rust_sources(&root.join("crates/rumoca-exec-cranelift/src"), &mut sources);
+    assert!(
+        !sources.is_empty(),
+        "no in-process target sources were read"
+    );
+    let offenders = sources
+        .iter()
+        .flat_map(|path| {
+            let source = fs::read_to_string(path).expect("read an in-process source");
+            retired_definitions(&source)
+                .into_iter()
+                .map(move |decision| format!("{}: {decision}", path.display()))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "retired storage decisions are defined in the in-process target again: {offenders:?}"
+    );
+}
+
+/// The scan reports a retired definition and ignores a mention of one.
+#[test]
+fn the_retired_decision_scan_finds_a_definition() {
+    assert_eq!(
+        retired_definitions("pub(super) fn compact_register_tape(\n"),
+        ["fn compact_register_tape("]
+    );
+    assert!(retired_definitions("// compact_register_tape was retired\n").is_empty());
+}
+
+/// The retired decisions `source` defines.
+fn retired_definitions(source: &str) -> Vec<&'static str> {
+    RETIRED_DECISIONS
+        .iter()
+        .copied()
+        .filter(|decision| source.contains(decision))
+        .collect()
+}
+
+/// Every `.rs` file under `dir`.
+fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            out.push(path);
+        }
     }
 }
 

@@ -4,7 +4,6 @@
 //! registers remain compact typed ranges in IR and are materialized as one
 //! contiguous 64-bit-cell range only inside this execution adapter.
 
-mod aliasing;
 mod assertions;
 mod assigned_state;
 #[cfg(test)]
@@ -17,12 +16,12 @@ pub use f64_call::{CompiledCheckedF64Call, CompiledF64Call};
 mod flat_map;
 #[cfg(test)]
 mod fold_comparison_tests;
-mod fusion;
 mod inline_call;
 mod input_results;
 #[cfg(test)]
 mod input_reuse_tests;
 mod integer;
+mod layout;
 #[cfg(test)]
 mod layout_tests;
 mod linear_solve;
@@ -40,7 +39,6 @@ mod pointwise_power_tests;
 #[cfg(test)]
 mod reduction_maximum_tests;
 mod scalar_forwarding;
-mod storage;
 mod support;
 mod tensor;
 #[cfg(test)]
@@ -52,26 +50,22 @@ use super::{
     CompileError, MathImports, emit_binary_op, emit_unary_op, finalize_jit_module, to_backend_err,
 };
 use super::{scratch, status};
-use aliasing::{
-    alias_consumed_functional_updates, alias_final_output_stores, alias_read_only_loads,
-    register_flow,
-};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Type, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use input_results::InputResults;
+use layout::{IssuedHomes, ProgramLayout};
 use observation::{
-    ObservationCells, ObservationLowering, declare_observation, observation_cells,
-    observation_owner_symbol, publishes_predicates,
+    ObservationLowering, declare_observation, observation_cells, observation_owner_symbol,
+    publishes_predicates,
 };
 use operators::{map_binary, map_float_compare, map_int_compare, map_unary};
 use rumoca_ir_solve as solve;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use storage::compact_register_tape;
 pub use support::{NativeFormDecline, NativeFormSupport, NativeOwnerSupport};
 
 const CELL_BYTES: usize = std::mem::size_of::<u64>();
@@ -94,8 +88,8 @@ struct TypedProgramCompilation<'a> {
     coordinate: solve::SolvePureCallInputCoordinate,
     /// The SOLVE-C62 group whose depth-carrying member form this unit is.
     recursion: Option<solve::SolveRecursiveGroup>,
-    /// Whether this unit is the assertion-observation form of its owner.
-    observation: bool,
+    /// The owner whose assertion-observation form this unit is, if any.
+    observation: Option<&'a solve::SolvePureCallOwner>,
     /// The table a call may inline its callee from (primal forms only).
     table: Option<&'a solve::SolvePureCallTable>,
 }
@@ -517,7 +511,7 @@ impl TableCompiler {
                 outputs: owner.outputs(),
                 coordinate: owner.input_coordinate(),
                 recursion: None,
-                observation: true,
+                observation: Some(owner),
                 table: None,
             },
             &functions,
@@ -544,7 +538,7 @@ impl TableCompiler {
                 outputs: owner.outputs(),
                 coordinate: owner.input_coordinate(),
                 recursion: None,
-                observation: false,
+                observation: None,
                 table: Some(table),
             },
             &functions,
@@ -573,7 +567,7 @@ impl TableCompiler {
                 outputs: owner.outputs(),
                 coordinate: owner.input_coordinate(),
                 recursion: Some(group),
-                observation: false,
+                observation: None,
                 table: None,
             },
             &functions,
@@ -663,7 +657,7 @@ impl TableCompiler {
                 outputs: directional.outputs(),
                 coordinate: directional.input_coordinate(),
                 recursion: None,
-                observation: false,
+                observation: None,
                 table: None,
             },
             &functions,
@@ -711,17 +705,27 @@ impl TableCompiler {
                     parameters[2],
                 )
             });
-            let cache = if observation {
+            let cache = if observation.is_some() {
                 None
             } else {
                 Some(input_results.enter(&mut builder, config, parameters[0], parameters[1])?)
             };
-            let ObservationCells {
-                cells,
-                slots: predicate_slots,
-            } = observation_cells(observation, input_count, outputs)?;
-            let layout =
-                ProgramLayout::new(program, (input_count, outputs.len()), &predicate_slots)?;
+            let cells = observation_cells(observation.is_some(), outputs)?;
+            let layout = match observation {
+                Some(owner) => ProgramLayout::new(
+                    program,
+                    (input_count, outputs.len()),
+                    IssuedHomes {
+                        aliases: &owner.observation_aliases(),
+                        cells: &owner.observation_cells(),
+                    },
+                )?,
+                None => ProgramLayout::new(
+                    program,
+                    (input_count, outputs.len()),
+                    IssuedHomes::of(program),
+                )?,
+            };
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
             let mut lowerer = ProgramLowerer {
                 scalar_forwarding: None,
@@ -739,7 +743,7 @@ impl TableCompiler {
                 recursive_calls,
                 flags: MemFlags::new(),
                 operation: std::ptr::null(),
-                observation: observation.then(|| ObservationLowering {
+                observation: observation.is_some().then(|| ObservationLowering {
                     owner_output: parameters[1],
                     input_slots: input_count,
                     cells,
@@ -750,7 +754,7 @@ impl TableCompiler {
                 // Admission probes compile each owner without inlining, so a
                 // declined callee declines its callers by name; the defined
                 // forms of admitted owners then only inline admitted callees.
-                table: table.filter(|_| !observation && self.emission == Emission::Define),
+                table: table.filter(|_| observation.is_none() && self.emission == Emission::Define),
                 inline_depth: 0,
             };
             lowerer.initialize_observation()?;
@@ -886,116 +890,6 @@ struct ValueLocation {
     base: StorageBase,
     cell: u32,
     value_type: solve::SolveValueType,
-}
-
-struct ProgramLayout {
-    slots: Box<[ValueLocation]>,
-    registers: Box<[ValueLocation]>,
-    assigned_states: Box<[assigned_state::AssignedLocation]>,
-    assigned_inputs: Box<[assigned_state::AssignedLocation]>,
-    assigned_outputs: Box<[assigned_state::AssignedLocation]>,
-    tape_cells: u32,
-    /// The operation each fused register defers (see [`fusion`]); such a
-    /// register is never stored.
-    fused: Box<[Option<solve::SolveOperation>]>,
-    /// Last reading operation of each register, extended over fusion.
-    last_uses: Box<[Option<usize>]>,
-}
-
-impl ProgramLayout {
-    fn region(region: &solve::SolveProgramRegion) -> Result<Self, CompileError> {
-        Self::new(
-            region.body(),
-            (region.inputs().len(), region.outputs().len()),
-            &[],
-        )
-    }
-
-    /// `unaliased_slots` are output slots whose cells are written outside the
-    /// program's stores, so no register may be placed in them.
-    fn new(
-        program: &solve::TypedProgram,
-        (input_slots, output_slots): (usize, usize),
-        unaliased_slots: &[usize],
-    ) -> Result<Self, CompileError> {
-        let mut input_cell = 0u32;
-        let mut output_cell = 0u32;
-        let mut tape_cell = 0u32;
-        let mut slots = Vec::with_capacity(program.slots().len());
-        for (index, slot) in program.slots().iter().enumerate() {
-            let count = slot.value_type().scalar_count();
-            let (base, cell) = if index < input_slots {
-                let cell = input_cell;
-                input_cell = checked_cells(input_cell, count, "typed input layout")?;
-                (StorageBase::Input, cell)
-            } else if index < input_slots.saturating_add(output_slots) {
-                let cell = output_cell;
-                output_cell = checked_cells(output_cell, count, "typed output layout")?;
-                (StorageBase::Output, cell)
-            } else {
-                let cell = tape_cell;
-                tape_cell = checked_cells(tape_cell, count, "typed slot layout")?;
-                (StorageBase::Tape, cell)
-            };
-            slots.push(ValueLocation {
-                base,
-                cell,
-                value_type: slot.value_type().clone(),
-            });
-        }
-        let register_base = tape_cell;
-        let mut registers = Vec::with_capacity(program.register_types().len());
-        for value_type in program.register_types() {
-            let cell = tape_cell;
-            tape_cell = checked_cells(
-                tape_cell,
-                value_type.scalar_count(),
-                "typed register layout",
-            )?;
-            registers.push(ValueLocation {
-                base: StorageBase::Tape,
-                cell,
-                value_type: value_type.clone(),
-            });
-        }
-        let (mut last_uses, definitions) = register_flow(program, registers.len())?;
-        let fused = fusion::plan(program, &mut last_uses)?;
-        alias_read_only_loads(program, &slots, &mut registers)?;
-        alias_final_output_stores(
-            program,
-            (&slots, unaliased_slots),
-            (&last_uses, &definitions),
-            &mut registers,
-        )?;
-        alias_consumed_functional_updates(program, &last_uses, &mut registers)?;
-        storage::alias_consumed_fold_carries(program, &last_uses, &mut registers);
-        tape_cell = compact_register_tape(register_base, &last_uses, &definitions, &mut registers)?;
-        let assigned_states = assigned_state::layout(
-            program.assigned_state_types(),
-            StorageBase::Tape,
-            &mut tape_cell,
-        )?;
-        let assigned_inputs = assigned_state::layout(
-            program.assigned_state_inputs(),
-            StorageBase::Input,
-            &mut input_cell,
-        )?;
-        let assigned_outputs = assigned_state::layout(
-            program.assigned_state_outputs(),
-            StorageBase::Output,
-            &mut output_cell,
-        )?;
-        Ok(Self {
-            slots: slots.into_boxed_slice(),
-            registers: registers.into_boxed_slice(),
-            assigned_states,
-            assigned_inputs,
-            assigned_outputs,
-            tape_cells: tape_cell,
-            fused: fused.into_boxed_slice(),
-            last_uses: last_uses.into_boxed_slice(),
-        })
-    }
 }
 
 fn reads_fused(fused: &[Option<solve::SolveOperation>], operation: &solve::SolveOperation) -> bool {
