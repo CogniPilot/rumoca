@@ -5,8 +5,6 @@ compile_error!("rumoca-solver production builds require the `sparse-linalg` feat
 
 #[cfg(not(kani))]
 mod backend_options;
-#[cfg(not(kani))]
-pub use rumoca_core::browser_profile;
 
 #[cfg(not(kani))]
 pub use backend_options::{BackendOptions, BackendOptionsError, NumericalBackend};
