@@ -125,8 +125,11 @@ mod tests {
     fn retained_event_key_preserves_replay_and_binds_the_event_inventory() {
         let mut model = crate::SolveModel::default();
         model.problem.events.root_conditions = block(1.0, "Event.mo");
-        let replay: crate::SolveModel =
-            serde_json::from_slice(&serde_json::to_vec(&model).unwrap()).unwrap();
+        let mut replay = model.clone();
+        replay.problem.events.root_conditions = serde_json::from_slice(
+            &serde_json::to_vec(&model.problem.events.root_conditions).unwrap(),
+        )
+        .unwrap();
         let source = crate::SolveExecutionSource::new(model.clone());
         let event = source
             .event_program(crate::RetainedAssertionSource::RootConditions, 0)
