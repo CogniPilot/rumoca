@@ -801,8 +801,12 @@ mod tests {
         let untagged = ComputeBlockDelta::diff(&base, &target);
         let json = serde_json::to_value(&untagged).unwrap();
         assert!(json["Rows"].get("program_occurrences").is_none(), "{json}");
-        let decoded: ComputeBlockDelta = serde_json::from_value(json).unwrap();
-        assert!(same_compute_block(&decoded.apply(&base).unwrap(), &target));
+        let from_json: ComputeBlockDelta = serde_json::from_value(json).unwrap();
+        let from_bincode: ComputeBlockDelta =
+            bincode::deserialize(&bincode::serialize(&untagged).unwrap()).unwrap();
+        for decoded in [from_json, from_bincode] {
+            assert!(same_compute_block(&decoded.apply(&base).unwrap(), &target));
+        }
 
         let (base, target) = (tagged_block(&values, true), tagged_block(&changed, true));
         let delta = ComputeBlockDelta::diff(&base, &target);
@@ -812,6 +816,24 @@ mod tests {
             bincode::deserialize(&bincode::serialize(&delta).unwrap()).unwrap();
         for decoded in [from_json, from_bincode] {
             let applied = decoded.apply(&base).unwrap();
+            assert!(same_compute_block(&applied, &target));
+            assert_eq!(occurrences(&applied), occurrences(&target));
+        }
+    }
+
+    /// A block carried whole round-trips through JSON and bincode with its
+    /// occurrences.
+    #[test]
+    fn a_whole_block_delta_round_trips_in_both_formats() {
+        let target = tagged_block(&[1.0, 2.0, 4.0], true);
+        let delta = ComputeBlockDelta::Whole(target.clone());
+        let json = serde_json::to_value(&delta).unwrap();
+        assert!(json.get("Whole").is_some(), "{json}");
+        let from_json: ComputeBlockDelta = serde_json::from_value(json).unwrap();
+        let from_bincode: ComputeBlockDelta =
+            bincode::deserialize(&bincode::serialize(&delta).unwrap()).unwrap();
+        for decoded in [from_json, from_bincode] {
+            let applied = decoded.apply(&ComputeBlock::default()).unwrap();
             assert!(same_compute_block(&applied, &target));
             assert_eq!(occurrences(&applied), occurrences(&target));
         }
