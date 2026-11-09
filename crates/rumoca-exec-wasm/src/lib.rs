@@ -89,6 +89,9 @@ use wasm_runtime::WasmKernelRuntime;
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 pub use typed_call::PreparedCheckedAssertionHost;
 
+#[cfg(feature = "precompiled-programs")]
+pub use typed_call::PrecompiledRetainedEvent;
+
 pub use typed_call::{
     CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledRetainedEventWasm,
     CompiledTypedCallWasm, NativeAssertionCells, NativeAssertionFrame,
@@ -619,6 +622,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(feature = "precompiled-programs")]
-pub use typed_call::PrecompiledRetainedEvent;
