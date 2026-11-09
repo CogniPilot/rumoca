@@ -60,6 +60,35 @@ fn a_schedule_over_the_chunk_budget_runs_as_several_functions_with_canonical_bit
 }
 
 #[test]
+fn a_fault_in_a_later_chunk_keeps_earlier_commits_and_its_issued_status() {
+    let fixture = fixture::late_fault_after_long_chain(solve::EXACT_ASSIGNMENT_CHUNK_OPS * 3 / 2);
+    assert_eq!(
+        fixture.schedule().chunks().collect::<Vec<_>>(),
+        vec![0..1, 1..2]
+    );
+    let compiled = fixture.compile().unwrap();
+    let fault = compiled
+        .faults()
+        .iter()
+        .find(|fault| fault.kind == rumoca_exec_wasm::TypedCallFaultKind::IntegerConversion)
+        .unwrap();
+    let mut runner = runner::Runner::new(&compiled, &fixture.layout);
+    let y = [2., 9., -0., 11., 13., 17.];
+    let p = [0.5, f64::NAN];
+    let mut expected = y;
+    fixture.canonical(&mut expected, &p).unwrap_err();
+    let (status, actual) = runner.run(&y, &p);
+    assert_eq!(status as u32, fault.status);
+    assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
+    assert_ne!(
+        actual[1].to_bits(),
+        y[1].to_bits(),
+        "the first chunk committed"
+    );
+    assert_eq!(actual[4], y[4], "the failing program publishes nothing");
+}
+
+#[test]
 fn late_source_fault_keeps_prior_tuple_commits_then_recovers_without_input_mutation() {
     let fixture = fixture::late_fault();
     let compiled = fixture.compile().unwrap();
