@@ -829,6 +829,7 @@ fn deferred_start_sample_model(
             component: String::new(),
         },
         scalar_count: 1,
+        occurrence: None,
     });
 
     let sample_span = source.span(sample_text, 0);

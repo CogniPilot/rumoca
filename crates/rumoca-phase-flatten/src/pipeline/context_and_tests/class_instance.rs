@@ -105,6 +105,7 @@ fn process_class_instance_body(
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(&mut flattened, &rewrite_ctx)?;
+        record_component_occurrences(&mut flattened.equations, &inst_eq, class_data.instance_id);
         let equation_base = flat.equations.len();
         for eq in flattened.equations {
             flat.add_equation(eq);
@@ -154,6 +155,7 @@ fn process_class_instance_body(
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(&mut flattened, &rewrite_ctx)?;
+        record_component_occurrences(&mut flattened.equations, &inst_eq, class_data.instance_id);
         let equation_base = flat.initial_equations.len();
         for eq in flattened.equations {
             flat.add_initial_equation(eq);
@@ -296,4 +298,29 @@ pub(crate) fn flatten_algorithm_section(
         },
         algorithms::AlgorithmSectionMetadata::new(span, origin),
     )
+}
+
+/// Tag each scalar view of one instantiated class equation with the class equation
+/// and the component it was instantiated for, so repeated component structure is
+/// carried rather than rediscovered. Equations without a resolved declaring scope
+/// stay untagged.
+fn record_component_occurrences(
+    equations: &mut [rumoca_ir_flat::Equation],
+    inst_eq: &rumoca_ir_ast::InstanceEquation,
+    instance: rumoca_core::InstanceId,
+) {
+    let Some(scope) = inst_eq.source_scope_id else {
+        return;
+    };
+    let class_equation = rumoca_core::ClassEquation {
+        scope,
+        span: inst_eq.span,
+    };
+    for (equation, view) in equations.iter_mut().zip(0u32..) {
+        equation.occurrence = Some(rumoca_core::ComponentOccurrence {
+            class_equation,
+            instance,
+            view,
+        });
+    }
 }
