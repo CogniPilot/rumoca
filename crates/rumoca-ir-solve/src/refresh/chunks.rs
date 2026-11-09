@@ -65,7 +65,8 @@ mod tests {
         assert_eq!(&*group_ends([], 10), &[] as &[usize]);
         assert_eq!(&*group_ends([3, 3, 3], 10), &[3]);
         assert_eq!(&*group_ends([6, 6, 6], 10), &[1, 2, 3]);
-        assert_eq!(&*group_ends([4, 6, 1, 9], 10), &[2, 3, 4]);
+        // A group may fill the budget exactly.
+        assert_eq!(&*group_ends([4, 6, 1, 9], 10), &[2, 4]);
         // A program over the budget is its own group; nothing is split inside it.
         assert_eq!(&*group_ends([2, 25, 2], 10), &[1, 2, 3]);
     }

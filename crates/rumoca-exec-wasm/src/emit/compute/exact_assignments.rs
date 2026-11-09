@@ -272,7 +272,8 @@ fn emit_module(
     private: bool,
     chunks: &[std::ops::Range<usize>],
 ) -> Result<CompiledNativeCallProgramWasm, String> {
-    if !private && chunks.len() > 1 && ready.observations.is_empty() {
+    // Only exact schedules pass issued chunks; every other module passes none.
+    if chunks.len() > 1 {
         return emit_chunked_module(ready, layout, chunks);
     }
     let mut module = Module::new();

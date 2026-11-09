@@ -94,11 +94,24 @@ pub(super) fn plain(unused_index: usize) -> Fixture {
 /// `y[1] := {42, 64}[p[0]]`: a checked model-scope gather whose runtime
 /// index can fail Integer conversion or the array bound.
 pub(super) fn gather() -> Fixture {
-    let programs = vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 1 },
+    assemble(
+        vec![gather_program(1, 0)],
+        vec![row(0, 0, 0, 1, 4, 5)],
+        solve::SolvePureCallTable::builder(arithmetic()).finish(),
+        1,
+    )
+}
+
+/// `y[target] := {42, 64}[p[index]]`, with its expression in register 4.
+fn gather_program(target: usize, index: usize) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: target,
+        },
         solve::LinearOp::Const { dst: 1, value: 42. },
         solve::LinearOp::Const { dst: 2, value: 64. },
-        solve::LinearOp::LoadP { dst: 3, index: 0 },
+        solve::LinearOp::LoadP { dst: 3, index },
         solve::LinearOp::LoadIndexedRegister {
             dst: 4,
             base: 1,
@@ -108,12 +121,24 @@ pub(super) fn gather() -> Fixture {
         },
         binary(5, solve::BinaryOp::Sub, 0, 4),
         solve::LinearOp::StoreOutput { src: 5 },
-    ]];
+    ]
+}
+
+/// A gather on `p[0]` into `y[1]`, a chain of `length` into `y[2]`, then a
+/// gather on `p[1]` into `y[4]`. With `length` over the chunk budget each
+/// program is its own chunk, so the two gathers issue statuses in different
+/// functions.
+pub(super) fn gathers_across_chunks(length: usize) -> Fixture {
+    let (chain, chain_reg, chain_len) = chain(0, 2, length);
     assemble(
-        programs,
-        vec![row(0, 0, 0, 1, 4, 5)],
+        vec![gather_program(1, 0), chain, gather_program(4, 1)],
+        vec![
+            row(0, 0, 0, 1, 4, 5),
+            row(1, 0, 1, 2, chain_reg, chain_len),
+            row(2, 0, 2, 4, 4, 5),
+        ],
         solve::SolvePureCallTable::builder(arithmetic()).finish(),
-        1,
+        2,
     )
 }
 
