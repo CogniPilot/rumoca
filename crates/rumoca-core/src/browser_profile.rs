@@ -69,3 +69,23 @@ mod disabled {
 }
 #[cfg(not(all(target_arch = "wasm32", feature = "browser-profile")))]
 pub use disabled::{Span, enable, snapshot};
+
+#[cfg(all(test, not(all(target_arch = "wasm32", feature = "browser-profile"))))]
+mod tests {
+    use super::{Span, enable, snapshot};
+
+    #[test]
+    fn disabled_profile_stays_disabled_across_enable_and_nested_spans() {
+        for requested in [false, true, false] {
+            enable(requested);
+            {
+                let _outer = Span::new("outer");
+                let _inner = Span::new("inner");
+            }
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&snapshot()).unwrap(),
+                serde_json::json!({ "instrumented": false })
+            );
+        }
+    }
+}

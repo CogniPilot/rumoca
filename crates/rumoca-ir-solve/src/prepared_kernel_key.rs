@@ -102,4 +102,49 @@ mod tests {
         assert_ne!(value, first);
         assert_ne!(first, second);
     }
+
+    #[test]
+    fn exact_assignment_key_preserves_replay_and_invalidates_changed_source() {
+        let source = ComputeBlock {
+            nodes: vec![crate::ComputeNode::ScalarPrograms(block(2.0, "Kernel.mo"))],
+        };
+        let replay: ComputeBlock =
+            serde_json::from_slice(&serde_json::to_vec(&source).unwrap()).unwrap();
+        let original = context().exact_assignments(&source).unwrap();
+        assert_eq!(original, context().exact_assignments(&replay).unwrap());
+
+        for changed in [block(3.0, "Kernel.mo"), block(2.0, "Other.mo")] {
+            let changed = ComputeBlock {
+                nodes: vec![crate::ComputeNode::ScalarPrograms(changed)],
+            };
+            assert_ne!(original, context().exact_assignments(&changed).unwrap());
+        }
+    }
+
+    #[test]
+    fn retained_event_key_preserves_replay_and_binds_the_event_inventory() {
+        let mut model = crate::SolveModel::default();
+        model.problem.events.root_conditions = block(1.0, "Event.mo");
+        let replay: crate::SolveModel =
+            serde_json::from_slice(&serde_json::to_vec(&model).unwrap()).unwrap();
+        let source = crate::SolveExecutionSource::new(model.clone());
+        let event = source
+            .event_program(crate::RetainedAssertionSource::RootConditions, 0)
+            .unwrap();
+        let replayed_source = crate::SolveExecutionSource::new(replay);
+        let replayed = replayed_source
+            .event_program(crate::RetainedAssertionSource::RootConditions, 0)
+            .unwrap();
+        assert!(!std::ptr::eq(event.program(), replayed.program()));
+        let original = context().retained_event(&event).unwrap();
+        assert_eq!(original, context().retained_event(&replayed).unwrap());
+
+        model.problem.events.action_conditions = block(0.0, "Action.mo");
+        let changed_source = crate::SolveExecutionSource::new(model);
+        let changed = changed_source
+            .event_program(crate::RetainedAssertionSource::RootConditions, 0)
+            .unwrap();
+        assert_eq!(event.program(), changed.program());
+        assert_ne!(original, context().retained_event(&changed).unwrap());
+    }
 }
