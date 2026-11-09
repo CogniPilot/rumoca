@@ -5004,7 +5004,6 @@ dependencies = [
 name = "rumoca-solver-rk45"
 version = "0.10.4"
 dependencies = [
- "rumoca-core",
  "rumoca-solver",
 ]
 

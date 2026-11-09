@@ -12,7 +12,6 @@ homepage.workspace = true
 # numerical-plugin interface. `rumoca-ir-solve` and `rumoca-eval-solve` are
 # deliberately absent so naming a Solve row, layout, opcode, event, or runtime
 # object here does not compile in production or tests.
-rumoca-core = { workspace = true }
 rumoca-solver = { workspace = true }
 
 [lints]
