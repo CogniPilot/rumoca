@@ -559,7 +559,7 @@ fn lower_continuous<'dae>(
                         equation.residual(),
                         scalar,
                         None,
-                        equation.provenance().span(),
+                        (equation.provenance().span(), equation.occurrence()),
                     )?;
                     row += 1;
                 }
@@ -1490,7 +1490,7 @@ fn lower_continuous_family_point<'dae>(
             body,
             scalar,
             Some((family.domain(), values)),
-            family.provenance().span(),
+            (family.provenance().span(), None),
         )?;
         row += 1;
     }
@@ -1504,7 +1504,7 @@ fn lower_continuous_row<'dae>(
     expression: dae::ExprId<'dae>,
     scalar: usize,
     domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
-    span: Span,
+    (span, occurrence): (Span, Option<rumoca_core::ComponentOccurrence>),
 ) -> Result<(), LowerError> {
     let ContinuousContext {
         view,
@@ -1583,7 +1583,9 @@ fn lower_continuous_row<'dae>(
                         span,
                     ),
                 })?;
-            output.residual.push(program, span, row);
+            output
+                .residual
+                .push_component(program, span, occurrence, row);
         }
         UnknownId::Solver(_) | UnknownId::Unmatched { .. } => {
             return Err(LowerError::non_computable(
@@ -2020,6 +2022,8 @@ pub(super) struct ScalarRows {
     programs: Vec<Vec<solve::LinearOp>>,
     spans: Vec<Span>,
     output_placements: Vec<solve::ScalarProgramOutputPlacement>,
+    /// Empty until a row records a component occurrence; then one per row.
+    occurrences: Vec<Option<rumoca_core::ComponentOccurrence>>,
 }
 
 impl ScalarRows {
@@ -2036,6 +2040,7 @@ impl ScalarRows {
     }
 
     pub(super) fn push(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
+        self.record_occurrence(None);
         self.programs.push(program);
         self.spans.push(span);
         self.output_placements
@@ -2051,6 +2056,7 @@ impl ScalarRows {
         span: Span,
         outputs: impl IntoIterator<Item = usize>,
     ) {
+        self.record_occurrence(None);
         self.programs.push(program);
         self.spans.push(span);
         self.output_placements
@@ -2065,6 +2071,7 @@ impl ScalarRows {
         span: Span,
         outputs: std::ops::Range<usize>,
     ) {
+        self.record_occurrence(None);
         self.programs.push(program);
         self.spans.push(span);
         self.output_placements
@@ -2076,9 +2083,36 @@ impl ScalarRows {
     /// Each row writes the block output at its own position, so a row appended
     /// after `self` must name the position it lands at, not the one it had.
     pub(super) fn extend(&mut self, other: Self) {
-        for (program, span) in other.programs.into_iter().zip(other.spans) {
+        let occurrences = other.occurrences;
+        for (row, (program, span)) in other.programs.into_iter().zip(other.spans).enumerate() {
             let output = self.programs.len();
-            self.push(program, span, output);
+            self.push_component(
+                program,
+                span,
+                occurrences.get(row).copied().flatten(),
+                output,
+            );
+        }
+    }
+
+    /// Push a row lowered from one component class equation (SPEC_0040 FLAT-C08).
+    pub(super) fn push_component(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
+        output: usize,
+    ) {
+        self.push(program, span, output);
+        if occurrence.is_some() {
+            self.occurrences.resize(self.programs.len() - 1, None);
+            self.occurrences.push(occurrence);
+        }
+    }
+
+    fn record_occurrence(&mut self, occurrence: Option<rumoca_core::ComponentOccurrence>) {
+        if !self.occurrences.is_empty() {
+            self.occurrences.push(occurrence);
         }
     }
 
@@ -2093,6 +2127,7 @@ impl ScalarRows {
             self.spans,
             self.output_placements,
         )
+        .and_then(|block| block.with_program_occurrences(self.occurrences))
         .map_err(Into::into)
     }
 
@@ -2101,6 +2136,7 @@ impl ScalarRows {
             &mut self.programs,
             &mut self.spans,
             &mut self.output_placements,
+            &mut self.occurrences,
             scalar::MetadataBudget::default(),
         );
         Ok(solve::ComputeBlock::from_scalar_program_block(
@@ -2117,20 +2153,28 @@ fn compact_identical_program_prefixes(
     programs: &mut Vec<Vec<solve::LinearOp>>,
     spans: &mut Vec<Span>,
     placements: &mut Vec<solve::ScalarProgramOutputPlacement>,
+    occurrences: &mut Vec<Option<rumoca_core::ComponentOccurrence>>,
     budget: scalar::MetadataBudget,
 ) {
     let mut compact_programs: Vec<Vec<solve::LinearOp>> = Vec::with_capacity(programs.len());
     let mut compact_spans = Vec::with_capacity(spans.len());
     let mut compact_placements = Vec::with_capacity(placements.len());
-    for ((program, span), placement) in std::mem::take(programs)
+    // Fusion is unchanged by occurrences, so emitted code is too; a fused row
+    // keeps an occurrence only when every row it absorbed shares it.
+    let recorded = std::mem::take(occurrences);
+    let mut compact_occurrences = Vec::with_capacity(recorded.len());
+    for (row, ((program, span), placement)) in std::mem::take(programs)
         .into_iter()
         .zip(std::mem::take(spans))
         .zip(std::mem::take(placements))
+        .enumerate()
     {
+        let occurrence = recorded.get(row).copied().flatten();
         let Some(body_len) = trailing_output_start(&program) else {
             compact_programs.push(program);
             compact_spans.push(span);
             compact_placements.push(placement);
+            compact_occurrences.push(occurrence);
             continue;
         };
         let can_fuse = compact_programs
@@ -2156,15 +2200,25 @@ fn compact_identical_program_prefixes(
                 .pop()
                 .expect("checked previous placement exists");
             compact_placements.push(previous.concatenate(placement));
+            let kept = compact_occurrences
+                .last_mut()
+                .expect("checked previous occurrence exists");
+            if *kept != occurrence {
+                *kept = None;
+            }
         } else {
             compact_programs.push(program);
             compact_spans.push(span);
             compact_placements.push(placement);
+            compact_occurrences.push(occurrence);
         }
     }
     *programs = compact_programs;
     *spans = compact_spans;
     *placements = compact_placements;
+    if !recorded.is_empty() {
+        *occurrences = compact_occurrences;
+    }
 }
 
 fn trailing_output_start(program: &[solve::LinearOp]) -> Option<usize> {

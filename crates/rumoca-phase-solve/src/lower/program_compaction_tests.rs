@@ -31,6 +31,7 @@ fn optional_fusion_keeps_checked_programs_when_the_combination_exceeds_metadata_
             solve::ScalarProgramOutputPlacement::Range(0..1),
             solve::ScalarProgramOutputPlacement::Range(1..2),
         ],
+        &mut Vec::new(),
         budget,
     );
     assert_eq!(separate.len(), 2);
@@ -44,6 +45,7 @@ fn optional_fusion_keeps_checked_programs_when_the_combination_exceeds_metadata_
             solve::ScalarProgramOutputPlacement::Range(0..1),
             solve::ScalarProgramOutputPlacement::Range(1..2),
         ],
+        &mut Vec::new(),
         scalar::MetadataBudget::with_bytes(1024),
     );
     assert_eq!(fused.len(), 1);
@@ -154,4 +156,67 @@ fn event_cursor_counts_stored_ranges_and_empty_programs_without_point_metadata()
         ]),
         None
     );
+}
+
+#[test]
+fn rows_keep_their_component_occurrence_without_changing_fusion() {
+    let mut sources = rumoca_core::SourceMap::new();
+    let source = sources.add("Units.mo", "7.0");
+    let span = Span::from_offsets(source, 0, 3);
+    let occurrence = |instance| rumoca_core::ComponentOccurrence {
+        class_equation: rumoca_core::ClassEquation {
+            scope: rumoca_core::ScopeId(2),
+            span,
+        },
+        instance: rumoca_core::InstanceId(instance),
+        view: 0,
+    };
+    let program = vec![
+        solve::LinearOp::Const { dst: 0, value: 7.0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+    let placements = || {
+        vec![
+            solve::ScalarProgramOutputPlacement::Range(0..1),
+            solve::ScalarProgramOutputPlacement::Range(1..2),
+        ]
+    };
+    let budget = || scalar::MetadataBudget::with_bytes(1024);
+
+    let mut across = vec![program.clone(), program.clone()];
+    let mut occurrences = vec![Some(occurrence(1)), Some(occurrence(2))];
+    compact_identical_program_prefixes(
+        &mut across,
+        &mut vec![span; 2],
+        &mut placements(),
+        &mut occurrences,
+        budget(),
+    );
+    assert_eq!(across.len(), 1, "occurrences never change which rows fuse");
+    assert_eq!(
+        occurrences,
+        vec![None],
+        "a row fused across instances has none"
+    );
+
+    let mut fused = vec![program.clone(), program.clone()];
+    let mut occurrences = vec![Some(occurrence(1)), Some(occurrence(1))];
+    compact_identical_program_prefixes(
+        &mut fused,
+        &mut vec![span; 2],
+        &mut placements(),
+        &mut occurrences,
+        budget(),
+    );
+    assert_eq!(fused.len(), 1);
+    assert_eq!(occurrences, vec![Some(occurrence(1))]);
+
+    let mut rows = ScalarRows::default();
+    rows.push(program.clone(), span, 0);
+    rows.push_component(program.clone(), span, Some(occurrence(3)), 1);
+    rows.push(program, span, 2);
+    let block = rows.into_scalar_block().unwrap();
+    assert_eq!(block.program_occurrence(0), None);
+    assert_eq!(block.program_occurrence(1), Some(occurrence(3)));
+    assert_eq!(block.program_occurrence(2), None);
 }

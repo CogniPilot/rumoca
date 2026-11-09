@@ -29,6 +29,7 @@ mod linear_op;
 mod model;
 mod parameter_classification;
 mod parameter_reads;
+mod program_occurrences;
 mod projection_stages;
 mod quotient_memory;
 mod refresh;
@@ -201,6 +202,11 @@ struct ScalarProgramData {
     /// This proof is rebuilt on wire replay and deliberately is not
     /// serialized as a second source of truth.
     program_register_counts: Box<[usize]>,
+    /// The component occurrence of each program (SPEC_0040 FLAT-C08): empty,
+    /// or one entry per program. Only lowering sets it; every other
+    /// constructor leaves it empty, so a re-cut block never carries a
+    /// misaligned identity.
+    program_occurrences: Box<[Option<rumoca_core::ComponentOccurrence>]>,
 }
 
 #[derive(Deserialize)]
@@ -209,13 +215,8 @@ struct ScalarProgramBlockWire {
     programs: Vec<Vec<LinearOp>>,
     program_spans: Vec<Span>,
     output_placements: ScalarOutputPlacementsWire,
-}
-
-#[derive(Serialize)]
-struct ScalarProgramBlockWireRef<'a> {
-    programs: &'a [Vec<LinearOp>],
-    program_spans: &'a [Span],
-    output_placements: ScalarOutputPlacementView<'a>,
+    #[serde(default)]
+    program_occurrences: Vec<Option<rumoca_core::ComponentOccurrence>>,
 }
 
 impl Serialize for ScalarProgramBlock {
@@ -223,10 +224,11 @@ impl Serialize for ScalarProgramBlock {
     where
         S: serde::Serializer,
     {
-        ScalarProgramBlockWireRef {
+        program_occurrences::ScalarProgramBlockWireRef {
             programs: &self.data.programs,
             program_spans: &self.data.program_spans,
             output_placements: self.data.output_placements.view(),
+            program_occurrences: &self.data.program_occurrences,
         }
         .serialize(serializer)
     }
@@ -239,6 +241,7 @@ impl<'de> Deserialize<'de> for ScalarProgramBlock {
     {
         let wire = ScalarProgramBlockWire::deserialize(deserializer)?;
         Self::construct(wire.programs, wire.program_spans, wire.output_placements)
+            .and_then(|block| block.with_program_occurrences(wire.program_occurrences))
             .map_err(serde::de::Error::custom)
     }
 }
@@ -411,6 +414,7 @@ impl ScalarProgramBlock {
                 program_output_ends,
                 materialized_output_indices: std::sync::OnceLock::new(),
                 program_register_counts,
+                program_occurrences: Box::default(),
             }),
         }
     }
