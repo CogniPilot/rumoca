@@ -81,3 +81,44 @@ fn the_top_level_equation_is_its_own_class_equation() {
             .all(|unit| unit.class_equation != top[0].class_equation)
     );
 }
+
+const INITIAL_SOURCE: &str = "
+model InitialUnit
+  Real x(start = 1);
+  parameter Real x0(fixed = false);
+initial equation
+  x0 = 1;
+  x = x0;
+equation
+  der(x) = -x;
+end InitialUnit;
+model InitialProbe
+  InitialUnit a;
+  InitialUnit b;
+end InitialProbe;
+";
+
+#[test]
+fn initial_equations_of_two_components_of_one_class_share_class_equations() {
+    let model = flatten_source(INITIAL_SOURCE, "InitialProbe");
+    let initial_from = |component: &str| -> Vec<rumoca_core::ComponentOccurrence> {
+        model
+            .initial_equations
+            .iter()
+            .filter(|equation| equation.origin.component_name() == Some(component))
+            .map(|equation| {
+                equation
+                    .occurrence
+                    .expect("component initial equation records its occurrence")
+            })
+            .collect()
+    };
+    let a = initial_from("a");
+    let b = initial_from("b");
+    assert_eq!(a.len(), 2);
+    assert_eq!(b.len(), 2);
+    for (left, right) in a.iter().zip(&b) {
+        assert_eq!(left.class_equation, right.class_equation);
+        assert_ne!(left.instance, right.instance);
+    }
+}

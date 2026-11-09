@@ -155,6 +155,7 @@ fn process_class_instance_body(
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(&mut flattened, &rewrite_ctx)?;
+        record_component_occurrences(&mut flattened.equations, &inst_eq, class_data.instance_id);
         let equation_base = flat.initial_equations.len();
         for eq in flattened.equations {
             flat.add_initial_equation(eq);
