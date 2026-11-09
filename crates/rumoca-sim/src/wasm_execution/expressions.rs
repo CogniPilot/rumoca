@@ -252,6 +252,16 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         &self,
         program: rumoca_ir_solve::RetainedEventProgram,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventObservation>, String> {
+        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+        if let Some(mode) = self.batch.mode() {
+            return super::observations::WasmObservations::compile_product(
+                program,
+                &self.layout,
+                &self.calls,
+                mode,
+            )
+            .map(|compiled| Rc::new(compiled) as Rc<_>);
+        }
         super::observations::WasmObservations::compile(program, &self.layout, &self.calls)
             .map(|compiled| Rc::new(compiled) as Rc<_>)
     }
@@ -292,13 +302,40 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         owners: &rumoca_ir_solve::ContinuousRefreshOwners,
         schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
-        assignments::WasmAssignments::compile(source, owners, schedule, &self.layout, &self.calls)
-            .map(|compiled| Rc::new(compiled) as Rc<_>)
+        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+        let compiled = assignments::WasmAssignments::compile_product(
+            source,
+            owners,
+            schedule,
+            &self.layout,
+            &self.calls,
+            self.batch.mode(),
+        );
+        #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
+        let compiled = assignments::WasmAssignments::compile(
+            source,
+            owners,
+            schedule,
+            &self.layout,
+            &self.calls,
+        );
+        compiled.map(|compiled| Rc::new(compiled) as Rc<_>)
     }
     fn compile_event_transaction(
         &self,
         program: &rumoca_ir_solve::EventTransactionProgram,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventTransaction>, String> {
+        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+        if self
+            .batch
+            .mode()
+            .is_some_and(|mode| mode.unsupported("event transaction"))
+        {
+            return Err(
+                "precompiled product has no event-transaction kernel; compilation is disabled"
+                    .into(),
+            );
+        }
         super::transactions::WasmEventTransaction::compile(program, &self.calls)
             .map(|compiled| Rc::new(compiled) as Rc<_>)
     }

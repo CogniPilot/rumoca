@@ -1,16 +1,17 @@
 //! Execute complete checked value programs without publishing solver storage.
-use crate::{
-    CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault, TypedCallFault,
-    WasmCompileError,
-};
+use crate::{NativeGatherFault, NativeLinearSolveFault, TypedCallFault, WasmCompileError};
 use rumoca_ir_solve::{ScalarProgramBlock, SolvePureCallTable, VarLayout};
 use std::rc::Rc;
+#[cfg(feature = "precompiled-programs")]
+mod artifact;
 mod directional;
+#[cfg(feature = "precompiled-programs")]
+pub use artifact::PrecompiledPrivatePrograms;
 pub use directional::compile_private_directional_program_wasm;
 
 /// One entry of a module shared by every program compiled with it.
 pub struct CompiledPrivateProgramWasm {
-    module: Rc<CompiledNativeCallProgramWasm>,
+    module: Rc<crate::program_payload::ProgramPayload>,
     export: String,
     gather_faults: Vec<NativeGatherFault>,
     // Read only by an admitted engine's status mapping.
@@ -26,6 +27,8 @@ pub struct CompiledPrivateProgramWasm {
     p: usize,
     outputs: usize,
     seed: Option<directional::SeedStorage>,
+    #[cfg(feature = "precompiled-programs")]
+    source_key: String,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
     #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
@@ -224,6 +227,9 @@ fn compile_admitted(
             "a private module needs at least one program".into(),
         ));
     }
+    #[cfg(feature = "precompiled-programs")]
+    let source = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+        .map_err(WasmCompileError::Input)?;
     let modules = crate::emit::emit_private_entries_modules(entries, layout, table, sizes)
         .map_err(WasmCompileError::Backend)?;
     let mut sources = entries.iter();
@@ -243,7 +249,7 @@ fn compile_admitted(
             all(feature = "host-engine", not(target_arch = "wasm32"))
         )))]
         let runtimes = vec![(); exports.len()];
-        let module = Rc::new(module);
+        let module = Rc::new(crate::program_payload::ProgramPayload::from(module));
         for ((artifact, runtime), &(block, seed_len, _)) in
             artifacts.into_iter().zip(runtimes).zip(sources.by_ref())
         {
@@ -275,6 +281,10 @@ fn compile_admitted(
                 p: layout.p_scalars(),
                 outputs: block.stored_output_count(),
                 seed,
+                #[cfg(feature = "precompiled-programs")]
+                source_key: source
+                    .private_program(block, seed_len)
+                    .map_err(WasmCompileError::Input)?,
                 #[cfg(any(
                     all(target_arch = "wasm32", target_os = "unknown"),
                     all(feature = "host-engine", not(target_arch = "wasm32"))

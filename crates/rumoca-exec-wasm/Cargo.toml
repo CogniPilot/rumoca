@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+precompiled-programs = ["dep:blake3", "dep:serde_json", "dep:serde", "dep:serde_bytes"]
 default = []
 component-build = ["dep:blake3", "dep:tempfile", "dep:serde_json", "dep:wit-component", "dep:wit-parser", "dep:wasmparser"]
 fixed-native-guest-build = ["component-build"]
@@ -16,6 +17,8 @@ fixed-native-guest-receiver = ["dep:rumoca-eval-solve", "dep:serde_json"]
 host-engine = ["dep:wasmi"]
 
 [dependencies]
+serde_bytes = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 libm = { version = "0.2", default-features = false }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }

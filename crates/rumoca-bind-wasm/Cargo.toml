@@ -61,12 +61,13 @@ flate2 = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 
 [features]
+browser-profile = ["rumoca-core/browser-profile"]
 default = ["console_error_panic_hook"]
 # The full web build is the browser-safe simulation build: explicit rk45 only.
 # Diffsol must NOT be added here — it pulls the Pulp relaxed-SIMD graph, which
 # is not safe in all browsers (guarded by
 # architecture_hardening_test::test_bind_wasm_full_web_uses_browser_safe_solver_graph).
-full-web = ["sim-rk45", "native-assignments"]
+full-web = ["precompiled-runtime", "sim-rk45", "native-assignments"]
 # Stateless CPU kernels use checked lowering through the optional runtime facade.
 # Enabling this surface does not enable an ODE solver.
 native-assignments = ["dep:rumoca-sim", "rumoca-sim/native-fmi-ls", "dep:rumoca-exec-wasm", "dep:sha2"]
@@ -75,6 +76,7 @@ native-assignments = ["dep:rumoca-sim", "rumoca-sim/native-fmi-ls", "dep:rumoca-
 native-fmi-ls-build = ["native-assignments", "rumoca-sim/native-fmi-ls-build"]
 sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol", "dep:sha2"]
+precompiled-runtime = ["sim-rk45", "rumoca-sim/precompiled-runtime"]
 sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45", "dep:sha2"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 

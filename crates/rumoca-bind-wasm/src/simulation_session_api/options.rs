@@ -1,6 +1,6 @@
 use crate::WasmError;
 
-#[derive(Default, serde::Deserialize)]
+#[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct InteractiveOptions {
     pub dt: f64,

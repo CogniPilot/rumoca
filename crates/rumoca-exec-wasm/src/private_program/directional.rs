@@ -2,6 +2,10 @@
 use super::*;
 
 #[derive(Clone)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(super) struct SeedStorage {
     pub offset: usize,
     pub count: usize,

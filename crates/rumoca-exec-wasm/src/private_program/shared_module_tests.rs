@@ -1,5 +1,6 @@
 //! Entries of one shared module return the bits of standalone modules.
 use super::*;
+use crate::CompiledNativeCallProgramWasm;
 use crate::host_runtime::HostKernelRuntime;
 use rumoca_ir_solve::{self as solve, BinaryOp, LinearOp, TensorInputKind, UnaryOp};
 use std::num::NonZeroU64;
