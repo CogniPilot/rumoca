@@ -393,13 +393,30 @@ fn warm_source_root_restore_preserves_effective_ancestor_dependencies() {
         "warm reopen should reuse the parsed source-root cache"
     );
 
+    assert!(
+        second
+            .query_state
+            .resolved
+            .dependency_fingerprints
+            .strict_compile_recovery
+            .is_none(),
+        "a root containing an unresolved class cannot hydrate a resolved graph"
+    );
+    let target = second
+        .resolve_strict_target("Lib.Targets.Sub.M")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "warm strict resolution must complete the exact ancestor closure: {:?}",
+                failure.failures
+            )
+        });
     let strict_cache = second
         .query_state
         .resolved
         .dependency_fingerprints
         .strict_compile_recovery
         .as_ref()
-        .expect("warm restore should hydrate strict dependency fingerprints");
+        .expect("strict target query should build dependency fingerprints");
     let dependencies = strict_cache.class_dependencies();
     for class in ["Lib.Targets", "Lib.Targets.Sub", "Lib.Targets.Sub.M"] {
         assert!(
@@ -410,14 +427,6 @@ fn warm_source_root_restore_preserves_effective_ancestor_dependencies() {
         );
     }
 
-    let target = second
-        .resolve_strict_target("Lib.Targets.Sub.M")
-        .unwrap_or_else(|failure| {
-            panic!(
-                "warm strict resolution must complete the exact ancestor closure: {:?}",
-                failure.failures
-            )
-        });
     assert!(
         target
             .resolved

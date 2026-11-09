@@ -329,9 +329,14 @@ impl Session {
         let mut session = Session::default();
         session.add_parsed_batch(documents.to_vec());
         let (plan, _) = session.build_resolution_plan_for_strict_compile().ok()?;
+        // A root can refer to declarations supplied by another source root.
+        // An incomplete isolated plan cannot certify its dependency graph.
+        let ResolutionPlanningTree::Complete(resolved) = plan else {
+            return None;
+        };
         Some(SourceRootResolvedAggregate {
             model_names: session.query_state.resolved.model_names.clone(),
-            dependency_fingerprints: DependencyFingerprintCache::from_tree(plan.tree()),
+            dependency_fingerprints: DependencyFingerprintCache::from_tree(resolved.inner()),
         })
     }
 
