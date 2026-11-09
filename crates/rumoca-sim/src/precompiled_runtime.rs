@@ -117,23 +117,27 @@ mod browser {
         payload: &[u8],
         configure: impl FnOnce(T) -> SimOptions,
     ) -> Result<SimulationSessionLease, SimulationDiagnosticError> {
-        let parse = rumoca_core::browser_profile::Span::new("decode_binary_and_checked_replay");
-        let mut reader = rmp_serde::Deserializer::new(Cursor::new(payload));
-        let wire = RuntimeWire::<T>::deserialize(&mut reader).map_err(refusal)?;
-        if reader.get_ref().position() != payload.len() as u64 {
-            return Err(refusal("trailing runtime bytes"));
-        }
-        drop(parse);
+        let wire = {
+            let _parse = rumoca_core::browser_profile::Span::new("decode_binary_and_checked_replay");
+            let mut reader = rmp_serde::Deserializer::new(Cursor::new(payload));
+            let wire = RuntimeWire::<T>::deserialize(&mut reader).map_err(refusal)?;
+            if reader.get_ref().position() != payload.len() as u64 {
+                return Err(refusal("trailing runtime bytes"));
+            }
+            wire
+        };
         if wire.version != 2 {
             return Err(refusal("unsupported precompiled runtime schema"));
         }
         let scope = ProgramScope::load(wire.programs).map_err(refusal)?;
-        let initialization = rumoca_core::browser_profile::Span::new("session_construct_and_init");
-        let prepared = session(wire.component, configure(wire.context))?;
-        drop(initialization);
-        let initial_state = rumoca_core::browser_profile::Span::new("initial_observation");
-        let _ = prepared.state()?;
-        drop(initial_state);
+        let prepared = {
+            let _initialization = rumoca_core::browser_profile::Span::new("session_construct_and_init");
+            session(wire.component, configure(wire.context))?
+        };
+        {
+            let _initial_state = rumoca_core::browser_profile::Span::new("initial_observation");
+            let _ = prepared.state()?;
+        }
         scope.finish_load().map_err(refusal)?;
         Ok(SimulationSessionLease::from_prepared(prepared))
     }

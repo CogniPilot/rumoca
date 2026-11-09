@@ -78,16 +78,18 @@ pub(super) fn load(
     options_json: &str,
 ) -> Result<rumoca_sim::SimulationSessionLease, WasmError> {
     let options = InteractiveOptions::parse(options_json)?;
-    let identity = rumoca_core::browser_profile::Span::new("binary_header_identity_and_hash");
-    let (encoded_key, payload) = container::decode(artifact).map_err(WasmError::new)?;
-    let artifact_key: Key = serde_json::from_slice(encoded_key)
-        .map_err(|error| WasmError::new(format!("Invalid runtime key: {error}")))?;
-    if artifact_key != key(source, model, sources, &options)? {
-        return Err(WasmError::new(
-            "Precompiled runtime source/model/compiler/options mismatch",
-        ));
-    }
-    drop(identity);
+    let payload = {
+        let _identity = rumoca_core::browser_profile::Span::new("binary_header_identity_and_hash");
+        let (encoded_key, payload) = container::decode(artifact).map_err(WasmError::new)?;
+        let artifact_key: Key = serde_json::from_slice(encoded_key)
+            .map_err(|error| WasmError::new(format!("Invalid runtime key: {error}")))?;
+        if artifact_key != key(source, model, sources, &options)? {
+            return Err(WasmError::new(
+                "Precompiled runtime source/model/compiler/options mismatch",
+            ));
+        }
+        payload
+    };
     rumoca_sim::load_precompiled_runtime(
         payload,
         |experiment: crate::simulation_api::experiment::SimulationExperiment| {
