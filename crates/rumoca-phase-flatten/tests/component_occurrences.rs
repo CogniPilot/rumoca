@@ -37,7 +37,7 @@ equation
 end Probe;
 ";
 
-fn occurrences_from(model: &flat::Model, component: &str) -> Vec<flat::ComponentOccurrence> {
+fn occurrences_from(model: &flat::Model, component: &str) -> Vec<rumoca_core::ComponentOccurrence> {
     model
         .equations
         .iter()

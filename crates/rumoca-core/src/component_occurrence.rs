@@ -1,10 +1,10 @@
 //! Which component class equation a flat equation instantiates, and for which component.
 //!
 //! Flattening instantiates a class equation once per component of that class. The
-//! occurrence keeps that relation, so later phases can carry repeated component
-//! structure (one body per class equation, called per component) instead of
-//! rediscovering it from rendered names, spans or emitted code.
-use rumoca_core::{InstanceId, ScopeId, Span};
+//! occurrence keeps that relation, so Flat, DAE and Solve can carry repeated
+//! component structure (one body per class equation, called per component) instead
+//! of rediscovering it from rendered names, spans or emitted code.
+use crate::{InstanceId, ScopeId, Span};
 use serde::{Deserialize, Serialize};
 
 /// One equation as written in a class: its declaring scope and its source span.

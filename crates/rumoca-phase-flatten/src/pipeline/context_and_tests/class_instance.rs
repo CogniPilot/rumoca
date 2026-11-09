@@ -311,12 +311,12 @@ fn record_component_occurrences(
     let Some(scope) = inst_eq.source_scope_id else {
         return;
     };
-    let class_equation = rumoca_ir_flat::ClassEquation {
+    let class_equation = rumoca_core::ClassEquation {
         scope,
         span: inst_eq.span,
     };
     for (equation, view) in equations.iter_mut().zip(0u32..) {
-        equation.occurrence = Some(rumoca_ir_flat::ComponentOccurrence {
+        equation.occurrence = Some(rumoca_core::ComponentOccurrence {
             class_equation,
             instance,
             view,

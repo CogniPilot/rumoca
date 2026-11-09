@@ -333,8 +333,8 @@ fn a_component_occurrence_is_construction_metadata_not_dump_content() {
         },
     );
     let plain = serde_json::to_string(&equation).expect("equation serializes");
-    equation.occurrence = Some(ComponentOccurrence {
-        class_equation: ClassEquation {
+    equation.occurrence = Some(rumoca_core::ComponentOccurrence {
+        class_equation: rumoca_core::ClassEquation {
             scope: rumoca_core::ScopeId(7),
             span: test_span(),
         },
