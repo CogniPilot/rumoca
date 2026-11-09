@@ -125,7 +125,17 @@ impl InitializationRows {
     }
 
     fn push(&mut self, program: Vec<solve::LinearOp>, span: rumoca_core::Span) {
-        self.scalars.push(program, span, self.len);
+        self.push_component(program, span, None);
+    }
+
+    fn push_component(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: rumoca_core::Span,
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
+    ) {
+        self.scalars
+            .push_component(program, span, occurrence, self.len);
         self.len += 1;
     }
 
@@ -170,7 +180,11 @@ fn lower_declared_rows<'dae>(
                     // An initial residual may constrain a state derivative;
                     // the continuous row that defines it supplies its value.
                     let program = lower_initial_residual_program(context, equation, scalar)?;
-                    rows.push(program, equation.provenance().span());
+                    rows.push_component(
+                        program,
+                        equation.provenance().span(),
+                        equation.occurrence(),
+                    );
                     incidence.push(initial_projection::InitialRowIncidence::Residual(
                         ScalarRowSource {
                             expression: equation.residual(),

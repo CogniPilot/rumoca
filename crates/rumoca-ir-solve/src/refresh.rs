@@ -320,6 +320,13 @@ impl ExactRefreshAssignmentProgram {
         self.source
     }
 
+    /// The component occurrence the source row was lowered from (SPEC_0040
+    /// FLAT-C08), read from the canonical owner this program keeps.
+    pub fn source_occurrence(&self) -> Option<rumoca_core::ComponentOccurrence> {
+        self.source_owner
+            .program_occurrence(self.source.program as usize)
+    }
+
     pub fn target_indices(&self) -> &[usize] {
         &self.target_indices
     }

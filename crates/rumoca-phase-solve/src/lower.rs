@@ -1564,7 +1564,9 @@ fn lower_continuous_row<'dae>(
             let solve::ScalarSlot::Y { index, .. } = target else {
                 unreachable!("state declarations are Y slots")
             };
-            output.derivative.push_scalar(program, span, index);
+            output
+                .derivative
+                .push_scalar(program, (span, occurrence), index);
         }
         UnknownId::Algebraic { .. } => {
             // An algebraic row may read a derivative another row defines; give
@@ -2104,6 +2106,11 @@ impl ScalarRows {
         output: usize,
     ) {
         self.push(program, span, output);
+        self.tag_last(occurrence);
+    }
+
+    /// Record the occurrence of the row just pushed.
+    fn tag_last(&mut self, occurrence: Option<rumoca_core::ComponentOccurrence>) {
         if occurrence.is_some() {
             self.occurrences.resize(self.programs.len() - 1, None);
             self.occurrences.push(occurrence);
@@ -2241,6 +2248,7 @@ enum DerivativePiece {
     Scalar {
         program: Vec<solve::LinearOp>,
         span: Span,
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
         outputs: Vec<usize>,
     },
     Tensor(Box<ImplicitTensorDerivative>),
@@ -2263,10 +2271,16 @@ impl DerivativePiece {
 }
 
 impl DerivativeRows {
-    fn push_scalar(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
+    fn push_scalar(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        (span, occurrence): (Span, Option<rumoca_core::ComponentOccurrence>),
+        output: usize,
+    ) {
         self.pieces.push(DerivativePiece::Scalar {
             program,
             span,
+            occurrence,
             outputs: vec![output],
         });
     }
@@ -2276,6 +2290,7 @@ impl DerivativeRows {
         self.pieces.push(DerivativePiece::Scalar {
             program,
             span,
+            occurrence: None,
             outputs,
         });
     }
@@ -2304,8 +2319,12 @@ impl DerivativeRows {
                 DerivativePiece::Scalar {
                     program,
                     span,
+                    occurrence,
                     outputs,
-                } => scalars.push_outputs(program, span, outputs),
+                } => {
+                    scalars.push_outputs(program, span, outputs);
+                    scalars.tag_last(occurrence);
+                }
                 DerivativePiece::Tensor(group) => {
                     flush_scalar_rows(&mut scalars, &mut nodes)?;
                     nodes.push(group.node);
