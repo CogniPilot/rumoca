@@ -8,6 +8,7 @@
 mod assertion_levels;
 mod canonical;
 pub mod clocks;
+mod component_occurrence;
 pub mod connections;
 pub mod name_utils;
 pub mod source_view;
@@ -84,6 +85,7 @@ pub use visitor::{
 };
 
 pub use assertion_levels::{AssertionLevel, AssertionLevelLiterals};
+pub use component_occurrence::{ClassEquation, ComponentOccurrence};
 pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 
 /// MLS §5.6: "flat equation system with globally unique variable names"
@@ -1417,6 +1419,11 @@ pub struct Equation {
     /// Used for balance checking per MLS §4.7.
     #[serde(default = "default_scalar_count")]
     pub scalar_count: usize,
+    /// The component class equation this equation instantiates, when it came
+    /// from one (see [`ComponentOccurrence`]). Construction metadata for later
+    /// phases, which carry it in their own IR; Flat dumps stay unchanged.
+    #[serde(skip)]
+    pub occurrence: Option<ComponentOccurrence>,
 }
 
 /// Structured source equation family over an index domain.
@@ -1538,6 +1545,7 @@ impl Equation {
             span,
             origin,
             scalar_count: 1,
+            occurrence: None,
         }
     }
 
@@ -1553,6 +1561,7 @@ impl Equation {
             span,
             origin,
             scalar_count,
+            occurrence: None,
         }
     }
 }

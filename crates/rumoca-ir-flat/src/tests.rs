@@ -219,6 +219,7 @@ fn flat_wire_accepts_only_the_current_reference_shape() {
             component: String::new(),
         },
         scalar_count: 1,
+        occurrence: None,
     });
     let encoded = serde_json::to_value(&flat).expect("serialize flat model");
 
@@ -320,4 +321,28 @@ fn algorithm_outputs_keep_function_call_targets() {
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_str(), "y");
     assert!(outputs[0].component_ref().is_some());
+}
+
+#[test]
+fn a_component_occurrence_is_construction_metadata_not_dump_content() {
+    let mut equation = Equation::new(
+        Expression::Empty { span: test_span() },
+        test_span(),
+        EquationOrigin::ComponentEquation {
+            component: "a".to_string(),
+        },
+    );
+    let plain = serde_json::to_string(&equation).expect("equation serializes");
+    equation.occurrence = Some(ComponentOccurrence {
+        class_equation: ClassEquation {
+            scope: rumoca_core::ScopeId(7),
+            span: test_span(),
+        },
+        instance: rumoca_core::InstanceId(3),
+        view: 0,
+    });
+    assert_eq!(
+        serde_json::to_string(&equation).expect("equation serializes"),
+        plain
+    );
 }

@@ -147,6 +147,7 @@ fn add_observation_equation(model: &mut flat::Model, expression: rumoca_core::Ex
             component: "observation".to_string(),
         },
         scalar_count: 1,
+        occurrence: None,
     });
 }
 
