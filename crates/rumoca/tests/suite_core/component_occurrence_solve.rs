@@ -149,6 +149,46 @@ end Splits;
     );
 }
 
+/// An array equation inside a component lowers as a structured DAE family.
+/// Families carry no occurrence yet, so its exact programs name none: this
+/// pins the documented exclusion until families are tagged.
+#[test]
+fn array_equations_lower_as_untagged_structured_families() {
+    const ARMS: &str = "
+model Arm
+  input Real u;
+  Real v[3];
+equation
+  v = {u, 2 * u, 3 * u};
+end Arm;
+model Arms
+  Real m(start = 1, fixed = true);
+  Arm a(u = m);
+  Arm b(u = 2 * m);
+equation
+  der(m) = -0.1 * (a.v[1] + b.v[3]);
+end Arms;
+";
+    let compiled = match Compiler::new().model("Arms").compile_str(ARMS, "Arms.mo") {
+        Ok(compiled) => compiled,
+        Err(error) => panic!("compile Arms: {error:#}"),
+    };
+    let families = compiled.dae.inspect(|view| {
+        view.continuous_owners()
+            .filter(|owner| matches!(owner, rumoca_ir_dae::ContinuousOwnerView::Structured { .. }))
+            .count()
+    });
+    assert!(
+        families >= 2,
+        "each Arm's array equation is a structured family: {families}"
+    );
+    let tagged = instances_by_class_equation(exact_refresh_occurrences(&lower(ARMS, "Arms")));
+    assert!(
+        tagged.is_empty(),
+        "structured families carry no occurrence yet: {tagged:?}"
+    );
+}
+
 #[test]
 fn exact_refresh_programs_name_the_component_class_equation_and_instance() {
     const PAIR: &str = "

@@ -220,3 +220,24 @@ fn rows_keep_their_component_occurrence_without_changing_fusion() {
     assert_eq!(block.program_occurrence(1), Some(occurrence(3)));
     assert_eq!(block.program_occurrence(2), None);
 }
+
+#[test]
+fn a_program_serving_several_owners_names_only_their_common_occurrence() {
+    let mut sources = rumoca_core::SourceMap::new();
+    let source = sources.add("Calls.mo", "0;");
+    let span = Span::from_offsets(source, 0, 2);
+    let occurrence = |instance| rumoca_core::ComponentOccurrence {
+        class_equation: rumoca_core::ClassEquation {
+            scope: rumoca_core::ScopeId(1),
+            span,
+        },
+        instance: rumoca_core::InstanceId(instance),
+        view: 0,
+    };
+    let shared = Some(occurrence(1));
+    assert_eq!(shared_occurrence([shared, shared]), shared);
+    assert_eq!(shared_occurrence([shared, Some(occurrence(2))]), None);
+    assert_eq!(shared_occurrence([shared, None]), None);
+    assert_eq!(shared_occurrence([None, shared]), None);
+    assert_eq!(shared_occurrence([]), None);
+}

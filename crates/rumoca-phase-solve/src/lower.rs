@@ -985,15 +985,23 @@ fn lower_continuous_aggregate_call_group<'borrow, 'dae>(
         .provenance()
         .span();
     output.residual.push_outputs(program, span, outputs);
-    // One program serves the whole group; it names a component occurrence
-    // only when every owner it serves shares that one (e.g. a tuple call).
-    let shared = first.occurrence.filter(|occurrence| {
-        group
-            .iter()
-            .all(|candidate| candidate.occurrence == Some(*occurrence))
-    });
-    output.residual.tag_last(shared);
+    output.residual.tag_last(shared_occurrence(
+        group.iter().map(|candidate| candidate.occurrence),
+    ));
     Ok(())
+}
+
+/// The occurrence one program serving several owners names: the owners' common
+/// occurrence (e.g. every receiver of one tuple call), or none when any owner
+/// has none or two owners differ.
+fn shared_occurrence(
+    occurrences: impl IntoIterator<Item = Option<rumoca_core::ComponentOccurrence>>,
+) -> Option<rumoca_core::ComponentOccurrence> {
+    let mut occurrences = occurrences.into_iter();
+    let first = occurrences.next()??;
+    occurrences
+        .all(|occurrence| occurrence == Some(first))
+        .then_some(first)
 }
 
 fn lower_algebraic_projection<'dae>(
