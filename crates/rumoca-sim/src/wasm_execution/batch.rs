@@ -37,10 +37,10 @@ impl ModuleBatch {
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
         let mode = super::precompiled::active();
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-        if source.is_err() {
-            if let Some(mode) = &mode {
-                mode.unsupported("checked kernel source identity refused");
-            }
+        if source.is_err()
+            && let Some(mode) = &mode
+        {
+            mode.unsupported("checked kernel source identity refused");
         }
         let admission = rumoca_exec_wasm::PrivateProgramAdmission::new(layout.clone(), calls);
         Rc::new_cyclic(|this| Self {
@@ -74,13 +74,14 @@ impl ModuleBatch {
         let admitted = if loading {
             None
         } else {
-            Some(self.admission.admit(block.clone(), seed).map_err(|error| {
-                #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-                if let Some(mode) = &self.mode {
-                    mode.unsupported("private admission refused");
-                }
-                error.to_string()
-            })?)
+            let admitted = self.admission.admit(block.clone(), seed);
+            #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+            if admitted.is_err()
+                && let Some(mode) = &self.mode
+            {
+                mode.unsupported("private admission refused");
+            }
+            Some(admitted.map_err(|error| error.to_string())?)
         };
         let entry = Rc::new(Entry {
             admitted,
