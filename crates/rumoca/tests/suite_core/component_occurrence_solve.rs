@@ -64,6 +64,35 @@ fn assert_each_class_equation_twice(source: &str, model: &str) {
 }
 
 #[test]
+fn occurrences_survive_the_state_selection_rewrites() {
+    // An alias equation and an evaluated parameter make state selection
+    // rebuild the DAE (alias quotient, parameter folding) before lowering.
+    assert_each_class_equation_twice(
+        "
+model Gain
+  input Real u;
+  parameter Real k = 2 annotation(Evaluate = true);
+  Real w;
+  Real y;
+  Real z;
+equation
+  w = k * u;
+  y = w + 1;
+  z = y;
+end Gain;
+model Gains
+  Real m(start = 1, fixed = true);
+  Gain a(u = m);
+  Gain b(u = 2 * m);
+equation
+  der(m) = -0.1 * (a.z + b.z);
+end Gains;
+",
+        "Gains",
+    );
+}
+
+#[test]
 fn record_equations_keep_the_occurrence_on_every_field_row() {
     assert_each_class_equation_twice(
         "

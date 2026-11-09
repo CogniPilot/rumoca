@@ -105,7 +105,11 @@ fn rebuild_equations<'target>(
                         expressions[equation.residual().index() as usize],
                         |replacement| replacement.replacement,
                     );
-                    target.value_equation(equation.provenance(), residual)?;
+                    target.component_value_equation(
+                        equation.provenance(),
+                        residual,
+                        equation.occurrence(),
+                    )?;
                 }
                 dae::ContinuousOwnerView::Structured { family, .. } => {
                     rebuild_continuous_family(
@@ -124,9 +128,10 @@ fn rebuild_equations<'target>(
         for owner in source.initialization_owners() {
             match owner {
                 dae::InitializationOwnerView::Residual { equation, .. } => {
-                    target.value_equation(
+                    target.component_value_equation(
                         equation.provenance(),
                         expressions[equation.residual().index() as usize],
+                        equation.occurrence(),
                     )?;
                 }
                 dae::InitializationOwnerView::Structured { family, .. } => {
