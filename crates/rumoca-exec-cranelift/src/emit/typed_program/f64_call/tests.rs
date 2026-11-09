@@ -345,7 +345,16 @@ fn checked_f64_scalar_tape_reuse_preserves_guards_and_new_call_values() {
                     },
                     at(),
                 )?;
-                let result = b.binary(solve::SolveBinaryOperator::Subtract, sum, y, at())?;
+                let shifted = b.binary(solve::SolveBinaryOperator::Subtract, sum, y, at())?;
+                b.check_finite(
+                    shifted,
+                    solve::SolveFiniteCheck::Primal {
+                        program: 0,
+                        operation: 6,
+                    },
+                    at(),
+                )?;
+                let result = b.binary(solve::SolveBinaryOperator::Multiply, shifted, x, at())?;
                 b.store(outputs[0], result, at())
             },
         )?;
@@ -369,7 +378,7 @@ fn checked_f64_scalar_tape_reuse_preserves_guards_and_new_call_values() {
             result.unwrap();
             assert_eq!(
                 output[0].to_bits(),
-                ((product + input[0]) - input[1]).to_bits()
+                (((product + input[0]) - input[1]) * input[0]).to_bits()
             );
         } else {
             assert!(matches!(
