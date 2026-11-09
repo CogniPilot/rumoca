@@ -104,7 +104,7 @@ fn lower_fmi_export_component_for(
 }
 
 #[cfg(feature = "fmi")]
-fn finish_component(
+pub(crate) fn finish_component(
     lowered: rumoca_phase_solve::LoweredSolveModel<'_>,
 ) -> Result<FmiComponent, SimulationDiagnosticError> {
     let component = rumoca_phase_solve::fmi::finish_fmi_component(lowered).map_err(|error| {

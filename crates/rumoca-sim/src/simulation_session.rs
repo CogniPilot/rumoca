@@ -24,6 +24,27 @@ enum SimulationSessionInner {
 }
 
 impl SimulationSession {
+    #[cfg(all(
+        feature = "precompiled-runtime",
+        feature = "solver-rk45",
+        target_arch = "wasm32"
+    ))]
+    pub(crate) fn from_prepared_rk(
+        artifact: rumoca_solver::fmi_me::MeModelArtifact,
+        opts: rumoca_solver::SimOptions,
+        backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    ) -> Result<Self, SimulationDiagnosticError> {
+        crate::backend_options::validate(&opts)?;
+        if opts.solver_mode != SimSolverMode::RkLike {
+            return Err(SimulationDiagnosticError::Solver(
+                "precompiled browser product requires its declared rk-like profile".into(),
+            ));
+        }
+        crate::rk45::SimulationSession::from_artifact(artifact, opts, backend).map(|session| Self {
+            inner: SimulationSessionInner::RkLike(Box::new(session)),
+        })
+    }
+
     pub fn new(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,

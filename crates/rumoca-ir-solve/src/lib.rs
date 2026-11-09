@@ -28,6 +28,8 @@ mod layout;
 mod linear_op;
 mod model;
 mod parameter_classification;
+mod prepared_kernel_key;
+pub use prepared_kernel_key::PreparedKernelSource;
 mod parameter_reads;
 mod projection_stages;
 mod quotient_memory;

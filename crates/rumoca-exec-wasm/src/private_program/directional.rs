@@ -1,7 +1,7 @@
 //! Compile the complete original directional source with private seed storage.
 use super::*;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct SeedStorage {
     pub offset: usize,
     pub count: usize,

@@ -3,10 +3,15 @@
 mod tests;
 use super::observations::ObservationPlan;
 use super::*;
-use crate::{CompiledNativeCallProgramWasm, WasmCompileError};
+use crate::WasmCompileError;
+use std::rc::Rc;
+#[cfg(feature = "precompiled-programs")]
+mod artifact;
+#[cfg(feature = "precompiled-programs")]
+pub use artifact::PrecompiledRetainedEvent;
 use std::cell::RefCell;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InvocationStorage {
     pub path: Vec<(usize, usize)>,
     pub operation: usize,
@@ -53,7 +58,9 @@ impl InvocationStorage {
 
 pub struct CompiledRetainedEventWasm {
     source: solve::RetainedEventProgram,
-    artifact: CompiledNativeCallProgramWasm,
+    artifact: Rc<crate::program_payload::ProgramPayload>,
+    #[cfg(feature = "precompiled-programs")]
+    source_key: String,
     invocations: Vec<InvocationStorage>,
     scratch: RefCell<Vec<u64>>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -83,9 +90,15 @@ impl CompiledRetainedEventWasm {
             "eval_private",
         )?;
         let scratch = RefCell::new(vec![0; artifact.scratch_bytes() as usize / 8]);
+        #[cfg(feature = "precompiled-programs")]
+        let source_key = solve::PreparedKernelSource::new(layout, source.table())
+            .and_then(|key| key.retained_event(&source))
+            .map_err(WasmCompileError::Input)?;
         Ok(Self {
             source,
-            artifact,
+            artifact: Rc::new(artifact.into()),
+            #[cfg(feature = "precompiled-programs")]
+            source_key,
             invocations,
             scratch,
             #[cfg(any(

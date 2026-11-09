@@ -12,6 +12,30 @@ pub(super) struct WasmObservations {
 }
 
 impl WasmObservations {
+    #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+    pub(super) fn compile_product(
+        program: RetainedEventProgram,
+        layout: &VarLayout,
+        calls: &SolvePureCallTable,
+        mode: &super::precompiled::ProgramMode,
+    ) -> Result<Self, String> {
+        if !program
+            .source()
+            .model()
+            .problem
+            .layout
+            .same_execution_layout(layout)
+            || !program.table().shares_table_owner(calls)
+        {
+            mode.unsupported("event observation context refused");
+            return Err("WASM observation differs from its original context".into());
+        }
+        Ok(Self {
+            code: mode.observation(program)?,
+            messages: RefCell::default(),
+        })
+    }
+
     pub(super) fn compile(
         program: RetainedEventProgram,
         layout: &VarLayout,

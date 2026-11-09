@@ -639,7 +639,7 @@ impl<'a> Emitter<'a> {
             owner: self.owner.id(),
             operation,
             region_path: self.region_path.clone(),
-            opcode,
+            opcode: opcode.into(),
             kind,
             provenance,
         });

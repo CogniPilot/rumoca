@@ -90,7 +90,10 @@ pub fn deserialize_solve_model<'de, D>(deserializer: D) -> Result<solve::SolveMo
 where
     D: serde::Deserializer<'de>,
 {
+    let parse = rumoca_core::browser_profile::Span::new("parse_component_model");
     let wire = SolveModelWire::deserialize(deserializer)?;
+    drop(parse);
+    let _replay = rumoca_core::browser_profile::Span::new("checked_solve_replay");
     replay_solve_model(wire).map_err(serde::de::Error::custom)
 }
 

@@ -115,6 +115,22 @@ pub struct SimulationSessionLease {
 }
 
 impl SimulationSessionLease {
+    #[cfg(all(
+        feature = "precompiled-runtime",
+        target_arch = "wasm32",
+        feature = "solver-rk45"
+    ))]
+    pub(crate) fn from_prepared(session: SimulationSession) -> Self {
+        Self {
+            session: Some(session),
+            key: None,
+            cache: Weak::new(),
+            generation: Rc::new(()),
+            reusable: false,
+            reused: false,
+        }
+    }
+
     /// Current time only; all fallible session access goes through `apply`.
     #[must_use]
     pub fn time(&self) -> f64 {

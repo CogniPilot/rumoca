@@ -22,6 +22,8 @@ pub use component_build::{
 
 mod emit;
 mod exact_assignments;
+#[cfg(feature = "precompiled-programs")]
+pub use exact_assignments::PrecompiledExactAssignments;
 #[cfg(any(
     test,
     all(target_arch = "wasm32", target_os = "unknown"),
@@ -42,6 +44,9 @@ pub use native_capacity::{
     encode_native_source_envelope,
 };
 mod private_program;
+#[cfg(feature = "precompiled-programs")]
+pub use private_program::PrecompiledPrivatePrograms;
+mod program_payload;
 mod retained_native_program;
 #[cfg(all(
     feature = "fixed-native-guest-receiver",
@@ -614,3 +619,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(feature = "precompiled-programs")]
+pub use typed_call::PrecompiledRetainedEvent;

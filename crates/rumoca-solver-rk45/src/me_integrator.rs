@@ -124,6 +124,7 @@ impl Rk45Integrator {
         state: &[f64],
         step: f64,
     ) -> Result<f64, MeIntegrationError> {
+        let _trial = rumoca_solver::browser_profile::Span::new("rk_trial");
         let derivatives = self.derivatives.as_ref().ok_or_else(|| {
             MeIntegrationError::numerical(
                 METHOD,
@@ -538,6 +539,7 @@ fn evaluate_derivative(
     states: &[f64],
     out: &mut Vec<f64>,
 ) -> Result<(), MeIntegrationError> {
+    let _derivative = rumoca_solver::browser_profile::Span::new("rk_derivative");
     resize_work(out, derivatives.state_count(), "RK45 derivative workspace")?;
     derivatives.derivatives_into(time, states, out);
     if derivatives.take_discard() {

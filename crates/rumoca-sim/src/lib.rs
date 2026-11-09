@@ -72,9 +72,13 @@ mod error;
 mod me_backend;
 #[cfg(all(test, feature = "solver-rk45"))]
 mod numerical_observation_tests;
+#[cfg(feature = "precompiled-runtime")]
+mod precompiled_runtime;
 pub mod row_eval_trace;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_cache;
+#[cfg(feature = "precompiled-runtime")]
+pub use precompiled_runtime::{export_precompiled_runtime, load_precompiled_runtime};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_protocol;
 pub mod sim_trace_compare;

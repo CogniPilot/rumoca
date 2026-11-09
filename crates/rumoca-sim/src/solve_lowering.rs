@@ -30,6 +30,8 @@ pub use diagnostics::{
 pub use entry::{
     lower_dae_for_gpu_preparation, lower_dae_for_native_preparation, lower_dae_for_simulation,
 };
+#[cfg(feature = "precompiled-runtime")]
+pub(crate) use fmi::finish_component;
 #[cfg(feature = "fmi")]
 pub use fmi::{lower_fmi_c_export_component, lower_fmi_component, lower_fmi_export_component};
 pub use linearization::{Linearization, linearization_for_dae};

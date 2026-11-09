@@ -52,6 +52,7 @@ impl WasmKernelRuntime {
         seed: Option<&[f64]>,
         out: &mut [f64],
     ) -> Result<(), WasmCompileError> {
+        let _call = rumoca_core::browser_profile::Span::new("kernel_bridge_call");
         use wasm_bindgen::JsValue;
 
         let y_ptr = ptr_to_wasm_i32(y.as_ptr())?;
@@ -100,6 +101,7 @@ impl WasmKernelRuntime {
         output: &mut [u64],
         scratch: &mut [u64],
     ) -> Result<u32, WasmCompileError> {
+        let _call = rumoca_core::browser_profile::Span::new("kernel_bridge_call");
         use wasm_bindgen::JsValue;
         let input_ptr = ptr_to_wasm_i32(input.as_ptr())?;
         let output_ptr = ptr_to_wasm_i32(output.as_ptr())?;
@@ -124,6 +126,7 @@ impl WasmKernelRuntime {
         scratch: &mut [u64],
         lanes: &mut [u64],
     ) -> Result<u32, WasmCompileError> {
+        let _call = rumoca_core::browser_profile::Span::new("kernel_bridge_call");
         use wasm_bindgen::JsValue;
         let y_ptr = ptr_to_wasm_i32(y.as_ptr())?;
         let p_ptr = ptr_to_wasm_i32(p.as_ptr())?;
@@ -156,6 +159,7 @@ impl WasmKernelRuntime {
         time: f64,
         scratch: &mut [f64],
     ) -> Result<u32, WasmCompileError> {
+        let _call = rumoca_core::browser_profile::Span::new("kernel_bridge_call");
         use wasm_bindgen::JsValue;
         let y_ptr = ptr_to_wasm_i32(y.as_ptr())?;
         let p_ptr = ptr_to_wasm_i32(p.as_ptr())?;
@@ -178,6 +182,8 @@ impl WasmKernelRuntime {
 }
 
 fn instantiate(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
+    let _instantiate =
+        rumoca_core::browser_profile::Span::new("kernel_module_compile_and_instantiate");
     use js_sys::Object;
     use js_sys::Reflect;
     use js_sys::Uint8Array;
