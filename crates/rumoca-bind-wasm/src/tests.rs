@@ -30,6 +30,8 @@ mod prebuilt_session_tests;
 #[cfg(feature = "sim-rk45")]
 mod prepared_session_cache_tests;
 mod scenario_config_tests;
+#[cfg(feature = "sim-rk45")]
+mod session_readout_tests;
 mod session_recovery_tests;
 mod simulation_runtime_tests;
 mod solve_render_tests;
