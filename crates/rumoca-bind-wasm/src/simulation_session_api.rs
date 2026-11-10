@@ -175,6 +175,30 @@ impl WasmSimulationSession {
         }
     }
 
+    /// Read named values in request order as a JavaScript `Float64Array`.
+    ///
+    /// `names_json` is a JSON array of variable/input names. Duplicates are
+    /// preserved. An unknown name rejects the entire read; no value is filled
+    /// in. This uses one ordinary session observation and does not advance time.
+    pub fn read_values(&mut self, names_json: &str) -> Result<Vec<f64>, WasmError> {
+        let names: Vec<String> = serde_json::from_str(names_json)
+            .map_err(|e| WasmError::new(format!("[EX012] Invalid value names: {e}")))?;
+        match self.apply(SessionCommand::Values {
+            names: names.clone(),
+        })? {
+            SessionEvent::Values { values, .. } => names
+                .iter()
+                .zip(values)
+                .map(|(name, value)| {
+                    value.ok_or_else(|| {
+                        WasmError::new(format!("[EX012] Unknown session value: {name}"))
+                    })
+                })
+                .collect(),
+            other => Err(unexpected_event("read_values", &other)),
+        }
+    }
+
     /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
     pub fn state_json(&mut self) -> Result<String, WasmError> {
         match self.apply(SessionCommand::State)? {
