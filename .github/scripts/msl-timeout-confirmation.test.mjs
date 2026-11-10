@@ -101,6 +101,66 @@ test('wrong source, model, context, budgets and extra model rows cannot recover 
   }
 });
 
+test('unmeasured quality binds the actual focused OMC reference without altering either raw payload', async t => {
+  const options = setup(t);
+  const runner = async ({dir, model}) => {
+    const d = data(MERGE, [row(model)]); d.quality.run_scope = 'partial';
+    d.quality.parity_measured = false; delete d.quality.omc_version; write(dir, d);
+    fs.writeFileSync(path.join(dir, 'omc_simulation_reference.json'), JSON.stringify({
+      git_commit: MERGE, msl_version: 'v4.1.0', omc_version: '1.26', total_models: 1, models: {[model]: {}},
+    }));
+    return {code: 0};
+  };
+  const result = await confirmAndAnnotate({...options, runner});
+  assert.equal(result.losses.length, 0);
+  const c = result.confirmations[0];
+  assert.equal(c.omcContext.source, 'omc_simulation_reference.json');
+  assert.match(c.omcContext.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(options.resultsDir, 'timeout-confirmations/1/msl_quality_current.json'))).omc_version, undefined);
+});
+
+test('missing or mismatched reference provenance never clears an unmeasured confirmation', async t => {
+  for (const mutate of [r => {delete r.omc_version;}, r => {r.omc_version = 'wrong';},
+    r => {r.git_commit = MAIN;}, r => {r.msl_version = 'other';}, r => {r.total_models = 2;},
+    r => {r.models = {'Modelica.Other': {}};}, () => null]) {
+    const options = setup(t);
+    const runner = async ({dir, model}) => {
+      const d = data(MERGE, [row(model)]); d.quality.run_scope = 'partial';
+      d.quality.parity_measured = false; delete d.quality.omc_version; write(dir, d);
+      const reference = {git_commit: MERGE, msl_version: '4.1.0', omc_version: '1.26', total_models: 1, models: {[model]: {}}};
+      if (mutate(reference) !== null) fs.writeFileSync(path.join(dir, 'omc_simulation_reference.json'), JSON.stringify(reference));
+      return {code: 0};
+    };
+    const result = await confirmAndAnnotate({...options, runner});
+    assert.equal(result.losses.length, 1); assert.equal(result.confirmations[0].outcome, 'unconfirmed');
+  }
+});
+
+test('real BatchPlant confirmation recovers all five compile stages only with its bound OMC reference', async t => {
+  const real = JSON.parse(fs.readFileSync(new URL('./fixtures/msl-batchplant-confirmation.json', import.meta.url)));
+  for (const withReference of [true, false]) {
+    const options = setup(t, [real.currentRow], [real.mainRow]);
+    const current = data(real.quality.git_commit, [real.currentRow]);
+    Object.assign(current.quality, {msl_version: real.quality.msl_version, omc_version: real.reference.omc_version});
+    current.results.msl_version = real.quality.msl_version;
+    write(options.resultsDir, current); options.currentSha = real.quality.git_commit;
+    const main = data(MAIN, [real.mainRow]);
+    Object.assign(main.quality, {msl_version: real.quality.msl_version, omc_version: real.reference.omc_version});
+    main.results.msl_version = real.quality.msl_version; write(options.baselineDir, main);
+    const runner = async ({dir}) => {
+      write(dir, {quality: real.quality, results: real.results});
+      if (withReference) fs.writeFileSync(path.join(dir, 'omc_simulation_reference.json'), JSON.stringify(real.reference));
+      return {code: 0};
+    };
+    const result = await confirmAndAnnotate({...options, runner});
+    assert.equal(result.initialLosses.length, 5);
+    assert.equal(result.losses.length, withReference ? 0 : 5);
+    assert.deepEqual(result.confirmations[0].row, real.results.model_results[0]);
+    assert.equal(result.confirmations[0].row.sim_status, 'sim_solver_fail');
+    if (withReference) assert.equal(result.confirmations[0].recoveredStages.length, 5);
+  }
+});
+
 test('failed execution cannot supply a success row; missing output and runner failure stay red', async t => {
   for (const mode of ['exit', 'missing', 'throw']) {
     const options = setup(t);

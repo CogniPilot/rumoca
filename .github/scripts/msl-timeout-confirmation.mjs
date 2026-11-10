@@ -55,14 +55,25 @@ function confirmedRow(dir, current, model) {
   assert.equal(results.git_commit, current.results.git_commit, 'confirmation source differs');
   assert.equal(quality.git_commit, current.quality.git_commit, 'confirmation quality source differs');
   assert.equal(quality.run_scope, 'partial', 'confirmation must be an explicit focused run');
-  for (const key of ['msl_version', 'omc_version', 'quality_gate_version',
+  for (const key of ['msl_version', 'quality_gate_version',
     'model_attempt_timeout_seconds', 'sim_timeout_seconds']) {
     assert.deepEqual(quality[key], current.quality[key], 'confirmation context differs: ' + key);
   }
   assert.equal(results.msl_version, quality.msl_version, 'confirmation MSL source differs');
   assert.equal(results.model_results?.length, 1, 'confirmation must contain exactly one model');
   assert.equal(results.model_results[0].model_name, model, 'confirmation selected another model');
-  return results.model_results[0];
+  let omc = { version: quality.omc_version, source: payloads[0] };
+  if (omc.version === undefined) {
+    assert.equal(quality.parity_measured, false, 'only explicit unmeasured confirmations may use reference metadata');
+    const name = 'omc_simulation_reference.json', reference = read(dir, name);
+    assert.equal(reference.git_commit, results.git_commit, 'confirmation OMC reference source differs');
+    assert.equal(reference.msl_version?.replace(/^v/, ''), quality.msl_version.replace(/^v/, ''), 'confirmation OMC reference MSL differs');
+    assert.equal(reference.total_models, 1, 'confirmation OMC reference must cover one model');
+    assert.deepEqual(Object.keys(reference.models ?? {}), [model], 'confirmation OMC reference selected another model');
+    omc = { version: reference.omc_version, source: name, sha256: digest(path.join(dir, name)) };
+  }
+  assert.equal(omc.version, current.quality.omc_version, 'confirmation context differs: omc_version');
+  return { row: results.model_results[0], omc };
 }
 
 export async function confirmAndAnnotate({ baselineDir, resultsDir, binding, currentSha,
@@ -100,7 +111,8 @@ export async function confirmAndAnnotate({ baselineDir, resultsDir, binding, cur
       if (fs.existsSync(path.join(dir, payloads[1]))) attempt.row = read(dir, payloads[1]).model_results?.[0] ?? null;
       assert.equal(attempt.execution.code, 0, 'confirmation process failed');
       assert.ok(!attempt.execution.timedOut, 'confirmation watchdog expired');
-      attempt.row = confirmedRow(dir, current, model);
+      const verified = confirmedRow(dir, current, model);
+      attempt.row = verified.row; attempt.omcContext = verified.omc;
       attempt.payloads = Object.fromEntries(payloads.map(name => [name, digest(path.join(dir, name))]));
       const single = snapshot => ({ ...snapshot,
         results: { ...snapshot.results, model_results: snapshot.results.model_results.filter(row => row.model_name === model) } });
