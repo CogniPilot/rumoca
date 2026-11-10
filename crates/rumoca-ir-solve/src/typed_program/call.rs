@@ -613,7 +613,7 @@ impl SolvePureCallOwner {
             body.slots(),
             body.register_types(),
             body.operations(),
-            body.storage_plan().fusion().last_reads(),
+            body.storage_plan().fusion(),
             &predicate_slots,
         )
     }

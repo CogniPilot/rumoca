@@ -5,20 +5,17 @@
 //! the placement it is handed and decides nothing. A program replayed from
 //! its wire form assembles its plan again, so no serialized plan is trusted.
 //!
-//! The host plan keeps every owned value in the function's own frame. An
-//! input slot the body never stores is a read-only view of the caller's
-//! array, and a register only a load of such a slot defines is a read-only
-//! view of that slot. Everything else is an owned frame array of the
-//! value's scalar count, which a checked value type keeps at least one.
-//!
-//! The plan also carries refinements a target may apply to those frame
-//! registers (see [`SolveFusionPlan`] and [`SolveAliasPlan`]). They never
-//! change a slot or register placement above, so a target that ignores them
-//! stores exactly as before.
+//! Slot and register placements describe portable ownership: immutable input
+//! views or owned values. The resolved home plan then issues input/output
+//! aliases, shared frame cells, and address-free scalar lifetimes. A scalar
+//! home has no frame cell; consumers of physical homes print that decision.
+//! Fusion-extended readers and the actual alias context participate in the
+//! decision, including the separate observation context.
 
 mod aliases;
 mod cells;
 mod fusion;
+mod scalar;
 
 use serde::Serialize;
 
@@ -27,6 +24,7 @@ pub(in crate::typed_program) use aliases::observation_cascades;
 pub use aliases::{SolveAliasPlan, SolveRegisterHome};
 pub use cells::SolveFrameCells;
 pub use fusion::{SOLVE_STATIC_MATRIX_WORK, SolveFusedRegister, SolveFusionPlan};
+pub use scalar::SolveScalarLifetime;
 
 use crate::typed_program::types::SolveValueKind;
 
@@ -146,8 +144,7 @@ impl SolveStoragePlan {
             }
         }
         let fusion = SolveFusionPlan::of(register_types, operations, last_reads);
-        let aliases =
-            SolveAliasPlan::of(slots, register_types, operations, fusion.last_reads(), &[]);
+        let aliases = SolveAliasPlan::of(slots, register_types, operations, &fusion, &[]);
         let cells = SolveFrameCells::of(
             register_types,
             operations,

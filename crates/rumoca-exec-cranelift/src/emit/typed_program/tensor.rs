@@ -381,9 +381,9 @@ impl ProgramLowerer<'_, '_> {
             self.builder.func,
         );
         let zero = self.builder.ins().iconst(types::I64, 0);
-        let destination_base = self.base(destination);
+        let destination_base = self.base(destination)?;
         let destination = self.cell_address(destination_base, destination.cell, zero);
-        let operand_base = self.base(operand);
+        let operand_base = self.base(operand)?;
         let operand = self.cell_address(operand_base, operand.cell, zero);
         let rows = self.builder.ins().iconst(types::I64, i64::from(rows));
         let columns = self.builder.ins().iconst(types::I64, i64::from(columns));

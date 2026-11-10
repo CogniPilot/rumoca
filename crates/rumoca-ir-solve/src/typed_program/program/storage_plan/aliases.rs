@@ -11,9 +11,11 @@
 //! earlier ones left, exactly as the in-process compiled target applied them
 //! on its own; the plan now issues the resolved result. They are ported
 //! unchanged from that target's `emit/typed_program/aliasing.rs` and the fold
-//! rule of `emit/typed_program/storage.rs`. A target that ignores them keeps
-//! every register in its own cells, as before.
+//! rule of `emit/typed_program/storage.rs`. After resolving these aliases,
+//! the constructor issues address-free scalar homes for complete lifetimes
+//! with no reload or alias member. Physical-home consumers use this result.
 
+use super::{SolveFusionPlan, SolveScalarLifetime};
 use serde::Serialize;
 
 use super::super::{
@@ -25,6 +27,12 @@ use super::super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "home", rename_all = "snake_case")]
 pub enum SolveRegisterHome {
+    /// A scalar value whose complete lifetime needs no addressable cells.
+    Scalar {
+        /// Reissued from the source on replay, never accepted from wire data.
+        #[serde(skip)]
+        lifetime: SolveScalarLifetime,
+    },
     /// Cells of its own.
     Own,
     /// The cells of input-buffer slot `slot`, read in place.
@@ -42,16 +50,17 @@ pub struct SolveAliasPlan {
 }
 
 impl SolveAliasPlan {
-    /// `last_reads` are the fusion-extended last reads; `unaliased` are
+    /// `fusion` includes deferred readers; `unaliased` are
     /// output slots whose cells are written outside the body's stores, which
     /// no register may take.
     pub(in crate::typed_program) fn of(
         slots: &[SolveSlot],
         register_types: &[SolveValueType],
         operations: &[SolveSpannedOperation],
-        last_reads: &[Option<usize>],
+        fusion: &SolveFusionPlan,
         unaliased: &[usize],
     ) -> Self {
+        let last_reads = fusion.last_reads();
         let mut homes = vec![SolveRegisterHome::Own; register_types.len()];
         let same_type = |register: SolveRegisterId, slot: SolveSlotId| {
             register_types.get(register.index())
@@ -63,6 +72,7 @@ impl SolveAliasPlan {
         );
         alias_consumed_functional_updates(register_types, operations, last_reads, &mut homes);
         alias_consumed_fold_carries(register_types, operations, last_reads, &mut homes);
+        super::scalar::issue(register_types, operations, fusion, &mut homes);
         Self {
             homes: homes.into_boxed_slice(),
         }
@@ -84,7 +94,9 @@ fn own_root(homes: &[SolveRegisterHome], register: SolveRegisterId) -> Option<us
     match homes.get(register.index())? {
         SolveRegisterHome::Own => Some(register.index()),
         SolveRegisterHome::Register { register } => Some(*register),
-        SolveRegisterHome::InputSlot { .. } | SolveRegisterHome::OutputSlot { .. } => None,
+        SolveRegisterHome::InputSlot { .. }
+        | SolveRegisterHome::OutputSlot { .. }
+        | SolveRegisterHome::Scalar { .. } => None,
     }
 }
 

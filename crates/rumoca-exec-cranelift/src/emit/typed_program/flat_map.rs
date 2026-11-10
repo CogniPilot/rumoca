@@ -364,9 +364,9 @@ impl ProgramLowerer<'_, '_> {
         destination: &ValueLocation,
         captures: &[solve::SolveRegisterId],
     ) -> Result<bool, CompileError> {
-        let target = self.physical(destination);
+        let target = self.physical(destination)?;
         for capture in captures {
-            let cells = self.physical(self.register(*capture)?);
+            let cells = self.physical(self.register(*capture)?)?;
             if cells.overlaps(target) && cells != target {
                 return Ok(false);
             }
