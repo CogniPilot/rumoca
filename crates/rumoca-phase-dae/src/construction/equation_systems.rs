@@ -11,7 +11,7 @@ pub(super) fn lower_equation_systems<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let continuous_excluded_families = analysis
         .derived_parameter_families
-        .union(&analysis.record_equality_families)
+        .union(&analysis.scalar_owned_families)
         .copied()
         .collect::<HashSet<_>>();
     let initial_excluded_families = initial_excluded_families(analysis);
@@ -144,12 +144,13 @@ pub(super) fn lower_equation_expression<'dae>(
 }
 
 /// Initialization families that own none of their rows: families of typed
-/// initial discrete-value definitions and families that are a second view of
-/// whole-record equalities (MLS 3.7 §10.6.1).
+/// initial discrete-value definitions and families whose rows keep their
+/// scalar owners (whole-record equalities, MLS 3.7 §10.6.1, and binder-selected
+/// branches).
 fn initial_excluded_families(analysis: &Analysis) -> HashSet<usize> {
     analysis
         .initial_discrete_families
-        .union(&analysis.initial_record_equality_families)
+        .union(&analysis.initial_scalar_owned_families)
         .copied()
         .collect()
 }

@@ -1,6 +1,8 @@
 use super::*;
 
 #[cfg(test)]
+mod selection_tests;
+#[cfg(test)]
 mod storage_tests;
 
 /// The structured families of one Flat equation partition.
@@ -13,8 +15,9 @@ pub(super) struct PartitionFamilies<'flat> {
     /// discrete-time `v` is an unknown, so the Appendix B solved form of
     /// discrete-valued equations governs only the simulation partition.
     pub(super) initialization: bool,
-    /// Families that are not owners of their rows (MLS 3.7 §10.6.1: an
-    /// equation between arrays of records is owned by its record equalities).
+    /// Families that are not owners of their rows: an equation between arrays
+    /// of records is owned by its record equalities (MLS 3.7 §10.6.1), and a
+    /// binder-selected family by its scalar rows ([`binder_selected_families`]).
     pub(super) excluded: &'flat HashSet<usize>,
 }
 
@@ -333,6 +336,144 @@ pub(super) fn record_equality_families(
         })
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Materialized `for` families whose rows a domain binder selects a constant
+/// branch of (MLS 3.7 §8.3.4, MSL PlugToPin: `plug.pin[j].i = if j == k then
+/// -pin.i else 0`). Each point is an alias or connection balance or a constant
+/// row fixed at translation; the structural phase reads such balances from
+/// scalar rows only, so these rows keep their scalar owners, like a
+/// whole-record equality family.
+///
+/// Matched: a component on one side of the residual and, on the other,
+/// exactly `if j == e` (or `<>`) with `e` a binder-free parameter or constant
+/// expression, between a literal and a binder-free arm. Any other binder
+/// conditional (a boundary term in a sum, an arm reading the binder, a runtime
+/// selector) keeps its compact owner (SPEC_0032).
+pub(super) fn binder_selected_families(
+    families: &[flat::StructuredEquationFamily],
+    flat: &flat::Model,
+) -> HashSet<usize> {
+    let fixed = |expression: &Expression| fixed_at_translation(expression, flat);
+    families
+        .iter()
+        .enumerate()
+        .filter(|(_, family)| {
+            let selection = PointSelection {
+                domain: &family.domain,
+                fixed: &fixed,
+            };
+            family.interiors_materialized()
+                && family.template.as_ref().is_some_and(|template| {
+                    template.scalar_view == rumoca_core::ComprehensionScalarView::BinderSubstitution
+                        && template
+                            .body
+                            .iter()
+                            .any(|body| selection.selects_alias_row(body))
+                })
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Whether `expression` reads only parameters and constants.
+fn fixed_at_translation(expression: &Expression, flat: &flat::Model) -> bool {
+    let mut reads = Vec::new();
+    expression.collect_var_refs(&mut reads);
+    reads.iter().all(|name| {
+        flat.variables.get(name).is_some_and(|variable| {
+            matches!(
+                variable.variability,
+                rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+            )
+        })
+    })
+}
+
+/// One family's binders and the test that a selector is fixed at translation.
+struct PointSelection<'a> {
+    domain: &'a rumoca_core::StructuredIndexDomain,
+    fixed: &'a dyn Fn(&Expression) -> bool,
+}
+
+impl PointSelection<'_> {
+    /// Whether `residual` is `component - selection` (either order) with
+    /// `selection` one fixed binder point between a literal and a binder-free
+    /// arm.
+    fn selects_alias_row(&self, residual: &Expression) -> bool {
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } = residual
+        else {
+            return false;
+        };
+        (is_component(lhs) && self.selects_constant_point(rhs))
+            || (is_component(rhs) && self.selects_constant_point(lhs))
+    }
+
+    fn selects_constant_point(&self, expression: &Expression) -> bool {
+        let Expression::If {
+            branches,
+            else_branch,
+            ..
+        } = expression
+        else {
+            return false;
+        };
+        let [(condition, selected)] = branches.as_slice() else {
+            return false;
+        };
+        let fixed_pair = |literal: &Expression, other: &Expression| {
+            super::guard_facts::numeric_literal(literal).is_some()
+                && !reads_binder(other, self.domain)
+        };
+        self.selects_binder_point(condition)
+            && (fixed_pair(selected, else_branch) || fixed_pair(else_branch, selected))
+    }
+
+    fn selects_binder_point(&self, condition: &Expression) -> bool {
+        let Expression::Binary {
+            op: rumoca_core::OpBinary::Eq | rumoca_core::OpBinary::Neq,
+            lhs,
+            rhs,
+            ..
+        } = condition
+        else {
+            return false;
+        };
+        let selector = |binder: &Expression, selector: &Expression| {
+            is_binder(binder, self.domain)
+                && !reads_binder(selector, self.domain)
+                && (self.fixed)(selector)
+        };
+        selector(lhs, rhs) || selector(rhs, lhs)
+    }
+}
+
+fn is_component(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::VarRef { .. } | Expression::FieldAccess { .. }
+    )
+}
+
+fn is_binder(expression: &Expression, domain: &rumoca_core::StructuredIndexDomain) -> bool {
+    matches!(
+        expression,
+        Expression::VarRef { name, subscripts, .. }
+            if subscripts.is_empty()
+                && domain
+                    .binders
+                    .iter()
+                    .any(|binder| name.as_str() == binder.display_name)
+    )
+}
+
+fn reads_binder(expression: &Expression, domain: &rumoca_core::StructuredIndexDomain) -> bool {
+    expression.contains_subexpression(|expression| is_binder(expression, domain))
 }
 
 fn materialized_family_rows(

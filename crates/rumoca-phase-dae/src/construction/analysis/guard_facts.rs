@@ -810,7 +810,7 @@ impl GuardFacts {
 }
 
 /// The value of an Integer or Real literal, or of its negation.
-fn numeric_literal(expression: &Expression) -> Option<f64> {
+pub(super) fn numeric_literal(expression: &Expression) -> Option<f64> {
     match expression {
         Expression::Literal {
             value: Literal::Real(value),

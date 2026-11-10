@@ -183,7 +183,8 @@ use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
 use structural_selections::{has_decidable_conditionals, select_structural_branches};
 use structured_families::{
-    PartitionFamilies, record_equality_families, validate_structured_families,
+    PartitionFamilies, binder_selected_families, record_equality_families,
+    validate_structured_families,
 };
 pub(super) use structured_families::{
     materialized_discrete_real_family, materialized_discrete_value_rows,
@@ -201,10 +202,11 @@ pub(super) struct Analysis {
     pub(super) balance: BalanceDetail,
     pub(super) continuous_family_rows: HashSet<usize>,
     pub(super) initialization_family_rows: HashSet<usize>,
-    /// Families that are a second view of whole-record equality rows, which keep
-    /// their record-equation owners.
-    pub(super) record_equality_families: HashSet<usize>,
-    pub(super) initial_record_equality_families: HashSet<usize>,
+    /// Families whose rows keep their scalar owners: a second view of
+    /// whole-record equality rows (MLS 3.7 §10.6.1), and a materialized
+    /// family that selects one binder point (`binder_selected_families`).
+    pub(super) scalar_owned_families: HashSet<usize>,
+    pub(super) initial_scalar_owned_families: HashSet<usize>,
     /// Scalar initial-equation rows represented by typed initial discrete-value
     /// definitions rather than numeric initialization residuals.
     pub(super) initial_discrete_equation_rows: HashSet<usize>,
@@ -787,8 +789,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         balance: balance.detail,
         continuous_family_rows: family_rows.continuous,
         initialization_family_rows: family_rows.initialization,
-        record_equality_families: family_rows.continuous_record_families,
-        initial_record_equality_families: family_rows.initialization_record_families,
+        scalar_owned_families: family_rows.continuous_scalar_owned,
+        initial_scalar_owned_families: family_rows.initialization_scalar_owned,
         initial_discrete_families: claimed_initial_families(flat, &initial.discrete_equation_rows),
         initial_discrete_equation_rows: initial.discrete_equation_rows,
         initial_parameter_equations: initial.parameter_equations,
@@ -984,8 +986,8 @@ fn validate_runtime_coordinates(
 struct StructuredFamilyRows {
     continuous: HashSet<usize>,
     initialization: HashSet<usize>,
-    continuous_record_families: HashSet<usize>,
-    initialization_record_families: HashSet<usize>,
+    continuous_scalar_owned: HashSet<usize>,
+    initialization_scalar_owned: HashSet<usize>,
 }
 
 fn analyze_structured_family_rows(
@@ -1002,16 +1004,21 @@ fn analyze_structured_family_rows(
         record_equations: records,
         ..
     } = input;
-    let continuous_record_families =
+    let mut continuous_scalar_owned =
         record_equality_families(&flat.structured_equations, &records.continuous);
-    let initialization_record_families =
+    continuous_scalar_owned.extend(binder_selected_families(&flat.structured_equations, flat));
+    let mut initialization_scalar_owned =
         record_equality_families(&flat.initial_structured_equations, &records.initialization);
+    initialization_scalar_owned.extend(binder_selected_families(
+        &flat.initial_structured_equations,
+        flat,
+    ));
     let continuous = validate_structured_families(
         PartitionFamilies {
             families: templates.continuous(flat),
             equations: &flat.equations,
             initialization: false,
-            excluded: &continuous_record_families,
+            excluded: &continuous_scalar_owned,
         },
         roles,
         expression_roles,
@@ -1024,7 +1031,7 @@ fn analyze_structured_family_rows(
             families: templates.initialization(flat),
             equations: &flat.initial_equations,
             initialization: true,
-            excluded: &initialization_record_families,
+            excluded: &initialization_scalar_owned,
         },
         roles,
         expression_roles,
@@ -1035,8 +1042,8 @@ fn analyze_structured_family_rows(
     Ok(StructuredFamilyRows {
         continuous,
         initialization,
-        continuous_record_families,
-        initialization_record_families,
+        continuous_scalar_owned,
+        initialization_scalar_owned,
     })
 }
 
