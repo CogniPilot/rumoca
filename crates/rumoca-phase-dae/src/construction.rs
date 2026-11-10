@@ -864,6 +864,31 @@ struct StructuredEquationRows<'scope, 'dae> {
     initialization: bool,
 }
 
+/// Refuse a scheduled time-event relation in a family body whose scalar views
+/// do not own its instants: its lowering skips the root on that proof.
+fn refuse_unowned_time_events(
+    bodies: &[Expression],
+    functions: &FunctionRegistry<'_, '_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let events = &functions.expression_events;
+    let unowned = bodies.iter().find_map(|body| {
+        let mut found = None;
+        body.contains_subexpression(|expression| {
+            if let Expression::Binary { op, span, .. } = expression
+                && op.is_relational()
+                && events.is_structured_time_event(*span)
+            {
+                found = Some(*span);
+            }
+            found.is_some()
+        });
+        found
+    });
+    unowned.map_or(Ok(()), |span| {
+        Err(dae::DaeConstructionError::UnsupportedStructuredEvent { span })
+    })
+}
+
 fn lower_structured_equations<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
@@ -910,6 +935,13 @@ fn lower_structured_equations<'dae>(
                 continue;
             }
             compact = Some((binders, scoped_shapes));
+        }
+        if let (Some(template), Some(_)) = (family.template, &compact) {
+            // MLS §8.5: only a continuous family whose own scalar views were
+            // analyzed has its scheduled instants owned by them.
+            if rows.initialization || !family.interiors_materialized() {
+                refuse_unowned_time_events(&template.body, functions)?;
+            }
         }
         let bodies = match (family.template, compact) {
             (Some(template), Some((binders, scoped_shapes))) => template

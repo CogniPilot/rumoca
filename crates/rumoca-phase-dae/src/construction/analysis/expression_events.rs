@@ -146,16 +146,37 @@ impl ExpressionEventPlans {
     /// Whether every materialized occurrence at `span` is one continuously
     /// monitored state relation.
     ///
-    /// This is the construction proof for the first compact structured-event
-    /// subset. Scheduled and dynamic time-event families require different
-    /// owners and remain fail-closed.
+    /// This is the construction proof for the compact structured-event subset
+    /// that needs a root of its own. Exactly scheduled time-event families are
+    /// accepted separately by [`Self::is_structured_time_event`]; dynamic
+    /// time-event families require a different owner and remain fail-closed.
     pub(in crate::construction) fn is_structured_state_relation(&self, span: Span) -> bool {
+        self.every_occurrence(span, |plan| {
+            matches!(plan, ExpressionEventPlan::StateRelation)
+        })
+    }
+
+    /// Whether every materialized occurrence at `span` is an exactly scheduled
+    /// time event.
+    ///
+    /// [`lower_scheduled_time_events`](crate::construction) already owns each
+    /// occurrence's instant, so a structured family over such a relation needs
+    /// no root of its own, exactly like its scalar views. A family without
+    /// those views is refused before its body is lowered
+    /// (`refuse_unowned_time_events`).
+    pub(in crate::construction) fn is_structured_time_event(&self, span: Span) -> bool {
+        self.every_occurrence(span, |plan| {
+            matches!(plan, ExpressionEventPlan::TimeEvent(_))
+        })
+    }
+
+    fn every_occurrence(&self, span: Span, accepts: impl Fn(ExpressionEventPlan) -> bool) -> bool {
         self.by_span.get(&span).is_some_and(|buckets| {
             !buckets.is_empty()
                 && buckets
                     .values()
                     .flatten()
-                    .all(|occurrence| matches!(occurrence.plan, ExpressionEventPlan::StateRelation))
+                    .all(|occurrence| accepts(occurrence.plan))
         })
     }
 

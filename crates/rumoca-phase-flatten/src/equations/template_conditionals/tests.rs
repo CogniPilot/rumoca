@@ -390,8 +390,21 @@ fn conditional_template_canonical_dae_rejects_incompatible_branch_payload() {
 }
 
 #[test]
-fn conditional_template_refuses_unsupported_scheduled_event_at_occurrence() {
+fn conditional_template_schedules_each_occurrence_of_a_static_time_event() {
     let source = "model M Real x[3]; equation for i in 1:3 loop if time > i then x[i]=1; else x[i]=0; end if; end for; end M;";
+    let flat = differential(source, "M");
+    assert!(flat.structured_equations[0].template.is_some());
+    let mut map = rumoca_core::SourceMap::new();
+    map.add("conditional_template_test.mo", source);
+    // MLS §8.5: each scalar view owns its exact instant, so the structured
+    // family needs no root of its own.
+    let dae = rumoca_phase_dae::to_dae(&flat, map).expect("each occurrence is a scheduled event");
+    assert_eq!(format!("{dae:?}").matches("TimeEventEntry {").count(), 3);
+}
+
+#[test]
+fn conditional_template_refuses_unsupported_dynamic_event_at_occurrence() {
+    let source = "model M discrete Real d(start = 1); Real x[3]; equation when time > 0.5 then d = 2; end when; for i in 1:3 loop if time > d * i then x[i]=1; else x[i]=0; end if; end for; end M;";
     let flat = differential(source, "M");
     assert!(flat.structured_equations[0].template.is_some());
     let mut map = rumoca_core::SourceMap::new();
@@ -405,5 +418,5 @@ fn conditional_template_refuses_unsupported_scheduled_event_at_occurrence() {
         panic!("unsupported event must have original construction provenance");
     };
     assert!(format!("{fault:?}").contains("UnsupportedStructuredEvent"));
-    assert_eq!(&source[span.start.0..span.end.0], "time > i");
+    assert_eq!(&source[span.start.0..span.end.0], "time > d * i");
 }

@@ -337,11 +337,13 @@ fn lower_expression_event<'dae>(
         && plan.is_none()
         && symbols.functions.expression_events.contains_span(span)
     {
-        if !symbols
-            .functions
-            .expression_events
-            .is_structured_state_relation(span)
-        {
+        let events = &symbols.functions.expression_events;
+        // MLS §8.5: every scalar view of a relation over `time` and parameters
+        // already owns its scheduled instant, so the family needs no root.
+        if events.is_structured_time_event(span) {
+            return Ok(());
+        }
+        if !events.is_structured_state_relation(span) {
             return Err(dae::DaeConstructionError::UnsupportedStructuredEvent { span });
         }
         return lower_model_relation_root(construction, lowered, provenance);
