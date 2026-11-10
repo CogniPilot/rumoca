@@ -267,13 +267,7 @@ impl ExpressionRewriter for Reads<'_> {
         span: Span,
     ) -> Expression {
         let var = name.var_name();
-        let reads_target = self.targets.iter().any(|target| {
-            var == target
-                || var
-                    .as_str()
-                    .strip_prefix(target.as_str())
-                    .is_some_and(|rest| rest.starts_with('.'))
-        });
+        let reads_target = self.targets.iter().any(|target| target.encloses(var));
         if reads_target {
             let value = subscripts
                 .is_empty()

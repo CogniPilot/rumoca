@@ -88,7 +88,37 @@ package While
     Real halved = halve(1 + time);
     Real selected = branched(table, time - 0.1);
     Real above = firstAbove({0.1, 0.4, 0.7, 1.0}, time);
+    Real divided = shrinking(1 + time, 16);
+    Real emptyDivision = shrinking(1 + time, 0);
+    Real descended = descending(1 + time);
   end Functions;
+  function shrinking
+    input Real x;
+    input Integer start;
+    output Real y;
+  protected
+    Integer gap;
+  algorithm
+    gap := start;
+    y := x;
+    while gap > 0 loop
+      y := y + gap;
+      gap := div(gap, 2);
+    end while;
+  end shrinking;
+  function descending
+    input Real x;
+    output Real y;
+  protected
+    Integer k;
+  algorithm
+    k := 3;
+    y := x;
+    while k >= 0 loop
+      y := y + k;
+      k := k - 1;
+    end while;
+  end descending;
   function coefficients "Blocks.Sources.TimeTable.getInterpolationCoefficients, reduced"
     input Real table[:, 2];
     input Real tp;
@@ -182,6 +212,9 @@ fn bounded_while_loops_compute_their_iterated_values() {
     // The first entry above 0.3 is the second; above 0.8 none within i < 4.
     assert_eq!(at(&result, "above", 0.3), 2.0);
     assert_eq!(at(&result, "above", 0.8), 0.0);
+    assert!((at(&result, "divided", 0.3) - 32.3).abs() < 1e-12);
+    assert!((at(&result, "emptyDivision", 0.3) - 1.3).abs() < 1e-12);
+    assert!((at(&result, "descended", 0.3) - 7.3).abs() < 1e-12);
 }
 
 #[test]

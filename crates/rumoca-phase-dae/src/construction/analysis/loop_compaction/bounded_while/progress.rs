@@ -8,12 +8,14 @@
 //! path every Integer local the pass writes is tracked as `a * k0 + o` with a
 //! literal `a` and an interval `o` (so `child := 2 * root` then
 //! `root := child` raises `root` by `root`), and the raise `(a - 1) * k0 + o`
-//! is bounded below with the interval `k0` has where the path first writes
+//! is bounded with the interval `k0` has where the path first writes
 //! `k` (guard facts, the loop condition and completed element accesses such
 //! as `rank[root]`, which prove `root >= 1`). Across the passes that do not
 //! end the loop `k0` strictly rises while staying within `[L, U]`, the hull
-//! of those intervals, so at most `U - L + 1` such passes run; with an exit
-//! flag the pass that ends the loop is one more. The facts at the loop head
+//! of those intervals. A uniformly negative change instead proves strictly
+//! decreasing progress over the same interval. In either direction at most
+//! `U - L + 1` such passes run; with an exit flag the pass that ends the loop
+//! is one more. The facts at the loop head
 //! are its invariant (`GuardFacts::while_head`), so `L` covers every pass.
 
 use super::super::super::guard_facts::{FactScope, GuardFacts};
@@ -218,7 +220,7 @@ impl PassProof<'_> {
         let raise = start
             .times(IntegerInterval::exact(value.scale.checked_sub(1)?))
             .plus(value.offset);
-        if raise.lower? < 1 {
+        if raise.lower.is_none_or(|lower| lower < 1) && raise.upper.is_none_or(|upper| upper > -1) {
             return None;
         }
         let (lower, upper) = start.bounds()?;
