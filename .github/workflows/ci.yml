@@ -25,10 +25,12 @@ env:
 
 # Prevent duplicate runs
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'v0.10.3' || github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  # Every main commit needs its own measured snapshot; only PR supersessions cancel.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'v0.10.3' || github.head_ref || format('{0}-{1}', github.ref_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
 permissions:
+  actions: read
   contents: write
   id-token: write
   issues: write
@@ -1590,6 +1592,7 @@ jobs:
           ref: ${{ env.CI_SOURCE_SHA }}
           token: ${{ github.token }}
           persist-credentials: true
+          fetch-depth: 2 # Both parents of the actual PR test merge.
 
       - name: Verify source checkout identity
         shell: bash
@@ -1676,19 +1679,105 @@ jobs:
           test -s target/msl/results/msl_results.json
           ./result-msl-artifacts/bin/rumoca-msl-tools compatibility-report
 
+      - name: Record full main MSL snapshot
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { pathToFileURL } = require('url');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            helper.recordMainSnapshot('target/msl/results', process.env.CI_SOURCE_SHA, context.runId);
+
+      - name: Resolve tested main baseline
+        id: main-baseline
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { pathToFileURL } = require('url');
+            const { execFileSync } = require('child_process');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            let sha;
+            try {
+              const parents = execFileSync('git', ['rev-list', '--parents', '-n', '1', 'HEAD'], { encoding: 'utf8' });
+              sha = helper.testedMainSha(process.env.CI_SOURCE_SHA, parents);
+              core.setOutput('sha', sha);
+              const binding = await helper.findMainArtifact({ github, repo: context.repo, sha, log: core.info });
+              core.setOutput('run-id', binding.runId);
+              core.setOutput('artifact-id', binding.artifactId);
+            } catch (error) {
+              helper.writeBaselineFailure('target/msl/results', error.message, sha);
+              core.setFailed(error.message);
+            }
+
+      - name: Download tested main MSL snapshot
+        id: main-download
+        if: ${{ always() && github.event_name == 'pull_request' && steps.main-baseline.outcome == 'success' }}
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.main-baseline.outputs.artifact-id }}
+          path: target/msl/pr-main-baseline
+          run-id: ${{ steps.main-baseline.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate tested main MSL snapshot
+        id: main-validated
+        if: ${{ always() && github.event_name == 'pull_request' && steps.main-baseline.outcome == 'success' }}
+        uses: actions/github-script@v8
+        env:
+          MAIN_BASELINE_SHA: ${{ steps.main-baseline.outputs.sha }}
+          MAIN_BASELINE_RUN_ID: ${{ steps.main-baseline.outputs.run-id }}
+          MAIN_BASELINE_ARTIFACT_ID: ${{ steps.main-baseline.outputs.artifact-id }}
+          MAIN_DOWNLOAD_OUTCOME: ${{ steps.main-download.outcome }}
+        with:
+          script: |
+            const { pathToFileURL } = require('url');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            try {
+              if (process.env.MAIN_DOWNLOAD_OUTCOME !== 'success') throw new Error('main baseline artifact download failed');
+              helper.readMainBaseline('target/msl/pr-main-baseline', {
+                sha: process.env.MAIN_BASELINE_SHA, runId: process.env.MAIN_BASELINE_RUN_ID,
+                artifactId: process.env.MAIN_BASELINE_ARTIFACT_ID,
+              });
+            } catch (error) {
+              helper.writeBaselineFailure('target/msl/results', error.message, process.env.MAIN_BASELINE_SHA);
+              core.setFailed(error.message);
+            }
+
       - name: Generate MSL PR summary comment
-        if: always()
+        if: ${{ always() && github.event_name == 'pull_request' && steps.main-validated.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
           test -s target/msl/results/msl_quality_current.json
-          baseline="crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json"
-          if [[ -f target/msl/baselines/msl_quality_baseline.json ]]; then
-            baseline="target/msl/baselines/msl_quality_baseline.json"
-          fi
+          test -s target/msl/pr-main-baseline/msl_quality_current.json
           ./result-msl-artifacts/bin/rumoca-msl-tools pr-comment \
             --results-dir target/msl/results \
-            --baseline "$baseline"
+            --baseline target/msl/pr-main-baseline/msl_quality_current.json
+
+      - name: Check PR model losses against tested main
+        if: ${{ always() && github.event_name == 'pull_request' && steps.main-validated.outcome == 'success' }}
+        uses: actions/github-script@v8
+        env:
+          MAIN_BASELINE_SHA: ${{ steps.main-baseline.outputs.sha }}
+          MAIN_BASELINE_RUN_ID: ${{ steps.main-baseline.outputs.run-id }}
+          MAIN_BASELINE_ARTIFACT_ID: ${{ steps.main-baseline.outputs.artifact-id }}
+        with:
+          script: |
+            const { pathToFileURL } = require('url');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            try {
+              const comparison = helper.compareAndAnnotate({
+                baselineDir: 'target/msl/pr-main-baseline', resultsDir: 'target/msl/results',
+                currentSha: process.env.CI_SOURCE_SHA,
+                binding: { sha: process.env.MAIN_BASELINE_SHA, runId: process.env.MAIN_BASELINE_RUN_ID,
+                  artifactId: process.env.MAIN_BASELINE_ARTIFACT_ID },
+              });
+              if (comparison.losses.length) core.setFailed('Model regression vs tested main: ' + comparison.losses.length + ' model/stage losses');
+            } catch (error) {
+              helper.writeBaselineFailure('target/msl/results', error.message, process.env.MAIN_BASELINE_SHA);
+              core.setFailed(error.message);
+            }
 
       - name: Publish MSL PR summary comment
         if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -1879,6 +1968,8 @@ jobs:
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_quality_current.json
+            target/msl/results/msl_main_snapshot.json
+            target/msl/results/msl_main_comparison.json
             target/msl/results/msl_band_table.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md
@@ -1887,7 +1978,7 @@ jobs:
             target/msl/results/msl_compatibility_report.md
             target/msl/results/msl_compatibility_report.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 90 || 7 }}
 
   msl-pr-status-on-failure:
     name: MSL PR status (upstream failure)
@@ -1910,13 +2001,23 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CI_SOURCE_SHA"
           printf 'source=%s workflow=%s tree=%s\n' "$CI_SOURCE_SHA" "$CI_WORKFLOW_SHA" "$(git rev-parse HEAD^{tree})"
 
+      - name: Download current MSL failure summary
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: msl-compatibility-report
+          path: target/msl/failure-report
+
       - name: Replace stale MSL statistics with the current failure status
         uses: actions/github-script@v8
         with:
           script: |
+            const fs = require('fs');
             const marker = '<!-- rumoca-msl-quality-summary -->';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
+            const reportPath = 'target/msl/failure-report/msl_pr_comment.md';
+            const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, 'utf8') : '';
+            const body = report.startsWith(marker) && report.length < 60000 ? report : [
               marker,
               '## MSL quality summary',
               '',
