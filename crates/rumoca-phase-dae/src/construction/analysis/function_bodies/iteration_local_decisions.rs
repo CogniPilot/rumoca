@@ -478,7 +478,10 @@ mod tests {
             call_scoped_actions: false,
             inside_fold: false,
         };
-        let statements = [rumoca_core::Statement::Empty { span }];
+        let statements = [rumoca_core::Statement::Empty {
+            span,
+            generated_boolean: None,
+        }];
         let error = annotate(&statements, &mut [], context)
             .expect_err("one source statement has no matching plan");
         let ToDaeError::UnsupportedFlatSemantics {

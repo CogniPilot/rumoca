@@ -87,3 +87,49 @@ fn both_returns_and_the_fall_through_keep_their_own_definitions() {
         assert_eq!(value(&report, name), expected, "{name}");
     }
 }
+
+/// A guard's reads live only in its side catalog once the return is
+/// normalized, so a store-deletion proof must keep `t := x * 2`: without it
+/// the guard reads `t := 0` and runs past the return.
+const GUARD_READS_LOCAL: &str = r#"
+model GuardedReturnLiveness
+  function f
+    input Real x;
+    input Boolean c;
+    output Real y;
+  protected
+    Real t;
+  algorithm
+    t := 0;
+    if c then
+      t := x * 2;
+    end if;
+    if t > 3 then
+      y := 1;
+      return;
+    end if;
+    y := 2;
+  end f;
+  Real s(start = 2, fixed = true);
+  Real taken;
+  Real fallthrough;
+equation
+  der(s) = 0;
+  taken = f(s, true);
+  fallthrough = f(s, false);
+end GuardedReturnLiveness;
+"#;
+
+#[test]
+fn a_guarded_return_keeps_the_local_its_condition_reads() {
+    let compiled = Compiler::new()
+        .model("GuardedReturnLiveness")
+        .compile_str(GUARD_READS_LOCAL, "GuardedReturnLiveness.mo")
+        .expect("a return guarded by a branch-assigned local compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the checked DAE evaluates");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    for (name, expected) in [("taken", 1.0), ("fallthrough", 2.0)] {
+        assert_eq!(value(&probe.report, name), expected, "{name}");
+    }
+}

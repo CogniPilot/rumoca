@@ -41,8 +41,11 @@ impl GuardFacts {
             }
             // The statement a generated Boolean is captured by: from here on it
             // holds the value of its definition.
-            rumoca_core::Statement::Empty { span } => {
-                if let Some(definition) = scope.generated.iter().find(|guard| guard.span == *span) {
+            rumoca_core::Statement::Empty { .. } => {
+                if let Some(definition) = super::super::function_returns::issued_generated_boolean(
+                    statement,
+                    scope.generated,
+                ) {
                     self.observe_accesses(&definition.value, scope);
                     self.assign(definition.target.clone(), &definition.value, scope);
                 }
@@ -206,13 +209,14 @@ impl GuardFacts {
     ) {
         for statement in statements {
             match statement {
-                rumoca_core::Statement::Empty { span } => {
+                rumoca_core::Statement::Empty { .. } => {
                     runs.extend(
-                        scope
-                            .generated
-                            .iter()
-                            .find(|store| store.span == *span && store.mutable)
-                            .map(|store| store.target.as_str().to_string()),
+                        super::super::function_returns::issued_generated_boolean(
+                            statement,
+                            scope.generated,
+                        )
+                        .filter(|store| store.mutable)
+                        .map(|store| store.target.as_str().to_string()),
                     );
                     self.after(statement, scope);
                 }

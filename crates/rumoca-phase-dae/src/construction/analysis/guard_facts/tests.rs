@@ -512,9 +512,42 @@ fn a_captured_boolean_holds_its_definition_after_its_statement() {
         ..scope
     };
     let mut facts = GuardFacts::entry();
-    facts.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    facts.after(&capture_statement(), scope);
     let held = facts.assuming(&var("g"), true, scope);
     assert_eq!(bound(&held, "r").lower, Some(5));
+}
+
+fn capture_statement() -> rumoca_core::Statement {
+    rumoca_core::Statement::Empty {
+        span: span(),
+        generated_boolean: Some(rumoca_core::GeneratedBooleanId(0)),
+    }
+}
+
+#[test]
+fn captures_at_the_same_span_transfer_their_own_definition() {
+    let names = Names::new();
+    let captures = [true, false].map(|value| function_returns::GeneratedBooleanDefinition {
+        mutable: false,
+        target: VarName::new(if value { "first" } else { "second" }),
+        value: boolean(value),
+        span: span(),
+    });
+    let scope = FactScope {
+        generated: &captures,
+        ..names.scope()
+    };
+    let mut facts = GuardFacts::entry();
+    facts.after(&capture_statement(), scope);
+    facts.after(
+        &rumoca_core::Statement::Empty {
+            span: span(),
+            generated_boolean: Some(rumoca_core::GeneratedBooleanId(1)),
+        },
+        scope,
+    );
+    assert!(facts.assuming(&var("first"), false, scope).is_unreachable());
+    assert!(facts.assuming(&var("second"), true, scope).is_unreachable());
 }
 
 #[test]
@@ -610,10 +643,7 @@ fn a_mutable_generated_store_invalidates_a_loop_entry_selection() {
     };
     let entry = GuardFacts::entry().assuming(&var("g"), false, scope);
     let body = [branch(
-        vec![(
-            not(var("g")),
-            vec![rumoca_core::Statement::Empty { span: span() }],
-        )],
+        vec![(not(var("g")), vec![capture_statement()])],
         None,
     )];
     let head = entry.loop_entry_on_path(&body, &[], scope);
@@ -770,7 +800,7 @@ fn a_false_captured_conjunction_retains_each_skipped_producer_path() {
         ..names.scope()
     };
     let mut paths = PathSet::single(GuardFacts::entry());
-    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    paths.after(&capture_statement(), scope);
     let mut undefined = paths.entering(&[&var("selected")], 1, scope);
     undefined.after(
         &branch(
@@ -807,7 +837,7 @@ fn a_true_captured_disjunction_retains_each_skipped_producer_path() {
         ..names.scope()
     };
     let mut paths = PathSet::single(GuardFacts::entry());
-    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    paths.after(&capture_statement(), scope);
     let mut undefined = paths.entering(&[&var("selected")], 0, scope);
     undefined.after(
         &branch(
@@ -843,7 +873,7 @@ fn an_unconditional_reenable_does_not_inherit_a_capture_producer() {
         ..names.scope()
     };
     let mut paths = PathSet::single(GuardFacts::entry());
-    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    paths.after(&capture_statement(), scope);
     let mut undefined = paths.entering(&[&var("selected")], 1, scope);
     undefined.after(&assign("choice", boolean(true)), scope);
     assert!(
@@ -896,7 +926,7 @@ fn a_capture_exclusion_survives_more_than_sixteen_boolean_alternatives() {
         let mut paths = sixteen_independent_boolean_paths(scope);
         // Sixteen existing paths each have three Boolean RHS alternatives,
         // so capture issuance necessarily uses the bounded owner's hull.
-        paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+        paths.after(&capture_statement(), scope);
         let skipped = paths.entering(&[&var("selected")], usize::from(conjunction), scope);
         let impossible = skipped
             .entering(&[&var("active")], usize::from(!conjunction), scope)
@@ -925,7 +955,7 @@ fn a_reenabled_operand_invalidates_the_capture_exclusion_after_a_hull() {
         ..names.scope()
     };
     let mut paths = sixteen_independent_boolean_paths(scope);
-    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    paths.after(&capture_statement(), scope);
     let mut skipped = paths.entering(&[&var("selected")], 1, scope);
     skipped.assign(&VarName::new("choice"), &boolean(true), scope);
     assert!(
@@ -961,7 +991,7 @@ fn a_boolean_call_is_not_an_exact_capture_exclusion_cube() {
         ..names.scope()
     };
     let mut paths = sixteen_independent_boolean_paths(scope);
-    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    paths.after(&capture_statement(), scope);
     let failed = paths.entering(&[&var("selected")], 1, scope);
     // Both operands may hold while the unsupported call returns false.
     assert!(

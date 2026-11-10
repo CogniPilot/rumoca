@@ -279,8 +279,8 @@ pub(super) struct FactScope<'a> {
     pub(super) shapes: &'a ShapeEnvironment,
     pub(super) integers: &'a HashSet<VarName>,
     pub(super) reals: &'a HashSet<VarName>,
-    /// The generated Booleans, each captured by the `Empty` statement at its
-    /// source span.
+    /// Generated Booleans, each captured by the `Empty` statement carrying its
+    /// catalog ID.
     pub(super) generated: &'a [function_returns::GeneratedBooleanDefinition],
 }
 

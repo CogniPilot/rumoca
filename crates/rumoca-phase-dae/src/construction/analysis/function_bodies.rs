@@ -645,12 +645,10 @@ pub(super) fn plan_function_statements(
             staged_record_fields: &staged_record_fields,
             ..context
         };
-        if let rumoca_core::Statement::Empty { span } = &statements[index]
-            && let Some(guard) = context
-                .generated_booleans
-                .iter()
-                .find(|guard| guard.span == *span)
-        {
+        if let Some(guard) = function_returns::generated_boolean_definition(
+            &statements[index],
+            context.generated_booleans,
+        )? {
             validate_function_expression_with_roles(
                 &guard.value,
                 statement_context.roles,

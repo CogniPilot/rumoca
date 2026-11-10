@@ -123,7 +123,10 @@ fn reading(field: u8) -> Expression {
 fn statement(code: u8) -> rumoca_core::Statement {
     let code = code & CODE_MASK;
     let Some(target) = selected(code) else {
-        return rumoca_core::Statement::Empty { span: span() };
+        return rumoca_core::Statement::Empty {
+            span: span(),
+            generated_boolean: None,
+        };
     };
     rumoca_core::Statement::Assignment {
         comp: component(target),

@@ -173,7 +173,7 @@ impl Snapshots<'_> {
             let selection = if self.is_immutable(&block.cond) {
                 selected
             } else {
-                self.capture(selected, guard_span, normalized)?
+                self.capture(selected, guard_span, normalized)
             };
             let unselected = Expression::Unary {
                 op: OpUnary::Not,
@@ -254,17 +254,13 @@ impl Snapshots<'_> {
         value: Expression,
         span: Span,
         normalized: &mut Vec<rumoca_core::Statement>,
-    ) -> Result<Expression, ToDaeError> {
-        // The definition is identified by its source occurrence; a copied
-        // occurrence would alias two different selections.
-        if self.guards.iter().any(|guard| guard.span == span) {
-            return Err(scope_error(
-                "repeats one source occurrence and needs a distinct identity",
-                span,
-            ));
-        }
-        let target = rumoca_core::function_branch_guard_name(span.start.0);
-        normalized.push(rumoca_core::Statement::Empty { span });
+    ) -> Expression {
+        let id = rumoca_core::GeneratedBooleanId(self.guards.len());
+        let target = rumoca_core::function_branch_guard_name(span.start.0, id.0);
+        normalized.push(rumoca_core::Statement::Empty {
+            span,
+            generated_boolean: Some(id),
+        });
         self.guards.push(GeneratedBooleanDefinition {
             mutable: false,
             target: target.clone(),
@@ -272,11 +268,11 @@ impl Snapshots<'_> {
             span,
         });
         self.immutable.insert(target.clone());
-        Ok(Expression::VarRef {
+        Expression::VarRef {
             name: Reference::generated(target.as_str()),
             subscripts: Vec::new(),
             span,
-        })
+        }
     }
 
     /// A condition reading only generated Booleans cannot change in any branch.
@@ -329,9 +325,9 @@ fn statement_contains_loop(statement: &rumoca_core::Statement) -> bool {
 
 /// Prove the lexical scope of every generated Boolean in `statements`.
 ///
-/// A definition (an `Empty` statement carrying its source span) must come
-/// before every read in the sequence that holds it, must not be repeated while
-/// it is in scope, and must read only generated Booleans already in scope. A
+/// A definition (an `Empty` statement carrying its catalog ID and source
+/// span) must come before every read in the sequence that holds it, must not
+/// be repeated while it is in scope, and must read only generated Booleans already in scope. A
 /// read outside that scope is refused. Consumers rely on this certificate: a
 /// definition in a loop body is that loop's per-iteration value, invariant in
 /// every nested loop and never carried out of the loop.
@@ -343,17 +339,23 @@ pub(super) fn certify_generated_scopes(
         .iter()
         .map(|guard| guard.target.clone())
         .collect::<HashSet<_>>();
-    ScopeCertificate { guards, generated }.sequence(statements, &HashSet::new())
+    ScopeCertificate {
+        guards,
+        generated,
+        issued: HashSet::new(),
+    }
+    .sequence(statements, &HashSet::new())
 }
 
 struct ScopeCertificate<'guards> {
     guards: &'guards [GeneratedBooleanDefinition],
     generated: HashSet<VarName>,
+    issued: HashSet<rumoca_core::GeneratedBooleanId>,
 }
 
 impl ScopeCertificate<'_> {
     fn sequence(
-        &self,
+        &mut self,
         statements: &[rumoca_core::Statement],
         enclosing: &HashSet<VarName>,
     ) -> Result<(), ToDaeError> {
@@ -365,15 +367,24 @@ impl ScopeCertificate<'_> {
     }
 
     fn statement(
-        &self,
+        &mut self,
         statement: &rumoca_core::Statement,
         scope: &mut HashSet<VarName>,
     ) -> Result<(), ToDaeError> {
         match statement {
-            rumoca_core::Statement::Empty { span } => {
-                let Some(guard) = self.guards.iter().find(|guard| guard.span == *span) else {
+            rumoca_core::Statement::Empty {
+                span,
+                generated_boolean,
+            } => {
+                let (Some(id), Some(guard)) = (
+                    generated_boolean,
+                    super::function_returns::generated_boolean_definition(statement, self.guards)?,
+                ) else {
                     return Ok(());
                 };
+                if !self.issued.insert(*id) {
+                    return Err(scope_error("repeats one normalized definition", *span));
+                }
                 self.reads_in_scope(&guard.value, scope, *span)?;
                 if !scope.insert(guard.target.clone()) && !guard.mutable {
                     return Err(scope_error("is defined twice in one scope", *span));

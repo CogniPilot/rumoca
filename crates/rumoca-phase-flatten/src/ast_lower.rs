@@ -314,7 +314,10 @@ fn statement_from_ast_with_span(
     span: Span,
 ) -> LowerResult<rumoca_core::Statement> {
     match stmt {
-        ast::Statement::Empty => Ok(rumoca_core::Statement::Empty { span }),
+        ast::Statement::Empty => Ok(rumoca_core::Statement::Empty {
+            span,
+            generated_boolean: None,
+        }),
         ast::Statement::Assignment { comp, value } => Ok(rumoca_core::Statement::Assignment {
             comp: component_reference_from_ast_with_context(comp, context)?,
             value: expression_from_ast_with_context(value, context)?,

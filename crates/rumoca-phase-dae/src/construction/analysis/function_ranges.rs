@@ -130,8 +130,10 @@ fn collect_function_assignment_targets(
                     collect_function_assignment_targets(&block.stmts, assigned, generated);
                 }
             }
-            rumoca_core::Statement::Empty { span } => {
-                if let Some(store) = generated.iter().find(|store| store.span == *span) {
+            rumoca_core::Statement::Empty { .. } => {
+                if let Some(store) =
+                    function_returns::issued_generated_boolean(statement, generated)
+                {
                     assigned.insert(store.target.as_str().to_string());
                 }
             }
