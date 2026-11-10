@@ -10,6 +10,8 @@ mod expressions;
 mod jacobians;
 #[cfg(any(target_arch = "wasm32", test))]
 mod observations;
+#[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+pub(crate) mod precompiled;
 mod profile;
 #[cfg(any(target_arch = "wasm32", test))]
 mod target_values;

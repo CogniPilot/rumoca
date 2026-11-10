@@ -118,8 +118,9 @@ impl<'p> IssuedHomes<'p> {
             .iter()
             .zip(offsets)
             .zip(types)
-            .map(|((home, offset), value_type)| {
-                let (base, cell) = home_cell(*home, *offset, slots, register_base)?;
+            .enumerate()
+            .map(|(register, ((home, offset), value_type))| {
+                let (base, cell) = home_cell(*home, *offset, slots, register_base, register)?;
                 Ok(ValueLocation {
                     base,
                     cell,
@@ -137,8 +138,14 @@ fn home_cell(
     offset: Option<u32>,
     slots: &[ValueLocation],
     register_base: u32,
+    register: usize,
 ) -> Result<(StorageBase, u32), CompileError> {
     match home {
+        solve::SolveRegisterHome::Scalar { .. } => Ok((
+            StorageBase::Scalar,
+            u32::try_from(register)
+                .map_err(|_| CompileError::Backend("issued scalar ordinal overflows".into()))?,
+        )),
         solve::SolveRegisterHome::InputSlot { slot }
         | solve::SolveRegisterHome::OutputSlot { slot } => slots
             .get(slot)

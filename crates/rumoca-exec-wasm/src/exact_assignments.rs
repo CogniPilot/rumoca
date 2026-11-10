@@ -1,14 +1,26 @@
 //! Construction-issued ordered exact assignment execution.
+#[cfg(feature = "precompiled-programs")]
+mod artifact;
 pub(crate) mod plan;
 pub(crate) mod profile;
 use crate::{TypedCallFault, WasmCompileError};
+#[cfg(feature = "precompiled-programs")]
+pub use artifact::PrecompiledExactAssignments;
 use rumoca_ir_solve::{
     ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, SolvePureCallTable,
     VarLayout,
 };
 
 pub struct CompiledExactAssignmentWasm {
-    artifact: crate::CompiledNativeCallProgramWasm,
+    artifact: crate::program_payload::ProgramPayload,
+    gather_faults: Vec<crate::NativeGatherFault>,
+    #[cfg(any(
+        feature = "precompiled-programs",
+        all(target_arch = "wasm32", target_os = "unknown")
+    ))]
+    linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
+    #[cfg(feature = "precompiled-programs")]
+    source_key: String,
     y_count: usize,
     p_count: usize,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -26,7 +38,7 @@ impl CompiledExactAssignmentWasm {
         self.artifact.faults()
     }
     pub fn gather_faults(&self) -> &[crate::NativeGatherFault] {
-        self.artifact.gather_faults()
+        &self.gather_faults
     }
 
     /// Direct schedule semantics: each complete source tuple commits in order.
@@ -54,7 +66,11 @@ impl CompiledExactAssignmentWasm {
         {
             let status = self.runtime.call_assignments(y, p, time, scratch)?;
             if status != 0 {
-                return Err(self.artifact.status_error(status));
+                return Err(self.artifact.entry_status_error(
+                    status,
+                    &self.gather_faults,
+                    &self.linear_solve_faults,
+                ));
             }
             Ok(())
         }
@@ -81,7 +97,17 @@ pub fn compile_exact_assignment_schedule_wasm(
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
     Ok(CompiledExactAssignmentWasm {
-        artifact,
+        gather_faults: artifact.gather_faults.clone(),
+        #[cfg(any(
+            feature = "precompiled-programs",
+            all(target_arch = "wasm32", target_os = "unknown")
+        ))]
+        linear_solve_faults: artifact.linear_solve_faults.clone(),
+        artifact: artifact.into(),
+        #[cfg(feature = "precompiled-programs")]
+        source_key: rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|source_key| source_key.exact_assignments(source))
+            .map_err(WasmCompileError::Input)?,
         y_count: layout.y_scalars(),
         p_count: layout.p_scalars(),
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

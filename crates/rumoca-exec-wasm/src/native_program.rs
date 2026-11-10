@@ -5,6 +5,10 @@ use rumoca_ir_solve::{NativeRefreshAssignmentSchedule, SolvePureCallTable, VarLa
 /// A checked address failure in a model scalar program, without a function owner.
 /// Kernel/program ordinals refer to the emitted construction-issued value schedule.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct NativeGatherFault {
     pub status: u32,
     pub kind: crate::TypedCallFaultKind,
@@ -18,6 +22,10 @@ pub struct NativeGatherFault {
 
 /// One failure of an original dense component, issued with its source program.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct NativeLinearSolveFault {
     pub status: u32,
     pub size: usize,
@@ -71,6 +79,23 @@ impl CompiledNativeCallProgramWasm {
     pub fn gather_faults(&self) -> &[NativeGatherFault] {
         &self.gather_faults
     }
+    pub fn math_imports(&self) -> &[&'static str] {
+        &self.math_imports
+    }
+}
+
+#[cfg(any(
+    test,
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(feature = "host-engine", not(target_arch = "wasm32")),
+    all(
+        feature = "fixed-native-guest-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )
+))]
+impl CompiledNativeCallProgramWasm {
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         self.entry_status_error(status, &self.gather_faults, &self.linear_solve_faults)
     }
@@ -95,10 +120,6 @@ impl CompiledNativeCallProgramWasm {
             return WasmCompileError::LinearSolveSource(fault.clone());
         }
         WasmCompileError::Backend(format!("native entry failure status {status}"))
-    }
-
-    pub fn math_imports(&self) -> &[&'static str] {
-        &self.math_imports
     }
 }
 

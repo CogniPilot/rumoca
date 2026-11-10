@@ -16,7 +16,7 @@ const ARTIFACT_VERSION: u32 = 1;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ArtifactKey {
+pub(super) struct ArtifactKey {
     version: u32,
     compiler_version: String,
     compiler_identity: String,
@@ -50,7 +50,11 @@ fn serialize(value: &impl Serialize) -> Result<String, WasmError> {
         .map_err(|error| WasmError::new(format!("Prebuilt artifact serialization: {error}")))
 }
 
-fn key(source: &str, model_name: &str, sources_json: &str) -> Result<ArtifactKey, WasmError> {
+pub(super) fn key(
+    source: &str,
+    model_name: &str,
+    sources_json: &str,
+) -> Result<ArtifactKey, WasmError> {
     let sources = sources::SourceSet::parse(source, sources_json)?;
     let identity = rumoca_tool_build_info::build_identity()
         .filter(|identity| !identity.ends_with("-dirty"))
@@ -90,20 +94,32 @@ pub fn export_prebuilt_artifact(
     workspace_sources_json: &str,
 ) -> Result<String, WasmError> {
     let key = key(source, model_name, workspace_sources_json)?;
+    let payload_json = serialize(&compile_payload(
+        source,
+        model_name,
+        workspace_sources_json,
+    )?)?;
+    serialize(&Envelope {
+        key,
+        payload_sha256: digest(&payload_json),
+        payload_json,
+    })
+}
+
+pub(super) fn compile_payload(
+    source: &str,
+    model_name: &str,
+    workspace_sources_json: &str,
+) -> Result<Payload, WasmError> {
     let sources = sources::SourceSet::parse(source, workspace_sources_json)?;
     let mut session = Session::default();
     sources.load(&mut session)?;
     let requested = qualify_input_model_name(&session, model_name);
     let compiled = compile_requested_model(&mut session, &requested)?;
     let experiment = SimulationExperiment::from(&compiled);
-    let payload_json = serialize(&Payload {
+    Ok(Payload {
         dae: compiled.dae,
         experiment,
-    })?;
-    serialize(&Envelope {
-        key,
-        payload_sha256: digest(&payload_json),
-        payload_json,
     })
 }
 

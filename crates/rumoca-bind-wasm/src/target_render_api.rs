@@ -14,8 +14,6 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
 #[cfg(target_arch = "wasm32")]
-use serde::Serialize;
-#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 use rumoca_compile::codegen::targets::{

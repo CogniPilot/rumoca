@@ -7,6 +7,10 @@ use rumoca_ir_solve as solve;
 
 /// One invocation frame. Fold counters identify the actual compact-domain point.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct ObservationFrame {
     pub(super) owner: solve::SolvePureCallOwnerId,
     pub(super) regions: Vec<(usize, usize)>,
@@ -17,6 +21,10 @@ pub struct ObservationFrame {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct ObservationSource {
     pub(crate) predicate: usize,
     pub(super) origin_predicate: usize,
@@ -55,6 +63,10 @@ impl ObservationSource {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(super) struct ObservationForwarding {
     pub regions: Vec<(usize, usize)>,
     pub operation: usize,
@@ -66,6 +78,10 @@ pub(super) struct ObservationForwarding {
 /// Header: initialized record count. Records: source tag then source-shaped bits.
 /// No ordinary output shares this range, and no operation may recycle it.
 #[derive(Clone)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub(crate) struct ObservationPlan {
     pub range: CellRange,
     pub capacity: u32,

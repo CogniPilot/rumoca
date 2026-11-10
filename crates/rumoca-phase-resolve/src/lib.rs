@@ -400,7 +400,10 @@ impl Resolver {
             expandable_connector_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             last_core_timing: ResolveCoreTiming::default(),
+            #[cfg(target_arch = "wasm32")]
+            last_core_timing: ResolveCoreTiming,
         };
         resolver.register_builtins();
         resolver

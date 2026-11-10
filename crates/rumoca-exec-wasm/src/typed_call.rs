@@ -19,6 +19,8 @@ mod promote;
 pub(crate) mod retained_event;
 mod runtime;
 pub use retained_event::CompiledRetainedEventWasm;
+#[cfg(feature = "precompiled-programs")]
+pub use retained_event::PrecompiledRetainedEvent;
 mod scalars;
 mod tensor;
 mod value_assertions;
@@ -41,6 +43,10 @@ use rumoca_ir_solve as solve;
 
 /// Positive return codes index this source-bound fault inventory; zero is success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum TypedCallFaultKind {
     InvalidBuffer,
     InvalidInput,
@@ -53,13 +59,17 @@ pub enum TypedCallFaultKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct TypedCallFault {
     pub status: u32,
     pub owner: solve::SolvePureCallOwnerId,
     pub operation: Option<usize>,
     /// Enclosing (operation, arm); Fold transition and failed-only message are zero.
     pub region_path: Vec<(usize, usize)>,
-    pub opcode: &'static str,
+    pub opcode: std::borrow::Cow<'static, str>,
     pub kind: TypedCallFaultKind,
     pub provenance: Span,
 }

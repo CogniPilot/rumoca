@@ -103,7 +103,7 @@ fn checked_storage_never_aliases_a_read_only_constant_tape_slot() {
 }
 
 #[test]
-fn checked_storage_reuses_tape_only_after_the_last_use() {
+fn checked_storage_keeps_address_free_scalars_out_of_the_tape() {
     let arithmetic = arithmetic();
     let program = solve::TypedProgram::construct(arithmetic, |builder| {
         // The slot value is unknown to the arithmetic constructor, so this
@@ -123,11 +123,11 @@ fn checked_storage_reuses_tape_only_after_the_last_use() {
     .unwrap();
 
     let layout = ProgramLayout::new(&program, (0, 0), IssuedHomes::of(&program)).unwrap();
-    let first = &layout.registers[0];
-    let live = &layout.registers[1];
-    let reused = &layout.registers[2];
-    assert_eq!(first.cell, reused.cell);
-    assert_ne!(first.cell, live.cell);
+    assert_eq!(layout.tape_cells, 1, "only the constant slot needs a cell");
+    for (ordinal, location) in layout.registers.iter().enumerate() {
+        assert_eq!(location.base, StorageBase::Scalar);
+        assert_eq!(location.cell as usize, ordinal);
+    }
 }
 
 #[test]
@@ -155,6 +155,12 @@ fn checked_storage_keeps_same_operation_inputs_and_output_disjoint() {
     .unwrap();
 
     let layout = ProgramLayout::new(&program, (0, 0), IssuedHomes::of(&program)).unwrap();
+    assert!(
+        layout
+            .registers
+            .iter()
+            .all(|location| location.base == StorageBase::Scalar)
+    );
     let cells = layout
         .registers
         .iter()

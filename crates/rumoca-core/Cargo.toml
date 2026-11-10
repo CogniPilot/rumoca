@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+browser-profile = ["dep:wasm-bindgen"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true, optional = true }
+
 [dependencies]
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }

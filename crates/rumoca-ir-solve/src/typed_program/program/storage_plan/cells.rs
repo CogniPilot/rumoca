@@ -7,8 +7,8 @@
 //! freed once its group's last read precedes the next group's definition,
 //! merging with adjacent free ranges. This is the in-process compiled
 //! target's own compaction (`emit/typed_program/storage.rs`), ported
-//! unchanged; the plan now issues it. A target that ignores it gives every
-//! register its own range, as before.
+//! unchanged; the plan now issues it. Address-free scalar homes do not
+//! participate in these groups and receive no frame offset.
 
 use std::collections::BTreeMap;
 
@@ -42,7 +42,7 @@ impl SolveFrameCells {
     }
 
     /// The frame offset of each register, `None` for one that lives in a
-    /// slot (or for every register of a layout that was not compacted).
+    /// slot or scalar home (or for every register of an overflowing layout).
     #[must_use]
     pub fn offsets(&self) -> &[Option<u32>] {
         &self.offsets
@@ -82,7 +82,9 @@ fn compact(
         let root = match home {
             SolveRegisterHome::Own => register,
             SolveRegisterHome::Register { register } => *register,
-            SolveRegisterHome::InputSlot { .. } | SolveRegisterHome::OutputSlot { .. } => continue,
+            SolveRegisterHome::InputSlot { .. }
+            | SolveRegisterHome::OutputSlot { .. }
+            | SolveRegisterHome::Scalar { .. } => continue,
         };
         // A checked body defines every register before reading it.
         let definition = definitions.get(register).copied().flatten().unwrap_or(0);

@@ -74,21 +74,28 @@ pub(super) fn placed_slot(slots: &[PlacedSlot], cell: u32) -> Option<&PlacedSlot
 
 impl ProgramLowerer<'_, '_> {
     /// The cells `location` occupies, through any placement of this region.
-    pub(super) fn physical(&self, location: &ValueLocation) -> PhysicalCells {
+    pub(super) fn physical(&self, location: &ValueLocation) -> Result<PhysicalCells, CompileError> {
         let count = location.value_type.scalar_count();
         let (placed, base) = match location.base {
             StorageBase::Input => (self.input_placement.as_deref(), self.input),
             StorageBase::Output => (self.output_placement.as_deref(), self.output),
             StorageBase::Tape => (None, self.tape),
+            StorageBase::Scalar => {
+                return Err(CompileError::Backend(
+                    "issued scalar home has no physical cell range".into(),
+                ));
+            }
         };
-        match placed.and_then(|slots| placed_slot(slots, location.cell)) {
-            Some(slot) => slot.cells.at(location.cell - slot.start, count),
-            None => PhysicalCells {
-                root: base,
-                cell: location.cell,
-                count,
+        Ok(
+            match placed.and_then(|slots| placed_slot(slots, location.cell)) {
+                Some(slot) => slot.cells.at(location.cell - slot.start, count),
+                None => PhysicalCells {
+                    root: base,
+                    cell: location.cell,
+                    count,
+                },
             },
-        }
+        )
     }
 
     /// Place `registers`, in order, as a region's consecutive slots on the
@@ -109,7 +116,7 @@ impl ProgramLowerer<'_, '_> {
         let mut slots = Vec::with_capacity(registers.len());
         for register in registers {
             let location = self.register(*register)?.clone();
-            let cells = self.physical(&location);
+            let cells = self.physical(&location)?;
             let shift = (i64::from(cells.cell) - i64::from(start))
                 .checked_mul(CELL_BYTES as i64)
                 .ok_or_else(|| CompileError::Backend("placed slot offset overflows".into()))?;
@@ -249,7 +256,7 @@ pub(super) fn relocate_updates_onto_placed(
         StorageBase::Output => true,
         StorageBase::Input => containing_slot(&layout.slots[..input_count], location.cell)
             .is_some_and(|slot| outputs.contains(&inputs[slot])),
-        StorageBase::Tape => false,
+        StorageBase::Tape | StorageBase::Scalar => false,
     };
     for (index, operation) in program.operations().iter().enumerate() {
         let operation = operation.operation();
@@ -376,7 +383,7 @@ impl Placed<'_> {
         let (slots, cells) = match location.base {
             StorageBase::Input => (self.input_slots, self.inputs),
             StorageBase::Output => (self.output_slots, self.outputs),
-            StorageBase::Tape => return None,
+            StorageBase::Tape | StorageBase::Scalar => return None,
         };
         let slot = containing_slot(slots, location.cell)?;
         Some(cells[slot].at(

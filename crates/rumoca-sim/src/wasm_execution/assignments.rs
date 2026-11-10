@@ -11,6 +11,7 @@ pub(super) struct WasmAssignments {
 }
 
 impl WasmAssignments {
+    #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
     pub(super) fn compile(
         source: &rumoca_ir_solve::ComputeBlock,
         owners: &rumoca_ir_solve::ContinuousRefreshOwners,
@@ -22,6 +23,45 @@ impl WasmAssignments {
             source, owners, schedule, layout, calls,
         )
         .map_err(|error| error.to_string())?;
+        Self::from_compiled(compiled, layout)
+    }
+
+    #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+    pub(super) fn compile_product(
+        source: &rumoca_ir_solve::ComputeBlock,
+        owners: &rumoca_ir_solve::ContinuousRefreshOwners,
+        schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
+        layout: &VarLayout,
+        calls: &rumoca_ir_solve::SolvePureCallTable,
+        mode: Option<&super::precompiled::ProgramMode>,
+    ) -> Result<Self, String> {
+        let key = rumoca_ir_solve::PreparedKernelSource::new(layout, calls).inspect_err(|_| {
+            if let Some(mode) = mode {
+                mode.unsupported("assignment source identity refused");
+            }
+        })?;
+        if let Some(result) = mode.and_then(|mode| mode.exact(&key, source, layout)) {
+            return Self::from_compiled(result?, layout);
+        }
+        let compiled = rumoca_exec_wasm::compile_exact_assignment_schedule_wasm(
+            source, owners, schedule, layout, calls,
+        )
+        .map_err(|error| {
+            if let Some(mode) = mode {
+                mode.unsupported("assignment compilation refused");
+            }
+            error.to_string()
+        })?;
+        if let Some(mode) = mode {
+            mode.record_exact(&compiled);
+        }
+        Self::from_compiled(compiled, layout)
+    }
+
+    fn from_compiled(
+        compiled: CompiledExactAssignmentWasm,
+        layout: &VarLayout,
+    ) -> Result<Self, String> {
         let count = usize::try_from(compiled.scratch_bytes())
             .map_err(|_| "WASM ME assignment scratch exceeds usize")?
             .div_ceil(8);

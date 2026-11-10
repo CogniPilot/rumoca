@@ -1,5 +1,7 @@
 mod options;
 pub(crate) mod prebuilt;
+#[cfg(feature = "precompiled-runtime")]
+pub(crate) mod precompiled;
 
 use options::InteractiveOptions;
 use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
@@ -107,6 +109,28 @@ impl WasmSimulationSession {
             .experiment
             .simulation_options(0.0, options.dt, &options.solver);
         create_session_from_dae(payload.dae, opts, &options, options.initial_inputs.clone())
+    }
+
+    /// Load a complete current-build runtime/core-kernel product. Source,
+    /// compiler and all options are checked before replay or instantiation.
+    #[cfg(feature = "precompiled-runtime")]
+    #[wasm_bindgen(js_name = fromPrecompiledRuntimeArtifact)]
+    pub fn from_precompiled_runtime_artifact(
+        artifact: &[u8],
+        source: &str,
+        model_name: &str,
+        workspace_sources_json: &str,
+        options_json: &str,
+    ) -> Result<WasmSimulationSession, WasmError> {
+        Ok(Self {
+            session: precompiled::load(
+                artifact,
+                source,
+                model_name,
+                workspace_sources_json,
+                options_json,
+            )?,
+        })
     }
 
     /// Set an input value by name. Takes effect on the next advance.
@@ -251,6 +275,18 @@ fn create_session_from_dae(
     options: &InteractiveOptions,
     initial_inputs: Vec<(String, f64)>,
 ) -> Result<WasmSimulationSession, WasmError> {
+    opts = configured_options(opts, options, initial_inputs);
+    let session = PREPARED_SESSION_CACHE
+        .with(|cache| cache.acquire(dae, opts))
+        .map_err(|e| WasmError::new(format!("Session creation error: {e}")))?;
+    Ok(WasmSimulationSession { session })
+}
+
+fn configured_options(
+    mut opts: rumoca_sim::SimOptions,
+    options: &InteractiveOptions,
+    initial_inputs: Vec<(String, f64)>,
+) -> rumoca_sim::SimOptions {
     if options.atol.is_finite() && options.atol > 0.0 {
         opts.atol = options.atol;
     }
@@ -260,8 +296,5 @@ fn create_session_from_dae(
     opts.initial_inputs = initial_inputs;
     opts.execution_policy = options.execution_policy;
     opts.param_overrides = options.param_overrides.clone();
-    let session = PREPARED_SESSION_CACHE
-        .with(|cache| cache.acquire(dae, opts))
-        .map_err(|e| WasmError::new(format!("Session creation error: {e}")))?;
-    Ok(WasmSimulationSession { session })
+    opts
 }

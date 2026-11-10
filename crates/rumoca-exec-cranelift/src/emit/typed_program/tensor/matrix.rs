@@ -108,13 +108,14 @@ impl ProgramLowerer<'_, '_> {
             self.builder.func,
         );
         let zero = self.builder.ins().iconst(types::I64, 0);
-        let address = |lowerer: &mut Self, location: &ValueLocation| {
-            let base = lowerer.base(location);
-            lowerer.cell_address(base, location.cell, zero)
-        };
-        let destination = address(self, destination);
-        let lhs = address(self, lhs);
-        let rhs = address(self, rhs);
+        let address =
+            |lowerer: &mut Self, location: &ValueLocation| -> Result<Value, CompileError> {
+                let base = lowerer.base(location)?;
+                Ok(lowerer.cell_address(base, location.cell, zero))
+            };
+        let destination = address(self, destination)?;
+        let lhs = address(self, lhs)?;
+        let rhs = address(self, rhs)?;
         let rows = self.builder.ins().iconst(types::I64, rows);
         let inner = self.builder.ins().iconst(types::I64, inner);
         let columns = self.builder.ins().iconst(types::I64, columns);
@@ -165,13 +166,14 @@ impl ProgramLowerer<'_, '_> {
             self.builder.func,
         );
         let zero = self.builder.ins().iconst(types::I64, 0);
-        let address = |lowerer: &mut Self, location: &ValueLocation| {
-            let base = lowerer.base(location);
-            lowerer.cell_address(base, location.cell, zero)
-        };
-        let destination = address(self, destination);
-        let lhs = address(self, lhs);
-        let rhs = address(self, rhs);
+        let address =
+            |lowerer: &mut Self, location: &ValueLocation| -> Result<Value, CompileError> {
+                let base = lowerer.base(location)?;
+                Ok(lowerer.cell_address(base, location.cell, zero))
+            };
+        let destination = address(self, destination)?;
+        let lhs = address(self, lhs)?;
+        let rhs = address(self, rhs)?;
         let rows = self.builder.ins().iconst(types::I64, rows);
         let inner = self.builder.ins().iconst(types::I64, inner);
         let columns = self.builder.ins().iconst(types::I64, columns);
