@@ -45,6 +45,45 @@ fn bound(facts: &GuardFacts, name: &str) -> IntegerInterval {
     shapes.proven_integer_interval(&var(name))
 }
 
+#[test]
+fn a_completed_shifted_access_bounds_its_integer_index() {
+    let names = Names::new();
+    for (offset, expected) in [(1, (0, 4)), (-2, (3, 7))] {
+        let mut facts = GuardFacts::entry();
+        facts.observe_accesses(
+            &element("idx", binary(OpBinary::Add, var("r"), integer(offset))),
+            names.scope(),
+        );
+        assert_eq!(bound(&facts, "r").bounds(), Some(expected));
+    }
+}
+
+#[test]
+fn unsettled_or_skipped_shifted_accesses_prove_no_bound() {
+    let names = Names::new();
+    let shifted = element("idx", binary(OpBinary::Add, var("r"), integer(1)));
+    let reads = [
+        element("idx", binary(OpBinary::Add, var("r"), var("n"))),
+        element("idx", binary(OpBinary::Mul, var("r"), integer(2))),
+        binary(
+            OpBinary::And,
+            var("gate"),
+            binary(OpBinary::Gt, shifted.clone(), integer(0)),
+        ),
+        Expression::If {
+            branches: vec![(var("gate"), shifted)],
+            else_branch: Box::new(integer(0)),
+            span: span(),
+        },
+        element("idx", binary(OpBinary::Add, var("r"), integer(i64::MIN))),
+    ];
+    for read in reads {
+        let mut facts = GuardFacts::entry();
+        facts.observe_accesses(&read, names.scope());
+        assert!(bound(&facts, "r").is_unbounded());
+    }
+}
+
 fn not(expression: Expression) -> Expression {
     Expression::Unary {
         op: OpUnary::Not,

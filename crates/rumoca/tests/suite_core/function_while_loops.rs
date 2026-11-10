@@ -91,6 +91,8 @@ package While
     Real divided = shrinking(1 + time, 16);
     Real emptyDivision = shrinking(1 + time, 0);
     Real descended = descending(1 + time);
+    Real nested = nestedShrinking(1 + time);
+    Real walked = shiftedWalk({1, 2, 3}, time);
   end Functions;
   function shrinking
     input Real x;
@@ -119,6 +121,50 @@ package While
       k := k - 1;
     end while;
   end descending;
+  function nestedShrinking
+    input Real x;
+    output Real y;
+  protected
+    Integer gap;
+    Integer i;
+    Integer j;
+  algorithm
+    y := x;
+    gap := 4;
+    while gap > 0 loop
+      i := 0;
+      while i < 3 loop
+        j := i;
+        while j >= 0 loop
+          y := y + 1;
+          j := j - 1;
+        end while;
+        i := i + 1;
+      end while;
+      gap := div(gap, 2);
+    end while;
+  end nestedShrinking;
+  function shiftedWalk
+    input Real samples[:];
+    input Real threshold;
+    output Real total;
+  protected
+    Integer position;
+    Boolean again;
+  algorithm
+    total := 0;
+    position := size(samples, 1) - 1;
+    again := true;
+    while again loop
+      total := total + samples[position + 1];
+      position := position - 1;
+      if position >= 0 then
+        again := samples[position + 1] > threshold;
+      else
+        again := false;
+      end if;
+    end while;
+  end shiftedWalk;
   function coefficients "Blocks.Sources.TimeTable.getInterpolationCoefficients, reduced"
     input Real table[:, 2];
     input Real tp;
@@ -215,6 +261,9 @@ fn bounded_while_loops_compute_their_iterated_values() {
     assert!((at(&result, "divided", 0.3) - 32.3).abs() < 1e-12);
     assert!((at(&result, "emptyDivision", 0.3) - 1.3).abs() < 1e-12);
     assert!((at(&result, "descended", 0.3) - 7.3).abs() < 1e-12);
+    assert!((at(&result, "nested", 0.3) - 19.3).abs() < 1e-12);
+    assert_eq!(at(&result, "walked", 0.3), 6.0);
+    assert_eq!(at(&result, "walked", 1.0), 5.0);
 }
 
 #[test]
@@ -293,4 +342,42 @@ end WhileBreak;
         message.contains("`firstAbove`"),
         "unexpected refusal: {message}"
     );
+}
+
+#[test]
+fn msl_shell_sort_constructs_both_runtime_directions() {
+    let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
+    let source = r#"
+model CheckedSort
+  Real values[5] = {time, 2, -1, 2, -time};
+  Real ascending[5];
+  Real descending[5];
+  Integer ascendingIndex[5];
+  Integer descendingIndex[5];
+equation
+  (ascending, ascendingIndex) = Modelica.Math.Vectors.sort(values, true);
+  (descending, descendingIndex) = Modelica.Math.Vectors.sort(values, false);
+end CheckedSort;
+"#;
+    let compiled = Compiler::new()
+        .model("CheckedSort")
+        .source_root(root.to_string_lossy().as_ref())
+        .compile_str(source, "CheckedSort.mo")
+        .expect("the actual MSL Shell sort constructs");
+    compiled.dae.inspect(|view| {
+        let sorts = (0..view.function_count())
+            .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
+            .filter(|function| function.name().as_str().ends_with("Vectors.sort"))
+            .collect::<Vec<_>>();
+        assert_eq!(sorts.len(), 1, "both calls share one shape specialization");
+        for sort in sorts {
+            assert!(
+                sort.statements().any(|statement| matches!(
+                    statement,
+                    rumoca_ir_dae::FunctionStatementView::For { .. }
+                )),
+                "the actual Shell sort retains compact loop owners"
+            );
+        }
+    });
 }
