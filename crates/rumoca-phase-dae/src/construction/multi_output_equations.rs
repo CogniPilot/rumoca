@@ -22,6 +22,7 @@ pub(super) struct MultiOutputSource<'flat> {
 /// is not a multi-result equation.
 fn multi_output_source(
     equation: &flat::Equation,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
 ) -> Result<MultiOutputSource<'_>, dae::DaeConstructionError> {
     let invalid = || dae::DaeConstructionError::InvalidExpressionForm {
         span: equation.span,
@@ -52,7 +53,7 @@ fn multi_output_source(
         name,
         arguments: args,
         provenance: dae::DaeProvenance::source(*span)?,
-        occurrence: equation.occurrence,
+        occurrence,
     })
 }
 
@@ -116,14 +117,14 @@ pub(super) fn lower_multi_output_equation<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     equation: &flat::Equation,
     plan: &MultiOutputEquationPlan,
-    owner: dae::DaeProvenance,
+    (owner, occurrence): (dae::DaeProvenance, Option<rumoca_core::ComponentOccurrence>),
     discrete: Option<MultiOutputDiscreteOwners<'_, 'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
     lower_multi_output_source(
         construction,
         coordinates,
         functions,
-        multi_output_source(equation)?,
+        multi_output_source(equation, occurrence)?,
         plan,
         owner,
         discrete,

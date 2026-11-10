@@ -15,7 +15,7 @@ pub(super) fn lower_record_equation<'dae>(
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     (equation, plan): (&flat::Equation, &RecordEquationPlan),
-    owner: dae::DaeProvenance,
+    (owner, occurrence): (dae::DaeProvenance, Option<rumoca_core::ComponentOccurrence>),
     mut discrete: Option<MultiOutputDiscreteOwners<'_, 'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
     let Expression::Binary {
@@ -59,7 +59,7 @@ pub(super) fn lower_record_equation<'dae>(
             (coordinate, discrete, _) => define_field_residual(
                 construction,
                 (coordinate, value),
-                (owner, generated, equation.occurrence),
+                (owner, generated, occurrence),
                 discrete.is_some(),
             )?,
         }

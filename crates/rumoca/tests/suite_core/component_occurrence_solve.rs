@@ -9,6 +9,56 @@ use rumoca_ir_solve as solve;
 use rumoca_sim::SimOptions;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn root_equations_keep_the_pre_component_dae_wire() {
+    let cases = [
+        (
+            "model Root Real x(start=1); initial equation x=1; equation der(x)=-x; end Root;",
+            true,
+        ),
+        (
+            "record Frame Real x; Real y; end Frame; model Root input Frame u; output Frame y; equation y=u; end Root;",
+            false,
+        ),
+        (
+            "function split input Real u; output Real a; output Real b; algorithm a:=u; b:=2*u; end split; model Root input Real u; Real a; Real b; equation (a,b)=split(u); end Root;",
+            false,
+        ),
+        (
+            "record Frame Real x; Real y; end Frame; model Root input Frame u; output Frame y; initial equation y=u; equation der(y.x)=-y.x; der(y.y)=-y.y; end Root;",
+            true,
+        ),
+        (
+            "function split input Real u; output Real a; output Real b; algorithm a:=u; b:=2*u; end split; model Root input Real u; Real a; Real b; initial equation (a,b)=split(u); equation der(a)=-a; der(b)=-b; end Root;",
+            true,
+        ),
+    ];
+    for (source, initial) in cases {
+        let compiled = Compiler::new()
+            .model("Root")
+            .compile_str(source, "root_occurrence.mo")
+            .unwrap();
+        compiled.dae.inspect(|view| {
+            assert!(view.continuous_equation_count() > 0);
+            assert_eq!(view.initialization_equation_count() > 0, initial);
+            for index in 0..view.continuous_equation_count() {
+                assert_eq!(view.continuous_equation(index).unwrap().occurrence(), None);
+            }
+            for index in 0..view.initialization_equation_count() {
+                assert_eq!(
+                    view.initialization_equation(index).unwrap().occurrence(),
+                    None
+                );
+            }
+        });
+        assert!(
+            !serde_json::to_string(&compiled.dae)
+                .unwrap()
+                .contains("\"occurrence\":")
+        );
+    }
+}
+
 fn lower(source: &str, model: &str) -> solve::SolveModel {
     let compiled = match Compiler::new()
         .model(model)
