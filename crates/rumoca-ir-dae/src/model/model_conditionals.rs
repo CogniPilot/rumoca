@@ -105,14 +105,40 @@ impl<'dae> DaeConstruction<'dae> {
     ) -> Result<T, DaeConstructionError> {
         let prior_function = self.storage.active_function_boundary;
         self.storage.active_function_boundary = true;
+        let result = self.with_model_arm_cleared(build);
+        self.storage.active_function_boundary = prior_function;
+        result
+    }
+
+    /// Run `build` with no active arm, then restore the arm and its ancestors.
+    fn with_model_arm_cleared<T>(
+        &mut self,
+        build: impl FnOnce(&mut Self) -> Result<T, DaeConstructionError>,
+    ) -> Result<T, DaeConstructionError> {
         let parent = self.storage.active_model_arm.take();
         let ancestors = std::mem::take(&mut self.storage.active_model_ancestors);
         let result = build(self);
         self.storage.active_model_arm = parent;
         self.storage.active_model_ancestors = ancestors;
-        self.storage.active_function_boundary = prior_function;
         result
     }
+
+    /// Build an operand outside the active arm: MLS §3.7.2 records a `delay`
+    /// history at every instant, whichever arm reads it. Checked replay moves
+    /// one parent edge at a time, so a read deeper than one arm is refused.
+    pub fn outside_model_arm<T>(
+        &mut self,
+        provenance: DaeProvenance,
+        build: impl FnOnce(&mut Self) -> Result<T, DaeConstructionError>,
+    ) -> Result<T, DaeConstructionError> {
+        let arm = self.storage.active_model_arm;
+        if arm.is_some_and(|arm| self.storage.model_arms[arm as usize].parent.is_some()) {
+            let span = provenance.span();
+            return Err(DaeConstructionError::UnsupportedNestedArmDelay { span });
+        }
+        self.with_model_arm_cleared(build)
+    }
+
     /// Issue both arms from the actual checked condition and current parent.
     pub fn begin_model_conditional(
         &mut self,
