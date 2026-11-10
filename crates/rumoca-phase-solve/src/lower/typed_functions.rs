@@ -1038,6 +1038,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::ExpressionOperation::Array(arguments) => {
                 self.array(node.value_type_id(), arguments, at)?
             }
+            dae::ExpressionOperation::Range(range) => {
+                self.range(node.value_type_id(), range, at)?
+            }
             dae::ExpressionOperation::Field { base, field } => {
                 self.field(node.value_type_id(), base, field, at)?
             }
@@ -1214,6 +1217,52 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             )?);
         }
         Ok(LoweredValue { value_type, leaves })
+    }
+
+    /// MLS 3.7 §10.4.3: `start : step : stop` is the Integer vector of its
+    /// elements. The checked DAE keeps the bounds as Integer literals, so the
+    /// vector is one aggregate of constants, as an array constructor of the
+    /// same literals would be.
+    fn range(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        range: dae::RangeView<'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        if self.is_zero_size(value_type)? {
+            return Ok(LoweredValue::empty(value_type));
+        }
+        let invalid = || solve::SolveProgramConstructionError::InvalidAggregate { provenance: at };
+        let expected = lower_value_type_leaves(self.view, value_type, arithmetic_profile())?;
+        let [leaf_type] = expected.as_slice() else {
+            return Err(invalid());
+        };
+        let [count] = leaf_type.dimensions() else {
+            return Err(invalid());
+        };
+        if range.element_count() != Some(*count) {
+            return Err(invalid());
+        }
+        let element_type = solve::SolveValueType::scalar(leaf_type.element_type());
+        let (start, step) = (range.start().value(), range.effective_step());
+        let mut elements = Vec::new();
+        // The checked count keeps every element between `start` and `stop`.
+        for ordinal in 0..i64::from(*count) {
+            let element = start + ordinal * step;
+            let value =
+                solve::SolveValue::integer(arithmetic_profile(), element).map_err(|_| {
+                    solve::SolveProgramConstructionError::ProfileMismatch { provenance: at }
+                })?;
+            let register = self.builder.constant(value, at)?;
+            elements.push(self.builder.coerce_to(register, &element_type, at)?);
+        }
+        let leaf =
+            self.builder
+                .construct_aggregate(&elements, leaf_type.dimensions().to_vec(), at)?;
+        Ok(LoweredValue {
+            value_type,
+            leaves: vec![leaf],
+        })
     }
 
     fn field(

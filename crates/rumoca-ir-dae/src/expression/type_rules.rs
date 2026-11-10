@@ -949,7 +949,7 @@ fn expect_arity(
     Err(invalid_arity(expected, arguments.len(), at))
 }
 
-pub(super) fn range_extent(
+pub(crate) fn range_extent(
     start: i64,
     step: i64,
     stop: i64,
