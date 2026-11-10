@@ -5,9 +5,13 @@ use crate::construction::analysis::loop_compaction::preservation_corpus::{
 use rumoca_core::BuiltinFunction;
 
 fn division(divisor: i64) -> Expression {
+    divided_by(integer(divisor))
+}
+
+fn divided_by(divisor: Expression) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Div,
-        args: vec![var("k"), integer(divisor)],
+        args: vec![var("k"), divisor],
         span: span(),
     }
 }
@@ -21,29 +25,40 @@ fn bound(
     bound_with_shapes(start, condition, body, &shapes)
 }
 
+/// Run `check` in a scope where `k` is the only Integer.
+fn with_scope<T>(shapes: &ShapeEnvironment, check: impl FnOnce(FactScope<'_>) -> T) -> T {
+    let integers = HashSet::from([VarName::new("k")]);
+    let reals = HashSet::new();
+    check(FactScope {
+        shapes,
+        integers: &integers,
+        reals: &reals,
+        generated: &[],
+    })
+}
+
+/// `k ± delta`.
+fn step(op: OpBinary, delta: i64) -> rumoca_core::Statement {
+    assign("k", binary(op, var("k"), integer(delta)))
+}
+
 fn bound_with_shapes(
     start: Option<i64>,
     condition: Expression,
     body: Vec<rumoca_core::Statement>,
     shapes: &ShapeEnvironment,
 ) -> Option<i64> {
-    let integers = HashSet::from([VarName::new("k")]);
-    let reals = HashSet::new();
-    let scope = FactScope {
-        shapes,
-        integers: &integers,
-        reals: &reals,
-        generated: &[],
-    };
-    let mut entry = GuardFacts::entry();
-    if let Some(start) = start {
-        entry.after(&assign("k", integer(start)), scope);
-    }
-    let block = StatementBlock {
-        cond: condition,
-        stmts: body,
-    };
-    iteration_bound(&block, &entry, &entry.while_head(&block, scope), scope)
+    with_scope(shapes, |scope| {
+        let mut entry = GuardFacts::entry();
+        if let Some(start) = start {
+            entry.after(&assign("k", integer(start)), scope);
+        }
+        let block = StatementBlock {
+            cond: condition,
+            stmts: body,
+        };
+        iteration_bound(&block, &entry, &entry.while_head(&block, scope), scope)
+    })
 }
 
 #[test]
@@ -109,12 +124,68 @@ fn division_rejects_nonprogress_and_additional_counter_writes() {
 }
 
 #[test]
+fn a_false_entry_condition_proves_zero_passes_in_either_direction() {
+    for (start, condition, update) in [
+        (
+            1,
+            binary(OpBinary::Gt, var("k"), integer(1)),
+            step(OpBinary::Sub, 1),
+        ),
+        (
+            5,
+            binary(OpBinary::Le, var("k"), integer(3)),
+            step(OpBinary::Add, 1),
+        ),
+    ] {
+        assert_eq!(bound(Some(start), condition, vec![update]), Some(0));
+    }
+}
+
+#[test]
+fn an_invalid_condition_access_is_not_a_zero_pass_proof() {
+    use crate::construction::analysis::loop_compaction::preservation_corpus::element;
+    let mut shapes = ShapeEnvironment::default();
+    shapes.insert(VarName::new("samples"), vec![4]);
+    assert_eq!(
+        bound_with_shapes(
+            Some(0),
+            binary(OpBinary::Gt, element("samples", var("k")), integer(0)),
+            vec![step(OpBinary::Sub, 1)],
+            &shapes
+        ),
+        None
+    );
+}
+
+#[test]
+fn an_unreachable_loop_never_peels_its_body() {
+    let shapes = ShapeEnvironment::default();
+    let statement = rumoca_core::Statement::While {
+        block: StatementBlock {
+            cond: binary(OpBinary::Gt, var("k"), integer(1)),
+            stmts: vec![step(OpBinary::Sub, 1)],
+        },
+        span: span(),
+    };
+    let normalized = with_scope(&shapes, |scope| {
+        bound_statement(&statement, scope, &GuardFacts::join(&[]))
+    });
+    let [rumoca_core::Statement::For { indices, .. }] = normalized.as_slice() else {
+        panic!("an unreachable loop has an empty compact domain, not a peeled body");
+    };
+    let Expression::Range { end, .. } = &indices[0].range else {
+        panic!("the compact loop has a fixed range");
+    };
+    assert_eq!(shapes.proven_extent(end), Some(0));
+}
+
+#[test]
 fn a_decreasing_counter_has_a_finite_progress_bound() {
     assert_eq!(
         bound(
             Some(8),
             binary(OpBinary::Ge, var("k"), integer(0)),
-            vec![assign("k", binary(OpBinary::Sub, var("k"), integer(1)))]
+            vec![step(OpBinary::Sub, 1)]
         ),
         Some(9)
     );
@@ -131,12 +202,9 @@ fn progress_rejects_stalling_or_opposite_directions_on_continuing_paths() {
         let body = vec![rumoca_core::Statement::If {
             cond_blocks: vec![StatementBlock {
                 cond: var("choose"),
-                stmts: vec![assign("k", binary(OpBinary::Sub, var("k"), integer(1)))],
+                stmts: vec![step(OpBinary::Sub, 1)],
             }],
-            else_block: Some(vec![assign(
-                "k",
-                binary(OpBinary::Add, var("k"), integer(delta)),
-            )]),
+            else_block: Some(vec![step(OpBinary::Add, delta)]),
             span: span(),
         }];
         assert_eq!(bound(Some(4), condition.clone(), body), None);
@@ -154,14 +222,7 @@ fn division_requires_its_fixed_expressions_to_stay_invariant() {
         VarName::new("zero"),
         rumoca_eval_flat::constant::Value::Integer(0),
     );
-    let update = assign(
-        "k",
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Div,
-            args: vec![var("k"), var("d")],
-            span: span(),
-        },
-    );
+    let update = assign("k", divided_by(var("d")));
     let condition = binary(OpBinary::Gt, var("k"), var("zero"));
     assert_eq!(
         bound_with_shapes(Some(8), condition.clone(), vec![update.clone()], &shapes),

@@ -90,7 +90,7 @@ fn bound_statement(
     let Some(bound) = iteration_bound(&block, facts, &head, scope) else {
         return vec![rumoca_core::Statement::While { block, span: *span }];
     };
-    if !facts.assuming(&block.cond, false, scope).is_unreachable() {
+    if bound == 0 || !facts.assuming(&block.cond, false, scope).is_unreachable() {
         return vec![guarded_for(block, bound, *span)];
     }
     let mut peeled = block.stmts.clone();
@@ -188,12 +188,38 @@ fn iteration_bound(
     head: &GuardFacts,
     scope: FactScope<'_>,
 ) -> Option<i64> {
+    // MLS §11.2.3: a condition the head facts exclude runs no pass, whichever
+    // proof form the body would otherwise match. The zero-pass loop evaluates
+    // no condition, so the proof is taken only when evaluating the condition
+    // cannot raise (a call's assertion, a division by zero).
+    if condition_cannot_raise(&block.cond)
+        && head.assuming(&block.cond, true, scope).is_unreachable()
+    {
+        return Some(0);
+    }
     if statements_exit_early(&block.stmts) {
         return None;
     }
     counter_bound(block, entry, scope)
         .or_else(|| progress_bound(block, head, scope))
         .or_else(|| division_bound(block, entry, scope))
+}
+
+/// Whether evaluating `condition` cannot raise: it calls nothing and divides
+/// by nothing. A failed array access is excluded by the head facts, which do
+/// not assume a condition access succeeds.
+fn condition_cannot_raise(condition: &Expression) -> bool {
+    !condition.contains_subexpression(|expression| {
+        matches!(
+            expression,
+            Expression::FunctionCall { .. }
+                | Expression::BuiltinCall { .. }
+                | Expression::Binary {
+                    op: OpBinary::Div | OpBinary::DivElem | OpBinary::Exp | OpBinary::ExpElem,
+                    ..
+                }
+        )
+    })
 }
 
 /// The counter proof form (see the module note).

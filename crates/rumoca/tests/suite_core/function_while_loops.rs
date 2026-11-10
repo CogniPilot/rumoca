@@ -345,6 +345,59 @@ end WhileBreak;
 }
 
 #[test]
+fn msl_interpolation_searches_forward_and_backward() {
+    let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
+    let source = r#"
+model CheckedInterpolation
+  Real backward;
+  Real forward;
+  Integer backwardIndex;
+  Integer forwardIndex;
+  Real extrapolated;
+  Integer extrapolatedIndex;
+equation
+  (backward, backwardIndex) = Modelica.Math.Vectors.interpolate(
+    {0, 0.25, 0.5, 0.75, 1}, {0, 0.5, 1, 1.5, 2}, time, 4);
+  (forward, forwardIndex) = Modelica.Math.Vectors.interpolate(
+    {0, 0.25, 0.5, 0.75, 1}, {0, 0.5, 1, 1.5, 2}, time, 1);
+  (extrapolated, extrapolatedIndex) = Modelica.Math.Vectors.interpolate(
+    {0, 0.25, 0.5, 0.75, 1}, {0, 0.5, 1, 1.5, 2}, 2*time - 0.5, 3);
+end CheckedInterpolation;
+"#;
+    let compiled = Compiler::new()
+        .model("CheckedInterpolation")
+        .source_root(root.to_string_lossy().as_ref())
+        .compile_str(source, "CheckedInterpolation.mo")
+        .unwrap_or_else(|error| panic!("the actual MSL interpolation searches construct: {error}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("the actual MSL interpolation searches simulate");
+    for &time in &result.times {
+        for (name, expected) in [
+            ("forward", 2.0 * time),
+            ("backward", 2.0 * time),
+            ("extrapolated", 4.0 * time - 1.0),
+        ] {
+            let value = at(&result, name, time);
+            assert!(
+                (value - expected).abs() < 1e-12,
+                "{name} at {time}: {value} != {expected}"
+            );
+        }
+        for name in ["forwardIndex", "backwardIndex", "extrapolatedIndex"] {
+            let index = at(&result, name, time);
+            assert!(index.fract() == 0.0 && (1.0..=4.0).contains(&index));
+        }
+    }
+}
+
+#[test]
 fn msl_shell_sort_constructs_both_runtime_directions() {
     let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
     let source = r#"
@@ -380,4 +433,65 @@ end CheckedSort;
             );
         }
     });
+}
+
+/// MLS §11.2.3 evaluates a `while` condition before the first pass even when
+/// no pass runs, so a call whose value the condition needs is evaluated. The
+/// head facts prove `k < min(check(k), 2)` false from `k = 5` alone, but `min`
+/// still needs `check(k)`; a zero-pass proof that dropped the condition would
+/// skip the call's failing assertion. (A call MLS §3.3 lets a tool skip, such
+/// as `check(k) and false`, is not this case.)
+const ZERO_PASS_CALL: &str = r#"
+model ZeroPassCall
+  function check
+    input Integer k;
+    output Integer limit;
+  algorithm
+    assert(k < 0, "the while condition was evaluated");
+    limit := 3;
+  end check;
+  function search
+    input Real u;
+    output Integer r;
+  protected
+    Integer k;
+  algorithm
+    r := 0;
+    k := 5;
+    while k < min(check(k), 2) loop
+      k := k + 1;
+      r := r + 1;
+    end while;
+  end search;
+  Real x(start = 0, fixed = true);
+  Real y;
+equation
+  der(x) = 1;
+  y = search(x);
+end ZeroPassCall;
+"#;
+
+#[test]
+fn a_zero_pass_while_still_evaluates_a_call_in_its_condition() {
+    let compiled = Compiler::new()
+        .model("ZeroPassCall")
+        .compile_str(ZERO_PASS_CALL, "ZeroPassCall.mo");
+    let outcome = compiled.map(|compiled| {
+        simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..SimOptions::default()
+            },
+        )
+    });
+    let failed = match outcome {
+        Err(_) | Ok(Err(_)) => true,
+        Ok(Ok(_)) => false,
+    };
+    assert!(
+        failed,
+        "the condition's failing assertion must not be skipped by a zero-pass bound"
+    );
 }
