@@ -122,7 +122,7 @@ function modelMap(results) {
     assert.ok(typeof row.model_name === 'string' && row.model_name.length > 0, 'invalid model identity');
     assert.ok(!map.has(row.model_name), 'duplicate model identity: ' + row.model_name);
     assert.ok(typeof row.phase_reached === 'string' && row.phase_reached.length > 0, 'missing model phase');
-    for (const key of ['is_balanced', 'initial_balance_ok']) {
+    for (const key of ['is_partial', 'is_balanced', 'initial_balance_ok']) {
       assert.ok(row[key] == null || typeof row[key] === 'boolean', 'invalid model boolean: ' + key);
     }
     map.set(row.model_name, row);
@@ -130,15 +130,18 @@ function modelMap(results) {
   return map;
 }
 
-// Match the stage-success predicates of balance_pipeline_reporting.rs. The
-// simulation stage is completion, never a claim of trace parity/certification.
+// Match balance_pipeline_reporting.rs and process_success_result's balance
+// cohort: only successfully compiled, non-partial classes count as balanced.
+// Simulation completion is never a claim of trace parity/certification.
 function stages(row) {
   const phase = row.phase_reached;
+  const balanceEligible = phase === 'Success' && row.is_partial !== true;
   const solve = row.ir_solve_file != null || row.ir_solve_seconds != null
     || ['SimBuild', 'IC', 'Sim'].includes(row.timeout_phase);
   const ic = solve && (row.ic_status === 'ic_ok' || row.timeout_phase === 'Sim');
   return { Flattened: ['ToDae', 'Success'].includes(phase), Compiled: phase === 'Success',
-    Balanced: row.is_balanced === true, 'Initial balance': row.initial_balance_ok === true,
+    Balanced: balanceEligible && row.is_balanced === true,
+    'Initial balance': balanceEligible && row.initial_balance_ok === true,
     'IR-Solve': solve, 'IC solved': ic, Simulated: ic && row.sim_status === 'sim_ok' };
 }
 

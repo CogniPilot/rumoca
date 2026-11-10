@@ -127,6 +127,7 @@ test('partial, unmeasured, duplicate and malformed result evidence refuses', t =
     data => { data.results.msl_version = 'other'; }, data => { data.results.model_results = []; },
     data => { data.results.model_results.push(row('Modelica.A')); },
     data => { data.results.model_results[0].is_balanced = 'true'; },
+    data => { data.results.model_results[0].is_partial = 'false'; },
     data => { delete data.quality.sim_target_models; }];
   for (const mutate of bad) {
     const data = snapshot(); mutate(data);
@@ -159,6 +160,23 @@ test('missing row and earlier-stage failures retain every lost stage', () => {
   Object.assign(failed, { phase_reached: 'Flatten', is_balanced: false, initial_balance_ok: false,
     ir_solve_seconds: null, ic_status: null, sim_status: null });
   assert.equal(compareModels(base, snapshot(MERGE, [failed, row('Modelica.B')])).losses.length, 7);
+});
+
+test('balance counts exclude partial and unsuccessful classes just as the producer does', () => {
+  const eligible = row('Modelica.Eligible');
+  const partial = { ...row('Modelica.Partial'), is_partial: true };
+  const failed = { ...row('Modelica.Failed'), phase_reached: 'ToDae' };
+  const base = snapshot(MAIN, [eligible, partial, failed]);
+  const current = snapshot(MERGE, [eligible,
+    { ...partial, is_balanced: false, initial_balance_ok: false },
+    { ...failed, is_balanced: false, initial_balance_ok: false }]);
+  const comparison = compareModels(base, current);
+  assert.deepEqual(comparison.counts.Balanced, { main: 1, current: 1 });
+  assert.deepEqual(comparison.counts['Initial balance'], { main: 1, current: 1 });
+  assert.deepEqual(comparison.counts.Compiled, { main: 2, current: 2 });
+  assert.deepEqual(comparison.losses, []);
+  current.results.model_results[0] = { ...eligible, is_balanced: false, initial_balance_ok: false };
+  assert.deepEqual(compareModels(base, current).losses.map(loss => loss.stage), ['Balanced', 'Initial balance']);
 });
 
 test('producer stage predicates distinguish IR and IC timeouts from completed simulations', () => {
