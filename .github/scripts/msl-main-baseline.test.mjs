@@ -239,6 +239,8 @@ test('executed Actions comparison step fails red on loss and passes equal result
     const helper = path.join(root, '.github/scripts/msl-main-baseline.mjs');
     fs.mkdirSync(path.dirname(helper), { recursive: true });
     fs.copyFileSync(new URL('./msl-main-baseline.mjs', import.meta.url), helper);
+    fs.copyFileSync(new URL('./msl-timeout-confirmation.mjs', import.meta.url),
+      path.join(root, '.github/scripts/msl-timeout-confirmation.mjs'));
     const runner = path.join(root, 'runner.cjs');
     fs.writeFileSync(runner, 'const core={setFailed(m){console.error(m);process.exitCode=1}};'
       + '(async()=>{const F=Object.getPrototypeOf(async function(){}).constructor;'
@@ -269,7 +271,7 @@ test('CI removes checked-in report fallback, preserves main runs and failure com
 test('executed summary step never selects v14, even when that file exists and main is missing', t => {
   const workflow = fs.readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
   const script = workflow.split('      - name: Generate MSL PR summary comment')[1]
-    .split('      - name: Check PR model losses')[0].split('        run: |\n')[1]
+    .split('      - name: Plan timeout-loss confirmations')[0].split('        run: |\n')[1]
     .split('\n').map(line => line.slice(10)).join('\n');
   const root = directory(t, snapshot());
   const current = path.join(root, 'target/msl/results/msl_quality_current.json');

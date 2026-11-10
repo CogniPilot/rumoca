@@ -1755,6 +1755,43 @@ jobs:
             --results-dir target/msl/results \
             --baseline target/msl/pr-main-baseline/msl_quality_current.json
 
+      - name: Plan timeout-loss confirmations
+        id: timeout-confirmations
+        if: ${{ always() && github.event_name == 'pull_request' && steps.main-validated.outcome == 'success' }}
+        uses: actions/github-script@v8
+        env:
+          MAIN_BASELINE_SHA: ${{ steps.main-baseline.outputs.sha }}
+          MAIN_BASELINE_RUN_ID: ${{ steps.main-baseline.outputs.run-id }}
+        with:
+          script: |
+            const { pathToFileURL } = require('url');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            const confirmer = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-timeout-confirmation.mjs'));
+            const baseline = helper.readMainBaseline('target/msl/pr-main-baseline', {
+              sha: process.env.MAIN_BASELINE_SHA, runId: process.env.MAIN_BASELINE_RUN_ID,
+            });
+            const current = helper.readFullSnapshot('target/msl/results', process.env.CI_SOURCE_SHA);
+            const comparison = helper.compareModels(baseline, current);
+            core.setOutput('needed', confirmer.timeoutLossModels(comparison, current).length > 0);
+
+      - name: Download OMC closure for timeout-loss confirmations
+        if: ${{ steps.timeout-confirmations.outputs.needed == 'true' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: openmodelica-cli-nix-closure
+          path: target/nix-cache
+
+      - name: Prepare OMC for timeout-loss confirmations
+        if: ${{ steps.timeout-confirmations.outputs.needed == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          zstd --decompress --stdout \
+            target/nix-cache/openmodelica-cli-closure.nar.zst | nix-store --import
+          nix build .#openmodelica-cli --out-link result-openmodelica
+          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
+          result-openmodelica/bin/omc --version
+
       - name: Check PR model losses against tested main
         if: ${{ always() && github.event_name == 'pull_request' && steps.main-validated.outcome == 'success' }}
         uses: actions/github-script@v8
@@ -1766,10 +1803,12 @@ jobs:
           script: |
             const { pathToFileURL } = require('url');
             const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-main-baseline.mjs'));
+            const confirmer = await import(pathToFileURL(process.cwd() + '/.github/scripts/msl-timeout-confirmation.mjs'));
             try {
-              const comparison = helper.compareAndAnnotate({
+              const comparison = await confirmer.confirmAndAnnotate({
                 baselineDir: 'target/msl/pr-main-baseline', resultsDir: 'target/msl/results',
                 currentSha: process.env.CI_SOURCE_SHA,
+                binaryDir: process.cwd() + '/result-msl-artifacts/bin',
                 binding: { sha: process.env.MAIN_BASELINE_SHA, runId: process.env.MAIN_BASELINE_RUN_ID,
                   artifactId: process.env.MAIN_BASELINE_ARTIFACT_ID },
               });
@@ -1970,6 +2009,7 @@ jobs:
             target/msl/results/msl_quality_current.json
             target/msl/results/msl_main_snapshot.json
             target/msl/results/msl_main_comparison.json
+            target/msl/results/timeout-confirmations/
             target/msl/results/msl_band_table.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md
