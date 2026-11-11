@@ -1,6 +1,14 @@
 //! Identity of checked executable source retained by a precompiled product.
 //! This selects no storage, lowering, omission, caching or execution policy.
 use crate::{ComputeBlock, ScalarProgramBlock, SolvePureCallTable, VarLayout};
+use std::io::Write;
+
+fn serialized_digest(source: &impl serde::Serialize) -> Result<String, String> {
+    let mut writer = std::io::BufWriter::new(blake3::Hasher::new());
+    bincode::serialize_into(&mut writer, source).map_err(|error| error.to_string())?;
+    writer.flush().map_err(|error| error.to_string())?;
+    Ok(writer.get_ref().finalize().to_hex().to_string())
+}
 
 /// Issued only from immutable checked source. A digest alone grants no entry authority.
 pub struct PreparedKernelSource {
@@ -9,10 +17,8 @@ pub struct PreparedKernelSource {
 
 impl PreparedKernelSource {
     pub fn new(layout: &VarLayout, calls: &SolvePureCallTable) -> Result<Self, String> {
-        let bytes =
-            bincode::serialize(&(1u32, layout, calls)).map_err(|error| error.to_string())?;
         Ok(Self {
-            context: blake3::hash(&bytes).to_hex().to_string(),
+            context: serialized_digest(&(1u32, layout, calls))?,
         })
     }
 
@@ -47,9 +53,7 @@ impl PreparedKernelSource {
     }
 
     fn key(&self, source: &impl serde::Serialize) -> Result<String, String> {
-        let bytes =
-            bincode::serialize(&(&self.context, source)).map_err(|error| error.to_string())?;
-        Ok(blake3::hash(&bytes).to_hex().to_string())
+        serialized_digest(&(&self.context, source))
     }
 }
 
@@ -72,6 +76,40 @@ mod tests {
 
     fn context() -> PreparedKernelSource {
         PreparedKernelSource::new(&VarLayout::default(), &SolvePureCallTable::default()).unwrap()
+    }
+
+    #[test]
+    fn buffered_digest_preserves_large_nested_bincode_bytes() {
+        let values: Vec<_> = (0..50_000u64)
+            .map(|i| (i, f64::from_bits(i << 17), i % 2 == 0))
+            .collect();
+        let source = ("nested", vec![(-0.0f64, values), (0.0, Vec::new())]);
+        let legacy = blake3::hash(&bincode::serialize(&source).unwrap());
+        assert_eq!(
+            serialized_digest(&source).unwrap(),
+            legacy.to_hex().as_str()
+        );
+    }
+
+    #[test]
+    fn buffered_context_and_program_keys_preserve_legacy_identity() {
+        let layout = VarLayout::default();
+        let calls = SolvePureCallTable::default();
+        let context = PreparedKernelSource::new(&layout, &calls).unwrap();
+        let legacy_context = blake3::hash(&bincode::serialize(&(1u32, &layout, &calls)).unwrap())
+            .to_hex()
+            .to_string();
+        assert_eq!(context.context, legacy_context);
+        let source = block(-0.0, "Identity.mo");
+        for seed in [None, Some(1), Some(3)] {
+            let legacy = blake3::hash(
+                &bincode::serialize(&(&legacy_context, ("private-v1", &source, seed))).unwrap(),
+            );
+            assert_eq!(
+                context.private_program(&source, seed).unwrap(),
+                legacy.to_hex().as_str()
+            );
+        }
     }
 
     #[test]
