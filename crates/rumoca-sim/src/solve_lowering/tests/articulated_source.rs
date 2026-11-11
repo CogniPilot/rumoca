@@ -1,4 +1,5 @@
 //! Source-to-owner proof for the same shared factor used by actual Revolute components.
+mod fmi_bindings;
 use super::{SimOptions, SimSolverMode, compile, lower_dae_for_simulation};
 const SOURCE: &str = r#"package K
     function articulatedJointReduction "One shared original articulated joint factor; the separate increment belongs to a numerical application"
