@@ -110,6 +110,7 @@ mod sensitivity;
 mod singular_mode;
 mod support;
 mod tangent_evaluators;
+mod visible_selection;
 mod warnings;
 use discrete_rows::PreparedStructuredDiscreteRows;
 pub use discrete_rows::SeededConditionMemory;

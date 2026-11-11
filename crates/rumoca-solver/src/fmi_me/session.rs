@@ -24,7 +24,7 @@ mod recovery;
 mod selected_values;
 
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, RefCell},
     marker::PhantomData,
     rc::Rc,
 };
@@ -296,7 +296,6 @@ fn build_host_state(
         state_count,
         indicator_count,
         inputs: IndexMap::new(),
-        output_index: OnceCell::new(),
         event_streak_time: None,
         event_streak_count: 0,
         sliding: rumoca_ir_solve::fmi::SlidingModes::new(indicator_count),
@@ -513,12 +512,9 @@ impl MeSimulationSession<'_, '_> {
     /// Batched `fmi3GetFloat64` over every output at the current coordinate.
     pub fn output_values(&self) -> Result<Vec<f64>, MeSessionError> {
         self.require_live()?;
-        match (&self.deferred, self.snapped_yield) {
-            (Some(deferred), _) => self
-                .host
-                .observe_off_point(deferred.observed_time, &deferred.observed_states),
-            (None, Some(snapped)) => self.host.observe_off_point(snapped, &self.host.states),
-            (None, None) => Ok(self.host.observe_current()?),
+        match self.off_point_observation() {
+            Some((time, states)) => self.host.observe_off_point(time, states),
+            None => Ok(self.host.observe_current()?),
         }
     }
 

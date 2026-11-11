@@ -442,6 +442,18 @@ impl SolveRuntime {
             .visible_values_for_names(y, params, t, names)
     }
 
+    pub fn visible_values_selected<N: AsRef<str>>(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        names: &[N],
+        selected: &mut Vec<Option<f64>>,
+    ) -> Result<usize, RuntimeSolveError> {
+        self.scalar_execution()?
+            .visible_values_selected(y, params, t, names, selected)
+    }
+
     pub fn eval_state_jacobian_v_ad_into(
         &self,
         lin: AlgebraicLinearization<'_>,

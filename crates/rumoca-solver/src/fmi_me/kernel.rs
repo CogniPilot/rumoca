@@ -879,6 +879,37 @@ impl SolveMeKernel {
         sample_time: f64,
         values: &mut Vec<f64>,
     ) -> Result<(), MeError> {
+        self.require_output_getter(observation)?;
+        *values = self.runtime.visible_values(
+            &observation.solver_y,
+            &observation.parameters,
+            sample_time,
+        )?;
+        Ok(())
+    }
+
+    /// The outputs `names` select at `observation`, in request order; `None`
+    /// for a name the component does not expose. Returns how many values
+    /// [`Self::get_outputs`] holds at the same observation.
+    pub(crate) fn get_selected_outputs<N: AsRef<str>>(
+        &self,
+        observation: &MeObservation,
+        sample_time: f64,
+        names: &[N],
+        values: &mut Vec<Option<f64>>,
+    ) -> Result<usize, MeError> {
+        self.require_output_getter(observation)?;
+        Ok(self.runtime.visible_values_selected(
+            &observation.solver_y,
+            &observation.parameters,
+            sample_time,
+            names,
+            values,
+        )?)
+    }
+
+    /// What either output getter requires of the component and the observation.
+    fn require_output_getter(&self, observation: &MeObservation) -> Result<(), MeError> {
         self.require_active_lifecycle("get_outputs")?;
         self.require_observation_brand(observation)?;
         #[cfg(feature = "native-wasm")]
@@ -887,12 +918,13 @@ impl SolveMeKernel {
                 "native outputs require original typed FMI value references",
             ));
         }
-        *values = self.runtime.visible_values(
-            &observation.solver_y,
-            &observation.parameters,
-            sample_time,
-        )?;
         Ok(())
+    }
+
+    /// How many outputs the component declares: the length of its output
+    /// names, without materializing them.
+    pub(crate) fn declared_output_count(&self) -> usize {
+        self.runtime.model().visible_projection.scalar_count()
     }
 
     pub(crate) fn set_float64(

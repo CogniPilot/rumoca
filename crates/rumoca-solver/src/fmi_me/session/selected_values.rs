@@ -1,37 +1,13 @@
-//! Reading a few named values without materializing the whole visible map.
+//! Reading a few named values without evaluating or keying every output.
 
-use rustc_hash::FxHashMap;
+use std::rc::Rc;
 
-use super::{MeSessionError, MeSimulationSession, host_state::MeHostState};
+use super::{MeSessionError, MeSimulationSession};
+use crate::fmi_me::{MeError, instance::MeKernelCell};
 
-/// Declared output positions by name, in the order `output_values` returns.
-///
-/// Built at most once per session: the inventory is the model's visible
-/// projection, which no restart, reset or chart switch replaces. The map is
-/// only ever looked up, never iterated.
-pub(super) struct OutputIndex {
-    declared: usize,
-    positions: FxHashMap<String, usize>,
-}
-
-impl OutputIndex {
-    /// A repeated name keeps its last position, as the keyed map does.
-    fn new(names: &[String]) -> Self {
-        Self {
-            declared: names.len(),
-            positions: names
-                .iter()
-                .enumerate()
-                .map(|(position, name)| (name.clone(), position))
-                .collect(),
-        }
-    }
-
-    fn value(&self, name: &str, values: &[f64]) -> Option<f64> {
-        let position = *self.positions.get(name)?;
-        values.get(position).copied()
-    }
-}
+/// What one selected read answers: the requested values, and how many values
+/// the full read holds at the same observation.
+type SelectedRead = (Vec<Option<f64>>, usize);
 
 /// The component answered with a different number of values than it declares.
 pub(super) fn output_arity_mismatch(returned: usize, declared: usize) -> MeSessionError {
@@ -42,44 +18,53 @@ pub(super) fn output_arity_mismatch(returned: usize, declared: usize) -> MeSessi
     }
 }
 
-impl MeHostState {
-    /// The output index, built from the report `output_names` reads.
-    ///
-    /// The kernel is borrowed on every call, so a kernel that is not active
-    /// refuses a selected read exactly as it refuses `output_names`.
-    fn output_index(&self) -> Result<&OutputIndex, MeSessionError> {
-        let kernel = self.kernel.borrow()?;
-        Ok(self
-            .output_index
-            .get_or_init(|| OutputIndex::new(kernel.model_description().output_names)))
-    }
+/// The selected counterpart of the full output read: one observation, the
+/// getter over `names` alone, and the same single warning report after it.
+fn read_selected_outputs<N: AsRef<str>>(
+    kernel: &Rc<MeKernelCell>,
+    names: &[N],
+) -> Result<SelectedRead, MeError> {
+    let kernel = kernel.borrow()?;
+    let observation = kernel.observe()?;
+    let mut values = Vec::new();
+    let returned =
+        kernel.get_selected_outputs(&observation, observation.time(), names, &mut values)?;
+    kernel.report_warnings(&observation)?;
+    Ok((values, returned))
 }
 
 impl MeSimulationSession<'_, '_> {
     /// Current visible values of `names` in request order, repeats included;
     /// `None` for a name that is neither an applied input nor an output.
     ///
-    /// Each entry is what [`Self::visible_values`] holds under that name, read
-    /// from one batched output observation and no keyed map.
+    /// Each entry is what [`Self::visible_values`] holds under that name, from
+    /// one observation at the coordinate [`Self::output_values`] reads, with
+    /// only the requested outputs evaluated and no keyed map.
     pub fn selected_values<N: AsRef<str>>(
         &self,
         names: &[N],
     ) -> Result<Vec<Option<f64>>, MeSessionError> {
-        let index = self.host.output_index()?;
-        let values = self.output_values()?;
-        if index.declared != values.len() {
-            return Err(output_arity_mismatch(values.len(), index.declared));
+        // Borrowed before anything is read, so a kernel that is not active
+        // refuses a selected read exactly as it refuses `output_names`.
+        let declared = self.host.kernel.borrow()?.declared_output_count();
+        let (mut values, returned) = self.observe_selected(names)?;
+        if declared != returned {
+            return Err(output_arity_mismatch(returned, declared));
         }
-        let inputs = &self.host.inputs;
-        Ok(names
-            .iter()
-            .map(|name| {
-                let name = name.as_ref();
-                inputs
-                    .get(name)
-                    .copied()
-                    .or_else(|| index.value(name, &values))
-            })
-            .collect())
+        for (name, value) in names.iter().zip(&mut values) {
+            if let Some(input) = self.host.inputs.get(name.as_ref()) {
+                *value = Some(*input);
+            }
+        }
+        Ok(values)
+    }
+
+    fn observe_selected<N: AsRef<str>>(&self, names: &[N]) -> Result<SelectedRead, MeSessionError> {
+        self.require_live()?;
+        let read = |kernel: &Rc<MeKernelCell>| read_selected_outputs(kernel, names);
+        match self.off_point_observation() {
+            Some((time, states)) => self.host.anchor().read_settled(time, states, read),
+            None => Ok(read(&self.host.kernel)?),
+        }
     }
 }

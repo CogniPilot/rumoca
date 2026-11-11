@@ -217,3 +217,104 @@ fn termination_at_a_deferred_yield_stands_on_that_yield() {
     );
     assert!(session.verification_component_is_terminated());
 }
+
+/// The input component with every kind of output: `x`, `a`, the expression
+/// `(x + a) * u` issued twice, and the input `u` read straight from storage.
+fn branch_component_with_expression_outputs() -> solve::SolveModel {
+    use solve::BinaryOp::{Add, Mul};
+    use solve::LinearOp::{Binary, LoadP, LoadY, StoreOutput};
+
+    let state = |index| vec![LoadY { dst: 0, index }, StoreOutput { src: 0 }];
+    let gain = vec![
+        LoadY { dst: 0, index: 0 },
+        LoadY { dst: 1, index: 1 },
+        Binary {
+            dst: 2,
+            op: Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        LoadP { dst: 3, index: 0 },
+        Binary {
+            dst: 4,
+            op: Mul,
+            lhs: 2,
+            rhs: 3,
+        },
+        StoreOutput { src: 4 },
+    ];
+    let input = vec![LoadP { dst: 0, index: 0 }, StoreOutput { src: 0 }];
+    refresh_owned(crate::fixture_layout::with_visible_expressions(
+        branch_component_with_input(),
+        ["x", "a", "gain", "gain_again", "u"]
+            .map(String::from)
+            .to_vec(),
+        block(
+            vec![state(0), state(1), gain.clone(), gain, input],
+            "fmi_me_deferred_selected_read.mo",
+        ),
+        Vec::new(),
+    ))
+}
+
+/// A selected read at a deferred yield observes the caller's coordinate like
+/// the full read, direct and expression outputs alike, and moves nothing.
+#[test]
+fn a_selected_read_at_a_deferred_yield_equals_the_full_read() {
+    let model = branch_component_with_expression_outputs();
+    let mut retained = retained_branch_component(&model);
+    let mut session = live_session(
+        &mut retained,
+        FaultyPlugin::new(PluginFault::Healthy),
+        false,
+    );
+    let names = ["gain_again", "x", "missing", "u", "gain", "a", "x"];
+    let agrees = |session: &me::session::MeSimulationSession<'_, 'static>| {
+        let full = session.output_values().expect("the full read observes");
+        let output = |index: usize| Some(full[index].to_bits());
+        let selected: Vec<_> = session
+            .selected_values(&names)
+            .expect("the selected read observes")
+            .iter()
+            .map(|value| value.map(f64::to_bits))
+            .collect();
+        assert_eq!(
+            selected,
+            [
+                output(3),
+                output(0),
+                None,
+                output(4),
+                output(2),
+                output(1),
+                output(0)
+            ]
+        );
+        assert_eq!(full[2].to_bits(), ((full[0] + full[1]) * full[4]).to_bits());
+        full
+    };
+
+    let at_start = agrees(&session);
+    defer_at(&mut session, 0.25);
+    let anchor = session.verification_session_point();
+    let at_yield = agrees(&session);
+    assert_ne!(
+        at_yield[2].to_bits(),
+        at_start[2].to_bits(),
+        "the expression is evaluated at the yield, not at the accepted point"
+    );
+    assert_eq!(session.time().to_bits(), 0.25_f64.to_bits());
+    assert_eq!(session.verification_session_point(), anchor);
+    assert_eq!(
+        session.verification_component_point(),
+        session.verification_session_point(),
+        "the excursion returned the component to the accepted point"
+    );
+
+    // An admitted input change makes the yield the accepted point; the
+    // expression row reads the new input there.
+    session.set_input("u", 2.0).unwrap();
+    let after_input = agrees(&session);
+    assert_eq!(after_input[4].to_bits(), 2.0_f64.to_bits());
+    assert_ne!(after_input[2].to_bits(), at_yield[2].to_bits());
+}

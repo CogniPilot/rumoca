@@ -1305,12 +1305,7 @@ impl ScalarExecutionView<'_> {
             }
         }
         if !plan.expression_rows.is_empty() {
-            self.eval_single_output_rows_with_native(
-                SpecializedRows {
-                    block: &self.scalar.visible_value_rows,
-                    cache: &self.scalar.compiled_visible_rows,
-                    failed: &self.scalar.failed_visible_rows,
-                },
+            self.eval_visible_expression_rows(
                 &plan.expression_rows,
                 RowEvalPoint { y, p: params, t },
                 values,
@@ -1318,6 +1313,26 @@ impl ScalarExecutionView<'_> {
             copy_grouped_expression_values(plan, values)?;
         }
         Ok(())
+    }
+
+    /// Evaluate the visible expression rows `rows`, each into its own slot of
+    /// `values`: the one evaluator of a planned read, full or selected.
+    pub(super) fn eval_visible_expression_rows(
+        &self,
+        rows: &[usize],
+        point: RowEvalPoint<'_>,
+        values: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.eval_single_output_rows_with_native(
+            SpecializedRows {
+                block: &self.scalar.visible_value_rows,
+                cache: &self.scalar.compiled_visible_rows,
+                failed: &self.scalar.failed_visible_rows,
+            },
+            rows,
+            point,
+            values,
+        )
     }
 
     pub fn visible_values_for_names(

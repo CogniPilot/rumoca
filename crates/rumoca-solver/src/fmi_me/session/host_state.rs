@@ -7,18 +7,12 @@
 
 mod saved_observation;
 
-use std::{
-    cell::{Cell, OnceCell},
-    rc::Rc,
-};
+use std::{cell::Cell, rc::Rc};
 
 use crate::fmi_me::instance::MeKernelCell;
 use indexmap::IndexMap;
 
-use super::{
-    MeSessionError, MeSessionLoss, MeSessionOptions, selected_values::OutputIndex, try_copied,
-    try_filled,
-};
+use super::{MeSessionError, MeSessionLoss, MeSessionOptions, try_copied, try_filled};
 use crate::{
     fmi_me::{
         MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeTime,
@@ -195,9 +189,6 @@ pub(super) struct MeHostState {
     pub(super) state_count: usize,
     pub(super) indicator_count: usize,
     pub(super) inputs: IndexMap<String, f64>,
-    /// Where each declared output sits in an output read, built on the first
-    /// selected read and kept for the session.
-    pub(super) output_index: OnceCell<OutputIndex>,
     pub(super) event_streak_time: Option<f64>,
     pub(super) event_streak_count: usize,
     /// Which indicators slide (SPEC_0044 ME-EVENT-005).
@@ -855,7 +846,18 @@ impl AcceptedAnchor<'_> {
 
     /// Batched output getters at a coordinate the session does not stand on.
     pub(super) fn observe_at(&self, time: f64, states: &[f64]) -> Result<Vec<f64>, MeSessionError> {
-        let attempted = self.read_at(time, states, observe_current);
+        self.read_settled(time, states, observe_current)
+    }
+
+    /// One read at a coordinate the session does not stand on, closed back
+    /// onto the accepted point.
+    pub(super) fn read_settled<T>(
+        &self,
+        time: f64,
+        states: &[f64],
+        read: impl FnOnce(&Rc<MeKernelCell>) -> Result<T, MeError>,
+    ) -> Result<T, MeSessionError> {
+        let attempted = self.read_at(time, states, read);
         self.settle(attempted)
     }
 
@@ -877,12 +879,12 @@ impl AcceptedAnchor<'_> {
     ///
     /// The move itself is inside the excursion, so a setter that fails after
     /// `fmi3SetTime` succeeded is restored exactly like a failed getter.
-    fn read_at(
+    fn read_at<T>(
         &self,
         time: f64,
         states: &[f64],
-        read: impl FnOnce(&Rc<MeKernelCell>) -> Result<Vec<f64>, MeError>,
-    ) -> Result<Vec<f64>, MeSessionError> {
+        read: impl FnOnce(&Rc<MeKernelCell>) -> Result<T, MeError>,
+    ) -> Result<T, MeSessionError> {
         let mut projected = try_copied(states, "projected observation states")?;
         {
             let mut kernel = self.kernel.borrow_mut()?;
