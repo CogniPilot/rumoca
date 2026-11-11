@@ -87,15 +87,8 @@ fn torn_assignments_delegate_ordered_fresh_state() {
         0,
         1,
     );
-    let sweep = eval::TornSweepComposite {
-        assignment_chunk_ends: solve::assignment_program_chunk_ends(&rows),
-        assignment_rows: rows,
-        assignment_targets: vec![0, 1],
-        assignment_spans: vec![span; 2],
-        residual_block: solve::ScalarProgramBlock::default(),
-        residual_outputs: Vec::new(),
-    };
-    let compiled = backend.compile_torn_assignment_rows(&sweep).unwrap();
+    let rows = solve::IssuedAssignmentRows::new(rows, vec![span; 2], vec![0, 1], 2).unwrap();
+    let compiled = backend.compile_issued_assignment_rows(&rows).unwrap();
     for (p, t) in [(3.0, 2.0), (-7.0, 0.5)] {
         let mut y = [99.0, 88.0];
         compiled.call(&mut y, &[p], t, &[]).unwrap();

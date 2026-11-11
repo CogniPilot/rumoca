@@ -7,7 +7,7 @@ use crate::{TypedCallFault, WasmCompileError};
 #[cfg(feature = "precompiled-programs")]
 pub use artifact::PrecompiledExactAssignments;
 use rumoca_ir_solve::{
-    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, ScalarProgramBlock,
+    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, IssuedAssignmentRows,
     SolvePureCallTable, VarLayout,
 };
 
@@ -100,21 +100,20 @@ pub fn compile_exact_assignment_schedule_wasm(
     })
 }
 
-/// The causal chain of an issued torn sweep as one schedule: each row commits
-/// its value to its Y target before the next row reads it, in issued order,
-/// with one function per issued chunk.
-pub fn compile_torn_assignment_rows_wasm(
-    rows: &ScalarProgramBlock,
-    targets: &[usize],
-    chunks: &[std::ops::Range<usize>],
+/// Issued ordered rows as one schedule call: each row commits its outputs to
+/// its slot targets before the next row reads them, in issued order, with one
+/// function per issued chunk. `layout` holds the issued slots as its Y and the
+/// model's P; seeded rows read their seed from the issued seed slots.
+pub fn compile_issued_assignment_rows_wasm(
+    rows: &IssuedAssignmentRows,
     layout: &VarLayout,
     table: &SolvePureCallTable,
 ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-    let artifact = crate::emit::emit_torn_assignment_module(rows, targets, chunks, layout, table)
+    let artifact = crate::emit::emit_issued_assignment_module(rows, layout, table)
         .map_err(WasmCompileError::Backend)?;
     CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
         rumoca_ir_solve::PreparedKernelSource::new(layout, table)
-            .and_then(|source_key| source_key.torn_assignment_rows(rows, targets, chunks))
+            .and_then(|source_key| source_key.issued_assignment_rows(rows))
     })
 }
 

@@ -471,6 +471,15 @@ impl DirectionalProgram {
         }
     }
 
+    /// Whether a native committing sweep issued at construction runs this
+    /// owner's programs; the reference interpreter has none.
+    pub(super) fn has_direct_committing_sweep(&self) -> bool {
+        match &self.execution {
+            DirectionalExecution::Reference => false,
+            DirectionalExecution::Compiled { code, .. } => code.has_direct_committing_sweep(),
+        }
+    }
+
     pub(super) fn prepare_projection_entries(
         &self,
         applications: &[&solve::ProjectionJacobianApplication],

@@ -29,15 +29,14 @@ impl Ready {
         Self::from_plan(plan, layout, table, layout.y_scalars(), None)
     }
 
-    pub(super) fn assignment_rows(
-        rows: &solve::ScalarProgramBlock,
-        targets: &[usize],
+    pub(super) fn issued_rows(
+        rows: &solve::IssuedAssignmentRows,
         layout: &VarLayout,
         table: &solve::SolvePureCallTable,
     ) -> Result<Self, String> {
         checked_slot_count(layout.y_scalars())?;
         checked_slot_count(layout.p_scalars())?;
-        let plan = Plan::assignment_rows(rows, targets, layout)?;
+        let plan = Plan::issued_rows(rows, layout)?;
         Self::from_plan(plan, layout, table, layout.y_scalars(), None)
     }
 
@@ -189,12 +188,14 @@ impl Ready {
         work: usize,
         event: Option<&solve::RetainedEventProgram>,
     ) -> Result<Self, String> {
-        // Every directional entry reads its seed from one shared extension.
+        // Every directional entry reads its seed from one shared extension,
+        // unless the plan reads it from issued Y slots.
         let seed_len = plan
             .programs
             .iter()
             .filter_map(|program| program.seed)
-            .max();
+            .max()
+            .filter(|_| plan.seed_slots.is_none());
         let programs = checked_programs(&plan, layout)?;
         let sites = conditional::call_sites(&programs)?;
         let directional = conditional::directional_call_sites(&programs)?;

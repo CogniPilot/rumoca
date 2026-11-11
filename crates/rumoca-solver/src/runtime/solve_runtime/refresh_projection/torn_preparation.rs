@@ -154,9 +154,12 @@ impl ScalarExecutionView<'_> {
                 .implicit_scalar_rhs
                 .source()
                 .torn_sweep_composite(&sweep)?;
+            let assignment = composite
+                .assignment(self.model.problem.layout.y_scalars())
+                .ok()?;
             let schedule = optional_compiled(
                 "torn_assignment_schedule",
-                backend.compile_torn_assignment_rows(&composite),
+                backend.compile_issued_assignment_rows(&assignment),
             )?;
             let residual_block = optional_compiled(
                 "torn_residual_block",

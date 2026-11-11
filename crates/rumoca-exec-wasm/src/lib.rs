@@ -66,7 +66,7 @@ mod typed_call;
 mod wasm_runtime;
 pub use exact_assignments::{
     CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm,
-    compile_torn_assignment_rows_wasm,
+    compile_issued_assignment_rows_wasm,
 };
 pub use native_program::{
     CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault,

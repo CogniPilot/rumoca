@@ -321,19 +321,20 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         );
         compiled.map(|compiled| Rc::new(compiled) as Rc<_>)
     }
-    fn compile_torn_assignment_rows(
+    fn compile_issued_assignment_rows(
         &self,
-        sweep: &rumoca_eval_solve::TornSweepComposite,
+        rows: &rumoca_ir_solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-        let compiled = assignments::WasmAssignments::compile_torn_product(
-            sweep,
+        let compiled = assignments::WasmAssignments::compile_issued_product(
+            rows,
             &self.layout,
             &self.calls,
             self.batch.mode(),
         );
         #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
-        let compiled = assignments::WasmAssignments::compile_torn(sweep, &self.layout, &self.calls);
+        let compiled =
+            assignments::WasmAssignments::compile_issued(rows, &self.layout, &self.calls);
         compiled.map(|compiled| Rc::new(compiled) as Rc<_>)
     }
     fn compile_event_transaction(

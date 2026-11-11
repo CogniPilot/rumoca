@@ -65,9 +65,6 @@ pub struct TornSweepComposite {
     pub assignment_targets: Vec<usize>,
     /// The source span of each assignment row: its residual program.
     pub assignment_spans: Vec<rumoca_core::Span>,
-    /// Exclusive ends of the function chunks a backend emits the assignment
-    /// rows in, cut between rows by the exact-assignment operation budget.
-    pub assignment_chunk_ends: Box<[usize]>,
     /// The reduced residual rows as one expression block.
     pub residual_block: ScalarProgramBlock,
     /// Flat output index of each residual row in `residual_block`'s output
@@ -76,11 +73,19 @@ pub struct TornSweepComposite {
 }
 
 impl TornSweepComposite {
-    /// Consecutive ranges of `assignment_rows` a backend emits as one function each.
-    pub fn assignment_chunks(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
-        self.assignment_chunk_ends
-            .iter()
-            .scan(0, |start, &end| Some(std::mem::replace(start, end)..end))
+    /// The causal chain as issued assignment rows over a solver Y of `y_len`
+    /// values, with the function chunks a backend emits them in.
+    pub fn assignment(
+        &self,
+        y_len: usize,
+    ) -> Result<rumoca_ir_solve::IssuedAssignmentRows, rumoca_ir_solve::IssuedAssignmentRowsError>
+    {
+        rumoca_ir_solve::IssuedAssignmentRows::new(
+            self.assignment_rows.clone(),
+            self.assignment_spans.clone(),
+            self.assignment_targets.clone(),
+            y_len,
+        )
     }
 }
 
@@ -345,8 +350,6 @@ impl PreparedScalarProgramBlock {
             assignment_targets.push(step.target_y_index);
             assignment_spans.push(self.block.program_span(step.program_row)?);
         }
-        let assignment_chunk_ends =
-            rumoca_ir_solve::assignment_program_chunk_ends(&assignment_rows);
         let mut residual_programs = Vec::new();
         let mut residual_spans = Vec::new();
         let mut residual_outputs = Vec::with_capacity(sweep.residuals.len());
@@ -373,7 +376,6 @@ impl PreparedScalarProgramBlock {
             assignment_rows,
             assignment_targets,
             assignment_spans,
-            assignment_chunk_ends,
             residual_block,
             residual_outputs,
         })

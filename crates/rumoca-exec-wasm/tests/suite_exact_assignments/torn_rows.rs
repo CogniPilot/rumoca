@@ -64,15 +64,6 @@ fn implicit_block() -> PreparedScalarProgramBlock {
 
 const STEPS: [(usize, usize); 4] = [(0, 1), (1, 2), (2, 3), (3, 4)];
 
-fn one(chunk: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
-    std::iter::once(chunk).collect()
-}
-
-/// The one chunk of all four causal rows.
-fn whole() -> Vec<std::ops::Range<usize>> {
-    one(0..STEPS.len())
-}
-
 fn layout() -> solve::VarLayout {
     solve::VarLayout::from_parts(Default::default(), 5, 2)
 }
@@ -82,22 +73,15 @@ fn composite(block: &PreparedScalarProgramBlock) -> TornSweepComposite {
     block.torn_sweep_composite(&sweep).unwrap()
 }
 
-fn rows(composite: &TornSweepComposite) -> solve::ScalarProgramBlock {
-    solve::ScalarProgramBlock::with_program_spans(
-        composite.assignment_rows.clone(),
-        composite.assignment_spans.clone(),
-    )
-    .unwrap()
+fn rows(composite: &TornSweepComposite) -> solve::IssuedAssignmentRows {
+    composite.assignment(layout().y_scalars()).unwrap()
 }
 
 fn compile(
-    composite: &TornSweepComposite,
-    chunks: &[std::ops::Range<usize>],
+    rows: &solve::IssuedAssignmentRows,
 ) -> Result<rumoca_exec_wasm::CompiledExactAssignmentWasm, rumoca_exec_wasm::WasmCompileError> {
-    rumoca_exec_wasm::compile_torn_assignment_rows_wasm(
-        &rows(composite),
-        &composite.assignment_targets,
-        chunks,
+    rumoca_exec_wasm::compile_issued_assignment_rows_wasm(
+        rows,
         &layout(),
         &solve::SolvePureCallTable::default(),
     )
@@ -147,9 +131,13 @@ fn torn_rows_run_as_one_call_with_the_per_row_bits_and_decline() {
     let block = implicit_block();
     let composite = composite(&block);
     assert_eq!(composite.assignment_targets, [1, 2, 3, 4]);
-    let chunks = composite.assignment_chunks().collect::<Vec<_>>();
-    assert_eq!(chunks, whole(), "four short rows share one chunk");
-    let compiled = compile(&composite, &chunks).unwrap();
+    let rows = rows(&composite);
+    assert_eq!(
+        rows.chunks().map(|chunk| chunk.len()).collect::<Vec<_>>(),
+        [STEPS.len()],
+        "four short rows share one chunk"
+    );
+    let compiled = compile(&rows).unwrap();
     let mut runner = runner::Runner::new(&compiled, &layout());
     let sweep = block.prepare_torn_sweep(&STEPS, &[4]).unwrap();
     let mut declined = 0;
@@ -191,56 +179,35 @@ fn torn_rows_run_as_one_call_with_the_per_row_bits_and_decline() {
 }
 
 #[test]
-fn issued_chunks_split_the_rows_into_functions_with_the_same_bits() {
+fn issued_rows_refuse_plans_that_differ_from_their_issue() {
     let block = implicit_block();
     let composite = composite(&block);
-    let single = compile(&composite, &whole()).unwrap();
-    let split = compile(&composite, &[0..1, 1..3, 3..4]).unwrap();
-    let functions = |compiled: &rumoca_exec_wasm::CompiledExactAssignmentWasm| {
-        wasmparser::Parser::new(0)
-            .parse_all(compiled.module_bytes())
-            .filter(|payload| matches!(payload, Ok(wasmparser::Payload::CodeSectionEntry(_))))
-            .count()
+    let issue = |targets: Vec<usize>, slots: usize| {
+        solve::IssuedAssignmentRows::new(
+            composite.assignment_rows.clone(),
+            composite.assignment_spans.clone(),
+            targets,
+            slots,
+        )
     };
-    assert_eq!(functions(&split), functions(&single) + 3);
-    let mut single = runner::Runner::new(&single, &layout());
-    let mut split = runner::Runner::new(&split, &layout());
-    for (y, p) in inputs() {
-        let ((one, whole), (other, parts)) = (single.run(&y, &p), split.run(&y, &p));
-        assert_eq!((one, runner::bytes(&whole)), (other, runner::bytes(&parts)));
-    }
-}
-
-#[test]
-fn torn_rows_refuse_plans_that_differ_from_their_issue() {
-    let block = implicit_block();
-    let composite = composite(&block);
-    let refused =
-        |rows: &solve::ScalarProgramBlock, targets: &[usize], chunks: &[std::ops::Range<usize>]| {
-            rumoca_exec_wasm::compile_torn_assignment_rows_wasm(
-                rows,
-                targets,
-                chunks,
-                &layout(),
-                &solve::SolvePureCallTable::default(),
-            )
-            .err()
-            .map(|error| error.to_string())
-            .unwrap()
-        };
-    let rows = rows(&composite);
-    let targets = composite.assignment_targets.as_slice();
-    for (chunks, what) in [
-        (one(0..3), "uncovered row"),
-        (vec![0..2, 3..4], "gap"),
-        (vec![0..2, 1..4], "overlap"),
-    ] {
-        assert!(
-            refused(&rows, targets, &chunks).contains("chunks differ"),
-            "{what}"
-        );
-    }
-    assert!(refused(&rows, &targets[..3], &whole()).contains("target list"));
-    assert!(refused(&rows, &[1, 2, 3, 5], &whole()).contains("Y layout"));
-    assert!(refused(&solve::ScalarProgramBlock::default(), &[], &[]).contains("no row"));
+    assert!(matches!(
+        issue(vec![1, 2, 3], 5),
+        Err(solve::IssuedAssignmentRowsError::Targets { .. })
+    ));
+    assert!(matches!(
+        issue(vec![1, 2, 3, 5], 5),
+        Err(solve::IssuedAssignmentRowsError::Slot { .. })
+    ));
+    assert!(matches!(
+        solve::IssuedAssignmentRows::new(Vec::new(), Vec::new(), Vec::new(), 5),
+        Err(solve::IssuedAssignmentRowsError::Empty)
+    ));
+    assert!(matches!(
+        issue(vec![1, 2, 3, 4], 5).unwrap().with_seed(3..6),
+        Err(solve::IssuedAssignmentRowsError::Seed { .. })
+    ));
+    // Rows issued over more slots than the layout the backend is given.
+    let wider = issue(vec![1, 2, 3, 4], 6).unwrap();
+    let error = compile(&wider).err().unwrap().to_string();
+    assert!(error.contains("slot layout"), "{error}");
 }

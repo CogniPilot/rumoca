@@ -41,16 +41,15 @@ impl PrecompiledExactAssignments {
         self.bind_expected(&expected, layout)
     }
 
-    /// Bind captured torn-sweep rows to the same issued rows, targets and
-    /// chunks of the current build.
-    pub fn bind_torn(
+    /// Bind captured issued rows to the same issued rows of the current build.
+    pub fn bind_issued(
         &self,
         key: &rumoca_ir_solve::PreparedKernelSource,
-        (rows, targets, chunks): (&ScalarProgramBlock, &[usize], &[std::ops::Range<usize>]),
+        rows: &IssuedAssignmentRows,
         layout: &VarLayout,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
         let expected = key
-            .torn_assignment_rows(rows, targets, chunks)
+            .issued_assignment_rows(rows)
             .map_err(WasmCompileError::Input)?;
         self.bind_expected(&expected, layout)
     }

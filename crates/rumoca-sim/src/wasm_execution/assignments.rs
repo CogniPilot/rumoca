@@ -58,63 +58,46 @@ impl WasmAssignments {
         Self::from_compiled(compiled, layout)
     }
 
-    /// The causal chain of an issued torn sweep as one schedule call.
+    /// Issued ordered rows as one schedule call over their issued slots.
     #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
-    pub(super) fn compile_torn(
-        sweep: &rumoca_eval_solve::TornSweepComposite,
+    pub(super) fn compile_issued(
+        rows: &rumoca_ir_solve::IssuedAssignmentRows,
         layout: &VarLayout,
         calls: &rumoca_ir_solve::SolvePureCallTable,
     ) -> Result<Self, String> {
-        let (rows, chunks) = torn_rows(sweep)?;
-        let compiled = rumoca_exec_wasm::compile_torn_assignment_rows_wasm(
-            &rows,
-            &sweep.assignment_targets,
-            &chunks,
-            layout,
-            calls,
-        )
-        .map_err(|error| error.to_string())?;
-        Self::from_compiled(compiled, layout)
+        let slots = slot_layout(rows, layout);
+        let compiled = rumoca_exec_wasm::compile_issued_assignment_rows_wasm(rows, &slots, calls)
+            .map_err(|error| error.to_string())?;
+        Self::from_compiled(compiled, &slots)
     }
 
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-    pub(super) fn compile_torn_product(
-        sweep: &rumoca_eval_solve::TornSweepComposite,
+    pub(super) fn compile_issued_product(
+        rows: &rumoca_ir_solve::IssuedAssignmentRows,
         layout: &VarLayout,
         calls: &rumoca_ir_solve::SolvePureCallTable,
         mode: Option<&super::precompiled::ProgramMode>,
     ) -> Result<Self, String> {
-        let refused = |kind: &str| {
+        let slots = slot_layout(rows, layout);
+        let key = rumoca_ir_solve::PreparedKernelSource::new(&slots, calls).inspect_err(|_| {
             if let Some(mode) = mode {
-                mode.unsupported(kind);
+                mode.unsupported("issued rows source identity refused");
             }
-        };
-        let (rows, chunks) = torn_rows(sweep).inspect_err(|_| refused("torn rows refused"))?;
-        let key = rumoca_ir_solve::PreparedKernelSource::new(layout, calls)
-            .inspect_err(|_| refused("torn assignment source identity refused"))?;
-        let issued = (
-            &rows,
-            sweep.assignment_targets.as_slice(),
-            chunks.as_slice(),
-        );
-        if let Some(result) = mode.and_then(|mode| mode.torn(&key, issued, layout)) {
-            return Self::from_compiled(result?, layout);
+        })?;
+        if let Some(result) = mode.and_then(|mode| mode.issued(&key, rows, &slots)) {
+            return Self::from_compiled(result?, &slots);
         }
-        let compiled = rumoca_exec_wasm::compile_torn_assignment_rows_wasm(
-            &rows,
-            &sweep.assignment_targets,
-            &chunks,
-            layout,
-            calls,
-        )
-        .map_err(|error| {
-            refused("torn assignment compilation refused");
+        let compiled = rumoca_exec_wasm::compile_issued_assignment_rows_wasm(rows, &slots, calls)
+            .map_err(|error| {
+            if let Some(mode) = mode {
+                mode.unsupported("issued rows compilation refused");
+            }
             error.to_string()
         })?;
         if let Some(mode) = mode {
-            mode.record_torn(&compiled);
+            mode.record_issued(&compiled);
         }
-        Self::from_compiled(compiled, layout)
+        Self::from_compiled(compiled, &slots)
     }
 
     fn from_compiled(
@@ -152,20 +135,12 @@ impl rumoca_solver::CompiledSolveAssignmentSchedule for WasmAssignments {
     }
 }
 
-/// The issued rows of a torn sweep as one spanned block, with their chunks.
-fn torn_rows(
-    sweep: &rumoca_eval_solve::TornSweepComposite,
-) -> Result<
-    (
-        rumoca_ir_solve::ScalarProgramBlock,
-        Vec<std::ops::Range<usize>>,
-    ),
-    String,
-> {
-    let rows = rumoca_ir_solve::ScalarProgramBlock::with_program_spans(
-        sweep.assignment_rows.clone(),
-        sweep.assignment_spans.clone(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok((rows, sweep.assignment_chunks().collect()))
+/// The model layout when the rows write the solver Y; otherwise the issued
+/// slots as Y beside the model's P.
+fn slot_layout(rows: &rumoca_ir_solve::IssuedAssignmentRows, layout: &VarLayout) -> VarLayout {
+    if rows.slots() == layout.y_scalars() {
+        layout.clone()
+    } else {
+        VarLayout::from_parts(Default::default(), rows.slots(), layout.p_scalars())
+    }
 }

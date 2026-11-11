@@ -142,7 +142,10 @@ use support::{
     resize_runtime_values, validate_finite_runtime_output, validate_runtime_output_len,
     visible_value_index_error, zero_runtime_values,
 };
-use tangent_evaluators::{colored_tangent_evaluators, torn_tangent_evaluators};
+use tangent_evaluators::{
+    CompiledTornTangent, colored_tangent_evaluators, compiled_torn_tangents,
+    torn_tangent_evaluators,
+};
 
 #[derive(Clone)]
 struct CompiledDiscreteSpecialization {
@@ -289,6 +292,9 @@ struct ScalarExecutionInventory {
     /// Tangent plan of each algebraic projection block's tearing, aligned
     /// with the block list; `None` for an untorn block or one without a plan.
     torn_tangents: Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]>,
+    /// The compiled one-call tangent schedule of each torn block, aligned
+    /// with `torn_tangents`; `None` keeps the evaluator's per-row tangent.
+    compiled_torn_tangents: Rc<[Option<Rc<CompiledTornTangent>>]>,
     /// Colored tangent plan of each algebraic projection block, aligned with
     /// the block list and its structural artifacts.
     colored_tangents: Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]>,
@@ -879,6 +885,16 @@ impl ScalarExecutionView<'_> {
                 .is_some_and(|block| block.tearing.as_ref() == Some(tearing)),
             "a torn block index names the plan block that owns its tearing"
         );
+        if let Some(compiled) = self
+            .scalar
+            .compiled_torn_tangents
+            .get(index)
+            .and_then(Option::as_ref)
+        {
+            return compiled
+                .eval((y, p, t), self.model.external_tables.as_slice())
+                .map(Some);
+        }
         let evaluator = self
             .scalar
             .torn_tangents

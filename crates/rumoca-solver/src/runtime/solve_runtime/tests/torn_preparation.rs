@@ -79,24 +79,18 @@ impl SolveExecutionBackend for Backend {
         super::super::test_kernels::assignment(source, owners, schedule)
     }
 
-    fn compile_torn_assignment_rows(
+    fn compile_issued_assignment_rows(
         &self,
-        sweep: &solve_eval::TornSweepComposite,
+        rows: &solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         self.attempts.set(self.attempts.get() + 1);
         if !self.composite {
             return Err("optional composite unavailable".into());
         }
         Ok(Rc::new(Schedule {
-            rows: PreparedScalarProgramBlock::new(
-                solve::ScalarProgramBlock::with_program_spans(
-                    sweep.assignment_rows.clone(),
-                    sweep.assignment_spans.clone(),
-                )
+            rows: PreparedScalarProgramBlock::new(rows.rows().clone())
                 .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?,
-            targets: sweep.assignment_targets.clone(),
+            targets: rows.targets().to_vec(),
             calls: Rc::clone(&self.calls),
         }))
     }

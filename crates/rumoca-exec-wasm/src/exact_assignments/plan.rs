@@ -1,7 +1,7 @@
 //! Final emission plan from existing construction-issued exact owners.
 use rumoca_ir_solve::{
-    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, ScalarProgramBlock,
-    VarLayout,
+    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, IssuedAssignmentRows,
+    ScalarProgramBlock, VarLayout,
 };
 
 pub(crate) struct Program {
@@ -14,6 +14,10 @@ pub(crate) struct Program {
 pub(crate) struct Plan {
     pub programs: Vec<Program>,
     pub maximum_tuple: usize,
+    /// The Y slot where seeded programs read seed coordinate 0, so commits
+    /// to seed slots are the seed later programs read; none reads the seed
+    /// from the private scratch extension.
+    pub seed_slots: Option<usize>,
 }
 
 impl Plan {
@@ -51,57 +55,64 @@ impl Plan {
         Ok(Self {
             programs,
             maximum_tuple,
+            seed_slots: None,
         })
     }
 
-    /// The issued causal chain of a torn sweep: one complete program per row,
-    /// each committing its outputs to its Y targets before the next row runs.
-    pub(crate) fn assignment_rows(
-        rows: &ScalarProgramBlock,
-        targets: &[usize],
+    /// Issued ordered rows: one complete program per row, each committing its
+    /// outputs to its slot targets before the next row runs; seeded rows read
+    /// their seed from the issued seed slots.
+    pub(crate) fn issued_rows(
+        issued: &IssuedAssignmentRows,
         layout: &VarLayout,
     ) -> Result<Self, String> {
+        let rows = issued.rows();
+        let targets = issued.targets();
+        let seed = issued.seed();
         layout
             .validate_shape_contract()
             .map_err(|error| error.to_string())?;
         if rows.stored_output_count() != targets.len() {
-            return Err("WASM torn assignment rows differ from their issued target list".into());
+            return Err("WASM issued assignment rows differ from their issued target list".into());
         }
-        if targets.iter().any(|&target| target >= layout.y_scalars()) {
-            return Err("WASM torn assignment target exceeds its issued Y layout".into());
+        if issued.slots() != layout.y_scalars()
+            || targets.iter().any(|&target| target >= layout.y_scalars())
+        {
+            return Err("WASM issued assignment target exceeds its issued slot layout".into());
         }
         let mut programs = Vec::new();
         programs
             .try_reserve_exact(rows.programs().len())
-            .map_err(|_| "WASM torn assignment plan allocation failed")?;
+            .map_err(|_| "WASM issued assignment plan allocation failed")?;
         let mut maximum_tuple = 0;
         let mut remaining = targets;
         for (index, operations) in rows.programs().iter().enumerate() {
             let span = rows
                 .program_span(index)
-                .ok_or("WASM torn assignment row has no source span")?;
+                .ok_or("WASM issued assignment row has no source span")?;
             let count = ScalarProgramBlock::program_output_count(operations);
             if count == 0 {
-                return Err("WASM torn assignment row has no output".into());
+                return Err("WASM issued assignment row has no output".into());
             }
             let (row_targets, rest) = remaining
                 .split_at_checked(count)
-                .ok_or("WASM torn assignment rows differ from their issued target list")?;
+                .ok_or("WASM issued assignment rows differ from their issued target list")?;
             remaining = rest;
             maximum_tuple = maximum_tuple.max(count);
             programs.push(Program {
                 block: ScalarProgramBlock::with_program_spans(vec![operations.clone()], vec![span])
                     .map_err(|error| error.to_string())?,
                 targets: row_targets.to_vec(),
-                seed: None,
+                seed: seed.as_ref().map(ExactSizeIterator::len),
             });
         }
         if programs.is_empty() {
-            return Err("WASM torn assignment sweep has no row".into());
+            return Err("WASM issued assignment rows have no row".into());
         }
         Ok(Self {
             programs,
             maximum_tuple,
+            seed_slots: seed.map(|seed| seed.start),
         })
     }
 
@@ -172,6 +183,7 @@ impl Plan {
         Ok(Self {
             programs,
             maximum_tuple,
+            seed_slots: None,
         })
     }
 }

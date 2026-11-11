@@ -3,6 +3,7 @@ mod fixture;
 mod private_targets;
 mod runner;
 mod torn_rows;
+mod torn_tangent;
 
 use rumoca_ir_solve as solve;
 

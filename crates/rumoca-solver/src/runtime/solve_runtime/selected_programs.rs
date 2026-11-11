@@ -515,6 +515,18 @@ impl CompleteJacobian {
         self.source.shares_program_owner(source)
     }
 
+    /// Whether the backend issued a native committing sweep over these
+    /// programs at construction; otherwise sweeps run program by program.
+    pub(super) fn has_direct_committing_sweep(&self) -> bool {
+        match &self.execution {
+            JacobianExecution::Native { committing, .. } => {
+                matches!(committing, CommittingExecution::Direct(_))
+            }
+            JacobianExecution::Shared(code) => code.has_direct_committing_sweep(),
+            JacobianExecution::Composite(_) => false,
+        }
+    }
+
     pub(super) fn prepare_projections(
         &self,
         applications: &[&solve::ProjectionJacobianApplication],

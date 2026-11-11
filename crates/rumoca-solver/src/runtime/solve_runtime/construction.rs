@@ -419,6 +419,19 @@ impl SolveRuntime {
             primary.map(|primary| &primary.scalar.derivative_jacobian_v),
         )?;
         let has_compiled_projection = implicit_projection_scalar_jacobian_v.is_compiled();
+        let torn_tangents = torn_tangent_evaluators(
+            &model.problem.continuous.algebraic_projection_plan,
+            &implicit_projection_scalar_jacobian,
+            has_compiled_projection,
+        );
+        let compiled_torn_tangents = compiled_torn_tangents(
+            &torn_tangents,
+            &implicit_projection_scalar_jacobian,
+            execution_backend
+                .as_ref()
+                .filter(|_| !implicit_projection_scalar_jacobian_v.has_direct_committing_sweep()),
+            model.problem.layout.y_scalars(),
+        );
         let expressions = match &execution_backend {
             None => PreparedExpressions::Reference,
             Some(backend) => PreparedExpressions::Compiled(Box::new(CompiledExpressions {
@@ -502,11 +515,8 @@ impl SolveRuntime {
             )?,
             expressions,
             observation_authority: solve_eval::EventObservationAuthority::default(),
-            torn_tangents: torn_tangent_evaluators(
-                &model.problem.continuous.algebraic_projection_plan,
-                &implicit_projection_scalar_jacobian,
-                has_compiled_projection,
-            ),
+            torn_tangents,
+            compiled_torn_tangents,
             // A backend-compiled JVP evaluates the colors natively, so the
             // colored lanes are built only for the interpreted runtime.
             colored_tangents: if has_compiled_projection {

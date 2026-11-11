@@ -210,15 +210,16 @@ pub trait SolveExecutionBackend {
         Err("assignment schedules are not compiled by this backend".into())
     }
 
-    /// Compile the causally ordered single-output isolator rows of an issued
-    /// torn sweep, whose outputs write to the paired solver-Y targets, so
-    /// later rows observe earlier writes. Torn back-substitution batches
-    /// through this; the default declines so existing backends stay untouched.
-    fn compile_torn_assignment_rows(
+    /// Compile issued ordered assignment rows: each row's outputs commit to
+    /// its slot targets before the next row runs, and seeded rows read their
+    /// AD seed from the issued seed slots. A torn sweep's causal chain and a
+    /// torn block's tangent sweep batch through this; the default declines so
+    /// existing backends stay untouched.
+    fn compile_issued_assignment_rows(
         &self,
-        _sweep: &solve_eval::TornSweepComposite,
+        _rows: &solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("torn assignment rows are not compiled by this backend".to_string())
+        Err("issued assignment rows are not compiled by this backend".to_string())
     }
 
     fn compile_event_transaction(

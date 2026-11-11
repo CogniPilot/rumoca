@@ -223,12 +223,12 @@ impl SolveExecutionBackend for Backend {
         self.inner
             .compile_assignment_schedule(source, owners, schedule)
     }
-    fn compile_torn_assignment_rows(
+    fn compile_issued_assignment_rows(
         &self,
-        sweep: &eval::TornSweepComposite,
+        rows: &solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         self.calls.prepare();
-        self.inner.compile_torn_assignment_rows(sweep)
+        self.inner.compile_issued_assignment_rows(rows)
     }
     fn compile_event_transaction(
         &self,

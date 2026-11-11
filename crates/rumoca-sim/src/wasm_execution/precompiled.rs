@@ -6,7 +6,6 @@ use rumoca_exec_wasm::{
 };
 use rumoca_ir_solve::{ComputeBlock, PreparedKernelSource, ScalarProgramBlock, VarLayout};
 use serde::{Deserialize, Serialize};
-use std::ops::Range;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -14,7 +13,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 pub(crate) struct CorePrograms {
     private: Vec<PrecompiledPrivatePrograms>,
     exact: Vec<PrecompiledExactAssignments>,
-    torn: Vec<PrecompiledExactAssignments>,
+    issued: Vec<PrecompiledExactAssignments>,
     observations: Vec<PrecompiledRetainedEvent>,
     uncompiled: Vec<String>,
 }
@@ -22,7 +21,7 @@ pub(crate) struct CorePrograms {
 pub(crate) struct LoadedPrograms {
     private: RefCell<VecDeque<PrecompiledPrivatePrograms>>,
     exact: RefCell<VecDeque<PrecompiledExactAssignments>>,
-    torn: RefCell<VecDeque<PrecompiledExactAssignments>>,
+    issued: RefCell<VecDeque<PrecompiledExactAssignments>>,
     observations: RefCell<VecDeque<PrecompiledRetainedEvent>>,
     errors: RefCell<Vec<String>>,
 }
@@ -69,7 +68,7 @@ impl ProgramScope {
         Self::begin(ProgramMode::Load(Rc::new(LoadedPrograms {
             private: RefCell::new(programs.private.into()),
             exact: RefCell::new(programs.exact.into()),
-            torn: RefCell::new(programs.torn.into()),
+            issued: RefCell::new(programs.issued.into()),
             observations: RefCell::new(programs.observations.into()),
             errors: RefCell::new(Vec::new()),
         })))
@@ -100,7 +99,7 @@ impl ProgramScope {
         }
         if !programs.private.borrow().is_empty()
             || !programs.exact.borrow().is_empty()
-            || !programs.torn.borrow().is_empty()
+            || !programs.issued.borrow().is_empty()
             || !programs.observations.borrow().is_empty()
         {
             return Err("precompiled kernel inventory has unconsumed entries".into());
@@ -234,24 +233,24 @@ impl ProgramMode {
                 .push(PrecompiledExactAssignments::from_compiled(program));
         }
     }
-    pub(crate) fn torn(
+    pub(crate) fn issued(
         &self,
         key: &PreparedKernelSource,
-        sweep: (&ScalarProgramBlock, &[usize], &[Range<usize>]),
+        rows: &rumoca_ir_solve::IssuedAssignmentRows,
         layout: &VarLayout,
     ) -> Option<Result<CompiledExactAssignmentWasm, String>> {
         let Self::Load(programs) = self else {
             return None;
         };
-        let wire = programs.torn.borrow_mut().pop_front();
+        let wire = programs.issued.borrow_mut().pop_front();
         let result = wire
             .ok_or_else(|| {
-                "precompiled torn assignment inventory is exhausted; compilation is disabled"
+                "precompiled issued assignment inventory is exhausted; compilation is disabled"
                     .to_owned()
             })
             .and_then(|program| {
                 program
-                    .bind_torn(key, sweep, layout)
+                    .bind_issued(key, rows, layout)
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = &result {
@@ -259,11 +258,11 @@ impl ProgramMode {
         }
         Some(result)
     }
-    pub(crate) fn record_torn(&self, program: &CompiledExactAssignmentWasm) {
+    pub(crate) fn record_issued(&self, program: &CompiledExactAssignmentWasm) {
         if let Self::Capture(output) = self {
             output
                 .borrow_mut()
-                .torn
+                .issued
                 .push(PrecompiledExactAssignments::from_compiled(program));
         }
     }

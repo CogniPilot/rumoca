@@ -24,6 +24,8 @@ mod feature_query;
 pub mod fmi;
 mod initial_values;
 mod initialization;
+mod issued_assignment_rows;
+pub use issued_assignment_rows::{IssuedAssignmentRows, IssuedAssignmentRowsError};
 mod layout;
 mod linear_op;
 mod model;
@@ -129,7 +131,8 @@ pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use static_parameters::ContinuousStaticParameters;
 pub use tangent_lanes::{
     ColoredLaneCall, ColoredTangentPlan, TangentLaneCatalog, TangentLaneError, TangentLaneProgram,
-    TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
+    TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentSchedule,
+    TornTangentScheduleRefusal, TornTangentSlots, TornTangentStep, tensor_lanes,
 };
 pub use tangent_workspace::{
     SolveTangentOccurrence, SolveTangentSchedule, SolveTangentWorkspace, SolveTangentWorkspaceError,

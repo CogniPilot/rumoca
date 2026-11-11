@@ -171,13 +171,13 @@ impl SolveExecutionBackend for RecordingBackend {
         )
     }
 
-    fn compile_torn_assignment_rows(
+    fn compile_issued_assignment_rows(
         &self,
-        sweep: &solve_eval::TornSweepComposite,
+        rows: &solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         self.log.observe(
-            "torn_assignment_rows",
-            self.inner.compile_torn_assignment_rows(sweep),
+            "issued_assignment_rows",
+            self.inner.compile_issued_assignment_rows(rows),
         )
     }
 
