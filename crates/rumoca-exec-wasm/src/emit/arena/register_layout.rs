@@ -1,6 +1,10 @@
 //! Projection of the checked Solve IR root register layout.
 use rumoca_ir_solve::{LinearOp, Reg, RootRegisterLayout};
 
+/// Largest component, in cells, requested as local homes: one dense 6x6.
+#[cfg(feature = "diagnostic-root-scalar-locals")]
+const VALUE_LOCAL_EXTENT: usize = 36;
+
 #[derive(Debug)]
 pub(in crate::emit) struct RegisterLayout(RootRegisterLayout);
 
@@ -9,8 +13,9 @@ impl RegisterLayout {
         #[cfg(feature = "diagnostic-root-scalar-locals")]
         let layout = RootRegisterLayout::for_target(
             program,
-            rumoca_ir_solve::RootRegisterTarget::scalar_locals(
+            rumoca_ir_solve::RootRegisterTarget::value_locals(
                 crate::typed_call::cost::ENGINE_LOCAL_LIMIT,
+                VALUE_LOCAL_EXTENT,
             ),
         )?;
         #[cfg(not(feature = "diagnostic-root-scalar-locals"))]

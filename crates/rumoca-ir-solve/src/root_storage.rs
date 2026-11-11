@@ -8,6 +8,7 @@ use crate::{LinearOp, Reg, RegisterVersionProgram};
 #[derive(Clone, Copy, Debug)]
 pub struct RootRegisterTarget {
     max_scalar_locals: u32,
+    max_value_extent: usize,
 }
 
 impl RootRegisterTarget {
@@ -15,13 +16,21 @@ impl RootRegisterTarget {
     pub const fn memory_only() -> Self {
         Self {
             max_scalar_locals: 0,
+            max_value_extent: 0,
         }
     }
 
     /// Request scalar f64 homes within the target's available local capacity.
     pub const fn scalar_locals(maximum: u32) -> Self {
+        Self::value_locals(maximum, 1)
+    }
+
+    /// Request f64 local homes for every cell of statically addressed
+    /// components of at most `extent` cells, within `maximum` local slots.
+    pub const fn value_locals(maximum: u32, extent: usize) -> Self {
         Self {
             max_scalar_locals: maximum,
+            max_value_extent: extent,
         }
     }
 }
@@ -96,6 +105,7 @@ impl RootRegisterLayout {
                 &versions,
                 &components,
                 target.max_scalar_locals,
+                target.max_value_extent,
             )?
         };
         let extent = allocate(&mut components)?;

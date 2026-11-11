@@ -1,5 +1,6 @@
 mod faults;
 mod runner;
+mod tensors;
 
 use super::*;
 use runner::Runner;

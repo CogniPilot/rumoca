@@ -1,5 +1,6 @@
 //! Compact tensor loads, replication and row-major permutations.
 
+use super::arithmetic::cell;
 use super::*;
 use rumoca_ir_solve::TensorInputKind;
 
@@ -22,6 +23,15 @@ impl BodyEmitter<'_> {
             TensorInputKind::Y => Y_PTR_PARAM,
             TensorInputKind::P => P_PTR_PARAM,
         };
+        if self.has_value_local(&[dst_start])? {
+            for element in 0..count {
+                let index = input_start
+                    .checked_add(element)
+                    .ok_or("native tensor input range overflow")?;
+                self.emit_array_load(cell(dst_start, element, 1)?, index, pointer)?;
+            }
+            return Ok(());
+        }
         self.push_arena_address(dst_start, None, 1)?;
         self.push(Instruction::LocalGet(pointer));
         self.push(Instruction::I32Const(cell_bytes(input_start)?));
@@ -115,6 +125,16 @@ impl BodyEmitter<'_> {
             .checked_mul(columns)
             .and_then(|n| n.checked_mul(element_width))
             .ok_or("native transpose count overflow")?;
+        if self.has_value_local(&[dst_start, src_start])? {
+            for index in 0..count {
+                let row = index / (columns * element_width);
+                let column = (index / element_width) % columns;
+                let source = (column * rows + row) * element_width + index % element_width;
+                self.push_reg(cell(src_start, source, 1)?)?;
+                self.set_reg(cell(dst_start, index, 1)?)?;
+            }
+            return Ok(());
+        }
         let row_width = columns
             .checked_mul(element_width)
             .and_then(|n| i32::try_from(n).ok())
@@ -168,6 +188,24 @@ impl BodyEmitter<'_> {
             .checked_mul(inner)
             .and_then(|n| i32::try_from(n).ok())
             .ok_or("native concatenate result width overflow")?;
+        let mut runs = vec![dst_start];
+        runs.extend(sources.iter().map(|source| source.start));
+        if self.has_value_local(&runs)? {
+            let result_cells = dimensions[axis] as usize * inner;
+            let mut axis_offset = 0usize;
+            for source in &sources {
+                let source_cells = source.dimensions[axis] as usize * inner;
+                let count = source
+                    .dimensions
+                    .iter()
+                    .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
+                    .ok_or("native concatenate count overflow")?;
+                let placement = [source_cells, result_cells, axis_offset * inner];
+                self.value_concatenate_source(dst_start, source.start, count, placement)?;
+                axis_offset += source.dimensions[axis] as usize;
+            }
+            return Ok(());
+        }
         let counter = self.arena_plan()?.counter;
         let mut axis_offset = 0usize;
         for source in &sources {
@@ -204,6 +242,25 @@ impl BodyEmitter<'_> {
             axis_offset = axis_offset
                 .checked_add(source.dimensions[axis] as usize)
                 .ok_or("native concatenate axis overflow")?;
+        }
+        Ok(())
+    }
+}
+
+impl BodyEmitter<'_> {
+    /// One concatenation source in the element order of its counted loop,
+    /// with every source and target cell named statically.
+    fn value_concatenate_source(
+        &mut self,
+        dst_start: Reg,
+        src_start: Reg,
+        count: usize,
+        [source_cells, result_cells, offset]: [usize; 3],
+    ) -> Result<(), String> {
+        for index in 0..count {
+            let target = (index / source_cells) * result_cells + offset + index % source_cells;
+            self.push_reg(cell(src_start, index, 1)?)?;
+            self.set_reg(cell(dst_start, target, 1)?)?;
         }
         Ok(())
     }

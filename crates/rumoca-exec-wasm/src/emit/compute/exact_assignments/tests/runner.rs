@@ -52,6 +52,26 @@ impl Runner {
         (status, self.bits(4096))
     }
 
+    pub(super) fn write(&mut self, offset: usize, values: &[f64]) {
+        for (index, value) in values.iter().enumerate() {
+            self.public
+                .write(&mut self.store, offset + index * 8, &value.to_le_bytes())
+                .unwrap();
+        }
+    }
+
+    pub(super) fn call_at(&mut self, entry: Entry, y: usize, p: usize, out: usize) -> i32 {
+        entry
+            .call(&mut self.store, (y as i32, p as i32, 0., out as i32, 0))
+            .unwrap()
+    }
+
+    pub(super) fn read(&self, offset: usize, count: usize) -> Vec<u64> {
+        (0..count)
+            .map(|index| self.bits(offset + index * 8))
+            .collect()
+    }
+
     pub(super) fn inputs(&self) -> [u64; 2] {
         [self.bits(0), self.bits(32)]
     }

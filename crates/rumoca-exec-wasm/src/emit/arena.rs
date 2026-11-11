@@ -344,6 +344,23 @@ impl BodyEmitter<'_> {
             .checked_mul(8)
             .and_then(|n| u32::try_from(n).ok())
             .ok_or("native output address overflow")?;
+        if self.has_value_local(&[start])? {
+            for element in 0..count {
+                let offset = u64::try_from(element)
+                    .ok()
+                    .and_then(|element| element.checked_mul(8))
+                    .and_then(|element| element.checked_add(u64::from(bytes)))
+                    .ok_or("native output address overflow")?;
+                self.push(Instruction::LocalGet(OUT_PTR_PARAM));
+                self.push_reg(arithmetic::cell(start, element, stride)?)?;
+                self.push(Instruction::F64Store(MemArg {
+                    offset,
+                    align: 3,
+                    memory_index: 0,
+                }));
+            }
+            return Ok(());
+        }
         self.loop_start(arena.counter, count)?;
         self.push(Instruction::LocalGet(OUT_PTR_PARAM));
         self.push(Instruction::LocalGet(arena.counter));
