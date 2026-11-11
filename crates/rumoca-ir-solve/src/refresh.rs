@@ -1826,13 +1826,13 @@ fn validate_refresh_plan(
                         "{label} refresh stage refers to unowned BLT block {block_index}"
                     ));
                 };
-                let Some(block) = plan.simultaneous_plan.blocks.explicit_block_at(local) else {
+                let Some(block) = plan.simultaneous_plan.blocks.scalar_block_at(local) else {
                     return refresh_error(format!(
-                        "{label} scalar projection stage refers to a compact singleton run"
+                        "{label} scalar projection stage has no canonical scalar block"
                     ));
                 };
                 if stage_plan.blocks.stages()
-                    != std::slice::from_ref(&crate::ProjectionStage::Explicit(block.clone()))
+                    != std::slice::from_ref(&crate::ProjectionStage::Explicit(block.into_owned()))
                 {
                     return refresh_error(format!(
                         "{label} refresh stage does not replay canonical BLT block {block_index}"

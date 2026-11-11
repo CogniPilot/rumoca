@@ -172,7 +172,7 @@ impl ProjectionBlocks {
 
     /// Rewrite only explicit coupled-block drafts, retaining every ranged owner.
     /// Borrow an authored coupled block at its original logical block index.
-    /// Independent declaration runs deliberately have no scalar block receipt.
+    /// Independent declaration runs have no authored explicit block here.
     pub fn explicit_block_at(&self, index: usize) -> Option<&AlgebraicProjectionBlock> {
         match self.data.index.stage_of_block(self.stages(), index)? {
             (ProjectionStage::Explicit(block), _) => Some(block),

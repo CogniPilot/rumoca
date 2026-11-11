@@ -1,3 +1,4 @@
+mod compact_projection_replay;
 mod exact_source;
 mod range_assignment;
 mod streamed_materialization;
