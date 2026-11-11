@@ -609,18 +609,11 @@ impl SolveMeKernel {
         &self.params
     }
 
-    /// The issued input event reach, one bit per declared input scalar.
+    /// The derived input event reach, one bit per declared input scalar.
     #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn audit_input_event_reach(&self) -> Vec<bool> {
-        let problem = &self.runtime.model().problem;
-        (0..problem.solve_layout.input_scalar_names().len())
-            .map(|input| {
-                problem
-                    .continuous
-                    .refresh_owners
-                    .input_write_reaches_event_owner(input)
-            })
-            .collect()
+        let reach = self.runtime.input_event_reach();
+        (0..reach.len()).map(|input| reach.reaches(input)).collect()
     }
 
     #[cfg(any(test, feature = "input-write-audit"))]

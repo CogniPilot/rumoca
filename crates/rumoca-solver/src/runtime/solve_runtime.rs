@@ -274,6 +274,9 @@ pub struct SolveRuntime {
     clock_activation_cache: RefCell<ClockActivationCache>,
     /// The model's `pre()` bindings as copy runs, built once at construction.
     pre_bindings: PreBindingPlan,
+    /// Which inputs a same-instant write can carry into an event owner,
+    /// derived from this runtime's own model on first use.
+    input_event_reach: std::cell::OnceCell<solve_eval::refresh_plan::InputEventReach>,
     execution: RuntimeExecutionInventory,
 }
 
@@ -446,6 +449,14 @@ impl SolveRuntime {
     /// The immutable source owner whose execution was prepared by construction.
     pub fn model(&self) -> &SolveRuntimeModel {
         &self.model
+    }
+
+    /// The input event reach of the model this runtime executes, derived once
+    /// from its checked refresh owners
+    /// (`rumoca_eval_solve::refresh_plan::derive_input_event_reach`).
+    pub(crate) fn input_event_reach(&self) -> &solve_eval::refresh_plan::InputEventReach {
+        self.input_event_reach
+            .get_or_init(|| solve_eval::refresh_plan::derive_input_event_reach(&self.model.problem))
     }
 
     /// `pre_params::commit_pre_params_after_event_at` over

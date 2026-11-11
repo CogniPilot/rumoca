@@ -9,7 +9,6 @@ mod chunks;
 mod compact_owner;
 mod dependency;
 mod exact_source;
-mod input_event_reach;
 mod leaf_dependencies;
 mod materialization;
 mod native_assignment;
@@ -39,7 +38,6 @@ pub use assignment_shape::{
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
 pub use exact_source::BoundExactRefreshAssignment;
-pub use input_event_reach::InputEventReach;
 pub use leaf_dependencies::LeafDependencies;
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
@@ -539,10 +537,6 @@ pub struct ContinuousRefreshOwners {
     algebraic_after_derivative: Option<RefreshRemainderRelation>,
     #[serde(skip)]
     clock_events_after_event: Vec<RefreshRemainderRelation>,
-    /// Which inputs a same-instant write can carry into an event owner;
-    /// `None` until the constructor of the event plans issues it.
-    #[serde(skip)]
-    input_event_reach: Option<InputEventReach>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -859,7 +853,6 @@ impl ContinuousRefreshOwners {
             root_after_algebraic: Some(root_after_algebraic),
             algebraic_after_derivative: Some(algebraic_after_derivative),
             clock_events_after_event,
-            input_event_reach: None,
         })
     }
 
@@ -1043,7 +1036,6 @@ impl ContinuousRefreshOwners {
             event,
             clock_events,
             exact_assignment_programs,
-            input_event_reach: _,
             exact_assignment_schedules,
             root_after_derivative,
             root_after_algebraic,

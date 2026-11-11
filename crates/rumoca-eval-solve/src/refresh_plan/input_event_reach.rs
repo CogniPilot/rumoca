@@ -1,4 +1,4 @@
-//! The input side of the event-consumer closure (`solve::InputEventReach`).
+//! The input side of the event-consumer closure ([`InputEventReach`]).
 
 use std::collections::BTreeSet;
 
@@ -9,9 +9,105 @@ use crate::EvalSolveError;
 
 use super::event_dependencies::{EventConsumerReads, extend_event_consumer_reads};
 use super::{
-    OutputRowPosition, RefreshPlan, RefreshProgramAccess, collect_dependency_closure,
-    dependency_blocks_by_target, dependency_target_rows,
+    CanonicalScalarProgramCatalog, OutputRowPosition, RefreshPlan, RefreshProgramAccess,
+    collect_dependency_closure, dependency_blocks_by_target, dependency_target_rows,
 };
+
+/// One bit per declared input scalar: whether a write to it can change an
+/// operand of any event owner in the same instant.
+///
+/// The event owners are the consumers the event refresh plans close over
+/// (root conditions, discrete rows, runtime, post-commit and guarded
+/// assignments, action conditions and messages) together with the dynamic
+/// time-event rows, the delay rows, the clock-partition intermediates and the
+/// `pre` copies. A bit is set when one of them reads the input's parameter
+/// slot or a non-state solver coordinate whose algebraic definition reads it;
+/// a continuous state is never input-dependent within one instant.
+///
+/// The only way to obtain one is [`derive_input_event_reach`] over a checked
+/// problem: no constructor takes caller-supplied reads or bits, and nothing
+/// attaches a ready-made fact to another problem. It is not serialized; a
+/// decoded model derives it from its own checked refresh owners exactly as a
+/// freshly lowered one does.
+///
+/// ```compile_fail
+/// use rumoca_eval_solve::refresh_plan::InputEventReach;
+/// // A caller cannot forge an empty reach.
+/// let forged = InputEventReach::from_parameter_reads(0, 1, []);
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputEventReach {
+    reached: Box<[bool]>,
+}
+
+impl InputEventReach {
+    /// Every input reaches an event owner: the fail-closed answer.
+    fn all(input_scalars: usize) -> Self {
+        Self {
+            reached: vec![true; input_scalars].into(),
+        }
+    }
+
+    /// The inputs among `parameter_reads`, the parameter slots the event
+    /// owners and their algebraic closure read. Inputs are the slots
+    /// `first_input_parameter .. first_input_parameter + input_scalars`.
+    fn from_parameter_reads(
+        first_input_parameter: usize,
+        input_scalars: usize,
+        parameter_reads: impl IntoIterator<Item = usize>,
+    ) -> Self {
+        let mut reached = vec![false; input_scalars];
+        for slot in parameter_reads {
+            if let Some(bit) = slot
+                .checked_sub(first_input_parameter)
+                .and_then(|input| reached.get_mut(input))
+            {
+                *bit = true;
+            }
+        }
+        Self {
+            reached: reached.into(),
+        }
+    }
+
+    /// Whether a write to input scalar `input` can reach an event owner. An
+    /// input this fact does not cover reaches.
+    #[must_use]
+    pub fn reaches(&self, input: usize) -> bool {
+        self.reached.get(input).copied().unwrap_or(true)
+    }
+
+    /// The number of input scalars the fact covers.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.reached.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.reached.is_empty()
+    }
+}
+
+/// Derive the input reach of `problem` from its own checked refresh owners
+/// and canonical rows.
+///
+/// Compact owners, whose plans are the whole projection inventory, and
+/// canonical rows without a catalog mark every input.
+#[must_use]
+pub fn derive_input_event_reach(problem: &solve::SolveProblem) -> InputEventReach {
+    let input_scalars = problem.solve_layout.input_scalar_names().len();
+    let owners = &problem.continuous.refresh_owners;
+    if owners.has_compact_source_recipe() {
+        return InputEventReach::all(input_scalars);
+    }
+    match CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs) {
+        Ok(catalog) => {
+            issue_input_event_reach(problem, &catalog, owners.algebraic(), catalog.positions())
+        }
+        Err(_) => InputEventReach::all(input_scalars),
+    }
+}
 
 /// Issue the input reach of `problem` from the event-consumer list and the
 /// closure its event refresh plans are built from.
@@ -20,21 +116,19 @@ use super::{
 /// program, when a structured update or an event transaction is present, when
 /// a `pre` copy reads a solver coordinate, or when the algebraic refresh is
 /// not an exact causal schedule.
-pub(super) fn issue_input_event_reach<A: RefreshProgramAccess + ?Sized>(
+fn issue_input_event_reach<A: RefreshProgramAccess + ?Sized>(
     problem: &solve::SolveProblem,
     implicit_block: &A,
     algebraic: &RefreshPlan,
     output_positions: &IndexMap<usize, OutputRowPosition>,
-) -> solve::InputEventReach {
+) -> InputEventReach {
     let layout = &problem.solve_layout;
     let input_scalars = layout.input_scalar_names().len();
     match event_owner_parameter_reads(problem, implicit_block, algebraic, output_positions) {
-        Ok(Some(reads)) => solve::InputEventReach::from_parameter_reads(
-            layout.parameter_count,
-            input_scalars,
-            reads,
-        ),
-        Ok(None) | Err(_) => solve::InputEventReach::all(input_scalars),
+        Ok(Some(reads)) => {
+            InputEventReach::from_parameter_reads(layout.parameter_count, input_scalars, reads)
+        }
+        Ok(None) | Err(_) => InputEventReach::all(input_scalars),
     }
 }
 
@@ -164,7 +258,7 @@ mod tests {
         program: Vec<solve::LinearOp>,
         algebraics: usize,
         algebraic: &RefreshPlan,
-    ) -> solve::InputEventReach {
+    ) -> InputEventReach {
         let mut problem = solve::SolveProblem::default();
         problem.solve_layout.algebraic_scalar_count = algebraics;
         problem.solve_layout.input_scalar_names.push_scalar("u");
@@ -187,8 +281,17 @@ mod tests {
         }
     }
 
-    fn bits(reach: &solve::InputEventReach) -> Vec<bool> {
+    fn bits(reach: &InputEventReach) -> Vec<bool> {
         (0..reach.len()).map(|input| reach.reaches(input)).collect()
+    }
+
+    #[test]
+    fn only_inputs_among_the_parameter_reads_are_marked() {
+        let reach = InputEventReach::from_parameter_reads(4, 3, [0, 3, 5, 7, 900]);
+        assert_eq!(bits(&reach), [false, true, false]);
+        // An input the fact does not cover reaches.
+        assert!(reach.reaches(3));
+        assert_eq!(bits(&InputEventReach::all(2)), [true, true]);
     }
 
     #[test]

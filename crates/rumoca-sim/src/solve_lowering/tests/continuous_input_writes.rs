@@ -35,11 +35,47 @@ fn plugin(solver_mode: SimSolverMode, setup: MeNumericalSetup) -> Box<dyn MeInte
     }
 }
 
+/// The FMI component of `dae`, optionally round-tripped through the canonical
+/// component wire the precompiled runtime loads.
+fn component(
+    dae: &rumoca_ir_dae::Dae,
+    opts: &SimOptions,
+    decoded: bool,
+) -> (
+    rumoca_ir_solve::fmi::FmiComponent,
+    Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+) {
+    let lowered = super::super::lower_correlated_for_simulation_with_overrides(dae, opts)
+        .expect("fixture lowers");
+    let backend =
+        crate::native_execution::admitted_native_execution_backend(opts, lowered.model()).unwrap();
+    let component =
+        rumoca_phase_solve::fmi::finish_fmi_component(lowered).expect("fixture is a component");
+    if !decoded {
+        return (component, backend);
+    }
+    let root = component.runtime_view().retain_assertion_root();
+    let wire = serde_json::to_value(
+        rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).expect("component wire"),
+    )
+    .unwrap();
+    let decoded = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(wire)
+        .expect("the component wire replays");
+    // The compiled backend binds to the decoded model's own call table.
+    let backend = crate::native_execution::admitted_native_execution_backend(
+        opts,
+        decoded.runtime_view().retain_assertion_root().model(),
+    )
+    .unwrap();
+    (decoded, backend)
+}
+
 fn run(
     source: &str,
     model: &str,
     solver_mode: SimSolverMode,
     forced: bool,
+    decoded: bool,
     script: &[Step],
 ) -> Run {
     let opts = SimOptions {
@@ -51,8 +87,8 @@ fn run(
         ..SimOptions::default()
     };
     let dae = compile(source, model);
-    let (artifact, backend) = super::super::lower_runtime_fmi_artifact(&dae, &opts)
-        .expect("fixture lowers to a component");
+    let (component, backend) = component(&dae, &opts, decoded);
+    let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
     let backend =
         rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, backend).unwrap();
     let config = MeInstanceConfig::open_ended("continuous-input-write", opts.rtol, opts.t_start)
@@ -72,10 +108,14 @@ fn run(
     )
     .unwrap();
     let host = retained.into_lease(options).unwrap();
-    let setup = host
-        .numerical_setup(Some(crate::me_backend::default_step_size(&opts)))
-        .unwrap();
-    let mut session = host.into_session(Some(plugin(solver_mode, setup))).unwrap();
+    // A stateless component runs without a numerical plugin.
+    let plugin = (host.state_count() != 0).then(|| {
+        let setup = host
+            .numerical_setup(Some(crate::me_backend::default_step_size(&opts)))
+            .unwrap();
+        plugin(solver_mode, setup)
+    });
+    let mut session = host.into_session(plugin).unwrap();
     force_input_event(forced);
     let before = input_write_counts();
     let reach = session.input_event_reach().unwrap();
@@ -110,13 +150,14 @@ fn run(
 fn assert_paths_agree(
     source: &str,
     model: &str,
+    decoded: bool,
     script: &[Step],
 ) -> Vec<(SimSolverMode, Vec<bool>, [usize; 2], usize)> {
     [SimSolverMode::RkLike, SimSolverMode::Bdf]
         .into_iter()
         .map(|solver_mode| {
-            let continuous = run(source, model, solver_mode, false, script);
-            let event = run(source, model, solver_mode, true, script);
+            let continuous = run(source, model, solver_mode, false, decoded, script);
+            let event = run(source, model, solver_mode, true, decoded, script);
             assert_eq!(continuous.reach, event.reach);
             assert_eq!(event.writes[0], 0, "{model} {solver_mode:?}: forced run");
             assert_eq!(
@@ -149,7 +190,7 @@ fn assert_paths_agree(
 
 /// The issued reach of each declared input of `model`, in declaration order.
 fn reach(source: &str, model: &str) -> Vec<bool> {
-    run(source, model, SimSolverMode::RkLike, false, &[]).reach
+    run(source, model, SimSolverMode::RkLike, false, false, &[]).reach
 }
 
 #[test]
@@ -250,7 +291,8 @@ fn a_model_without_events_writes_inputs_continuously() {
         Step::Set(&[("u", 0.0), ("u", 4.0)]),
         Step::Advance(0.5),
     ];
-    for (solver_mode, reach, writes, deferred) in assert_paths_agree(NO_EVENTS, "NoEvents", &script)
+    for (solver_mode, reach, writes, deferred) in
+        assert_paths_agree(NO_EVENTS, "NoEvents", false, &script)
     {
         assert_eq!(reach, [false, false]);
         assert_eq!(writes, [5, 0], "{solver_mode:?}");
@@ -283,7 +325,7 @@ fn state_relations_at_zero_and_inside_tolerance_keep_the_input_event_bits() {
         Step::Advance(0.6),
     ];
     for (solver_mode, reach, writes, _) in
-        assert_paths_agree(STATE_RELATIONS, "StateRelations", &script)
+        assert_paths_agree(STATE_RELATIONS, "StateRelations", false, &script)
     {
         assert_eq!(reach, [false]);
         assert_eq!(writes, [4, 0], "{solver_mode:?}");
@@ -305,7 +347,7 @@ fn a_write_on_a_periodic_tick_keeps_the_input_event_bits() {
         Step::Set(&[("u", -1.0)]),
         Step::Advance(0.35),
     ];
-    for (solver_mode, reach, writes, _) in assert_paths_agree(TICKS, "Ticks", &script) {
+    for (solver_mode, reach, writes, _) in assert_paths_agree(TICKS, "Ticks", false, &script) {
         assert_eq!(reach, [false]);
         // The ticks at 0.1 and 0.2 are still due when those writes arrive.
         assert_eq!(writes, [1, 2], "{solver_mode:?}");
@@ -328,8 +370,98 @@ fn an_identically_rewritten_reached_input_does_not_force_the_input_event() {
         Step::Set(&[("g", 0.0), ("u", -1.0)]),
         Step::Advance(0.4),
     ];
-    for (solver_mode, reach, writes, _) in assert_paths_agree(MIXED, "Mixed", &script) {
+    for (solver_mode, reach, writes, _) in assert_paths_agree(MIXED, "Mixed", false, &script) {
         assert_eq!(reach, [false, true]);
         assert_eq!(writes, [2, 1], "{solver_mode:?}");
+    }
+}
+
+const STATELESS: &str = "model Stateless input Real a = 0; input Real h = 1; input Real o = 0; \
+    output Real y; output Real z; output Real w; \
+    equation y = if abs(a) > h then 1 else 0; w = 3*o; z = 2*w + 1; end Stateless;";
+
+#[test]
+fn a_decoded_model_derives_the_same_input_event_reach_as_a_fresh_one() {
+    for (source, model, expected) in [
+        (NO_EVENTS, "NoEvents", vec![false, false]),
+        (STATE_RELATIONS, "StateRelations", vec![false]),
+        (TICKS, "Ticks", vec![false]),
+        (MIXED, "Mixed", vec![false, true]),
+        (STATELESS, "Stateless", vec![true, true, false]),
+    ] {
+        let session_reach =
+            |decoded| run(source, model, SimSolverMode::RkLike, false, decoded, &[]).reach;
+        assert_eq!(session_reach(false), expected, "{model}: fresh");
+        assert_eq!(session_reach(true), expected, "{model}: decoded");
+    }
+}
+
+/// Each component derives the reach from its own checked refresh owners; no
+/// fact travels with a model or can be bound to another one. Two models with
+/// the same input width and opposite reach keep their own facts.
+#[test]
+fn a_component_never_takes_another_models_input_event_reach() {
+    let feeds_relation = "model FeedsRelation input Real u = 0; input Real w = 0; \
+        Real x(start=0, fixed=true); output Real y; \
+        equation der(x) = w; y = if u > 0.5 then x else -x; end FeedsRelation;";
+    let feeds_derivative = "model FeedsDerivative input Real u = 0; input Real w = 0; \
+        Real x(start=0, fixed=true); output Real y; \
+        equation der(x) = u; y = if w > 0.5 then x else -x; end FeedsDerivative;";
+    assert_eq!(reach(feeds_relation, "FeedsRelation"), [true, false]);
+    assert_eq!(reach(feeds_derivative, "FeedsDerivative"), [false, true]);
+    // A write that one model may keep continuous is an event in the other.
+    let script = [
+        Step::Advance(0.1),
+        Step::Set(&[("u", 1.0)]),
+        Step::Advance(0.2),
+    ];
+    for (solver_mode, _, writes, _) in
+        assert_paths_agree(feeds_relation, "FeedsRelation", true, &script)
+    {
+        assert_eq!(writes, [0, 1], "{solver_mode:?}");
+    }
+    for (solver_mode, _, writes, _) in
+        assert_paths_agree(feeds_derivative, "FeedsDerivative", true, &script)
+    {
+        assert_eq!(writes, [1, 0], "{solver_mode:?}");
+    }
+}
+
+#[test]
+fn a_decoded_model_writes_unreached_inputs_continuously() {
+    let mixed = [
+        Step::Advance(0.1),
+        Step::Set(&[("u", 2.0), ("g", 1.0)]),
+        Step::Advance(0.2),
+        Step::Set(&[("g", 0.0)]),
+        Step::Advance(0.3),
+        Step::Set(&[("g", 0.0), ("u", -1.0)]),
+        Step::Advance(0.4),
+    ];
+    for (solver_mode, reach, writes, _) in assert_paths_agree(MIXED, "Mixed", true, &mixed) {
+        assert_eq!(reach, [false, true]);
+        assert_eq!(writes, [2, 1], "{solver_mode:?}");
+    }
+}
+
+#[test]
+fn a_stateless_model_writes_unreached_inputs_continuously() {
+    let script = [
+        Step::Set(&[("o", 1.0)]),
+        Step::Set(&[("a", 2.0)]),
+        // `h` reaches the relation but keeps its bits; only `o` changes.
+        Step::Set(&[("o", 2.0), ("h", 1.0)]),
+        Step::Advance(0.1),
+        Step::Set(&[("o", 3.0)]),
+        Step::Set(&[("a", 0.5), ("o", 4.0)]),
+        Step::Advance(0.2),
+    ];
+    for decoded in [false, true] {
+        for (solver_mode, reach, writes, _) in
+            assert_paths_agree(STATELESS, "Stateless", decoded, &script)
+        {
+            assert_eq!(reach, [true, true, false]);
+            assert_eq!(writes, [3, 2], "{solver_mode:?} decoded={decoded}");
+        }
     }
 }

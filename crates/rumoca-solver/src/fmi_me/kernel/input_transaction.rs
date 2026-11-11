@@ -29,7 +29,7 @@ impl SolveMeKernel {
     /// Continuous-Time Mode instead of running an input event.
     ///
     /// It may when no changed input reaches an event owner in the same
-    /// instant (Solve IR `InputEventReach`, issued with the refresh owners),
+    /// instant (`InputEventReach`, derived from this model's refresh owners),
     /// no time event is due at `time` (the input event would consume it), the
     /// model has no delay channels (Event Mode holds their history) and no
     /// retained state constraints (an event projects the states onto them),
@@ -62,19 +62,14 @@ impl SolveMeKernel {
         {
             return false;
         }
-        let problem = &self.runtime.model().problem;
-        let first_input = problem.solve_layout.parameter_count;
+        let first_input = self.runtime.model().problem.solve_layout.parameter_count;
+        let reach = self.runtime.input_event_reach();
         references
             .into_iter()
             .all(|reference| match reference.backing {
-                MeFloat64Backing::InputParameter(index) => {
-                    index.checked_sub(first_input).is_some_and(|input| {
-                        !problem
-                            .continuous
-                            .refresh_owners
-                            .input_write_reaches_event_owner(input)
-                    })
-                }
+                MeFloat64Backing::InputParameter(index) => index
+                    .checked_sub(first_input)
+                    .is_some_and(|input| !reach.reaches(input)),
                 MeFloat64Backing::MaxStepDuration(_) => false,
             })
     }
