@@ -75,13 +75,13 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         rumoca_ir_solve::SolveModel {
             problem: SolveProblem {
                 schema_version: rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
+                cartesian_pairs: None,
+                mechanical_step: None,
                 layout: integrate_fixture::named_y_layout(
                     rumoca_ir_solve::VarLayout::from_parts(Default::default(), 1, 1),
                     vec!["x".into()],
                 ),
                 continuous: ContinuousSolveSystem {
-                    cartesian_pairs: None,
-                    mechanical_step: None,
                     implicit_rhs: implicit_rhs_cb,
                     implicit_row_targets: (vec![Some(rumoca_ir_solve::scalar_slot_y(0))]).into(),
                     residual: ComputeBlock::from_scalar_program_block(spb(

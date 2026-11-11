@@ -21,8 +21,8 @@ pub(super) fn issue(system: &ContinuousSolveSystem, states: usize) -> Option<Car
 
 pub(super) fn mechanical(
     system: &ContinuousSolveSystem,
+    cartesian: &CartesianPairPlan,
 ) -> Option<rumoca_ir_solve::MechanicalStepPlan> {
-    let cartesian = system.cartesian_pairs.as_ref()?;
     let mut nodes = system
         .derivative_rhs
         .nodes

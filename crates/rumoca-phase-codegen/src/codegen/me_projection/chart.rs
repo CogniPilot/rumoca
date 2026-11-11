@@ -72,8 +72,6 @@ pub(super) fn alternate_problem(
 ) -> solve::SolveProblem {
     let mut alternate = problem.clone();
     alternate.continuous = solve::ContinuousSolveSystem {
-        cartesian_pairs: None,
-        mechanical_step: None,
         implicit_rhs: plan.implicit_rhs.clone(),
         implicit_row_targets: plan.implicit_row_targets.clone(),
         algebraic_projection_plan: plan.algebraic_projection_plan.clone(),

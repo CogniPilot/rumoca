@@ -11,12 +11,7 @@ pub struct MeCartesianPartition {
 
 impl MeCartesianPartition {
     pub(super) fn from_kernel(kernel: &crate::fmi_me::SolveMeKernel) -> Option<Self> {
-        let plan = kernel
-            .source_model()
-            .problem
-            .continuous
-            .cartesian_pairs
-            .as_ref()?;
+        let plan = kernel.source_model().problem.cartesian_pairs.as_ref()?;
         Some(Self {
             pairs: Rc::from(plan.pairs()),
         })

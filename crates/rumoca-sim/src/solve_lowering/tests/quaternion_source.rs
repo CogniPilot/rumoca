@@ -42,8 +42,8 @@ fn quaternion_source_has_exact_owner_and_complete_state_roles() {
     assert!(replay.matches_site(&owner.call_site()));
     let block = &model.problem.continuous.derivative_rhs;
     let plan = rumoca_ir_solve::GeometricStepPlan::from_derivative(block, 30, calls).unwrap();
-    assert!(model.problem.continuous.cartesian_pairs.is_none());
-    assert!(model.problem.continuous.mechanical_step.is_none());
+    assert!(model.problem.cartesian_pairs.is_none());
+    assert!(model.problem.mechanical_step.is_none());
     assert_eq!(plan.quaternions().len(), 1);
     assert_eq!(plan.cartesian_pairs().len(), 3);
     assert_eq!(plan.auxiliary().len(), 17);

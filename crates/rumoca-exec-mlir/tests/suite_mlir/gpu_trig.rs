@@ -152,6 +152,8 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
         rumoca_ir_solve::SolveModel {
             problem: SolveProblem {
                 schema_version: rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
+                cartesian_pairs: None,
+                mechanical_step: None,
                 layout: integrate_fixture::named_y_layout(
                     rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 6),
                     names.clone(),

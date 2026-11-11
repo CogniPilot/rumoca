@@ -69,7 +69,7 @@ impl CartesianPairPlan {
 }
 
 /// Read-only register provenance: `Some(i)` means this output is exactly a
-/// direct Y[i] read, including copies. Arithmetic and calls never prove one.
+/// direct `Y[i]` read, including copies. Arithmetic and calls never prove one.
 /// Checked affine identity Maps retain their original index maps. A coupled
 /// LinSolve owns nonidentity acceleration rows; other aggregates decline.
 pub fn direct_state_derivative_reads(
@@ -278,38 +278,28 @@ mod tests {
             0,
         );
         let mut problem = crate::SolveProblem::with_derivative_rhs(rhs, layout).unwrap();
-        problem.continuous.cartesian_pairs = Some(
+        problem.cartesian_pairs = Some(
             CartesianPairPlan::checked(2, vec![[0, 1]], &problem.continuous.derivative_rhs)
                 .unwrap(),
         );
         let wire = serde_json::to_value(&problem).unwrap();
         let replay: crate::SolveProblem = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(
-            replay.continuous.cartesian_pairs,
-            problem.continuous.cartesian_pairs
-        );
+        assert_eq!(replay.cartesian_pairs, problem.cartesian_pairs);
         let binary: crate::SolveProblem =
             bincode::deserialize(&bincode::serialize(&problem).unwrap()).unwrap();
-        assert_eq!(
-            binary.continuous.cartesian_pairs,
-            problem.continuous.cartesian_pairs
-        );
+        assert_eq!(binary.cartesian_pairs, problem.cartesian_pairs);
 
         let mut forged = wire.clone();
-        forged["continuous"]["cartesian_pairs"]["pairs"][0][1] = 0.into();
+        forged["cartesian_pairs"]["pairs"][0][1] = 0.into();
         assert!(serde_json::from_value::<crate::SolveProblem>(forged).is_err());
         let mut old = wire.clone();
-        old["schema_version"] = 89.into();
+        old["schema_version"] = (crate::SOLVE_SCHEMA_VERSION - 1).into();
         assert!(serde_json::from_value::<crate::SolveProblem>(old).is_err());
         let mut absent = wire;
-        absent["continuous"]
-            .as_object_mut()
-            .unwrap()
-            .remove("cartesian_pairs");
+        absent.as_object_mut().unwrap().remove("cartesian_pairs");
         assert!(
             serde_json::from_value::<crate::SolveProblem>(absent)
                 .unwrap()
-                .continuous
                 .cartesian_pairs
                 .is_none()
         );

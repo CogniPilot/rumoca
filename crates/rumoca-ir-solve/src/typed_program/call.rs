@@ -565,7 +565,7 @@ impl SolvePureCallOwner {
         self.articulated.as_ref()
     }
 
-    /// Exact scalar-first q_dot = 0.5*q*[0,omega_body] source relation.
+    /// Exact scalar-first `q_dot = 0.5*q*[0,omega_body]` source relation.
     #[must_use]
     pub fn body_quaternion_kinematics(&self) -> Option<&BodyQuaternionKinematics> {
         self.quaternion.as_ref()

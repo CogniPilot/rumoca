@@ -330,7 +330,7 @@ These rows are normative by reference from SPEC_0007 Structural Lowering Scope.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| SOLVE-C108: phase-solve issues optional CartesianPairPlan from exact direct state-read derivative outputs; complete disjoint pairs cover all states. Wire replay checks the same canonical rows, including register overwrites. No names, units, charts, backend inference, or input index lists prove a partition. Missing proofs refuse only the opt-in Cartesian backend. Schema90 carries this optional plan. | phase-solve; ir-solve CartesianPairPlan and root wire validation | Prevent unproved mechanical updates |
+| SOLVE-C108: phase-solve issues optional CartesianPairPlan from exact direct state-read derivative outputs; complete disjoint pairs cover all states. Wire replay checks the same canonical rows, including register overwrites. No names, units, charts, backend inference, or input index lists prove a partition. Missing proofs refuse only the opt-in Cartesian backend. The current SolveProblem wire carries this optional plan at the complete problem owner; it is absent for manifold or alternate-chart systems. | phase-solve; ir-solve CartesianPairPlan and root wire validation | Prevent unproved mechanical updates |
 
 
 ### Same-source damped mechanical systems

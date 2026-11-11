@@ -218,22 +218,16 @@ fn mechanical_root_replay_rechecks_damping_source_and_current_wire() {
     );
     let mut problem = crate::SolveProblem::with_derivative_rhs(source, layout).unwrap();
     let mechanical = plan(&problem.continuous.derivative_rhs).unwrap();
-    problem.continuous.cartesian_pairs = Some(mechanical.cartesian().clone());
-    problem.continuous.mechanical_step = Some(mechanical);
+    problem.cartesian_pairs = Some(mechanical.cartesian().clone());
+    problem.mechanical_step = Some(mechanical);
     let wire = serde_json::to_value(&problem).unwrap();
     let replay: crate::SolveProblem = serde_json::from_value(wire.clone()).unwrap();
-    assert_eq!(
-        replay.continuous.mechanical_step,
-        problem.continuous.mechanical_step
-    );
+    assert_eq!(replay.mechanical_step, problem.mechanical_step);
     let binary: crate::SolveProblem =
         bincode::deserialize(&bincode::serialize(&problem).unwrap()).unwrap();
-    assert_eq!(
-        binary.continuous.mechanical_step,
-        problem.continuous.mechanical_step
-    );
+    assert_eq!(binary.mechanical_step, problem.mechanical_step);
     let mut forged = wire.clone();
-    forged["continuous"]["mechanical_step"]["damping"][0]["parameter"]["index"] = 99.into();
+    forged["mechanical_step"]["damping"][0]["parameter"]["index"] = 99.into();
     assert!(serde_json::from_value::<crate::SolveProblem>(forged).is_err());
     let mut old = wire;
     old["schema_version"] = 90.into();

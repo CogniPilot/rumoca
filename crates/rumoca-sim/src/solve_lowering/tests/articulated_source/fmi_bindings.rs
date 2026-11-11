@@ -48,7 +48,7 @@ fn check_channels(component: &FmiComponent, factor: &FmiArticulatedReduction) {
             assert!(channel.literal().unwrap().is_finite());
         }
     }
-    assert!(component.problem().continuous.mechanical_step.is_none());
+    assert!(component.problem().mechanical_step.is_none());
 }
 
 #[test]
