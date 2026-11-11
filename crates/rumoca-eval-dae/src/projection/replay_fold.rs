@@ -1,5 +1,5 @@
 //! Cached node bodies reenter the original queue; closures are never inlined.
-use super::{Projection, ProjectionError, dae, fold_graph};
+use super::{Projection, ProjectionError, fold_graph};
 
 impl<'dae> Projection<'_, 'dae> {
     pub(super) fn project_or_replay_fold_node(

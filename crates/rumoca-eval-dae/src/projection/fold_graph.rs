@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
 
-#[cfg(test)]
 use super::dependencies::OrderedDependencies;
 use super::domain_context::Context;
 use super::{FieldPath, FunctionParameterDependency};
