@@ -491,6 +491,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .collect::<Result<Vec<_>, _>>()?;
                 self.target.at(provenance).builtin(builtin, arguments)
             }
+            // A model expression inside a structured family carries the family's
+            // binder domain but no function scope; it needs no argument
+            // substitution, so every other operation (a model coordinate, a
+            // conditional) is its ordinary rebuild. Only a function-body
+            // expression is restricted by the instantiation preflight.
+            _ if source.function_scope().is_none() => self.rebuild(source_id),
             _ => unreachable!("instantiation preflight rejects this function expression"),
         }
     }

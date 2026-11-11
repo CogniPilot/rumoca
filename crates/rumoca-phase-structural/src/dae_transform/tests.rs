@@ -1,4 +1,5 @@
 mod alternative_definitions;
+mod binder_guards;
 mod defining_equations;
 mod demoted_derivative_scope;
 mod demotion_bounds;
