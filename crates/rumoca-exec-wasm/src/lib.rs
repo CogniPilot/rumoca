@@ -64,7 +64,10 @@ mod scratch_report;
 mod typed_call;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm_runtime;
-pub use exact_assignments::{CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm};
+pub use exact_assignments::{
+    CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm,
+    compile_torn_assignment_rows_wasm,
+};
 pub use native_program::{
     CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault,
     compile_native_assignment_schedule_with_calls_wasm,

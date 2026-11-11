@@ -210,14 +210,13 @@ pub trait SolveExecutionBackend {
         Err("assignment schedules are not compiled by this backend".into())
     }
 
-    /// Compile a causally ordered list of single-output isolator rows whose
-    /// outputs write to the paired solver-Y targets, so later rows observe
-    /// earlier writes. Torn back-substitution batches through this; the
-    /// default declines so existing backends stay untouched.
+    /// Compile the causally ordered single-output isolator rows of an issued
+    /// torn sweep, whose outputs write to the paired solver-Y targets, so
+    /// later rows observe earlier writes. Torn back-substitution batches
+    /// through this; the default declines so existing backends stay untouched.
     fn compile_torn_assignment_rows(
         &self,
-        _rows: &[Vec<solve::LinearOp>],
-        _target_y_indices: &[usize],
+        _sweep: &solve_eval::TornSweepComposite,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         Err("torn assignment rows are not compiled by this backend".to_string())
     }

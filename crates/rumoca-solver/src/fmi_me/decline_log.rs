@@ -173,13 +173,11 @@ impl SolveExecutionBackend for RecordingBackend {
 
     fn compile_torn_assignment_rows(
         &self,
-        rows: &[Vec<solve::LinearOp>],
-        target_y_indices: &[usize],
+        sweep: &solve_eval::TornSweepComposite,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         self.log.observe(
             "torn_assignment_rows",
-            self.inner
-                .compile_torn_assignment_rows(rows, target_y_indices),
+            self.inner.compile_torn_assignment_rows(sweep),
         )
     }
 

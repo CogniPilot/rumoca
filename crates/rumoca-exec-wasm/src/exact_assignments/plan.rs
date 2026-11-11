@@ -54,6 +54,57 @@ impl Plan {
         })
     }
 
+    /// The issued causal chain of a torn sweep: one complete program per row,
+    /// each committing its outputs to its Y targets before the next row runs.
+    pub(crate) fn assignment_rows(
+        rows: &ScalarProgramBlock,
+        targets: &[usize],
+        layout: &VarLayout,
+    ) -> Result<Self, String> {
+        layout
+            .validate_shape_contract()
+            .map_err(|error| error.to_string())?;
+        if rows.stored_output_count() != targets.len() {
+            return Err("WASM torn assignment rows differ from their issued target list".into());
+        }
+        if targets.iter().any(|&target| target >= layout.y_scalars()) {
+            return Err("WASM torn assignment target exceeds its issued Y layout".into());
+        }
+        let mut programs = Vec::new();
+        programs
+            .try_reserve_exact(rows.programs().len())
+            .map_err(|_| "WASM torn assignment plan allocation failed")?;
+        let mut maximum_tuple = 0;
+        let mut remaining = targets;
+        for (index, operations) in rows.programs().iter().enumerate() {
+            let span = rows
+                .program_span(index)
+                .ok_or("WASM torn assignment row has no source span")?;
+            let count = ScalarProgramBlock::program_output_count(operations);
+            if count == 0 {
+                return Err("WASM torn assignment row has no output".into());
+            }
+            let (row_targets, rest) = remaining
+                .split_at_checked(count)
+                .ok_or("WASM torn assignment rows differ from their issued target list")?;
+            remaining = rest;
+            maximum_tuple = maximum_tuple.max(count);
+            programs.push(Program {
+                block: ScalarProgramBlock::with_program_spans(vec![operations.clone()], vec![span])
+                    .map_err(|error| error.to_string())?,
+                targets: row_targets.to_vec(),
+                seed: None,
+            });
+        }
+        if programs.is_empty() {
+            return Err("WASM torn assignment sweep has no row".into());
+        }
+        Ok(Self {
+            programs,
+            maximum_tuple,
+        })
+    }
+
     pub(crate) fn new(
         source: &ComputeBlock,
         owners: &ContinuousRefreshOwners,

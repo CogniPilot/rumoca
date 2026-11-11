@@ -81,17 +81,22 @@ impl SolveExecutionBackend for Backend {
 
     fn compile_torn_assignment_rows(
         &self,
-        rows: &[Vec<solve::LinearOp>],
-        targets: &[usize],
+        sweep: &solve_eval::TornSweepComposite,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         self.attempts.set(self.attempts.get() + 1);
         if !self.composite {
             return Err("optional composite unavailable".into());
         }
         Ok(Rc::new(Schedule {
-            rows: PreparedScalarProgramBlock::new(spanned_block(rows.to_vec(), "torn_schedule.mo"))
+            rows: PreparedScalarProgramBlock::new(
+                solve::ScalarProgramBlock::with_program_spans(
+                    sweep.assignment_rows.clone(),
+                    sweep.assignment_spans.clone(),
+                )
                 .map_err(|error| error.to_string())?,
-            targets: targets.to_vec(),
+            )
+            .map_err(|error| error.to_string())?,
+            targets: sweep.assignment_targets.clone(),
             calls: Rc::clone(&self.calls),
         }))
     }

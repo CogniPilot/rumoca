@@ -527,12 +527,11 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
 
     fn compile_torn_assignment_rows(
         &self,
-        rows: &[Vec<rumoca_ir_solve::LinearOp>],
-        target_y_indices: &[usize],
+        sweep: &rumoca_eval_solve::TornSweepComposite,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
         let compiled = rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
-            rows,
-            target_y_indices,
+            &sweep.assignment_rows,
+            &sweep.assignment_targets,
             &self.pure_calls,
         );
         compiled

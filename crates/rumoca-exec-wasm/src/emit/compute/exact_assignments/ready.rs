@@ -29,6 +29,18 @@ impl Ready {
         Self::from_plan(plan, layout, table, layout.y_scalars(), None)
     }
 
+    pub(super) fn assignment_rows(
+        rows: &solve::ScalarProgramBlock,
+        targets: &[usize],
+        layout: &VarLayout,
+        table: &solve::SolvePureCallTable,
+    ) -> Result<Self, String> {
+        checked_slot_count(layout.y_scalars())?;
+        checked_slot_count(layout.p_scalars())?;
+        let plan = Plan::assignment_rows(rows, targets, layout)?;
+        Self::from_plan(plan, layout, table, layout.y_scalars(), None)
+    }
+
     #[cfg(test)]
     pub(super) fn private(
         block: &solve::ScalarProgramBlock,

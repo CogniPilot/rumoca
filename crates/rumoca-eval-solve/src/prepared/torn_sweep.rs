@@ -63,11 +63,25 @@ pub struct TornSweepComposite {
     pub assignment_rows: Vec<Vec<LinearOp>>,
     /// The solver-Y slot each assignment row writes.
     pub assignment_targets: Vec<usize>,
+    /// The source span of each assignment row: its residual program.
+    pub assignment_spans: Vec<rumoca_core::Span>,
+    /// Exclusive ends of the function chunks a backend emits the assignment
+    /// rows in, cut between rows by the exact-assignment operation budget.
+    pub assignment_chunk_ends: Box<[usize]>,
     /// The reduced residual rows as one expression block.
     pub residual_block: ScalarProgramBlock,
     /// Flat output index of each residual row in `residual_block`'s output
     /// order; `None` marks a row with no scalar view.
     pub residual_outputs: Vec<Option<usize>>,
+}
+
+impl TornSweepComposite {
+    /// Consecutive ranges of `assignment_rows` a backend emits as one function each.
+    pub fn assignment_chunks(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+        self.assignment_chunk_ends
+            .iter()
+            .scan(0, |start, &end| Some(std::mem::replace(start, end)..end))
+    }
 }
 
 /// Whether one batched sweep completed or declined at a causal step.
@@ -325,10 +339,14 @@ impl PreparedScalarProgramBlock {
     pub fn torn_sweep_composite(&self, sweep: &PreparedTornSweep) -> Option<TornSweepComposite> {
         let mut assignment_rows = Vec::with_capacity(sweep.steps.len());
         let mut assignment_targets = Vec::with_capacity(sweep.steps.len());
+        let mut assignment_spans = Vec::with_capacity(sweep.steps.len());
         for step in &sweep.steps {
             assignment_rows.push(self.torn_step_isolator_program(step)?);
             assignment_targets.push(step.target_y_index);
+            assignment_spans.push(self.block.program_span(step.program_row)?);
         }
+        let assignment_chunk_ends =
+            rumoca_ir_solve::assignment_program_chunk_ends(&assignment_rows);
         let mut residual_programs = Vec::new();
         let mut residual_spans = Vec::new();
         let mut residual_outputs = Vec::with_capacity(sweep.residuals.len());
@@ -354,6 +372,8 @@ impl PreparedScalarProgramBlock {
         Some(TornSweepComposite {
             assignment_rows,
             assignment_targets,
+            assignment_spans,
+            assignment_chunk_ends,
             residual_block,
             residual_outputs,
         })

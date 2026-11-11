@@ -7,8 +7,8 @@ use crate::{TypedCallFault, WasmCompileError};
 #[cfg(feature = "precompiled-programs")]
 pub use artifact::PrecompiledExactAssignments;
 use rumoca_ir_solve::{
-    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, SolvePureCallTable,
-    VarLayout,
+    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, ScalarProgramBlock,
+    SolvePureCallTable, VarLayout,
 };
 
 pub struct CompiledExactAssignmentWasm {
@@ -94,23 +94,55 @@ pub fn compile_exact_assignment_schedule_wasm(
     let artifact =
         crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
             .map_err(WasmCompileError::Backend)?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
-    Ok(CompiledExactAssignmentWasm {
-        gather_faults: artifact.gather_faults.clone(),
-        #[cfg(any(
-            feature = "precompiled-programs",
-            all(target_arch = "wasm32", target_os = "unknown")
-        ))]
-        linear_solve_faults: artifact.linear_solve_faults.clone(),
-        artifact: artifact.into(),
-        #[cfg(feature = "precompiled-programs")]
-        source_key: rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+    CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
+        rumoca_ir_solve::PreparedKernelSource::new(layout, table)
             .and_then(|source_key| source_key.exact_assignments(source))
-            .map_err(WasmCompileError::Input)?,
-        y_count: layout.y_scalars(),
-        p_count: layout.p_scalars(),
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        runtime,
     })
+}
+
+/// The causal chain of an issued torn sweep as one schedule: each row commits
+/// its value to its Y target before the next row reads it, in issued order,
+/// with one function per issued chunk.
+pub fn compile_torn_assignment_rows_wasm(
+    rows: &ScalarProgramBlock,
+    targets: &[usize],
+    chunks: &[std::ops::Range<usize>],
+    layout: &VarLayout,
+    table: &SolvePureCallTable,
+) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
+    let artifact = crate::emit::emit_torn_assignment_module(rows, targets, chunks, layout, table)
+        .map_err(WasmCompileError::Backend)?;
+    CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
+        rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|source_key| source_key.torn_assignment_rows(rows, targets, chunks))
+    })
+}
+
+impl CompiledExactAssignmentWasm {
+    fn from_artifact(
+        artifact: crate::native_program::CompiledNativeCallProgramWasm,
+        layout: &VarLayout,
+        source_key: impl FnOnce() -> Result<String, String>,
+    ) -> Result<Self, WasmCompileError> {
+        #[cfg(not(feature = "precompiled-programs"))]
+        let _ = source_key;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let runtime =
+            crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
+        Ok(Self {
+            gather_faults: artifact.gather_faults.clone(),
+            #[cfg(any(
+                feature = "precompiled-programs",
+                all(target_arch = "wasm32", target_os = "unknown")
+            ))]
+            linear_solve_faults: artifact.linear_solve_faults.clone(),
+            artifact: artifact.into(),
+            #[cfg(feature = "precompiled-programs")]
+            source_key: source_key().map_err(WasmCompileError::Input)?,
+            y_count: layout.y_scalars(),
+            p_count: layout.p_scalars(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            runtime,
+        })
+    }
 }

@@ -2,6 +2,7 @@
 mod fixture;
 mod private_targets;
 mod runner;
+mod torn_rows;
 
 use rumoca_ir_solve as solve;
 

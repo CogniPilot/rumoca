@@ -225,11 +225,10 @@ impl SolveExecutionBackend for Backend {
     }
     fn compile_torn_assignment_rows(
         &self,
-        rows: &[Vec<solve::LinearOp>],
-        targets: &[usize],
+        sweep: &eval::TornSweepComposite,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
         self.calls.prepare();
-        self.inner.compile_torn_assignment_rows(rows, targets)
+        self.inner.compile_torn_assignment_rows(sweep)
     }
     fn compile_event_transaction(
         &self,

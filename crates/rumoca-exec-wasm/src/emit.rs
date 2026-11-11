@@ -9,7 +9,7 @@ mod seed;
 mod tensor;
 pub(super) use compute::{
     AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
-    emit_exact_assignment_module, emit_private_entries_modules,
+    emit_exact_assignment_module, emit_private_entries_modules, emit_torn_assignment_module,
 };
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
 pub(super) use compute::{

@@ -28,6 +28,17 @@ impl PreparedKernelSource {
         self.key(&("exact-v1", source))
     }
 
+    /// The ordered assignment rows of one torn sweep with their Y targets and
+    /// issued function chunks.
+    pub fn torn_assignment_rows(
+        &self,
+        rows: &ScalarProgramBlock,
+        targets: &[usize],
+        chunks: &[std::ops::Range<usize>],
+    ) -> Result<String, String> {
+        self.key(&("torn-rows-v1", rows, targets, chunks))
+    }
+
     pub fn retained_event(&self, source: &crate::RetainedEventProgram) -> Result<String, String> {
         self.key(&(
             "retained-event-v1",

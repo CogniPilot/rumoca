@@ -300,7 +300,7 @@ pub struct ExactRefreshAssignmentSchedule {
     chunk_ends: Box<[usize]>,
 }
 
-pub use chunks::EXACT_ASSIGNMENT_CHUNK_OPS;
+pub use chunks::{EXACT_ASSIGNMENT_CHUNK_OPS, assignment_program_chunk_ends};
 
 impl ExactRefreshAssignmentSchedule {
     pub const fn sequence_id(&self) -> RefreshSequenceId {

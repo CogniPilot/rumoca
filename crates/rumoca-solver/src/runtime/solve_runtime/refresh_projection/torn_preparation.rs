@@ -156,10 +156,7 @@ impl ScalarExecutionView<'_> {
                 .torn_sweep_composite(&sweep)?;
             let schedule = optional_compiled(
                 "torn_assignment_schedule",
-                backend.compile_torn_assignment_rows(
-                    &composite.assignment_rows,
-                    &composite.assignment_targets,
-                ),
+                backend.compile_torn_assignment_rows(&composite),
             )?;
             let residual_block = optional_compiled(
                 "torn_residual_block",

@@ -28,6 +28,33 @@ pub(crate) fn emit_exact_assignment_module(
     )
 }
 
+/// The causal chain of an issued torn sweep: every row commits its Y targets
+/// before the next row reads them, one function per issued chunk.
+pub(crate) fn emit_torn_assignment_module(
+    rows: &solve::ScalarProgramBlock,
+    targets: &[usize],
+    chunks: &[std::ops::Range<usize>],
+    layout: &VarLayout,
+    table: &solve::SolvePureCallTable,
+) -> Result<CompiledNativeCallProgramWasm, String> {
+    if chunks.iter().map(|chunk| chunk.len()).sum::<usize>() != rows.programs().len()
+        || chunks
+            .iter()
+            .scan(0, |start, chunk| {
+                Some(std::mem::replace(start, chunk.end) == chunk.start)
+            })
+            .any(|consecutive| !consecutive)
+    {
+        return Err("WASM torn assignment chunks differ from their issued rows".into());
+    }
+    emit_module(
+        Ready::assignment_rows(rows, targets, layout, table)?,
+        layout,
+        false,
+        chunks,
+    )
+}
+
 /// The standalone per-program module the shared entries replace, kept as the
 /// reference their results are checked against.
 #[cfg(test)]

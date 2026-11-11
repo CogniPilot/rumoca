@@ -50,7 +50,7 @@ mod browser {
     // before replaying the component that follows it in the canonical wire.
     fn current_version<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<u32, D::Error> {
         let version = u32::deserialize(reader)?;
-        if version != 2 {
+        if version != 3 {
             return Err(serde::de::Error::custom(
                 "unsupported precompiled runtime schema",
             ));
@@ -117,7 +117,7 @@ mod browser {
         drop(prepared);
         let programs = scope.finish_capture().map_err(refusal)?;
         encode(&RuntimeWireRef {
-            version: 2,
+            version: 3,
             context,
             component: rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
                 .map_err(refusal)?,
@@ -138,7 +138,7 @@ mod browser {
             }
             wire
         };
-        if wire.version != 2 {
+        if wire.version != 3 {
             return Err(refusal("unsupported precompiled runtime schema"));
         }
         let scope = ProgramScope::load(wire.programs).map_err(refusal)?;
