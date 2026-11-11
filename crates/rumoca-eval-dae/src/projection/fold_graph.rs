@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod closure;
 mod fragments;
 
@@ -6,6 +7,7 @@ use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
 
+#[cfg(test)]
 use super::dependencies::OrderedDependencies;
 use super::domain_context::Context;
 use super::{FieldPath, FunctionParameterDependency};
@@ -23,6 +25,22 @@ pub(super) struct FoldNode<'dae> {
     pub(super) initial: dae::ExprId<'dae>,
     pub(super) update: dae::ExprId<'dae>,
     pub(super) parent: Arc<Context>,
+}
+
+/// One fully checked node body, preserving both direct reads and edge order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FoldRecipe<'dae> {
+    direct: Arc<[FunctionParameterDependency]>,
+    edges: Arc<[FoldNode<'dae>]>,
+}
+
+impl<'dae> FoldRecipe<'dae> {
+    pub(super) fn direct(&self) -> &[FunctionParameterDependency] {
+        &self.direct
+    }
+    pub(super) fn edges(&self) -> &[FoldNode<'dae>] {
+        &self.edges
+    }
 }
 
 /// A reachable dependency graph, not a collection of reusable partial walks.
@@ -108,7 +126,36 @@ impl<'dae> FoldGraph<'dae> {
             .collect()
     }
 
-    /// Complete every reachable closure before publishing reusable results.
+    /// Publish only after every node and outgoing edge has been checked.
+    pub(super) fn recipes(&self) -> Vec<(FoldNode<'dae>, FoldRecipe<'dae>)> {
+        assert_eq!(
+            self.cursor,
+            self.nodes.len(),
+            "the whole reachable graph was checked"
+        );
+        assert!(self.active.is_none(), "an active node cannot be published");
+        self.nodes
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, node)| {
+                let edges = self.edges[index]
+                    .iter()
+                    .map(|edge| self.nodes[*edge].clone())
+                    .collect::<Vec<_>>();
+                (
+                    node,
+                    FoldRecipe {
+                        direct: Arc::clone(&self.direct[index]),
+                        edges: edges.into(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Completed closures are a test oracle, never a production replay path.
+    #[cfg(test)]
     pub(super) fn completed(self) -> Vec<(FoldNode<'dae>, Arc<[FunctionParameterDependency]>)> {
         assert_eq!(
             self.cursor,

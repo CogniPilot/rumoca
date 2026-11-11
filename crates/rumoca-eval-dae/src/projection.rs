@@ -18,6 +18,7 @@ mod merge_profile_tests;
 mod parameter_fragments;
 mod query;
 mod record_fields;
+mod replay_fold;
 use record_fields::FieldPath;
 mod scalar_selection;
 #[cfg(test)]
@@ -184,6 +185,8 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     #[cfg(test)]
     plain_argument_cache_lookups: std::cell::Cell<u64>,
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
+    fold_recipes: HashMap<fold_graph::FoldNode<'dae>, fold_graph::FoldRecipe<'dae>>,
+    #[cfg(test)]
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
     parameter_eligibility: parameter_fragments::SharedEligibility,
@@ -826,12 +829,8 @@ impl<'dae> Projection<'_, 'dae> {
                 .collect();
             let previous = self.domain_contexts.replace(parent);
             self.fold_summary_capture(function).unwrap().visited.clear();
-            #[cfg(test)]
-            {
-                self.cache.fold_walks += 1;
-            }
             let projected = self.with_activation(node.activation, |projection| {
-                projection.project_fold_node(&node)
+                projection.project_or_replay_fold_node(&node)
             });
             self.domain_contexts.replace(previous);
             let capture = self.fold_summary_capture(function).unwrap();
@@ -1340,6 +1339,12 @@ impl<'dae> Projection<'_, 'dae> {
                 self.cache.parameter_fragments.insert(key, values);
             }
         }
+        for (node, recipe) in capture.folds.recipes() {
+            if self.cache.fold_recipes.len() < 65_536 {
+                self.cache.fold_recipes.insert(node, recipe);
+            }
+        }
+        #[cfg(test)]
         self.cache.completed_folds.extend(capture.folds.completed());
         Ok(FunctionSummaryEntry::Complete(
             capture.dependencies.into_values(),

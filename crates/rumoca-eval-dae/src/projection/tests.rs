@@ -9,6 +9,7 @@ mod indexed_write_fold;
 mod integer_calls;
 mod linear_solve;
 mod literal_update_sweeps;
+mod ordered_fold_replay;
 mod parameter_fragment_reuse;
 mod profiled_folds;
 mod query;

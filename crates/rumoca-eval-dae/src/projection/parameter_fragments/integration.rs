@@ -150,24 +150,10 @@ impl<'dae> Projection<'_, 'dae> {
             update: transition.update_values().rhs(carried as usize).unwrap(),
             parent: self.domain_contexts.snapshot(context),
         };
-        if let Some(dependencies) = self.cache.completed_folds.get(&node).cloned() {
-            #[cfg(test)]
-            {
-                self.cache.fold_reuses += 1;
-            }
-            for dependency in dependencies.iter().cloned() {
-                self.capture_function_parameter(
-                    fold.function(),
-                    dependency,
-                    transition.provenance().span(),
-                )?;
-            }
-        } else {
-            self.fold_summary_capture(fold.function())
-                .unwrap()
-                .folds
-                .enqueue(node);
-        }
+        self.fold_summary_capture(fold.function())
+            .unwrap()
+            .folds
+            .enqueue(node);
         Ok(())
     }
 }
