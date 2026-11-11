@@ -1775,14 +1775,14 @@ jobs:
             core.setOutput('needed', confirmer.timeoutLossModels(comparison, current).length > 0);
 
       - name: Download OMC closure for timeout-loss confirmations
-        if: ${{ steps.timeout-confirmations.outputs.needed == 'true' }}
+        if: ${{ always() && steps.timeout-confirmations.outputs.needed == 'true' }}
         uses: actions/download-artifact@v8
         with:
           name: openmodelica-cli-nix-closure
           path: target/nix-cache
 
       - name: Prepare OMC for timeout-loss confirmations
-        if: ${{ steps.timeout-confirmations.outputs.needed == 'true' }}
+        if: ${{ always() && steps.timeout-confirmations.outputs.needed == 'true' }}
         shell: bash
         run: |
           set -euo pipefail

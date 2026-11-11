@@ -321,3 +321,189 @@ fn arms_that_select_the_same_argument_reduce_to_that_one_coordinate() {
         );
     });
 }
+
+fn alias_fixture(scale: f64, root: bool, conflict: bool) -> dae::Dae {
+    alias_fixture_with_parameter(scale, root, conflict, false, false)
+}
+
+fn alias_fixture_with_parameter(
+    scale: f64,
+    root: bool,
+    conflict: bool,
+    parameter: bool,
+    close_on_component: bool,
+) -> dae::Dae {
+    let text = "Real im; Real re; Real theta; Real first; Real last; equation theta=atan2(im,re); theta=first; last=first;";
+    let source = TestSource::new(text);
+    let at = source.at(0, text.len());
+    dae::Dae::construct(source.map, |model| {
+        let real = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
+        let variables = model.variables(|owner| {
+            ["im", "re", "theta", "first", "last"]
+                .into_iter()
+                .map(|name| owner.algebraic(VarName::new(name), real, at, Default::default()))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        let gain = if parameter {
+            let binding =
+                model.expressions(|owner| owner.at(at).literal(dae::DaeLiteral::Real(1.0)))?;
+            Some(model.variables(|owner| {
+                owner.parameter(
+                    VarName::new("gain"),
+                    real,
+                    at,
+                    dae::VariableAttributes {
+                        binding: Some(binding),
+                        is_tunable: true,
+                        ..Default::default()
+                    },
+                )
+            })?)
+        } else {
+            None
+        };
+        let equations = model.expressions(|owner| {
+            let values = variables
+                .iter()
+                .map(|&id| owner.at(at).coordinate(dae::CoordinateInput::Algebraic(id)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut result = Vec::new();
+            if root {
+                let angle = owner
+                    .at(at)
+                    .builtin(dae::PureBuiltin::Atan2, [values[0], values[1]])?;
+                result.push(owner.at(at).binary(
+                    dae::BinaryOperator::Subtract,
+                    values[2],
+                    angle,
+                )?);
+            }
+            result.push(owner.at(at).binary(
+                dae::BinaryOperator::Subtract,
+                values[2],
+                values[3],
+            )?);
+            let unit = match gain {
+                Some(parameter) => owner
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Parameter(parameter))?,
+                None => owner.at(at).literal(dae::DaeLiteral::Real(scale))?,
+            };
+            let alias = owner
+                .at(at)
+                .binary(dae::BinaryOperator::Multiply, unit, values[3])?;
+            result.push(
+                owner
+                    .at(at)
+                    .binary(dae::BinaryOperator::Subtract, values[4], alias)?,
+            );
+            if conflict {
+                let other = owner
+                    .at(at)
+                    .builtin(dae::PureBuiltin::Atan2, [values[1], values[0]])?;
+                result.push(owner.at(at).binary(
+                    dae::BinaryOperator::Subtract,
+                    values[4],
+                    other,
+                )?);
+            }
+            if close_on_component {
+                result.push(owner.at(at).binary(
+                    dae::BinaryOperator::Subtract,
+                    values[0],
+                    values[4],
+                )?);
+            }
+            Ok(result)
+        })?;
+        model.continuous(|owner| {
+            for expression in equations {
+                owner.value_equation(at, expression)?;
+            }
+            Ok(())
+        })
+    })
+    .unwrap()
+}
+
+#[test]
+fn unit_aliases_keep_the_original_phasor_components() {
+    for sign in [1.0, -1.0] {
+        let model = alias_fixture(sign, true, false);
+        model.inspect(|view| {
+            let facts = PhasorSources::of(view);
+            for ordinal in [2, 3, 4] {
+                let id = view.variable_id(ordinal).unwrap();
+                let issued = facts.declaration_sources(id);
+                assert_eq!(
+                    issued.len(),
+                    1,
+                    "source equality must carry the root proof to alias {ordinal}"
+                );
+                assert_eq!(issued[0].1.re, "re");
+                assert_eq!(issued[0].1.im, "im");
+            }
+        });
+    }
+}
+
+#[test]
+fn nonunit_and_conflicting_aliases_issue_no_substitute_proof() {
+    let model = alias_fixture(2.0, true, false);
+    model.inspect(|view| {
+        let facts = PhasorSources::of(view);
+        assert!(
+            facts
+                .declaration_sources(view.variable_id(4).unwrap())
+                .is_empty()
+        );
+    });
+    for (root, conflict) in [(false, false), (true, true)] {
+        let model = alias_fixture(1.0, root, conflict);
+        model.inspect(|view| {
+            let facts = PhasorSources::of(view);
+            for ordinal in [2, 3, 4] {
+                assert!(
+                    facts
+                        .declaration_sources(view.variable_id(ordinal).unwrap())
+                        .is_empty()
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn a_model_parameter_default_of_one_is_not_a_unit_literal_proof() {
+    let model = alias_fixture_with_parameter(1.0, true, false, true, false);
+    model.inspect(|view| {
+        let facts = PhasorSources::of(view);
+        assert_eq!(
+            facts
+                .declaration_sources(view.variable_id(3).unwrap())
+                .len(),
+            1
+        );
+        assert!(
+            facts
+                .declaration_sources(view.variable_id(4).unwrap())
+                .is_empty()
+        );
+    });
+}
+
+#[test]
+fn an_alias_component_cannot_supply_its_own_angle_component() {
+    let model = alias_fixture_with_parameter(1.0, true, false, false, true);
+    model.inspect(|view| {
+        let facts = PhasorSources::of(view);
+        for ordinal in [0, 2, 3, 4] {
+            assert!(
+                facts
+                    .declaration_sources(view.variable_id(ordinal).unwrap())
+                    .is_empty()
+            );
+        }
+    });
+}
