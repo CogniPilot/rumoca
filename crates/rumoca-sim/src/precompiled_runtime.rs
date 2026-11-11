@@ -10,6 +10,17 @@ fn refusal(message: impl ToString) -> SimulationDiagnosticError {
         span: None,
     }
 }
+/// The solver profiles a precompiled browser product may declare: the
+/// explicit plugins of the rk45 session. Both evaluate only state derivatives
+/// (neither requests a model state Jacobian), so they prepare and replay the
+/// same program inventory.
+#[cfg(any(test, all(target_arch = "wasm32", feature = "solver-rk45")))]
+pub(crate) fn admits_solver_profile(mode: crate::SimSolverMode) -> bool {
+    matches!(
+        mode,
+        crate::SimSolverMode::RkLike | crate::SimSolverMode::FixedStep
+    )
+}
 #[cfg(all(target_arch = "wasm32", feature = "solver-rk45"))]
 mod browser {
     use super::*;
@@ -80,9 +91,9 @@ mod browser {
         opts: SimOptions,
         context: T,
     ) -> Result<Vec<u8>, SimulationDiagnosticError> {
-        if opts.solver_mode != crate::SimSolverMode::RkLike {
+        if !admits_solver_profile(opts.solver_mode) {
             return Err(refusal(
-                "precompiled browser product requires the declared rk-like profile",
+                "precompiled browser product requires the declared rk-like or fixed-step profile",
             ));
         }
         crate::backend_options::validate(&opts)?;

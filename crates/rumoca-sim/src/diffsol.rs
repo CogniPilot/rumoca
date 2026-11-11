@@ -62,6 +62,13 @@ fn configured_integrator(
             }
             .into());
         }
+        #[cfg(feature = "solver-rk45")]
+        crate::backend_options::ValidatedOptions::FixedStep(_) => {
+            return Err(rumoca_solver::BackendOptionsError::ConcreteType {
+                backend: rumoca_solver::NumericalBackend::Bdf,
+            }
+            .into());
+        }
     };
     match config.method {
         rumoca_solver_diffsol::DiffsolMethod::Bdf => Ok(

@@ -320,5 +320,13 @@ fn configured_options(
     opts.initial_inputs = initial_inputs;
     opts.execution_policy = options.execution_policy;
     opts.param_overrides = options.param_overrides.clone();
+    // Captured as given: the backend the solver name selected validates the
+    // payload's identity and values when the session is prepared.
+    if let Some(fixed_step) = options.fixed_step {
+        opts.backend_options = Some(rumoca_sim::fixed_step_backend_options(
+            fixed_step.step,
+            fixed_step.order,
+        ));
+    }
     opts
 }

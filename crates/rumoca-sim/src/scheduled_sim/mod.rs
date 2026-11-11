@@ -266,5 +266,6 @@ fn solver_mode_label(mode: SimSolverMode) -> &'static str {
         SimSolverMode::Bdf => "bdf",
         SimSolverMode::RkLike => "rk-like",
         SimSolverMode::VelImplicit => "velimplicit",
+        SimSolverMode::FixedStep => "fixed-step",
     }
 }

@@ -10,6 +10,9 @@ pub enum SimSolverMode {
     /// Opt-in fixed-step linearly implicit Euler with a reused Jacobian
     /// (MuJoCo-style; `rumoca-solver-velimplicit`, 1 ms step, Jacobian reuse 200).
     VelImplicit,
+    /// Opt-in fixed-step explicit Runge-Kutta (`rumoca-solver-rk45`'s
+    /// `fixed_step` plugin; 1 ms step and classical fourth order by default).
+    FixedStep,
 }
 
 impl SimSolverMode {
@@ -25,6 +28,9 @@ impl SimSolverMode {
         let normalized = lower.replace(['-', '_', ' '], "");
         if normalized == "velimplicit" {
             return Self::VelImplicit;
+        }
+        if normalized == "fixedstep" {
+            return Self::FixedStep;
         }
         // The ESDIRK34 / TR-BDF2 names are *implicit* tableaus, not the explicit
         // rk45 backend, so they land in `Bdf` here rather than `RkLike`.
@@ -439,6 +445,30 @@ mod tests {
         assert_eq!(
             SimSolverMode::from_external_name("dopri5"),
             SimSolverMode::RkLike
+        );
+    }
+
+    /// The fixed-step explicit plugin is selected only by its own name; the
+    /// method-family names the heuristic already routes keep their solver.
+    #[test]
+    fn the_fixed_step_name_selects_its_own_mode_and_no_other_name_does() {
+        for name in ["fixed-step", "Fixed_Step", "fixed step", " FIXEDSTEP "] {
+            assert_eq!(
+                SimSolverMode::from_external_name(name),
+                SimSolverMode::FixedStep,
+                "{name}"
+            );
+        }
+        for name in ["rk4", "euler", "heun", "rk-like", "midpoint"] {
+            assert_ne!(
+                SimSolverMode::from_external_name(name),
+                SimSolverMode::FixedStep,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            SimSolverMode::from_external_name("velimplicit"),
+            SimSolverMode::VelImplicit
         );
     }
 
