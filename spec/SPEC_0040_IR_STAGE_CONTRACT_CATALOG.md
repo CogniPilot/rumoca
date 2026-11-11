@@ -333,6 +333,12 @@ These rows are normative by reference from SPEC_0007 Structural Lowering Scope.
 | SOLVE-C108: phase-solve issues optional CartesianPairPlan from exact direct state-read derivative outputs; complete disjoint pairs cover all states. Wire replay checks the same canonical rows, including register overwrites. No names, units, charts, backend inference, or input index lists prove a partition. Missing proofs refuse only the opt-in Cartesian backend. Schema90 carries this optional plan. | phase-solve; ir-solve CartesianPairPlan and root wire validation | Prevent unproved mechanical updates |
 
 
+### Same-source damped mechanical systems
+
+| Rule | Contract | Owner |
+|---|---|---|
+| SOLVE-C110 | A damped Cartesian mechanical step plan proves affine identity-Map kinematics through the original output/load maps without publishing scalar fallback programs; all executed prefix operations and load extents must be covered. It binds complete direct position/velocity pairs to one original coupled `LinSolve` acceleration node. Every velocity row belongs to that same matrix/rhs owner. Each rhs row must retain an explicit subtraction of a parameter-or-literal coefficient times that row's original velocity; the checked register provenance, not names, units, an ODE mass artifact or a velocity Jacobian, issues the coefficient relation. The plan retains the original setup and source spans; replay checks the same relation against the actual derivative kernel. Missing, ambiguous, overwritten or unsupported evidence declines this optional plan, leaving ordinary RK available. The derived coefficient program retains the original matrix, already-damped force and diagonal damping source in one ordered result. This proof alone authorizes no private component operation or runtime adoption. Full floating-root/basis and auxiliary-state admission require their separate complete update proof. | Phase-solve producer, checked Solve plan and common FMI numerical capability |
+
 ## References
 
 - [SPEC_0007](SPEC_0007_IR_PIPELINE.md) — owning stage contracts and placement

@@ -99,10 +99,12 @@ impl Serialize for ContinuousSolveSystem {
         let omit_charts = serializer.is_human_readable() && charts.is_empty();
         let omit_guards = serializer.is_human_readable() && self.unlocalizable_guards.is_empty();
         let omit_cartesian = serializer.is_human_readable() && self.cartesian_pairs.is_none();
+        let omit_mechanical = serializer.is_human_readable() && self.mechanical_step.is_none();
         let field_count = 8
             + usize::from(!omit_charts)
             + usize::from(!omit_guards)
-            + usize::from(!omit_cartesian);
+            + usize::from(!omit_cartesian)
+            + usize::from(!omit_mechanical);
         let mut state = serializer.serialize_struct("ContinuousSolveSystem", field_count)?;
         state.serialize_field("implicit_rhs", &self.implicit_rhs)?;
         state.serialize_field("implicit_row_targets", &self.implicit_row_targets)?;
@@ -127,6 +129,9 @@ impl Serialize for ContinuousSolveSystem {
         if !omit_cartesian {
             state.serialize_field("cartesian_pairs", &self.cartesian_pairs)?;
         }
+        if !omit_mechanical {
+            state.serialize_field("mechanical_step", &self.mechanical_step)?;
+        }
         state.end()
     }
 }
@@ -147,6 +152,8 @@ struct ContinuousSolveSystemWire {
     unlocalizable_guards: Vec<crate::UnlocalizableGuard>,
     #[serde(default)]
     cartesian_pairs: Option<crate::CartesianPairPlan>,
+    #[serde(default)]
+    mechanical_step: Option<crate::MechanicalStepPlan>,
 }
 
 impl<'de> Deserialize<'de> for ContinuousSolveSystem {
@@ -154,6 +161,7 @@ impl<'de> Deserialize<'de> for ContinuousSolveSystem {
         let wire = ContinuousSolveSystemWire::deserialize(deserializer)?;
         let mut system = Self {
             cartesian_pairs: wire.cartesian_pairs,
+            mechanical_step: wire.mechanical_step,
             implicit_rhs: wire.implicit_rhs,
             implicit_row_targets: crate::ImplicitRowTargets::from_wire(
                 wire.implicit_row_targets,

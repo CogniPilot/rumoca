@@ -18,3 +18,23 @@ pub(super) fn issue(system: &ContinuousSolveSystem, states: usize) -> Option<Car
         .collect();
     CartesianPairPlan::checked(states, pairs, &system.derivative_rhs).ok()
 }
+
+pub(super) fn mechanical(
+    system: &ContinuousSolveSystem,
+) -> Option<rumoca_ir_solve::MechanicalStepPlan> {
+    let cartesian = system.cartesian_pairs.as_ref()?;
+    let mut nodes = system
+        .derivative_rhs
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            matches!(node, rumoca_ir_solve::ComputeNode::LinSolve { .. }).then_some(index)
+        });
+    let index = nodes.next()?;
+    if nodes.next().is_some() {
+        return None;
+    }
+    rumoca_ir_solve::MechanicalStepPlan::checked(cartesian.clone(), index, &system.derivative_rhs)
+        .ok()
+}

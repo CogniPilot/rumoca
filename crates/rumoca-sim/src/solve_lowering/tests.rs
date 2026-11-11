@@ -1,3 +1,4 @@
+mod mechanical_admission;
 use rumoca_compile::compile::{Session, SessionConfig};
 
 use super::entry::lower_dae_for_simulation;

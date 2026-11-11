@@ -37,6 +37,7 @@ pub use variable_storage::{
 #[derive(Clone, Debug, Default)]
 pub struct ContinuousSolveSystem {
     pub cartesian_pairs: Option<CartesianPairPlan>,
+    pub mechanical_step: Option<MechanicalStepPlan>,
     pub implicit_rhs: ComputeBlock,
     pub implicit_row_targets: ImplicitRowTargets,
     pub algebraic_projection_plan: AlgebraicProjectionPlan,

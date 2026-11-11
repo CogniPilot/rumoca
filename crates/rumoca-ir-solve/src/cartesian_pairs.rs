@@ -70,42 +70,127 @@ impl CartesianPairPlan {
 
 /// Read-only register provenance: `Some(i)` means this output is exactly a
 /// direct Y[i] read, including copies. Arithmetic and calls never prove one.
-/// Unsupported aggregate nodes decline the query rather than scalarize them.
+/// Checked affine identity Maps retain their original index maps. A coupled
+/// LinSolve owns nonidentity acceleration rows; other aggregates decline.
 pub fn direct_state_derivative_reads(
     block: &ComputeBlock,
     state_count: usize,
 ) -> Option<Vec<Option<usize>>> {
+    block.checked_source_view("Cartesian kinematics").ok()?;
     let mut reads = vec![None; state_count];
     let mut covered = vec![false; state_count];
-    let mut cursor = 0;
+    let mut cursor = 0usize;
     for (node_index, node) in block.nodes.iter().enumerate() {
-        let ComputeNode::ScalarPrograms(rows) = node else {
-            return None;
-        };
-        let indices = rows
-            .compute_block_output_indices("Cartesian kinematics", node_index, cursor)
-            .ok()?;
-        let outputs = rows.programs().iter().enumerate().try_fold(
-            Vec::new(),
-            |mut outputs, (index, program)| {
-                outputs.extend(program_reads(program, rows.program_register_count(index)?)?);
-                Some(outputs)
-            },
-        )?;
-        if indices.len() != outputs.len() {
-            return None;
-        }
-        for (index, source) in indices.into_iter().zip(outputs) {
-            if index >= state_count || std::mem::replace(&mut covered[index], true) {
+        let (indices, sources) = node_reads(node, node_index, cursor, state_count)?;
+        for (index, source) in indices.into_iter().zip(sources) {
+            let claimed = covered.get_mut(index)?;
+            if std::mem::replace(claimed, true) {
                 return None;
             }
             reads[index] = source.filter(|&source| source < state_count);
         }
-        cursor = rows
-            .advance_compute_block_output_cursor("Cartesian kinematics", node_index, cursor)
-            .ok()?;
+        cursor = crate::tensor::advance_compute_output_cursor(
+            "Cartesian kinematics",
+            node_index,
+            node,
+            cursor,
+        )
+        .ok()?;
     }
     covered.iter().all(|&value| value).then_some(reads)
+}
+
+fn node_reads(
+    node: &ComputeNode,
+    node_index: usize,
+    cursor: usize,
+    state_count: usize,
+) -> Option<(Vec<usize>, Vec<Option<usize>>)> {
+    match node {
+        ComputeNode::Map { .. } => {
+            let (indices, sources) = identity_map_reads(node, state_count)?;
+            Some((indices, sources.into_iter().map(Some).collect()))
+        }
+        ComputeNode::LinSolve { n, .. } => {
+            let end = cursor.checked_add(*n)?;
+            if end > state_count {
+                return None;
+            }
+            Some(((cursor..end).collect(), vec![None; *n]))
+        }
+        ComputeNode::ScalarPrograms(rows) => {
+            let indices = rows
+                .compute_block_output_indices("Cartesian kinematics", node_index, cursor)
+                .ok()?;
+            let outputs = rows.programs().iter().enumerate().try_fold(
+                Vec::new(),
+                |mut outputs, (index, program)| {
+                    outputs.extend(program_reads(program, rows.program_register_count(index)?)?);
+                    Some(outputs)
+                },
+            )?;
+            (indices.len() == outputs.len()).then_some((indices, outputs))
+        }
+        _ => None,
+    }
+}
+
+/// This query proves only a single direct state read per affine invocation.
+/// Every executed op is accounted for, including unused loads. It does not
+/// turn a Map into backend scalar programs or infer physical coordinates.
+pub(crate) fn identity_map_reads(
+    node: &ComputeNode,
+    state_count: usize,
+) -> Option<(Vec<usize>, Vec<usize>)> {
+    use std::collections::BTreeMap;
+    let ComputeNode::Map {
+        domain,
+        output_map,
+        base_ops,
+        load_strides,
+        const_strides,
+        ..
+    } = node
+    else {
+        return None;
+    };
+    node.validate_shape_contract("Cartesian identity Map", 0)
+        .ok()?;
+    if domain.scalar_count().ok()? > state_count || !const_strides.is_empty() {
+        return None;
+    }
+    crate::RegisterVersionProgram::derive(base_ops)?;
+    let mut registers = BTreeMap::new();
+    let mut output = None;
+    for (position, op) in base_ops.iter().enumerate() {
+        match *op {
+            LinearOp::LoadY { dst, index } => {
+                let map = crate::TensorOutputMap {
+                    start: index,
+                    strides: load_strides
+                        .iter()
+                        .find(|s| s.op_position == position)
+                        .map(|s| s.terms.clone())
+                        .unwrap_or_default(),
+                };
+                if map.output_count(domain).ok()? > state_count {
+                    return None;
+                }
+                registers.insert(dst, map);
+            }
+            LinearOp::Move { dst, src } => {
+                let source = registers.get(&src)?.clone();
+                registers.insert(dst, source);
+            }
+            LinearOp::StoreOutput { src } if output.is_none() => {
+                output = Some(registers.get(&src)?.clone());
+            }
+            _ => return None,
+        }
+    }
+    let indices = output_map.output_indices(domain).ok()?;
+    let sources = output?.output_indices(domain).ok()?;
+    (indices.len() == sources.len()).then_some((indices, sources))
 }
 
 fn program_reads(program: &[LinearOp], register_count: usize) -> Option<Vec<Option<usize>>> {

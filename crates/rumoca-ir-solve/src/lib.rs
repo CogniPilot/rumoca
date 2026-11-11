@@ -9,6 +9,10 @@
 mod affinity;
 mod assertion_observation;
 mod cartesian_pairs;
+mod mechanical_step;
+pub use mechanical_step::{
+    MechanicalDampingSource, MechanicalStepError, MechanicalStepPlan, linear_damping_sources,
+};
 mod certificate;
 pub use cartesian_pairs::{CartesianPairError, CartesianPairPlan, direct_state_derivative_reads};
 #[cfg(test)]
@@ -150,7 +154,8 @@ pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 /// 79 to 88 carry this lineage's native-product Solve rows on top of that.
 /// 89 carries checked producer partitions within one event-iteration declaration.
 /// 90 carries source-checked direct Cartesian kinematic pairs.
-pub const SOLVE_SCHEMA_VERSION: u16 = 90;
+/// 91 carries source-bound coupled mechanical mass/damping plans.
+pub const SOLVE_SCHEMA_VERSION: u16 = 91;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1101,6 +1106,17 @@ impl SolveProblem {
             {
                 return Err(SolveProblemShapeContractError::SolverStorage {
                     detail: "Cartesian plan state extent differs from the source".into(),
+                });
+            }
+            plan.validate(&self.continuous.derivative_rhs)
+                .map_err(|error| SolveProblemShapeContractError::SolverStorage {
+                    detail: error.to_string(),
+                })?;
+        }
+        if let Some(plan) = &self.continuous.mechanical_step {
+            if self.continuous.cartesian_pairs.as_ref() != Some(plan.cartesian()) {
+                return Err(SolveProblemShapeContractError::SolverStorage {
+                    detail: "mechanical plan differs from its checked kinematic owner".into(),
                 });
             }
             plan.validate(&self.continuous.derivative_rhs)
