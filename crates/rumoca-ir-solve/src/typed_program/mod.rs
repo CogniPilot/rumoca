@@ -24,15 +24,15 @@ pub use algorithm_block::{
 pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;
 pub use call::{
-    AssertionRegionKind, AssertionRegionStep, AssertionSource, BodyQuaternionKinematics,
-    BoundSolvePureCallBody, CheckedAssertionFlow, ScopedSolvePureCallTable, SolveAssertionLevel,
-    SolveCallSiteCount, SolveCallValueRole, SolvePureCallDirectionalOwner,
-    SolvePureCallDirectionalSite, SolvePureCallIdentity, SolvePureCallInputCoordinate,
-    SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId,
-    SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder, SolvePureCallWireError,
-    SolvePureCallWireScope, SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
-    SolveScalarBoundary, SolveScalarBoundaryError, SolveScalarCrossing, SolveScalarInput,
-    SolveScalarOutput,
+    ArticulatedJointReduction, AssertionRegionKind, AssertionRegionStep, AssertionSource,
+    BodyQuaternionKinematics, BoundSolvePureCallBody, CheckedAssertionFlow,
+    ScopedSolvePureCallTable, SolveAssertionLevel, SolveCallSiteCount, SolveCallValueRole,
+    SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
+    SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
+    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
+    SolvePureCallWireError, SolvePureCallWireScope, SolveRecursionProfile, SolveRecursiveGroup,
+    SolveRecursiveMember, SolveScalarBoundary, SolveScalarBoundaryError, SolveScalarCrossing,
+    SolveScalarInput, SolveScalarOutput,
 };
 pub use demand::{SolveLiveness, SolveOutputDemand, visit_demanded_calls, visit_demanded_reads};
 pub use entry::{

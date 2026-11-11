@@ -1,4 +1,6 @@
+mod articulated;
 mod assertion_flow;
+pub use articulated::ArticulatedJointReduction;
 mod bound_body;
 pub(super) mod dependency;
 mod quaternion;
@@ -285,6 +287,8 @@ pub struct SolvePureCallDirectionalOwner {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOwner {
     #[serde(skip)]
+    articulated: Option<ArticulatedJointReduction>,
+    #[serde(skip)]
     quaternion: Option<BodyQuaternionKinematics>,
     #[serde(skip)]
     input_coordinate: SolvePureCallInputCoordinate,
@@ -555,6 +559,12 @@ impl SolvePureCallDirectionalOwner {
 }
 
 impl SolvePureCallOwner {
+    /// Exact original joint-factor formula, without granting tree/runtime admission.
+    #[must_use]
+    pub fn articulated_joint_reduction(&self) -> Option<&ArticulatedJointReduction> {
+        self.articulated.as_ref()
+    }
+
     /// Exact scalar-first q_dot = 0.5*q*[0,omega_body] source relation.
     #[must_use]
     pub fn body_quaternion_kinematics(&self) -> Option<&BodyQuaternionKinematics> {
@@ -936,6 +946,7 @@ impl SolvePureCallTableBuilder {
         let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
         let assertion_flow = assertion_flow::derive(&body, inputs.len(), &outputs, interfaces);
         self.owners.push(SolvePureCallOwner {
+            articulated: articulated::derive(&body, &inputs, &outputs),
             quaternion: quaternion::derive(&body, &inputs, &outputs),
             input_coordinate,
             assertion_flow,
@@ -1277,6 +1288,7 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             let assertion_flow =
                 assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
             owners.push(SolvePureCallOwner {
+                articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
                 quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
                 input_coordinate,
                 assertion_flow,
