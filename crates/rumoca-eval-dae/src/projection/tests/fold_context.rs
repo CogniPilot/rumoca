@@ -697,8 +697,8 @@ fn check_graph_case(
     for node in &issued {
         graph.enqueue(node.clone());
     }
-    for node in 0..2 {
-        assert_eq!(graph.begin_next().as_deref(), Some(&nodes[node]));
+    for (node, expected) in nodes.iter().enumerate() {
+        assert_eq!(graph.begin_next().as_deref(), Some(expected));
         for (target, key) in issued.iter().enumerate() {
             if edges & (1 << (2 * node + target)) != 0 {
                 graph.enqueue(key.clone());
