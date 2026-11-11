@@ -164,6 +164,27 @@ struct HermiteInterval {
 }
 
 impl HermiteInterval {
+    /// Reserve all state-sized buffers before changing the accepted interval.
+    fn reserve(&mut self, width: usize, slopes: bool) -> Result<(), MeIntegrationError> {
+        let buffers = [
+            &mut self.start,
+            &mut self.end,
+            &mut self.start_slope,
+            &mut self.end_slope,
+        ];
+        for buffer in buffers.into_iter().take(if slopes { 4 } else { 2 }) {
+            if buffer.capacity() < width {
+                buffer
+                    .try_reserve_exact(width - buffer.len())
+                    .map_err(|_| MeIntegrationError::Allocation {
+                        context: "fixed-step continuous extension",
+                        entries: width,
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
     fn evaluate_into(&self, time: f64, states: &mut [f64]) {
         let span = self.end_time - self.start_time;
         let theta = if span > 0.0 {
@@ -252,8 +273,15 @@ impl FixedStepIntegrator {
 
     /// Retain the step just taken as the accepted interval, reusing the
     /// previous interval's buffers.
-    fn retain_interval(&mut self, start: &MeContinuousPoint, step: f64, end_time: f64) {
-        let mut interval = self.accepted_interval.take().unwrap_or_default();
+    fn retain_interval(
+        &mut self,
+        start: &MeContinuousPoint,
+        step: f64,
+        end_time: f64,
+    ) -> Result<(), MeIntegrationError> {
+        let mut fresh = HermiteInterval::default();
+        let interval = self.accepted_interval.as_mut().unwrap_or(&mut fresh);
+        interval.reserve(self.width, self.method.end_stage().is_some())?;
         interval.start_time = start.time();
         interval.end_time = end_time;
         interval.step = step;
@@ -264,7 +292,10 @@ impl FixedStepIntegrator {
             overwrite(&mut interval.start_slope, &self.work.slopes[0]);
             overwrite(&mut interval.end_slope, &self.work.slopes[end_stage]);
         }
-        self.accepted_interval = Some(interval);
+        if self.accepted_interval.is_none() {
+            self.accepted_interval = Some(fresh);
+        }
+        Ok(())
     }
 }
 
@@ -314,7 +345,7 @@ impl MeIntegratorBackend for FixedStepIntegrator {
         // accepted interval untouched.
         self.trial_step(now, start.states(), step, end_time)?;
         let endpoint = try_copied(&self.work.end, "fixed-step accepted endpoint")?;
-        self.retain_interval(start, step, end_time);
+        self.retain_interval(start, step, end_time)?;
         Ok(MeStepCandidate::new(
             end_time,
             endpoint,

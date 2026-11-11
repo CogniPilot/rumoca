@@ -438,3 +438,47 @@ fn an_unvalidated_configuration_is_refused_by_the_factory() {
         );
     }
 }
+
+#[test]
+fn continuous_extension_allocation_is_typed_and_preserves_existing_values() {
+    let mut fresh = HermiteInterval::default();
+    assert!(matches!(
+        fresh.reserve(usize::MAX, true),
+        Err(MeIntegrationError::Allocation {
+            entries: usize::MAX,
+            ..
+        })
+    ));
+    let mut retained = HermiteInterval {
+        start_time: 1.0,
+        end_time: 2.0,
+        step: 1.0,
+        start: vec![2.0],
+        end: vec![3.0],
+        start_slope: vec![1.0],
+        end_slope: vec![1.0],
+    };
+    assert!(matches!(
+        retained.reserve(usize::MAX, true),
+        Err(MeIntegrationError::Allocation {
+            entries: usize::MAX,
+            ..
+        })
+    ));
+    assert_eq!(retained.start_time, 1.0);
+    assert_eq!(retained.end_time, 2.0);
+    assert_eq!(retained.step, 1.0);
+    assert_eq!(retained.start, [2.0]);
+    assert_eq!(retained.end, [3.0]);
+    assert_eq!(retained.start_slope, [1.0]);
+    assert_eq!(retained.end_slope, [1.0]);
+    retained.reserve(8, true).unwrap();
+    for capacity in [
+        retained.start.capacity(),
+        retained.end.capacity(),
+        retained.start_slope.capacity(),
+        retained.end_slope.capacity(),
+    ] {
+        assert!(capacity >= 8);
+    }
+}
