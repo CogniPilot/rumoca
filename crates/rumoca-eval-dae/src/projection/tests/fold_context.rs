@@ -842,3 +842,38 @@ fn retained_node_hashing_is_constant_after_exact_construction() {
         assert!(node_hash_bytes(&local) > 4096 * std::mem::size_of::<i64>());
     });
 }
+
+#[test]
+fn completed_recipe_edges_reenter_queue_without_reproving_unique_membership() {
+    positive_model().inspect(|view| {
+        let [first, second] = checked_graph_nodes(view);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let keys = [
+            owner.with_test_limit(first, 1),
+            owner.with_test_limit(second, 1),
+        ];
+        let mut original = crate::projection::fold_graph::FoldGraph::default();
+        original.enqueue(keys[0].clone());
+        assert_eq!(original.begin_next(), Some(keys[0].clone()));
+        original.enqueue(keys[1].clone());
+        original.enqueue(keys[1].clone());
+        original.finish_node();
+        assert_eq!(original.begin_next(), Some(keys[1].clone()));
+        original.enqueue(keys[0].clone());
+        original.finish_node();
+        assert!(original.begin_next().is_none());
+        assert_eq!(original.recorded_edges, 2);
+        let recipes = original.recipes();
+        let mut replay = crate::projection::fold_graph::FoldGraph::default();
+        replay.enqueue(keys[0].clone());
+        for (key, recipe) in recipes {
+            assert_eq!(replay.begin_next(), Some(key));
+            replay.replay_edges(&recipe);
+            replay.finish_node();
+        }
+        assert!(replay.begin_next().is_none());
+        assert_eq!(original.ordered_edges(), replay.ordered_edges());
+        assert_eq!(replay.recorded_edges, 0);
+        assert_eq!(replay.replayed_edges, 2);
+    });
+}

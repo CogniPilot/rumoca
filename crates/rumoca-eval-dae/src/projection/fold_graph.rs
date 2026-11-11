@@ -38,9 +38,6 @@ impl<'dae> FoldRecipe<'dae> {
     pub(super) fn direct(&self) -> &[FunctionParameterDependency] {
         &self.direct
     }
-    pub(super) fn edges(&self) -> &[Node<'dae>] {
-        &self.edges
-    }
 }
 
 /// A reachable dependency graph, not a collection of reusable partial walks.
@@ -58,11 +55,28 @@ pub(super) struct FoldGraph<'dae> {
     cursor: usize,
     #[cfg(test)]
     pub(super) repeated_edges: usize,
+    #[cfg(test)]
+    pub(super) recorded_edges: usize,
+    #[cfg(test)]
+    pub(super) replayed_edges: usize,
 }
 
 impl<'dae> FoldGraph<'dae> {
     pub(super) fn enqueue(&mut self, node: Node<'dae>) {
-        let index = if let Some(index) = self.inventory.get(&node) {
+        let index = self.node_index(node);
+        if let Some(active) = self.active
+            && self.edge_membership[active].insert(index)
+        {
+            self.edges[active].push(index);
+            #[cfg(test)]
+            {
+                self.recorded_edges += 1;
+            }
+        }
+    }
+
+    fn node_index(&mut self, node: Node<'dae>) -> usize {
+        if let Some(index) = self.inventory.get(&node) {
             #[cfg(test)]
             {
                 self.repeated_edges += 1;
@@ -76,11 +90,27 @@ impl<'dae> FoldGraph<'dae> {
             self.edge_membership.push(HashSet::default());
             self.direct.push(Arc::from([]));
             index
-        };
-        if let Some(active) = self.active
-            && self.edge_membership[active].insert(index)
+        }
+    }
+
+    /// A recipe's constructor has already issued its unique ordered edges.
+    /// Re-interning their immutable handles preserves that uniqueness, so the
+    /// replay arm needs no second edge-membership proof or allocation.
+    pub(super) fn replay_edges(&mut self, recipe: &FoldRecipe<'dae>) {
+        let active = self.active.expect("a replay has one active node");
+        assert!(
+            self.edges[active].is_empty(),
+            "replay replaces no source walk"
+        );
+        self.edges[active] = recipe
+            .edges
+            .iter()
+            .cloned()
+            .map(|node| self.node_index(node))
+            .collect();
+        #[cfg(test)]
         {
-            self.edges[active].push(index);
+            self.replayed_edges += recipe.edges.len();
         }
     }
 

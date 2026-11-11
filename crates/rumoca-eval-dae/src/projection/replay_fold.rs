@@ -29,9 +29,7 @@ impl<'dae> Projection<'_, 'dae> {
         let capture = self
             .fold_summary_capture(node.fold.function())
             .expect("the same summary owns the recipe");
-        for edge in recipe.edges().iter().cloned() {
-            capture.folds.enqueue(edge);
-        }
+        capture.folds.replay_edges(&recipe);
         Ok(())
     }
 }
