@@ -22,6 +22,7 @@ mod scalar_selection;
 #[cfg(test)]
 mod tests;
 mod visited;
+mod whole_visit;
 mod zero_coefficients;
 pub use literal_bindings::{LiteralBinding, literal_bindings};
 pub use zero_coefficients::{
@@ -187,6 +188,12 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     parameter_eligibility: parameter_fragments::SharedEligibility,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
+    #[cfg(test)]
+    uncached_whole_visits: bool,
+    #[cfg(test)]
+    whole_visit_hits: u64,
+    #[cfg(test)]
+    all_scalar_entries: u64,
     #[cfg(test)]
     uncached_fold_reference: bool,
     #[cfg(test)]
@@ -1818,8 +1825,23 @@ impl<'dae> Projection<'_, 'dae> {
     }
 
     fn all_scalars(&mut self, expression: dae::ExprId<'dae>) -> Result<(), ProjectionError> {
+        let whole = self.whole_visit(expression);
+        if whole.as_ref().is_some_and(|(_, completed)| *completed) {
+            #[cfg(test)]
+            {
+                self.cache.whole_visit_hits += 1;
+            }
+            return Ok(());
+        }
         for index in 0..self.scalar_count(expression) {
+            #[cfg(test)]
+            {
+                self.cache.all_scalar_entries += 1;
+            }
             self.expression(expression, index)?;
+        }
+        if let Some((visit, _)) = whole {
+            self.finish_whole_visit(visit);
         }
         Ok(())
     }

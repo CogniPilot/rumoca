@@ -14,6 +14,7 @@ mod query;
 mod record_comprehension;
 pub(super) mod shape_only_size;
 mod shared_dag;
+mod whole_visit;
 mod zero_coefficients;
 
 use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName};
