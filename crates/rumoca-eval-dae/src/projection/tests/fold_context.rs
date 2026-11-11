@@ -824,7 +824,7 @@ fn node_hash_bytes(node: &crate::projection::fold_nodes::Node<'_>) -> usize {
     use std::hash::Hash;
     let mut counter = HashedBytes::default();
     node.hash(&mut counter);
-    counter.0
+    std::hash::Hasher::finish(&counter) as usize
 }
 
 #[test]
