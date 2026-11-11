@@ -1,6 +1,6 @@
 //! Exact request validation and preparation identity owned by this backend.
 
-use super::{FixedStepConfig, Method};
+use super::{FixedStepConfig, FixedStepScheme, Method};
 use rumoca_solver::{BackendOptionsError, NumericalBackend};
 
 /// Process-local exact configuration value, not a digest or caller assertion.
@@ -8,6 +8,7 @@ use rumoca_solver::{BackendOptionsError, NumericalBackend};
 pub struct FixedStepOptionsKey {
     step_bits: u64,
     order: u32,
+    scheme: FixedStepScheme,
 }
 
 impl FixedStepConfig {
@@ -20,20 +21,26 @@ impl FixedStepConfig {
                 field: "step",
             });
         }
-        if Method::from_order(self.order).is_none() {
-            return Err(invalid_order());
+        match Method::from_config(self.order, self.scheme) {
+            None => Err(invalid_order()),
+            Some(None) => Err(invalid_scheme()),
+            Some(Some(_)) => Ok(self),
         }
-        Ok(self)
     }
 
     /// Identity includes every concrete configuration field. The exhaustive
     /// destructure makes adding a new option require an explicit key decision.
     #[must_use]
     pub fn exact_key(self) -> FixedStepOptionsKey {
-        let Self { step, order } = self;
+        let Self {
+            step,
+            order,
+            scheme,
+        } = self;
         FixedStepOptionsKey {
             step_bits: step.to_bits(),
             order,
+            scheme,
         }
     }
 }
@@ -43,6 +50,14 @@ pub(super) fn invalid_order() -> BackendOptionsError {
     BackendOptionsError::InvalidValue {
         backend: NumericalBackend::FixedStep,
         field: "order",
+    }
+}
+
+/// The typed failure of a scheme the configured order does not admit.
+pub(super) fn invalid_scheme() -> BackendOptionsError {
+    BackendOptionsError::InvalidValue {
+        backend: NumericalBackend::FixedStep,
+        field: "scheme",
     }
 }
 
@@ -57,6 +72,7 @@ mod tests {
             FixedStepConfig {
                 step: 1.0e-3,
                 order: 4,
+                scheme: FixedStepScheme::Explicit,
             }
         );
     }
@@ -125,6 +141,39 @@ mod tests {
         for order in [1, 2, 4] {
             let config = FixedStepConfig { order, ..original };
             assert_eq!(config.validate_request(), Ok(config));
+        }
+    }
+
+    #[test]
+    fn the_semi_implicit_scheme_is_its_own_key_and_needs_order_one() {
+        let explicit = FixedStepConfig {
+            order: 1,
+            ..FixedStepConfig::default()
+        };
+        let semi_implicit = FixedStepConfig {
+            scheme: FixedStepScheme::SemiImplicit,
+            ..explicit
+        };
+        assert_eq!(semi_implicit.validate_request(), Ok(semi_implicit));
+        assert_ne!(semi_implicit.exact_key(), explicit.exact_key());
+        for order in [2, 4] {
+            let error = FixedStepConfig {
+                order,
+                ..semi_implicit
+            }
+            .validate_request()
+            .unwrap_err();
+            assert_eq!(error, invalid_scheme());
+        }
+        // An order no method implements is that field's failure first.
+        for order in [0, 3] {
+            let error = FixedStepConfig {
+                order,
+                ..semi_implicit
+            }
+            .validate_request()
+            .unwrap_err();
+            assert_eq!(error, invalid_order());
         }
     }
 }

@@ -10,7 +10,9 @@ mod dense_output;
 mod fixed_step;
 mod me_integrator;
 
-pub use fixed_step::{FixedStepConfig, FixedStepOptionsKey, fixed_step_integrator};
+pub use fixed_step::{
+    FixedStepConfig, FixedStepOptionsKey, FixedStepScheme, fixed_step_integrator,
+};
 pub use me_integrator::{model_exchange_integrator, model_exchange_integrator_with_observation};
 
 /// The explicit adapter currently has no backend-specific knobs. Supplying

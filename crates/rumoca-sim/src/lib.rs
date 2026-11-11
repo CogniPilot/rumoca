@@ -123,7 +123,7 @@ pub mod native_expansion {
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod backend_options;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub use backend_options::fixed_step_backend_options;
+pub use backend_options::{fixed_step_backend_options, fixed_step_semi_implicit_backend_options};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;

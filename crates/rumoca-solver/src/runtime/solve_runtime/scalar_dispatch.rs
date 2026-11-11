@@ -80,6 +80,18 @@ impl SolveRuntime {
             .eval_state_derivatives_into(t, state, params, tol, max_iters, out)
     }
 
+    pub(crate) fn eval_derivative_rows_at_settled_y(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        rows: &[usize],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .eval_derivative_rows_at_settled_y(t, solver_y, params, rows, out)
+    }
+
     pub fn eval_state_derivatives_with_guess(
         &self,
         t: f64,

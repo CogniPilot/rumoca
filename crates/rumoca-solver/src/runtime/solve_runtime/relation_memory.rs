@@ -1482,6 +1482,41 @@ impl ScalarExecutionView<'_> {
         self.validate_finite_derivatives(out)
     }
 
+    /// The derivative program over `solver_y` as given, without the algebraic
+    /// refresh a full evaluation runs first: the caller supplies a coordinate
+    /// a derivative refresh already settled. Only the rows in `rows` are
+    /// checked finite; the others read values the caller does not vouch for.
+    pub(crate) fn eval_derivative_rows_at_settled_y(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        rows: &[usize],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        validate_derivative_output_len(out, self.state_count)?;
+        self.scalar.derivative_scalar.eval(
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
+                t,
+            },
+            self.row_eval_context(),
+            out,
+        )?;
+        for &row in rows {
+            if !out.get(row).is_some_and(|value| value.is_finite()) {
+                let state_name = self
+                    .model
+                    .visible_projection()
+                    .name(row)
+                    .unwrap_or_else(|| format!("state[{row}]"));
+                return Err(RuntimeSolveError::NonFiniteDerivative { state_name });
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_finite_derivatives(
         &self,
         derivative: &[f64],

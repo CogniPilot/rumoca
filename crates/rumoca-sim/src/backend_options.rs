@@ -14,9 +14,29 @@ use rumoca_solver::{
 #[must_use]
 pub fn fixed_step_backend_options(step: f64, order: u32) -> BackendOptions {
     #[cfg(feature = "solver-rk45")]
-    let payload = rumoca_solver_rk45::FixedStepConfig { step, order };
+    let payload = rumoca_solver_rk45::FixedStepConfig {
+        step,
+        order,
+        scheme: rumoca_solver_rk45::FixedStepScheme::Explicit,
+    };
     // Without the backend the request is refused as unavailable before its
     // concrete type is read.
+    #[cfg(not(feature = "solver-rk45"))]
+    let payload = (step, order);
+    BackendOptions::new(NumericalBackend::FixedStep, payload)
+}
+
+/// Capture a `fixed-step` configuration with the semi-implicit scheme, as
+/// [`fixed_step_backend_options`] does: the backend refuses an order the
+/// scheme does not admit.
+#[must_use]
+pub fn fixed_step_semi_implicit_backend_options(step: f64, order: u32) -> BackendOptions {
+    #[cfg(feature = "solver-rk45")]
+    let payload = rumoca_solver_rk45::FixedStepConfig {
+        step,
+        order,
+        scheme: rumoca_solver_rk45::FixedStepScheme::SemiImplicit,
+    };
     #[cfg(not(feature = "solver-rk45"))]
     let payload = (step, order);
     BackendOptions::new(NumericalBackend::FixedStep, payload)
@@ -354,6 +374,38 @@ mod tests {
                 supplied: NumericalBackend::FixedStep,
             })
         ));
+    }
+
+    #[cfg(feature = "solver-rk45")]
+    #[test]
+    fn fixed_step_semi_implicit_scheme_is_keyed_and_refused_above_order_one() {
+        let mut opts = SimOptions {
+            solver_mode: SimSolverMode::FixedStep,
+            ..Default::default()
+        };
+        let step = rumoca_solver_rk45::FixedStepConfig::default().step;
+        opts.backend_options = Some(fixed_step_semi_implicit_backend_options(step, 1));
+        let semi_implicit = validate_for_backend(&opts, NumericalBackend::FixedStep).unwrap();
+        let ValidatedOptions::FixedStep(consumed) = semi_implicit else {
+            panic!("the factory must receive the validated concrete configuration");
+        };
+        assert_eq!(
+            consumed.scheme,
+            rumoca_solver_rk45::FixedStepScheme::SemiImplicit
+        );
+        opts.backend_options = Some(fixed_step_backend_options(step, 1));
+        let explicit = validate_for_backend(&opts, NumericalBackend::FixedStep).unwrap();
+        assert_ne!(semi_implicit.identity(), explicit.identity());
+        for order in [2, 4] {
+            opts.backend_options = Some(fixed_step_semi_implicit_backend_options(step, order));
+            assert_eq!(
+                validate_for_backend(&opts, NumericalBackend::FixedStep).unwrap_err(),
+                BackendOptionsError::InvalidValue {
+                    backend: NumericalBackend::FixedStep,
+                    field: "scheme",
+                }
+            );
+        }
     }
 
     #[cfg(feature = "solver-velimplicit")]

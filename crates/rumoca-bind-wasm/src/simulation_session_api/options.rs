@@ -21,9 +21,9 @@ pub(super) struct InteractiveOptions {
     pub fixed_step: Option<FixedStepOptions>,
 }
 
-/// The `fixed-step` solver's two options as plain data. Both are required
-/// once the object is given; the backend that owns them validates the values
-/// before any model work.
+/// The `fixed-step` solver's options as plain data. `step` and `order` are
+/// required once the object is given; the backend that owns them validates
+/// the values before any model work.
 #[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FixedStepOptions {
@@ -31,6 +31,26 @@ pub(super) struct FixedStepOptions {
     pub step: f64,
     /// 1 (explicit Euler), 2 (Heun) or 4 (classical Runge-Kutta).
     pub order: u32,
+    /// `"explicit"` (absent) or `"semi-implicit"`, the partitioned Euler
+    /// step over the compiler-issued kinematic states, which the backend
+    /// admits with order 1 only. Absent, the serialized options are unchanged.
+    #[serde(default, skip_serializing_if = "FixedStepScheme::is_explicit")]
+    pub scheme: FixedStepScheme,
+}
+
+/// The `fixed-step` scheme by name; any other name is a parse error.
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum FixedStepScheme {
+    #[default]
+    Explicit,
+    SemiImplicit,
+}
+
+impl FixedStepScheme {
+    fn is_explicit(&self) -> bool {
+        *self == Self::Explicit
+    }
 }
 
 /// Only an object names its members: a positional array would bind `step`
@@ -151,6 +171,8 @@ mod tests {
             r#"{"fixed_step":{"step":1e400,"order":1}}"#,
             r#"{"fixed_step":[0.005,1]}"#,
             r#"{"fixedStep":{"step":0.005,"order":1}}"#,
+            r#"{"fixed_step":{"step":0.005,"order":1,"scheme":"implicit"}}"#,
+            r#"{"fixed_step":{"step":0.005,"order":1,"scheme":1}}"#,
             "[]",
         ] {
             assert!(InteractiveOptions::parse(json).is_err(), "{json}");
@@ -193,5 +215,25 @@ mod tests {
         let parsed = InteractiveOptions::parse(r#"{"parameters":{"k":3,"zero":-0.0}}"#).unwrap();
         assert_eq!(parsed.param_overrides[0], ("k".to_owned(), 3.0));
         assert_eq!(parsed.param_overrides[1].1.to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn the_fixed_step_scheme_is_named_and_absent_when_explicit() {
+        let json = r#"{"fixed_step":{"step":0.005,"order":1,"scheme":"semi-implicit"}}"#;
+        let parsed = InteractiveOptions::parse(json).unwrap();
+        assert!(parsed.fixed_step.unwrap().scheme == FixedStepScheme::SemiImplicit);
+        assert!(
+            serde_json::to_string(&parsed)
+                .unwrap()
+                .contains(r#""scheme":"semi-implicit""#)
+        );
+        let json = r#"{"fixed_step":{"step":0.005,"order":1,"scheme":"explicit"}}"#;
+        let parsed = InteractiveOptions::parse(json).unwrap();
+        assert!(parsed.fixed_step.unwrap().scheme == FixedStepScheme::Explicit);
+        assert!(
+            serde_json::to_string(&parsed)
+                .unwrap()
+                .contains(r#""fixed_step":{"step":0.005,"order":1}"#)
+        );
     }
 }

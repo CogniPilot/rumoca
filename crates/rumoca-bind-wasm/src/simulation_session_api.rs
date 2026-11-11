@@ -3,7 +3,7 @@ pub(crate) mod prebuilt;
 #[cfg(feature = "precompiled-runtime")]
 pub(crate) mod precompiled;
 
-use options::InteractiveOptions;
+use options::{FixedStepScheme, InteractiveOptions};
 use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
 use wasm_bindgen::prelude::*;
 
@@ -323,10 +323,11 @@ fn configured_options(
     // Captured as given: the backend the solver name selected validates the
     // payload's identity and values when the session is prepared.
     if let Some(fixed_step) = options.fixed_step {
-        opts.backend_options = Some(rumoca_sim::fixed_step_backend_options(
-            fixed_step.step,
-            fixed_step.order,
-        ));
+        let capture = match fixed_step.scheme {
+            FixedStepScheme::Explicit => rumoca_sim::fixed_step_backend_options,
+            FixedStepScheme::SemiImplicit => rumoca_sim::fixed_step_semi_implicit_backend_options,
+        };
+        opts.backend_options = Some(capture(fixed_step.step, fixed_step.order));
     }
     opts
 }

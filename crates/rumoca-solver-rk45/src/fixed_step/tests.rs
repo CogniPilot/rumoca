@@ -61,7 +61,15 @@ fn run(t_end: f64) -> OdeRun {
 }
 
 fn plugin(setup: MeNumericalSetup, step: f64, order: u32) -> Box<dyn MeIntegratorBackend> {
-    fixed_step_integrator(setup, FixedStepConfig { step, order }).expect("a valid configuration")
+    fixed_step_integrator(
+        setup,
+        FixedStepConfig {
+            step,
+            order,
+            scheme: FixedStepScheme::Explicit,
+        },
+    )
+    .expect("a valid configuration")
 }
 
 /// What the driver observed of one run: every accepted endpoint, the
@@ -415,6 +423,7 @@ fn an_unvalidated_configuration_is_refused_by_the_factory() {
             FixedStepConfig {
                 step: 1.0e-3,
                 order: 3,
+                scheme: FixedStepScheme::Explicit,
             },
             "order",
         ),
@@ -422,6 +431,7 @@ fn an_unvalidated_configuration_is_refused_by_the_factory() {
             FixedStepConfig {
                 step: 0.0,
                 order: 4,
+                scheme: FixedStepScheme::Explicit,
             },
             "step",
         ),

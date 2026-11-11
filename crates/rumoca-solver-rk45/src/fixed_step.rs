@@ -10,6 +10,17 @@
 //! | 2 | Heun (explicit trapezoid) | 2 |
 //! | 4 | classical Runge-Kutta | 4 |
 //!
+//! The semi-implicit scheme, valid with order 1 only, is the partitioned
+//! (symplectic) Euler step over the kinematic states the Solve IR issues
+//! through the derivative handle (`MeDerivativeHandle::kinematic_states`):
+//! one full evaluation `f(t, x)`; every other state advances by `h f`; the
+//! kinematic states then advance by `h g`, where `g` is their derivative at
+//! `t` with the other states already advanced, evaluated without a second
+//! algebraic refresh. For a mechanical model the kinematic states are the
+//! positions, so positions move with the new velocities. With no kinematic
+//! state, or no other state, the step is explicit Euler bit for bit and spends
+//! one evaluation; otherwise one full and one kinematic evaluation.
+//!
 //! There is no error estimate, no step-size control and no rejection: the
 //! step is the caller's choice, clipped only so an accepted interval never
 //! crosses the request's latest accepted coordinate, on which a clipped step
@@ -20,9 +31,10 @@
 //! stage, which every two- and four-stage method here evaluates at the end
 //! time, as the end slope. It costs no evaluation. For Heun it is the method's
 //! quadratic continuous extension (order 2) and for the classical method its
-//! cubic one (order 3); explicit Euler has one stage, so its extension is the
-//! chord (order 1). Each is the method's native extension, and the order
-//! declared for a step is that extension's own.
+//! cubic one (order 3); explicit and semi-implicit Euler have no end-time
+//! stage, so their extension is the chord (order 1). Each is the method's
+//! native extension, and the order declared for a step is that extension's
+//! own.
 //!
 //! A component that refuses a trial point gets its typed discard back at once
 //! with nothing committed: the step is fixed, so repeating it would evaluate
@@ -35,9 +47,13 @@
 //! methods, with the Hermite form used here: E. Hairer, S. P. Norsett and
 //! G. Wanner, "Solving Ordinary Differential Equations I: Nonstiff Problems",
 //! 2nd rev. ed., Springer 1993, sections II.1 (the methods of Runge, Heun and
-//! Kutta) and II.6 (dense output and continuous extensions).
+//! Kutta) and II.6 (dense output and continuous extensions). The partitioned
+//! Euler method and its symplecticity: E. Hairer, C. Lubich and G. Wanner,
+//! "Geometric Numerical Integration", 2nd ed., Springer 2006, section VI.3.
 
 mod options;
+#[cfg(test)]
+mod semi_implicit_tests;
 #[cfg(test)]
 mod tests;
 
@@ -56,14 +72,17 @@ const METHOD: &str = "fixed-step";
 /// Most stages any method here evaluates in one step.
 const MAX_STAGES: usize = 4;
 
-/// Fixed step and order of the explicit Runge-Kutta plugin.
+/// Fixed step, order and scheme of the fixed-step plugin.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FixedStepConfig {
     /// The fixed internal step `h` in seconds.
     pub step: f64,
     /// The method's order: 1 (explicit Euler), 2 (Heun) or 4 (classical
-    /// Runge-Kutta). It is also the derivative evaluations spent per step.
+    /// Runge-Kutta). For the explicit scheme it is also the derivative
+    /// evaluations spent per step.
     pub order: u32,
+    /// How the states advance; the semi-implicit scheme requires order 1.
+    pub scheme: FixedStepScheme,
 }
 
 impl Default for FixedStepConfig {
@@ -71,16 +90,30 @@ impl Default for FixedStepConfig {
         Self {
             step: 1.0e-3,
             order: 4,
+            scheme: FixedStepScheme::Explicit,
         }
     }
 }
 
-/// The explicit method one configured order selects.
+/// How one fixed step advances the states.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FixedStepScheme {
+    /// Every state from the stages of the explicit method the order selects.
+    #[default]
+    Explicit,
+    /// Partitioned Euler over the Solve IR kinematic states: the other states
+    /// advance first and the kinematic states from their derivative at the
+    /// advanced values.
+    SemiImplicit,
+}
+
+/// The method one configured order and scheme select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Method {
     Euler,
     Heun,
     Classical,
+    SemiImplicitEuler,
 }
 
 impl Method {
@@ -93,10 +126,23 @@ impl Method {
         }
     }
 
+    /// `None` for an order no method implements, `Some(None)` for a scheme
+    /// the order does not admit.
+    const fn from_config(order: u32, scheme: FixedStepScheme) -> Option<Option<Self>> {
+        match (Self::from_order(order), scheme) {
+            (None, _) => None,
+            (Some(method), FixedStepScheme::Explicit) => Some(Some(method)),
+            (Some(Self::Euler), FixedStepScheme::SemiImplicit) => {
+                Some(Some(Self::SemiImplicitEuler))
+            }
+            (Some(_), FixedStepScheme::SemiImplicit) => Some(None),
+        }
+    }
+
     /// Local accuracy order of the method's native continuous extension.
     const fn continuous_extension_order(self) -> u32 {
         match self {
-            Self::Euler => 1,
+            Self::Euler | Self::SemiImplicitEuler => 1,
             Self::Heun => 2,
             Self::Classical => 3,
         }
@@ -105,7 +151,7 @@ impl Method {
     /// Index of the stage evaluated at the end time, when the method has one.
     const fn end_stage(self) -> Option<usize> {
         match self {
-            Self::Euler => None,
+            Self::Euler | Self::SemiImplicitEuler => None,
             Self::Heun => Some(1),
             Self::Classical => Some(3),
         }
@@ -122,7 +168,9 @@ pub fn fixed_step_integrator(
     config: FixedStepConfig,
 ) -> Result<Box<dyn MeIntegratorBackend + 'static>, BackendOptionsError> {
     let config = config.validate_request()?;
-    let method = Method::from_order(config.order).ok_or_else(options::invalid_order)?;
+    let method = Method::from_config(config.order, config.scheme)
+        .ok_or_else(options::invalid_order)?
+        .ok_or_else(options::invalid_scheme)?;
     Ok(Box::new(FixedStepIntegrator::new(
         setup.state_nominals().len(),
         config.step,
@@ -239,6 +287,10 @@ impl FixedStepIntegrator {
         evaluate(derivatives, time, state, &mut k[0])?;
         match self.method {
             Method::Euler => combine_into(state, step, &[(&k[0], 1.0)], end),
+            Method::SemiImplicitEuler => {
+                combine_into(state, step, &[(&k[0], 1.0)], end);
+                advance_kinematic(derivatives, time, state, step, stage, &mut k[1], end)?;
+            }
             Method::Heun => {
                 combine_into(state, step, &[(&k[0], 1.0)], stage);
                 evaluate(derivatives, end_time, stage, &mut k[1])?;
@@ -418,6 +470,60 @@ fn evaluate(
         out,
         "fixed-step derivative workspace",
     )
+}
+
+/// Replace the kinematic entries of the explicit endpoint `end` by
+/// `state + step * g`, where `g` is the kinematic derivative with every other
+/// state already at `end`. Nothing to do when either side of the partition
+/// is empty: `end` is then the explicit Euler endpoint.
+fn advance_kinematic(
+    derivatives: &MeDerivativeHandle,
+    time: f64,
+    state: &[f64],
+    step: f64,
+    stage: &mut [f64],
+    slope: &mut Vec<f64>,
+    end: &mut [f64],
+) -> Result<(), MeIntegrationError> {
+    let kinematic = derivatives.kinematic_states();
+    if kinematic.is_empty() || kinematic.len() >= state.len() {
+        return Ok(());
+    }
+    // The kinematic states are read at the step start, as the full
+    // evaluation saw them.
+    stage.copy_from_slice(end);
+    for &index in kinematic {
+        stage[index] = state[index];
+    }
+    evaluate_kinematic(derivatives, time, stage, slope)?;
+    for &index in kinematic {
+        end[index] = state[index] + step * slope[index];
+    }
+    Ok(())
+}
+
+/// The kinematic state derivatives at a point that differs from the last full
+/// evaluation only in the other states; the same refusal routing as
+/// [`evaluate`].
+fn evaluate_kinematic(
+    derivatives: &MeDerivativeHandle,
+    time: f64,
+    states: &[f64],
+    out: &mut Vec<f64>,
+) -> Result<(), MeIntegrationError> {
+    resize_work(
+        out,
+        derivatives.state_count(),
+        "fixed-step kinematic workspace",
+    )?;
+    derivatives.kinematic_derivatives_into(time, states, out);
+    if derivatives.take_discard() {
+        return Err(MeIntegrationError::ComponentDiscard { time });
+    }
+    if derivatives.has_failed() {
+        return Err(MeIntegrationError::DerivativeRefused);
+    }
+    Ok(())
 }
 
 /// Overwrite a retained buffer, keeping its allocation.

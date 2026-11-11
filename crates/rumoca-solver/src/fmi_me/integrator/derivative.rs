@@ -95,6 +95,28 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
     /// superset of the nonzeros of every directional derivative, or `None`
     /// when the component proves none.
     fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]>;
+
+    /// The Solve IR kinematic states, ascending: the states whose derivatives
+    /// stay exact at a point that differs from the last full evaluation only in
+    /// the other states. Empty when the component issues none.
+    fn kinematic_states(&self) -> &[usize] {
+        &[]
+    }
+
+    /// `fmi3SetTime` + `fmi3SetContinuousStates` + the kinematic entries of
+    /// the state derivatives, without a new algebraic refresh. Only the
+    /// entries of [`Self::kinematic_states`] are written.
+    fn kinematic_derivatives_into(
+        &self,
+        _time: f64,
+        _states: &[f64],
+        _event_boundary: Option<f64>,
+        _out: &mut [f64],
+    ) -> Result<(), MeError> {
+        Err(MeError::Contract {
+            reason: "the component issues no kinematic states".to_owned(),
+        })
+    }
 }
 
 /// The sole production derivative source: the one leased FMI component.
@@ -102,6 +124,7 @@ struct KernelDerivatives {
     kernel: Rc<MeKernelCell>,
     state_count: usize,
     state_jacobian_columns: Option<Rc<[Vec<usize>]>>,
+    kinematic_states: Rc<[usize]>,
     discards_failed_trials: bool,
 }
 
@@ -158,6 +181,23 @@ impl MeDerivativeComponent for KernelDerivatives {
     fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
         self.state_jacobian_columns.as_deref()
     }
+
+    fn kinematic_states(&self) -> &[usize] {
+        &self.kinematic_states
+    }
+
+    fn kinematic_derivatives_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        event_boundary: Option<f64>,
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
+        let mut kernel = self.kernel.borrow_mut()?;
+        kernel.set_time(MeTime::new(time, event_boundary))?;
+        kernel.set_continuous_states(states)?;
+        kernel.kinematic_state_derivatives_into(out)
+    }
 }
 
 /// The activation state and the latched failure the handle and the controller
@@ -175,6 +215,9 @@ struct DerivativeCell {
     /// plugin acknowledged it by rejecting its trial.
     discard: RefCell<Option<MeIntegrationError>>,
     discard_taken: Cell<bool>,
+    /// The time bits and states of the last full evaluation that succeeded in
+    /// the current host call; the time is `None` when there is none.
+    evaluated: RefCell<(Option<u64>, Vec<f64>)>,
 }
 
 impl DerivativeCell {
@@ -231,6 +274,7 @@ impl DerivativeCell {
         out: &mut [f64],
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a state-derivative evaluation")?;
+        self.forget_evaluated_point();
         // A method that retries after a discard can form its next trial from
         // the discarded NaN values. For a discarding component that trial is
         // one more point it cannot evaluate, not a contract failure.
@@ -242,6 +286,53 @@ impl DerivativeCell {
         }
         self.component
             .derivatives_into(time, states, self.event_boundary.get(), out)
+            .map_err(MeIntegrationError::from)?;
+        // A point that cannot be retained is simply not current: a later
+        // kinematic request is then the typed refusal, never an abort.
+        let mut evaluated = self.evaluated.borrow_mut();
+        evaluated.1.clear();
+        if evaluated.1.try_reserve_exact(states.len()).is_ok() {
+            evaluated.1.extend_from_slice(states);
+            evaluated.0 = Some(time.to_bits());
+        }
+        Ok(())
+    }
+
+    fn forget_evaluated_point(&self) {
+        self.evaluated.borrow_mut().0 = None;
+    }
+
+    /// The kinematic derivatives at a point that differs from the last full
+    /// evaluation of this host call only outside the kinematic states.
+    fn evaluate_kinematic(
+        &self,
+        time: f64,
+        states: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), MeIntegrationError> {
+        self.require_active("a kinematic state-derivative evaluation")?;
+        let current = {
+            let (evaluated_time, evaluated_states) = &*self.evaluated.borrow();
+            *evaluated_time == Some(time.to_bits())
+                && evaluated_states.len() == states.len()
+                && self.component.kinematic_states().iter().all(|&state| {
+                    evaluated_states
+                        .get(state)
+                        .zip(states.get(state))
+                        .is_some_and(|(before, now)| before.to_bits() == now.to_bits())
+                })
+        };
+        if !current {
+            return Err(MeIntegrationError::NoEvaluatedPoint { time });
+        }
+        if self.component.discards_failed_trials() && !states.iter().all(|value| value.is_finite())
+        {
+            return Err(MeIntegrationError::from(MeError::Evaluation {
+                message: format!("trial state at t={time} is not finite"),
+            }));
+        }
+        self.component
+            .kinematic_derivatives_into(time, states, self.event_boundary.get(), out)
             .map_err(MeIntegrationError::from)
     }
 
@@ -253,6 +344,7 @@ impl DerivativeCell {
         out: &mut [f64],
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a directional-derivative evaluation")?;
+        self.forget_evaluated_point();
         self.component
             .directional_derivative_into(time, states, self.event_boundary.get(), seed, out)
             .map_err(MeIntegrationError::from)
@@ -266,6 +358,7 @@ impl DerivativeCell {
         out: &mut [f64],
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a finite Jacobian assembly action")?;
+        self.forget_evaluated_point();
         self.component
             .solver_jacobian_action_into(time, states, self.event_boundary.get(), seed, out)
             .map_err(MeIntegrationError::from)
@@ -371,6 +464,37 @@ impl MeDerivativeHandle {
         }
     }
 
+    /// The Solve IR kinematic states, ascending (see
+    /// [`Self::kinematic_derivatives_into`]); empty when the component
+    /// issues none.
+    #[must_use]
+    pub fn kinematic_states(&self) -> &[usize] {
+        self.shared.component.kinematic_states()
+    }
+
+    /// The derivatives of the [`Self::kinematic_states`] at `(time, states)`,
+    /// written into their entries of `out`; the other entries are not
+    /// written.
+    ///
+    /// Legal only when the last full evaluation of this host call
+    /// ([`Self::derivatives`] or [`Self::derivatives_into`]) succeeded at the
+    /// same `time` and the same kinematic entries, so `states` may differ
+    /// from it only in the other states: the component then reuses that
+    /// evaluation's algebraic refresh. Otherwise the request is the typed
+    /// [`MeIntegrationError::NoEvaluatedPoint`]. Failures are latched and
+    /// fill the kinematic entries with NaN, as for [`Self::derivatives_into`].
+    pub fn kinematic_derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) {
+        let Err(error) = self.shared.evaluate_kinematic(time, states, out) else {
+            return;
+        };
+        for &state in self.kinematic_states() {
+            if let Some(value) = out.get_mut(state) {
+                *value = f64::NAN;
+            }
+        }
+        self.shared.fail(error);
+    }
+
     /// The directional derivative an implicit plugin's Newton direction needs.
     pub fn directional_derivative_into(
         &self,
@@ -435,10 +559,12 @@ impl MeDerivativeController {
         let state_count = kernel.borrow()?.continuous_state_count();
         let state_jacobian_columns = kernel.borrow()?.state_jacobian_columns();
         let discards_failed_trials = kernel.borrow()?.switches_reduced_charts();
+        let kinematic_states = Rc::from(kernel.borrow()?.kinematic_state_indices());
         Ok(Self::over_component(Box::new(KernelDerivatives {
             kernel,
             state_count,
             state_jacobian_columns,
+            kinematic_states,
             discards_failed_trials,
         })))
     }
@@ -452,6 +578,7 @@ impl MeDerivativeController {
                 pending: RefCell::new(None),
                 discard: RefCell::new(None),
                 discard_taken: Cell::new(false),
+                evaluated: RefCell::new((None, Vec::new())),
             }),
         }
     }
@@ -480,6 +607,7 @@ impl MeDerivativeController {
         event_boundary: Option<f64>,
     ) -> MeDerivativeActivation<'_> {
         self.shared.event_boundary.set(event_boundary);
+        self.shared.forget_evaluated_point();
         self.shared.active.set(true);
         MeDerivativeActivation {
             shared: &self.shared,
@@ -525,6 +653,7 @@ impl Drop for MeDerivativeActivation<'_> {
     fn drop(&mut self) {
         self.shared.active.set(false);
         self.shared.event_boundary.set(None);
+        self.shared.forget_evaluated_point();
     }
 }
 
