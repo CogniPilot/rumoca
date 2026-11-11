@@ -351,6 +351,25 @@ fn base_modelica_has_no_each_and_no_protected_section() {
     }
 }
 
+/// A Base Modelica document starts with the version header and holds one
+/// package, with the model of the same name as its last class (MCP-0031,
+/// grammar.md, start rule).
+#[test]
+fn base_modelica_writes_the_version_header_and_package() {
+    let fixture = compile_fixture(ARRAYS_MODEL, ARRAYS_SOURCE);
+    let files = render_target_files(&fixture.compiled, fixture.model_name, "base-modelica", None)
+        .unwrap_or_else(|error| panic!("base-modelica must render: {error:#}"));
+    let text = &files[0].content;
+    assert!(
+        text.starts_with("//! base 0.1.0\npackage 'Arrays'\nmodel 'Arrays'\n"),
+        "base-modelica must start with the version header and package:\n{text}"
+    );
+    assert!(
+        text.trim_end().ends_with("end 'Arrays';\nend 'Arrays';"),
+        "base-modelica must end the model and the package:\n{text}"
+    );
+}
+
 /// The galec target renders a non-empty `<Model>.alg` (typed-printer output
 /// with the mandatory block methods) and a well-formed Algorithm Code
 /// `manifest.xml` for the discrete fixture, through the real CLI path.
