@@ -4,6 +4,7 @@ pub(super) struct OrdinaryEquationRow<'input, 'scope, 'dae> {
     pub(super) input: &'input EquationRows<'scope, 'dae>,
     pub(super) index: usize,
     pub(super) equation: &'scope flat::Equation,
+    pub(super) occurrence: Option<rumoca_core::ComponentOccurrence>,
     pub(super) owner: dae::DaeProvenance,
     pub(super) generation: Option<dae::DaeGeneration>,
     pub(super) owner_clock: Option<dae::ClockId<'dae>>,
@@ -20,6 +21,7 @@ pub(super) fn lower_ordinary_equation<'dae>(
         input,
         index,
         equation,
+        occurrence,
         owner,
         generation,
         owner_clock,
@@ -32,7 +34,9 @@ pub(super) fn lower_ordinary_equation<'dae>(
             &equation.residual,
             generation,
         )?;
-        construction.initialization(|system| system.value_equation(owner, residual))?;
+        construction.initialization(|system| {
+            system.component_value_equation(owner, residual, occurrence)
+        })?;
         return Ok(());
     }
     match input.partition(index, equation) {
@@ -49,7 +53,9 @@ pub(super) fn lower_ordinary_equation<'dae>(
                 source,
                 generation,
             )?;
-            construction.continuous(|system| system.value_equation(owner, residual))?;
+            construction.continuous(|system| {
+                system.component_value_equation(owner, residual, occurrence)
+            })?;
         }
         EquationPartition::DiscreteReal { .. } => {
             let residual = lower_equation_expression(

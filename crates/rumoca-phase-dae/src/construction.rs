@@ -1292,6 +1292,25 @@ struct EquationRows<'scope, 'dae> {
 }
 
 impl<'scope> EquationRows<'scope, '_> {
+    /// The root class keeps its provenance in Flat. Only an actual component
+    /// occurrence crosses into DAE; containment is issued by instantiation.
+    fn component_occurrence(
+        &self,
+        equation: &flat::Equation,
+    ) -> Result<Option<rumoca_core::ComponentOccurrence>, dae::DaeConstructionError> {
+        let Some(occurrence) = equation.occurrence else {
+            return Ok(None);
+        };
+        let relation = self
+            .flat
+            .instance_relations
+            .get(&occurrence.instance)
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                span: equation.span,
+            })?;
+        Ok(relation.owner.is_some().then_some(occurrence))
+    }
+
     fn partition(
         &'scope self,
         row: usize,
@@ -1321,6 +1340,7 @@ fn lower_equations<'dae>(
             continue;
         }
         let owner = equation_owner_provenance(&equation.origin, equation.span)?;
+        let occurrence = input.component_occurrence(equation)?;
         let generation = equation_generation(&equation.origin);
         let owner_clock = input
             .clocked_owners
@@ -1334,7 +1354,7 @@ fn lower_equations<'dae>(
                 functions,
                 equation,
                 plan,
-                owner,
+                (owner, occurrence),
                 (!input.initialization).then_some(MultiOutputDiscreteOwners {
                     discrete_values: &mut *discrete_values,
                     topology: input.topology,
@@ -1349,7 +1369,7 @@ fn lower_equations<'dae>(
                 coordinates,
                 functions,
                 (equation, plan),
-                owner,
+                (owner, occurrence),
                 (!input.initialization).then_some(MultiOutputDiscreteOwners {
                     discrete_values: &mut *discrete_values,
                     topology: input.topology,
@@ -1367,6 +1387,7 @@ fn lower_equations<'dae>(
                 input: &input,
                 index,
                 equation,
+                occurrence,
                 owner,
                 generation,
                 owner_clock,

@@ -14,12 +14,15 @@ pub(super) struct MultiOutputSource<'flat> {
     pub(super) name: &'flat rumoca_core::Reference,
     pub(super) arguments: &'flat [Expression],
     pub(super) provenance: dae::DaeProvenance,
+    /// The component class equation the receivers instantiate, if any.
+    pub(super) occurrence: Option<rumoca_core::ComponentOccurrence>,
 }
 
 /// The receiving tuple and call of `(a, b, ...) = f(...)`; any other residual
 /// is not a multi-result equation.
 fn multi_output_source(
     equation: &flat::Equation,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
 ) -> Result<MultiOutputSource<'_>, dae::DaeConstructionError> {
     let invalid = || dae::DaeConstructionError::InvalidExpressionForm {
         span: equation.span,
@@ -50,6 +53,7 @@ fn multi_output_source(
         name,
         arguments: args,
         provenance: dae::DaeProvenance::source(*span)?,
+        occurrence,
     })
 }
 
@@ -113,14 +117,14 @@ pub(super) fn lower_multi_output_equation<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     equation: &flat::Equation,
     plan: &MultiOutputEquationPlan,
-    owner: dae::DaeProvenance,
+    (owner, occurrence): (dae::DaeProvenance, Option<rumoca_core::ComponentOccurrence>),
     discrete: Option<MultiOutputDiscreteOwners<'_, 'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
     lower_multi_output_source(
         construction,
         coordinates,
         functions,
-        multi_output_source(equation)?,
+        multi_output_source(equation, occurrence)?,
         plan,
         owner,
         discrete,
@@ -179,7 +183,7 @@ pub(super) fn lower_multi_output_source<'dae>(
                     construction,
                     (lhs, value),
                     coordinate,
-                    (owner, initialization),
+                    (owner, initialization, source.occurrence),
                 )?;
             }
         }
@@ -266,7 +270,11 @@ fn define_residual_receiver<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     (lhs, value): (dae::ExprId<'dae>, dae::ExprId<'dae>),
     coordinate: Coordinate<'dae>,
-    (owner, initialization): (dae::DaeProvenance, bool),
+    (owner, initialization, occurrence): (
+        dae::DaeProvenance,
+        bool,
+        Option<rumoca_core::ComponentOccurrence>,
+    ),
 ) -> Result<(), dae::DaeConstructionError> {
     let residual = generated_residual(construction, owner, lhs, value)?;
     match coordinate {
@@ -276,10 +284,14 @@ fn define_residual_receiver<'dae>(
             })?;
         }
         _ if initialization => {
-            construction.initialization(|system| system.value_equation(owner, residual))?;
+            construction.initialization(|system| {
+                system.component_value_equation(owner, residual, occurrence)
+            })?;
         }
         _ => {
-            construction.continuous(|system| system.value_equation(owner, residual))?;
+            construction.continuous(|system| {
+                system.component_value_equation(owner, residual, occurrence)
+            })?;
         }
     }
     Ok(())

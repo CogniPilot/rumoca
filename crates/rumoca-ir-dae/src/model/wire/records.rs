@@ -263,6 +263,8 @@ pub(super) enum EquationOperationInput {
         residual: u32,
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
+        #[serde(default)]
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
     },
     Structured {
         domain: u32,

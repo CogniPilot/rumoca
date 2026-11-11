@@ -1,6 +1,6 @@
 use super::*;
 use serde::Serialize;
-use serde::ser::SerializeSeq;
+use serde::ser::{SerializeSeq, SerializeStruct};
 
 pub(super) struct EquationOperationsOutput<'storage> {
     owners: &'storage [EquationOwnerEntry],
@@ -28,16 +28,35 @@ impl<'storage> EquationOperationsOutput<'storage> {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EquationOperationOutput<'storage> {
-    Residual {
-        residual: u32,
-        provenance: DaeProvenance,
-    },
+    Residual(ResidualOperationOutput<'storage>),
     Structured {
         domain: u32,
         scalar_view: rumoca_core::ComprehensionScalarView,
         bodies: &'storage [u32],
         provenance: DaeProvenance,
     },
+}
+
+/// A residual row on the wire. An absent occurrence is dropped only from
+/// human-readable formats, so a model without components keeps its JSON bytes,
+/// while positional formats (bincode) keep every field and still round-trip.
+struct ResidualOperationOutput<'storage>(&'storage ResidualEquationEntry);
+
+impl Serialize for ResidualOperationOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let omit_occurrence = serializer.is_human_readable() && self.0.occurrence.is_none();
+        let mut state =
+            serializer.serialize_struct("Residual", if omit_occurrence { 2 } else { 3 })?;
+        state.serialize_field("residual", &self.0.residual)?;
+        state.serialize_field("provenance", &self.0.provenance)?;
+        if !omit_occurrence {
+            state.serialize_field("occurrence", &self.0.occurrence)?;
+        }
+        state.end()
+    }
 }
 
 impl Serialize for EquationOperationsOutput<'_> {
@@ -96,10 +115,9 @@ impl<'storage> EquationOperationsOutput<'storage> {
             .residuals
             .get(cursor)
             .ok_or("equation residual is missing")?;
-        Ok(EquationOperationOutput::Residual {
-            residual: equation.residual,
-            provenance: equation.provenance,
-        })
+        Ok(EquationOperationOutput::Residual(ResidualOperationOutput(
+            equation,
+        )))
     }
 
     fn project_family(
@@ -174,10 +192,13 @@ fn reconstruct_continuous_operation<'dae>(
         EquationOperationInput::Residual {
             residual,
             provenance,
+            occurrence,
         } => {
             let residual = mapped(&ids.expressions, *residual, "expression", *provenance)?;
             dae.continuous(|continuous| {
-                continuous.equation(*provenance, |owner| owner.residual(residual))
+                continuous.equation(*provenance, |owner| {
+                    replay_residual(owner, residual, *occurrence)
+                })
             })?;
         }
         EquationOperationInput::Structured {
@@ -207,10 +228,13 @@ fn reconstruct_initialization_operation<'dae>(
         EquationOperationInput::Residual {
             residual,
             provenance,
+            occurrence,
         } => {
             let residual = mapped(&ids.expressions, *residual, "expression", *provenance)?;
             dae.initialization(|initialization| {
-                initialization.equation(*provenance, |owner| owner.residual(residual))
+                initialization.equation(*provenance, |owner| {
+                    replay_residual(owner, residual, *occurrence)
+                })
             })?;
         }
         EquationOperationInput::Structured {
@@ -239,4 +263,17 @@ fn attach_family_bodies<'dae>(
         residuals.body(*body)?;
     }
     Ok(())
+}
+
+/// Replay one residual row with the component occurrence it was issued with.
+fn replay_residual<'dae>(
+    owner: &mut crate::ResidualEquation<'_, 'dae>,
+    residual: ExprId<'dae>,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
+) -> Result<(), DaeConstructionError> {
+    owner.residual(residual)?;
+    match occurrence {
+        Some(occurrence) => owner.occurrence(occurrence),
+        None => Ok(()),
+    }
 }

@@ -536,7 +536,7 @@ fn lower_continuous<'dae>(
                         row,
                         equation.residual(),
                         0..count,
-                        equation.provenance().span(),
+                        (equation.provenance().span(), equation.occurrence()),
                     )?
                 {
                     row = checked_ordinal_add(
@@ -559,7 +559,7 @@ fn lower_continuous<'dae>(
                         equation.residual(),
                         scalar,
                         None,
-                        equation.provenance().span(),
+                        (equation.provenance().span(), equation.occurrence()),
                     )?;
                     row += 1;
                 }
@@ -724,6 +724,7 @@ struct ContinuousAggregateCallCandidate<'dae> {
     call: dae::ExprId<'dae>,
     first_row: usize,
     output_count: usize,
+    occurrence: Option<rumoca_core::ComponentOccurrence>,
 }
 
 impl ContinuousAggregateCallCandidate<'_> {
@@ -831,10 +832,14 @@ fn continuous_aggregate_call_candidate<'dae>(
     first_row: usize,
     owner: dae::ContinuousOwnerView<'dae>,
 ) -> Result<Option<ContinuousAggregateCallCandidate<'dae>>, LowerError> {
-    let (expression, output_count) = match owner {
+    let (expression, output_count, occurrence) = match owner {
         dae::ContinuousOwnerView::Residual { equation, .. } => {
             let expression = equation.residual();
-            (expression, scalar_count(context.view, expression))
+            (
+                expression,
+                scalar_count(context.view, expression),
+                equation.occurrence(),
+            )
         }
         dae::ContinuousOwnerView::Structured { family, .. }
             if family.scalar_view() == ComprehensionScalarView::RowMajorProjection
@@ -853,7 +858,7 @@ fn continuous_aggregate_call_candidate<'dae>(
             {
                 return Ok(None);
             }
-            (expression, family.scalar_rows() as usize)
+            (expression, family.scalar_rows() as usize, None)
         }
         _ => return Ok(None),
     };
@@ -879,6 +884,7 @@ fn continuous_aggregate_call_candidate<'dae>(
         call,
         first_row,
         output_count,
+        occurrence,
     }))
 }
 
@@ -979,7 +985,23 @@ fn lower_continuous_aggregate_call_group<'borrow, 'dae>(
         .provenance()
         .span();
     output.residual.push_outputs(program, span, outputs);
+    output.residual.tag_last(shared_occurrence(
+        group.iter().map(|candidate| candidate.occurrence),
+    ));
     Ok(())
+}
+
+/// The occurrence one program serving several owners names: the owners' common
+/// occurrence (e.g. every receiver of one tuple call), or none when any owner
+/// has none or two owners differ.
+fn shared_occurrence(
+    occurrences: impl IntoIterator<Item = Option<rumoca_core::ComponentOccurrence>>,
+) -> Option<rumoca_core::ComponentOccurrence> {
+    let mut occurrences = occurrences.into_iter();
+    let first = occurrences.next()??;
+    occurrences
+        .all(|occurrence| occurrence == Some(first))
+        .then_some(first)
 }
 
 fn lower_algebraic_projection<'dae>(
@@ -1334,7 +1356,7 @@ fn lower_continuous_family<'dae>(
                 row,
                 body,
                 scalars,
-                family.provenance().span(),
+                (family.provenance().span(), None),
             )? {
                 return checked_ordinal_add(
                     row,
@@ -1432,7 +1454,7 @@ fn lower_algebraic_scalar_outputs<'dae>(
     first_row: usize,
     expression: dae::ExprId<'dae>,
     scalars: impl IntoIterator<Item = usize>,
-    span: Span,
+    (span, occurrence): (Span, Option<rumoca_core::ComponentOccurrence>),
 ) -> Result<bool, LowerError> {
     let scalars = scalars.into_iter().collect::<Vec<_>>();
     let mut rows = Vec::with_capacity(scalars.len());
@@ -1463,6 +1485,7 @@ fn lower_algebraic_scalar_outputs<'dae>(
         Err(error) => return Err(error),
     };
     output.residual.push_outputs(program, span, rows);
+    output.residual.tag_last(occurrence);
     Ok(true)
 }
 
@@ -1490,7 +1513,7 @@ fn lower_continuous_family_point<'dae>(
             body,
             scalar,
             Some((family.domain(), values)),
-            family.provenance().span(),
+            (family.provenance().span(), None),
         )?;
         row += 1;
     }
@@ -1504,7 +1527,7 @@ fn lower_continuous_row<'dae>(
     expression: dae::ExprId<'dae>,
     scalar: usize,
     domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
-    span: Span,
+    (span, occurrence): (Span, Option<rumoca_core::ComponentOccurrence>),
 ) -> Result<(), LowerError> {
     let ContinuousContext {
         view,
@@ -1564,7 +1587,9 @@ fn lower_continuous_row<'dae>(
             let solve::ScalarSlot::Y { index, .. } = target else {
                 unreachable!("state declarations are Y slots")
             };
-            output.derivative.push_scalar(program, span, index);
+            output
+                .derivative
+                .push_scalar(program, (span, occurrence), index);
         }
         UnknownId::Algebraic { .. } => {
             // An algebraic row may read a derivative another row defines; give
@@ -1583,7 +1608,9 @@ fn lower_continuous_row<'dae>(
                         span,
                     ),
                 })?;
-            output.residual.push(program, span, row);
+            output
+                .residual
+                .push_component(program, span, occurrence, row);
         }
         UnknownId::Solver(_) | UnknownId::Unmatched { .. } => {
             return Err(LowerError::non_computable(
@@ -2020,6 +2047,8 @@ pub(super) struct ScalarRows {
     programs: Vec<Vec<solve::LinearOp>>,
     spans: Vec<Span>,
     output_placements: Vec<solve::ScalarProgramOutputPlacement>,
+    /// Empty until a row records a component occurrence; then one per row.
+    occurrences: Vec<Option<rumoca_core::ComponentOccurrence>>,
 }
 
 impl ScalarRows {
@@ -2036,6 +2065,7 @@ impl ScalarRows {
     }
 
     pub(super) fn push(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
+        self.record_occurrence(None);
         self.programs.push(program);
         self.spans.push(span);
         self.output_placements
@@ -2051,6 +2081,7 @@ impl ScalarRows {
         span: Span,
         outputs: impl IntoIterator<Item = usize>,
     ) {
+        self.record_occurrence(None);
         self.programs.push(program);
         self.spans.push(span);
         self.output_placements
@@ -2065,6 +2096,7 @@ impl ScalarRows {
         span: Span,
         outputs: std::ops::Range<usize>,
     ) {
+        self.record_occurrence(None);
         self.programs.push(program);
         self.spans.push(span);
         self.output_placements
@@ -2076,9 +2108,41 @@ impl ScalarRows {
     /// Each row writes the block output at its own position, so a row appended
     /// after `self` must name the position it lands at, not the one it had.
     pub(super) fn extend(&mut self, other: Self) {
-        for (program, span) in other.programs.into_iter().zip(other.spans) {
+        let occurrences = other.occurrences;
+        for (row, (program, span)) in other.programs.into_iter().zip(other.spans).enumerate() {
             let output = self.programs.len();
-            self.push(program, span, output);
+            self.push_component(
+                program,
+                span,
+                occurrences.get(row).copied().flatten(),
+                output,
+            );
+        }
+    }
+
+    /// Push a row lowered from one component class equation (SPEC_0040 FLAT-C08).
+    pub(super) fn push_component(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
+        output: usize,
+    ) {
+        self.push(program, span, output);
+        self.tag_last(occurrence);
+    }
+
+    /// Record the occurrence of the row just pushed.
+    fn tag_last(&mut self, occurrence: Option<rumoca_core::ComponentOccurrence>) {
+        if occurrence.is_some() {
+            self.occurrences.resize(self.programs.len() - 1, None);
+            self.occurrences.push(occurrence);
+        }
+    }
+
+    fn record_occurrence(&mut self, occurrence: Option<rumoca_core::ComponentOccurrence>) {
+        if !self.occurrences.is_empty() {
+            self.occurrences.push(occurrence);
         }
     }
 
@@ -2088,12 +2152,12 @@ impl ScalarRows {
     }
 
     pub(super) fn into_scalar_block(self) -> Result<solve::ScalarProgramBlock, LowerError> {
-        solve::ScalarProgramBlock::with_program_output_placements(
+        let block = solve::ScalarProgramBlock::with_program_output_placements(
             self.programs,
             self.spans,
             self.output_placements,
-        )
-        .map_err(Into::into)
+        )?;
+        Ok(block.with_program_occurrences(self.occurrences)?)
     }
 
     pub(super) fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
@@ -2101,6 +2165,7 @@ impl ScalarRows {
             &mut self.programs,
             &mut self.spans,
             &mut self.output_placements,
+            &mut self.occurrences,
             scalar::MetadataBudget::default(),
         );
         Ok(solve::ComputeBlock::from_scalar_program_block(
@@ -2117,20 +2182,28 @@ fn compact_identical_program_prefixes(
     programs: &mut Vec<Vec<solve::LinearOp>>,
     spans: &mut Vec<Span>,
     placements: &mut Vec<solve::ScalarProgramOutputPlacement>,
+    occurrences: &mut Vec<Option<rumoca_core::ComponentOccurrence>>,
     budget: scalar::MetadataBudget,
 ) {
     let mut compact_programs: Vec<Vec<solve::LinearOp>> = Vec::with_capacity(programs.len());
     let mut compact_spans = Vec::with_capacity(spans.len());
     let mut compact_placements = Vec::with_capacity(placements.len());
-    for ((program, span), placement) in std::mem::take(programs)
+    // Fusion is unchanged by occurrences, so emitted code is too; a fused row
+    // keeps an occurrence only when every row it absorbed shares it.
+    let recorded = std::mem::take(occurrences);
+    let mut compact_occurrences = Vec::with_capacity(recorded.len());
+    for (row, ((program, span), placement)) in std::mem::take(programs)
         .into_iter()
         .zip(std::mem::take(spans))
         .zip(std::mem::take(placements))
+        .enumerate()
     {
+        let occurrence = recorded.get(row).copied().flatten();
         let Some(body_len) = trailing_output_start(&program) else {
             compact_programs.push(program);
             compact_spans.push(span);
             compact_placements.push(placement);
+            compact_occurrences.push(occurrence);
             continue;
         };
         let can_fuse = compact_programs
@@ -2156,15 +2229,25 @@ fn compact_identical_program_prefixes(
                 .pop()
                 .expect("checked previous placement exists");
             compact_placements.push(previous.concatenate(placement));
+            let kept = compact_occurrences
+                .last_mut()
+                .expect("checked previous occurrence exists");
+            if *kept != occurrence {
+                *kept = None;
+            }
         } else {
             compact_programs.push(program);
             compact_spans.push(span);
             compact_placements.push(placement);
+            compact_occurrences.push(occurrence);
         }
     }
     *programs = compact_programs;
     *spans = compact_spans;
     *placements = compact_placements;
+    if !recorded.is_empty() {
+        *occurrences = compact_occurrences;
+    }
 }
 
 fn trailing_output_start(program: &[solve::LinearOp]) -> Option<usize> {
@@ -2187,6 +2270,7 @@ enum DerivativePiece {
     Scalar {
         program: Vec<solve::LinearOp>,
         span: Span,
+        occurrence: Option<rumoca_core::ComponentOccurrence>,
         outputs: Vec<usize>,
     },
     Tensor(Box<ImplicitTensorDerivative>),
@@ -2209,10 +2293,16 @@ impl DerivativePiece {
 }
 
 impl DerivativeRows {
-    fn push_scalar(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
+    fn push_scalar(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        (span, occurrence): (Span, Option<rumoca_core::ComponentOccurrence>),
+        output: usize,
+    ) {
         self.pieces.push(DerivativePiece::Scalar {
             program,
             span,
+            occurrence,
             outputs: vec![output],
         });
     }
@@ -2222,6 +2312,7 @@ impl DerivativeRows {
         self.pieces.push(DerivativePiece::Scalar {
             program,
             span,
+            occurrence: None,
             outputs,
         });
     }
@@ -2250,8 +2341,12 @@ impl DerivativeRows {
                 DerivativePiece::Scalar {
                     program,
                     span,
+                    occurrence,
                     outputs,
-                } => scalars.push_outputs(program, span, outputs),
+                } => {
+                    scalars.push_outputs(program, span, outputs);
+                    scalars.tag_last(occurrence);
+                }
                 DerivativePiece::Tensor(group) => {
                     flush_scalar_rows(&mut scalars, &mut nodes)?;
                     nodes.push(group.node);

@@ -76,6 +76,7 @@ mod clock_trigger_initial_tick;
 mod clocked_coincident_exchange;
 mod clocked_partition_semantics;
 mod clocked_sample_regression;
+mod component_occurrence_solve;
 mod component_redeclare_constraints;
 mod component_redeclare_dimensions;
 mod comprehension_time_invariance;

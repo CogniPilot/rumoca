@@ -10,6 +10,7 @@
 //! delta is only ever issued after [`ChartPlanDelta::diff`] proves that
 //! applying it to the primary reproduces the lowered plan exactly.
 
+use rumoca_core::ComponentOccurrence;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -250,14 +251,55 @@ pub enum ChartDeltaError {
 
 /// A compute block as row replacements of the primary's single scalar-program
 /// node, or whole when either block has another shape.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) enum ComputeBlockDelta {
     Rows {
         programs: VecDelta<Vec<LinearOp>>,
         program_spans: VecDelta<rumoca_core::Span>,
         output_indices: VecDelta<usize>,
+        /// Absent when neither block records program occurrences.
+        #[serde(default)]
+        program_occurrences: Option<VecDelta<Option<ComponentOccurrence>>>,
     },
     Whole(ComputeBlock),
+}
+
+/// Absent occurrences are dropped only from human-readable formats, keeping
+/// JSON unchanged for blocks without them, while positional formats keep
+/// every field.
+impl Serialize for ComputeBlockDelta {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStructVariant;
+        match self {
+            Self::Rows {
+                programs,
+                program_spans,
+                output_indices,
+                program_occurrences,
+            } => {
+                let omit = serializer.is_human_readable() && program_occurrences.is_none();
+                let mut state = serializer.serialize_struct_variant(
+                    "ComputeBlockDelta",
+                    0,
+                    "Rows",
+                    if omit { 3 } else { 4 },
+                )?;
+                state.serialize_field("programs", programs)?;
+                state.serialize_field("program_spans", program_spans)?;
+                state.serialize_field("output_indices", output_indices)?;
+                if !omit {
+                    state.serialize_field("program_occurrences", program_occurrences)?;
+                }
+                state.end()
+            }
+            Self::Whole(block) => {
+                serializer.serialize_newtype_variant("ComputeBlockDelta", 1, "Whole", block)
+            }
+        }
+    }
 }
 
 fn single_scalar_block(block: &ComputeBlock) -> Option<&ScalarProgramBlock> {
@@ -274,40 +316,50 @@ impl ComputeBlockDelta {
                 programs: VecDelta::diff(base.programs(), target.programs()),
                 program_spans: VecDelta::diff(base.program_spans(), target.program_spans()),
                 output_indices: VecDelta::diff(base.output_indices(), target.output_indices()),
+                program_occurrences: (!base.program_occurrences().is_empty()
+                    || !target.program_occurrences().is_empty())
+                .then(|| VecDelta::diff(base.program_occurrences(), target.program_occurrences())),
             },
             _ => Self::Whole(target.clone()),
         }
     }
 
     fn apply(&self, base: &ComputeBlock) -> Result<ComputeBlock, ChartDeltaError> {
-        let (programs, program_spans, output_indices) = match self {
+        let (programs, program_spans, output_indices, program_occurrences) = match self {
             Self::Whole(block) => return Ok(block.clone()),
             Self::Rows {
                 programs,
                 program_spans,
                 output_indices,
-            } => (programs, program_spans, output_indices),
+                program_occurrences,
+            } => (programs, program_spans, output_indices, program_occurrences),
         };
         let empty = ScalarProgramBlock::default();
         let base = single_scalar_block(base).unwrap_or(&empty);
-        let block = ScalarProgramBlock::with_output_indices(
+        let mut block = ScalarProgramBlock::with_output_indices(
             programs.apply(base.programs())?,
             program_spans.apply(base.program_spans())?,
             output_indices.apply(base.output_indices())?,
         )
         .map_err(|_| ChartDeltaError::InvalidProgramBlock)?;
+        if let Some(occurrences) = program_occurrences {
+            block = block
+                .with_program_occurrences(occurrences.apply(base.program_occurrences())?)
+                .map_err(|_| ChartDeltaError::InvalidProgramBlock)?;
+        }
         Ok(ComputeBlock::from_scalar_program_block(block))
     }
 }
 
-/// Two single scalar-program blocks with the same stored programs; any other
-/// shape is not compared and counts as different.
+/// Two single scalar-program blocks with the same stored programs and program
+/// occurrences; any other shape is not compared and counts as different.
 fn same_compute_block(a: &ComputeBlock, b: &ComputeBlock) -> bool {
     match (single_scalar_block(a), single_scalar_block(b)) {
         (Some(a), Some(b)) => {
             a.programs() == b.programs()
                 && a.program_spans() == b.program_spans()
                 && a.output_indices() == b.output_indices()
+                && a.program_occurrences() == b.program_occurrences()
         }
         _ => false,
     }
@@ -646,5 +698,144 @@ mod tests {
         };
         assert!(matches!(programs, VecDelta::Edits(_)), "{programs:?}");
         assert!(same_compute_block(&delta.apply(&base).unwrap(), &target));
+    }
+
+    fn occurrence_span() -> rumoca_core::ProvenanceSpan {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("chart_delta_occurrence.mo"),
+            0,
+            1,
+        )
+        .require_provenance("chart delta occurrence fixture")
+        .unwrap()
+    }
+
+    /// One `Const` program per value; even values carry the occurrence of
+    /// instance `value`, so a shifted row keeps its occurrence.
+    fn tagged_block(values: &[f64], tagged: bool) -> ComputeBlock {
+        let span = occurrence_span();
+        let block = ScalarProgramBlock::with_source_span(
+            values
+                .iter()
+                .map(|value| {
+                    vec![
+                        LinearOp::Const {
+                            dst: 0,
+                            value: *value,
+                        },
+                        LinearOp::StoreOutput { src: 0 },
+                    ]
+                })
+                .collect(),
+            span,
+        )
+        .unwrap();
+        let occurrences = values
+            .iter()
+            .map(|value| {
+                (tagged && (*value as u32).is_multiple_of(2)).then_some(ComponentOccurrence {
+                    class_equation: rumoca_core::ClassEquation {
+                        scope: rumoca_core::ScopeId(3),
+                        span: span.span(),
+                    },
+                    instance: rumoca_core::InstanceId(*value as u32),
+                    view: 0,
+                })
+            })
+            .collect();
+        ComputeBlock::from_scalar_program_block(
+            block.with_program_occurrences(occurrences).unwrap(),
+        )
+    }
+
+    fn occurrences(block: &ComputeBlock) -> Vec<Option<ComponentOccurrence>> {
+        single_scalar_block(block)
+            .unwrap()
+            .program_occurrences()
+            .to_vec()
+    }
+
+    /// A chart whose tagged programs shift carries their occurrences, and the
+    /// patched block keeps them; a delta that lost them no longer reproduces
+    /// the chart, so the plan would refuse rather than drop them.
+    #[test]
+    fn a_row_delta_carries_program_occurrences_and_refuses_to_drop_them() {
+        let values: Vec<f64> = (0..24).map(f64::from).collect();
+        let mut shifted = values.clone();
+        shifted.insert(5, 40.0);
+        shifted.remove(13);
+        for (base, target) in [
+            (tagged_block(&values, true), tagged_block(&shifted, true)),
+            (tagged_block(&values, false), tagged_block(&shifted, true)),
+            (tagged_block(&values, true), tagged_block(&shifted, false)),
+        ] {
+            let mut delta = ComputeBlockDelta::diff(&base, &target);
+            let applied = delta.apply(&base).unwrap();
+            assert_eq!(occurrences(&applied), occurrences(&target));
+            assert!(delta.reproduces(&applied, &target));
+            match &mut delta {
+                ComputeBlockDelta::Rows {
+                    program_occurrences,
+                    ..
+                } => *program_occurrences = None,
+                ComputeBlockDelta::Whole(_) => {
+                    panic!("two single scalar-program blocks diff by rows")
+                }
+            }
+            let dropped = delta.apply(&base).unwrap();
+            assert_eq!(
+                same_compute_block(&dropped, &target),
+                occurrences(&target).is_empty()
+            );
+        }
+    }
+
+    /// A row delta between untagged blocks keeps its JSON shape, and a tagged
+    /// one round-trips through JSON and bincode to the same chart.
+    #[test]
+    fn row_delta_occurrences_round_trip_without_changing_untagged_json() {
+        let values: Vec<f64> = (0..8).map(f64::from).collect();
+        let mut changed = values.clone();
+        changed[3] = 30.0;
+        let (base, target) = (tagged_block(&values, false), tagged_block(&changed, false));
+        let untagged = ComputeBlockDelta::diff(&base, &target);
+        let json = serde_json::to_value(&untagged).unwrap();
+        assert!(json["Rows"].get("program_occurrences").is_none(), "{json}");
+        let from_json: ComputeBlockDelta = serde_json::from_value(json).unwrap();
+        let from_bincode: ComputeBlockDelta =
+            bincode::deserialize(&bincode::serialize(&untagged).unwrap()).unwrap();
+        for decoded in [from_json, from_bincode] {
+            assert!(same_compute_block(&decoded.apply(&base).unwrap(), &target));
+        }
+
+        let (base, target) = (tagged_block(&values, true), tagged_block(&changed, true));
+        let delta = ComputeBlockDelta::diff(&base, &target);
+        let from_json: ComputeBlockDelta =
+            serde_json::from_value(serde_json::to_value(&delta).unwrap()).unwrap();
+        let from_bincode: ComputeBlockDelta =
+            bincode::deserialize(&bincode::serialize(&delta).unwrap()).unwrap();
+        for decoded in [from_json, from_bincode] {
+            let applied = decoded.apply(&base).unwrap();
+            assert!(same_compute_block(&applied, &target));
+            assert_eq!(occurrences(&applied), occurrences(&target));
+        }
+    }
+
+    /// A block carried whole round-trips through JSON and bincode with its
+    /// occurrences.
+    #[test]
+    fn a_whole_block_delta_round_trips_in_both_formats() {
+        let target = tagged_block(&[1.0, 2.0, 4.0], true);
+        let delta = ComputeBlockDelta::Whole(target.clone());
+        let json = serde_json::to_value(&delta).unwrap();
+        assert!(json.get("Whole").is_some(), "{json}");
+        let from_json: ComputeBlockDelta = serde_json::from_value(json).unwrap();
+        let from_bincode: ComputeBlockDelta =
+            bincode::deserialize(&bincode::serialize(&delta).unwrap()).unwrap();
+        for decoded in [from_json, from_bincode] {
+            let applied = decoded.apply(&ComputeBlock::default()).unwrap();
+            assert!(same_compute_block(&applied, &target));
+            assert_eq!(occurrences(&applied), occurrences(&target));
+        }
     }
 }
