@@ -28,7 +28,10 @@ use reverse_invalidations::derive_algebraic_reverse_invalidations;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without
 /// losing the owner span the authority reported it against.
-fn from_pattern_error(error: StructuralPatternError, owner_span: Option<Span>) -> EvalSolveError {
+pub(crate) fn from_pattern_error(
+    error: StructuralPatternError,
+    owner_span: Option<Span>,
+) -> EvalSolveError {
     match error {
         StructuralPatternError::UninitializedRegister { register, span } => {
             EvalSolveError::UninitializedRegister {

@@ -68,7 +68,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 rumoca-compile = { workspace = true }
-rumoca-solver = { workspace = true, features = ["native-wasm"] }
+rumoca-solver = { workspace = true, features = ["native-wasm", "input-write-audit"] }
 rumoca-exec-wasm = { workspace = true, features = ["host-engine"] }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 

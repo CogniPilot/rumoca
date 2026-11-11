@@ -11,6 +11,7 @@ mod causal_dependency_tests;
 mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
+mod input_event_reach;
 mod output_inventory;
 mod parameter_static;
 mod ready_queue;
@@ -44,6 +45,7 @@ use capacity::{
 };
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
+use input_event_reach::issue_input_event_reach;
 use row_analysis::{
     AssignmentCertificates, PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row,
 };
@@ -709,6 +711,8 @@ fn build_scalar_refresh_owners(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let input_event_reach =
+        issue_input_event_reach(problem, &catalog, &algebraic, catalog.positions());
     let owners = solve::ContinuousRefreshOwners::checked_for_source(
         &problem.continuous.implicit_rhs,
         algebraic,
@@ -721,7 +725,7 @@ fn build_scalar_refresh_owners(
         message: error.to_string(),
         span: catalog.first_span(),
     })?;
-    Ok(owners)
+    Ok(owners.with_input_event_reach(input_event_reach))
 }
 
 /// Rewrite every algebraic block's tearing so back-substitution is exact-only.

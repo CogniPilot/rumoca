@@ -11,6 +11,9 @@ homepage.workspace = true
 default = ["sparse-linalg"]
 sparse-linalg = ["dep:faer"]
 native-wasm = ["dep:rumoca-exec-wasm"]
+# Test-only audit of the input write paths; enabled only as a dev-dependency
+# feature, never by a production build.
+input-write-audit = []
 
 [dependencies]
 faer = { workspace = true, optional = true }

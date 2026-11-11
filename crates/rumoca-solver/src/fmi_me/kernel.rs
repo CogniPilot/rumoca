@@ -418,27 +418,39 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn value_reference(&self, name: &str) -> Option<MeValueRef> {
-        self.runtime
+        self.input_value_reference(name).flatten()
+    }
+
+    /// The Float64 reference of declared input `name` from one name lookup:
+    /// `None` when `name` is not a declared input, `Some(None)` when it is
+    /// declared but has no Float64 reference.
+    pub(crate) fn input_value_reference(&self, name: &str) -> Option<Option<MeValueRef>> {
+        let index = self
+            .runtime
             .model()
             .problem
             .solve_layout
-            .input_parameter_index(name)
-            .filter(|&index| {
-                #[cfg(feature = "native-wasm")]
-                {
-                    self.native_parameter_is_real(index)
-                }
-                #[cfg(not(feature = "native-wasm"))]
-                {
-                    let _ = index;
-                    true
-                }
-            })
-            .map(|index| MeValueRef {
-                backing: MeFloat64Backing::InputParameter(index),
-                instance_brand: Rc::clone(&self.instance_brand),
-            })
+            .input_parameter_index(name)?;
+        Some(
+            Some(index)
+                .filter(|&index| {
+                    #[cfg(feature = "native-wasm")]
+                    {
+                        self.native_parameter_is_real(index)
+                    }
+                    #[cfg(not(feature = "native-wasm"))]
+                    {
+                        let _ = index;
+                        true
+                    }
+                })
+                .map(|index| MeValueRef {
+                    backing: MeFloat64Backing::InputParameter(index),
+                    instance_brand: Rc::clone(&self.instance_brand),
+                }),
+        )
     }
 
     pub(crate) fn max_step_duration_value_reference(&self) -> Option<MeValueRef> {
@@ -591,7 +603,27 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    #[cfg(test)]
+    /// The parameter vector, inputs included, for the input write audit.
+    #[cfg(any(test, feature = "input-write-audit"))]
+    pub(crate) fn audit_parameters(&self) -> &[f64] {
+        &self.params
+    }
+
+    /// The issued input event reach, one bit per declared input scalar.
+    #[cfg(any(test, feature = "input-write-audit"))]
+    pub(crate) fn audit_input_event_reach(&self) -> Vec<bool> {
+        let problem = &self.runtime.model().problem;
+        (0..problem.solve_layout.input_scalar_names().len())
+            .map(|input| {
+                problem
+                    .continuous
+                    .refresh_owners
+                    .input_write_reaches_event_owner(input)
+            })
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn get_continuous_state_derivatives(
         &self,
         derivatives: &mut Vec<f64>,

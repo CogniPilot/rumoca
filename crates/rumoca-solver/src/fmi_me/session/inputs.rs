@@ -2,7 +2,8 @@
 
 use super::host_state::{close_excursion, update_discrete_states_to_completion};
 use super::{MeSessionError, MeSessionLoss, MeSimulationSession};
-use crate::fmi_me::{MeEventCause, MeTime, MeValueRef};
+use crate::fmi_me::kernel::AcceptedInputWrite;
+use crate::fmi_me::{MeError, MeEventCause, MeTime, MeValueRef};
 
 impl MeSimulationSession<'_, '_> {
     /// Apply one declared input through the same transaction as a batch.
@@ -17,6 +18,11 @@ impl MeSimulationSession<'_, '_> {
     /// history. A failure after the component commits ends the session, because
     /// no consumer may use owners that disagree about the accepted point.
     /// Repeated names retain the component's source-ordered last-write behavior.
+    ///
+    /// A batch whose changed inputs reach no event owner in this instant, at a
+    /// coordinate where no time event is due, stays in Continuous-Time Mode:
+    /// the component writes it as an input event's exit would leave it, and
+    /// the plugin history restarts once, as after that event.
     pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), MeSessionError> {
         self.require_live()?;
         let references = self.input_references(inputs)?;
@@ -43,6 +49,27 @@ impl MeSimulationSession<'_, '_> {
             .check_float64_inputs(&references, &values)?;
         self.truncate_deferred_at_observation()?;
         self.clear_snapped_yield();
+        let changed = references
+            .iter()
+            .zip(current.iter().zip(&values))
+            .filter(|(_, (before, after))| before.to_bits() != after.to_bits())
+            .map(|(reference, _)| reference);
+        let continuous = self
+            .host
+            .kernel
+            .borrow()?
+            .admits_continuous_input_write(changed, self.host.time);
+        if continuous && self.write_continuous_inputs(&references, &values)? {
+            #[cfg(any(test, feature = "input-write-audit"))]
+            super::input_write_audit::count_input_write(true);
+            self.record_inputs(inputs);
+            let restarted = self.restart_plugin_history();
+            return self
+                .host
+                .guard_mutation(MeSessionLoss::InputApplication, restarted);
+        }
+        #[cfg(any(test, feature = "input-write-audit"))]
+        super::input_write_audit::count_input_write(false);
         self.write_inputs(&references, &values)?;
         let correlated = self.correlate_inputs(inputs);
         self.host
@@ -54,13 +81,11 @@ impl MeSimulationSession<'_, '_> {
         inputs
             .iter()
             .map(|(name, _)| {
-                if !self.has_input(name) {
-                    return Err(MeSessionError::Contract {
-                        reason: format!("'{name}' is not a declared input of this component"),
-                    });
-                }
                 kernel
-                    .value_reference(name)
+                    .input_value_reference(name)
+                    .ok_or_else(|| MeSessionError::Contract {
+                        reason: format!("'{name}' is not a declared input of this component"),
+                    })?
                     .ok_or_else(|| MeSessionError::Contract {
                         reason: format!("declared input '{name}' has no value reference"),
                     })
@@ -76,22 +101,45 @@ impl MeSimulationSession<'_, '_> {
         self.write_input_transaction(|kernel| kernel.set_float64(references, values))
     }
 
+    /// Write inputs in Continuous-Time Mode; `false`, with nothing written,
+    /// when the component needs the input event after all.
+    fn write_continuous_inputs(
+        &self,
+        references: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<bool, MeSessionError> {
+        self.input_rollback(|scope| {
+            scope.write_continuous(
+                MeTime::at(self.host.time),
+                &self.host.states,
+                references,
+                values,
+            )
+        })
+    }
+
     pub(super) fn write_input_transaction(
         &mut self,
-        write: impl FnOnce(
-            &mut crate::fmi_me::kernel::AcceptedInputWrite<'_>,
-        ) -> Result<(), crate::fmi_me::MeError>,
+        write: impl FnOnce(&mut AcceptedInputWrite<'_>) -> Result<(), MeError>,
     ) -> Result<(), MeSessionError> {
         let entry = self
             .host
             .event_entry(MeEventCause::InputEvent, self.host.time);
+        self.input_rollback(|scope| {
+            scope.position(MeTime::at(self.host.time), &self.host.states, entry)?;
+            write(scope)
+        })
+    }
+
+    /// Run one component input write under the component's rollback owner.
+    fn input_rollback<T>(
+        &self,
+        write: impl FnOnce(&mut AcceptedInputWrite<'_>) -> Result<T, MeError>,
+    ) -> Result<T, MeSessionError> {
         let result = {
             let mut kernel = self.host.kernel.borrow_mut()?;
-            match kernel.with_input_rollback(|scope| {
-                scope.position(MeTime::at(self.host.time), &self.host.states, entry)?;
-                write(scope)
-            }) {
-                Ok(()) => Ok(()),
+            match kernel.with_input_rollback(write) {
+                Ok(written) => Ok(written),
                 Err((error, restoration)) => {
                     close_excursion(self.host.time, restoration, Err(error.into()))
                 }

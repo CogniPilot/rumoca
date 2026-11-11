@@ -12,6 +12,8 @@ mod block_residual_split;
 mod coincident_strict;
 #[cfg(not(target_arch = "wasm32"))]
 mod compiled_messages;
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod continuous_input_writes;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
 mod function_returns;

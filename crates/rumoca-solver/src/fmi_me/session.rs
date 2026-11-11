@@ -15,6 +15,8 @@
 mod deferred_crossing;
 mod error;
 mod host_state;
+#[cfg(any(test, feature = "input-write-audit"))]
+pub mod input_write_audit;
 mod inputs;
 #[cfg(feature = "native-wasm")]
 mod native_inputs;
