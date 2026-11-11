@@ -15,6 +15,7 @@ use super::{FieldPath, FunctionParameterDependency};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct FoldNode<'dae> {
     pub(super) activation: super::Activation,
+    pub(super) integer_profile: Arc<[super::IntegerBinding]>,
     pub(super) fold: dae::FunctionFoldId<'dae>,
     pub(super) carried: u32,
     pub(super) field: Option<FieldPath>,

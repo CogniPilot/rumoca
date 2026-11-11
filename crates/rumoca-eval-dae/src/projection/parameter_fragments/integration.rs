@@ -133,8 +133,15 @@ impl<'dae> Projection<'_, 'dae> {
             .expect("checked fold resolves");
         let parent = self.view.domain(transition.domain()).unwrap().parent();
         let context = self.domain_contexts.for_domain(self.view, parent);
+        let integer_profile = Arc::clone(
+            &self
+                .fold_summary_capture(fold.function())
+                .expect("the active summary owns the fold profile")
+                .integer_profile,
+        );
         let node = fold_graph::FoldNode {
             activation: self.activation,
+            integer_profile,
             fold,
             carried,
             field,

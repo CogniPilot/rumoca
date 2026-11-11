@@ -515,6 +515,7 @@ enum FunctionParameterDependency {
 #[derive(Debug)]
 struct FunctionSummaryCapture<'dae> {
     function: u32,
+    integer_profile: Arc<[IntegerBinding]>,
     dependencies: dependencies::OrderedDependencies,
     needed_integers: Vec<(u32, usize)>,
     cacheable: bool,
@@ -1284,16 +1285,13 @@ impl<'dae> Projection<'_, 'dae> {
         if !self.function_call_active.insert(dependency.clone()) {
             return Err(ProjectionError::FunctionRecursion { span });
         }
-        // These local caches do not bind Integer profiles. A specialized
-        // invocation cannot import generic facts or publish into their cache.
-        let isolated = (!integers.is_empty()).then(|| {
-            (
-                std::mem::take(&mut self.cache.completed_folds),
-                std::mem::take(&mut self.cache.parameter_fragments),
-            )
-        });
+        // Fold nodes carry the exact Integer profile; fragment keys do not.
+        // Only fragments still require isolation for a specialized invocation.
+        let isolated =
+            (!integers.is_empty()).then(|| std::mem::take(&mut self.cache.parameter_fragments));
         self.function_summary_captures.push(FunctionSummaryCapture {
             function: function.index(),
+            integer_profile: Arc::from(integers),
             dependencies: dependencies::OrderedDependencies::default(),
             needed_integers: Vec::new(),
             cacheable: true,
@@ -1319,8 +1317,7 @@ impl<'dae> Projection<'_, 'dae> {
             .pop()
             .expect("function summary capture was just pushed");
         self.function_call_active.remove(dependency);
-        if let Some((folds, fragments)) = isolated {
-            self.cache.completed_folds = folds;
+        if let Some(fragments) = isolated {
             self.cache.parameter_fragments = fragments;
         }
         projected?;
@@ -1341,8 +1338,8 @@ impl<'dae> Projection<'_, 'dae> {
             for (key, values) in capture.fragments.into_reusable() {
                 self.cache.parameter_fragments.insert(key, values);
             }
-            self.cache.completed_folds.extend(capture.folds.completed());
         }
+        self.cache.completed_folds.extend(capture.folds.completed());
         Ok(FunctionSummaryEntry::Complete(
             capture.dependencies.into_values(),
         ))

@@ -10,6 +10,7 @@ mod integer_calls;
 mod linear_solve;
 mod literal_update_sweeps;
 mod parameter_fragment_reuse;
+mod profiled_folds;
 mod query;
 mod record_comprehension;
 pub(super) mod shape_only_size;

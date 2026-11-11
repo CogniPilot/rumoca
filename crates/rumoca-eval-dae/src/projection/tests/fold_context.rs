@@ -654,6 +654,7 @@ fn checked_graph_nodes<'dae>(
     let transition = view.function_fold(fold).unwrap();
     std::array::from_fn(|carried| crate::projection::fold_graph::FoldNode {
         activation: crate::projection::Activation::Guaranteed,
+        integer_profile: Arc::from([]),
         fold,
         carried: carried as u32,
         field: None,
