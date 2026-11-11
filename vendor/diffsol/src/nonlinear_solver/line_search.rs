@@ -142,7 +142,15 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
         match convergence.check_new_iteration(self.norm) {
             ConvergenceStatus::Converged => {
                 x.sub_assign(&*delta);
-                return Ok(ConvergenceStatus::Converged);
+                // A branch change can invalidate the estimated remaining error.
+                // Check the returned point without advancing outer norm history.
+                fun(x, delta);
+                linear_solver(delta)?;
+                self.norm = convergence.norm(delta, error_y);
+                if convergence.current_correction_converged(self.norm) {
+                    return Ok(ConvergenceStatus::Converged);
+                }
+                return Ok(ConvergenceStatus::Continue);
             }
             ConvergenceStatus::Diverged => return Ok(ConvergenceStatus::Diverged),
             ConvergenceStatus::Continue => {}

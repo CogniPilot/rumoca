@@ -30,6 +30,10 @@ impl<'a, V: Vector> Convergence<'a, V> {
     pub fn niter(&self) -> IndexType {
         self.niter
     }
+    pub(crate) fn current_correction_converged(&self, norm: V::T) -> bool {
+        norm <= self.tol
+    }
+
     pub fn eta(&self) -> V::T {
         self.eta
     }
@@ -114,7 +118,10 @@ impl<'a, V: Vector> Convergence<'a, V> {
             );
         };
         // check if iteration is converged
-        if self.eta * norm < self.tol {
+        // A rate retained from another solve cannot certify a large first
+        // correction. Measure contraction in this solve, or require the
+        // current correction itself to fit its unchanged tolerance.
+        if self.eta * norm < self.tol && (self.old_norm.is_some() || norm <= self.tol) {
             trace!(
                 "  Converged with eta * norm = {:.3e} < tol = {:.3e}",
                 (self.eta * norm).to_f64().unwrap(),
