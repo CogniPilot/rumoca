@@ -3,29 +3,31 @@
 //! The planner (`layout::homes`) decides which single-cell registers have no
 //! address; every operation that may read or define one goes through these
 //! helpers, so a register in a local is never reached as a memory range.
-use super::cells::{CELL_LOCALS, FIRST_CELL_LOCAL};
 use super::emit::{CELL, Emitter};
 use super::layout::{CellRange, Home, LocalCounts};
 use rumoca_ir_solve as solve;
 use wasm_encoder::{Instruction as I, ValType};
 
-/// The locals below are the call parameters and the emitter's transient
-/// locals, the last of them the cell iteration owner's.
-pub(super) const FIRST_PROMOTED_LOCAL: u32 = FIRST_CELL_LOCAL + CELL_LOCALS;
+/// Locals 0..13 are the call parameters and the emitter's transient locals.
+pub(super) const FIRST_PROMOTED_LOCAL: u32 = 13;
 
-/// The transient locals every body declares, then the promoted ones.
-pub(super) fn locals_header(total: LocalCounts) -> Vec<(u32, ValType)> {
+/// The transient locals every body declares, then the promoted ones, then
+/// the `cells` locals of the cell iteration owner.
+pub(super) fn locals_header(total: LocalCounts, cells: u32) -> Vec<(u32, ValType)> {
     let mut locals = vec![
         (1, ValType::I32),
         (4, ValType::I64),
         (2, ValType::F64),
-        (3 + CELL_LOCALS, ValType::I32),
+        (3, ValType::I32),
     ];
     if total.integers > 0 {
         locals.push((total.integers, ValType::I64));
     }
     if total.reals > 0 {
         locals.push((total.reals, ValType::F64));
+    }
+    if cells > 0 {
+        locals.push((cells, ValType::I32));
     }
     locals
 }

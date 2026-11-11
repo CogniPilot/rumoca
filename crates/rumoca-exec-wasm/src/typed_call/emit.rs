@@ -70,6 +70,10 @@ pub(super) struct Emitter<'a> {
     /// Whether Solve IR issued the operation being emitted straight-line
     /// cells (`TypedProgram::straight_cells`).
     pub straight_cells: bool,
+    /// First of the cell iteration owner's locals, after the promoted ones.
+    pub cell_local_base: u32,
+    /// The cell iteration owner's locals this function declares.
+    pub cell_locals: u32,
     /// Promoted locals of the enclosing bodies, below this body's own.
     pub local_floor: LocalCounts,
     /// Promoted locals the whole function declares.
@@ -201,7 +205,7 @@ fn compile_helper_with(
     (_facts, outlining): (CallProgramFacts, Outlining),
 ) -> Result<HelperBody, TypedCallCompileError> {
     let mut emitter = Emitter::new(owner, unit, linked, plan, fault_offset)?;
-    let header = locals_header(emitter.local_total);
+    let header = locals_header(emitter.local_total, emitter.cell_locals);
     let mut outliner = Outliner::new(header.clone(), outlining.budget);
     let prologue = emitter.encode(|e| {
         e.reset_observations();
@@ -276,6 +280,15 @@ impl<'a> Emitter<'a> {
             .integers
             .checked_add(super::control::max_loop_locals(program))
             .ok_or(TypedCallCompileError::SizeLimit)?;
+        let cell_locals = super::cells::cell_locals(program);
+        // A function past the engine's local limit is refused, not printed
+        // with fewer cell locals.
+        if (FIRST_PROMOTED_LOCAL + total.integers + total.reals)
+            .checked_add(cell_locals)
+            .is_none_or(|locals| locals > super::cost::ENGINE_LOCAL_LIMIT)
+        {
+            return Err(TypedCallCompileError::SizeLimit);
+        }
         Ok(Self {
             code: Vec::new(),
             spans: Vec::new(),
@@ -302,6 +315,8 @@ impl<'a> Emitter<'a> {
             cell_levels: Vec::new(),
             cell_bases: None,
             straight_cells: false,
+            cell_local_base: FIRST_PROMOTED_LOCAL + total.integers + total.reals,
+            cell_locals,
             local_floor: LocalCounts::default(),
             local_total: total,
             fault_offset: fault_offset as u32,
@@ -355,7 +370,7 @@ impl<'a> Emitter<'a> {
     /// One function from consecutive chunks, with the scratch cells that only
     /// static addresses reach held in locals (SOLVE-C99).
     pub(super) fn assemble(&self, chunks: &[&Chunk]) -> Function {
-        let header = locals_header(self.local_total);
+        let header = locals_header(self.local_total, self.cell_locals);
         let mut code = Vec::new();
         let mut spans = Vec::new();
         for chunk in chunks {
@@ -415,7 +430,7 @@ impl<'a> Emitter<'a> {
             ]);
         }
         code.extend(epilogue.code.iter().cloned());
-        let entry = Chunk::function_with(&locals_header(self.local_total), &code);
+        let entry = Chunk::function_with(&locals_header(self.local_total, self.cell_locals), &code);
         if entry.byte_len() > outlining.budget {
             return Err(self.over_budget(entry.byte_len(), outlining.budget));
         }
@@ -1087,7 +1102,7 @@ impl Emitter<'_> {
             } else {
                 0
             },
-            locals: FIRST_PROMOTED_LOCAL + self.local_total.integers + self.local_total.reals,
+            locals: self.cell_local_base + self.cell_locals,
             math_arity: self
                 .linked
                 .math_indices

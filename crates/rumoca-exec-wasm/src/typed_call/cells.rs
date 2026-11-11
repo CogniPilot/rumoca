@@ -11,29 +11,22 @@
 //!   so every address is a constant offset (no counter, no branch);
 //! - otherwise: one `i32` counter per axis of extent above one, in nested
 //!   loops in row-major order, with each address its base plus constant
-//!   multiples of the counters (no divide or remainder). Only past
-//!   [`AXIS_LOCALS`] axes do the leading axes share one counter and take
-//!   their indices from it by division.
+//!   multiples of the counters (no divide or remainder).
 //!
 //! Either way the body runs the same instructions on the same cells in the
 //! same order, so the values computed are bit for bit the same.
 //!
 //! The address of a range reached by reference (a pointer cell) does not
 //! change while one operation runs: it is loaded once, before the operation's
-//! cells, into one of [`BASE_LOCALS`] locals.
+//! cells, into a local of its own.
+//!
+//! Each operation takes its counters and base locals from the function's
+//! cell locals, in order of first use; [`cell_locals`] sizes them from the
+//! program before the function's locals are declared.
 use super::emit::Emitter;
 use super::layout::CellRange;
+use rumoca_ir_solve as solve;
 use wasm_encoder::{BlockType, Instruction as I, MemArg};
-
-/// First of the transient `i32` locals this owner uses.
-pub(super) const FIRST_CELL_LOCAL: u32 = 13;
-/// Loop counters for the axes of one operation's iterations.
-const AXIS_LOCALS: u32 = 6;
-/// Loop-invariant base addresses of ranges reached by reference; a range past
-/// them reloads its address at each use.
-const BASE_LOCALS: u32 = 4;
-/// The transient `i32` locals this owner uses.
-pub(super) const CELL_LOCALS: u32 = AXIS_LOCALS + BASE_LOCALS;
 
 /// The index along one axis of the cell the body is printed for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,13 +35,6 @@ pub(super) enum Index {
     At(u32),
     /// Held in an `i32` local.
     Counter(u32),
-    /// `(local / stride) % extent`: an axis sharing a counter with the axes
-    /// after it.
-    Digit {
-        local: u32,
-        stride: u32,
-        extent: u32,
-    },
 }
 
 /// One iteration over a static shape, innermost last.
@@ -64,8 +50,10 @@ pub(super) struct Level {
 pub(super) struct Bases {
     /// Where the loads go: the first instruction of the operation's cells.
     at: usize,
-    /// Pointer base (`CellRange::base`) held in each base local.
-    held: Vec<u32>,
+    /// Each pointer base (`CellRange::base`) held, and its local.
+    held: Vec<(u32, u32)>,
+    /// Cell locals the operation has taken.
+    taken: u32,
 }
 
 impl Emitter<'_> {
@@ -146,33 +134,34 @@ impl Emitter<'_> {
         match index {
             Index::At(at) => self.push(I::I32Const(at as i32)),
             Index::Counter(local) => self.push(I::LocalGet(local)),
-            Index::Digit {
-                local,
-                stride,
-                extent,
-            } => {
-                self.push(I::LocalGet(local));
-                self.push(I::I32Const(stride as i32));
-                self.push(I::I32DivU);
-                self.push(I::I32Const(extent as i32));
-                self.push(I::I32RemU);
-            }
         }
     }
 
     /// The local that holds the address of `base`, a pointer cell, while an
     /// operation's cells are printed.
     pub(super) fn held_base(&mut self, base: u32) -> Option<u32> {
+        let bases = self.cell_bases.as_ref()?;
+        if let Some((_, local)) = bases.held.iter().find(|(held, _)| *held == base) {
+            return Some(*local);
+        }
+        let local = self.take_cell_local();
         let bases = self.cell_bases.as_mut()?;
-        let slot = match bases.held.iter().position(|held| *held == base) {
-            Some(slot) => slot,
-            None if bases.held.len() < BASE_LOCALS as usize => {
-                bases.held.push(base);
-                bases.held.len() - 1
-            }
-            None => return None,
-        };
-        Some(FIRST_CELL_LOCAL + AXIS_LOCALS + slot as u32)
+        bases.held.push((base, local));
+        Some(local)
+    }
+
+    /// The next cell local of the operation being printed.
+    fn take_cell_local(&mut self) -> u32 {
+        let bases = self
+            .cell_bases
+            .as_mut()
+            .expect("cell locals are taken inside a cell iteration");
+        assert!(
+            bases.taken < self.cell_locals,
+            "the function's cell locals cover each operation"
+        );
+        bases.taken += 1;
+        self.cell_local_base + bases.taken - 1
     }
 
     fn iterate(&mut self, start: u32, shape: &[u32], body: impl FnMut(&mut Self)) {
@@ -181,13 +170,13 @@ impl Emitter<'_> {
             self.cell_bases = Some(Bases {
                 at: self.code.len(),
                 held: Vec::new(),
+                taken: 0,
             });
         }
         if self.straight_cells {
             self.unrolled(start, shape, body);
         } else {
-            let first = self.cell_levels.iter().map(|l| l.axes.len()).sum::<usize>();
-            self.looped(start, shape, first, body);
+            self.looped(start, shape, body);
         }
         if outermost {
             let bases = self.cell_bases.take().expect("bases of this iteration");
@@ -212,46 +201,30 @@ impl Emitter<'_> {
         }
     }
 
-    /// One loop per axis of extent above one, counting in local
-    /// `FIRST_CELL_LOCAL` plus the axis' position among the operation's axes.
-    /// When the operation has more axes than counters, the leading axes share
-    /// the first counter over their combined extent.
-    fn looped(&mut self, start: u32, shape: &[u32], first: usize, body: impl FnOnce(&mut Self)) {
+    /// One loop per axis of extent above one, each with its own counter.
+    fn looped(&mut self, start: u32, shape: &[u32], body: impl FnOnce(&mut Self)) {
         if shape.iter().product::<u32>() <= start {
             return;
         }
-        let free = (AXIS_LOCALS as usize)
-            .checked_sub(first)
-            .filter(|free| *free > 0)
-            .expect("a counter for each nested cell iteration");
-        let fused = shape.len().saturating_sub(free - 1).max(1);
-        let local = |position: usize| FIRST_CELL_LOCAL + (first + position) as u32;
-        let mut loops = vec![(shape[..fused].iter().product::<u32>(), local(0))];
-        let mut axes = Vec::with_capacity(shape.len());
-        let mut stride = loops[0].0;
-        for &extent in &shape[..fused] {
-            stride /= extent;
-            axes.push(match (extent, fused) {
-                (1, _) => Index::At(0),
-                (_, 1) => Index::Counter(local(0)),
-                _ => Index::Digit {
-                    local: local(0),
-                    stride,
-                    extent,
-                },
-            });
-        }
-        for (position, &extent) in shape[fused..].iter().enumerate() {
-            loops.push((extent, local(position + 1)));
-            axes.push(match extent {
+        let axes = shape
+            .iter()
+            .map(|extent| match extent {
                 1 => Index::At(0),
-                _ => Index::Counter(local(position + 1)),
-            });
-        }
-        loops.retain(|(extent, _)| *extent > 1);
-        for (ordinal, &(extent, local)) in loops.iter().enumerate() {
+                _ => Index::Counter(self.take_cell_local()),
+            })
+            .collect::<Vec<_>>();
+        let loops = axes
+            .iter()
+            .zip(shape)
+            .enumerate()
+            .filter_map(|(axis, (index, extent))| match *index {
+                Index::Counter(local) => Some((axis, local, *extent)),
+                Index::At(_) => None,
+            })
+            .collect::<Vec<_>>();
+        for &(axis, local, extent) in &loops {
             // Only a flat shape starts past its first cell.
-            let from = if ordinal == 0 && fused == 1 { start } else { 0 };
+            let from = if axis == 0 { start } else { 0 };
             self.open_loop(local, from, extent);
         }
         self.cell_levels.push(Level {
@@ -260,7 +233,7 @@ impl Emitter<'_> {
         });
         body(self);
         self.cell_levels.pop();
-        for &(_, local) in loops.iter().rev() {
+        for &(_, local, _) in loops.iter().rev() {
             self.close_loop(local);
         }
     }
@@ -290,9 +263,9 @@ impl Emitter<'_> {
     /// its cells used.
     fn load_bases(&mut self, bases: &Bases) {
         let mut loads = Vec::new();
-        for (slot, base) in bases.held.iter().enumerate() {
+        for &(base, local) in &bases.held {
             let range = CellRange {
-                base: *base,
+                base,
                 offset: 0,
                 bytes: 0,
             };
@@ -306,7 +279,7 @@ impl Emitter<'_> {
                     align: 2,
                     memory_index: 0,
                 }),
-                I::LocalSet(FIRST_CELL_LOCAL + AXIS_LOCALS + slot as u32),
+                I::LocalSet(local),
             ]);
         }
         if loads.is_empty() {
@@ -328,4 +301,51 @@ fn row_major_strides(shape: &[u32]) -> Vec<u32> {
         strides[axis] = strides[axis + 1] * shape[axis + 1];
     }
     strides
+}
+
+/// The cell locals a function needs: for its most demanding operation, in
+/// the program or any region of it, a counter for each axis it may loop over
+/// (its largest register rank, plus the summed axis of a product) and a base
+/// local for each register it names, plus one for an input slot.
+pub(super) fn cell_locals(program: &solve::TypedProgram) -> u32 {
+    use solve::SolveOperation as O;
+    let types = program.register_types();
+    program
+        .operations()
+        .iter()
+        .map(|operation| {
+            let operation = operation.operation();
+            let (mut registers, mut rank) = (0u32, 0u32);
+            let mut count = |register: solve::SolveRegisterId| {
+                registers += 1;
+                rank = rank.max(types[register.index()].dimensions().len() as u32);
+            };
+            operation.visit_input_registers(&mut count);
+            operation.visit_output_registers(&mut count);
+            let own = rank + 1 + registers;
+            let nested = match operation {
+                O::Fold {
+                    transition,
+                    continuation,
+                    ..
+                } => cell_locals(transition.body()).max(
+                    continuation
+                        .as_ref()
+                        .map_or(0, |predicate| cell_locals(predicate.body())),
+                ),
+                O::Map { body, .. } => cell_locals(body.body()),
+                O::Conditional {
+                    if_true, if_false, ..
+                } => cell_locals(if_true.body()).max(cell_locals(if_false.body())),
+                O::AssignedConditional { program } => cell_locals(program.if_true().body())
+                    .max(cell_locals(program.if_false().body())),
+                O::CheckAssertion {
+                    message: solve::SolveAssertionMessage::Captures { program },
+                    ..
+                } => cell_locals(program.body()),
+                _ => 0,
+            };
+            own.max(nested)
+        })
+        .fold(2, u32::max)
 }

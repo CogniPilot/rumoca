@@ -366,3 +366,27 @@ fn row_axes(
         },
     ]
 }
+
+#[test]
+fn seven_axis_slices_and_five_operand_concatenations_match_the_evaluator_bit_for_bit() {
+    // Counted: 128 cells over seven axes of extent two.
+    let (shape, origin, dimensions) = ([3; 7], [1, 0, 1, 0, 1, 0, 1], [2; 7]);
+    check(
+        &[real_type(&shape)],
+        real_type(&dimensions),
+        &move |b, r| b.project_slice(r[0], origin.to_vec(), dimensions.to_vec(), span(26600)),
+    );
+    check(
+        &[real_type(&shape), real_type(&dimensions)],
+        real_type(&shape),
+        &move |b, r| b.update_slice(r[0], r[1], origin.to_vec(), span(26601)),
+    );
+    // Five operands, which a child receives as five arguments.
+    for (rows, output) in [(3, [3, 10]), (33, [33, 10])] {
+        let operand = real_type(&[rows, 2]);
+        let operands: [_; 5] = std::array::from_fn(|_| operand.clone());
+        check(&operands, real_type(&output), &|b, r| {
+            b.concatenate(1, r, span(26602))
+        });
+    }
+}
