@@ -94,11 +94,24 @@ pub(super) fn plain(unused_index: usize) -> Fixture {
 /// `y[1] := {42, 64}[p[0]]`: a checked model-scope gather whose runtime
 /// index can fail Integer conversion or the array bound.
 pub(super) fn gather() -> Fixture {
-    let programs = vec![vec![
-        solve::LinearOp::LoadY { dst: 0, index: 1 },
+    assemble(
+        vec![gather_program(1, 0)],
+        vec![row(0, 0, 0, 1, 4, 5)],
+        solve::SolvePureCallTable::builder(arithmetic()).finish(),
+        1,
+    )
+}
+
+/// `y[target] := {42, 64}[p[index]]`, with its expression in register 4.
+fn gather_program(target: usize, index: usize) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: target,
+        },
         solve::LinearOp::Const { dst: 1, value: 42. },
         solve::LinearOp::Const { dst: 2, value: 64. },
-        solve::LinearOp::LoadP { dst: 3, index: 0 },
+        solve::LinearOp::LoadP { dst: 3, index },
         solve::LinearOp::LoadIndexedRegister {
             dst: 4,
             base: 1,
@@ -108,12 +121,24 @@ pub(super) fn gather() -> Fixture {
         },
         binary(5, solve::BinaryOp::Sub, 0, 4),
         solve::LinearOp::StoreOutput { src: 5 },
-    ]];
+    ]
+}
+
+/// A gather on `p[0]` into `y[1]`, a chain of `length` into `y[2]`, then a
+/// gather on `p[1]` into `y[4]`. With `length` over the chunk budget each
+/// program is its own chunk, so the two gathers issue statuses in different
+/// functions.
+pub(super) fn gathers_across_chunks(length: usize) -> Fixture {
+    let (chain, chain_reg, chain_len) = chain(0, 2, length);
     assemble(
-        programs,
-        vec![row(0, 0, 0, 1, 4, 5)],
+        vec![gather_program(1, 0), chain, gather_program(4, 1)],
+        vec![
+            row(0, 0, 0, 1, 4, 5),
+            row(1, 0, 1, 2, chain_reg, chain_len),
+            row(2, 0, 2, 4, 4, 5),
+        ],
         solve::SolvePureCallTable::builder(arithmetic()).finish(),
-        1,
+        2,
     )
 }
 
@@ -286,6 +311,67 @@ impl Fixture {
         }
         Ok(())
     }
+}
+
+/// `y[target] := y[input] + length * p[0]` as a chain of `length` additions,
+/// with its expression register and evaluation length.
+fn chain(input: usize, target: usize, length: usize) -> (Vec<solve::LinearOp>, u32, usize) {
+    let mut ops = vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: input,
+        },
+        solve::LinearOp::LoadP { dst: 1, index: 0 },
+    ];
+    let mut last = 0;
+    for step in 0..length {
+        let dst = u32::try_from(step + 2).unwrap();
+        ops.push(binary(dst, solve::BinaryOp::Add, last, 1));
+        last = dst;
+    }
+    let eval_len = ops.len();
+    ops.extend([
+        solve::LinearOp::LoadY {
+            dst: last + 1,
+            index: target,
+        },
+        binary(last + 2, solve::BinaryOp::Sub, last + 1, last),
+        solve::LinearOp::StoreOutput { src: last + 2 },
+    ]);
+    (ops, last, eval_len)
+}
+
+/// A long chain into `y[1]`, then `late_fault`'s Integer-conversion program
+/// into `y[4]`, so the fault happens in a later chunk than the first commit.
+pub(super) fn late_fault_after_long_chain(length: usize) -> Fixture {
+    let source = late_fault();
+    let solve::ComputeNode::ScalarPrograms(block) = &source.source.nodes[0] else {
+        unreachable!()
+    };
+    let faulting = block.programs()[1].clone();
+    let (first, first_reg, first_len) = chain(0, 1, length);
+    assemble(
+        vec![first, faulting],
+        vec![row(0, 0, 0, 1, first_reg, first_len), row(1, 0, 1, 4, 4, 5)],
+        source.calls,
+        2,
+    )
+}
+
+/// Two dependent chains: `y[1] := y[0] + length * p[0]`, then
+/// `y[2] := y[1] + length * p[0]`.
+pub(super) fn long_chain(length: usize) -> Fixture {
+    let (first, first_reg, first_len) = chain(0, 1, length);
+    let (second, second_reg, second_len) = chain(1, 2, length);
+    assemble(
+        vec![first, second],
+        vec![
+            row(0, 0, 0, 1, first_reg, first_len),
+            row(1, 0, 1, 2, second_reg, second_len),
+        ],
+        solve::SolvePureCallTable::builder(arithmetic()).finish(),
+        1,
+    )
 }
 
 fn binary(dst: u32, op: solve::BinaryOp, lhs: u32, rhs: u32) -> solve::LinearOp {

@@ -31,6 +31,131 @@ fn sparse_tuple_and_later_dependency_preserve_canonical_bits_and_source_order() 
 }
 
 #[test]
+fn a_schedule_over_the_chunk_budget_runs_as_several_functions_with_canonical_bits() {
+    let fixture = fixture::long_chain(solve::EXACT_ASSIGNMENT_CHUNK_OPS * 3 / 4);
+    assert_eq!(
+        fixture.schedule().chunks().collect::<Vec<_>>(),
+        vec![0..1, 1..2]
+    );
+    let compiled = fixture.compile().unwrap();
+    // Encoded body bytes of each defined function, ending with the two chunks and the entry.
+    let bodies = wasmparser::Parser::new(0)
+        .parse_all(compiled.module_bytes())
+        .filter_map(|payload| match payload.ok()? {
+            wasmparser::Payload::CodeSectionEntry(body) => Some(body.range().len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    eprintln!("exact chunk body bytes: {bodies:?}");
+    let [.., first, second, entry] = bodies[..] else {
+        panic!("two chunk functions plus the entry: {bodies:?}");
+    };
+    // Each chunk holds one of two equal programs, so neither carries the schedule.
+    let total = first + second;
+    assert!(
+        first * 10 <= total * 6 && second * 10 <= total * 6,
+        "{bodies:?}"
+    );
+    assert!(entry < first.min(second) / 10, "{bodies:?}");
+    let mut runner = runner::Runner::new(&compiled, &fixture.layout);
+    for value in [
+        0.,
+        -0.,
+        2.5,
+        -5.,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
+        -f64::from_bits(1),
+    ] {
+        let y = [value, 9., -0., 11., 13., 17.];
+        let p = [0.25];
+        let mut expected = y;
+        fixture.canonical(&mut expected, &p).unwrap();
+        let (status, actual) = runner.run(&y, &p);
+        assert_eq!(status, 0);
+        assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
+    }
+}
+
+#[test]
+fn a_fault_in_a_later_chunk_keeps_earlier_commits_and_its_issued_status() {
+    let fixture = fixture::late_fault_after_long_chain(solve::EXACT_ASSIGNMENT_CHUNK_OPS * 3 / 2);
+    assert_eq!(
+        fixture.schedule().chunks().collect::<Vec<_>>(),
+        vec![0..1, 1..2]
+    );
+    let compiled = fixture.compile().unwrap();
+    let fault = compiled
+        .faults()
+        .iter()
+        .find(|fault| fault.kind == rumoca_exec_wasm::TypedCallFaultKind::IntegerConversion)
+        .unwrap();
+    let mut runner = runner::Runner::new(&compiled, &fixture.layout);
+    let y = [2., 9., -0., 11., 13., 17.];
+    let p = [0.5, f64::NAN];
+    let mut expected = y;
+    fixture.canonical(&mut expected, &p).unwrap_err();
+    let (status, actual) = runner.run(&y, &p);
+    assert_eq!(status as u32, fault.status);
+    assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
+    assert_ne!(
+        actual[1].to_bits(),
+        y[1].to_bits(),
+        "the first chunk committed"
+    );
+    assert_eq!(actual[4], y[4], "the failing program publishes nothing");
+}
+
+#[test]
+fn gathers_in_different_chunks_report_distinct_issued_statuses() {
+    let fixture = fixture::gathers_across_chunks(solve::EXACT_ASSIGNMENT_CHUNK_OPS * 3 / 2);
+    assert_eq!(
+        fixture.schedule().chunks().collect::<Vec<_>>(),
+        vec![0..1, 1..2, 2..3]
+    );
+    let compiled = fixture.compile().unwrap();
+    // Statuses run on across chunks; a chunk restarting at its own base would
+    // reuse the first gather's statuses for the last one.
+    let mut statuses = compiled
+        .gather_faults()
+        .iter()
+        .map(|fault| fault.status)
+        .collect::<Vec<_>>();
+    statuses.sort_unstable();
+    statuses.dedup();
+    assert_eq!(statuses.len(), compiled.gather_faults().len());
+    let mut runner = runner::Runner::new(&compiled, &fixture.layout);
+    let y = [2., 9., -0., 11., 13., 17.];
+    let mut run = |p: [f64; 2]| {
+        let mut expected = y;
+        assert!(fixture.canonical(&mut expected, &p).is_err());
+        let (status, actual) = runner.run(&y, &p);
+        assert_eq!(runner::bytes(&actual), runner::bytes(&expected));
+        let fault = compiled
+            .gather_faults()
+            .iter()
+            .find(|fault| fault.status == status as u32)
+            .expect("a failing gather reports one of its issued statuses");
+        assert_eq!(fault.kind, gather_fault_kind(3.));
+        (fault.status, actual)
+    };
+    let (early, unchanged) = run([3., 1.]);
+    assert_eq!(runner::bytes(&unchanged), runner::bytes(&y));
+    let (late, committed) = run([1., 3.]);
+    assert!(
+        late > early,
+        "the later chunk's status follows the earlier one"
+    );
+    assert_eq!(committed[1], 42.);
+    assert_ne!(
+        committed[2].to_bits(),
+        y[2].to_bits(),
+        "the chain committed"
+    );
+    assert_eq!(committed[4], y[4], "the failing gather publishes nothing");
+}
+
+#[test]
 fn late_source_fault_keeps_prior_tuple_commits_then_recovers_without_input_mutation() {
     let fixture = fixture::late_fault();
     let compiled = fixture.compile().unwrap();

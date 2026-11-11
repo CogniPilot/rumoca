@@ -49,6 +49,7 @@ fn fault_artifact() -> CompiledNativeCallProgramWasm {
         Ready::private(&block, &layout, &calls).unwrap(),
         &layout,
         true,
+        &[],
     )
     .unwrap()
 }
