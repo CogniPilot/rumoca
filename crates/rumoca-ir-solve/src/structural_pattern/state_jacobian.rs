@@ -43,7 +43,12 @@ impl StructuralPattern {
                 span,
             ));
         }
-        let closure = AlgebraicClosure::derive(implicit, plan, (state_count, solver_count), span)?;
+        let closure = AlgebraicClosure::derive(
+            implicit.map(|implicit| implicit as &dyn RowColumns),
+            plan,
+            (state_count, solver_count),
+            span,
+        )?;
         let rows = (0..state_count)
             .map(|row| closure.row_states(derivative, row, None))
             .collect::<Result<Vec<_>, _>>()?;
@@ -81,9 +86,38 @@ impl StructuralPattern {
     }
 }
 
+/// A relation the algebraic closure reads: the solver columns each row
+/// depends on. The state Jacobian closes over the certified sensitivity
+/// relation; the kinematic state partition closes over the primal read
+/// relation, which also holds the columns a row reads only in a condition.
+pub(super) trait RowColumns {
+    fn row_count(&self) -> usize;
+    fn visit_row_columns(&self, row: usize, visitor: &mut dyn FnMut(usize));
+}
+
+impl RowColumns for StructuralPattern {
+    fn row_count(&self) -> usize {
+        self.rows() as usize
+    }
+
+    fn visit_row_columns(&self, row: usize, visitor: &mut dyn FnMut(usize)) {
+        Self::visit_row_columns(self, row, visitor);
+    }
+}
+
+impl RowColumns for Vec<std::sync::Arc<crate::IndexIntervals>> {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+
+    fn visit_row_columns(&self, row: usize, visitor: &mut dyn FnMut(usize)) {
+        self[row].iter().for_each(visitor);
+    }
+}
+
 /// The states every solver column depends on through the algebraic
 /// projection.
-struct AlgebraicClosure {
+pub(super) struct AlgebraicClosure {
     state_count: usize,
     solver_count: usize,
     /// The projection block solving each algebraic (solver `state_count + k`).
@@ -94,8 +128,8 @@ struct AlgebraicClosure {
 }
 
 impl AlgebraicClosure {
-    fn derive(
-        implicit: Option<&StructuralPattern>,
+    pub(super) fn derive(
+        implicit: Option<&dyn RowColumns>,
         plan: &AlgebraicProjectionPlan,
         (state_count, solver_count): (usize, usize),
         span: Option<Span>,
@@ -131,7 +165,7 @@ impl AlgebraicClosure {
     fn close_over(
         &mut self,
         plan: &AlgebraicProjectionPlan,
-        implicit: &StructuralPattern,
+        implicit: &dyn RowColumns,
     ) -> Result<(), StructuralPatternError> {
         let mut changed = true;
         while changed {
@@ -152,13 +186,13 @@ impl AlgebraicClosure {
 
     /// The states row `row` of `relation` depends on when read by projection
     /// block `reader` (`None` for the derivative).
-    fn row_states(
+    pub(super) fn row_states(
         &self,
-        relation: &StructuralPattern,
+        relation: &dyn RowColumns,
         row: usize,
         reader: Option<usize>,
     ) -> Result<Vec<usize>, StructuralPatternError> {
-        if row >= relation.rows() as usize {
+        if row >= relation.row_count() {
             return Err(dependency_error(
                 format!("relation row {row} is outside the relation"),
                 self.span,
@@ -171,6 +205,17 @@ impl AlgebraicClosure {
             states.extend(self.column_states(column, reader)?);
         }
         Ok(states.into_iter().collect())
+    }
+
+    /// The states the unknowns of projection block `block` depend on.
+    pub(super) fn block_states(&self, block: usize) -> Option<&BTreeSet<usize>> {
+        self.block_states.get(block)
+    }
+
+    /// The projection block solving algebraic solver column `column`.
+    pub(super) fn owner_block(&self, column: usize) -> Option<usize> {
+        let algebraic = column.checked_sub(self.state_count)?;
+        self.owner.get(algebraic).copied().flatten()
     }
 
     /// The states solver column `column` stands for when read by projection

@@ -891,11 +891,11 @@ pub use register_versions::{
     RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
 };
 pub use structural_pattern::{
-    ColoredStructuralPattern, ColumnColoring, PatternDerivation, PatternProvenance,
-    StateJacobianCompactConstruction, StateJacobianCompactInput, StateJacobianProduct,
-    StateJacobianProductConstruction, StateJacobianProductConstructionError,
-    StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
-    StructuralPattern, StructuralPatternError, StructuralPatternView,
+    ColoredStructuralPattern, ColumnColoring, KinematicStates, NonKinematicReason,
+    PatternDerivation, PatternProvenance, StateJacobianCompactConstruction,
+    StateJacobianCompactInput, StateJacobianProduct, StateJacobianProductConstruction,
+    StateJacobianProductConstructionError, StateJacobianProductDomain, StateJacobianProductInput,
+    StateJacobianProductValue, StructuralPattern, StructuralPatternError, StructuralPatternView,
 };
 
 #[cfg(test)]

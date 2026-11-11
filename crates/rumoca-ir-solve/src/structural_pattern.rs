@@ -5,6 +5,8 @@ pub use jacobian_product::{
     StateJacobianProductConstruction, StateJacobianProductConstructionError,
     StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
 };
+mod kinematic_states;
+pub use kinematic_states::{KinematicStates, NonKinematicReason};
 mod register_dependencies;
 #[cfg(test)]
 mod register_dependencies_tests;
@@ -13,6 +15,8 @@ pub(crate) use register_dependencies::DependencyRegisters;
 mod compact_placement;
 mod tensor_update;
 
+#[cfg(test)]
+mod kinematic_states_tests;
 #[cfg(test)]
 mod state_jacobian_tests;
 

@@ -13,6 +13,8 @@
 //! programs", IEEE Computational Science and Engineering 3(3):18-32, 1996,
 //! doi:10.1109/99.537089.
 
+#[cfg(test)]
+mod kinematic_tests;
 mod reverse_invalidations;
 
 use std::collections::BTreeSet;
@@ -249,7 +251,12 @@ fn derive_structural_artifacts(
             solver_columns,
         )
         .map_err(|error| from_pattern_error(error, None))?
-    };
+    }
+    .with_kinematic_states(derive_kinematic_states(
+        &problem.continuous,
+        problem.solve_layout.state_scalar_count,
+        solver_columns,
+    ));
     let initialization_columns = solver_columns
         .checked_add(problem.layout.p_scalars())
         .ok_or_else(|| {
@@ -273,6 +280,31 @@ fn derive_structural_artifacts(
         initialization_projection,
     );
     Ok((continuous, initialization))
+}
+
+/// Issue the Solve IR kinematic state partition over the scalar rows the
+/// runtime executes: each tensor compute node enters as its per-cell rows, so
+/// a cell is judged by what that cell reads. A block that does not scalarize
+/// issues no partition.
+#[must_use]
+pub fn derive_kinematic_states(
+    continuous: &rumoca_ir_solve::ContinuousSolveSystem,
+    state_count: usize,
+    solver_count: usize,
+) -> rumoca_ir_solve::KinematicStates {
+    let (Ok(derivative), Ok(implicit)) = (
+        to_scalar_program_block(&continuous.derivative_rhs),
+        to_scalar_program_block(&continuous.implicit_rhs),
+    ) else {
+        return rumoca_ir_solve::KinematicStates::default();
+    };
+    rumoca_ir_solve::KinematicStates::derive(
+        &derivative,
+        &implicit,
+        &continuous.algebraic_projection_plan,
+        state_count,
+        solver_count,
+    )
 }
 
 fn derive_y_projection_patterns(
