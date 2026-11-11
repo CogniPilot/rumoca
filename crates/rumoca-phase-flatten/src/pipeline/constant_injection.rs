@@ -1558,10 +1558,11 @@ fn infer_dims_via_eval_ast(
 /// where `lossTable` is a parameter with a default value.
 pub(crate) fn pre_evaluate_structural_equations(
     ctx: &mut Context,
+    flat: &Model,
     overlay: &InstanceOverlay,
     tree: &ClassTree,
 ) -> Result<(), FlattenError> {
-    let eval_ctx = build_structural_eval_context(ctx, overlay, tree)?;
+    let eval_ctx = build_structural_eval_context(ctx, flat, tree)?;
 
     // Scan all class instances for structural Boolean equations
     for (_def_id, class_data) in &overlay.classes {
@@ -1584,10 +1585,10 @@ pub(crate) fn pre_evaluate_structural_equations(
 }
 
 /// Build an evaluation context populated with known parameters, functions, constants,
-/// and component bindings from the overlay.
+/// and qualified component bindings from Flat.
 pub(crate) fn build_structural_eval_context(
     ctx: &Context,
-    overlay: &InstanceOverlay,
+    flat: &Model,
     tree: &ClassTree,
 ) -> Result<rumoca_eval_flat::constant::EvalContext, FlattenError> {
     use rumoca_eval_flat::constant::{EvalContext, Value};
@@ -1605,12 +1606,15 @@ pub(crate) fn build_structural_eval_context(
     for (name, value) in &ctx.boolean_parameter_values {
         eval_ctx.add_parameter(name.clone(), Value::Bool(*value));
     }
+    for (name, value) in &ctx.aggregate_parameter_values {
+        eval_ctx.add_parameter(name.clone(), value.clone());
+    }
     for func in ctx.functions.values() {
         eval_ctx.add_function(func.clone());
     }
 
     resolve_constants_from_tree(tree, &mut eval_ctx)?;
-    collect_component_binding_values(overlay, &mut eval_ctx)?;
+    collect_component_binding_values(flat, &mut eval_ctx);
 
     Ok(eval_ctx)
 }

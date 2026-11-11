@@ -6,12 +6,10 @@ use super::{
     try_eval_const_integer_with_scope, try_eval_structural_equation,
 };
 use crate::Context;
-use rumoca_core::InstanceId;
 use rumoca_core::{ClassType, DefId, Literal, OpBinary, Token, Variability};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::{
-    ClassDef, ClassDefIndex, Component, ComponentRefPart, ComponentReference, InstanceData,
-    InstanceOverlay, QualifiedName,
+    ClassDef, ClassDefIndex, Component, ComponentRefPart, ComponentReference, QualifiedName,
 };
 
 #[test]
@@ -289,25 +287,27 @@ fn const_field_access_resolves_package_constant_value() {
 
 #[test]
 fn component_binding_collection_uses_only_structural_components() {
-    let mut overlay = InstanceOverlay::new();
-    overlay.add_component(InstanceData {
-        instance_id: InstanceId::new(1),
-        qualified_name: QualifiedName::from_dotted("M.x"),
-        variability: Variability::Empty,
-        binding: Some(real_expr("1.0")),
-        ..InstanceData::default()
-    });
-    overlay.add_component(InstanceData {
-        instance_id: InstanceId::new(2),
-        qualified_name: QualifiedName::from_dotted("M.p"),
-        variability: Variability::Parameter(Token::default()),
-        binding: Some(real_expr("2.0")),
-        ..InstanceData::default()
-    });
+    let mut flat = rumoca_ir_flat::Model::new();
+    for (name, variability, value) in [
+        ("M.x", Variability::Empty, 1.0),
+        ("M.p", Variability::Parameter(Token::default()), 2.0),
+    ] {
+        let name = rumoca_core::VarName::new(name);
+        flat.add_variable(
+            name.clone(),
+            rumoca_ir_flat::Variable {
+                name,
+                variability,
+                binding: Some(rumoca_core::Expression::Literal {
+                    value: Literal::Real(value),
+                    span: test_span(),
+                }),
+                ..rumoca_ir_flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
     let mut eval_ctx = rumoca_eval_flat::constant::EvalContext::default();
-
-    collect_component_binding_values(&overlay, &mut eval_ctx).unwrap();
-
+    collect_component_binding_values(&flat, &mut eval_ctx);
     assert!(eval_ctx.get("M.x").is_none());
     assert!(eval_ctx.get("M.p").is_some());
 }

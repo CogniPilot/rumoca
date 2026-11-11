@@ -1,52 +1,50 @@
-use crate::FlattenError;
-use crate::pipeline::qualify_expression;
-use rumoca_ir_ast::{InstanceData, InstanceOverlay, QualifiedName};
+use rumoca_ir_flat::{Model, Variable};
 
-/// Evaluate structural component bindings and parameter/constant start values.
+/// Evaluate the already-qualified Flat bindings and parameter/constant starts.
+///
+/// MLS §7.2.4: normal variable lowering owns modifier scope and declaration
+/// identity. A forwarded AST value can still refer to its original writer;
+/// re-lowering it here would bypass the proved binding used by Flat.
 ///
 /// Non-parameter variables' start values are initial conditions, not compile-time
 /// constants, and must not be used for structural equation evaluation (MLS 8.6).
 pub(crate) fn collect_component_binding_values(
-    overlay: &InstanceOverlay,
+    flat: &Model,
     eval_ctx: &mut rumoca_eval_flat::constant::EvalContext,
-) -> Result<(), FlattenError> {
-    for instance_data in overlay.components.values() {
-        if !component_binding_is_structural(instance_data) {
+) {
+    for variable in flat.variables.values() {
+        if !component_binding_is_structural(variable) {
             continue;
         }
-        let qualified_name = instance_data.qualified_name.to_flat_string();
+        let qualified_name = variable.name.to_string();
 
         if eval_ctx.get(&qualified_name).is_some() {
             continue;
         }
 
-        if let Some(binding) = &instance_data.binding {
-            let flat_binding = qualify_expression(binding, &QualifiedName::new())?;
-            if let Ok(value) = rumoca_eval_flat::constant::eval_expr(&flat_binding, eval_ctx) {
-                eval_ctx.add_parameter(qualified_name.clone(), value);
-                continue;
-            }
+        if let Some(binding) = &variable.binding
+            && let Ok(value) = rumoca_eval_flat::constant::eval_expr(binding, eval_ctx)
+        {
+            eval_ctx.add_parameter(qualified_name.clone(), value);
+            continue;
         }
 
-        if component_start_is_structural(instance_data)
-            && let Some(start) = &instance_data.start
+        if component_start_is_structural(variable)
+            && let Some(start) = &variable.start
+            && let Ok(value) = rumoca_eval_flat::constant::eval_expr(start, eval_ctx)
         {
-            let flat_start = qualify_expression(start, &QualifiedName::new())?;
-            if let Ok(value) = rumoca_eval_flat::constant::eval_expr(&flat_start, eval_ctx) {
-                eval_ctx.add_parameter(qualified_name, value);
-            }
+            eval_ctx.add_parameter(qualified_name, value);
         }
     }
-    Ok(())
 }
 
-fn component_binding_is_structural(instance_data: &InstanceData) -> bool {
-    component_start_is_structural(instance_data) || instance_data.is_discrete_type
+fn component_binding_is_structural(variable: &Variable) -> bool {
+    component_start_is_structural(variable) || variable.is_discrete_type
 }
 
-fn component_start_is_structural(instance_data: &InstanceData) -> bool {
+fn component_start_is_structural(variable: &Variable) -> bool {
     matches!(
-        instance_data.variability,
+        variable.variability,
         rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
     )
 }
