@@ -1,5 +1,43 @@
 use super::*;
 
+fn finish_expression<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    finished: dae::ExprId<'dae>,
+    fault: bool,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let sum = expressions
+        .at(at)
+        .builtin(dae::PureBuiltin::Sum, [finished])?;
+    let product = expressions
+        .at(at)
+        .builtin(dae::PureBuiltin::Product, [finished])?;
+    let result = expressions
+        .at(at)
+        .binary(dae::BinaryOperator::Add, sum, product)?;
+    if !fault {
+        return Ok(result);
+    }
+    let zero = expressions.at(at).literal(dae::DaeLiteral::Integer(0))?;
+    let bad = expressions.at(at).index(
+        finished,
+        [dae::Subscript::Index {
+            expression: zero,
+            provenance: at,
+        }],
+    )?;
+    expressions
+        .at(at)
+        .binary(dae::BinaryOperator::Add, result, bad)
+}
+
+fn algebraic(coordinate: dae::CoordinateView<'_>, scalar: usize) -> (u32, usize) {
+    let dae::CoordinateView::Algebraic(id) = coordinate else {
+        panic!("algebraic actual");
+    };
+    (id.index(), scalar)
+}
+
 fn fixture(fault: bool) -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add(
@@ -58,31 +96,7 @@ fn fixture(fault: bool) -> dae::Dae {
                 body = model.functions(|functions| functions.finish_loop(loop_body, at))?;
                 let finished = model.functions(|functions| functions.read(&body, carried, at))?;
                 let result = model.expressions(|expressions| {
-                    let sum = expressions
-                        .at(at)
-                        .builtin(dae::PureBuiltin::Sum, [finished])?;
-                    let product = expressions
-                        .at(at)
-                        .builtin(dae::PureBuiltin::Product, [finished])?;
-                    let result =
-                        expressions
-                            .at(at)
-                            .binary(dae::BinaryOperator::Add, sum, product)?;
-                    if fault {
-                        let zero = expressions.at(at).literal(dae::DaeLiteral::Integer(0))?;
-                        let bad = expressions.at(at).index(
-                            finished,
-                            [dae::Subscript::Index {
-                                expression: zero,
-                                provenance: at,
-                            }],
-                        )?;
-                        expressions
-                            .at(at)
-                            .binary(dae::BinaryOperator::Add, result, bad)
-                    } else {
-                        Ok(result)
-                    }
+                    finish_expression(expressions, finished, fault, at)
                 })?;
                 model.functions(|functions| {
                     functions.assign(&mut body, output, result, at)?;
@@ -123,10 +137,7 @@ fn completed_whole_walk_preserves_ordered_dependencies_and_fold_edges() {
                 None,
                 &mut cache,
                 |coordinate, scalar| {
-                    let dae::CoordinateView::Algebraic(id) = coordinate else {
-                        panic!("algebraic actual");
-                    };
-                    result.push((id.index(), scalar));
+                    result.push(algebraic(coordinate, scalar));
                 },
             )
             .unwrap();
