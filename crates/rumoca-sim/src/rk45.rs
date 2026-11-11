@@ -301,6 +301,11 @@ impl SimulationSession {
         self.inner.values_for(names)
     }
 
+    /// The requested values in request order; `None` for an unknown name.
+    pub fn selected_values(&self, names: &[String]) -> Result<Vec<Option<f64>>, SimError> {
+        self.inner.selected_values(names)
+    }
+
     pub fn input_names(&self) -> &[String] {
         self.inner.input_names()
     }

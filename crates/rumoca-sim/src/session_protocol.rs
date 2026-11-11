@@ -214,14 +214,9 @@ impl SimulationSession {
                 })
             }
             SessionCommand::Values { names } => {
-                let state = self.state().map_err(fault)?;
-                Ok(SessionEvent::Values {
-                    time: state.time,
-                    values: names
-                        .iter()
-                        .map(|name| state.values.get(name).copied())
-                        .collect(),
-                })
+                let time = self.time();
+                let values = self.selected_values(&names).map_err(fault)?;
+                Ok(SessionEvent::Values { time, values })
             }
             SessionCommand::Reset { time } => {
                 let time = nonnegative_time("reset time", time.unwrap_or(0.0))?;

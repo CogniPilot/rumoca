@@ -143,6 +143,41 @@ fn every_command_has_one_outcome() {
     }
 }
 
+/// `values` answers from the same point as `state`, repeats in request
+/// order, after every restart of the session.
+#[test]
+fn a_batched_read_equals_the_state_after_each_reset() {
+    for &mode in MODES {
+        let mut s = session(mode);
+        let names: Vec<String> = ["y", "u", "missing", "y"].map(String::from).to_vec();
+        for start in [0.0, 0.25] {
+            assert_eq!(
+                time_of(s.apply(SessionCommand::Reset { time: Some(start) })),
+                start
+            );
+            s.apply(SessionCommand::SetInput {
+                name: "u".into(),
+                value: 1.0,
+            });
+            s.apply(SessionCommand::Step { dt: 0.5 });
+            let SessionEvent::State { time, values } = s.apply(SessionCommand::State) else {
+                panic!("state");
+            };
+            assert!(values["y"] > 0.0, "{mode:?}: the plant moved");
+            assert_eq!(
+                s.apply(SessionCommand::Values {
+                    names: names.clone()
+                }),
+                SessionEvent::Values {
+                    time,
+                    values: names.iter().map(|name| values.get(name).copied()).collect()
+                },
+                "{mode:?}: restarted at {start}"
+            );
+        }
+    }
+}
+
 #[test]
 fn set_inputs_applies_the_whole_frame() {
     let mut s = session(MODES[0]);

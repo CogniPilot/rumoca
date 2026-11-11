@@ -123,7 +123,15 @@ impl BackendSimulationSession {
     }
 
     pub(crate) fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
-        Ok(self.session.visible_values()?.get(name).copied())
+        Ok(self.selected_values(&[name])?.into_iter().next().flatten())
+    }
+
+    /// The requested values in request order; `None` for an unknown name.
+    pub(crate) fn selected_values<N: AsRef<str>>(
+        &self,
+        names: &[N],
+    ) -> Result<Vec<Option<f64>>, SimError> {
+        self.session.selected_values(names).map_err(Into::into)
     }
 
     pub(crate) fn visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {

@@ -166,6 +166,24 @@ impl SimulationSession {
         }
     }
 
+    /// The requested variables at the current point, in request order; `None`
+    /// for a name that is not a variable.
+    pub fn selected_values(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<f64>>, SimulationDiagnosticError> {
+        match &self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .selected_values(names)
+                .map_err(SimulationDiagnosticError::from),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .selected_values(names)
+                .map_err(SimulationDiagnosticError::from),
+        }
+    }
+
     pub fn state(&self) -> Result<SessionState, SimulationDiagnosticError> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]

@@ -21,9 +21,10 @@ mod native_inputs;
 mod numerical_observation;
 mod options;
 mod recovery;
+mod selected_values;
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     marker::PhantomData,
     rc::Rc,
 };
@@ -38,6 +39,7 @@ pub use options::{MeAdvanceOutcome, MeOutputCursor, MeSessionOptions, MeSessionO
 
 use error::latched_failure;
 use options::trace_capacity;
+use selected_values::output_arity_mismatch;
 
 use super::{
     MeEventCause, MeExecutionBackend, MeInstanceConfig, MeModelSource, MeTime, SolveMeKernel,
@@ -294,6 +296,7 @@ fn build_host_state(
         state_count,
         indicator_count,
         inputs: IndexMap::new(),
+        output_index: OnceCell::new(),
         event_streak_time: None,
         event_streak_count: 0,
         sliding: rumoca_ir_solve::fmi::SlidingModes::new(indicator_count),
@@ -524,13 +527,7 @@ impl MeSimulationSession<'_, '_> {
         let names = self.output_names()?;
         let values = self.output_values()?;
         if names.len() != values.len() {
-            return Err(MeSessionError::Contract {
-                reason: format!(
-                    "the component returned {} output values for {} declared outputs",
-                    values.len(),
-                    names.len()
-                ),
-            });
+            return Err(output_arity_mismatch(values.len(), names.len()));
         }
         let mut visible: IndexMap<String, f64> = names.into_iter().zip(values).collect();
         for (name, value) in &self.host.inputs {

@@ -7,12 +7,18 @@
 
 mod saved_observation;
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, OnceCell},
+    rc::Rc,
+};
 
 use crate::fmi_me::instance::MeKernelCell;
 use indexmap::IndexMap;
 
-use super::{MeSessionError, MeSessionLoss, MeSessionOptions, try_copied, try_filled};
+use super::{
+    MeSessionError, MeSessionLoss, MeSessionOptions, selected_values::OutputIndex, try_copied,
+    try_filled,
+};
 use crate::{
     fmi_me::{
         MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeTime,
@@ -189,6 +195,9 @@ pub(super) struct MeHostState {
     pub(super) state_count: usize,
     pub(super) indicator_count: usize,
     pub(super) inputs: IndexMap<String, f64>,
+    /// Where each declared output sits in an output read, built on the first
+    /// selected read and kept for the session.
+    pub(super) output_index: OnceCell<OutputIndex>,
     pub(super) event_streak_time: Option<f64>,
     pub(super) event_streak_count: usize,
     /// Which indicators slide (SPEC_0044 ME-EVENT-005).

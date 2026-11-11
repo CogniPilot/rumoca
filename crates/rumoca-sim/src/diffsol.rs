@@ -380,6 +380,10 @@ impl SimulationSession {
         })
     }
 
+    pub(crate) fn selected_values(&self, names: &[String]) -> Result<Vec<Option<f64>>, SimError> {
+        self.inner.selected_values(names)
+    }
+
     scheduled_executor_items! {
         pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
             self.inner.values_for(names)
