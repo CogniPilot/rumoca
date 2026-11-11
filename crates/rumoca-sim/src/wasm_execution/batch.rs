@@ -15,8 +15,9 @@ pub(super) struct ModuleBatch {
     mode: Option<super::precompiled::ProgramMode>,
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
     source: Result<rumoca_ir_solve::PreparedKernelSource, String>,
-    #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-    layout: VarLayout,
+    // The one layout every product of this preparation checks its inputs
+    // against; products share it and never keep a copy of their own.
+    layout: Rc<VarLayout>,
 }
 
 pub(super) struct Entry {
@@ -51,9 +52,12 @@ impl ModuleBatch {
             mode,
             #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
             source,
-            #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-            layout,
+            layout: Rc::new(layout),
         })
+    }
+
+    pub(super) fn layout(&self) -> &Rc<VarLayout> {
+        &self.layout
     }
 
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
