@@ -118,6 +118,7 @@ fn model() -> dae::Dae {
             }
             let dynamic = e.at(at).coordinate(dae::CoordinateInput::Input(input))?;
             e.at(at).call(function, 0, [x, dynamic])?;
+            e.at(at).call(function, 1, [x, dynamic])?;
             Ok(())
         })?;
         Ok(())
@@ -150,13 +151,13 @@ fn exact_profiles_keep_fold_results_separate_and_restore_generic_shared_caches()
         let roots=(0..view.expression_count()).filter_map(|i| view.expression_id(i))
             .filter(|id| matches!(view.expression(*id).unwrap().operation(),dae::ExpressionOperation::Call {..}))
             .collect::<Vec<_>>();
-        assert_eq!(roots.len(),13);
+        assert_eq!(roots.len(),14);
         let mut cache=ScalarCoordinateProjectionCache::default();
         let mut reference=ScalarCoordinateProjectionCache {uncached_fold_reference:true,
             uncached_parameter_fragments:true,..Default::default()};
         // The unrelated carried output is a complete generic summary, with
         // real shared fold/fragment facts. Profiled calls must restore them.
-        assert_eq!(project(view,roots[1],&mut cache).unwrap(),vec![(false,0,0),(false,0,1),(false,0,2)]);
+        assert_eq!(project(view,roots[13],&mut cache).unwrap(),vec![(false,0,0),(false,0,1),(false,0,2)]);
         let folds=cache.completed_folds.clone();
         assert!(!folds.is_empty());
         let fragments=(0..view.expression_count()).flat_map(|expression| (0..3).map(move |scalar| (expression,scalar)))

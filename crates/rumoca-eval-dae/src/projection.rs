@@ -7,6 +7,7 @@ mod function_conditionals;
 mod indexed_write_fold;
 mod integer;
 mod literal_bindings;
+mod literal_profile;
 mod pruned;
 pub use coordinate_query::CoordinateQuery;
 use coordinate_query::ProjectionQuery;
@@ -1151,7 +1152,7 @@ impl<'dae> Projection<'_, 'dae> {
         arguments: Vec<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        let mut integers: Vec<IntegerBinding> = Vec::new();
+        let mut integers = literal_profile::arguments(self.view, &arguments);
         loop {
             let key = FunctionSummaryKey {
                 activation: self.activation,
