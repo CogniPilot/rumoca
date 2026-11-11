@@ -5,8 +5,8 @@
 
 use crate::Resolver;
 use crate::traversal_adapter::{
-    ResolveTraversalCallbacks, walk_class_modification_values, walk_equations, walk_expression,
-    walk_expressions, walk_statements, walk_subscripts,
+    ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
+    walk_subscripts,
 };
 use rumoca_core::{ComponentPath, DefId, Diagnostic, PrimaryLabel, ScopeId};
 use rumoca_ir_ast as ast;
@@ -311,7 +311,7 @@ impl Resolver {
             // of the modified element's type, which Resolve does not own.
             Expression::ClassModification { target, .. } => {
                 self.resolve_component_reference(target, target_scope);
-                walk_class_modification_values(self, expr, value_scope);
+                self.resolve_source_modification(expr, value_scope);
             }
             Expression::Binary {
                 op: rumoca_core::OpBinary::Assign,
@@ -323,7 +323,7 @@ impl Resolver {
                 {
                     self.resolve_component_reference(target, target_scope);
                 }
-                walk_class_modification_values(self, std::sync::Arc::make_mut(lhs), value_scope);
+                self.resolve_source_modification(std::sync::Arc::make_mut(lhs), value_scope);
                 self.resolve_expression(std::sync::Arc::make_mut(rhs), value_scope);
             }
             other => self.resolve_expression(other, target_scope),
@@ -360,6 +360,15 @@ impl Resolver {
                 }
                 Expression::ClassModification { modifications, .. } => {
                     pending.extend(modifications.iter_mut().map(|item| (item, false)));
+                }
+                Expression::Binary {
+                    op: rumoca_core::OpBinary::Assign,
+                    lhs,
+                    rhs,
+                    ..
+                } => {
+                    pending.push((std::sync::Arc::make_mut(lhs), false));
+                    self.resolve_expression(std::sync::Arc::make_mut(rhs), class_scope);
                 }
                 Expression::NamedArgument { value, .. } => {
                     self.resolve_expression(std::sync::Arc::make_mut(value), class_scope);

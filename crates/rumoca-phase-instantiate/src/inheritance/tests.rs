@@ -1,4 +1,5 @@
 mod nested_prefixes;
+mod nested_redeclare;
 
 use super::*;
 use rumoca_core::DefId;
