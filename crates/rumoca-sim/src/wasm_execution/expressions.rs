@@ -86,8 +86,9 @@ impl WasmExpression {
         // A program's scratch is at least the whole Y vector wide, so one buffer
         // per program grows with the program count (20k+ on large models). Calls
         // run one program at a time and copy its outputs out before the next, so
-        // one buffer, sized once its module is emitted, serves all of them.
-        let private = Rc::new(RefCell::new(Vec::new()));
+        // the batch's one buffer, sized once its module is emitted, serves all
+        // of them and every other entry of the batch.
+        let private = batch.scratch();
         let selected = entries
             .into_iter()
             .map(|entry| Rc::new((entry, Rc::clone(&private))))

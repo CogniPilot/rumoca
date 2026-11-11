@@ -12,7 +12,8 @@ pub(super) struct WasmTargetValues {
     // Shared, never copied: only its owner lineage is checked per call, and a
     // deep copy per value family dominated WASM session start-up.
     calls: Rc<SolvePureCallTable>,
-    scratch: RefCell<Vec<f64>>,
+    // The batch's scratch, shared by every entry of the batch.
+    scratch: Rc<RefCell<Vec<f64>>>,
 }
 
 impl WasmTargetValues {
@@ -28,12 +29,12 @@ impl WasmTargetValues {
         if plan.private_result_offset() >= compiled.output_count() {
             return Err("target-value projection exceeds private tuple".into());
         }
-        // Sized on the first call, once the shared module is emitted.
+        // Grown on the first call, once the shared module is emitted.
         Ok(Self {
             compiled,
             layout: Rc::clone(batch.layout()),
             calls: Rc::clone(calls),
-            scratch: RefCell::new(Vec::new()),
+            scratch: batch.scratch(),
         })
     }
 }
