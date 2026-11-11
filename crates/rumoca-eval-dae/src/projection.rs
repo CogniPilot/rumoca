@@ -1341,10 +1341,9 @@ impl<'dae> Projection<'_, 'dae> {
                 self.cache.parameter_fragments.insert(key, values);
             }
         }
-        for (node, recipe) in capture.folds.recipes() {
-            if node.retained() && self.cache.fold_recipes.len() < 65_536 {
-                self.cache.fold_recipes.insert(node, recipe);
-            }
+        let available = 65_536usize.saturating_sub(self.cache.fold_recipes.len());
+        for (node, recipe) in capture.folds.recipes(available) {
+            self.cache.fold_recipes.insert(node, recipe);
         }
         #[cfg(test)]
         self.cache.completed_folds.extend(capture.folds.completed());

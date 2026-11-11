@@ -46,6 +46,7 @@ impl<'dae> FoldRecipe<'dae> {
 pub(super) struct FoldGraph<'dae> {
     inventory: HashMap<Node<'dae>, usize>,
     nodes: Vec<Node<'dae>>,
+    from_source: Vec<bool>,
     edges: Vec<Vec<usize>>,
     direct: Vec<Arc<[FunctionParameterDependency]>>,
     direct_inventory: fragments::Inventories,
@@ -59,6 +60,8 @@ pub(super) struct FoldGraph<'dae> {
     pub(super) recorded_edges: usize,
     #[cfg(test)]
     pub(super) replayed_edges: usize,
+    #[cfg(test)]
+    pub(super) recipe_emissions: std::cell::Cell<usize>,
 }
 
 impl<'dae> FoldGraph<'dae> {
@@ -86,6 +89,7 @@ impl<'dae> FoldGraph<'dae> {
             let index = self.nodes.len();
             self.inventory.insert(node.clone(), index);
             self.nodes.push(node);
+            self.from_source.push(true);
             self.edges.push(Vec::new());
             self.edge_membership.push(HashSet::default());
             self.direct.push(Arc::from([]));
@@ -108,6 +112,7 @@ impl<'dae> FoldGraph<'dae> {
             .cloned()
             .map(|node| self.node_index(node))
             .collect();
+        self.from_source[active] = false;
         #[cfg(test)]
         {
             self.replayed_edges += recipe.edges.len();
@@ -156,8 +161,13 @@ impl<'dae> FoldGraph<'dae> {
             .collect()
     }
 
-    /// Publish only after every node and outgoing edge has been checked.
-    pub(super) fn recipes(&self) -> Vec<(Node<'dae>, FoldRecipe<'dae>)> {
+    /// Issue new retained source bodies only after the whole graph succeeds.
+    /// Replayed bodies already own their recipe. Capacity limits construction
+    /// itself, before cloning any edge vector.
+    pub(super) fn recipes(
+        &self,
+        available: usize,
+    ) -> impl Iterator<Item = (Node<'dae>, FoldRecipe<'dae>)> + '_ {
         assert_eq!(
             self.cursor,
             self.nodes.len(),
@@ -166,22 +176,24 @@ impl<'dae> FoldGraph<'dae> {
         assert!(self.active.is_none(), "an active node cannot be published");
         self.nodes
             .iter()
-            .cloned()
             .enumerate()
+            .filter(|(index, node)| self.from_source[*index] && node.retained())
+            .take(available)
             .map(|(index, node)| {
+                #[cfg(test)]
+                self.recipe_emissions.set(self.recipe_emissions.get() + 1);
                 let edges = self.edges[index]
                     .iter()
                     .map(|edge| self.nodes[*edge].clone())
                     .collect::<Vec<_>>();
                 (
-                    node,
+                    node.clone(),
                     FoldRecipe {
                         direct: Arc::clone(&self.direct[index]),
                         edges: edges.into(),
                     },
                 )
             })
-            .collect()
     }
 
     /// Completed closures are a test oracle, never a production replay path.

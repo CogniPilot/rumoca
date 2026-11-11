@@ -863,7 +863,7 @@ fn completed_recipe_edges_reenter_queue_without_reproving_unique_membership() {
         original.finish_node();
         assert!(original.begin_next().is_none());
         assert_eq!(original.recorded_edges, 2);
-        let recipes = original.recipes();
+        let recipes = original.recipes(usize::MAX);
         let mut replay = crate::projection::fold_graph::FoldGraph::default();
         replay.enqueue(keys[0].clone());
         for (key, recipe) in recipes {
@@ -871,9 +871,70 @@ fn completed_recipe_edges_reenter_queue_without_reproving_unique_membership() {
             replay.replay_edges(&recipe);
             replay.finish_node();
         }
+        assert_eq!(replay.begin_next(), Some(keys[1].clone()));
+        replay.enqueue(keys[0].clone());
+        replay.finish_node();
         assert!(replay.begin_next().is_none());
         assert_eq!(original.ordered_edges(), replay.ordered_edges());
-        assert_eq!(replay.recorded_edges, 0);
-        assert_eq!(replay.replayed_edges, 2);
+        assert_eq!(replay.recorded_edges, 1);
+        assert_eq!(replay.replayed_edges, 1);
+        assert_eq!(replay.recipes(usize::MAX).count(), 0);
+    });
+}
+
+#[test]
+fn recipe_construction_is_lazy_bounded_and_only_for_new_source_bodies() {
+    positive_model().inspect(|view| {
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let keys = checked_graph_nodes(view).map(|node| owner.intern(node));
+        let mut source = crate::projection::fold_graph::FoldGraph::default();
+        for key in &keys {
+            source.enqueue(key.clone());
+        }
+        for key in &keys {
+            assert_eq!(source.begin_next(), Some(key.clone()));
+            source.finish_node();
+        }
+        assert!(source.begin_next().is_none());
+        assert_eq!(source.recipes(0).count(), 0);
+        assert_eq!(source.recipe_emissions.get(), 0);
+        let one = source.recipes(1).collect::<Vec<_>>();
+        assert_eq!(one.len(), 1);
+        assert_eq!(source.recipe_emissions.get(), 1);
+        let mut mixed = crate::projection::fold_graph::FoldGraph::default();
+        for key in &keys {
+            mixed.enqueue(key.clone());
+        }
+        assert_eq!(mixed.begin_next(), Some(keys[0].clone()));
+        mixed.replay_edges(&one[0].1);
+        mixed.finish_node();
+        assert_eq!(mixed.begin_next(), Some(keys[1].clone()));
+        mixed.finish_node();
+        assert!(mixed.begin_next().is_none());
+        assert_eq!(mixed.ordered_edges(), source.ordered_edges());
+        let fresh = mixed.recipes(usize::MAX).collect::<Vec<_>>();
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].0, keys[1]);
+        assert_eq!(mixed.recipe_emissions.get(), 1);
+    });
+}
+
+#[test]
+fn completed_replay_never_reconstructs_any_recipe() {
+    positive_model().inspect(|view| {
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let key = owner.intern(checked_graph_nodes(view)[0].clone());
+        let mut source = crate::projection::fold_graph::FoldGraph::default();
+        source.enqueue(key.clone());
+        assert_eq!(source.begin_next(), Some(key.clone()));
+        source.finish_node();
+        let recipe = source.recipes(1).next().unwrap().1;
+        let mut replay = crate::projection::fold_graph::FoldGraph::default();
+        replay.enqueue(key.clone());
+        assert_eq!(replay.begin_next(), Some(key));
+        replay.replay_edges(&recipe);
+        replay.finish_node();
+        assert_eq!(replay.recipes(usize::MAX).count(), 0);
+        assert_eq!(replay.recipe_emissions.get(), 0);
     });
 }
