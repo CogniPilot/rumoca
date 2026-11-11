@@ -3,6 +3,7 @@ mod coordinate_query;
 mod dependencies;
 mod domain_context;
 mod fold_graph;
+mod fold_nodes;
 mod function_conditionals;
 mod indexed_write_fold;
 mod integer;
@@ -185,7 +186,8 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     #[cfg(test)]
     plain_argument_cache_lookups: std::cell::Cell<u64>,
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
-    fold_recipes: HashMap<fold_graph::FoldNode<'dae>, fold_graph::FoldRecipe<'dae>>,
+    fold_nodes: fold_nodes::Nodes<'dae>,
+    fold_recipes: HashMap<fold_nodes::Node<'dae>, fold_graph::FoldRecipe<'dae>>,
     #[cfg(test)]
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
@@ -1340,7 +1342,7 @@ impl<'dae> Projection<'_, 'dae> {
             }
         }
         for (node, recipe) in capture.folds.recipes() {
-            if self.cache.fold_recipes.len() < 65_536 {
+            if node.retained() && self.cache.fold_recipes.len() < 65_536 {
                 self.cache.fold_recipes.insert(node, recipe);
             }
         }

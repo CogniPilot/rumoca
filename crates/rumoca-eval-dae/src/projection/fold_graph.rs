@@ -9,6 +9,7 @@ use rumoca_ir_dae as dae;
 
 use super::dependencies::OrderedDependencies;
 use super::domain_context::Context;
+use super::fold_nodes::Node;
 use super::{FieldPath, FunctionParameterDependency};
 
 /// One source transition at an exact lexical parent environment. The selected
@@ -30,14 +31,14 @@ pub(super) struct FoldNode<'dae> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct FoldRecipe<'dae> {
     direct: Arc<[FunctionParameterDependency]>,
-    edges: Arc<[FoldNode<'dae>]>,
+    edges: Arc<[Node<'dae>]>,
 }
 
 impl<'dae> FoldRecipe<'dae> {
     pub(super) fn direct(&self) -> &[FunctionParameterDependency] {
         &self.direct
     }
-    pub(super) fn edges(&self) -> &[FoldNode<'dae>] {
+    pub(super) fn edges(&self) -> &[Node<'dae>] {
         &self.edges
     }
 }
@@ -46,8 +47,8 @@ impl<'dae> FoldRecipe<'dae> {
 /// Pending and cyclic edges are retained until every node has been checked.
 #[derive(Debug, Default)]
 pub(super) struct FoldGraph<'dae> {
-    inventory: HashMap<FoldNode<'dae>, usize>,
-    nodes: Vec<FoldNode<'dae>>,
+    inventory: HashMap<Node<'dae>, usize>,
+    nodes: Vec<Node<'dae>>,
     edges: Vec<Vec<usize>>,
     direct: Vec<Arc<[FunctionParameterDependency]>>,
     direct_inventory: fragments::Inventories,
@@ -60,7 +61,7 @@ pub(super) struct FoldGraph<'dae> {
 }
 
 impl<'dae> FoldGraph<'dae> {
-    pub(super) fn enqueue(&mut self, node: FoldNode<'dae>) {
+    pub(super) fn enqueue(&mut self, node: Node<'dae>) {
         let index = if let Some(index) = self.inventory.get(&node) {
             #[cfg(test)]
             {
@@ -83,7 +84,7 @@ impl<'dae> FoldGraph<'dae> {
         }
     }
 
-    pub(super) fn begin_next(&mut self) -> Option<FoldNode<'dae>> {
+    pub(super) fn begin_next(&mut self) -> Option<Node<'dae>> {
         let node = self.nodes.get(self.cursor)?.clone();
         self.active = Some(self.cursor);
         self.cursor += 1;
@@ -115,18 +116,18 @@ impl<'dae> FoldGraph<'dae> {
     pub(super) fn ordered_edges(&self) -> Vec<(FoldNode<'dae>, Vec<FoldNode<'dae>>)> {
         self.nodes
             .iter()
-            .cloned()
+            .map(|node| (**node).clone())
             .zip(self.edges.iter().map(|edges| {
                 edges
                     .iter()
-                    .map(|index| self.nodes[*index].clone())
+                    .map(|index| (*self.nodes[*index]).clone())
                     .collect()
             }))
             .collect()
     }
 
     /// Publish only after every node and outgoing edge has been checked.
-    pub(super) fn recipes(&self) -> Vec<(FoldNode<'dae>, FoldRecipe<'dae>)> {
+    pub(super) fn recipes(&self) -> Vec<(Node<'dae>, FoldRecipe<'dae>)> {
         assert_eq!(
             self.cursor,
             self.nodes.len(),
@@ -163,6 +164,10 @@ impl<'dae> FoldGraph<'dae> {
         );
         assert!(self.active.is_none(), "no active node can be completed");
         let (closures, _) = closure::complete(&self.edges, &self.direct);
-        self.nodes.into_iter().zip(closures).collect()
+        self.nodes
+            .into_iter()
+            .map(|node| (*node).clone())
+            .zip(closures)
+            .collect()
     }
 }

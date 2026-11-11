@@ -150,6 +150,7 @@ impl<'dae> Projection<'_, 'dae> {
             update: transition.update_values().rhs(carried as usize).unwrap(),
             parent: self.domain_contexts.snapshot(context),
         };
+        let node = self.cache.fold_nodes.intern(node);
         self.fold_summary_capture(fold.function())
             .unwrap()
             .folds

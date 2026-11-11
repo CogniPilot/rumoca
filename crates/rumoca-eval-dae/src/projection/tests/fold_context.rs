@@ -692,12 +692,14 @@ fn check_graph_case(
     direct: u32,
 ) {
     let mut graph = crate::projection::fold_graph::FoldGraph::default();
-    for node in nodes {
+    let mut owner = crate::projection::fold_nodes::Nodes::default();
+    let issued = nodes.each_ref().map(|node| owner.intern(node.clone()));
+    for node in &issued {
         graph.enqueue(node.clone());
     }
     for node in 0..2 {
-        assert_eq!(graph.begin_next().as_ref(), Some(&nodes[node]));
-        for (target, key) in nodes.iter().enumerate() {
+        assert_eq!(graph.begin_next().as_deref(), Some(&nodes[node]));
+        for (target, key) in issued.iter().enumerate() {
             if edges & (1 << (2 * node + target)) != 0 {
                 graph.enqueue(key.clone());
             }
@@ -740,5 +742,103 @@ fn graph_fixed_point_matches_every_two_node_graph_and_parameter_assignment() {
                 check_graph_case(&nodes, edges, direct);
             }
         }
+    });
+}
+
+#[test]
+fn node_identity_is_issued_from_exact_values_and_never_crosses_owners() {
+    positive_model().inspect(|view| {
+        let [node, other] = checked_graph_nodes(view);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let issued = owner.intern(node.clone());
+        let mut equal = node.clone();
+        equal.integer_profile = Arc::from(node.integer_profile.as_ref());
+        equal.parent = Arc::new((*node.parent).clone());
+        assert_eq!(issued, owner.intern(equal));
+        assert_ne!(issued, owner.intern(other));
+        let changed = [
+            crate::projection::fold_graph::FoldNode {
+                activation: crate::projection::Activation::Conditional,
+                ..node.clone()
+            },
+            crate::projection::fold_graph::FoldNode {
+                scalar: 1,
+                ..node.clone()
+            },
+            crate::projection::fold_graph::FoldNode {
+                integer_profile: Arc::from([crate::projection::IntegerBinding {
+                    parameter: 0,
+                    scalar: 0,
+                    value: 2,
+                }]),
+                ..node.clone()
+            },
+            crate::projection::fold_graph::FoldNode {
+                parent: Arc::new(vec![(0, vec![2])]),
+                ..node.clone()
+            },
+        ];
+        for different in changed {
+            assert_ne!(issued, owner.intern(different));
+        }
+        let mut foreign = crate::projection::fold_nodes::Nodes::default();
+        assert_ne!(issued, foreign.intern(node.clone()));
+        // No external owner is needed to keep an issued allocation alive.
+        drop(owner);
+        assert_eq!(&*issued, &node);
+        assert_eq!(issued, issued.clone());
+    });
+}
+
+#[test]
+fn full_node_identity_cache_keeps_existing_ids_and_exact_local_fallback() {
+    positive_model().inspect(|view| {
+        let [first, second] = checked_graph_nodes(view);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let issued = owner.with_test_limit(first.clone(), 1);
+        let local = owner.with_test_limit(second.clone(), 1);
+        assert!(issued.retained());
+        assert!(!local.retained());
+        assert_eq!(issued, owner.with_test_limit(first, 1));
+        assert_eq!(local, owner.with_test_limit(second.clone(), 1));
+        let mut changed = second;
+        changed.scalar = 1;
+        assert_ne!(local, owner.with_test_limit(changed, 1));
+    });
+}
+
+#[derive(Default)]
+struct HashedBytes(usize);
+
+impl std::hash::Hasher for HashedBytes {
+    fn finish(&self) -> u64 {
+        self.0 as u64
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 += bytes.len();
+    }
+}
+
+fn node_hash_bytes(node: &crate::projection::fold_nodes::Node<'_>) -> usize {
+    use std::hash::Hash;
+    let mut counter = HashedBytes::default();
+    node.hash(&mut counter);
+    counter.0
+}
+
+#[test]
+fn retained_node_hashing_is_constant_after_exact_construction() {
+    positive_model().inspect(|view| {
+        let [small, mut large] = checked_graph_nodes(view);
+        large.parent = Arc::new(vec![(0, vec![1; 4096])]);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let a = owner.intern(small);
+        let b = owner.intern(large.clone());
+        assert_eq!(node_hash_bytes(&a), node_hash_bytes(&b));
+        assert_eq!(node_hash_bytes(&b), node_hash_bytes(&b.clone()));
+        let mut fallback = crate::projection::fold_nodes::Nodes::default();
+        let local = fallback.with_test_limit(large, 0);
+        assert!(node_hash_bytes(&local) > 4096 * std::mem::size_of::<i64>());
     });
 }

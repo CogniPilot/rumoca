@@ -1,10 +1,10 @@
 //! Cached node bodies reenter the original queue; closures are never inlined.
-use super::{Projection, ProjectionError, fold_graph};
+use super::{Projection, ProjectionError, fold_nodes};
 
 impl<'dae> Projection<'_, 'dae> {
     pub(super) fn project_or_replay_fold_node(
         &mut self,
-        node: &fold_graph::FoldNode<'dae>,
+        node: &fold_nodes::Node<'dae>,
     ) -> Result<(), ProjectionError> {
         let Some(recipe) = self.cache.fold_recipes.get(node).cloned() else {
             #[cfg(test)]
