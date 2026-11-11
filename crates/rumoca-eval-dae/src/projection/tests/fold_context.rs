@@ -512,13 +512,12 @@ fn specialized_actual_arguments_remain_distinct_and_out_of_bounds_stays_a_refusa
                 ..
             }
         ));
-        assert_eq!(cache.function_results.len(), 3);
+        assert_eq!(cache.function_results.len(), 2);
         let mut profiles = Vec::new();
         for (key, entry) in &cache.function_results {
             match entry {
-                FunctionSummaryEntry::NeedsIntegers(needed) => {
-                    assert!(key.integers.is_empty());
-                    assert_eq!(needed, &[(1, 0)]);
+                FunctionSummaryEntry::NeedsIntegers(_) => {
+                    panic!("literal Integer profiles must be issued before the first walk");
                 }
                 FunctionSummaryEntry::Complete(dependencies) => {
                     assert_eq!(key.integers.len(), 1);
