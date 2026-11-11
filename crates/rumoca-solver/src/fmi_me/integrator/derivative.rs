@@ -55,6 +55,20 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
         None
     }
 
+    /// Standard typed getter composition; unsupported components refuse.
+    fn float64_values_into(
+        &self,
+        _time: f64,
+        _states: &[f64],
+        _event_boundary: Option<f64>,
+        _references: &[u32],
+        _values: &mut [f64],
+    ) -> Result<(), MeError> {
+        Err(MeError::Contract {
+            reason: "the component has no ordinary Float64 getter capability".into(),
+        })
+    }
+
     /// `fmi3SetTime` + `fmi3SetContinuousStates` +
     /// `fmi3GetContinuousStateDerivatives`.
     fn derivatives_into(
@@ -117,6 +131,24 @@ impl MeDerivativeComponent for KernelDerivatives {
 
     fn cartesian_partition(&self) -> Option<MeCartesianPartition> {
         self.cartesian_partition.clone()
+    }
+
+    #[cfg(feature = "native-wasm")]
+    fn float64_values_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        event_boundary: Option<f64>,
+        references: &[u32],
+        values: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.kernel.borrow_mut()?.float64_values_at(
+            time,
+            states,
+            event_boundary,
+            references,
+            values,
+        )
     }
 
     fn derivatives_into(
@@ -322,6 +354,31 @@ impl From<MeDerivativeRefused> for MeIntegrationError {
 }
 
 impl MeDerivativeHandle {
+    /// Compose standard time/state setters and an ordinary typed FMI getter.
+    /// Value references come from the same checked modelDescription. This
+    /// grants no mechanical, topology or state-role admission.
+    pub fn float64_values_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        references: &[u32],
+        values: &mut [f64],
+    ) -> Result<(), MeDerivativeRefused> {
+        self.shared
+            .require_active("ordinary Float64 evaluation")
+            .map_err(|error| self.shared.fail(error))?;
+        self.shared
+            .component
+            .float64_values_into(
+                time,
+                states,
+                self.shared.event_boundary.get(),
+                references,
+                values,
+            )
+            .map_err(|error| self.shared.fail(error.into()))
+    }
+
     /// Obtain the same component's numerical partition during an active host
     /// call. Refusals latch just like derivative evaluation failures.
     pub fn cartesian_partition(&self) -> Result<MeCartesianPartition, MeDerivativeRefused> {
