@@ -25,6 +25,7 @@ impl Ready {
         checked_slot_count(layout.y_scalars())?;
         checked_slot_count(layout.p_scalars())?;
         let plan = Plan::new(source, owners, schedule, layout)?;
+        checked_source_prefixes(source, owners, schedule, layout)?;
         Self::from_plan(plan, layout, table, layout.y_scalars(), None)
     }
 
@@ -266,24 +267,47 @@ fn storage_plan(plan: &Plan, programs: &[Vec<LinearOp>]) -> Result<arena::ArenaP
     }
     for (program, ops) in plan.programs.iter().zip(programs) {
         if program.seed.is_none() {
-            arena::ArenaPlan::validate_primal(std::slice::from_ref(ops))?;
+            arena::ArenaPlan::validate_primal([ops.as_slice()])?;
         }
     }
     arena::ArenaPlan::required_directional(programs, 0)
 }
 
-fn checked_programs(plan: &Plan, layout: &VarLayout) -> Result<Vec<Vec<LinearOp>>, String> {
-    for program in &plan.programs {
-        crate::exact_assignments::profile::disjoint_destinations(&program.block)?;
+/// Admission of an exact schedule is decided on the complete original source
+/// prefix of each issued program: an operation its final program no longer
+/// holds still declines the schedule. Only the emitted body is the final one.
+fn checked_source_prefixes(
+    source: &solve::ComputeBlock,
+    owners: &solve::ContinuousRefreshOwners,
+    schedule: &solve::ExactRefreshAssignmentSchedule,
+    layout: &VarLayout,
+) -> Result<(), String> {
+    let mut prefixes = Vec::new();
+    for &id in schedule.program_ids() {
+        let prefix = owners
+            .exact_assignment_program(id)
+            .ok_or("WASM exact assignment program is missing")?
+            .bind_source(source)
+            .and_then(|bound| bound.source_prefix())
+            .map_err(|error| error.to_string())?;
+        prefixes.push((prefix, None));
     }
-    let programs = plan
-        .programs
-        .iter()
-        .map(|program| program.block.programs()[0].clone())
-        .collect::<Vec<_>>();
-    for (issued, program) in plan.programs.iter().zip(&programs) {
-        let seed_len = issued.seed;
-        conditional::visit_operations(std::slice::from_ref(program), |operation| match seed_len {
+    checked_operations(&prefixes, layout)?;
+    arena::ArenaPlan::validate_primal(prefixes.iter().map(|&(prefix, _)| prefix))
+}
+
+/// The exact profile's predicates over complete programs, each with its
+/// directional seed length: destination versions, operation kinds and load
+/// bounds. Every admission path asks this one definition.
+pub(super) fn checked_operations(
+    programs: &[(&[LinearOp], Option<usize>)],
+    layout: &VarLayout,
+) -> Result<(), String> {
+    crate::exact_assignments::profile::disjoint_destinations(
+        programs.iter().map(|&(program, _)| program),
+    )?;
+    for &(program, seed_len) in programs {
+        conditional::visit_program_operations([program], |operation| match seed_len {
             None => crate::exact_assignments::profile::primal_only(operation),
             Some(count) => directional_operation(operation, count),
         })?;
@@ -291,6 +315,22 @@ fn checked_programs(plan: &Plan, layout: &VarLayout) -> Result<Vec<Vec<LinearOp>
             affine::directional_load_context(layout, seed_len.unwrap_or(layout.y_scalars()));
         affine::validate_loads(program, &[], context)?;
     }
+    Ok(())
+}
+
+fn checked_programs(plan: &Plan, layout: &VarLayout) -> Result<Vec<Vec<LinearOp>>, String> {
+    let programs = plan
+        .programs
+        .iter()
+        .map(|program| program.block.programs()[0].clone())
+        .collect::<Vec<_>>();
+    let issued = plan
+        .programs
+        .iter()
+        .zip(&programs)
+        .map(|(issued, program)| (program.as_slice(), issued.seed))
+        .collect::<Vec<_>>();
+    checked_operations(&issued, layout)?;
     Ok(programs)
 }
 

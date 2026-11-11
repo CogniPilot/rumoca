@@ -62,6 +62,25 @@ impl<'source> BoundExactRefreshAssignment<'source> {
         self.provenance
     }
 
+    /// The leading source operations the issued values are evaluated from,
+    /// stores included: the complete prefix the final program is built over,
+    /// whichever of its operations that program keeps.
+    pub fn source_prefix(self) -> Result<&'source [LinearOp], ContinuousRefreshConstructionError> {
+        let prefix_len = self
+            .owner
+            .assignment_shapes
+            .iter()
+            .map(|shape| shape.expr_eval_len())
+            .max()
+            .unwrap_or(0);
+        self.operations
+            .get(..prefix_len)
+            .ok_or_else(|| ContinuousRefreshConstructionError {
+                reason: "exact continuous refresh assignment prefix exceeds its canonical source"
+                    .to_string(),
+            })
+    }
+
     /// Explicit scalar execution boundary using the already-bound source.
     /// Construction reuses the canonical materializer, with no second source
     /// argument or source-identity probe.
@@ -72,26 +91,16 @@ impl<'source> BoundExactRefreshAssignment<'source> {
     }
 }
 
+/// The source prefix without its stores, then the issued isolators and one
+/// store per target in tuple order, without the pure computations nothing
+/// kept reads (SPEC_0043 §6).
 fn materialize_exact_assignment_program(
     bound: BoundExactRefreshAssignment<'_>,
 ) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
     let owner = bound.owner;
-    let source_program = bound.operations;
     let span = bound.provenance;
-    let prefix_len = owner
-        .assignment_shapes
-        .iter()
-        .map(|shape| shape.expr_eval_len())
-        .max()
-        .unwrap_or(0);
-    let prefix =
-        source_program
-            .get(..prefix_len)
-            .ok_or_else(|| ContinuousRefreshConstructionError {
-                reason: "exact continuous refresh assignment prefix exceeds its canonical source"
-                    .to_string(),
-            })?;
-    let mut operations = prefix
+    let mut operations = bound
+        .source_prefix()?
         .iter()
         .filter(|operation| {
             !matches!(
@@ -124,6 +133,8 @@ fn materialize_exact_assignment_program(
                 .ok_or_else(overflow)?,
         }
     }
+    // Every append is done: positions the builder indexed are no longer used.
+    let operations = crate::prune_unread_pure_operations(operations);
     let provenance = rumoca_core::ProvenanceSpan::new(span, "continuous refresh assignment")
         .map_err(|error| ContinuousRefreshConstructionError {
             reason: error.to_string(),

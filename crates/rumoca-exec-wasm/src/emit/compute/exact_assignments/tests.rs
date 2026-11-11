@@ -5,6 +5,29 @@ mod tensors;
 use super::*;
 use runner::Runner;
 
+/// Solve construction issues no exact assignment over a prefix that rewrites
+/// a register, so the destination-version predicate is pinned on the complete
+/// program it is asked about: both loads of register 100 are unread, and the
+/// program without them is admitted.
+#[test]
+fn an_unread_overlapping_destination_version_still_declines_a_complete_program() {
+    let complete = vec![
+        LinearOp::LoadY { dst: 100, index: 0 },
+        LinearOp::LoadY { dst: 100, index: 1 },
+        LinearOp::LoadY { dst: 0, index: 1 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let layout = VarLayout::from_parts(Default::default(), 2, 0);
+    let refusal = ready::checked_operations(&[(complete.as_slice(), None)], &layout).unwrap_err();
+    assert!(
+        refusal.contains("declines overlapping destination versions"),
+        "{refusal}"
+    );
+    let emitted = solve::prune_unread_pure_operations(complete.clone());
+    assert_eq!(emitted, complete[2..]);
+    ready::checked_operations(&[(emitted.as_slice(), None)], &layout).unwrap();
+}
+
 fn artifact(sinusoid: bool) -> CompiledNativeCallProgramWasm {
     let mut ops = vec![
         LinearOp::LoadY { dst: 0, index: 0 },

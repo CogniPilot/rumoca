@@ -60,9 +60,13 @@ impl ArenaPlan {
         )
     }
 
-    /// The primal profile of entries sharing a directional module's storage.
-    pub(super) fn validate_primal(rows: &[Vec<LinearOp>]) -> Result<(), String> {
-        conditional::visit_operations(rows, |operation| validate_profile(operation, false))
+    /// The primal profile of programs whose storage this plan does not derive:
+    /// entries sharing a directional module's storage, and the complete source
+    /// prefixes an exact schedule is admitted on.
+    pub(super) fn validate_primal<'a>(
+        rows: impl IntoIterator<Item = &'a [LinearOp]>,
+    ) -> Result<(), String> {
+        conditional::visit_program_operations(rows, |operation| validate_profile(operation, false))
     }
 
     fn required_with_profile(
