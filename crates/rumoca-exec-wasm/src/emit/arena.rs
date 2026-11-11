@@ -136,6 +136,15 @@ impl ArenaPlan {
         ]
     }
 
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    pub(in crate::emit) fn scalar_local_count(&self) -> u32 {
+        self.layouts
+            .iter()
+            .map(|issued| issued.layout.scalar_local_count())
+            .max()
+            .unwrap_or(0)
+    }
+
     pub(super) fn add_memory(&self, module: &mut Module) {
         let pages = (self.registers * 8).div_ceil(65536).max(1) as u64;
         let mut memory = MemorySection::new();
@@ -273,6 +282,10 @@ impl BodyEmitter<'_> {
         counter: Option<u32>,
         stride: usize,
     ) -> Result<(), String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if self.diagnostic_scalar_local(start)?.is_some() {
+            return Err("diagnostic scalar local cannot be addressed".into());
+        }
         let start = self.physical_arena_register(start)?;
         self.push_absolute_arena_address(start, counter, stride)
     }

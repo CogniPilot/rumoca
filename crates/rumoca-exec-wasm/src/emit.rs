@@ -366,6 +366,8 @@ struct BodyEmitter<'a> {
     register_base: Reg,
     root_program_cursor: usize,
     root_register_layout: Option<std::rc::Rc<arena::register_layout::RegisterLayout>>,
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    diagnostic_scalar_base: Option<u32>,
     region_frame_end: Option<Reg>,
     conditional_region: Option<conditional::Region>,
     gather_faults: Vec<crate::NativeGatherFault>,
@@ -406,6 +408,8 @@ impl<'a> BodyEmitter<'a> {
             register_base: 0,
             root_program_cursor: 0,
             root_register_layout: None,
+            #[cfg(feature = "diagnostic-root-scalar-locals")]
+            diagnostic_scalar_base: None,
             region_frame_end: None,
             conditional_region: None,
             gather_faults: Vec::new(),
@@ -852,6 +856,11 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn push_reg(&mut self, reg: Reg) -> Result<(), String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if let Some(local) = self.diagnostic_scalar_local(reg)? {
+            self.push(Instruction::LocalGet(local));
+            return Ok(());
+        }
         if self.arena.is_some() {
             self.push_arena_address(reg, None, 0)?;
             self.push(Instruction::F64Load(arena::memarg()));
@@ -862,6 +871,11 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn set_reg(&mut self, reg: Reg) -> Result<(), String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if let Some(local) = self.diagnostic_scalar_local(reg)? {
+            self.push(Instruction::LocalSet(local));
+            return Ok(());
+        }
         if self.arena.is_some() {
             self.push(Instruction::LocalSet(LOCAL_BASE));
             self.push_arena_address(reg, None, 0)?;
@@ -871,6 +885,24 @@ impl<'a> BodyEmitter<'a> {
             self.push(Instruction::LocalSet(local_for_reg(reg)?));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    fn diagnostic_scalar_local(&self, register: Reg) -> Result<Option<u32>, String> {
+        if self.conditional_region.is_some() || self.register_base != 0 {
+            return Ok(None);
+        }
+        let Some(base) = self.diagnostic_scalar_base else {
+            return Ok(None);
+        };
+        self.root_register_layout
+            .as_ref()
+            .and_then(|layout| layout.scalar_local_slot(register))
+            .map(|slot| {
+                base.checked_add(slot)
+                    .ok_or_else(|| "diagnostic scalar local index overflow".into())
+            })
+            .transpose()
     }
 }
 

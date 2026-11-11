@@ -881,6 +881,8 @@ fn validate_function_conditional_owners(
 mod index_intervals;
 pub use index_intervals::{IndexIntervals, SettledIntervals};
 mod register_versions;
+mod root_storage;
+pub use root_storage::{RootRegisterLayout, RootRegisterTarget};
 mod structural_pattern;
 pub use register_versions::{
     RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
