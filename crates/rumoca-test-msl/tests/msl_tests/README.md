@@ -34,9 +34,13 @@ those defaults and shortening a budget would silently turn real failures into
 timeouts. The OMC reference budget scales with `--sim-timeout-secs` so the two
 tools keep a comparable amount of time (`omc_sim_reference_timeout_secs`).
 
-Each model has one attempt. If any phase exceeds the attempt budget, the
+Each canonical model measurement has one attempt. If any phase exceeds the attempt budget, the
 harness kills that model's worker and records `EMSL_TIMEOUT_MODEL_ATTEMPT`.
-There is no diagnostic retry or alternate-budget result.
+The PR-to-main comparison can confirm a timeout-related stage loss once in an
+isolated process with the same CI budgets. It retains both rows and the original
+counts, and fails any unresolved stage loss. Confirmations are capped at four
+models and ten minutes per job; they never replace the canonical snapshot,
+change its quality-floor/parity gate, or supply a speed or parity claim.
 
 ## Per-model resource ceilings
 

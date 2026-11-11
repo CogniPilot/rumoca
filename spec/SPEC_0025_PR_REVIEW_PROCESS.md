@@ -31,7 +31,7 @@ mapped by this table.
 
 | Rule | Why |
 |---|---|
-| Use a descriptive branch name without an `agent/` prefix | Branch names describe the work, not the tool that performed it |
+| Use a descriptive branch name without an `agent/` prefix | Describe work rather than tooling |
 
 ### 1. Summary
 
@@ -62,15 +62,15 @@ fn flatten_if_equation(...) { ... }
 | State the main correctness risk | Forces the author to think adversarially before merge |
 | State the main maintenance risk | Surfaces follow-up debt before the PR is closed |
 | Justify the crate(s) the change lives in | Prevents drift across crate boundaries (SPEC_0029) |
-| Document any new abstraction, public API, or migration path | New surface is permanent until removed; the PR is where the trade-off is recorded |
+| Document any new abstraction, public API, or migration path | Record permanent-surface trade-offs |
 
 ### 4. Testing
 
 | Rule | Why |
 |---|---|
-| List the key commands run | Reviewers reproduce locally; absent commands signal untested paths |
-| Describe the behavior or regression covered | Tests must prove behavior, not just exercise code |
-| State commands NOT run and why | Honest disclosure beats silent gaps |
+| List the key commands run | Enable reproduction |
+| Describe the behavior or regression covered | Prove behavior |
+| State commands NOT run and why | Disclose gaps |
 | Report Tier 1 evidence — focused suites plus the fixed 20-model canary delta — for every capability change | Tier 1 is the per-change done-criterion (SPEC_0033 §6a) |
 | Quote cohort parity only from a complete Tier 2 566-model sweep, naming its commit | Partial, sharded, focused, and stale runs are not cohort evidence |
 
@@ -157,11 +157,14 @@ Rust developer workflow MUST remain Cargo-native.
 | Run the separate ModelicaTest semantic gate for language-semantics changes when the MSL source-tree `ModelicaTest` package is available | ModelicaTest is an assertion-heavy semantic suite and must not be conflated with the curated MSL example target set |
 | Run the pinned `modelica_models` aggregate-compile and corpus-owned assertion-smoke gate for compiler/simulator semantic changes | A fixed external assertion corpus catches cross-library compatibility regressions without weakening MLS or MSL gates |
 | Compare against the resolved MSL quality baseline (`cargo xtask verify msl-parity` downloads the promoted `msl-quality-baseline/msl_quality_baseline.json` release asset and falls back to `crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json` offline) | Baseline is the regression bar |
-| An explicitly reviewed checked-in full baseline MAY declare an exact `from_omc_version` -> `to_omc_version` migration and fixed target count; only a declaration matching both contexts takes precedence over the older promoted release until the next main run promotes it | Metrics from different reference compilers are not directly comparable, while undeclared, reversed, malformed, or target-set-changing migrations fail and the normal gate still verifies the selected context against current artifacts |
-| A corrected metric definition MAY lower a checked-in stage count only through a quality-gate schema-version migration that records the prior/new versions, prior/new count, affected cohort, and exact model set; the checked-in migration takes precedence over an older-schema promoted release until main promotes the new schema | A truthful correction must not keep a known-bad count, and an ordinary baseline edit must never disguise a compiler regression as cleanup |
+| Every main commit's complete measured MSL snapshot MUST be retained as a commit-bound CI artifact, independently of improvement or release-asset promotion; newer main pushes MUST NOT cancel earlier main measurements | Reporting history follows every merge |
+| PR comments MUST compare against the first parent of the actual CI test merge, print that full main SHA, and use its own push/main artifact; pending snapshots get a bounded wait, while missing, expired, partial or mismatched snapshots fail explicitly without a checked-in or different-commit fallback | Prevents old progress being credited to a new PR |
+| The PR-vs-main check MUST fail on any previously successful per-model stage membership lost, even if another model holds the aggregate count constant; retain the complete model-loss report. Timeout losses allow one same-budget confirmation; retain both attempts and fail unrecovered stages | Gains cannot hide a model regression |
+| An explicitly reviewed checked-in full baseline MAY declare an exact `from_omc_version` -> `to_omc_version` migration and fixed target count; only a declaration matching both contexts takes precedence over the older promoted release until the next main run promotes it | Reference contexts must match; malformed or undeclared migrations fail |
+| A corrected metric definition MAY lower a checked-in stage count only through a quality-gate schema-version migration that records the prior/new versions, prior/new count, affected cohort, and exact model set; the checked-in migration takes precedence over an older-schema promoted release until main promotes the new schema | Schema corrections cannot conceal compiler regressions |
 | A checked-in full baseline MAY bridge a promoted asset across multiple reviewed migrations only with the exact source digest, source/target schemas, target count, and ordered evidence commits; all other old assets MUST fail | Promotion lag must not deadlock CI or permit a generic old-schema fallback |
-| Every resolved full baseline MUST own the exact model roster behind its strict-high count; cohort-loss gates compare the current per-model table to that roster, while prior workflow artifacts are diagnostic history only and MUST NOT redefine the ratchet | A failed, cancelled, partial, or merely newer run is not certified evidence, and aggregate counts cannot detect one certified model disappearing while another enters |
-| Every resolved full baseline MUST also own the roster of completions that are neither strict-high nor covered by a typed trace exception (`unexcepted_non_high_models`); the gate fails on a current completion outside it, the ratchet refuses a promotion adding to it, and the PR comment lists it by triage package (first three segments) with new entries marked | The soundness target is an empty roster (SPEC_0033); each parity lane reads its own rows, and only removals can land |
+| Every resolved full baseline MUST own the exact model roster behind its strict-high count; cohort-loss gates compare the current per-model table to that roster, while prior workflow artifacts are diagnostic history only and MUST NOT redefine the ratchet | Only certified rosters detect offsetting model losses |
+| Every resolved full baseline MUST also own the roster of completions that are neither strict-high nor covered by a typed trace exception (`unexcepted_non_high_models`); the gate fails on a current completion outside it, the ratchet refuses a promotion adding to it, and the PR comment lists it by triage package (first three segments) with new entries marked | SPEC_0033 targets an empty roster; parity lanes use their own rows; only removals land |
 | Cumulative MSL stage counts (parse, flatten, DAE, IR-Solve, initial-condition solve, strict-high simulation) MUST NOT materially decrease on the fixed root-example baseline denominator; full-library runs may tolerate one-model host jitter | A simulation pass requires strict-high trace parity |
 | Balanced / OMC-agreement counts MUST NOT decrease | These are headline correctness and numerical-quality numbers |
 | Focused or limited MSL runs MUST mark quality snapshots as partial and partial snapshots MUST NOT be promoted | Prevents local-debug subsets from becoming the committed release baseline |
@@ -172,9 +175,9 @@ Rust developer workflow MUST remain Cargo-native.
 | The PR comment's speed report MUST take every aggregate over the trace-agreeing (high or near) models, beside a high-only line, and compare compilation as time to runnable labelled JIT vs C toolchain and the FMU path, printed as not measured unless a CI job exports FMUs | A JIT-versus-C-toolchain speedup, or one counting disagreeing traces, is not like for like |
 | The speed report MUST take agreement from the comparator's band table, count initialization in rumoca's simulation time as OMC's `timeSimulation` does, time only OMC rows collected under the run's own worker count and host, and print a methodology block of recorded runner, per-stage parallelism, integrator and tolerance per tool, output density, cache state, and parity gating; OMC reference collection MUST use the rumoca compile and simulation worker counts, both tools MUST use the OMC output grid (the experiment `Interval`, else 500 intervals), and unequal counts or grids are flagged | Timings taken under different contention are not comparable |
 | Promoted baseline release-asset updates require a successful full main CI run and a non-regressing ratchet decision; checked-in fallback updates remain explicit via `cargo xtask repo msl promote-quality-baseline` | Prevents silent baseline drift |
-| The coverage gate (`cargo xtask coverage gate --changed-since <base>`) fails on every function the change adds (its first line lies in an added hunk of `git diff -U0 <base>...HEAD`) that no workspace test executes; closures are exempt | It blames only the change under review; an error-path closure runs only on failure, and dropping error context to move a count is a regression |
-| The one coverage exemption is `#[cfg_attr(coverage_nightly, coverage(off))]` on a function reachable only through an effect no test can drive (process exit, an interactive terminal, or a toolchain the coverage run lacks), with a comment naming the effect and the exercising job; the crate root enables `#![cfg_attr(coverage_nightly, feature(coverage_attribute))]`, and the gate report lists each one a change adds | An explicit, greppable, reviewed escape; nothing else exempts a new function |
-| Workspace line coverage MUST NOT drop more than 0.25 points below the committed baseline; per-package zero-execution counts are reported, never enforced | Line coverage is stable between runs; the counts drift by about one per crate and would blame whichever change lands next |
+| The coverage gate (`cargo xtask coverage gate --changed-since <base>`) fails on every function the change adds (its first line lies in an added hunk of `git diff -U0 <base>...HEAD`) that no workspace test executes; closures are exempt | Blame only this change; do not drop error context to satisfy counts |
+| The one coverage exemption is `#[cfg_attr(coverage_nightly, coverage(off))]` on a function reachable only through an effect no test can drive (process exit, an interactive terminal, or a toolchain the coverage run lacks), with a comment naming the effect and the exercising job; the crate root enables `#![cfg_attr(coverage_nightly, feature(coverage_attribute))]`, and the gate report lists each one a change adds | Only this reviewed exemption applies |
+| Workspace line coverage MUST NOT drop more than 0.25 points below the committed baseline; per-package zero-execution counts are reported, never enforced | Line coverage is stable; per-crate zero-execution counts drift |
 | The line-coverage baseline is updated only by `cargo xtask coverage gate --promote-baseline` over CI's measurement artifacts | Coverage promotion is explicit only |
 
 ### 5. Code Size Budget
@@ -203,7 +206,7 @@ net_added_lines:
 
 | Rule | Why |
 |---|---|
-| The landed tip passed `cargo xtask verify gate --rev <tip> --coverage` (GATE_OK) before landing | The gate runs CI's blocking steps and the coverage gate over a committed snapshot, so a landing is never the first run of a blocking check |
+| The landed tip passed `cargo xtask verify gate --rev <tip> --coverage` (GATE_OK) before landing | Run CI's blocking checks and coverage on the committed tip before landing |
 | At least one approving review | Two-eyes on every merge |
 | All CI checks passing | CI gates (incl. `architecture_hardening_test`, `spec_budget_test`) are the non-negotiables |
 | Capability PRs show Tier 1 evidence and source every parity number | SPEC_0033 §6a cadence must be checkable at review |
