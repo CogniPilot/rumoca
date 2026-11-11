@@ -2,6 +2,7 @@
 mod aggregates;
 mod assigned_state;
 mod calls;
+mod cells;
 mod checked_assertions;
 mod control;
 pub(crate) mod cost;

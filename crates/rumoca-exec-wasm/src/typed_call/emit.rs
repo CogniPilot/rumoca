@@ -1,4 +1,4 @@
-use super::layout::{CellRange, FramePlan, Home, LocalCounts, PointerCell};
+use super::layout::{CellRange, FramePlan, Home, LocalCounts};
 use super::link::LinkedOwners;
 use super::scalars::{FIRST_PROMOTED_LOCAL, cell_load, cell_store, locals_header};
 use super::{TypedCallCompileError, TypedCallFault, TypedCallFaultKind};
@@ -63,6 +63,13 @@ pub(super) struct Emitter<'a> {
     /// within: the planned ones, refined by what the emitter knows.
     pub intervals: Vec<Option<super::layout::Interval>>,
     pub linked: &'a LinkedOwners,
+    /// The cell iterations of the operation being emitted, innermost last.
+    pub cell_levels: Vec<super::cells::Level>,
+    /// The base addresses the operation being emitted loads once.
+    pub cell_bases: Option<super::cells::Bases>,
+    /// Whether Solve IR issued the operation being emitted straight-line
+    /// cells (`TypedProgram::straight_cells`).
+    pub straight_cells: bool,
     /// Promoted locals of the enclosing bodies, below this body's own.
     pub local_floor: LocalCounts,
     /// Promoted locals the whole function declares.
@@ -292,6 +299,9 @@ impl<'a> Emitter<'a> {
             intervals: plan.intervals.clone(),
             pending_known: None,
             linked,
+            cell_levels: Vec::new(),
+            cell_bases: None,
+            straight_cells: false,
             local_floor: LocalCounts::default(),
             local_total: total,
             fault_offset: fault_offset as u32,
@@ -516,14 +526,15 @@ impl<'a> Emitter<'a> {
     }
 
     pub(super) fn address(&mut self, range: CellRange) {
-        if let Some(cell) = range.pointer_cell() {
+        if let Some(local) = range
+            .pointer_cell()
+            .and_then(|_| self.held_base(range.base))
+        {
+            self.push(I::LocalGet(local));
+        } else if let Some((frame, cell)) = range.pointer_frame() {
             // The range is reached by reference: its address is in an input
             // tuple cell (a caller's argument) or a scratch cell (a conditional
             // result that passes a parent value through).
-            let (frame, cell) = match cell {
-                PointerCell::Input(cell) => (0, cell),
-                PointerCell::Scratch(cell) => (2, cell),
-            };
             self.push(I::LocalGet(frame));
             self.push(I::I32Const(cell as i32));
             self.push(I::I32Add);
@@ -545,14 +556,6 @@ impl<'a> Emitter<'a> {
         self.spans
             .push(super::promote::Extent::of(self.code.len(), range));
         self.address(range);
-    }
-
-    pub(super) fn cell_address(&mut self, range: CellRange) {
-        self.address_span(range);
-        self.push(I::LocalGet(3));
-        self.push(I::I32Const(8));
-        self.push(I::I32Mul);
-        self.push(I::I32Add);
     }
 
     pub(super) fn load_cell(&mut self, range: CellRange, real: bool) {
@@ -587,36 +590,6 @@ impl<'a> Emitter<'a> {
             src_mem: 0,
             dst_mem: 0,
         });
-    }
-
-    pub(super) fn cells(&mut self, count: u32, body: impl FnOnce(&mut Self)) {
-        self.cells_from(0, count, body);
-    }
-
-    /// Run `body` once per cell index `start..count` held in local 3.
-    pub(super) fn cells_from(&mut self, start: u32, count: u32, body: impl FnOnce(&mut Self)) {
-        self.push(I::I32Const(start as i32));
-        self.push(I::LocalSet(3));
-        if count == start + 1 {
-            body(self);
-            self.push(I::I32Const(count as i32));
-            self.push(I::LocalSet(3));
-            return;
-        }
-        self.push(I::Block(BlockType::Empty));
-        self.push(I::Loop(BlockType::Empty));
-        self.push(I::LocalGet(3));
-        self.push(I::I32Const(count as i32));
-        self.push(I::I32GeU);
-        self.push(I::BrIf(1));
-        body(self);
-        self.push(I::LocalGet(3));
-        self.push(I::I32Const(1));
-        self.push(I::I32Add);
-        self.push(I::LocalSet(3));
-        self.push(I::Br(0));
-        self.push(I::End);
-        self.push(I::End);
     }
 
     pub(super) fn fail_if(&mut self, status: u32) {
@@ -771,6 +744,7 @@ impl<'a> Emitter<'a> {
         }
         self.record_cells(op);
         self.refine_interval(op);
+        self.straight_cells = self.program.straight_cells(index);
         match op {
             O::CheckFinite { .. } => Err(TypedCallCompileError::AdmissionInvariant {
                 owner: self.owner.id(),

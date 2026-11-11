@@ -3,13 +3,15 @@
 //! The planner (`layout::homes`) decides which single-cell registers have no
 //! address; every operation that may read or define one goes through these
 //! helpers, so a register in a local is never reached as a memory range.
+use super::cells::{CELL_LOCALS, FIRST_CELL_LOCAL};
 use super::emit::{CELL, Emitter};
 use super::layout::{CellRange, Home, LocalCounts};
 use rumoca_ir_solve as solve;
 use wasm_encoder::{Instruction as I, ValType};
 
-/// Locals 0..13 are the call parameters and the emitter's transient locals.
-pub(super) const FIRST_PROMOTED_LOCAL: u32 = 13;
+/// The locals below are the call parameters and the emitter's transient
+/// locals, the last of them the cell iteration owner's.
+pub(super) const FIRST_PROMOTED_LOCAL: u32 = FIRST_CELL_LOCAL + CELL_LOCALS;
 
 /// The transient locals every body declares, then the promoted ones.
 pub(super) fn locals_header(total: LocalCounts) -> Vec<(u32, ValType)> {
@@ -17,7 +19,7 @@ pub(super) fn locals_header(total: LocalCounts) -> Vec<(u32, ValType)> {
         (1, ValType::I32),
         (4, ValType::I64),
         (2, ValType::F64),
-        (3, ValType::I32),
+        (3 + CELL_LOCALS, ValType::I32),
     ];
     if total.integers > 0 {
         locals.push((total.integers, ValType::I64));
@@ -115,8 +117,8 @@ impl Emitter<'_> {
         }
     }
 
-    /// Push one cell of a register: its scalar value, or the cell selected by
-    /// the cell index (local 3) of an aggregate.
+    /// Push one cell of a register: its scalar value, or the cell of an
+    /// aggregate that the enclosing cell iteration is at.
     pub(super) fn load_register(&mut self, register: solve::SolveRegisterId, real: bool) {
         let range = self.reg(register);
         if self.home(register) != Home::Memory || range.bytes == 8 {
