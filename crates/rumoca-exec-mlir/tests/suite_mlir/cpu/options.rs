@@ -46,6 +46,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                     vec!["x".to_string()],
                 ),
                 continuous: ContinuousSolveSystem {
+                    cartesian_pairs: None,
                     implicit_rhs: implicit_rhs_cb,
                     implicit_row_targets: (vec![Some(rumoca_ir_solve::scalar_slot_y(0))]).into(),
                     residual: ComputeBlock::from_scalar_program_block(spb(

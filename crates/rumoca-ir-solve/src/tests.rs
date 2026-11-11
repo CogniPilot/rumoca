@@ -713,6 +713,7 @@ fn representative_solve_layout() -> SolveLayout {
 
 fn representative_continuous_system() -> ContinuousSolveSystem {
     ContinuousSolveSystem {
+        cartesian_pairs: None,
         implicit_rhs: ComputeBlock {
             nodes: vec![ComputeNode::ScalarPrograms(
                 ScalarProgramBlock::with_source_span(

@@ -17,6 +17,7 @@ mod matching_rows;
 use matched_projection::{MatchedBlockView, MatchedProjection};
 use matching_rows::MatchingRows;
 pub(crate) mod call_scoped_actions;
+mod cartesian;
 pub(crate) mod clock_ownership;
 mod clocks;
 mod continuous_rows;
@@ -82,6 +83,8 @@ pub(crate) fn lower_solve_problem(
     )?;
     let mut continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     continuous.reduced_chart_set = lower_reduced_chart_set(charts, &lowered.solve_layout)?;
+    continuous.cartesian_pairs =
+        cartesian::issue(&continuous, lowered.solve_layout.state_scalar_count());
     let initialization = initialization::lower_initialization(
         view,
         &lowered,
@@ -611,6 +614,7 @@ fn lower_continuous<'dae>(
         lower_algebraic_projection(view, layout, structural, &residual)?;
     let (manifold_residual, manifold_projection_plan) = lower_manifold(view, layout, manifold)?;
     Ok(solve::ContinuousSolveSystem {
+        cartesian_pairs: None,
         implicit_rhs: residual.clone(),
         implicit_row_targets,
         algebraic_projection_plan,

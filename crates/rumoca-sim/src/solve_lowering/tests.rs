@@ -8,6 +8,8 @@ use crate::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnosti
 mod array_storage_views;
 mod array_trajectories;
 mod block_residual_split;
+#[cfg(feature = "solver-rk45")]
+mod cartesian_euler;
 mod coincident_strict;
 #[cfg(not(target_arch = "wasm32"))]
 mod compiled_messages;

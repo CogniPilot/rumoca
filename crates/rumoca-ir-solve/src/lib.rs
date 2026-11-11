@@ -8,7 +8,9 @@
 
 mod affinity;
 mod assertion_observation;
+mod cartesian_pairs;
 mod certificate;
+pub use cartesian_pairs::{CartesianPairError, CartesianPairPlan, direct_state_derivative_reads};
 #[cfg(test)]
 mod certificate_tests;
 mod chart_delta;
@@ -147,7 +149,8 @@ pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 /// 78 checks lazy quotient root/step activation and exact inactive private holds.
 /// 79 to 88 carry this lineage's native-product Solve rows on top of that.
 /// 89 carries checked producer partitions within one event-iteration declaration.
-pub const SOLVE_SCHEMA_VERSION: u16 = 89;
+/// 90 carries source-checked direct Cartesian kinematic pairs.
+pub const SOLVE_SCHEMA_VERSION: u16 = 90;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1091,6 +1094,20 @@ impl SolveProblem {
         self.validate_solver_storage()?;
         validate_event_iteration_plan(self)?;
         validate_continuous_system_shape(self)?;
+        if let Some(plan) = &self.continuous.cartesian_pairs {
+            if plan.state_count() != self.solve_layout.state_scalar_count()
+                || !self.continuous.manifold_residual.is_empty()
+                || !self.continuous.reduced_chart_set.charts.is_empty()
+            {
+                return Err(SolveProblemShapeContractError::SolverStorage {
+                    detail: "Cartesian plan state extent differs from the source".into(),
+                });
+            }
+            plan.validate(&self.continuous.derivative_rhs)
+                .map_err(|error| SolveProblemShapeContractError::SolverStorage {
+                    detail: error.to_string(),
+                })?;
+        }
         validate_initialization_system_shape(self)?;
         validate_discrete_system_shape(self)?;
         validate_event_partition_shape(self)?;

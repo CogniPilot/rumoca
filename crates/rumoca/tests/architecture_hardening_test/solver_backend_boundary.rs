@@ -9,10 +9,14 @@ use super::*;
 #[test]
 fn concrete_solver_backends_consume_the_me_contract_only() {
     let root = workspace_root();
-    let offenders = ["rumoca-solver-diffsol", "rumoca-solver-rk45"]
-        .iter()
-        .flat_map(|crate_name| solver_backend_boundary_offenders(&root, crate_name))
-        .collect::<Vec<_>>();
+    let offenders = [
+        "rumoca-solver-diffsol",
+        "rumoca-solver-rk45",
+        "rumoca-solver-semiimplicit",
+    ]
+    .iter()
+    .flat_map(|crate_name| solver_backend_boundary_offenders(&root, crate_name))
+    .collect::<Vec<_>>();
 
     assert!(
         offenders.is_empty(),

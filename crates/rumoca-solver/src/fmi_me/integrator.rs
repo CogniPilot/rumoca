@@ -25,6 +25,7 @@
 
 use super::MeError;
 
+mod cartesian;
 /// The unrelated-solver conformance fixture required by ME-INT-001. It is
 /// compiled only under test, so it can never become a production path.
 #[cfg(test)]
@@ -33,6 +34,7 @@ pub(super) mod conformance;
 /// controller. SPEC_0044 §6's ruling keeps the concrete component source and
 /// the handle constructor inside the common host.
 mod derivative;
+pub use cartesian::MeCartesianPartition;
 pub mod time_only;
 
 pub(super) use derivative::{MeDerivativeComponent, MeDerivativeController};

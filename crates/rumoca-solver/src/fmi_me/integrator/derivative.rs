@@ -25,7 +25,7 @@ use std::{
     rc::Rc,
 };
 
-use super::MeIntegrationError;
+use super::{MeCartesianPartition, MeIntegrationError, MeNumericalFailure};
 use crate::fmi_me::{MeError, MeTime, instance::MeKernelCell};
 
 thread_local! {
@@ -50,6 +50,10 @@ pub fn reset_trial_discard_count() {
 /// nameable from a plugin and no plugin-visible type mentions the FMI kernel.
 pub(in crate::fmi_me) trait MeDerivativeComponent {
     fn state_count(&self) -> usize;
+
+    fn cartesian_partition(&self) -> Option<MeCartesianPartition> {
+        None
+    }
 
     /// `fmi3SetTime` + `fmi3SetContinuousStates` +
     /// `fmi3GetContinuousStateDerivatives`.
@@ -103,11 +107,16 @@ struct KernelDerivatives {
     state_count: usize,
     state_jacobian_columns: Option<Rc<[Vec<usize>]>>,
     discards_failed_trials: bool,
+    cartesian_partition: Option<MeCartesianPartition>,
 }
 
 impl MeDerivativeComponent for KernelDerivatives {
     fn state_count(&self) -> usize {
         self.state_count
+    }
+
+    fn cartesian_partition(&self) -> Option<MeCartesianPartition> {
+        self.cartesian_partition.clone()
     }
 
     fn derivatives_into(
@@ -313,6 +322,20 @@ impl From<MeDerivativeRefused> for MeIntegrationError {
 }
 
 impl MeDerivativeHandle {
+    /// Obtain the same component's numerical partition during an active host
+    /// call. Refusals latch just like derivative evaluation failures.
+    pub fn cartesian_partition(&self) -> Result<MeCartesianPartition, MeDerivativeRefused> {
+        self.shared
+            .require_active("Cartesian partition")
+            .map_err(|error| self.shared.fail(error))?;
+        self.shared.component.cartesian_partition().ok_or_else(|| {
+            self.shared.fail(MeIntegrationError::numerical(
+                "semi-implicit Euler",
+                MeNumericalFailure::Construction,
+                "the component has no checked complete Cartesian position/velocity partition",
+            ))
+        })
+    }
     /// Action used to assemble an implicit solver's finite Jacobian matrix.
     /// A source-qualified prepared model product is reused across colors;
     /// unsupported sources retain the existing directional base with a receipt.
@@ -435,11 +458,13 @@ impl MeDerivativeController {
         let state_count = kernel.borrow()?.continuous_state_count();
         let state_jacobian_columns = kernel.borrow()?.state_jacobian_columns();
         let discards_failed_trials = kernel.borrow()?.switches_reduced_charts();
+        let cartesian_partition = MeCartesianPartition::from_kernel(&*(kernel.borrow()?));
         Ok(Self::over_component(Box::new(KernelDerivatives {
             kernel,
             state_count,
             state_jacobian_columns,
             discards_failed_trials,
+            cartesian_partition,
         })))
     }
 
@@ -692,6 +717,26 @@ mod tests {
         handle.solver_jacobian_action_into(0.0, &[1.0], &[2.0], &mut out);
         assert_eq!(out, [6.0]);
         assert!(!handle.has_failed());
+    }
+
+    #[test]
+    fn cartesian_capability_is_active_only_and_missing_evidence_is_latched() {
+        let controller = MeDerivativeController::over_component(Box::new(DistinctJacobianActions));
+        let handle = controller.issue_handle();
+        assert!(handle.cartesian_partition().is_err());
+        assert!(matches!(
+            controller.take_error(),
+            Some(MeIntegrationError::DerivativeCapabilityInactive { .. })
+        ));
+        let _window = controller.activate();
+        assert!(handle.cartesian_partition().is_err());
+        assert!(matches!(
+            controller.take_error(),
+            Some(MeIntegrationError::Numerical {
+                category: MeNumericalFailure::Construction,
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -326,6 +326,13 @@ These rows are normative by reference from SPEC_0007 Structural Lowering Scope.
 | Structural differentiation may select an exact whole-coordinate equality with proved state/invariant value anchors when executable causal-definition uniqueness is unavailable; selection must be acyclic and retain every source equation, including alternative definitions | structural substitution facts | Multiple equations constrain a coordinate without preventing exact substitution |
 | Differentiate `A*q=b` as `A*der(q)=der(b)-der(A)*q`, preserving exact zeros and only needed primal reads; manifold reconstruction uses proved state/invariant anchors on the same nonsingular domain | structural reconstruction | Preserve the original primal solve instead of recursively recomputing it |
 
+### Cartesian kinematic admission
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| SOLVE-C108: phase-solve issues optional CartesianPairPlan from exact direct state-read derivative outputs; complete disjoint pairs cover all states. Wire replay checks the same canonical rows, including register overwrites. No names, units, charts, backend inference, or input index lists prove a partition. Missing proofs refuse only the opt-in Cartesian backend. Schema90 carries this optional plan. | phase-solve; ir-solve CartesianPairPlan and root wire validation | Prevent unproved mechanical updates |
+
+
 ## References
 
 - [SPEC_0007](SPEC_0007_IR_PIPELINE.md) — owning stage contracts and placement
