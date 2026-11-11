@@ -1,4 +1,5 @@
 mod mechanical_admission;
+mod quaternion_source;
 use rumoca_compile::compile::{Session, SessionConfig};
 
 use super::entry::lower_dae_for_simulation;

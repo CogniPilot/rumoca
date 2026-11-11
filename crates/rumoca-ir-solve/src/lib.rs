@@ -9,6 +9,9 @@
 mod affinity;
 mod assertion_observation;
 mod cartesian_pairs;
+mod geometric_step;
+mod state_derivative_sources;
+pub use geometric_step::{GeometricStepPlan, QuaternionStateGroup};
 mod mechanical_step;
 pub use mechanical_step::{
     MechanicalDampingSource, MechanicalStepError, MechanicalStepPlan, linear_damping_sources,

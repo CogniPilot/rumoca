@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ComputeBlock, ComputeNode, LinearOp, TensorInputKind};
+use crate::{ComputeBlock, ComputeNode, LinearOp};
 
 /// Complete, disjoint position/velocity pairs bound to their derivative rows.
 /// No caller-provided names or coordinate offsets establish kinematics.
@@ -76,63 +76,13 @@ pub fn direct_state_derivative_reads(
     block: &ComputeBlock,
     state_count: usize,
 ) -> Option<Vec<Option<usize>>> {
-    block.checked_source_view("Cartesian kinematics").ok()?;
-    let mut reads = vec![None; state_count];
-    let mut covered = vec![false; state_count];
-    let mut cursor = 0usize;
-    for (node_index, node) in block.nodes.iter().enumerate() {
-        let (indices, sources) = node_reads(node, node_index, cursor, state_count)?;
-        for (index, source) in indices.into_iter().zip(sources) {
-            let claimed = covered.get_mut(index)?;
-            if std::mem::replace(claimed, true) {
-                return None;
-            }
-            reads[index] = source.filter(|&source| source < state_count);
-        }
-        cursor = crate::tensor::advance_compute_output_cursor(
-            "Cartesian kinematics",
-            node_index,
-            node,
-            cursor,
-        )
-        .ok()?;
-    }
-    covered.iter().all(|&value| value).then_some(reads)
-}
-
-fn node_reads(
-    node: &ComputeNode,
-    node_index: usize,
-    cursor: usize,
-    state_count: usize,
-) -> Option<(Vec<usize>, Vec<Option<usize>>)> {
-    match node {
-        ComputeNode::Map { .. } => {
-            let (indices, sources) = identity_map_reads(node, state_count)?;
-            Some((indices, sources.into_iter().map(Some).collect()))
-        }
-        ComputeNode::LinSolve { n, .. } => {
-            let end = cursor.checked_add(*n)?;
-            if end > state_count {
-                return None;
-            }
-            Some(((cursor..end).collect(), vec![None; *n]))
-        }
-        ComputeNode::ScalarPrograms(rows) => {
-            let indices = rows
-                .compute_block_output_indices("Cartesian kinematics", node_index, cursor)
-                .ok()?;
-            let outputs = rows.programs().iter().enumerate().try_fold(
-                Vec::new(),
-                |mut outputs, (index, program)| {
-                    outputs.extend(program_reads(program, rows.program_register_count(index)?)?);
-                    Some(outputs)
-                },
-            )?;
-            (indices.len() == outputs.len()).then_some((indices, outputs))
-        }
-        _ => None,
-    }
+    Some(
+        crate::state_derivative_sources::derive(block, state_count, None)?
+            .rows
+            .into_iter()
+            .map(|source| source.and_then(|source| source.direct()))
+            .collect(),
+    )
 }
 
 /// This query proves only a single direct state read per affine invocation.
@@ -193,57 +143,10 @@ pub(crate) fn identity_map_reads(
     (indices.len() == sources.len()).then_some((indices, sources))
 }
 
-fn program_reads(program: &[LinearOp], register_count: usize) -> Option<Vec<Option<usize>>> {
-    let mut registers = vec![None; register_count];
-    let mut outputs = Vec::new();
-    for op in program {
-        match *op {
-            LinearOp::LoadY { dst, index } => registers[dst as usize] = Some(index),
-            LinearOp::Move { dst, src } => registers[dst as usize] = registers[src as usize],
-            LinearOp::TensorLoad {
-                dst_start,
-                input: TensorInputKind::Y,
-                input_start,
-                count,
-                seed_start: None,
-                lanes: 1,
-            } => {
-                for offset in 0..count {
-                    registers[dst_start as usize + offset] = Some(input_start.checked_add(offset)?);
-                }
-            }
-            LinearOp::StoreOutput { src } => outputs.push(registers[src as usize]),
-            LinearOp::StoreOutputRange {
-                start,
-                count,
-                stride,
-            } => {
-                for index in 0..count {
-                    outputs.push(registers[start as usize + index * stride]);
-                }
-            }
-            _ => {
-                if let Some(start) = op.dst_register() {
-                    let start = start as usize;
-                    registers[start..start.checked_add(op.dst_register_count())?].fill(None);
-                } else {
-                    outputs.extend(std::iter::repeat_n(
-                        None,
-                        crate::ScalarProgramBlock::checked_program_output_count(
-                            std::slice::from_ref(op),
-                        )?,
-                    ));
-                }
-            }
-        }
-    }
-    Some(outputs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ScalarProgramBlock, UnaryOp};
+    use crate::{ScalarProgramBlock, TensorInputKind, UnaryOp};
     use rumoca_core::{ProvenanceSpan, SourceId, Span};
 
     fn provenance() -> ProvenanceSpan {

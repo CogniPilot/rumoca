@@ -2,7 +2,9 @@
 //! remain in the common host. This profile does not implement implicit damping.
 
 mod observation;
+mod quaternion;
 pub use observation::{CartesianWorkCounts, CartesianWorkObserver};
+pub use quaternion::UnitBodyQuaternion;
 
 use rumoca_solver::fmi_me::{
     MeAdvanceRequest, MeCartesianPartition, MeContinuousPoint, MeDerivativeHandle,
