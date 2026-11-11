@@ -702,15 +702,16 @@ pub(super) enum RecordEquationFieldValue {
 
 pub(super) fn analyze_prepared_model(
     flat: &flat::Model,
+    options: crate::ToDaeOptions,
 ) -> Result<(Cow<'_, flat::Model>, Analysis), ToDaeError> {
-    let (prepared, bindings) = algorithm_coordinates::prepared_flat(flat)?;
-    let analysis = analyze_with_bindings(prepared.as_ref(), bindings)?;
+    let (prepared, bindings) = algorithm_coordinates::prepared_flat(flat, options)?;
+    let analysis = analyze_with_bindings(prepared.as_ref(), bindings, options)?;
     Ok((prepared, analysis))
 }
 
 #[cfg(test)]
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
-    analyze_with_bindings(flat, None)
+    analyze_with_bindings(flat, None, crate::ToDaeOptions::default())
 }
 
 // SPEC_0021: Exception - ToDAE analysis entry point assembling every Analysis field
@@ -721,6 +722,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
 fn analyze_with_bindings(
     flat: &flat::Model,
     prepared_bindings: Option<ParameterBindings>,
+    options: crate::ToDaeOptions,
 ) -> Result<Analysis, ToDaeError> {
     validate_source_model(flat)?;
     // Fold the parameter fixed point before shape analysis: MLS §12.2 array
@@ -736,7 +738,7 @@ fn analyze_with_bindings(
     // a deferred parameter. Refresh that evidence for the selected equations.
     register_deferred_parameters(flat, &mut constants);
     let (mut function_shapes, templates, record_array_fields) =
-        analyze_selected_shape_owners(flat, &constants, &evaluable)?;
+        analyze_selected_shape_owners(flat, &constants, &evaluable, options)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equation_sets(flat, function_shapes.model_values())?;
     let expression_support = analyze_expression_support(flat, &constants, &templates)?;
@@ -882,9 +884,10 @@ fn analyze_selected_shape_owners(
     flat: &flat::Model,
     constants: &EvalContext,
     evaluable: &HashSet<VarName>,
+    options: crate::ToDaeOptions,
 ) -> Result<SelectedShapeOwners, ToDaeError> {
     let mut function_shapes =
-        FunctionShapeAnalysis::analyze_model(flat, constants, Some(evaluable))?;
+        FunctionShapeAnalysis::analyze_model(flat, constants, Some(evaluable), options)?;
     let templates = TemplateSelection::analyze(flat, &function_shapes);
     let record_array_fields = Arc::new(analyze_record_array_field_plans(
         flat,

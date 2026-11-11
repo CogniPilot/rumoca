@@ -86,8 +86,15 @@ fn dae_model_outcome_internal_with_options(
     tree: &ast::ClassTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> DaeModelOutcome {
-    dae_model_outcome_and_warnings_with_options(tree, model_name, instantiation_options).0
+    dae_model_outcome_and_warnings_with_options(
+        tree,
+        model_name,
+        instantiation_options,
+        dae_options,
+    )
+    .0
 }
 
 /// [`dae_model_outcome_internal_with_options`], plus the warnings a successful
@@ -96,6 +103,7 @@ fn dae_model_outcome_and_warnings_with_options(
     tree: &ast::ClassTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> (DaeModelOutcome, Option<StrictCompileWarnings>) {
     notify_compile_phase(FailedPhase::Instantiate, CompilePhaseEvent::Started);
     let instantiate_start = maybe_start_timer();
@@ -133,7 +141,7 @@ fn dae_model_outcome_and_warnings_with_options(
 
     notify_compile_phase(FailedPhase::ToDae, CompilePhaseEvent::Started);
     let todae_start = maybe_start_timer();
-    let (dae_outcome, todae_built) = dae_model_outcome_from_flat(tree, flat_outcome);
+    let (dae_outcome, todae_built) = dae_model_outcome_from_flat(tree, flat_outcome, dae_options);
     if todae_built {
         maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
     }
@@ -154,7 +162,12 @@ fn dae_model_outcome_and_warnings_with_options(
 }
 
 fn dae_model_outcome_internal(tree: &ast::ClassTree, model_name: &str) -> DaeModelOutcome {
-    dae_model_outcome_internal_with_options(tree, model_name, InstantiateOptions::default())
+    dae_model_outcome_internal_with_options(
+        tree,
+        model_name,
+        InstantiateOptions::default(),
+        rumoca_phase_dae::ToDaeOptions::default(),
+    )
 }
 
 /// Internal function for parallel compilation.
@@ -171,9 +184,14 @@ pub(super) fn compile_model_internal_with_options(
     tree: &ast::ClassTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> PhaseResult {
-    let dae_outcome =
-        dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
+    let dae_outcome = dae_model_outcome_internal_with_options(
+        tree,
+        model_name,
+        instantiation_options,
+        dae_options,
+    );
     compile_phase_result_from_dae(tree, model_name, dae_outcome)
 }
 
@@ -191,9 +209,14 @@ pub(super) fn compile_model_dae_internal_with_warnings(
     tree: &ast::ClassTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> (DaePhaseResult, Option<StrictCompileWarnings>) {
-    let (dae_outcome, warnings) =
-        dae_model_outcome_and_warnings_with_options(tree, model_name, instantiation_options);
+    let (dae_outcome, warnings) = dae_model_outcome_and_warnings_with_options(
+        tree,
+        model_name,
+        instantiation_options,
+        dae_options,
+    );
     (
         dae_phase_result_from_dae(tree, model_name, dae_outcome),
         warnings,
@@ -286,6 +309,7 @@ pub(super) fn flat_model_outcome_from_typed(
 pub(super) fn dae_model_outcome_from_flat(
     tree: &ast::ClassTree,
     flat_outcome: FlatModelOutcome,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> (DaeModelOutcome, bool) {
     let artifact = match flat_outcome {
         FlatModelOutcome::Success(artifact) => *artifact,
@@ -314,7 +338,11 @@ pub(super) fn dae_model_outcome_from_flat(
 
     // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    match rumoca_phase_dae::to_dae_with_evidence(&artifact.flat, tree.source_map.clone()) {
+    match rumoca_phase_dae::to_dae_with_options(
+        &artifact.flat,
+        tree.source_map.clone(),
+        dae_options,
+    ) {
         Ok(result) => {
             let (dae, balance_detail, structural_selections) = result.into_parts();
             (
@@ -574,6 +602,7 @@ pub(super) fn finalize_strict_compile_report_from_uncached_targets(
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> StrictCompileReport {
     finalize_strict_compile_report_from_uncached_targets_impl(
         tree,
@@ -581,6 +610,7 @@ pub(super) fn finalize_strict_compile_report_from_uncached_targets(
         failures,
         targets,
         instantiation_options,
+        dae_options,
     )
 }
 
@@ -591,12 +621,18 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> StrictCompileReport {
     let mut failures = failures;
     let results = targets.iter().map(|name| {
         (
             name.clone(),
-            compile_model_internal_with_options(tree, name, instantiation_options.clone()),
+            compile_model_internal_with_options(
+                tree,
+                name,
+                instantiation_options.clone(),
+                dae_options,
+            ),
         )
     });
     finalize_strict_compile_report_from_results(tree, requested_model, &mut failures, results)
@@ -609,6 +645,7 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
 ) -> StrictCompileReport {
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<(String, PhaseResult)>(1);
 
@@ -624,8 +661,12 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
         });
 
         targets.par_iter().for_each_with(result_tx, |tx, name| {
-            let result =
-                compile_model_internal_with_options(tree, name, instantiation_options.clone());
+            let result = compile_model_internal_with_options(
+                tree,
+                name,
+                instantiation_options.clone(),
+                dae_options,
+            );
             let _ = tx.send((name.clone(), result));
         });
 

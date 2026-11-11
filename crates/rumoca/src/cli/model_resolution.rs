@@ -70,6 +70,7 @@ pub(crate) fn compiler_for_source(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .retain_parameter_guards(options.retain_parameter_guards)
         .source_roots(&source_roots);
     Ok((compiler, model))
 }

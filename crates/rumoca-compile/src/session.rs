@@ -1919,6 +1919,7 @@ impl CompilationSummary {
 #[derive(Debug, Clone)]
 pub struct Session {
     instantiation_options: InstantiateOptions,
+    dae_options: rumoca_phase_dae::ToDaeOptions,
     structural_override_sources: Vec<StructuralOverrideSource>,
     documents: IndexMap<String, Arc<Document>>,
     detached_document_uris: IndexSet<String>,

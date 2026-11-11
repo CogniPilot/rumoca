@@ -1710,7 +1710,13 @@ pub(super) fn retained_conditional(
     } else {
         !symbols.shapes.is_structural_selection(span)
             && symbols.shapes.evaluable().is_some_and(|evaluable| {
-                retains_equation_guard(symbols.coordinates, evaluable, branches, else_branch)
+                retains_equation_guard(
+                    symbols.coordinates,
+                    evaluable,
+                    symbols.shapes.retains_every_parameter_guard(),
+                    branches,
+                    else_branch,
+                )
             })
     }
 }

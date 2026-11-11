@@ -297,6 +297,16 @@ pub struct ModelOptions {
     /// explicit flag.
     #[arg(long = "source-root", value_name = "PATH", action = ArgAction::Append)]
     pub source_roots: Vec<String>,
+
+    /// Keep an equation `if` whose condition reads a parameter as a run-time
+    /// branch also when its branches read different variables, as long as
+    /// they differentiate the same ones. By default such a branch is selected
+    /// at translation and its parameters are fixed (warning WD001). For a
+    /// host that sets parameters at run time and evaluates the equations
+    /// (Base Modelica, an FMU in DAE mode). The index of the system may still
+    /// depend on the branch; that is not checked.
+    #[arg(long)]
+    pub retain_parameter_guards: bool,
 }
 
 /// `compile`/`check` model input: the required model-file positional plus the
@@ -1089,6 +1099,7 @@ fn run_configured_simulation(args: SimCommandArgs) -> Result<()> {
                     .iter()
                     .map(|path| path.to_string_lossy().to_string())
                     .collect(),
+                retain_parameter_guards: false,
             },
         };
         init_debug_tracing(&args.diagnostics)?;
@@ -1666,6 +1677,7 @@ fn compile_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .retain_parameter_guards(args.options.retain_parameter_guards)
         .source_roots(&source_roots);
     let result = compiler.compile_file(&args.model_file)?;
     Ok((result, model))
@@ -1693,6 +1705,7 @@ fn compile_early_ir_with_inferred_model(
             let compiler = Compiler::new()
                 .model(&model)
                 .verbose(verbose)
+                .retain_parameter_guards(args.options.retain_parameter_guards)
                 .source_roots(&source_roots);
             let flat = compiler.compile_file_flat(&args.model_file)?;
             Ok(EarlyIrArtifact::Flat {
@@ -1717,6 +1730,7 @@ pub(crate) fn compile_dae_with_inferred_model(
     let compiler = Compiler::new()
         .model(&model)
         .verbose(verbose)
+        .retain_parameter_guards(args.options.retain_parameter_guards)
         .source_roots(&source_roots);
     let result = compiler.compile_file_dae(&args.model_file)?;
     Ok((result, model))

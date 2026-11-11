@@ -246,7 +246,13 @@ impl Selection<'_> {
         span: Span,
     ) -> bool {
         self.values.is_structural_selection(span)
-            || !retains_flat_guard(self.flat, self.evaluable, branches, else_branch)
+            || !retains_flat_guard(
+                self.flat,
+                self.evaluable,
+                self.values.retains_every_parameter_guard(),
+                branches,
+                else_branch,
+            )
     }
 
     fn decided(&self, condition: &Expression) -> Option<bool> {

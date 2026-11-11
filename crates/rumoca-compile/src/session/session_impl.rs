@@ -1261,6 +1261,7 @@ impl Session {
             tree,
             model_name,
             self.instantiation_options.clone(),
+            self.dae_options,
         );
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
         failures.extend(dae_phase_result_to_failures(
@@ -1331,6 +1332,7 @@ impl Session {
                 failures,
                 &target.closure.compile_targets,
                 self.instantiation_options.clone(),
+                self.dae_options,
             )
         };
         Ok((report, target.resolved.as_ref().clone()))
@@ -1422,13 +1424,19 @@ impl Session {
             .collect();
 
         let instantiation_options = self.instantiation_options.clone();
+        let dae_options = self.dae_options;
         let compiled_misses: Vec<(String, Fingerprint, PhaseResult)> = misses
             .par_iter()
             .map(|(name, fingerprint)| {
                 (
                     name.clone(),
                     *fingerprint,
-                    compile_model_internal_with_options(tree, name, instantiation_options.clone()),
+                    compile_model_internal_with_options(
+                        tree,
+                        name,
+                        instantiation_options.clone(),
+                        dae_options,
+                    ),
                 )
             })
             .collect();

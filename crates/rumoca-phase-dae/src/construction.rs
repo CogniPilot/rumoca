@@ -263,14 +263,16 @@ struct ReservedVariable<'flat, 'dae> {
 }
 
 pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
-    construct_with_evidence(flat, source_map).map(|result| result.dae)
+    construct_with_evidence(flat, source_map, crate::ToDaeOptions::default())
+        .map(|result| result.dae)
 }
 
 pub(crate) fn construct_with_evidence(
     flat: &flat::Model,
     source_map: SourceMap,
+    options: crate::ToDaeOptions,
 ) -> Result<crate::DaeConstructionResult, ToDaeError> {
-    let (prepared, analysis) = analyze_prepared_model(flat)?;
+    let (prepared, analysis) = analyze_prepared_model(flat, options)?;
     let flat = prepared.as_ref();
     let analysis = analysis.with_semi_linear_rules(flat);
     if !flat.is_partial && !analysis.balance.is_balanced() {
@@ -294,7 +296,7 @@ pub(crate) fn construct_with_evidence(
 pub(crate) fn construction_evidence(
     flat: &flat::Model,
 ) -> Result<(BalanceDetail, Vec<analysis::StructuralSelection>), ToDaeError> {
-    let (_, analysis) = analyze_prepared_model(flat)?;
+    let (_, analysis) = analyze_prepared_model(flat, crate::ToDaeOptions::default())?;
     Ok((analysis.balance, analysis.structural_selections))
 }
 

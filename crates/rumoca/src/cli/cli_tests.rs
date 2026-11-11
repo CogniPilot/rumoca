@@ -629,6 +629,31 @@ fn infer_model_from_recovered_parse_broken_file() {
     assert_eq!(model, "Broken");
 }
 
+/// `rumoca compile --retain-parameter-guards` reaches the DAE construction.
+#[test]
+fn compile_flag_retains_parameter_guards() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("Conv.mo");
+    std::fs::write(
+        &path,
+        "model Conv\n  parameter Boolean conv = false;\n  Real q(start = 1, fixed = true);\n  \
+         Real a;\nequation\n  der(q) = -a;\n  if conv then\n    a = q^2;\n  else\n    \
+         a = 0;\n  end if;\nend Conv;\n",
+    )
+    .expect("write");
+    let path = path.to_str().expect("utf8 path");
+    for (flag, conditionals) in [(None, 0), (Some("--retain-parameter-guards"), 1)] {
+        let cli = Cli::try_parse_from(["rumoca", "compile", path].into_iter().chain(flag))
+            .expect("parse compile");
+        let Commands::Compile(args) = cli.command else {
+            panic!("expected compile command");
+        };
+        let (result, _) = compile_with_inferred_model(&args.input, false).expect("compile");
+        let json = result.to_json().expect("DAE JSON");
+        assert_eq!(json.matches("\"conditional\"").count(), conditionals);
+    }
+}
+
 #[test]
 fn split_path_list_parses_multiple_entries() {
     let joined =

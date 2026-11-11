@@ -33,6 +33,10 @@ fn wrapped(function: BuiltinFunction, value: Expression) -> Expression {
 }
 
 fn retained(then: Expression, otherwise: Expression) -> bool {
+    retained_with(false, then, otherwise)
+}
+
+fn retained_with(every_guard: bool, then: Expression, otherwise: Expression) -> bool {
     let parameter = |name: &VarName| name.as_str() == "enabled";
     let unknown = |name: &VarName| matches!(name.as_str(), "x" | "y");
     let condition = Expression::VarRef {
@@ -46,6 +50,7 @@ fn retained(then: Expression, otherwise: Expression) -> bool {
         &GuardClasses {
             tunable_parameter: &parameter,
             unknown: &unknown,
+            every_guard,
         },
     )
 }
@@ -118,6 +123,29 @@ fn incidence_is_a_set_without_source_order_or_duplicate_read_bias() {
     ));
 }
 
+/// `every_guard` ignores reads by value, but arms must still read the same
+/// unknowns under `der` and `pre`.
+#[test]
+fn every_guard_compares_only_differentiated_and_previous_reads() {
+    let (a, b) = spans();
+    let x = reference("x", "i", a);
+    let y = reference("y", "i", b);
+    let der = |value: &Expression| wrapped(BuiltinFunction::Der, value.clone());
+    let pre = |value: &Expression| wrapped(BuiltinFunction::Pre, value.clone());
+    assert!(!retained_with(false, x.clone(), y.clone()));
+    assert!(retained_with(true, x.clone(), y.clone()));
+    let der_x_plus_y = Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(der(&x)),
+        rhs: Box::new(y.clone()),
+        span: a,
+    };
+    assert!(retained_with(true, der(&x), der_x_plus_y));
+    assert!(!retained_with(true, der(&x), der(&y)));
+    assert!(!retained_with(true, pre(&x), pre(&y)));
+    assert!(!retained_with(true, der(&x), x));
+}
+
 fn input_model(external: bool, connected: bool) -> flat::Model {
     let mut model = flat::Model::new();
     let mut parameter = flat::Variable::empty_with_span(Span::DUMMY);
@@ -161,6 +189,7 @@ fn retained_input(model: &flat::Model) -> bool {
     retains_flat_guard(
         model,
         &Default::default(),
+        false,
         &[(
             reference("enabled", "i", a),
             reference("component.x", "i", a),

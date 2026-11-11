@@ -460,6 +460,7 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
             options: ModelOptions {
                 model: Some(model_name),
                 source_roots,
+                retain_parameter_guards: false,
             },
         },
         window: BenchWindow::Configured {
