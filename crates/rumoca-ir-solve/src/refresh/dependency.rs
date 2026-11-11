@@ -30,13 +30,7 @@ impl<'a> AssignmentDependencies<'a> {
         source_program: &'a [LinearOp],
         shapes: &[TargetAssignmentShape],
     ) -> Box<[IndexIntervals]> {
-        let queries = self
-            .sources
-            .entry(source)
-            .or_insert_with(|| AssignmentSourceQueries {
-                dependencies: ScalarProgramYDependencyQueries::new(source_program),
-                loaded: None,
-            });
+        let queries = self.source(source, source_program);
         shapes
             .iter()
             .map(|shape| {
@@ -57,6 +51,30 @@ impl<'a> AssignmentDependencies<'a> {
                 }
             })
             .collect()
+    }
+
+    /// The whole-program dependencies of `source`, from the analysis its
+    /// shapes are answered from; `None` when no one analysis serves every
+    /// prefix of the program.
+    pub(super) fn whole_program(
+        &mut self,
+        source: crate::RefreshScalarProgramSource,
+        source_program: &'a [LinearOp],
+    ) -> Option<&ScalarProgramYDependency<'a>> {
+        self.source(source, source_program).dependencies.complete()
+    }
+
+    fn source(
+        &mut self,
+        source: crate::RefreshScalarProgramSource,
+        source_program: &'a [LinearOp],
+    ) -> &mut AssignmentSourceQueries<'a> {
+        self.sources
+            .entry(source)
+            .or_insert_with(|| AssignmentSourceQueries {
+                dependencies: ScalarProgramYDependencyQueries::new(source_program),
+                loaded: None,
+            })
     }
 }
 

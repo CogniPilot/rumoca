@@ -133,3 +133,57 @@ fn register_only_walk_checks_huge_zero_stride_outputs_without_retaining_them() {
         assert_eq!(queries.complete.get().unwrap().is_some(), register == 0);
     }
 }
+
+#[test]
+fn the_whole_source_inventory_is_the_one_prefix_queries_answer_from() {
+    let source = [
+        LinearOp::LoadY { dst: 0, index: 3 },
+        LinearOp::LoadY { dst: 1, index: 4 },
+        LinearOp::Binary {
+            dst: 2,
+            op: crate::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let fresh = ScalarProgramYDependency::new(&source);
+    let mut queries = ScalarProgramYDependencyQueries::new(&source);
+    let whole = queries.complete().expect("unique writers");
+    for range in [(0, 1), (0, 3), (2, 1), (1, 2), (0, 4), (3, 1)] {
+        assert_eq!(
+            whole.footprint_ranges([range]),
+            fresh.footprint_ranges([range]),
+            "{range:?}"
+        );
+    }
+    assert_eq!(queries.footprint(3, [2]), fresh.footprint([2]));
+    assert!(queries.complete().is_some());
+    assert_eq!(queries.complete_builds, 1);
+    assert_eq!(queries.prefix_builds, 0);
+}
+
+#[test]
+fn a_source_that_rewrites_a_register_has_no_whole_inventory() {
+    let source = [
+        LinearOp::LoadY { dst: 0, index: 3 },
+        LinearOp::StoreOutput { src: 0 },
+        LinearOp::LoadY { dst: 0, index: 4 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let mut queries = ScalarProgramYDependencyQueries::new(&source);
+    assert!(queries.complete().is_none());
+    assert!(queries.complete().is_none());
+    // Asking for it analyzes no prefix; the prefix queries are unchanged.
+    assert_eq!(queries.prefix_builds, 0);
+    assert!(queries.prefix.is_none());
+    assert_eq!(
+        queries.footprint(1, [0]),
+        Some(IndexIntervals::singleton(3))
+    );
+    assert_eq!(
+        queries.footprint(3, [0]),
+        Some(IndexIntervals::singleton(4))
+    );
+    assert_eq!(queries.prefix_builds, 2);
+}

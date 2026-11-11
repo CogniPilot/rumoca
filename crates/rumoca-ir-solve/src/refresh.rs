@@ -1217,8 +1217,9 @@ fn validate_refresh_assignment_certificate(
 }
 
 /// The exact programs issued while one owner set's schedules are built, keyed
-/// by their rows, and the dependency analyses they share: rows of one source
-/// issued as separate programs reuse that source's analysis.
+/// by their rows, and the dependency analyses they share: the check that one
+/// source's rows may commit together and the programs issued for those rows,
+/// together or separately, reuse that source's analysis.
 #[derive(Default)]
 struct ExactProgramInventory<'a> {
     by_rows: BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
@@ -1321,9 +1322,10 @@ fn scalar_source_owner(
     })
 }
 
-fn exact_rows_can_commit_together(
-    block: &ComputeBlock,
+fn exact_rows_can_commit_together<'a>(
+    block: &'a ComputeBlock,
     rows: &[&AlgebraicRefreshRow],
+    dependencies: &mut AssignmentDependencies<'a>,
 ) -> Result<bool, ContinuousRefreshConstructionError> {
     let Some(first) = rows.first() else {
         return Ok(false);
@@ -1331,7 +1333,16 @@ fn exact_rows_can_commit_together(
     let Some((program, _)) = scalar_source_program(block, first.source)? else {
         return Ok(false);
     };
-    let dependencies = ScalarProgramYDependency::new(program);
+    // The source's shared analysis answers when it serves the whole program;
+    // otherwise this check analyzes the program itself.
+    let own;
+    let dependencies = match dependencies.whole_program(first.source, program) {
+        Some(shared) => shared,
+        None => {
+            own = ScalarProgramYDependency::new(program);
+            &own
+        }
+    };
     // A row conflicts with another when its value reads the other's target;
     // each row's read footprint is met with the targets once, not per pair.
     let mut owners_by_target: BTreeMap<usize, Vec<_>> = BTreeMap::new();
@@ -1660,7 +1671,9 @@ fn append_exact_assignment_schedule<'a>(
         let source_rows = (position..end)
             .map(|position| &rows[position])
             .collect::<Vec<_>>();
-        if source_rows.len() > 1 && exact_rows_can_commit_together(block, &source_rows)? {
+        if source_rows.len() > 1
+            && exact_rows_can_commit_together(block, &source_rows, &mut inventory.dependencies)?
+        {
             append_exact_assignment_program(
                 block,
                 programs,

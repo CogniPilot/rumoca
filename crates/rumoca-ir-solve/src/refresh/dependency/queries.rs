@@ -46,16 +46,7 @@ impl<'source> ScalarProgramYDependencyQueries<'source> {
         len: usize,
     ) -> Option<&ScalarProgramYDependency<'source>> {
         let source = self.source.get(..len)?;
-        #[cfg(test)]
-        if self.complete.get().is_none() {
-            self.complete_builds += 1;
-        }
-        self.complete.get_or_init(|| {
-            Some(CompleteAnalysis {
-                producers: UniqueProgram::new(self.source)?,
-                dependencies: ScalarProgramYDependency::complete(self.source)?,
-            })
-        });
+        self.analyze_complete();
         if self.complete.get()?.is_some() {
             return self
                 .complete
@@ -72,6 +63,30 @@ impl<'source> ScalarProgramYDependencyQueries<'source> {
             }
         }
         self.prefix.as_ref().map(|(_, dependencies)| dependencies)
+    }
+
+    /// The whole-source inventory, when unique writers let it serve every
+    /// prefix. It is the analysis the prefix queries answer from, so a
+    /// whole-program consumer reads it instead of walking the source again.
+    pub(in crate::refresh) fn complete(&mut self) -> Option<&ScalarProgramYDependency<'source>> {
+        self.analyze_complete();
+        self.complete
+            .get()?
+            .as_ref()
+            .map(|analysis| &analysis.dependencies)
+    }
+
+    fn analyze_complete(&mut self) {
+        #[cfg(test)]
+        if self.complete.get().is_none() {
+            self.complete_builds += 1;
+        }
+        self.complete.get_or_init(|| {
+            Some(CompleteAnalysis {
+                producers: UniqueProgram::new(self.source)?,
+                dependencies: ScalarProgramYDependency::complete(self.source)?,
+            })
+        });
     }
 
     /// The exact prefix footprint, refusing missing or not-yet-written cells.

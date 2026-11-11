@@ -23,6 +23,12 @@ impl Query<'_> {
     fn key(self) -> (usize, Selection) {
         (std::ptr::from_ref(self.family) as usize, self.selection)
     }
+
+    /// The cell a one-register query names: the form every scalar view and
+    /// every per-cell child request takes.
+    fn cell(self) -> Option<usize> {
+        (self.selection.count == 1 && self.selection.stride == 0).then_some(self.selection.start)
+    }
 }
 
 enum Pending<'a> {
@@ -36,9 +42,19 @@ pub(super) fn project(roots: Vec<Query<'_>>) -> Option<DependencyState> {
     while let Some(next) = pending.pop() {
         match next {
             Pending::Enter(query) if results.contains_key(&query.key()) => {}
-            Pending::Enter(query) => enter(query, &mut pending, &mut results)?,
+            Pending::Enter(query) => {
+                match query.cell().and_then(|cell| query.family.projected(cell)) {
+                    Some(state) => {
+                        results.insert(query.key(), state);
+                    }
+                    None => enter(query, &mut pending, &mut results)?,
+                }
+            }
             Pending::Finish(query, children, base) => {
                 let state = base.union(union_results(&children, &results)?);
+                if let Some(cell) = query.cell() {
+                    query.family.retain_projected(cell, &state);
+                }
                 results.insert(query.key(), state);
             }
         }
@@ -137,7 +153,7 @@ fn enter<'a>(
                 pending,
             );
         }
-        FamilyKind::Call { inputs } => {
+        FamilyKind::Call { inputs, .. } => {
             let (children, base) = call_children(query.selection, inputs)?;
             schedule(query, children, base, pending);
         }
