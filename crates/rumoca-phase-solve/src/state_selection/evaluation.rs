@@ -17,6 +17,9 @@ pub(super) struct TrialPoint {
     values: Vec<Option<Vec<f64>>>,
     retained_guesses: Vec<bool>,
     stated_initial_values: Vec<Vec<bool>>,
+    /// Source value scalars whose evaluated `start` is nonzero, fixed before any
+    /// trial guess or pin rewrites `values`.
+    nonzero_starts: Vec<Vec<bool>>,
 }
 
 impl TrialPoint {
@@ -26,6 +29,13 @@ impl TrialPoint {
         scalar: usize,
     ) -> bool {
         self.stated_initial_values[coordinate.value().index() as usize][scalar]
+    }
+    pub(super) fn has_nonzero_start(
+        &self,
+        coordinate: FormalStageCoordinate<'_, '_>,
+        scalar: usize,
+    ) -> bool {
+        self.nonzero_starts[coordinate.value().index() as usize][scalar]
     }
     pub(super) fn seed_definitions(
         &mut self,
@@ -70,6 +80,7 @@ impl TrialPoint {
         let mut values = vec![None; formal.view.variables().count()];
         let mut retained_guesses = vec![false; values.len()];
         let mut stated_initial_values = vec![Vec::new(); values.len()];
+        let mut nonzero_starts = vec![Vec::new(); values.len()];
         for (source, variable) in formal.source.variables() {
             if variable.value_type().scalar_type() == dae::ScalarType::String {
                 continue;
@@ -78,6 +89,8 @@ impl TrialPoint {
             let target = formal
                 .coordinate(source, 0)
                 .ok_or_else(|| failure("trial source coordinate has no formal value"))?;
+            nonzero_starts[target.index() as usize] =
+                value.iter().map(|start| *start != 0.0).collect();
             values[target.index() as usize] = Some(value);
             stated_initial_values[target.index() as usize] = (0..variable.scalar_count())
                 .map(|scalar| variable.fixed_scalar(scalar) == Some(true))
@@ -99,6 +112,7 @@ impl TrialPoint {
                 values[target.index() as usize] = Some(vec![0.; variable.scalar_count()]);
                 stated_initial_values[target.index() as usize] =
                     vec![false; variable.scalar_count()];
+                nonzero_starts[target.index() as usize] = vec![false; variable.scalar_count()];
                 order += 1;
             }
         }
@@ -106,6 +120,7 @@ impl TrialPoint {
             values,
             retained_guesses,
             stated_initial_values,
+            nonzero_starts,
         };
         seed_initial_pins(&mut point, formal, |expression| {
             evaluator.expression(expression).map_err(failure)
