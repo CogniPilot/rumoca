@@ -41,8 +41,11 @@ impl GuardFacts {
             }
             // The statement a generated Boolean is captured by: from here on it
             // holds the value of its definition.
-            rumoca_core::Statement::Empty { span } => {
-                if let Some(definition) = scope.generated.iter().find(|guard| guard.span == *span) {
+            rumoca_core::Statement::Empty { .. } => {
+                if let Some(definition) = super::super::function_returns::issued_generated_boolean(
+                    statement,
+                    scope.generated,
+                ) {
                     self.observe_accesses(&definition.value, scope);
                     self.assign(definition.target.clone(), &definition.value, scope);
                 }
@@ -206,13 +209,14 @@ impl GuardFacts {
     ) {
         for statement in statements {
             match statement {
-                rumoca_core::Statement::Empty { span } => {
+                rumoca_core::Statement::Empty { .. } => {
                     runs.extend(
-                        scope
-                            .generated
-                            .iter()
-                            .find(|store| store.span == *span && store.mutable)
-                            .map(|store| store.target.as_str().to_string()),
+                        super::super::function_returns::issued_generated_boolean(
+                            statement,
+                            scope.generated,
+                        )
+                        .filter(|store| store.mutable)
+                        .map(|store| store.target.as_str().to_string()),
                     );
                     self.after(statement, scope);
                 }
@@ -502,8 +506,8 @@ fn certain_accesses(
     }
 }
 
-/// `1 <= k <= size(array, d)` for each scalar Integer subscript `k` on an
-/// axis `d` whose extent is proven.
+/// A completed `array[k + c]` access proves `1 - c <= k <= size(array, d) - c`
+/// when the canonical range-distance proof settles the offset `c`.
 fn index_facts(
     array: &VarName,
     subscripts: &[Subscript],
@@ -514,22 +518,58 @@ fn index_facts(
         return;
     };
     for (subscript, extent) in subscripts.iter().zip(shape) {
-        let Subscript::Expr { expr, .. } = subscript else {
+        let Subscript::Expr { expr, span } = subscript else {
             continue;
         };
-        let Some(subject) = FactSubject::of(expr) else {
-            continue;
-        };
-        if !subject.is_scalar() || !scope.is_integer(&subject) {
+        // The plain `array[k]` access settles offset 0 without the affine proof.
+        if let Some(subject) = FactSubject::of(expr).filter(FactSubject::is_scalar) {
+            if scope.is_integer(&subject) {
+                insert_index_fact(subject, *extent, 0, facts);
+            }
             continue;
         }
-        let fact = ValueFact::Integer(IntegerInterval::finite(1, i64::from(*extent)));
-        let merged = match facts.get(&subject) {
-            Some(existing) => existing.meet(fact),
-            None => fact,
-        };
-        facts.insert(subject, merged);
+        let mut reads = Vec::new();
+        expr.collect_var_refs(&mut reads);
+        // Each distinct name is proven once; a repeated read adds nothing.
+        reads.sort();
+        reads.dedup();
+        for name in reads {
+            let subject = FactSubject::scalar(name.clone());
+            if !scope.is_integer(&subject) || scope.is_array(&name) {
+                continue;
+            }
+            let index = Expression::VarRef {
+                name: rumoca_core::Reference::from_var_name(name),
+                subscripts: Vec::new(),
+                span: *span,
+            };
+            let Some(offset) = crate::construction::function_shapes::exact_range_distance(
+                &index,
+                expr,
+                scope.shapes,
+            ) else {
+                continue;
+            };
+            insert_index_fact(subject, *extent, offset, facts);
+        }
     }
+}
+
+/// Meet `1 - offset <= subject <= extent - offset` into the facts.
+fn insert_index_fact(
+    subject: FactSubject,
+    extent: u32,
+    offset: i64,
+    facts: &mut BTreeMap<FactSubject, ValueFact>,
+) {
+    let interval =
+        IntegerInterval::finite(1, i64::from(extent)).minus(IntegerInterval::exact(offset));
+    let fact = ValueFact::Integer(interval);
+    let merged = match facts.get(&subject) {
+        Some(existing) => existing.meet(fact),
+        None => fact,
+    };
+    facts.insert(subject, merged);
 }
 
 /// Whether `fact` proves at least what `bound` does.

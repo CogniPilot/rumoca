@@ -135,6 +135,16 @@ impl VarName {
         self.scope_split().map(|(scope, _)| scope)
     }
 
+    /// Whether `other` is this name or a component nested inside it
+    /// (`r` encloses `r` and `r.k`, not `rk`).
+    pub fn encloses(&self, other: &VarName) -> bool {
+        other == self
+            || other
+                .as_str()
+                .strip_prefix(self.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+
     /// True when the name is nested inside a component scope.
     pub fn is_nested(&self) -> bool {
         !self.data.top_level_dots.is_empty()

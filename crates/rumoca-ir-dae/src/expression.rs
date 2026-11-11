@@ -32,9 +32,10 @@ use derived_facts::{definition_type, max_variability, merge_binder_domain, merge
 use function_facts::{FunctionCallFact, node_function_facts};
 use function_nodes::function_fold_entry;
 pub(crate) use type_rules::QuotientScope;
+pub(crate) use type_rules::range_extent;
 use type_rules::{
-    binary_result, builtin_result, common_value_type, range_extent, type_mismatch,
-    validate_runtime_quotient, validate_static_quotient, validate_subscript,
+    binary_result, builtin_result, common_value_type, type_mismatch, validate_runtime_quotient,
+    validate_static_quotient, validate_subscript,
 };
 
 pub(crate) use arena::{ExpressionArenaStorage, FrozenExpressionArenaStorage, OperandRange};

@@ -110,6 +110,66 @@ pub(super) struct GeneratedBooleanDefinition {
     pub(super) span: Span,
 }
 
+/// The generated Boolean `statement` defines, if it is a definition marker.
+///
+/// A marker whose ID has no issued definition at its provenance in
+/// `definitions`, including an empty catalog, is a typed refusal: the
+/// statements were paired with a catalog that did not issue them. The scope
+/// certificate resolves markers through this same rule. Function planning
+/// ([`plan_function_statements`](super::function_bodies)) visits every
+/// normalized statement and propagates it, so such a function is refused.
+pub(super) fn generated_boolean_definition<'a>(
+    statement: &rumoca_core::Statement,
+    definitions: &'a [GeneratedBooleanDefinition],
+) -> Result<Option<&'a GeneratedBooleanDefinition>, ToDaeError> {
+    marker_definition(statement, definitions)
+        .transpose()
+        .map_err(|span| {
+            ToDaeError::unsupported_flat(
+                "function branch selection",
+                "a generated Boolean marker has no issued definition at its provenance",
+                span,
+            )
+        })
+}
+
+/// The catalog rule both lookups share, building no error: `None` for an
+/// ordinary statement, else the issued definition or the unissued marker's span.
+fn marker_definition<'a>(
+    statement: &rumoca_core::Statement,
+    definitions: &'a [GeneratedBooleanDefinition],
+) -> Option<Result<&'a GeneratedBooleanDefinition, Span>> {
+    let rumoca_core::Statement::Empty {
+        generated_boolean: Some(id),
+        span,
+    } = statement
+    else {
+        return None;
+    };
+    Some(
+        definitions
+            .get(id.0)
+            .filter(|definition| definition.span == *span)
+            .ok_or(*span),
+    )
+}
+
+/// [`generated_boolean_definition`] for a read-only analysis.
+///
+/// An unissued marker defines nothing here; planning refuses the function
+/// with the typed error, so no analysis result over it is ever used. A
+/// source-only analysis (an empty catalog) has no authority over generated
+/// stores and sees none.
+pub(super) fn issued_generated_boolean<'a>(
+    statement: &rumoca_core::Statement,
+    definitions: &'a [GeneratedBooleanDefinition],
+) -> Option<&'a GeneratedBooleanDefinition> {
+    if definitions.is_empty() {
+        return None;
+    }
+    marker_definition(statement, definitions)?.ok()
+}
+
 /// MLS 3.7 §11.2.6: a top-level `return` ends the algorithm, so the statements
 /// before it are exactly the sequence that runs (a trailing `return;` in
 /// `Basic.OpAmpDetailed`'s limiters).
@@ -152,7 +212,10 @@ pub(super) fn normalize_function_returns(
                     span: guard_span,
                 },
             );
-            normalized.push(rumoca_core::Statement::Empty { span: guard_span });
+            normalized.push(rumoca_core::Statement::Empty {
+                span: guard_span,
+                generated_boolean: Some(rumoca_core::GeneratedBooleanId(guards.len())),
+            });
             guards.push(GeneratedBooleanDefinition {
                 mutable: false,
                 target: target.clone(),

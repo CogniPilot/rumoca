@@ -279,8 +279,8 @@ pub(super) struct FactScope<'a> {
     pub(super) shapes: &'a ShapeEnvironment,
     pub(super) integers: &'a HashSet<VarName>,
     pub(super) reals: &'a HashSet<VarName>,
-    /// The generated Booleans, each captured by the `Empty` statement at its
-    /// source span.
+    /// Generated Booleans, each captured by the `Empty` statement carrying its
+    /// catalog ID.
     pub(super) generated: &'a [function_returns::GeneratedBooleanDefinition],
 }
 
@@ -810,7 +810,7 @@ impl GuardFacts {
 }
 
 /// The value of an Integer or Real literal, or of its negation.
-fn numeric_literal(expression: &Expression) -> Option<f64> {
+pub(super) fn numeric_literal(expression: &Expression) -> Option<f64> {
     match expression {
         Expression::Literal {
             value: Literal::Real(value),

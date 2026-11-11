@@ -163,3 +163,62 @@ fn a_start_tick_jump_reaches_a_delay_one_delay_later_with_a_state() {
         );
     }
 }
+
+/// MLS §3.7.2: a `delay` read inside a conditional arm records its history at
+/// every instant, so its operand, and the relation and runtime quotient nested
+/// in it, are owned outside the arm. That ownership must survive the checked
+/// DAE wire, whose replay moves between arms one parent edge at a time, so a
+/// read more than one arm deep is a typed refusal instead of a DAE that does
+/// not replay.
+const ARM_DELAY: &str = r#"
+model ArmDelay
+  parameter Integer p = 2;
+  Real x(start = 1.0, fixed = true);
+  Boolean a = time > 0.2;
+  Boolean b = time > 0.4;
+  Real y;
+equation
+  der(x) = 1;
+  y = BODY;
+end ArmDelay;
+"#;
+
+const ARM_DELAYED: &str = "delay(div(integer(x), p) + (if x > 1.5 then 1 else 0), 0.1)";
+
+fn arm_delay(body: &str) -> String {
+    ARM_DELAY.replace("BODY", body)
+}
+
+#[test]
+fn a_delay_one_arm_deep_replays_from_the_wire() {
+    let source = arm_delay(&format!("if a then {ARM_DELAYED} else 0"));
+    let compiled = Compiler::new()
+        .model("ArmDelay")
+        .compile_str(&source, "arm_delay.mo")
+        .expect("a delay inside one arm constructs checked DAE");
+    let wire = serde_json::to_string(&compiled.dae).expect("the arm delay serializes");
+    let decoded: rumoca_compile::compile::Dae =
+        serde_json::from_str(&wire).expect("wire replay rebuilds the arm delay owners");
+    assert_eq!(
+        serde_json::to_string(&decoded).expect("the replayed DAE serializes"),
+        wire,
+        "a replayed arm delay has one wire representation"
+    );
+}
+
+#[test]
+fn a_delay_two_arms_deep_is_a_typed_refusal() {
+    let source = arm_delay(&format!(
+        "if a then (if b then {ARM_DELAYED} else 0) else 0"
+    ));
+    let error = Compiler::new()
+        .model("ArmDelay")
+        .compile_str(&source, "arm_delay.mo")
+        .expect_err("a nested arm delay has no replayable operand owner");
+    let rendered = format!("{error:?}");
+    assert!(
+        rendered.contains("UnsupportedNestedArmDelay")
+            || rendered.contains("more than one conditional arm deep"),
+        "the refusal names the nested arm delay: {rendered}"
+    );
+}

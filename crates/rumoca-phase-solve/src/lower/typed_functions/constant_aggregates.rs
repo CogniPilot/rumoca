@@ -14,7 +14,7 @@
 //! element update, must stay a private value the loop updates in place: a
 //! hoisted copy would be a shared capture that every update copies whole. A
 //! generated fill such as `zeros(n)` is one operation already and is not a
-//! literal table.
+//! literal table. A range `start : step : stop` has literal bounds and is one.
 
 use std::collections::BTreeSet;
 
@@ -103,6 +103,9 @@ fn is_literal_tree<'dae>(view: dae::DaeView<'dae>, id: dae::ExprId<'dae>) -> boo
             !matches!(literal, dae::DaeLiteral::String(_))
         }
         dae::ExpressionOperation::Unary { operand, .. } => is_literal_tree(view, operand),
+        // The checked range keeps its bounds as Integer literals (MLS 3.7
+        // §10.4.3), so it is a table of literals issued once per scope.
+        dae::ExpressionOperation::Range(_) => true,
         dae::ExpressionOperation::Array(operands) => operands
             .iter()
             .all(|operand| is_literal_tree(view, operand)),

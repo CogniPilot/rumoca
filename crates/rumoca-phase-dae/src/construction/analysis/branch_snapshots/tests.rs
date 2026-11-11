@@ -104,7 +104,7 @@ fn a_conditional_inside_a_loop_body_is_captured_in_that_body() {
         panic!("the outer loop is preserved: {normalized:#?}")
     };
     assert!(
-        matches!(&equations[0], Statement::Empty { span: at } if *at == guard.span),
+        matches!(&equations[0], Statement::Empty { span: at, generated_boolean: Some(rumoca_core::GeneratedBooleanId(0)) } if *at == guard.span),
         "the capture is the first statement of each outer iteration: {equations:#?}"
     );
     // The predicate's own write and the inner loop body run under the capture,
@@ -135,7 +135,7 @@ fn an_immutable_selection_issues_no_capture() {
         span: span(5),
     }];
     let body = vec![
-        Statement::Empty { span: span(5) },
+        marker(0, span(5)),
         Statement::If {
             cond_blocks: vec![rumoca_core::StatementBlock {
                 cond: read("returned", span(6)),
@@ -166,12 +166,19 @@ fn capture(name: &str, at: Span) -> GeneratedBooleanDefinition {
     }
 }
 
+fn marker(id: usize, span: Span) -> Statement {
+    Statement::Empty {
+        span,
+        generated_boolean: Some(rumoca_core::GeneratedBooleanId(id)),
+    }
+}
+
 #[test]
 fn a_read_before_its_capture_is_refused() {
     let guards = [capture("g", span(50))];
     let body = vec![
         assign("x", 2, read("g", span(51)), span(52)),
-        Statement::Empty { span: span(50) },
+        marker(0, span(50)),
     ];
     assert!(certify_generated_scopes(&body, &guards).is_err());
 }
@@ -180,7 +187,7 @@ fn a_read_before_its_capture_is_refused() {
 fn a_read_after_its_sequence_ends_is_refused() {
     let guards = [capture("g", span(50))];
     let body = vec![
-        for_loop("i", vec![Statement::Empty { span: span(50) }], span(53)),
+        for_loop("i", vec![marker(0, span(50))], span(53)),
         assign("x", 2, read("g", span(51)), span(52)),
     ];
     assert!(certify_generated_scopes(&body, &guards).is_err());
@@ -190,7 +197,7 @@ fn a_read_after_its_sequence_ends_is_refused() {
 fn a_nested_read_after_its_capture_is_in_scope() {
     let guards = [capture("g", span(50))];
     let body = vec![
-        Statement::Empty { span: span(50) },
+        marker(0, span(50)),
         for_loop(
             "i",
             vec![assign("x", 2, read("g", span(51)), span(52))],
@@ -203,9 +210,64 @@ fn a_nested_read_after_its_capture_is_in_scope() {
 #[test]
 fn a_repeated_capture_in_one_scope_is_refused() {
     let guards = [capture("g", span(50))];
+    let body = vec![marker(0, span(50)), marker(0, span(50))];
+    assert!(certify_generated_scopes(&body, &guards).is_err());
+}
+
+#[test]
+fn copied_source_occurrences_issue_distinct_captures() {
+    let original = nested_mutable_gate();
+    let body = [original.clone(), original].concat();
+    let mut guards = Vec::new();
+    let normalized = snapshot_loop_conditionals(&body, &mut guards).unwrap();
+    assert_eq!(guards.len(), 2);
+    assert_eq!(guards[0].span, guards[1].span);
+    assert_ne!(guards[0].target, guards[1].target);
+    certify_generated_scopes(&normalized, &guards).unwrap();
+}
+
+#[test]
+fn a_repeated_id_in_disjoint_scopes_is_refused() {
+    let guards = [capture("g", span(50))];
     let body = vec![
-        Statement::Empty { span: span(50) },
-        Statement::Empty { span: span(50) },
+        for_loop("i", vec![marker(0, span(50))], span(51)),
+        for_loop("j", vec![marker(0, span(50))], span(52)),
+    ];
+    assert!(certify_generated_scopes(&body, &guards).is_err());
+}
+
+#[test]
+fn an_unissued_id_or_changed_provenance_is_refused() {
+    let guards = [capture("g", span(50))];
+    for statement in [marker(1, span(50)), marker(0, span(51))] {
+        assert!(certify_generated_scopes(&[statement], &guards).is_err());
+    }
+}
+
+#[test]
+fn a_catalog_lookup_refuses_an_unissued_marker_without_panicking() {
+    use super::super::function_returns::{generated_boolean_definition, issued_generated_boolean};
+    let guards = [capture("g", span(50))];
+    let issued = marker(0, span(50));
+    assert!(matches!(
+        generated_boolean_definition(&issued, &guards),
+        Ok(Some(guard)) if guard.target == VarName::new("g")
+    ));
+    for statement in [marker(1, span(50)), marker(0, span(51))] {
+        assert!(generated_boolean_definition(&statement, &guards).is_err());
+        assert!(issued_generated_boolean(&statement, &guards).is_none());
+    }
+}
+
+#[test]
+fn an_ordinary_empty_statement_does_not_define_a_capture() {
+    let guards = [capture("g", span(50))];
+    let body = vec![
+        Statement::Empty {
+            span: span(50),
+            generated_boolean: None,
+        },
+        assign("x", 2, read("g", span(51)), span(52)),
     ];
     assert!(certify_generated_scopes(&body, &guards).is_err());
 }

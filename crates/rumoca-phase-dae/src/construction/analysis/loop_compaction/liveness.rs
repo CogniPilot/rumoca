@@ -44,13 +44,15 @@
 //! liveness wherever a value is definitely written by a form this rule does not
 //! recognize, and an over-approximation is what a deletion proof needs.
 //!
-//! Two statement forms transfer control somewhere this module does not model:
-//! `return` leaves the function and `break` leaves the enclosing loop. Both are
-//! treated as transparent, which over-approximates liveness on the path that
-//! falls through and can under-approximate it on the jump path.
+//! Three statement forms transfer control somewhere this module does not model:
+//! `return` leaves the function, `break` leaves the enclosing loop, and a
+//! generated Boolean marker stands for a normalized `return` guard or branch
+//! selection whose reads live only in its side catalog. All are treated as
+//! transparent, which over-approximates liveness on the path that falls
+//! through and can under-approximate it on the jump path.
 //! [`prove_unobserved_stores`] and [`prove_unobserved_loop_local_store`]
-//! therefore refuse to certify anything about a region containing either, and
-//! [`contains_unstructured_jump`] is the test they use.
+//! therefore refuse to certify anything about a region containing any of
+//! them, and [`contains_unstructured_jump`] is the test they use.
 
 use super::*;
 use std::collections::BTreeSet;
@@ -360,8 +362,14 @@ fn statement_contains_unstructured_jump(statement: &rumoca_core::Statement) -> b
         rumoca_core::Statement::Return { span: _ } | rumoca_core::Statement::Break { span: _ } => {
             true
         }
-        rumoca_core::Statement::Empty { span: _ }
-        | rumoca_core::Statement::Assignment {
+        // A generated Boolean marker stands for a normalized `return` guard or
+        // branch selection whose definition, and the reads it makes, live only
+        // in the side catalog: control flow this module does not model.
+        rumoca_core::Statement::Empty {
+            generated_boolean,
+            span: _,
+        } => generated_boolean.is_some(),
+        rumoca_core::Statement::Assignment {
             comp: _,
             value: _,
             span: _,
@@ -420,7 +428,12 @@ fn statement_contains_unstructured_jump(statement: &rumoca_core::Statement) -> b
 /// compiler is made to check the enumeration.
 fn live_in_statement(statement: &rumoca_core::Statement, live_out: &LiveSet) -> LiveSet {
     match statement {
-        rumoca_core::Statement::Empty { span: _ }
+        // A generated marker's catalog reads are unseen here; the deletion
+        // proofs refuse its region through `contains_unstructured_jump`.
+        rumoca_core::Statement::Empty {
+            generated_boolean: _,
+            span: _,
+        }
         | rumoca_core::Statement::Return { span: _ }
         | rumoca_core::Statement::Break { span: _ } => live_out.clone(),
         rumoca_core::Statement::Assignment {

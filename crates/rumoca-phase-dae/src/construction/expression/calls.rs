@@ -215,8 +215,28 @@ pub(super) fn lower_delay<'dae>(
         .get(&span)
         .copied()
         .ok_or(dae::DaeConstructionError::InvalidPositiveParameter { span })?;
-    let source = lower_expression_scoped(construction, symbols, binders, &arguments[0], None)?;
-    let delay_time = lower_expression_scoped(construction, symbols, binders, &arguments[1], None)?;
+    // The plan is `Fixed` for `delay(expr, delayTime)` and `Bounded` for
+    // `delay(expr, delayTime, delayMax)`; any other count is a broken plan.
+    let expected = match plan {
+        DelayPlan::Fixed(_) => 2,
+        DelayPlan::Bounded(_) => 3,
+    };
+    if arguments.len() != expected {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected,
+            found: arguments.len(),
+            span,
+        });
+    }
+    // MLS §3.7.2: the history of `delay(expr, ...)` is recorded at every
+    // instant, so a delay read inside one arm of a conditional still owns
+    // operands that are independent of that arm.
+    let (source, delay_time) = construction.outside_model_arm(provenance, |construction| {
+        let source = lower_expression_scoped(construction, symbols, binders, &arguments[0], None)?;
+        let delay_time =
+            lower_expression_scoped(construction, symbols, binders, &arguments[1], None)?;
+        Ok((source, delay_time))
+    })?;
     match plan {
         DelayPlan::Fixed(timing) => {
             let timing_provenance = expression_provenance(timing.provenance(), None)?;
@@ -230,8 +250,9 @@ pub(super) fn lower_delay<'dae>(
             })
         }
         DelayPlan::Bounded(maximum) => {
-            let delay_max =
-                lower_expression_scoped(construction, symbols, binders, &arguments[2], None)?;
+            let delay_max = construction.outside_model_arm(provenance, |construction| {
+                lower_expression_scoped(construction, symbols, binders, &arguments[2], None)
+            })?;
             let maximum_provenance = expression_provenance(maximum.provenance(), None)?;
             let maximum = construction.temporal(|temporal| {
                 temporal.positive_parameter(delay_max, maximum.value(), maximum_provenance)

@@ -17,7 +17,13 @@ pub trait StatementRewriter: ExpressionRewriter {
 
     fn walk_statement(&mut self, statement: &Statement) -> Statement {
         match statement {
-            Statement::Empty { span } => Statement::Empty { span: *span },
+            Statement::Empty {
+                span,
+                generated_boolean,
+            } => Statement::Empty {
+                span: *span,
+                generated_boolean: *generated_boolean,
+            },
             Statement::Assignment { comp, value, span } => Statement::Assignment {
                 comp: self.rewrite_component_reference(comp),
                 value: self.rewrite_expression(value),
@@ -175,7 +181,13 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
 
     fn walk_statement(&mut self, statement: &Statement) -> Result<Statement, Self::Error> {
         match statement {
-            Statement::Empty { span } => Ok(Statement::Empty { span: *span }),
+            Statement::Empty {
+                span,
+                generated_boolean,
+            } => Ok(Statement::Empty {
+                span: *span,
+                generated_boolean: *generated_boolean,
+            }),
             Statement::Assignment { comp, value, span } => Ok(Statement::Assignment {
                 comp: self.rewrite_component_reference(comp)?,
                 value: self.rewrite_expression(value)?,
@@ -356,5 +368,15 @@ mod tests {
         let source = indices();
         assert_eq!(Identity.rewrite_for_indices(&source), source);
         assert_eq!(Fallible.rewrite_for_indices(&source), Ok(source));
+    }
+
+    #[test]
+    fn generated_boolean_markers_keep_their_identity_through_rewrites() {
+        let statement = Statement::Empty {
+            span: Span::DUMMY,
+            generated_boolean: Some(crate::GeneratedBooleanId(7)),
+        };
+        assert_eq!(Identity.rewrite_statement(&statement), statement);
+        assert_eq!(Fallible.rewrite_statement(&statement), Ok(statement));
     }
 }

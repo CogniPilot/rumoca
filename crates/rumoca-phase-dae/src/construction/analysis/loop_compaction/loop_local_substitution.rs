@@ -639,12 +639,7 @@ fn statement_segments_read_count(segments: &[&[rumoca_core::Statement]], name: &
 }
 
 fn reference_reads_name(reference: &Reference, name: &VarName) -> bool {
-    let reference = reference.var_name().as_str();
-    let name = name.as_str();
-    reference == name
-        || reference
-            .strip_prefix(name)
-            .is_some_and(|suffix| suffix.starts_with('.'))
+    name.encloses(reference.var_name())
 }
 
 pub(super) fn statements_read_nonrewritable_name(

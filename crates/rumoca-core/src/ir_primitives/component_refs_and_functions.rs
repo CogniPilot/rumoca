@@ -459,9 +459,15 @@ pub struct StatementBlock {
     pub stmts: Vec<Statement>,
 }
 
+/// One generated Boolean definition in a normalized function's source-ordered catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GeneratedBooleanId(pub usize);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Statement {
     Empty {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_boolean: Option<GeneratedBooleanId>,
         #[serde(
             default = "Span::source_free_serde_default",
             skip_serializing_if = "Span::is_dummy"
@@ -571,7 +577,7 @@ impl Statement {
 
     pub fn source_span(&self) -> Option<Span> {
         let span = match self {
-            Statement::Empty { span }
+            Statement::Empty { span, .. }
             | Statement::Assignment { span, .. }
             | Statement::Return { span }
             | Statement::Break { span }
@@ -592,7 +598,7 @@ impl Statement {
 
     fn map_span(mut self, f: impl FnOnce(Span) -> Span) -> Self {
         let span_slot = match &mut self {
-            Statement::Empty { span }
+            Statement::Empty { span, .. }
             | Statement::Assignment { span, .. }
             | Statement::Return { span }
             | Statement::Break { span }

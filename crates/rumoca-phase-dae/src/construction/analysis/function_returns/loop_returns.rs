@@ -27,7 +27,10 @@ pub(super) fn normalize(
     require_span(span, "function loop return state")?;
     let target = rumoca_core::function_return_state_name(span.start.0);
     let mut guards = vec![store(&target, false, span)];
-    let mut normalized = vec![rumoca_core::Statement::Empty { span }];
+    let mut normalized = vec![rumoca_core::Statement::Empty {
+        span,
+        generated_boolean: Some(rumoca_core::GeneratedBooleanId(0)),
+    }];
     normalized.extend(sequence(statements, &target, &mut guards, false)?);
     Ok(NormalizedFunctionReturns {
         statements: normalized,
@@ -90,8 +93,12 @@ fn normalize_statement(
 ) -> Result<rumoca_core::Statement, ToDaeError> {
     Ok(match statement {
         rumoca_core::Statement::Return { .. } => {
+            let id = rumoca_core::GeneratedBooleanId(guards.len());
             guards.push(store(target, true, span));
-            rumoca_core::Statement::Empty { span }
+            rumoca_core::Statement::Empty {
+                span,
+                generated_boolean: Some(id),
+            }
         }
         rumoca_core::Statement::For {
             indices, equations, ..

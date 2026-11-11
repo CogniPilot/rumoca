@@ -1321,11 +1321,7 @@ fn collect_loop_target_dependencies<'a>(
 }
 
 fn source_target_contains(source: &VarName, concrete: &VarName) -> bool {
-    source == concrete
-        || concrete
-            .as_str()
-            .strip_prefix(source.as_str())
-            .is_some_and(|suffix| suffix.starts_with('.'))
+    source.encloses(concrete)
 }
 
 fn validate_when_equation_targets(

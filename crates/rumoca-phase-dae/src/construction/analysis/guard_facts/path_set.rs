@@ -82,8 +82,8 @@ impl PathSet {
                 scope.generated,
             ),
         );
-        if let rumoca_core::Statement::Empty { span } = statement
-            && let Some(capture) = scope.generated.iter().find(|capture| capture.span == *span)
+        if let Some(capture) =
+            super::super::function_returns::issued_generated_boolean(statement, scope.generated)
         {
             let mut alternatives = self.assuming(&capture.value, true, scope);
             alternatives.join_path(&self.assuming(&capture.value, false, scope));

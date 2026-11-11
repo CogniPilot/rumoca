@@ -14,7 +14,7 @@
 //! they raise no error the original does not.
 //!
 //! The bound is proven from the value facts (`guard_facts`) at the loop, in
-//! one of two forms. The counter form:
+//! one of three forms. The counter form:
 //!
 //! * a top-level conjunct of `c` is `k < N`, `k <= N`, `N > k`, or `N >= k`,
 //!   with `N` settled at translation (a literal, a shape extent, an evaluable
@@ -32,16 +32,22 @@
 //! Then every iteration raises `k` by at least 1 from at least `s` while `k`
 //! stays at most `N`, so `B = N - min(s, 1) + 1` iterations suffice (`B = N`
 //! for `s >= 1`). The progress form (`progress`) proves that every pass
-//! either ends the loop or raises a counter by at least 1 from within a
-//! proven interval. A loop without either proof is left as written and keeps
-//! its typed rejection.
+//! either ends the loop or moves a counter by at least 1 from within a
+//! proven interval, in one direction on every continuing path. The division
+//! form (`shrinking`) proves a positive counter repeatedly divided by a fixed
+//! Integer greater than one reaches zero. A loop without a proof is left as
+//! written and keeps its typed rejection.
 
 use super::super::guard_facts::{FactScope, GuardFacts};
 use super::*;
 use rumoca_core::{ForIndex, Literal, OpBinary, StatementBlock};
 
 mod progress;
+mod shrinking;
+#[cfg(test)]
+mod tests;
 use progress::progress_bound;
+use shrinking::division_bound;
 
 /// `statements` with every `while` loop they contain bounded, reading the
 /// facts that hold before them.
@@ -84,7 +90,7 @@ fn bound_statement(
     let Some(bound) = iteration_bound(&block, facts, &head, scope) else {
         return vec![rumoca_core::Statement::While { block, span: *span }];
     };
-    if !facts.assuming(&block.cond, false, scope).is_unreachable() {
+    if bound == 0 || !facts.assuming(&block.cond, false, scope).is_unreachable() {
         return vec![guarded_for(block, bound, *span)];
     }
     let mut peeled = block.stmts.clone();
@@ -182,25 +188,48 @@ fn iteration_bound(
     head: &GuardFacts,
     scope: FactScope<'_>,
 ) -> Option<i64> {
+    // MLS §11.2.3: a condition the head facts exclude runs no pass, whichever
+    // proof form the body would otherwise match. The zero-pass loop evaluates
+    // no condition, so the proof is taken only when evaluating the condition
+    // cannot raise (a call's assertion, a division by zero).
+    if condition_cannot_raise(&block.cond)
+        && head.assuming(&block.cond, true, scope).is_unreachable()
+    {
+        return Some(0);
+    }
     if statements_exit_early(&block.stmts) {
         return None;
     }
-    counter_bound(block, entry, scope).or_else(|| progress_bound(block, head, scope))
+    counter_bound(block, entry, scope)
+        .or_else(|| progress_bound(block, head, scope))
+        .or_else(|| division_bound(block, entry, scope))
+}
+
+/// Whether evaluating `condition` cannot raise: it calls nothing and divides
+/// by nothing. A failed array access is excluded by the head facts, which do
+/// not assume a condition access succeeds.
+fn condition_cannot_raise(condition: &Expression) -> bool {
+    !condition.contains_subexpression(|expression| {
+        matches!(
+            expression,
+            Expression::FunctionCall { .. }
+                | Expression::BuiltinCall { .. }
+                | Expression::Binary {
+                    op: OpBinary::Div | OpBinary::DivElem | OpBinary::Exp | OpBinary::ExpElem,
+                    ..
+                }
+        )
+    })
 }
 
 /// The counter proof form (see the module note).
 fn counter_bound(block: &StatementBlock, entry: &GuardFacts, scope: FactScope<'_>) -> Option<i64> {
     let mut conjuncts = Vec::new();
     collect_conjuncts(&block.cond, &mut conjuncts);
+    let written = statements_written_names(&block.stmts);
     conjuncts.iter().find_map(|conjunct| {
         let (counter_reference, counter, limit) = counter_limit(conjunct)?;
-        let bound = scope.shapes.proven_extent(limit)?;
-        let written = statements_written_names(&block.stmts);
-        let limit_invariant = {
-            let mut reads = Vec::new();
-            limit.collect_var_refs(&mut reads);
-            reads.iter().all(|name| !written.contains(name))
-        };
+        let bound = fixed_integer(limit, &written, scope)?;
         // The least value `k` can hold when `c` is evaluated: 1 when `c`
         // indexes an array with it, otherwise its least value on entry.
         let floor = if indexes_with(&block.cond, counter) {
@@ -209,11 +238,34 @@ fn counter_bound(block: &StatementBlock, entry: &GuardFacts, scope: FactScope<'_
             entry.integer_interval(counter_reference, scope).lower
         }?;
         let iterations = iterations_from(bound, floor)?;
-        (bound >= 0
-            && limit_invariant
-            && advances_each_iteration(&block.stmts, counter, bound, scope.shapes))
-        .then_some(iterations)
+        (bound >= 0 && advances_each_iteration(&block.stmts, counter, bound, scope.shapes))
+            .then_some(iterations)
     })
+}
+
+/// The translation-time value of `expression` when it is proven and reads
+/// nothing in `written` (the loop body's writes, collected once per loop), so
+/// every pass of the loop sees the same value.
+fn fixed_integer(
+    expression: &Expression,
+    written: &HashSet<VarName>,
+    scope: FactScope<'_>,
+) -> Option<i64> {
+    let extent = scope.shapes.proven_extent(expression)?;
+    let mut reads = Vec::new();
+    expression.collect_var_refs(&mut reads);
+    reads
+        .iter()
+        .all(|name| !writes_name(written, name))
+        .then_some(extent)
+}
+
+/// Whether a write in `written` changes `name`: the same reference, an
+/// enclosing record (`r := …` writes `r.k`), or a field of it.
+fn writes_name(written: &HashSet<VarName>, name: &VarName) -> bool {
+    written
+        .iter()
+        .any(|write| write.encloses(name) || name.encloses(write))
 }
 
 /// An iteration bound for a counter that rises by at least 1 per iteration

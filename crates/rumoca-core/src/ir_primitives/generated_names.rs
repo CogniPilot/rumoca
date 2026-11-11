@@ -47,9 +47,10 @@ pub fn function_return_guard_name(source_start: usize) -> VarName {
     VarName::new(format!("__rumoca_return_guard_{source_start}"))
 }
 
-/// Boolean snapshot inserted for a return-bearing conditional branch.
-pub fn function_branch_guard_name(source_start: usize) -> VarName {
-    VarName::new(format!("__rumoca_branch_guard_{source_start}"))
+/// Boolean snapshot inserted for a return-bearing conditional branch; the
+/// catalog ID keeps peeled copies of one source occurrence distinct.
+pub fn function_branch_guard_name(source_start: usize, catalog_id: usize) -> VarName {
+    VarName::new(format!("__rumoca_branch_guard_{source_start}_{catalog_id}"))
 }
 
 /// Compact binder introduced while rectangularizing one affine slice.

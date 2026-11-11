@@ -88,7 +88,83 @@ package While
     Real halved = halve(1 + time);
     Real selected = branched(table, time - 0.1);
     Real above = firstAbove({0.1, 0.4, 0.7, 1.0}, time);
+    Real divided = shrinking(1 + time, 16);
+    Real emptyDivision = shrinking(1 + time, 0);
+    Real descended = descending(1 + time);
+    Real nested = nestedShrinking(1 + time);
+    Real walked = shiftedWalk({1, 2, 3}, time);
   end Functions;
+  function shrinking
+    input Real x;
+    input Integer start;
+    output Real y;
+  protected
+    Integer gap;
+  algorithm
+    gap := start;
+    y := x;
+    while gap > 0 loop
+      y := y + gap;
+      gap := div(gap, 2);
+    end while;
+  end shrinking;
+  function descending
+    input Real x;
+    output Real y;
+  protected
+    Integer k;
+  algorithm
+    k := 3;
+    y := x;
+    while k >= 0 loop
+      y := y + k;
+      k := k - 1;
+    end while;
+  end descending;
+  function nestedShrinking
+    input Real x;
+    output Real y;
+  protected
+    Integer gap;
+    Integer i;
+    Integer j;
+  algorithm
+    y := x;
+    gap := 4;
+    while gap > 0 loop
+      i := 0;
+      while i < 3 loop
+        j := i;
+        while j >= 0 loop
+          y := y + 1;
+          j := j - 1;
+        end while;
+        i := i + 1;
+      end while;
+      gap := div(gap, 2);
+    end while;
+  end nestedShrinking;
+  function shiftedWalk
+    input Real samples[:];
+    input Real threshold;
+    output Real total;
+  protected
+    Integer position;
+    Boolean again;
+  algorithm
+    total := 0;
+    position := size(samples, 1) - 1;
+    again := true;
+    while again loop
+      total := total + samples[position + 1];
+      position := position - 1;
+      if position >= 0 then
+        again := samples[position + 1] > threshold;
+      else
+        again := false;
+      end if;
+    end while;
+  end shiftedWalk;
   function coefficients "Blocks.Sources.TimeTable.getInterpolationCoefficients, reduced"
     input Real table[:, 2];
     input Real tp;
@@ -182,6 +258,12 @@ fn bounded_while_loops_compute_their_iterated_values() {
     // The first entry above 0.3 is the second; above 0.8 none within i < 4.
     assert_eq!(at(&result, "above", 0.3), 2.0);
     assert_eq!(at(&result, "above", 0.8), 0.0);
+    assert!((at(&result, "divided", 0.3) - 32.3).abs() < 1e-12);
+    assert!((at(&result, "emptyDivision", 0.3) - 1.3).abs() < 1e-12);
+    assert!((at(&result, "descended", 0.3) - 7.3).abs() < 1e-12);
+    assert!((at(&result, "nested", 0.3) - 19.3).abs() < 1e-12);
+    assert_eq!(at(&result, "walked", 0.3), 6.0);
+    assert_eq!(at(&result, "walked", 1.0), 5.0);
 }
 
 #[test]
@@ -259,5 +341,157 @@ end WhileBreak;
     assert!(
         message.contains("`firstAbove`"),
         "unexpected refusal: {message}"
+    );
+}
+
+#[test]
+fn msl_interpolation_searches_forward_and_backward() {
+    let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
+    let source = r#"
+model CheckedInterpolation
+  Real backward;
+  Real forward;
+  Integer backwardIndex;
+  Integer forwardIndex;
+  Real extrapolated;
+  Integer extrapolatedIndex;
+equation
+  (backward, backwardIndex) = Modelica.Math.Vectors.interpolate(
+    {0, 0.25, 0.5, 0.75, 1}, {0, 0.5, 1, 1.5, 2}, time, 4);
+  (forward, forwardIndex) = Modelica.Math.Vectors.interpolate(
+    {0, 0.25, 0.5, 0.75, 1}, {0, 0.5, 1, 1.5, 2}, time, 1);
+  (extrapolated, extrapolatedIndex) = Modelica.Math.Vectors.interpolate(
+    {0, 0.25, 0.5, 0.75, 1}, {0, 0.5, 1, 1.5, 2}, 2*time - 0.5, 3);
+end CheckedInterpolation;
+"#;
+    let compiled = Compiler::new()
+        .model("CheckedInterpolation")
+        .source_root(root.to_string_lossy().as_ref())
+        .compile_str(source, "CheckedInterpolation.mo")
+        .unwrap_or_else(|error| panic!("the actual MSL interpolation searches construct: {error}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("the actual MSL interpolation searches simulate");
+    for &time in &result.times {
+        for (name, expected) in [
+            ("forward", 2.0 * time),
+            ("backward", 2.0 * time),
+            ("extrapolated", 4.0 * time - 1.0),
+        ] {
+            let value = at(&result, name, time);
+            assert!(
+                (value - expected).abs() < 1e-12,
+                "{name} at {time}: {value} != {expected}"
+            );
+        }
+        for name in ["forwardIndex", "backwardIndex", "extrapolatedIndex"] {
+            let index = at(&result, name, time);
+            assert!(index.fract() == 0.0 && (1.0..=4.0).contains(&index));
+        }
+    }
+}
+
+#[test]
+fn msl_shell_sort_constructs_both_runtime_directions() {
+    let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
+    let source = r#"
+model CheckedSort
+  Real values[5] = {time, 2, -1, 2, -time};
+  Real ascending[5];
+  Real descending[5];
+  Integer ascendingIndex[5];
+  Integer descendingIndex[5];
+equation
+  (ascending, ascendingIndex) = Modelica.Math.Vectors.sort(values, true);
+  (descending, descendingIndex) = Modelica.Math.Vectors.sort(values, false);
+end CheckedSort;
+"#;
+    let compiled = Compiler::new()
+        .model("CheckedSort")
+        .source_root(root.to_string_lossy().as_ref())
+        .compile_str(source, "CheckedSort.mo")
+        .expect("the actual MSL Shell sort constructs");
+    compiled.dae.inspect(|view| {
+        let sorts = (0..view.function_count())
+            .filter_map(|index| view.function_id(index).and_then(|id| view.function(id)))
+            .filter(|function| function.name().as_str().ends_with("Vectors.sort"))
+            .collect::<Vec<_>>();
+        assert_eq!(sorts.len(), 1, "both calls share one shape specialization");
+        for sort in sorts {
+            assert!(
+                sort.statements().any(|statement| matches!(
+                    statement,
+                    rumoca_ir_dae::FunctionStatementView::For { .. }
+                )),
+                "the actual Shell sort retains compact loop owners"
+            );
+        }
+    });
+}
+
+/// MLS §11.2.3 evaluates a `while` condition before the first pass even when
+/// no pass runs, so a call whose value the condition needs is evaluated. The
+/// head facts prove `k < min(check(k), 2)` false from `k = 5` alone, but `min`
+/// still needs `check(k)`; a zero-pass proof that dropped the condition would
+/// skip the call's failing assertion. (A call MLS §3.3 lets a tool skip, such
+/// as `check(k) and false`, is not this case.)
+const ZERO_PASS_CALL: &str = r#"
+model ZeroPassCall
+  function check
+    input Integer k;
+    output Integer limit;
+  algorithm
+    assert(k < 0, "the while condition was evaluated");
+    limit := 3;
+  end check;
+  function search
+    input Real u;
+    output Integer r;
+  protected
+    Integer k;
+  algorithm
+    r := 0;
+    k := 5;
+    while k < min(check(k), 2) loop
+      k := k + 1;
+      r := r + 1;
+    end while;
+  end search;
+  Real x(start = 0, fixed = true);
+  Real y;
+equation
+  der(x) = 1;
+  y = search(x);
+end ZeroPassCall;
+"#;
+
+#[test]
+fn a_zero_pass_while_still_evaluates_a_call_in_its_condition() {
+    let compiled = Compiler::new()
+        .model("ZeroPassCall")
+        .compile_str(ZERO_PASS_CALL, "ZeroPassCall.mo");
+    let outcome = compiled.map(|compiled| {
+        simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..SimOptions::default()
+            },
+        )
+    });
+    let failed = match outcome {
+        Err(_) | Ok(Err(_)) => true,
+        Ok(Ok(_)) => false,
+    };
+    assert!(
+        failed,
+        "the condition's failing assertion must not be skipped by a zero-pass bound"
     );
 }

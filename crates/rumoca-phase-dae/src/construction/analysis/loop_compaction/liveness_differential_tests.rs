@@ -1162,3 +1162,29 @@ fn the_loop_local_witness_counts_the_caller_as_a_reader() {
         "the execution oracle agrees that a surviving output is observed"
     );
 }
+
+/// A generated Boolean marker stands for a normalized `return` guard whose
+/// reads live only in its side catalog, so it is unmodeled control flow: no
+/// store-deletion proof is issued across it. An ordinary empty statement
+/// carries no ID and is not one.
+#[test]
+fn a_generated_boolean_marker_blocks_store_deletion_proofs() {
+    let name = VarName::new("t");
+    let names = HashSet::from([name.clone()]);
+    let marker = rumoca_core::Statement::Empty {
+        generated_boolean: Some(rumoca_core::GeneratedBooleanId(0)),
+        span: span(),
+    };
+    let empty = rumoca_core::Statement::Empty {
+        generated_boolean: None,
+        span: span(),
+    };
+    assert!(liveness::contains_unstructured_jump(std::slice::from_ref(
+        &marker
+    )));
+    assert!(!liveness::contains_unstructured_jump(std::slice::from_ref(
+        &empty
+    )));
+    assert!(liveness::prove_unobserved_stores(&names, &[], &[&[marker]]).is_empty());
+    assert!(liveness::prove_unobserved_stores(&names, &[], &[&[empty]]).contains_key(&name));
+}

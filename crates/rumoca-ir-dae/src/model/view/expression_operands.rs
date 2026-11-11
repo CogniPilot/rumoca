@@ -1,6 +1,6 @@
 //! Read-only operand shapes; consumers carry the selected shape into iteration.
 
-use super::{ExprId, ExpressionOperands};
+use super::{ExprId, ExpressionOperands, RangeView};
 
 #[derive(Clone, Copy)]
 pub struct ConditionalExpressionOperands<'dae> {
@@ -44,5 +44,19 @@ impl<'dae> ExpressionOperands<'dae> {
             branches,
             fallback: ExprId::from_raw(fallback),
         })
+    }
+}
+
+impl RangeView<'_> {
+    /// MLS 3.7 §10.4.3: the number of elements of `start : step : stop`, by
+    /// the same rule that checked the range's extent; `None` when it overflows.
+    pub fn element_count(self) -> Option<u32> {
+        crate::expression::range_extent(
+            self.start().value(),
+            self.effective_step(),
+            self.stop().value(),
+            self.start().provenance(),
+        )
+        .ok()
     }
 }

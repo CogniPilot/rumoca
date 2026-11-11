@@ -58,6 +58,8 @@ pub enum DaeConstructionError {
         "event-generating relation in a structured equation requires a compact structured event owner"
     )]
     UnsupportedStructuredEvent { span: Span },
+    #[error("a delay read more than one conditional arm deep has no replayable operand owner")]
+    UnsupportedNestedArmDelay { span: Span },
     #[error(
         "an assertion level must name a predefined `AssertionLevel` literal; another evaluable level expression has no checked lowering"
     )]
@@ -361,6 +363,7 @@ impl DaeConstructionError {
             | Self::InvalidClockedOperand { span, .. }
             | Self::InvalidExpressionForm { span }
             | Self::UnsupportedStructuredEvent { span }
+            | Self::UnsupportedNestedArmDelay { span }
             | Self::UnsupportedAssertionLevel { span }
             | Self::MissingClockDomainOwner { span }
             | Self::CapacityExceeded { span, .. }

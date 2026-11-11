@@ -91,7 +91,10 @@ pub(super) fn selected_capture(
             value,
             span,
             &mut |value| SelectedBooleanCapture {
-                source: Statement::Empty { span },
+                source: Statement::Empty {
+                    span,
+                    generated_boolean: None,
+                },
                 plan: FunctionStatementPlan::GeneratedBooleanAssignment {
                     mutable: false,
                     target: target.clone(),
