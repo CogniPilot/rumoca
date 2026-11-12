@@ -2727,6 +2727,20 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'ARR-047'
+case_id = 'arr_047_min_max_vectorized_arrays_and_scalar_broadcast_accepted'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-047'
+case_id = 'arr_047_min_max_mismatched_vector_shapes_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'ALG-011'
 case_id = 'alg_011_non_boolean_when_condition_rejected'
 test_file = 'tests/alg_contracts.rs'

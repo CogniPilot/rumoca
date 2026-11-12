@@ -521,9 +521,35 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         {
             let lhs = self.expression(arguments.get(0).expect("checked binary builtin lhs"))?;
             let rhs = self.expression(arguments.get(1).expect("checked binary builtin rhs"))?;
-            let lhs = self.coerce_value(lhs, value_type, at)?.only_register(at)?;
-            let rhs = self.coerce_value(rhs, value_type, at)?.only_register(at)?;
-            let register = self.builder.binary(operator, lhs, rhs, at)?;
+            if self.is_zero_size(value_type)? {
+                return Ok(LoweredValue::empty(value_type));
+            }
+            let mut operands = [lhs.only_register(at)?, rhs.only_register(at)?];
+            let real_result = self
+                .view
+                .value_type(value_type)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                .scalar_type()
+                == dae::ScalarType::Real;
+            if real_result {
+                for operand in &mut operands {
+                    if self.integer_register(*operand, at)? {
+                        *operand = self.builder.convert(
+                            solve::SolveConversionOperator::IntegerToReal,
+                            *operand,
+                            at,
+                        )?;
+                    }
+                }
+            }
+            let [lhs, rhs] = operands;
+            let lhs_scalar = self.builder.value_type_of(lhs, at)?.dimensions().is_empty();
+            let rhs_scalar = self.builder.value_type_of(rhs, at)?.dimensions().is_empty();
+            let register = match (lhs_scalar, rhs_scalar) {
+                (true, false) => self.builder.broadcast_binary(operator, rhs, lhs, true, at),
+                (false, true) => self.builder.broadcast_binary(operator, lhs, rhs, false, at),
+                _ => self.builder.binary(operator, lhs, rhs, at),
+            }?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
         // MLS 3.7 §3.7.2 makes function bodies event-free, so the exact

@@ -543,7 +543,8 @@ pub(super) fn builtin_result<'dae>(
 
 /// MLS §10.3.4 (ARR-040): `min` and `max` order Boolean, Integer, and Real
 /// elements, with `false < true` for Boolean. One argument reduces an array to
-/// its element type; several arguments take their common type.
+/// its element type. The scalar-pair form vectorizes under MLS §3.7.1 / §12.4.6,
+/// broadcasting scalar arguments before checking the common element type.
 fn extremum_result(
     storage: &Storage,
     arguments: &[ExprId<'_>],
@@ -558,7 +559,18 @@ fn extremum_result(
         return Ok(ValueType::scalar(scalar));
     }
     arguments[1..].iter().try_fold(first, |common, argument| {
-        common_value_type(&common, storage.expr_type(*argument, at)?, at)
+        let next = storage.expr_type(*argument, at)?;
+        let common = if common.is_scalar() {
+            common.with_dimensions(next.dimensions())
+        } else {
+            common
+        };
+        let next = if next.is_scalar() {
+            next.with_dimensions(common.dimensions())
+        } else {
+            next.clone()
+        };
+        common_value_type(&common, &next, at)
     })
 }
 

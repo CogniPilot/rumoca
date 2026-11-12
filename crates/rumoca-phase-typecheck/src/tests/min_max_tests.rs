@@ -51,17 +51,19 @@ fn min_max_reject_invalid_arity_and_known_argument_shapes() {
         model Invalid
             Real scalar;
             Real vector[2];
+            Real other_vector[3];
             Real matrix[2, 2];
+            Real other_matrix[2, 3];
             Real min_zero = min();
             Real max_zero = max();
             Real min_three = min(1.0, 2.0, 3.0);
             Real max_three = max(1.0, 2.0, 3.0);
             Real min_scalar = min(scalar);
             Real max_scalar = max(scalar);
-            Real min_arrays = min(vector, vector);
-            Real max_arrays = max(matrix, matrix);
-            Real min_mixed = min(scalar, vector);
-            Real max_mixed = max(vector, scalar);
+            Real min_arrays[2] = min(vector, other_vector);
+            Real max_arrays[2, 2] = max(matrix, vector);
+            Real min_matrix[2, 2] = min(matrix, other_matrix);
+            Real max_vectors[3] = max(other_vector, vector);
         end Invalid;
         "#,
         "Invalid",
@@ -91,11 +93,56 @@ fn min_max_reject_invalid_arity_and_known_argument_shapes() {
             .iter()
             .filter(|diagnostic| diagnostic
                 .message
-                .contains("with two arguments requires scalar"))
+                .contains("array argument shapes must match"))
             .count(),
         4,
-        "both builtins must reject array pairs and mixed scalar/array arguments: {diagnostics:?}"
+        "both builtins must reject mismatched known array shapes: {diagnostics:?}"
     );
+}
+
+#[test]
+fn min_max_vectorize_matching_arrays_and_broadcast_scalars() {
+    instanced_diagnostics(
+        r#"
+        model Vectorized
+            parameter Real left[2] = {1.0, 4.0};
+            parameter Real right[2] = {2.0, 3.0};
+            parameter Real pairs[2] = min(left, right);
+            parameter Real scalar_left[2] = max(2.0, left);
+            parameter Real scalar_right[2] = min(right, 2.0);
+            parameter Real matrix[2, 2] = [1.0, 2.0; 3.0, 4.0];
+            parameter Real matrix_pairs[2, 2] = max(matrix, matrix);
+            parameter Real tensor[2, 2, 2];
+            parameter Real tensor_scalar[2, 2, 2] = min(tensor, 2.0);
+            parameter Real nested[2] = max(min(left, right), 2.0);
+            parameter Real reduced = min(max(left, right));
+            parameter Integer integers[2] = min({1, 4}, {2, 3});
+            parameter Boolean booleans[2] = max({true, false}, false);
+            type E = enumeration(a, b);
+            parameter E enumerations[2] = min({E.a, E.b}, E.b);
+        end Vectorized;
+        "#,
+        "Vectorized",
+    )
+    .expect("MLS 3.7 scalar-pair min/max vectorize over matching arrays and scalar operands");
+}
+
+#[test]
+fn min_max_nested_scalar_result_is_not_an_array_reduction_argument() {
+    let diagnostics = instanced_diagnostics(
+        r#"
+        model NestedScalar
+            Real result = min(max(1.0, 2.0));
+        end NestedScalar;
+        "#,
+        "NestedScalar",
+    )
+    .expect_err("a scalar-pair result remains scalar when passed to a one-argument reduction");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("with one argument requires an array")
+    }));
 }
 
 #[test]
