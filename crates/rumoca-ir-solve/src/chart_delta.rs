@@ -441,6 +441,7 @@ impl RefreshPlanDelta {
             dynamic_causal_seed_rows: self.dynamic_causal_seed_rows.clone(),
             value_stages: self.value_stages.apply(&base.value_stages)?,
             causal_solution_certified: self.causal_solution_certified,
+            execution_order_refusal: None,
         })
     }
 }

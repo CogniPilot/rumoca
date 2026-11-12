@@ -19,10 +19,12 @@ pub(super) struct AssignmentDependencies<'a> {
 struct AssignmentSourceQueries<'a> {
     dependencies: ScalarProgramYDependencyQueries<'a>,
     loaded: Option<(usize, IndexIntervals)>,
+    execution: Option<crate::ScalarProgramExecutionYDependency>,
 }
 
 impl<'a> AssignmentDependencies<'a> {
-    /// The loaded indices inside each shape's footprint, met interval by
+    /// Value reads and execution obligations of each evaluated shape prefix.
+    /// The loaded indices inside each shape's footprint are met interval by
     /// interval: the cost follows the two sets' structure.
     pub(super) fn for_shapes(
         &mut self,
@@ -42,12 +44,22 @@ impl<'a> AssignmentDependencies<'a> {
                     *loaded = (prefix_len, y_load_intervals(&source_program[..prefix_len]));
                 }
                 let loaded = &loaded.1;
-                match queries
+                let values = match queries
                     .dependencies
                     .footprint_ranges(prefix_len, shape.value_register_ranges())
                 {
                     Some(footprint) => footprint.intersection(loaded),
                     None => loaded.clone(),
+                };
+                match queries
+                    .execution
+                    .get_or_insert_with(|| {
+                        crate::ScalarProgramExecutionYDependency::new(source_program)
+                    })
+                    .prefix(prefix_len)
+                {
+                    Some(reads) => reads.union_with(&values),
+                    None => values.union(loaded),
                 }
             })
             .collect()
@@ -74,6 +86,7 @@ impl<'a> AssignmentDependencies<'a> {
             .or_insert_with(|| AssignmentSourceQueries {
                 dependencies: ScalarProgramYDependencyQueries::new(source_program),
                 loaded: None,
+                execution: None,
             })
     }
 }

@@ -11,6 +11,7 @@ mod causal_dependency_tests;
 mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
+mod execution;
 mod input_event_reach;
 mod output_inventory;
 mod parameter_static;
@@ -46,9 +47,7 @@ use capacity::{
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
 pub use input_event_reach::{InputEventReach, derive_input_event_reach};
-use row_analysis::{
-    AssignmentCertificates, PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row,
-};
+use row_analysis::{PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row};
 use row_candidates::refresh_row_candidates;
 
 #[cfg(test)]
@@ -1059,6 +1058,7 @@ fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
     rows: &mut Vec<AlgebraicRefreshRow>,
 ) -> Result<(), EvalSolveError> {
     let span = block.first_span();
+    let mut analyses = RowAnalysisCache::default();
     let mut claimed_targets = rows
         .iter()
         .map(|row| row.target_index())
@@ -1093,17 +1093,12 @@ fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
         let Some(program) = block.program(position.program_index) else {
             continue;
         };
-        let assignment_shape = crate::prepared::assignment_shape_for_program_output(
+        let (assignment_shape, certificates) = analyses.assignment(
+            position.program_index,
             program,
             position.output_offset,
             *target_index,
-        )?;
-        let certificates = AssignmentCertificates::for_shape(
-            program,
-            position.output_offset,
-            *target_index,
-            assignment_shape.as_ref(),
-        )?;
+        );
         if !certificates.exact {
             continue;
         }
@@ -1456,7 +1451,7 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         plan.causal_solution_certified,
         |row, targets| {
             block.source_program(row.source()).map(|operations| {
-                refresh_row_dependency_positions(
+                execution::refresh_row_execution_dependency_positions(
                     row,
                     operations,
                     state_count,
@@ -1692,7 +1687,7 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
                 .filter_map(|(idx, row)| (!emitted[idx]).then_some(row)),
         );
     }
-    Ok(RefreshPlan {
+    let mut plan = RefreshPlan {
         static_causal_sequence: Default::default(),
         dynamic_causal_sequence: Default::default(),
         simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
@@ -1709,7 +1704,10 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
         value_stages: Vec::new(),
         rows: ordered,
         causal_solution_certified,
-    })
+        execution_order_refusal: None,
+    };
+    plan.check_execution_order(|source| block.source_program(source));
+    Ok(plan)
 }
 
 fn refresh_row_dependency_positions<'ops>(
@@ -1762,6 +1760,7 @@ fn refresh_row_dependency_positions<'ops>(
 struct RowDependencyCache<'ops> {
     prefixes: BTreeMap<(usize, usize), solve::ScalarProgramYDependencyQueries<'ops>>,
     inputs: BTreeMap<(usize, usize), Vec<std::ops::Range<usize>>>,
+    execution: BTreeMap<(usize, usize), solve::ScalarProgramExecutionYDependency>,
 }
 
 impl<'ops> RowDependencyCache<'ops> {
