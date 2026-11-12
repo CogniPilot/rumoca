@@ -49,7 +49,9 @@ mod record_equation_elements;
 mod record_equations;
 mod sample_aliases;
 mod scalar_types;
-pub(super) use scalar_types::{effective_function_scalar_type, effective_variable_scalar_type};
+pub(super) use scalar_types::{
+    declared_parameter_value, effective_function_scalar_type, effective_variable_scalar_type,
+};
 mod source_balance;
 mod structural_selections;
 mod structured_families;
@@ -1671,29 +1673,6 @@ fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
         }
     }
     evaluable
-}
-
-/// `value` as a value of `variable`'s declared predefined scalar type: an
-/// Integer settled for a Real declaration is the Real it denotes (MLS 3.7
-/// §10.6.13), so every later evaluation that reads it computes in Real
-/// arithmetic; a value of another type is refused.
-fn declared_parameter_value(
-    flat: &flat::Model,
-    variable: &flat::Variable,
-    value: EvalValue,
-) -> Result<EvalValue, rumoca_eval_flat::constant::EvalError> {
-    let declared = flat
-        .predefined_types
-        .is_complete()
-        .then(|| flat.effective_types.get(&variable.type_id))
-        .flatten()
-        .and_then(|effective| {
-            rumoca_eval_flat::constant::DeclaredScalar::of(effective, &flat.predefined_types)
-        });
-    match declared {
-        Some(declared) => declared.convert(value, variable.source_span),
-        None => Ok(value),
-    }
 }
 
 /// Whether every variable `binding` reads by value is a constant or an

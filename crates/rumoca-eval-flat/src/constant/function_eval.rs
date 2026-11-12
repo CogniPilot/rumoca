@@ -268,21 +268,21 @@ impl FunctionEnv {
         args: Vec<FunctionCallArg>,
         eval: &EvalState<'_>,
     ) -> Result<Self, EvalError> {
-        let declared: IndexMap<String, DeclaredScalar> = eval
-            .ctx
-            .predefined_types()
-            .map(|predefined| {
-                func.inputs
-                    .iter()
-                    .chain(&func.outputs)
-                    .chain(&func.locals)
-                    .filter_map(|param| {
-                        DeclaredScalar::of(&param.effective_type, &predefined)
-                            .map(|declared| (param.name.clone(), declared))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Without the model's predefined type identities no declared type is
+        // known, and values are stored as computed.
+        let declared: IndexMap<String, DeclaredScalar> = match eval.ctx.predefined_types() {
+            Some(predefined) => func
+                .inputs
+                .iter()
+                .chain(&func.outputs)
+                .chain(&func.locals)
+                .filter_map(|param| {
+                    DeclaredScalar::of(&param.effective_type, &predefined)
+                        .map(|declared| (param.name.clone(), declared))
+                })
+                .collect(),
+            None => IndexMap::new(),
+        };
         let mut inputs = Self::bind_inputs(func, args, eval.span)?;
         for (name, value) in &mut inputs {
             if let Some(declared) = declared.get(name) {
