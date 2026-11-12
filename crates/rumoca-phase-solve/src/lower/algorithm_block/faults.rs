@@ -549,7 +549,9 @@ fn enumerated<T>(
     }
     let combinations = names.values().try_fold(1u128, |count, &(low, high)| {
         let span = u128::try_from(i128::from(high) - i128::from(low) + 1).ok()?;
-        count.checked_mul(span).filter(|&count| count <= ENUMERATION_BUDGET)
+        count
+            .checked_mul(span)
+            .filter(|&count| count <= ENUMERATION_BUDGET)
     })?;
     let domain = scope.scope.arithmetic.integer_domain();
     let domain = IntegerDomain::new(domain.minimum(), domain.maximum())?;
@@ -881,8 +883,8 @@ fn collect_ranges(
                         .element_type(),
                     SolveScalarType::Integer(_)
                 );
-                let range = int_range(scope, ctx, value)
-                    .or_else(|| enumerated_range(scope, ctx, value));
+                let range =
+                    int_range(scope, ctx, value).or_else(|| enumerated_range(scope, ctx, value));
                 match range.filter(|_| integer) {
                     Some((low, high)) => {
                         let entry = next.entry(index).or_insert((low, high));

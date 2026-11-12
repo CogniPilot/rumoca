@@ -119,20 +119,58 @@ impl Functions {
 ///
 /// A protected function is called only from this block, so an input that
 /// every call passes as an Integer literal takes no other value in its body.
+/// Every expression the block holds is searched for calls: the statements of
+/// its methods and functions, and each declaration's dimensions, range and
+/// start value.
 /// A public function gets no entry: it may be called from outside.
 fn literal_arguments(block: &Block) -> BTreeMap<String, Vec<Option<(i64, i64)>>> {
     let mut found = BTreeMap::new();
     let mut record = |call: &FunctionCall| record_literal_arguments(call, &mut found);
+    let entities = block
+        .compartments
+        .iter()
+        .flat_map(|compartment| &compartment.entities)
+        .chain(&block.protected)
+        .map(|entity| (&entity.decl, &entity.start));
+    let interface = block
+        .interface
+        .iter()
+        .map(|variable| (&variable.decl, &variable.start));
+    for (declaration, start) in interface.chain(entities) {
+        declaration_calls(declaration, &mut record);
+        if let Some(start) = start {
+            expression_calls(start, &mut record);
+        }
+    }
     for method in [&block.startup, &block.recalibrate, &block.do_step] {
         statement_calls(&method.statements, &mut record);
     }
     for function in user_functions(block) {
+        let parameters = function.parameters.iter().map(|parameter| &parameter.decl);
+        for declaration in parameters.chain(&function.locals) {
+            declaration_calls(declaration, &mut record);
+        }
         statement_calls(&function.statements, &mut record);
     }
     for function in &block.public_functions {
         found.remove(function.name.lexeme());
     }
     found
+}
+
+/// The calls in a declaration's own expressions: its dimensions and range.
+fn declaration_calls(declaration: &VariableDeclaration, found: &mut impl FnMut(&FunctionCall)) {
+    let dimensions = declaration
+        .dimensions
+        .iter()
+        .filter_map(|dimension| match dimension {
+            Dimension::Expr(extent) => Some(extent),
+            Dimension::Derived => None,
+        });
+    let range = [&declaration.range.min, &declaration.range.max];
+    dimensions
+        .chain(range.into_iter().flatten())
+        .for_each(|expression| expression_calls(expression, found));
 }
 
 /// Merge one call's arguments into what its function has been passed so far.
@@ -419,7 +457,10 @@ fn require_declared_signals(
 
 /// The static range of each Integer input of `function` that every call in
 /// the block passes as a literal, keyed by the input's local in `scope`.
-fn literal_inputs(scope: &MethodScope<'_>, function: &UserFunction) -> BTreeMap<usize, (i128, i128)> {
+fn literal_inputs(
+    scope: &MethodScope<'_>,
+    function: &UserFunction,
+) -> BTreeMap<usize, (i128, i128)> {
     function
         .parameters
         .iter()
