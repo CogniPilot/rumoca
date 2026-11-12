@@ -213,7 +213,7 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
         };
         let span = implicit_block.program_span(program_index);
         parameters.extend(
-            solve::StructuralPattern::derive_p_dependency_union(program, span)
+            solve::StructuralPattern::derive_execution_p_dependency_union(program, span)
                 .map_err(|error| crate::sparsity::from_pattern_error(error, span))?,
         );
     }
@@ -331,5 +331,276 @@ mod tests {
             bits(&reach_with_root(reads_w, 0, &RefreshPlan::default())),
             [true, true]
         );
+    }
+
+    // SOURCE-ONLY PROPOSED INSERTION inside the EXISTING
+    // crates/rumoca-eval-solve/src/refresh_plan/input_event_reach.rs::tests.
+    // Uses that module's existing `super::*`, `bits`, `reach_with_root`, `certified`.
+    // Not compiled/executed; sole author must integrate the IDENTICAL fixture in
+    // isolated baseline and candidate sources after separate executable admission.
+
+    fn baseline_guard_table(guard: bool, logarithm: bool) -> solve::SolvePureCallTable {
+        let profile = solve::SolvePureCallTable::default().arithmetic();
+        let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(profile));
+        let span = solve::source_span_from_offsets(813, 1, 2);
+        solve::SolvePureCallTable::construct(profile, |table| {
+            table.add_owner(
+                solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(813).unwrap()),
+                vec![real.clone(), real.clone()],
+                vec![solve::SolvePureCallOutput::result(real)],
+                span,
+                |builder, inputs, outputs| {
+                    let x = builder.load(inputs[0], span)?;
+                    let q = builder.load(inputs[1], span)?;
+                    let checked = logarithm
+                        .then(|| builder.unary(solve::SolveUnaryOperator::Log, q, span))
+                        .transpose()?
+                        .unwrap_or(q);
+                    let check = solve::SolveFiniteCheck::Primal {
+                        program: 7,
+                        operation: 3,
+                    };
+                    guard
+                        .then(|| builder.check_finite(checked, check, span))
+                        .transpose()?;
+                    builder.store(outputs[0], x, span)
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    fn baseline_guard_program(
+        guard: bool,
+        logarithm: bool,
+        result_used: bool,
+    ) -> Vec<solve::LinearOp> {
+        let table = baseline_guard_table(guard, logarithm);
+        vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::LoadP { dst: 1, index: 1 },
+            solve::LinearOp::PureCall {
+                dst_start: 2,
+                input_starts: vec![0, 1].into(),
+                site: table.owners()[0].call_site(),
+            },
+            solve::LinearOp::Const {
+                dst: 3,
+                value: 42.0,
+            },
+            solve::LinearOp::StoreOutput {
+                src: if result_used { 2 } else { 3 },
+            },
+        ]
+    }
+
+    #[test]
+    fn baseline_api_guard_only_input_must_reach_event_even_when_result_is_unused() {
+        for logarithm in [false, true] {
+            for result_used in [false, true] {
+                let plain = baseline_guard_program(false, logarithm, result_used);
+                assert_eq!(
+                    bits(&reach_with_root(plain, 0, &certified())),
+                    [false, false]
+                );
+                let guarded = baseline_guard_program(true, logarithm, result_used);
+                assert!(
+                    solve::StructuralPattern::derive_p_dependency_union(&guarded, None)
+                        .unwrap()
+                        .is_empty(),
+                    "value-only control must remain unchanged"
+                );
+                assert_eq!(
+                    bits(&reach_with_root(guarded, 0, &certified())),
+                    [false, true],
+                    "guard-only q is input1: logarithm={logarithm}, result_used={result_used}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn baseline_api_guard_log_has_the_original_fault_and_recovers_on_a_good_call() {
+        let table = baseline_guard_table(true, true);
+        let owner = &table.owners()[0];
+        let input = |index: usize, value: f64| {
+            crate::TypedValue::construct(
+                owner.inputs()[index].clone(),
+                vec![solve::SolveValueKind::Real64(value.to_bits())],
+            )
+            .unwrap()
+        };
+        for q in [1.0, -1.0, 1.0] {
+            let result =
+                crate::eval_pure_call_checked(&table, owner.id(), &[input(0, 2.0), input(1, q)]);
+            if q > 0.0 {
+                assert_eq!(
+                    result.unwrap()[0].elements(),
+                    &[solve::SolveValueKind::Real64(2.0f64.to_bits())]
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error,
+                    crate::TypedProgramEvalError::NonFinite {
+                        check: solve::SolveFiniteCheck::Primal {
+                            program: 7,
+                            operation: 3
+                        },
+                        element: 0,
+                        ..
+                    }
+                ));
+                assert_eq!(
+                    error.source_span(),
+                    Some(solve::source_span_from_offsets(813, 1, 2))
+                );
+            }
+        }
+    }
+
+    /// `y0 = w` and `y1 = f(2, y0)`, where `f` returns its first input and
+    /// checks the second one is finite; one root reads `y1`.
+    fn guarded_closure_problem() -> (solve::SolveProblem, crate::PreparedScalarProgramBlock) {
+        let site = baseline_guard_table(true, false).owners()[0].call_site();
+        let define_y0 = vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 1,
+                rhs: 0,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ];
+        let define_y1 = vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::PureCall {
+                dst_start: 2,
+                input_starts: vec![0, 1].into(),
+                site,
+            },
+            solve::LinearOp::LoadY { dst: 3, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 3,
+                rhs: 2,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ];
+        let block = crate::PreparedScalarProgramBlock::new(
+            solve::ScalarProgramBlock::with_program_spans(
+                vec![define_y0, define_y1],
+                vec![solve::source_span_from_offsets(817, 1, 2); 2],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut problem = solve::SolveProblem::default();
+        problem.solve_layout.algebraic_scalar_count = 2;
+        problem.solve_layout.input_scalar_names.push_scalar("u");
+        problem.solve_layout.input_scalar_names.push_scalar("w");
+        problem.layout = solve::VarLayout::from_parts(
+            (0..2)
+                .map(|index| (format!("y{index}"), solve::scalar_slot_y(index)))
+                .collect(),
+            2,
+            0,
+        );
+        problem.continuous.implicit_rhs =
+            solve::ComputeBlock::from_scalar_program_block(block.block().clone());
+        problem.continuous.implicit_row_targets = (0..2)
+            .map(|index| Some(solve::scalar_slot_y(index)))
+            .collect::<Vec<_>>()
+            .into();
+        problem.continuous.algebraic_projection_plan.blocks = (0..2)
+            .map(|index| solve::AlgebraicProjectionBlock {
+                rows: vec![index],
+                y_indices: vec![index],
+                tearing: None,
+                alternate_charts: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        problem.events.root_conditions = solve::ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            vec![solve::source_span_from_offsets(818, 0, 1)],
+            vec![0],
+        )
+        .unwrap();
+        (problem, block)
+    }
+
+    #[test]
+    fn an_exact_assignment_guard_carries_the_closure_to_its_producer() {
+        let (problem, block) = guarded_closure_problem();
+        let plan = super::super::build_algebraic_refresh_plan(&problem, &block).unwrap();
+        assert!(
+            plan.causal_solution_certified
+                && !plan
+                    .value_stages
+                    .iter()
+                    .any(|stage| matches!(stage, solve::RefreshStage::ProjectionBlock { .. })),
+            "{plan:?}"
+        );
+        let exact = super::super::issued_exact_assignment_rows(&plan);
+        assert!(
+            exact.contains_key(&1),
+            "y1 is an issued exact assignment whose value does not read y0"
+        );
+        let catalog =
+            CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs).unwrap();
+        // The root reads y1; executing y1's assignment checks y0, which reads w.
+        assert_eq!(
+            bits(&issue_input_event_reach(
+                &problem,
+                &catalog,
+                &plan,
+                catalog.positions()
+            )),
+            [false, true]
+        );
+    }
+
+    #[test]
+    fn a_selected_discrete_output_carries_its_program_guard_into_the_event_seeds() {
+        // The selected output stores a constant; the program also makes an
+        // unused call whose guard (when present) reads y0.
+        for guard in [false, true] {
+            let site = baseline_guard_table(guard, false).owners()[0].call_site();
+            let program = vec![
+                solve::LinearOp::Const { dst: 0, value: 2.0 },
+                solve::LinearOp::LoadY { dst: 1, index: 0 },
+                solve::LinearOp::PureCall {
+                    dst_start: 2,
+                    input_starts: vec![0, 1].into(),
+                    site,
+                },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ];
+            let mut problem = solve::SolveProblem::default();
+            problem.solve_layout.algebraic_scalar_count = 1;
+            problem.discrete.rhs = solve::ScalarProgramBlock::with_output_indices(
+                vec![program],
+                vec![solve::source_span_from_offsets(819, 0, 1)],
+                vec![0],
+            )
+            .unwrap();
+            problem.discrete.clock_owners = vec![None];
+            let mut reads = EventConsumerReads::default();
+            super::super::event_dependencies::extend_event_consumer_reads(
+                &mut reads, &problem, 0, None,
+            )
+            .unwrap();
+            let (y, _, _) = reads.into_parts();
+            assert_eq!(y.may_contain(0), guard, "guard={guard}");
+        }
     }
 }

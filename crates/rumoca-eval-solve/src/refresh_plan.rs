@@ -1200,6 +1200,7 @@ fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
 ) -> Result<(IndexSet<usize>, IndexSet<usize>), EvalSolveError> {
     let span = implicit_block.first_span();
     let exact_rows = issued_exact_assignment_rows(plan);
+    let mut execution = BTreeMap::new();
     let mut stack = initial_deps
         .into_seed_stack(target_to_row.keys().chain(block_by_target.keys()).copied())
         .map_err(|error| compact_dependency_error(error, span))?;
@@ -1231,6 +1232,7 @@ fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
                 row,
                 state_count,
                 &mut stack,
+                &mut execution,
                 span,
             )?;
         } else {
@@ -1267,11 +1269,18 @@ fn issued_exact_assignment_rows(plan: &RefreshPlan) -> BTreeMap<usize, &Algebrai
         .collect()
 }
 
+/// Enqueue what executing one issued exact assignment reads: the value
+/// footprint of its expression prefix and the execution obligations (guards
+/// without a result included) of that same prefix, proven once per source.
 fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
     block: &A,
     row: &AlgebraicRefreshRow,
     state_count: usize,
     stack: &mut Vec<usize>,
+    execution: &mut BTreeMap<
+        solve::RefreshScalarProgramSource,
+        solve::ScalarProgramExecutionYDependency,
+    >,
     span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
     let (Some(program), Some(shape)) = (block.source_program(row.source()), row.assignment_shape())
@@ -1287,9 +1296,16 @@ fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
     let footprint = program.get(..shape.expr_eval_len()).and_then(|prefix| {
         solve::ScalarProgramYDependency::new(prefix).footprint(shape.value_registers())
     });
-    let reads: Box<dyn Iterator<Item = usize>> = match &footprint {
-        Some(footprint) => Box::new(footprint.iter()),
-        None => Box::new(row_y_input_ranges(program).into_iter().flatten()),
+    // A prefix whose execution the walk refuses reads every input as well.
+    let obligations = execution
+        .entry(row.source())
+        .or_insert_with(|| solve::ScalarProgramExecutionYDependency::new(program))
+        .prefix(shape.expr_eval_len());
+    let reads: Box<dyn Iterator<Item = usize>> = match (&footprint, &obligations) {
+        (Some(footprint), Some(obligations)) => {
+            Box::new(footprint.iter().chain(obligations.iter()))
+        }
+        _ => Box::new(row_y_input_ranges(program).into_iter().flatten()),
     };
     for dependency in reads {
         if dependency >= state_count {
