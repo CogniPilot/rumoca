@@ -12,6 +12,7 @@
 //! whose body can leave it through `break` keeps only the facts about values
 //! its body never writes.
 
+use super::super::function_returns::statements_break;
 use super::*;
 use std::collections::BTreeSet;
 
@@ -675,25 +676,6 @@ fn widening_thresholds(body: &[rumoca_core::Statement], scope: FactScope<'_>) ->
         rumoca_ir_flat::visitor::StatementVisitor::visit_statement(&mut collect, statement);
     }
     collect.values.into_iter().collect()
-}
-
-/// Whether `statements` can leave their innermost enclosing loop through
-/// `break` (a `break` inside a nested loop leaves only that loop).
-fn statements_break(statements: &[rumoca_core::Statement]) -> bool {
-    statements.iter().any(|statement| match statement {
-        rumoca_core::Statement::Break { .. } => true,
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            cond_blocks
-                .iter()
-                .any(|block| statements_break(&block.stmts))
-                || else_block.as_deref().is_some_and(statements_break)
-        }
-        _ => false,
-    })
 }
 
 /// How many captured definitions deep a condition's reads are followed.

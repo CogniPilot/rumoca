@@ -1,4 +1,6 @@
-//! MLS §11.2.6: a finite loop's return ends the enclosing function algorithm.
+//! Early loop exits: MLS §11.2.6 `return` inside a finite loop ends the
+//! enclosing function algorithm, and MLS §11.2.4 `break` ends its innermost
+//! enclosing loop.
 use super::*;
 
 pub(in crate::construction::analysis) fn contains_for_return(
@@ -15,6 +17,47 @@ pub(in crate::construction::analysis) fn contains_for_return(
                 .iter()
                 .any(|block| contains_for_return(&block.stmts))
                 || else_block.as_deref().is_some_and(contains_for_return)
+        }
+        _ => false,
+    })
+}
+
+/// Whether `statements` contain a `break` at any depth.
+pub(in crate::construction::analysis) fn contains_break(
+    statements: &[rumoca_core::Statement],
+) -> bool {
+    statements.iter().any(|statement| match statement {
+        rumoca_core::Statement::Break { .. } => true,
+        rumoca_core::Statement::For { equations, .. } => contains_break(equations),
+        rumoca_core::Statement::While { block, .. } => contains_break(&block.stmts),
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks.iter().any(|block| contains_break(&block.stmts))
+                || else_block.as_deref().is_some_and(contains_break)
+        }
+        _ => false,
+    })
+}
+
+/// Whether `statements` can leave their innermost enclosing loop through
+/// `break` (a `break` inside a nested loop leaves only that loop).
+pub(in crate::construction::analysis) fn statements_break(
+    statements: &[rumoca_core::Statement],
+) -> bool {
+    statements.iter().any(|statement| match statement {
+        rumoca_core::Statement::Break { .. } => true,
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks
+                .iter()
+                .any(|block| statements_break(&block.stmts))
+                || else_block.as_deref().is_some_and(statements_break)
         }
         _ => false,
     })
