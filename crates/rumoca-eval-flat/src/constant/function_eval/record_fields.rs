@@ -17,6 +17,17 @@ pub(super) struct RecordField {
     record: bool,
 }
 
+impl RecordField {
+    /// Why this field, never written, has no value.
+    fn missing_value(&self) -> &'static str {
+        if self.defaulted {
+            "has only its declared default, which is not evaluated here"
+        } else {
+            "has no value"
+        }
+    }
+}
+
 impl FunctionEnv {
     /// Write `value` into the field `fields` of the record output or local
     /// `root`, converted to the field's declared type; `false` when `root` has
@@ -86,12 +97,11 @@ impl FunctionEnv {
         let mut complete = IndexMap::new();
         for field in layout {
             let Some(field_value) = record.get(&field.name) else {
-                let reason = if field.defaulted {
-                    "has only its declared default, which is not evaluated here"
-                } else {
-                    "has no value"
-                };
-                return Err(unproven(format!("field `{}` {reason}", field.name)));
+                return Err(unproven(format!(
+                    "field `{}` {}",
+                    field.name,
+                    field.missing_value()
+                )));
             };
             complete.insert(field.name.clone(), field_value.clone());
         }
