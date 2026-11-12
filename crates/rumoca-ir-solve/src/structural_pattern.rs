@@ -10,6 +10,7 @@ pub use jacobian_product::{
 };
 mod kinematic_states;
 pub use execution_reads::{ExecutionYReadPrefix, ScalarProgramExecutionYDependency};
+pub(crate) use execution_reads::{conditional_obligation, fold_obligation};
 pub use kinematic_states::{KinematicStates, NonKinematicReason};
 mod register_dependencies;
 #[cfg(test)]

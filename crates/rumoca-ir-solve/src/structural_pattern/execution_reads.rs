@@ -292,7 +292,7 @@ impl DependencyWalk<'_> {
     }
 }
 
-pub(super) fn conditional_obligation(program: &crate::FunctionConditionalProgram) -> bool {
+pub(crate) fn conditional_obligation(program: &crate::FunctionConditionalProgram) -> bool {
     program
         .arms
         .iter()
@@ -300,7 +300,7 @@ pub(super) fn conditional_obligation(program: &crate::FunctionConditionalProgram
         || program_obligation(&program.fallback)
 }
 
-pub(super) fn fold_obligation(program: &crate::FunctionFoldProgram) -> bool {
+pub(crate) fn fold_obligation(program: &crate::FunctionFoldProgram) -> bool {
     program_obligation(&program.update)
         || program
             .continuation
