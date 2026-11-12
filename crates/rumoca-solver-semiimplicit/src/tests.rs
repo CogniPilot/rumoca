@@ -58,6 +58,10 @@ fn run(extension_order_limit: Option<u32>) -> OdeRun {
 
 #[test]
 fn the_driver_admits_the_linear_extension_and_then_meets_the_partition_refusal() {
+    // Both refusals below concern a well-formed ordinary system: y' = -y.
+    let mut slope = [0.0];
+    Decay.derivatives_into(0.0, &[2.0], &mut slope).unwrap();
+    assert_eq!(slope, [-2.0]);
     let mut steps = 0;
     let refused = integrate_ode(
         Rc::new(Decay),
