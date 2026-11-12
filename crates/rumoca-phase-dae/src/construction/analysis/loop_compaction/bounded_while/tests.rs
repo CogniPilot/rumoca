@@ -282,7 +282,7 @@ fn a_break_keeps_the_counter_bound_and_adds_its_pass_to_progress() {
     assert_eq!(bound(Some(8), window, vec![leave, fall]), Some(10));
 }
 
-/// MLS §11.2.6: a pass that returns is the last one too, so the counter
+/// MLS §11.2.5: a pass that returns is the last one too, so the counter
 /// form keeps its bound and the progress form counts that pass once more.
 #[test]
 fn a_return_keeps_the_counter_bound_and_adds_its_pass_to_progress() {

@@ -1,5 +1,5 @@
 //! Early loop exits: MLS §11.2.4 `break` ends its innermost enclosing loop,
-//! and MLS §11.2.6 `return` inside a loop ends the enclosing function
+//! and MLS §11.2.5 `return` inside a loop ends the enclosing function
 //! algorithm.
 //!
 //! Each exit is one mutable generated Boolean, its *exit state*: the function
@@ -17,6 +17,7 @@
 //! (`function_body::loop_exit`): every executor ends the fold at the pass
 //! after the exit.
 use super::*;
+use rumoca_core::{ExpressionRewriter, Statement, StatementRewriter};
 
 /// Whether `statements` leave a loop early: a `break`, or a `return` inside a
 /// `for` or `while` loop.
@@ -83,6 +84,50 @@ pub(in crate::construction::analysis) fn statements_break(
         }
         _ => false,
     })
+}
+
+/// `statements` with every loop a `break` ends written as a loop of one
+/// iterator.
+///
+/// MLS §11.2.2.3 defines a `for` with several iterators as the nest of one
+/// loop per iterator, so a `break` in its body ends the loop of the last
+/// iterator and the next pass of the others runs it again. Such a loop
+/// becomes the loop of its last iterator, which owns the body and its break,
+/// inside one loop of the iterators before it. A loop that does not break
+/// keeps its iterators together: the nest and their product run the same
+/// passes in the same order.
+pub(in crate::construction::analysis) fn nest_breaking_iterators(
+    statements: &[Statement],
+) -> Vec<Statement> {
+    BreakingIterators.rewrite_statements(statements)
+}
+
+struct BreakingIterators;
+
+impl ExpressionRewriter for BreakingIterators {}
+
+impl StatementRewriter for BreakingIterators {
+    fn rewrite_statement(&mut self, statement: &Statement) -> Statement {
+        match self.walk_statement(statement) {
+            Statement::For {
+                mut indices,
+                equations,
+                span,
+            } if indices.len() > 1 && statements_break(&equations) => {
+                let last = indices.split_off(indices.len() - 1);
+                Statement::For {
+                    indices,
+                    equations: vec![Statement::For {
+                        indices: last,
+                        equations,
+                        span,
+                    }],
+                    span,
+                }
+            }
+            walked => walked,
+        }
+    }
 }
 
 pub(super) fn normalize(
@@ -241,6 +286,18 @@ impl LoopExits {
                     ));
                 };
                 self.store(state, true, span)
+            }
+            // One break state ends one loop. `nest_breaking_iterators` gives
+            // every breaking loop one iterator before any state is assigned.
+            rumoca_core::Statement::For {
+                indices, equations, ..
+            } if indices.len() > 1 && statements_break(equations) => {
+                return Err(unsupported_statement(
+                    statement,
+                    "function break under several iterators",
+                    "function loop exit",
+                    "a `break` ends the loop of the last iterator only (MLS §11.2.2.3), so its loop must have one iterator when its exit state is assigned",
+                ));
             }
             rumoca_core::Statement::For {
                 indices, equations, ..

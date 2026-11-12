@@ -229,10 +229,13 @@ fn normalize_function_source(
 ) -> Result<function_returns::NormalizedFunctionReturns, ToDaeError> {
     // Mutable exit stores must not be hidden from source compaction's write analysis.
     // Compact the source first; branch snapshots then see the checked exit state.
+    // Every rewrite reads a `break` as the exit of the loop around it, so each
+    // breaking loop is first written with the one iterator it ends.
     let precompacted = function_returns::contains_loop_exit(body);
     let returned = if precompacted {
+        let nested = function_returns::nest_breaking_iterators(body);
         let compacted = compact_function_loops(
-            body,
+            &nested,
             context.static_integers,
             context.shapes,
             function,

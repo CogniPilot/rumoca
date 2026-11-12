@@ -157,7 +157,7 @@ fn while_return(point: Point) -> f64 {
     total + 1000.0
 }
 
-/// MLS §11.2.6: a `return` inside a `while` ends the function at its pass.
+/// MLS §11.2.5: a `return` inside a `while` ends the function at its pass.
 #[test]
 fn a_return_inside_a_while_ends_the_function() {
     let fixture = Fixture::compile(

@@ -5,7 +5,9 @@ use rumoca_core::Reference;
 mod tests;
 
 mod loop_exits;
-pub(super) use loop_exits::{contains_break, contains_loop_exit, statements_break};
+pub(super) use loop_exits::{
+    contains_break, contains_loop_exit, nest_breaking_iterators, statements_break,
+};
 
 pub(super) fn validate_guarded_function_return(
     function: &rumoca_core::Function,

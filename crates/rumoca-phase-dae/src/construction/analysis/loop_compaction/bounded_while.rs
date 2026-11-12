@@ -38,7 +38,7 @@
 //! Integer greater than one reaches zero. A loop without a proof is left as
 //! written and keeps its typed rejection.
 //!
-//! A `break` of the loop (MLS §11.2.4) or a `return` (MLS §11.2.6) leaves
+//! A `break` of the loop (MLS §11.2.4) or a `return` (MLS §11.2.5) leaves
 //! the counter and division proofs intact: they bound the passes by the
 //! counter values a pass can start from, every pass that goes on moves the
 //! counter at top level, and a pass that exits is the last one. The progress
