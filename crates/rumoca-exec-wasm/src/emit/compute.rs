@@ -19,7 +19,7 @@ pub(crate) use exact_assignments::{
 };
 #[cfg(test)]
 pub(crate) use exact_assignments::{emit_private_directional_module, emit_private_program_module};
-pub(crate) use values::emit_derivative_value_module;
+pub(crate) use values::{emit_derivative_value_module, emit_kinematic_value_module};
 
 use super::*;
 use affine::AffinePlan;

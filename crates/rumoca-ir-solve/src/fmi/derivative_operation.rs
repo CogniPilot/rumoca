@@ -7,6 +7,7 @@
 mod causal;
 mod control_builder;
 mod control_plan;
+mod kinematic;
 pub use causal::{
     FmiDerivativeCausalOperation, FmiDerivativeCausalRefusal, FmiDerivativeStatus,
     FmiDerivativeWorkspace,
@@ -15,6 +16,7 @@ pub use control_plan::{
     FmiDerivativeControlPlan, Helper as FmiDerivativeHelper,
     Instruction as FmiDerivativeControlInstruction,
 };
+pub use kinematic::FmiKinematicDerivativeOperation;
 
 use super::{FmiMetadata, FmiRuntimeView};
 use crate::{

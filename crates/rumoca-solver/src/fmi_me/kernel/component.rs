@@ -100,7 +100,9 @@ impl SolveMeKernel {
     /// algebraics are reused with the current states written over its state
     /// prefix. The Solve IR partition makes that exact: a kinematic row reads
     /// the other states only as slots, and no algebraic it reads depends on
-    /// them. Anything else is a contract failure, never a refresh.
+    /// them. Anything else is a contract failure, never a refresh. The rows
+    /// read the stamped solver guess in place, with the current states over
+    /// its prefix only for the evaluation.
     pub(crate) fn kinematic_state_derivatives_into(
         &self,
         derivatives: &mut [f64],
@@ -115,22 +117,25 @@ impl SolveMeKernel {
         self.require_active_lifecycle("get_kinematic_state_derivatives")?;
         let kinematic = self.kinematic_state_indices();
         let time = self.continuous_eval_time();
-        let Some(mut solver_y) = self.settled_kinematic_coordinate(time, kinematic) else {
+        if !self.settled_kinematic_coordinate(time, kinematic) {
             return Err(contract(
                 "kinematic state derivatives need the settled coordinate of a derivative \
                  evaluation at this time and these kinematic states",
             ));
-        };
-        solver_y[..self.state_count].copy_from_slice(&self.states);
+        }
+        let mut states = self.states.clone();
         let mut values = vec![0.0; self.state_count];
-        self.runtime
-            .eval_derivative_rows_at_settled_y(
-                time,
-                &solver_y,
-                &self.params,
-                kinematic,
-                &mut values,
-            )
+        self.solver_y_guess
+            .with_prefix(&mut states, |solver_y| {
+                self.runtime.eval_derivative_rows_at_settled_y(
+                    time,
+                    solver_y,
+                    &self.params,
+                    kinematic,
+                    &mut values,
+                )
+            })
+            .ok_or_else(|| contract("the settled solver vector is in use"))?
             .map_err(|error| MeError::from(error).at_stage(MeStage::Integration))?;
         for &state in kinematic {
             derivatives[state] = values[state];
@@ -138,21 +143,26 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    /// The solver vector the last derivative refresh settled, when it is at
-    /// `time`, the current parameters and the current kinematic states.
-    fn settled_kinematic_coordinate(&self, time: f64, kinematic: &[usize]) -> Option<Vec<f64>> {
+    /// Whether the solver guess holds the coordinate the last derivative
+    /// refresh settled at `time`, the current parameters and the current
+    /// kinematic states.
+    fn settled_kinematic_coordinate(&self, time: f64, kinematic: &[usize]) -> bool {
         let cache = self.continuous_linearization_cache.borrow();
-        let cached = cache.as_ref()?;
+        let Some(cached) = cache.as_ref() else {
+            return false;
+        };
         let kinematic_match = |state: &usize| {
             cached.state.get(*state).map(|value| value.to_bits())
                 == self.states.get(*state).map(|value| value.to_bits())
         };
-        (cached.kind == SettledCoordinateKind::Derivative
+        cached.kind == SettledCoordinateKind::Derivative
             && cached.time.to_bits() == time.to_bits()
-            && cached.solver_y.len() >= self.state_count
             && state_values_match(&cached.parameters, &self.params)
-            && kinematic.iter().all(kinematic_match))
-        .then(|| cached.solver_y.clone())
+            && kinematic.iter().all(kinematic_match)
+            && matches!(cached.values, SettledValues::Guess { .. })
+            && self
+                .settled_values(cached)
+                .is_some_and(|values| values.len() >= self.state_count)
     }
 
     /// The Solve IR kinematic states this component serves: none when delay
@@ -562,7 +572,13 @@ impl SolveMeKernel {
         solver_y: &[f64],
     ) {
         self.solver_y_guess.borrow_mut().clone_from_slice(solver_y);
-        self.cache_continuous_linearization(time, state, parameters, solver_y);
+        self.cache_continuous_linearization(time, state, parameters);
+    }
+
+    /// A write to the solver guess that leaves its values as they are.
+    #[cfg(test)]
+    pub(crate) fn verification_touch_solver_guess(&self) {
+        drop(self.solver_y_guess.borrow_mut());
     }
 
     #[cfg(test)]
@@ -606,7 +622,7 @@ impl SolveMeKernel {
             )
             && root_cache_bit_eq(self.root_cache.borrow().as_ref(), state.root_cache.as_ref())
             && continuous_linearization_cache_bit_eq(
-                self.continuous_linearization_cache.borrow().as_ref(),
+                self.snapshot_settled_coordinate().as_ref(),
                 state.continuous_linearization_cache.as_ref(),
             )
             && observations_bit_eq(&self.initial_observations, &state.initial_observations)
@@ -836,7 +852,7 @@ impl SolveMeKernel {
             active_chart: 0,
             active_reference: None,
             pending_basis_change: None,
-            solver_y_guess: RefCell::new(initial_y.clone()),
+            solver_y_guess: solver_guess::SolverGuess::new(initial_y.clone()),
             committed_seed: RefCell::default(),
             indicator_root_scratch: RefCell::new(scratch.indicator_root_scratch),
             indicator_deadline_scratch: RefCell::new(scratch.indicator_deadline_scratch),
@@ -1055,18 +1071,17 @@ impl SolveMeKernel {
         };
         {
             let cache = self.continuous_linearization_cache.borrow();
-            if let Some(cached) = cache.as_ref().filter(|cached| {
-                cached.kind == SettledCoordinateKind::Derivative
-                    && cached.matches(time, &self.states, parameters)
-            }) {
+            if let Some(values) = cache
+                .as_ref()
+                .filter(|cached| {
+                    cached.kind == SettledCoordinateKind::Derivative
+                        && cached.matches(time, &self.states, parameters)
+                })
+                .and_then(|cached| self.settled_values(cached))
+            {
                 return self
                     .runtime
-                    .eval_state_jacobian_v_at_settled_solver_y_into(
-                        lin,
-                        &cached.solver_y,
-                        seed,
-                        sensitivity,
-                    )
+                    .eval_state_jacobian_v_at_settled_solver_y_into(lin, &values, seed, sensitivity)
                     .map_err(MeError::from);
             }
         }
@@ -1082,7 +1097,7 @@ impl SolveMeKernel {
                 )
                 .map_err(MeError::from);
             if result.is_ok() {
-                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+                self.cache_continuous_linearization(time, &self.states, parameters);
             } else {
                 self.invalidate_continuous_linearization();
             }
@@ -1100,7 +1115,7 @@ impl SolveMeKernel {
         self.with_callback_solver_y(time, |guess, settled| {
             if let Some(settled) = settled {
                 derivatives.copy_from_slice(settled);
-                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+                self.cache_continuous_linearization(time, &self.states, parameters);
                 return Ok(());
             }
             let result = self
@@ -1116,7 +1131,7 @@ impl SolveMeKernel {
                 )
                 .map_err(MeError::from);
             if result.is_ok() {
-                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+                self.cache_continuous_linearization(time, &self.states, parameters);
             } else {
                 self.invalidate_continuous_linearization();
             }

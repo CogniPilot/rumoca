@@ -18,6 +18,7 @@ pub(in crate::fmi_me) use input_transaction::fail_input_restore;
 pub(in crate::fmi_me) use input_transaction::snapshot_count;
 #[cfg(feature = "native-wasm")]
 mod native_typed;
+mod solver_guess;
 
 #[cfg(feature = "native-wasm")]
 pub use native_typed::{MePendingNativeComponent, MePendingNativeState};
@@ -85,10 +86,21 @@ struct SettledIndicatorCoordinate {
     values: Vec<f64>,
 }
 
+/// Where a settled coordinate is held.
+#[derive(Clone)]
+enum SettledValues {
+    /// A copy, for an algebraic settle the warm start later moves away from.
+    Owned(Vec<f64>),
+    /// The kernel's solver guess as `writes` left it: a derivative refresh
+    /// settles there in place. A snapshot keeps this only while it is current
+    /// and restores it against the guess it restores.
+    Guess { writes: u64 },
+}
+
 #[derive(Clone)]
 struct CachedContinuousLinearization {
     kind: SettledCoordinateKind,
-    solver_y: Vec<f64>,
+    values: SettledValues,
     time: f64,
     state: Vec<f64>,
     parameters: Vec<f64>,
@@ -216,7 +228,7 @@ pub struct SolveMeKernel {
     boundary_event_pre_y: Option<Vec<f64>>,
     boundary_event_pre_p: Option<Vec<f64>>,
 
-    solver_y_guess: RefCell<Vec<f64>>,
+    solver_y_guess: solver_guess::SolverGuess,
     committed_seed: RefCell<committed_seed::CommittedSeed>,
     /// Who orders this instance's evaluations (Solve IR `RefreshExecutor`).
     refresh_executor: rumoca_ir_solve::RefreshExecutor,
@@ -1200,10 +1212,7 @@ impl SolveMeKernel {
                 delay_solver_y_scratch: snapshot_values(&self.delay_solver_y_scratch.borrow())?,
                 derivative_cache: self.derivative_cache.borrow().clone(),
                 root_cache: self.root_cache.borrow().clone(),
-                continuous_linearization_cache: self
-                    .continuous_linearization_cache
-                    .borrow()
-                    .clone(),
+                continuous_linearization_cache: self.snapshot_settled_coordinate(),
                 initial_observations: snapshot_values(&self.initial_observations)?,
                 max_step_duration: self.max_step_duration,
                 last_projection_changed: self.last_projection_changed,
@@ -1284,9 +1293,7 @@ impl SolveMeKernel {
             .borrow_mut()
             .clone_from(&state.derivative_cache);
         self.root_cache.borrow_mut().clone_from(&state.root_cache);
-        self.continuous_linearization_cache
-            .borrow_mut()
-            .clone_from(&state.continuous_linearization_cache);
+        self.restore_settled_coordinate(state.continuous_linearization_cache.as_ref());
         self.initial_observations
             .clone_from(&state.initial_observations);
         self.max_step_duration = state.max_step_duration;
@@ -1478,7 +1485,14 @@ fn continuous_linearization_cache_bit_eq(
     match (left, right) {
         (Some(left), Some(right)) => {
             left.time.to_bits() == right.time.to_bits()
-                && float_slice_bit_eq(&left.solver_y, &right.solver_y)
+                && match (&left.values, &right.values) {
+                    (SettledValues::Owned(left), SettledValues::Owned(right)) => {
+                        float_slice_bit_eq(left, right)
+                    }
+                    // Both name their own solver guess, compared on its own.
+                    (SettledValues::Guess { .. }, SettledValues::Guess { .. }) => true,
+                    _ => false,
+                }
                 && float_slice_bit_eq(&left.state, &right.state)
                 && float_slice_bit_eq(&left.parameters, &right.parameters)
                 && left.kind == right.kind

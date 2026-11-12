@@ -1489,6 +1489,8 @@ impl ScalarExecutionView<'_> {
     /// refresh a full evaluation runs first: the caller supplies a coordinate
     /// a derivative refresh already settled. Only the rows in `rows` are
     /// checked finite; the others read values the caller does not vouch for.
+    /// The complete operation's kinematic entry, when it serves exactly
+    /// `rows`, evaluates no other row.
     pub(crate) fn eval_derivative_rows_at_settled_y(
         &self,
         t: f64,
@@ -1498,6 +1500,9 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
+        if let Some(result) = self.try_complete_kinematic(t, solver_y, params, rows, out) {
+            return result;
+        }
         self.scalar.derivative_scalar.eval(
             RowEvalPoint {
                 y: solver_y,

@@ -35,6 +35,66 @@ impl FmiDerivativeFailure {
     }
 }
 
+/// The kinematic entry's storage: `y` is read, never written, and only the
+/// issued kinematic rows of `output` are written.
+pub struct FmiKinematicCall<'a> {
+    pub y: &'a [f64],
+    pub parameters: &'a [f64],
+    pub time: f64,
+    pub output: &'a mut [f64],
+    pub workspace: &'a mut [u64],
+}
+
+impl BoundFmiDerivativeOperation {
+    /// Whether the source issued a kinematic entry.
+    pub fn has_kinematic(&self) -> bool {
+        self.kinematic.is_some()
+    }
+
+    /// The kinematic rows over a settled `y`. A refused helper or a non-finite
+    /// kinematic row is the same typed failure as a complete evaluation's.
+    pub fn call_kinematic(&self, frame: FmiKinematicCall<'_>) -> Result<(), FmiDerivativeFailure> {
+        let lengths = [
+            (frame.y.len(), self.workspace.y_bytes()),
+            (frame.parameters.len(), self.workspace.regions()[1].1),
+            (frame.output.len(), self.workspace.output_bytes()),
+        ];
+        if self.kinematic.is_none()
+            || lengths
+                .iter()
+                .any(|&(cells, bytes)| cells.checked_mul(8) != Some(bytes as usize))
+            || frame
+                .workspace
+                .len()
+                .checked_mul(8)
+                .is_none_or(|bytes| bytes < self.workspace.bytes() as usize)
+        {
+            return Err(FmiDerivativeFailure::Entry(WasmCompileError::Input(
+                "kinematic derivative input differs from issued layout".into(),
+            )));
+        }
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            let mut frame = frame;
+            frame.workspace[..2].fill(0);
+            let status = self.runtime.call_kinematic(&mut frame).map_err(|error| {
+                FmiDerivativeFailure::Helper {
+                    phase: Status::Values,
+                    error,
+                }
+            })?;
+            self.returned_status(frame.output.len(), frame.workspace, status, true)
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            let _ = frame;
+            Err(FmiDerivativeFailure::Entry(WasmCompileError::Input(
+                "kinematic FMI derivative has no admitted engine on this target".into(),
+            )))
+        }
+    }
+}
+
 impl BoundFmiDerivativeOperation {
     /// Private entry only. Its public FMI runtime must retain the original root.
     /// No interpreted retry occurs after a native failure or engine exception.
@@ -49,7 +109,7 @@ impl BoundFmiDerivativeOperation {
                 *frame.cache_valid = true;
             }
             let status = result.map_err(|error| self.engine_failure(&mut frame, error))?;
-            self.returned_status(&frame, status)
+            self.returned_status(frame.output.len(), frame.workspace, status, false)
         }
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
@@ -118,8 +178,10 @@ impl BoundFmiDerivativeOperation {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn returned_status(
         &self,
-        frame: &FmiDerivativeCall<'_>,
+        outputs: usize,
+        workspace: &[u64],
         status: u32,
+        kinematic: bool,
     ) -> Result<(), FmiDerivativeFailure> {
         let Some(phase) = Status::from_code(status) else {
             return Err(FmiDerivativeFailure::Entry(WasmCompileError::Backend(
@@ -130,8 +192,8 @@ impl BoundFmiDerivativeOperation {
             return Ok(());
         }
         if phase == Status::NonFinite {
-            let output = frame.workspace[1] as u32 as usize;
-            if output < frame.output.len() {
+            let output = workspace[1] as u32 as usize;
+            if output < outputs {
                 return Err(FmiDerivativeFailure::NonFinite { output });
             }
             return Err(FmiDerivativeFailure::Entry(WasmCompileError::Backend(
@@ -141,11 +203,12 @@ impl BoundFmiDerivativeOperation {
         let helper = match phase {
             Status::StaticRefresh => self.static_program.as_ref(),
             Status::DynamicRefresh => self.dynamic_program.as_ref(),
+            Status::Values if kinematic => self.kinematic.as_ref(),
             Status::Values => Some(&self.values),
             _ => None,
         };
         let error = helper
-            .map(|helper| helper.status_error((frame.workspace[0] >> 32) as u32))
+            .map(|helper| helper.status_error((workspace[0] >> 32) as u32))
             .unwrap_or_else(|| {
                 WasmCompileError::Input("complete derivative buffer admission refused".into())
             });

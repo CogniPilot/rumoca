@@ -1,6 +1,6 @@
 //! Runtime adapter retaining the original source and borrowing the global cache.
 use rumoca_exec_wasm::{
-    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure,
+    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall,
     PrecompiledFmiDerivativeOperation, compile_fmi_derivative_operation_wasm,
 };
 use rumoca_ir_solve::{RetainedAssertionRoot, fmi::FmiDerivativeCausalRefusal};
@@ -13,6 +13,7 @@ use std::cell::RefCell;
 pub(super) struct WasmDerivative {
     root: RetainedAssertionRoot,
     compiled: BoundFmiDerivativeOperation,
+    kinematic_rows: Option<Box<[usize]>>,
     workspace: RefCell<Vec<u64>>,
 }
 impl WasmDerivative {
@@ -38,6 +39,9 @@ impl WasmDerivative {
                 .bind(&operation)
                 .map_err(|error| error.to_string())?
         };
+        let kinematic_rows = operation
+            .kinematic()
+            .map(|kinematic| kinematic.rows().iter().collect());
         let count = (compiled.workspace().bytes() as usize).div_ceil(8);
         let mut workspace = Vec::new();
         workspace
@@ -47,6 +51,7 @@ impl WasmDerivative {
         Ok(Some(Self {
             root,
             compiled,
+            kinematic_rows,
             workspace: RefCell::new(workspace),
         }))
     }
@@ -105,5 +110,44 @@ impl CompiledSolveDerivativeOperation for WasmDerivative {
                 cache_valid: cache.valid,
             })
             .map_err(|error| self.failure(error))
+    }
+
+    fn call_kinematic(
+        &self,
+        y: &[f64],
+        parameters: &[f64],
+        time: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        rows: &[usize],
+        output: &mut [f64],
+    ) -> Option<Result<(), SolveDerivativeOperationFailure>> {
+        if self.kinematic_rows.as_deref() != Some(rows) {
+            return None;
+        }
+        let early = |error| SolveDerivativeOperationFailure { phase: None, error };
+        let result = super::profile::validate_inputs(
+            &self.root.model().problem.layout,
+            y.len(),
+            parameters.len(),
+            tables.len(),
+        )
+        .map_err(|error| early(RuntimeSolveError::solve_ir(error)))
+        .and_then(|()| {
+            let mut workspace = self.workspace.try_borrow_mut().map_err(|_| {
+                early(RuntimeSolveError::solve_ir(
+                    "complete derivative workspace is reentrant",
+                ))
+            })?;
+            self.compiled
+                .call_kinematic(FmiKinematicCall {
+                    y,
+                    parameters,
+                    time,
+                    output,
+                    workspace: &mut workspace,
+                })
+                .map_err(|error| self.failure(error))
+        });
+        Some(result)
     }
 }

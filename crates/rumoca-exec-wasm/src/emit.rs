@@ -8,12 +8,12 @@ mod gather;
 mod linear_solve;
 mod seed;
 mod tensor;
-pub(super) use compute::emit_derivative_value_module;
 pub(super) use compute::{
     AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
     emit_exact_assignment_module, emit_issued_assignment_module, emit_private_entries_modules,
 };
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
+pub(super) use compute::{emit_derivative_value_module, emit_kinematic_value_module};
 pub(super) use compute::{
     emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
 };

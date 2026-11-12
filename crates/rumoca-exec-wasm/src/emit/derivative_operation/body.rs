@@ -1,17 +1,19 @@
 //! One-to-one printing of the constructor-issued memory32 control stream.
 use super::*;
-use rumoca_ir_solve::fmi::{
-    FmiDerivativeControlInstruction as Op, FmiDerivativeControlPlan, FmiDerivativeHelper as Helper,
-};
+use rumoca_ir_solve::fmi::{FmiDerivativeControlInstruction as Op, FmiDerivativeHelper as Helper};
 
-pub(super) fn emit(
-    plan: &FmiDerivativeControlPlan,
-    stat: Option<u32>,
-    dynamic: Option<u32>,
-    values: u32,
-) -> Function {
-    let mut function = Function::new([(plan.i32_locals(), ValType::I32)]);
-    for &op in plan.instructions() {
+/// Function indices of the imported helpers an entry may call.
+#[derive(Clone, Copy)]
+pub(super) struct Helpers {
+    pub(super) stat: Option<u32>,
+    pub(super) dynamic: Option<u32>,
+    pub(super) values: u32,
+    pub(super) kinematic: Option<u32>,
+}
+
+pub(super) fn emit(instructions: &[Op], i32_locals: u32, helpers: Helpers) -> Function {
+    let mut function = Function::new([(i32_locals, ValType::I32)]);
+    for &op in instructions {
         let instruction = match op {
             Op::I32Const(n) => Instruction::I32Const(n),
             Op::I64Const(n) => Instruction::I64Const(n),
@@ -50,9 +52,10 @@ pub(super) fn emit(
             Op::Br(n) => Instruction::Br(n),
             Op::Return => Instruction::Return,
             Op::Call(helper) => Instruction::Call(match helper {
-                Helper::Static => stat.expect("issued static helper"),
-                Helper::Dynamic => dynamic.expect("issued dynamic helper"),
-                Helper::Values => values,
+                Helper::Static => helpers.stat.expect("issued static helper"),
+                Helper::Dynamic => helpers.dynamic.expect("issued dynamic helper"),
+                Helper::Values => helpers.values,
+                Helper::Kinematic => helpers.kinematic.expect("issued kinematic helper"),
             }),
         };
         function.instruction(&instruction);

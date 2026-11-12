@@ -36,6 +36,7 @@ pub struct FmiDerivativeCausalOperation<'source> {
     static_targets: IndexIntervals,
     parameter_keys: Box<[usize]>,
     parameter_runs: Vec<(usize, usize, usize)>,
+    kinematic: Option<super::FmiKinematicDerivativeOperation>,
 }
 
 impl<'source> FmiDerivativeOperationSource<'source> {
@@ -76,6 +77,7 @@ impl<'source> FmiDerivativeOperationSource<'source> {
             .static_cache_parameters(&self.problem().continuous.implicit_rhs)
             .map_err(FmiDerivativeCausalRefusal::Source)?;
         let parameter_runs = parameter_runs(&parameter_keys);
+        let kinematic = super::FmiKinematicDerivativeOperation::issue(&self);
         Ok(FmiDerivativeCausalOperation {
             source: self,
             static_schedule,
@@ -83,6 +85,7 @@ impl<'source> FmiDerivativeOperationSource<'source> {
             static_targets,
             parameter_keys,
             parameter_runs,
+            kinematic,
         })
     }
 }
@@ -106,6 +109,12 @@ impl<'source> FmiDerivativeCausalOperation<'source> {
 
     pub fn parameter_runs(&self) -> &[(usize, usize, usize)] {
         &self.parameter_runs
+    }
+
+    /// The kinematic rows over the settled coordinate, when the source issues
+    /// a proper partition (see [`super::FmiKinematicDerivativeOperation`]).
+    pub fn kinematic(&self) -> Option<&super::FmiKinematicDerivativeOperation> {
+        self.kinematic.as_ref()
     }
 
     /// Child executables report their actual private scratch demand. These

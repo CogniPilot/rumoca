@@ -37,3 +37,27 @@ impl ScalarExecutionView<'_> {
         Some(result.map_err(|failure| failure.error))
     }
 }
+
+impl ScalarExecutionView<'_> {
+    /// The issued kinematic entry of the complete operation, when it serves
+    /// exactly `rows`.
+    pub(super) fn try_complete_kinematic(
+        &self,
+        time: f64,
+        y: &[f64],
+        parameters: &[f64],
+        rows: &[usize],
+        output: &mut [f64],
+    ) -> Option<Result<(), RuntimeSolveError>> {
+        let operation = self.scalar.compiled_derivative_operation.as_ref()?;
+        let result = operation.call_kinematic(
+            y,
+            parameters,
+            time,
+            self.model.external_tables.as_slice(),
+            rows,
+            output,
+        )?;
+        Some(result.map_err(|failure| failure.error))
+    }
+}

@@ -3,7 +3,7 @@ use super::*;
 use crate::program_payload::ProgramPayload;
 use serde::{Deserialize, Serialize};
 mod call;
-pub use call::{FmiDerivativeCall, FmiDerivativeFailure};
+pub use call::{FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod runtime;
 
@@ -17,6 +17,7 @@ pub struct PrecompiledFmiDerivativeOperation {
     static_program: Option<ProgramPayload>,
     dynamic_program: Option<ProgramPayload>,
     values: ProgramPayload,
+    kinematic: Option<ProgramPayload>,
 }
 
 /// Bound bytes still carry no engine admission. The workspace is freshly issued
@@ -29,17 +30,19 @@ pub struct BoundFmiDerivativeOperation {
     static_program: Option<ProgramPayload>,
     dynamic_program: Option<ProgramPayload>,
     values: ProgramPayload,
+    kinematic: Option<ProgramPayload>,
 }
 
 impl PrecompiledFmiDerivativeOperation {
     pub fn from_compiled(program: &CompiledFmiDerivativeOperationWasm) -> Self {
         Self {
-            version: 1,
+            version: 2,
             source_key: program.source_key.clone(),
             bytes: program.bytes.clone(),
             static_program: program.static_program.as_ref().map(ProgramPayload::from),
             dynamic_program: program.dynamic_program.as_ref().map(ProgramPayload::from),
             values: ProgramPayload::from(&program.values),
+            kinematic: program.kinematic.as_ref().map(ProgramPayload::from),
         }
     }
 
@@ -57,11 +60,13 @@ impl PrecompiledFmiDerivativeOperation {
             .static_program
             .iter()
             .chain(self.dynamic_program.iter())
-            .chain(std::iter::once(&self.values));
-        if self.version != 1
+            .chain(std::iter::once(&self.values))
+            .chain(self.kinematic.iter());
+        if self.version != 2
             || self.source_key != expected
             || self.static_program.is_some() != operation.static_schedule().is_some()
             || self.dynamic_program.is_some() != operation.dynamic_schedule().is_some()
+            || self.kinematic.is_some() != operation.kinematic().is_some()
             || self.bytes.len() > (8 << 20)
             || helpers.clone().any(|p| {
                 p.module_bytes().len() > (8 << 20)
@@ -92,6 +97,7 @@ impl PrecompiledFmiDerivativeOperation {
             static_program: self.static_program.clone(),
             dynamic_program: self.dynamic_program.clone(),
             values: self.values.clone(),
+            kinematic: self.kinematic.clone(),
         })
     }
 }
@@ -115,6 +121,9 @@ impl BoundFmiDerivativeOperation {
     }
     pub fn value_module_bytes(&self) -> &[u8] {
         self.values.module_bytes()
+    }
+    pub fn kinematic_module_bytes(&self) -> Option<&[u8]> {
+        self.kinematic.as_ref().map(ProgramPayload::module_bytes)
     }
 }
 

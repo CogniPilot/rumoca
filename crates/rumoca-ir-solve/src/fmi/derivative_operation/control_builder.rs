@@ -26,8 +26,10 @@ pub(super) fn instructions(
     let mut b = Body {
         function: Vec::new(),
         workspace: w,
+        index: INDEX,
+        native: NATIVE,
     };
-    b.guards();
+    b.guards(&w.regions(), true);
     b.address(WORK, 0);
     b.i(0);
     b.i(16);
@@ -68,9 +70,71 @@ pub(super) fn instructions(
     b.function
 }
 
+/// Locals of the kinematic entry `(y, p, t, out, work)`.
+const KINEMATIC_INDEX: u32 = 5;
+const KINEMATIC_NATIVE: u32 = 6;
+
+/// The kinematic entry: the restricted values over `y` as given, then the
+/// kinematic rows copied out and checked finite in ascending order, as the
+/// selected evaluation checks them. No refresh runs and `y` is only read, so
+/// no failure has a coordinate to restore.
+pub(super) fn kinematic(
+    kinematic: &super::FmiKinematicDerivativeOperation,
+    w: FmiDerivativeWorkspace,
+) -> Vec<Instruction> {
+    let mut b = Body {
+        function: Vec::new(),
+        workspace: w,
+        index: KINEMATIC_INDEX,
+        native: KINEMATIC_NATIVE,
+    };
+    let regions = w.regions();
+    let entry = regions
+        .iter()
+        .copied()
+        .filter(|&(arg, _)| matches!(arg, Y | P | OUT | WORK))
+        .collect::<Vec<_>>();
+    b.guards(&entry, false);
+    b.address(WORK, 0);
+    b.i(0);
+    b.i(16);
+    b.p(Instruction::MemoryFill);
+    b.record(0, Status::Values as u32);
+    b.call(Helper::Kinematic);
+    b.child_failure(Status::Values, false);
+    for run in kinematic.rows().intervals() {
+        let start = *run.start() as u32;
+        let count = (*run.end() - *run.start() + 1) as u32;
+        b.copy((OUT, start * 8), (WORK, w.helper() + start * 8), count * 8);
+    }
+    for run in kinematic.rows().intervals() {
+        b.range(*run.start() as u32, *run.end() as u32 + 1, |b| {
+            b.indexed(OUT, 0, 8);
+            b.p(Instruction::F64Load);
+            b.p(Instruction::F64Abs);
+            b.p(Instruction::F64Const(f64::MAX.to_bits()));
+            b.p(Instruction::F64Le);
+            b.p(Instruction::I32Eqz);
+            b.p(Instruction::If);
+            b.record(0, Status::NonFinite as u32);
+            b.address(WORK, 8);
+            b.p(Instruction::LocalGet(KINEMATIC_INDEX));
+            b.p(Instruction::I32Store);
+            b.ret(Status::NonFinite);
+            b.p(Instruction::End);
+        });
+    }
+    b.record(0, Status::Success as u32);
+    b.i(Status::Success as u32);
+    b.p(Instruction::End);
+    b.function
+}
+
 struct Body {
     function: Vec<Instruction>,
     workspace: FmiDerivativeWorkspace,
+    index: u32,
+    native: u32,
 }
 impl Body {
     fn p(&mut self, i: Instruction) {
@@ -88,7 +152,7 @@ impl Body {
     }
     fn indexed(&mut self, arg: u32, base: u32, scale: u32) {
         self.address(arg, base);
-        self.p(Instruction::LocalGet(INDEX));
+        self.p(Instruction::LocalGet(self.index));
         self.i(scale);
         self.p(Instruction::I32Mul);
         self.p(Instruction::I32Add);
@@ -125,25 +189,24 @@ impl Body {
     }
     fn range(&mut self, start: u32, end: u32, body: impl FnOnce(&mut Self)) {
         self.i(start);
-        self.p(Instruction::LocalSet(INDEX));
+        self.p(Instruction::LocalSet(self.index));
         self.p(Instruction::Block);
         self.p(Instruction::Loop);
-        self.p(Instruction::LocalGet(INDEX));
+        self.p(Instruction::LocalGet(self.index));
         self.i(end);
         self.p(Instruction::I32GeU);
         self.p(Instruction::BrIf(1));
         body(self);
-        self.p(Instruction::LocalGet(INDEX));
+        self.p(Instruction::LocalGet(self.index));
         self.i(1);
         self.p(Instruction::I32Add);
-        self.p(Instruction::LocalSet(INDEX));
+        self.p(Instruction::LocalSet(self.index));
         self.p(Instruction::Br(0));
         self.p(Instruction::End);
         self.p(Instruction::End);
     }
-    fn guards(&mut self) {
-        let regions = self.workspace.regions();
-        for &(arg, bytes) in &regions {
+    fn guards(&mut self, regions: &[(u32, u32)], cache_validity: bool) {
+        for &(arg, bytes) in regions {
             if bytes == 0 {
                 continue;
             }
@@ -174,10 +237,12 @@ impl Body {
                 self.reject_if();
             }
         }
-        self.p(Instruction::LocalGet(VALID_ARG));
-        self.i(1);
-        self.p(Instruction::I32GtU);
-        self.reject_if();
+        if cache_validity {
+            self.p(Instruction::LocalGet(VALID_ARG));
+            self.i(1);
+            self.p(Instruction::I32GtU);
+            self.reject_if();
+        }
     }
     fn call(&mut self, function: Helper) {
         self.p(Instruction::LocalGet(Y));
@@ -186,14 +251,14 @@ impl Body {
         self.address(WORK, self.workspace.helper());
         self.i(0);
         self.p(Instruction::Call(function));
-        self.p(Instruction::LocalSet(NATIVE));
+        self.p(Instruction::LocalSet(self.native));
     }
     fn child_failure(&mut self, phase: Status, rollback: bool) {
-        self.p(Instruction::LocalGet(NATIVE));
+        self.p(Instruction::LocalGet(self.native));
         self.p(Instruction::If);
         self.record(0, phase as u32);
         self.address(WORK, 4);
-        self.p(Instruction::LocalGet(NATIVE));
+        self.p(Instruction::LocalGet(self.native));
         self.p(Instruction::I32Store);
         if rollback {
             self.copy(

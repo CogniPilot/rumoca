@@ -8,12 +8,23 @@ use super::*;
 use crate::native_program::CompiledNativeCallProgramWasm;
 use crate::typed_call::program::ProgramHelpers;
 use call_program::layout::CallProgramPlan;
-use rumoca_ir_solve::{SolvePureCallTable, fmi::FmiDerivativeOperationSource};
+use rumoca_ir_solve::{
+    SolvePureCallTable,
+    fmi::{FmiDerivativeOperationSource, FmiKinematicDerivativeOperation},
+};
 
 pub(crate) fn emit_derivative_value_module(
     source: &FmiDerivativeOperationSource<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     emit_values(source.values(), &source.problem().layout, source.calls())
+}
+
+/// The same printer over the issued kinematic selection of `source`'s values.
+pub(crate) fn emit_kinematic_value_module(
+    source: &FmiDerivativeOperationSource<'_>,
+    kinematic: &FmiKinematicDerivativeOperation,
+) -> Result<CompiledNativeCallProgramWasm, String> {
+    emit_values(kinematic.values(), &source.problem().layout, source.calls())
 }
 
 struct Ready<'a> {

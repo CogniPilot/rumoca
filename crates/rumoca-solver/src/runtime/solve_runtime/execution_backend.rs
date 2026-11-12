@@ -66,6 +66,22 @@ pub trait CompiledSolveDerivativeOperation {
         output: &mut [f64],
         cache: SolveDerivativeCacheView<'_>,
     ) -> Result<(), SolveDerivativeOperationFailure>;
+
+    /// The kinematic rows over a coordinate a derivative refresh settled, when
+    /// the source issued a kinematic entry for exactly `rows`; `None`
+    /// otherwise. Only the `rows` entries of `output` are written, and `y` is
+    /// not.
+    fn call_kinematic(
+        &self,
+        _y: &[f64],
+        _parameters: &[f64],
+        _time: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+        _rows: &[usize],
+        _output: &mut [f64],
+    ) -> Option<Result<(), SolveDerivativeOperationFailure>> {
+        None
+    }
 }
 
 /// Backend-neutral callable for a causally ordered set of exact assignments.

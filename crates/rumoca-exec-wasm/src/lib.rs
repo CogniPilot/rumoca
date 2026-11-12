@@ -26,7 +26,7 @@ pub use derivative_operation::{
 
 #[cfg(feature = "precompiled-programs")]
 pub use derivative_operation::{
-    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure,
+    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall,
     PrecompiledFmiDerivativeOperation,
 };
 

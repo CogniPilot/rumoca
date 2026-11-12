@@ -1,5 +1,5 @@
 //! Direct Wasm-to-Wasm links; exact SDK memory and math ABI are shared.
-use super::call::FmiDerivativeCall;
+use super::call::{FmiDerivativeCall, FmiKinematicCall};
 use super::{PrecompiledFmiDerivativeOperation, WasmCompileError};
 use crate::wasm_runtime::{
     exported_function, instantiate, instantiate_with_operations, ptr_to_wasm_i32, status_value,
@@ -25,10 +25,23 @@ extern "C" {
         keys: u32,
         valid: u32,
     ) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(extends = js_sys::Function, js_name = Function)]
+    type KinematicEntry;
+    #[wasm_bindgen(method, catch, js_name = call)]
+    fn invoke_kinematic(
+        this: &KinematicEntry,
+        context: &JsValue,
+        y: u32,
+        parameters: u32,
+        time: f64,
+        output: u32,
+        workspace: u32,
+    ) -> Result<JsValue, JsValue>;
 }
 
 pub(super) struct DerivativeRuntime {
     entry: DerivativeEntry,
+    kinematic: Option<KinematicEntry>,
 }
 impl DerivativeRuntime {
     pub(super) fn new(code: &PrecompiledFmiDerivativeOperation) -> Result<Self, WasmCompileError> {
@@ -45,6 +58,7 @@ impl DerivativeRuntime {
                 "eval_assignments",
             ),
             ("values", Some(&code.values), "eval_values"),
+            ("kinematic_values", code.kinematic.as_ref(), "eval_values"),
         ] {
             if let Some(payload) = payload {
                 let instance = instantiate(payload.module_bytes())?;
@@ -55,8 +69,15 @@ impl DerivativeRuntime {
             }
         }
         let instance = instantiate_with_operations(&code.bytes, &operations)?;
+        let kinematic = code
+            .kinematic
+            .as_ref()
+            .map(|_| exported_function(&instance, "eval_kinematic"))
+            .transpose()?
+            .map(JsCast::unchecked_into);
         Ok(Self {
             entry: exported_function(&instance, "eval_derivatives")?.unchecked_into(),
+            kinematic,
         })
     }
 
@@ -78,6 +99,28 @@ impl DerivativeRuntime {
             )
             .map_err(|error| {
                 WasmCompileError::Backend(format!("complete derivative call failed: {error:?}"))
+            })?;
+        status_value(result)
+    }
+    pub(super) fn call_kinematic(
+        &self,
+        frame: &mut FmiKinematicCall<'_>,
+    ) -> Result<u32, WasmCompileError> {
+        let entry = self
+            .kinematic
+            .as_ref()
+            .ok_or_else(|| WasmCompileError::Input("no issued kinematic entry".into()))?;
+        let result = entry
+            .invoke_kinematic(
+                &JsValue::NULL,
+                ptr_to_wasm_i32(frame.y.as_ptr())?,
+                ptr_to_wasm_i32(frame.parameters.as_ptr())?,
+                frame.time,
+                ptr_to_wasm_i32(frame.output.as_ptr())?,
+                ptr_to_wasm_i32(frame.workspace.as_ptr())?,
+            )
+            .map_err(|error| {
+                WasmCompileError::Backend(format!("kinematic derivative call failed: {error:?}"))
             })?;
         status_value(result)
     }

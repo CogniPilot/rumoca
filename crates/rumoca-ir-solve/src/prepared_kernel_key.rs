@@ -44,15 +44,21 @@ impl PreparedKernelSource {
     }
 
     /// Identity of the complete original FMI operation, never a wire plan.
+    /// The kinematic rows select its kinematic entry; the problem fixes the
+    /// values they select.
     pub fn fmi_derivative(
         &self,
         operation: &crate::fmi::FmiDerivativeCausalOperation<'_>,
     ) -> Result<String, String> {
+        let kinematic = operation
+            .kinematic()
+            .map(|kinematic| kinematic.rows().iter().collect::<Vec<_>>());
         self.key(&(
-            "fmi-derivative-v1",
+            "fmi-derivative-v2",
             operation.source().problem(),
             operation.source().vector_extent(),
             operation.parameter_keys(),
+            kinematic,
         ))
     }
 

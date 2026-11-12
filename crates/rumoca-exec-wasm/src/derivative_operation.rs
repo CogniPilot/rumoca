@@ -4,7 +4,7 @@ mod artifact;
 use crate::{CompiledNativeCallProgramWasm, WasmCompileError};
 #[cfg(feature = "precompiled-programs")]
 pub use artifact::{
-    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure,
+    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall,
     PrecompiledFmiDerivativeOperation,
 };
 use rumoca_ir_solve::{
@@ -20,6 +20,7 @@ pub struct CompiledFmiDerivativeOperationWasm {
     static_program: Option<CompiledNativeCallProgramWasm>,
     dynamic_program: Option<CompiledNativeCallProgramWasm>,
     values: CompiledNativeCallProgramWasm,
+    kinematic: Option<CompiledNativeCallProgramWasm>,
 }
 impl CompiledFmiDerivativeOperationWasm {
     pub fn module_bytes(&self) -> &[u8] {
@@ -36,6 +37,9 @@ impl CompiledFmiDerivativeOperationWasm {
     }
     pub fn values(&self) -> &CompiledNativeCallProgramWasm {
         &self.values
+    }
+    pub fn kinematic(&self) -> Option<&CompiledNativeCallProgramWasm> {
+        self.kinematic.as_ref()
     }
 }
 
@@ -65,12 +69,18 @@ pub fn compile_fmi_derivative_operation_wasm(
     let dynamic_program = operation.dynamic_schedule().map(emit).transpose()?;
     let values =
         crate::emit::emit_derivative_value_module(source).map_err(WasmCompileError::Backend)?;
+    let kinematic = operation
+        .kinematic()
+        .map(|kinematic| crate::emit::emit_kinematic_value_module(source, kinematic))
+        .transpose()
+        .map_err(WasmCompileError::Backend)?;
     let control = operation
         .control_plan(
             static_program
                 .iter()
                 .chain(dynamic_program.iter())
                 .chain(std::iter::once(&values))
+                .chain(kinematic.iter())
                 .map(|p| p.scratch_bytes()),
             CheckedNativeWasmCapacityPolicy::default(),
         )
@@ -85,5 +95,6 @@ pub fn compile_fmi_derivative_operation_wasm(
         static_program,
         dynamic_program,
         values,
+        kinematic,
     })
 }

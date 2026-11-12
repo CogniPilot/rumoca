@@ -450,3 +450,84 @@ fn tensor_derivative_rows_give_kinematic_derivatives_equal_to_a_full_evaluation(
         [-1.25, 3.0, 1.5, 2.0]
     );
 }
+
+#[test]
+fn kinematic_derivatives_read_the_settled_guess_in_place_and_leave_it_as_it_was() {
+    let model = position_algebraic_model();
+    let mut kernel = instantiate(&model);
+    kernel.set_time(MeTime::at(0.5)).expect("a legal time");
+    kernel
+        .set_continuous_states(&[2.25, 0.5, 0.75])
+        .expect("finite states");
+    let mut full = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut full)
+        .expect("the point settles");
+    kernel
+        .set_continuous_states(&[2.25, -1.25, 0.75])
+        .expect("finite states");
+    let saved = kernel.fmu_state().expect("a snapshot");
+    let mut first = vec![f64::NAN; 3];
+    kernel
+        .kinematic_state_derivatives_into(&mut first)
+        .expect("the evaluated point is current");
+    // The guess and its stamp are what they were: a second evaluation reads
+    // the same coordinate.
+    assert!(kernel.verification_matches_snapshot(&saved));
+    let mut second = vec![f64::NAN; 3];
+    kernel
+        .kinematic_state_derivatives_into(&mut second)
+        .expect("the stamp is still current");
+    for state in [0, 2] {
+        assert_eq!(first[state].to_bits(), second[state].to_bits());
+    }
+}
+
+#[test]
+fn a_later_write_to_the_solver_guess_retires_the_settled_stamp_until_a_restore() {
+    let model = position_algebraic_model();
+    let mut kernel = instantiate(&model);
+    kernel.set_time(MeTime::at(0.5)).expect("a legal time");
+    kernel
+        .set_continuous_states(&[2.25, 0.5, 0.75])
+        .expect("finite states");
+    let mut full = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut full)
+        .expect("the point settles");
+    kernel
+        .set_continuous_states(&[2.25, -1.25, 0.75])
+        .expect("finite states");
+    let mut expected = vec![f64::NAN; 3];
+    kernel
+        .kinematic_state_derivatives_into(&mut expected)
+        .expect("the evaluated point is current");
+    let saved = kernel.fmu_state().expect("a snapshot");
+
+    // Even a write of the same values may have moved the coordinate.
+    kernel.verification_touch_solver_guess();
+    assert!(!kernel.verification_continuous_linearization_cache_matches(
+        0.5,
+        &[2.25, 0.5, 0.75],
+        &[]
+    ));
+    let mut out = vec![f64::NAN; 3];
+    let refusal = kernel.kinematic_state_derivatives_into(&mut out);
+    assert!(
+        matches!(refusal, Err(MeError::Contract { .. })),
+        "{refusal:?}"
+    );
+    assert!(!kernel.verification_matches_snapshot(&saved));
+
+    // A snapshot keeps a current stamp and restores it against its guess.
+    kernel
+        .reset_to_fmu_state(&saved)
+        .expect("the same instance");
+    assert!(kernel.verification_matches_snapshot(&saved));
+    kernel
+        .kinematic_state_derivatives_into(&mut out)
+        .expect("the restored stamp names the restored guess");
+    for state in [0, 2] {
+        assert_eq!(out[state].to_bits(), expected[state].to_bits());
+    }
+}
