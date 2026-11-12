@@ -2,8 +2,9 @@
 //!
 //! `while c loop S end while` with a counter `k` (a scalar Integer local):
 //! every path through `S` either leaves a Boolean local `v` that is a
-//! top-level conjunct of `c` last assigned the literal `false` (the loop ends
-//! after this pass), or ends with `k` raised by at least 1 above its value at
+//! top-level conjunct of `c` last assigned the literal `false`, or whose
+//! negation `not v` is one last assigned `true` (the loop ends after this
+//! pass), or ends with `k` raised by at least 1 above its value at
 //! the start of the pass, `k0`. The raise is proven symbolically: along the
 //! path every Integer local the pass writes is tracked as `a * k0 + o` with a
 //! literal `a` and an interval `o` (so `child := 2 * root` then
@@ -141,8 +142,8 @@ pub(super) fn progress_bound(
     collect_conjuncts(&block.cond, &mut conjuncts);
     let flags = conjuncts
         .iter()
-        .filter_map(|conjunct| plain_reference(conjunct))
-        .filter(|name| !scope.integers.contains(*name) && !scope.reals.contains(*name));
+        .filter_map(|conjunct| exit_flag(conjunct))
+        .filter(|flag| !scope.integers.contains(flag.name) && !scope.reals.contains(flag.name));
     let mut pass = head.clone();
     pass.observe_accesses(&block.cond, scope);
     let pass = pass.assuming(&block.cond, true, scope);
@@ -160,6 +161,31 @@ pub(super) fn progress_bound(
                 .bound(&block.stmts, &pass)
             })
         })
+}
+
+/// A Boolean conjunct of the loop condition: `v` ends the loop once `v` is
+/// false, `not v` once it is true.
+#[derive(Clone, Copy)]
+struct ExitFlag<'a> {
+    name: &'a VarName,
+    ends_with: bool,
+}
+
+fn exit_flag(conjunct: &Expression) -> Option<ExitFlag<'_>> {
+    match conjunct {
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs,
+            ..
+        } => plain_reference(rhs).map(|name| ExitFlag {
+            name,
+            ends_with: true,
+        }),
+        _ => plain_reference(conjunct).map(|name| ExitFlag {
+            name,
+            ends_with: false,
+        }),
+    }
 }
 
 /// Every scalar Integer a top-level or conditional assignment of
@@ -197,7 +223,7 @@ fn collect_written_integers(
 }
 
 struct PassProof<'a> {
-    flag: Option<&'a VarName>,
+    flag: Option<ExitFlag<'a>>,
     counter: &'a VarName,
     scope: FactScope<'a>,
 }
@@ -291,13 +317,13 @@ impl PassProof<'_> {
 
     fn statement(&self, statement: &rumoca_core::Statement, mut paths: Paths) -> Paths {
         match plain_assignment(statement) {
-            Some((target, _, value)) if Some(&target) == self.flag => {
+            Some((target, _, value)) if self.flag.is_some_and(|flag| flag.name == &target) => {
                 let ends = matches!(
                     value,
                     Expression::Literal {
-                        value: Literal::Boolean(false),
+                        value: Literal::Boolean(stored),
                         ..
-                    }
+                    } if self.flag.is_some_and(|flag| flag.ends_with == *stored)
                 );
                 paths = if ends {
                     Paths {
@@ -335,7 +361,7 @@ impl PassProof<'_> {
             }
             _ => {
                 let written = statements_written_names(std::slice::from_ref(statement));
-                if self.flag.is_some_and(|flag| written.contains(flag)) {
+                if self.flag.is_some_and(|flag| written.contains(flag.name)) {
                     paths.continuing = join_counter(paths.continuing, paths.exiting);
                     paths.exiting = None;
                 }

@@ -339,3 +339,47 @@ fn a_loop_that_can_break_is_not_peeled() {
         [rumoca_core::Statement::For { .. }]
     ));
 }
+
+/// `while not done` ends once `done` is true, as `while going` ends once
+/// `going` is false: both prove the same progress bound.
+#[test]
+fn a_negated_exit_flag_proves_the_same_progress_bound() {
+    let walk = |flag: &str, ends_with: bool| {
+        vec![branch(
+            vec![(
+                binary(OpBinary::Ge, var("k"), integer(4)),
+                vec![assign(
+                    flag,
+                    Expression::Literal {
+                        value: Literal::Boolean(ends_with),
+                        span: span(),
+                    },
+                )],
+            )],
+            Some(vec![step(OpBinary::Add, 1)]),
+        )]
+    };
+    let positive = bound(Some(0), var("going"), walk("going", false));
+    let negated = bound(
+        Some(0),
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs: Box::new(var("done")),
+            span: span(),
+        },
+        walk("done", true),
+    );
+    assert!(positive.is_some(), "the exit flag form proves a bound");
+    assert_eq!(negated, positive);
+    // Storing the value that keeps the loop running ends nothing.
+    let stalled = bound(
+        Some(0),
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs: Box::new(var("done")),
+            span: span(),
+        },
+        walk("done", false),
+    );
+    assert_eq!(stalled, None);
+}

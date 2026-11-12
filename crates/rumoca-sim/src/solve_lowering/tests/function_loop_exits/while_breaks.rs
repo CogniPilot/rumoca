@@ -170,3 +170,58 @@ fn a_return_inside_a_while_ends_the_function() {
         [0.5, 1.5, 4.5, 9.5, 14.5, 100.0].map(|limit| Point::new([1.0, 2.0, 3.0, 4.0, 5.0], limit));
     fixture.check(&points, |point| vec![while_return(point)]);
 }
+
+const EXIT_FLAG: &str = r#"
+function flaggedSearch
+  input Real x[:];
+  input Real limit;
+  output Real k;
+  output Real steps;
+protected
+  Integer node;
+  Boolean done;
+algorithm
+  k := 0;
+  steps := 0;
+  node := 1;
+  done := false;
+  while not done loop
+    steps := steps + 1;
+    if x[node] > limit then
+      k := node;
+      done := true;
+    elseif node >= size(x, 1) then
+      done := true;
+    else
+      node := node + 1;
+    end if;
+  end while;
+end flaggedSearch;
+"#;
+
+fn flagged_search(point: Point) -> Vec<f64> {
+    let (mut k, mut steps, mut node) = (0, 0, 1);
+    loop {
+        steps += 1;
+        if point.x[node - 1] > point.limit {
+            k = node;
+            break;
+        } else if node >= point.x.len() {
+            break;
+        }
+        node += 1;
+    }
+    vec![k as f64, f64::from(steps)]
+}
+
+/// A `while not done` loop is bounded by its progress like `while going`.
+#[test]
+fn a_while_ended_by_a_negated_flag_is_bounded_by_its_progress() {
+    let fixture = Fixture::compile(
+        EXIT_FLAG,
+        "  Real k;\n  Real steps;\n",
+        &format!("  (k, steps) = flaggedSearch({SAMPLES}, limit);\n"),
+        &["k", "steps"],
+    );
+    fixture.check(&while_points(), flagged_search);
+}
