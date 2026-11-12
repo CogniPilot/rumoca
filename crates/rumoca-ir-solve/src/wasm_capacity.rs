@@ -16,10 +16,15 @@ pub struct CheckedNativeWasmCapacityPolicy {
     request: NativeWasmCapacityRequest,
 }
 
+/// The policy's rule for one bound: nonzero whole memory32 pages.
+const fn whole_pages(bytes: u32) -> bool {
+    bytes != 0 && bytes.is_multiple_of(PAGE_BYTES)
+}
+
 impl CheckedNativeWasmCapacityPolicy {
     pub fn new(request: NativeWasmCapacityRequest) -> Result<Self, String> {
         for bytes in [request.private_arena_bytes, request.public_scratch_bytes] {
-            if bytes == 0 || bytes % PAGE_BYTES != 0 {
+            if !whole_pages(bytes) {
                 return Err("native capacity must be nonzero whole memory32 pages".into());
             }
         }
@@ -74,13 +79,18 @@ impl CheckedNativeWasmCapacityPolicy {
     }
 }
 
+// The canonical default satisfies the policy's rule; this is checked when the
+// crate is compiled, so the default needs no run-time proof.
+const _: () = assert!(whole_pages(DEFAULT_BYTES));
+
 impl Default for CheckedNativeWasmCapacityPolicy {
     fn default() -> Self {
-        Self::new(NativeWasmCapacityRequest {
-            private_arena_bytes: DEFAULT_BYTES,
-            public_scratch_bytes: DEFAULT_BYTES,
-        })
-        .expect("the canonical default is a nonzero memory32 page bound")
+        Self {
+            request: NativeWasmCapacityRequest {
+                private_arena_bytes: DEFAULT_BYTES,
+                public_scratch_bytes: DEFAULT_BYTES,
+            },
+        }
     }
 }
 
