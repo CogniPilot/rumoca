@@ -35,6 +35,11 @@ fn schedule_key(
         .map_err(WasmCompileError::Input)
 }
 
+/// Provenance of the fixture's issued rows and forged fault entries.
+fn fixture_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("rows.mo"), 1, 2)
+}
+
 fn fault_entries() -> [serde_json::Value; 3] {
     let typed = crate::TypedCallFault {
         status: 1000,
@@ -43,7 +48,7 @@ fn fault_entries() -> [serde_json::Value; 3] {
         region_path: Vec::new(),
         opcode: "forged".into(),
         kind: crate::TypedCallFaultKind::IndexBounds,
-        provenance: rumoca_core::Span::DUMMY,
+        provenance: fixture_span(),
     };
     let gather = crate::NativeGatherFault {
         status: 1000,
@@ -52,7 +57,7 @@ fn fault_entries() -> [serde_json::Value; 3] {
         program: 0,
         operation: 0,
         region_path: Vec::new(),
-        provenance: rumoca_core::Span::DUMMY,
+        provenance: fixture_span(),
     };
     let linear = crate::NativeLinearSolveFault {
         status: 1000,
@@ -62,7 +67,7 @@ fn fault_entries() -> [serde_json::Value; 3] {
         program: 0,
         operation: 0,
         region_path: Vec::new(),
-        provenance: rumoca_core::Span::DUMMY,
+        provenance: fixture_span(),
     };
     [
         serde_json::to_value(typed).unwrap(),
@@ -130,13 +135,17 @@ fn check(
         .filter(|(name, _)| selected.is_none_or(|wanted| *name == wanted))
     {
         let changed: PrecompiledExactAssignments = serde_json::from_value(changed).unwrap();
-        let Err(error) = bind(&changed) else {
-            panic!("modified {field} must refuse before runtime activation");
-        };
+        let refused = bind(&changed);
         assert!(
-            error.to_string().contains("authoritative issued emission"),
-            "{field}: {error}"
+            refused.is_err(),
+            "modified {field} must refuse before runtime activation"
         );
+        if let Err(error) = refused {
+            assert!(
+                error.to_string().contains("authoritative issued emission"),
+                "{field}: {error}"
+            );
+        }
     }
     for field in ["version", "source_key", "y", "p"] {
         let mut changed = value.clone();
@@ -300,18 +309,13 @@ fn ordinary_key_names_its_domain_selected_schedule_and_context() {
     );
 }
 
-/// Issued rows carry the provenance of a source program.
-fn row_span() -> rumoca_core::Span {
-    rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("rows.mo"), 1, 2)
-}
-
 fn rows(target: usize, slots: usize) -> IssuedAssignmentRows {
     IssuedAssignmentRows::new(
         vec![vec![
             rumoca_ir_solve::LinearOp::Const { dst: 0, value: 3.0 },
             rumoca_ir_solve::LinearOp::StoreOutput { src: 0 },
         ]],
-        vec![row_span()],
+        vec![fixture_span()],
         vec![target],
         slots,
     )
@@ -329,7 +333,7 @@ fn ordered_rows(reverse: bool) -> IssuedAssignmentRows {
             ]
         })
         .collect();
-    IssuedAssignmentRows::new(programs, vec![row_span(); 2], vec![0, 0], 1).unwrap()
+    IssuedAssignmentRows::new(programs, vec![fixture_span(); 2], vec![0, 0], 1).unwrap()
 }
 
 #[test]
