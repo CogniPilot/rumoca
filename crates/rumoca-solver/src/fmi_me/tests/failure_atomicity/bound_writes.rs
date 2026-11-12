@@ -85,8 +85,13 @@ fn a_refused_bound_write_leaves_the_checkpoint_bit_equal() {
         refusal(inputs, MeBindingRefusal::Stale).to_string()
     );
     assert!(session.verification_matches_checkpoint(&before));
-    let mut read = Vec::new();
+    // A refused read leaves the caller's buffer as it was.
+    let mut read = vec![7.0, -0.0];
     assert!(session.read_bound(outputs, &mut read).is_err());
+    assert_eq!(
+        read.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        [7.0_f64.to_bits(), (-0.0_f64).to_bits()]
+    );
     assert_eq!(
         session.verification_component_point(),
         session.verification_session_point()

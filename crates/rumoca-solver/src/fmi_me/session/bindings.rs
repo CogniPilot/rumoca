@@ -228,18 +228,24 @@ impl MeSimulationSession<'_, '_> {
                 selected,
             )
         })?;
-        values.clear();
-        for (position, (entry, value)) in outputs.entries.iter().zip(selected).enumerate() {
-            let applied = if entry.input {
-                self.host.inputs.get(entry.name.as_str()).copied()
-            } else {
-                None
-            };
-            values.push(applied.or(value).ok_or(MeSessionError::Binding {
-                binding,
-                refusal: MeBindingRefusal::Unapplied { position },
-            })?);
+        // The whole frame is resolved before the caller's buffer changes, so a
+        // refused read leaves it as it was.
+        let mut resolved = selected;
+        for (position, (entry, value)) in outputs.entries.iter().zip(&mut resolved).enumerate() {
+            if entry.input
+                && let Some(applied) = self.host.inputs.get(entry.name.as_str())
+            {
+                *value = Some(*applied);
+            }
+            if value.is_none() {
+                return Err(MeSessionError::Binding {
+                    binding,
+                    refusal: MeBindingRefusal::Unapplied { position },
+                });
+            }
         }
+        values.clear();
+        values.extend(resolved.into_iter().flatten());
         Ok(())
     }
 }
