@@ -14,6 +14,7 @@ mod coincident_strict;
 mod compiled_messages;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
+mod function_loop_exits;
 mod function_returns;
 #[cfg(feature = "solver-diffsol")]
 mod g2_projection;

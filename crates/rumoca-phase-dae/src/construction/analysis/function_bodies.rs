@@ -229,7 +229,8 @@ fn normalize_function_source(
 ) -> Result<function_returns::NormalizedFunctionReturns, ToDaeError> {
     // Mutable exit stores must not be hidden from source compaction's write analysis.
     // Compact the source first; branch snapshots then see the checked exit state.
-    let returned = if function_returns::contains_for_return(body) {
+    let precompacted = function_returns::contains_loop_exit(body);
+    let returned = if precompacted {
         let compacted = compact_function_loops(
             body,
             context.static_integers,
@@ -256,7 +257,7 @@ fn normalize_function_source(
     {
         validate_nonreturn_path(function, context)?;
     }
-    let compacted = if returned.guards.iter().any(|guard| guard.mutable) {
+    let compacted = if precompacted {
         returned.statements.clone()
     } else {
         compact_function_loops(

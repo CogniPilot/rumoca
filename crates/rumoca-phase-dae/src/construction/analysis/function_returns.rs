@@ -5,13 +5,13 @@ use rumoca_core::Reference;
 mod tests;
 
 mod loop_exits;
-pub(super) use loop_exits::{contains_break, contains_for_return, statements_break};
+pub(super) use loop_exits::{contains_break, contains_loop_exit, statements_break};
 
 pub(super) fn validate_guarded_function_return(
     function: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
 ) -> Result<Option<FunctionPlan>, ToDaeError> {
-    if !contains_return(&function.body) || loop_exits::contains_for_return(&function.body) {
+    if !contains_return(&function.body) || loop_exits::contains_loop_exit(&function.body) {
         return Ok(None);
     }
     let Some((first, tail)) = function.body.split_first() else {
@@ -92,9 +92,10 @@ pub(super) fn validate_guarded_function_return(
 /// Convert non-leading early returns into lexical conditional continuations.
 ///
 /// Each returning branch owns the statements before its `return`; the
-/// non-returning path owns the remaining sequence exactly once. Returns nested
-/// in loops remain unsupported because they require a distinct loop-exit
-/// capability rather than a conditional value join.
+/// non-returning path owns the remaining sequence exactly once. A body that
+/// leaves a loop early (`break`, or `return` inside a loop) is normalized onto
+/// mutable exit states instead (`loop_exits`), which no conditional value join
+/// can express.
 pub(super) struct NormalizedFunctionReturns {
     pub(super) statements: Vec<rumoca_core::Statement>,
     pub(super) guards: Vec<GeneratedBooleanDefinition>,
@@ -184,7 +185,7 @@ pub(super) fn normalize_function_returns(
     statements: &[rumoca_core::Statement],
     function_span: Span,
 ) -> Result<NormalizedFunctionReturns, ToDaeError> {
-    if loop_exits::contains_for_return(statements) {
+    if loop_exits::contains_loop_exit(statements) {
         return loop_exits::normalize(statements, function_span);
     }
     let statements = reachable_prefix(statements);
