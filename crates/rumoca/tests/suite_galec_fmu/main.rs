@@ -15,6 +15,7 @@ mod galec_emission_policy;
 mod galec_enumeration_status;
 mod galec_equation_pre;
 mod galec_equivalence;
+mod galec_guarded_element_writes;
 mod galec_integer_sign;
 mod galec_parameter_ranges;
 mod galec_periodic_real;
