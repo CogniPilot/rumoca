@@ -17,6 +17,7 @@ fn function_comprehension_inactive_source_id_cannot_read_same_name_input() {
         locals: IndexMap::new(),
         source_iterators: Vec::new(),
         source_iterator_declarations: std::collections::HashSet::new(),
+        record_layouts: IndexMap::new(),
     };
     let own_ref = Expression::VarRef {
         name: exact_reference("i", id),
@@ -51,6 +52,7 @@ fn function_comprehension_source_values_keep_same_name_input_and_iterator_separa
         locals: IndexMap::new(),
         source_iterators: Vec::new(),
         source_iterator_declarations: std::collections::HashSet::new(),
+        record_layouts: IndexMap::new(),
     };
     let index = ComprehensionIndex {
         binder: rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(42)),

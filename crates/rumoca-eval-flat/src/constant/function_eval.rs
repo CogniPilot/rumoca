@@ -24,8 +24,10 @@ use super::errors::EvalError;
 use super::value::Value;
 use super::{EvalEnvironment, EvalIndexMap};
 
+mod record_fields;
 mod slice_assignment;
 mod statement_calls;
+use record_fields::{RecordField, record_layout};
 use slice_assignment::assign_array_slice;
 use statement_calls::{eval_assert_stmt, eval_fn_call_stmt};
 
@@ -229,6 +231,10 @@ struct FunctionEnv {
     locals: IndexMap<String, Value>,
     source_iterators: Vec<(rumoca_core::IndexBinderProvenance, String, Value)>,
     source_iterator_declarations: std::collections::HashSet<rumoca_core::DefId>,
+    /// The declared fields of each scalar record output or local declared
+    /// without a binding, from its record constructor; `None` when no
+    /// constructor is in scope, so no field layout is known.
+    record_layouts: IndexMap<String, Option<Vec<RecordField>>>,
 }
 
 /// Function-call argument after expression evaluation.
@@ -264,6 +270,7 @@ impl FunctionEnv {
             locals: IndexMap::new(),
             source_iterators: Vec::new(),
             source_iterator_declarations: std::collections::HashSet::new(),
+            record_layouts: IndexMap::new(),
         };
         env.bind_omitted_input_defaults(func, eval)?;
         env.declare_all(func, eval)?;
@@ -484,6 +491,12 @@ impl FunctionEnv {
                 Some(default) => eval_expr_in_function(default, self, eval)?,
                 None => self.shaped_default(param, eval)?,
             };
+            if param.default.is_none()
+                && matches!(&value, Value::Record(fields) if fields.is_empty())
+            {
+                self.record_layouts
+                    .insert(param.name.clone(), record_layout(param, eval));
+            }
             match kind {
                 DeclaredKind::Output => self.outputs.insert(param.name.clone(), value),
                 DeclaredKind::Local => self.locals.insert(param.name.clone(), value),
@@ -609,47 +622,22 @@ impl FunctionEnv {
         }
     }
 
-    /// Write `value` into the field `fields` of the record held by the output
-    /// or local `root`; `false` when `root` holds no record with that field
-    /// path.
-    fn set_field(&mut self, root: &str, fields: &[ComponentRefPart], value: Value) -> bool {
-        let slot = match self.outputs.get_mut(root) {
-            Some(slot) => slot,
-            None => match self.locals.get_mut(root) {
-                Some(slot) => slot,
-                None => return false,
-            },
-        };
-        set_record_field(slot, fields, value)
-    }
-
     /// Get the return value (single output or tuple of outputs).
     fn return_value(&self, span: Span) -> Result<Value, EvalError> {
-        if self.outputs.len() == 1 {
-            self.outputs.values().next().cloned().ok_or_else(|| {
+        let mut outputs = self
+            .outputs
+            .iter()
+            .map(|(name, value)| self.complete_record(name, value, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        if outputs.len() == 1 {
+            outputs.pop().ok_or_else(|| {
                 EvalError::function_error("single-output function has no output slot", span)
             })
         } else {
             // Multiple outputs -> tuple/array
-            Ok(Value::Array(self.outputs.values().cloned().collect()))
+            Ok(Value::Array(outputs))
         }
     }
-}
-
-/// Write `value` at the field path `fields` inside the record `slot`. An
-/// intermediate field must already hold a record: its type is not known here,
-/// so it is never invented.
-fn set_record_field(slot: &mut Value, fields: &[ComponentRefPart], value: Value) -> bool {
-    let (Value::Record(record), Some((field, rest))) = (slot, fields.split_first()) else {
-        return false;
-    };
-    if rest.is_empty() {
-        record.insert(field.ident.clone(), value);
-        return true;
-    }
-    record
-        .get_mut(&field.ident)
-        .is_some_and(|inner| set_record_field(inner, rest, value))
 }
 
 /// Create a default value for a given type.
@@ -1241,7 +1229,12 @@ fn eval_expr_in_function(
                 .iter()
                 .map(|arg| eval_expr_in_function(arg, env, eval))
                 .collect::<Result<_, _>>()?;
-            super::eval_builtin(function.name(), &arg_values, eval.span)
+            super::builtins::eval_builtin_within(
+                function.name(),
+                &arg_values,
+                eval.span,
+                eval.limits.max_iterations,
+            )
         }
         Expression::Array { elements, kind, .. } => {
             let values = eval_array_values(elements, env, eval)?;
@@ -1357,6 +1350,9 @@ fn eval_var_ref(
         return Err(EvalError::unknown_variable(name, eval.span));
     }
     if let Some(val) = env.get(name) {
+        if env.record_layouts.contains_key(name) {
+            return env.complete_record(name, val, eval.span);
+        }
         return apply_subscripts_flat(val, subscripts, env, eval);
     }
     if let Some(val) = eval.ctx.get_reference_value(reference) {
@@ -1553,6 +1549,7 @@ fn eval_array_comprehension(
         locals: env.locals.clone(),
         source_iterators: env.source_iterators.clone(),
         source_iterator_declarations: env.source_iterator_declarations.clone(),
+        record_layouts: env.record_layouts.clone(),
     };
 
     local_env
@@ -1623,7 +1620,12 @@ fn eval_comprehension_recursive(
 /// Call a function (builtin or user-defined).
 fn call_function(name: &str, args: Vec<Value>, eval: &EvalState<'_>) -> Result<Value, EvalError> {
     if super::is_builtin(name) {
-        return super::eval_builtin(name, &args, eval.span);
+        return super::builtins::eval_builtin_within(
+            name,
+            &args,
+            eval.span,
+            eval.limits.max_iterations,
+        );
     }
     if let Some(func) = eval.ctx.get_function(name) {
         // Impure/external refusal lives in eval_function_with_call_args, the

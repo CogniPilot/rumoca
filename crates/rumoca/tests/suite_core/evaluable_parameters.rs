@@ -367,3 +367,86 @@ fn bindings_through_array_and_transparent_builtins_are_evaluable() {
     expected.sort_unstable();
     assert_eq!(marked, expected);
 }
+
+/// The folded value of `name` in row-major order, and its declared extents.
+fn folded_value(model: &dae::Dae, name: &str) -> (Vec<f64>, Vec<u32>) {
+    model.inspect(|view| {
+        let (id, variable) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .unwrap_or_else(|| panic!("`{name}` is declared"));
+        let values = rumoca_eval_dae::NumericEvaluator::new(view)
+            .source_initial_values(id)
+            .unwrap_or_else(|error| panic!("`{name}` has a value: {error}"))
+            .materialize()
+            .into_iter()
+            .map(|value| match value {
+                rumoca_eval_dae::NumericSourceScalar::Real(value) => value,
+                rumoca_eval_dae::NumericSourceScalar::Integer(value) => value as f64,
+                other => panic!("`{name}` holds a non-numeric {other:?}"),
+            })
+            .collect();
+        (values, variable.value_type().dimensions().to_vec())
+    })
+}
+
+/// The admitted parameters of `ArrayBuiltins` fold to their MLS values with
+/// their declared shapes, the binding and the function-body forms alike, and
+/// no expression reads them afterwards.
+#[test]
+fn bindings_through_array_and_transparent_builtins_fold_to_their_values() {
+    let source = compile(ARRAY_BUILTINS, "ArrayBuiltins");
+    let folded = fold_evaluable_parameters(&source)
+        .unwrap()
+        .expect("ArrayBuiltins reads evaluable parameters");
+    let expected: [(&[&str], &[f64], &[u32]); 11] = [
+        (&["t", "ft"], &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], &[3, 2]),
+        (
+            &["i", "fi"],
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            &[3, 3],
+        ),
+        (
+            &["d", "fd"],
+            &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
+            &[3, 3],
+        ),
+        (
+            &["o", "fo"],
+            &[1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0],
+            &[3, 3],
+        ),
+        (&["c", "fc"], &[2.0, -1.0, 0.0], &[3]),
+        (
+            &["k", "fk"],
+            &[0.0, -3.0, 2.0, 3.0, 0.0, -1.0, -2.0, 1.0, 0.0],
+            &[3, 3],
+        ),
+        (&["sm", "fsm"], &[1.0], &[]),
+        (&["ne", "fne"], &[2.0], &[]),
+        (&["p.m"], &[2.5], &[]),
+        (&["p.c"], &[5.0], &[]),
+        (
+            &["fb"],
+            &[0.0, 1.0, 2.0, 0.0, 3.0, 1.0, 2.0, 3.0, 0.0],
+            &[3, 3],
+        ),
+    ];
+    for (names, values, extents) in expected {
+        for name in names {
+            assert_eq!(
+                folded_value(&folded, name),
+                (values.to_vec(), extents.to_vec()),
+                "{name}"
+            );
+        }
+    }
+    let read = read_parameters(&folded);
+    assert!(
+        expected
+            .iter()
+            .flat_map(|(names, _, _)| names.iter())
+            .all(|name| !read.iter().any(|read| read == name)),
+        "every admitted parameter is folded: {read:?}"
+    );
+}

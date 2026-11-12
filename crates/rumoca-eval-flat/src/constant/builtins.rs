@@ -14,15 +14,31 @@ use super::errors::EvalError;
 use super::value::Value;
 use rumoca_core::{BuiltinFunction, Span, apply_scalar_binary_math, apply_scalar_unary_math};
 
-/// Evaluate a built-in function call.
+/// Evaluate a built-in function call under the default evaluation limits.
 pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, EvalError> {
+    eval_builtin_within(
+        name,
+        args,
+        span,
+        super::EvalLimits::default().max_iterations,
+    )
+}
+
+/// Evaluate a built-in function call that builds at most `budget` array
+/// elements (the evaluator's element budget, [`super::EvalLimits`]).
+pub(super) fn eval_builtin_within(
+    name: &str,
+    args: &[Value],
+    span: Span,
+    budget: usize,
+) -> Result<Value, EvalError> {
     if let Some(result) = eval_vectorized_call(name, args, span) {
         return result;
     }
     if let Some(result) = eval_scalar_math_builtin(name, args, span) {
         return result;
     }
-    if let Some(result) = super::array_builtins::eval_array_builtin(name, args, span) {
+    if let Some(result) = super::array_builtins::eval_array_builtin(name, args, span, budget) {
         return result;
     }
     match name {
