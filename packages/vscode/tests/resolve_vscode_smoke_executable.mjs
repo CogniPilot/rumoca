@@ -16,11 +16,11 @@ function argValue(name) {
     : undefined;
 }
 
-// Node tries each resolved address for only 250 ms by default before moving
-// to the next. Without an IPv6 route, one slow IPv4 handshake to the VS Code
-// release API then fails the lookup long before its 15 s request timeout
-// (main 63c44acd, job 131399986644: connect ETIMEDOUT, then ENETUNREACH).
-// Give each address up to 5 s; a host that stays unreachable still fails.
+// Allow non-final address attempts more time before Node tries the next one.
+// The smoke resolver hit Node's attempt timer and an IPv6 route failure
+// (main 63c44acd, job 131399986644). The log does not distinguish a slow
+// handshake from an unreachable endpoint. Keep errors visible; the package's
+// existing request timeout and cache fallback remain in effect.
 net.setDefaultAutoSelectFamilyAttemptTimeout(5_000);
 
 const cachePathArg = argValue("--cache-path");
