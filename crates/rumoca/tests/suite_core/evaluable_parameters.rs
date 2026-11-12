@@ -305,6 +305,14 @@ function bodyCross input Real v[3]; output Real y[3]; algorithm y := cross(v, {0
 function bodySkew input Real v[3]; output Real y[3, 3]; algorithm y := skew(v); end bodySkew;
 function bodySmooth input Real v; output Real y; algorithm y := smooth(0, v); end bodySmooth;
 function bodyNoEvent input Real v; output Real y; algorithm y := noEvent(v); end bodyNoEvent;
+function bodyBlock
+  input Real v[3];
+  output Real y[3, 3];
+algorithm
+  y := zeros(3, 3);
+  y[1:2, 2:3] := {{v[1], v[2]}, {v[3], v[1]}};
+  y[3, 1:2] := {v[2], v[3]};
+end bodyBlock;
 function split
   input Real total;
   output MassSplit head;
@@ -332,18 +340,20 @@ model ArrayBuiltins
   final parameter Real fsm = bodySmooth(a[1]);
   final parameter Real fne = bodyNoEvent(a[2]);
   final parameter MassSplit p = split(a[3]);
+  final parameter Real fb[3, 3] = bodyBlock(a);
   Real x(start = 1, fixed = true);
 equation
   der(x) = -(sum(t) + sum(i) + sum(d) + sum(o) + sum(c) + sum(k) + sm + ne
     + sum(ft) + sum(fi) + sum(fd) + sum(fo) + sum(fc) + sum(fk) + fsm + fne
-    + p.m + p.c) * x;
+    + p.m + p.c + sum(fb)) * x;
 end ArrayBuiltins;";
 
 /// MLS 3.7 §4.5, §18.6: a `final` parameter bound through an array builtin
 /// (§10.3: `transpose`, `identity`, `diagonal`, `outerProduct`, `cross`, `skew`)
 /// or a value-transparent one (§3.7.4: `smooth`, `noEvent`), in
 /// the binding itself or inside the body of the function it calls, or through
-/// a record output a function assigns field by field (§11.2.1), is evaluated
+/// a record output a function assigns field by field (§11.2.1), or through a
+/// block of a matrix a function assigns by slices (§10.5), is evaluated
 /// at translation like any other evaluable binding.
 #[test]
 fn bindings_through_array_and_transparent_builtins_are_evaluable() {
@@ -352,7 +362,7 @@ fn bindings_through_array_and_transparent_builtins_are_evaluable() {
     marked.sort();
     let mut expected = [
         "a", "B", "t", "i", "d", "o", "c", "k", "sm", "ne", "ft", "fi", "fd", "fo", "fc", "fk",
-        "fsm", "fne", "p.m", "p.c",
+        "fsm", "fne", "p.m", "p.c", "fb",
     ];
     expected.sort_unstable();
     assert_eq!(marked, expected);
