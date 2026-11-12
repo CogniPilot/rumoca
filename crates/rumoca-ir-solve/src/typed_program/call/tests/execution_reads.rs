@@ -458,6 +458,52 @@ fn assigned_region_state_captures_retain_their_guard_execution_reads() {
     assert!(site.output_dependencies()[0].is_empty());
 }
 
+type Slots<'a, 'p> = &'a [super::super::super::program::ProgramSlot<'p>];
+
+/// One pass that checks the carried value and carries it on.
+fn guarded_pass<'p>(
+    b: &mut TypedProgramBuilder<'p>,
+    carried: Slots<'_, 'p>,
+    _: Slots<'_, 'p>,
+    _: Slots<'_, 'p>,
+    outputs: Slots<'_, 'p>,
+) -> Result<(), SolveProgramConstructionError> {
+    let value = b.load(carried[0], span(1295))?;
+    check(b, value)?;
+    b.store(outputs[0], value, span(1296))
+}
+
+/// One pass of an inner fold: it checks the value it captured and keeps its
+/// own carried value.
+fn capturing_pass<'p>(
+    b: &mut TypedProgramBuilder<'p>,
+    carried: Slots<'_, 'p>,
+    captures: Slots<'_, 'p>,
+    _: Slots<'_, 'p>,
+    outputs: Slots<'_, 'p>,
+) -> Result<(), SolveProgramConstructionError> {
+    let captured = b.load(captures[0], span(1297))?;
+    check(b, captured)?;
+    let kept = b.load(carried[0], span(1298))?;
+    b.store(outputs[0], kept, span(1299))
+}
+
+/// One pass of an outer fold whose guard sits in an inner fold that captures
+/// the outer carried value.
+fn nesting_pass<'p>(
+    b: &mut TypedProgramBuilder<'p>,
+    carried: Slots<'_, 'p>,
+    _: Slots<'_, 'p>,
+    _: Slots<'_, 'p>,
+    outputs: Slots<'_, 'p>,
+) -> Result<(), SolveProgramConstructionError> {
+    let value = b.load(carried[0], span(1295))?;
+    let one = b.constant(SolveValue::real(profile(), 1.0), span(1293))?;
+    let inner = b.fold(domain(), &[one], &[value], span(1296), capturing_pass)?;
+    let _ = inner;
+    b.store(outputs[0], value, span(1300))
+}
+
 /// A fold whose passes are followed at their binder values: the guard reads
 /// the carried value, which starts from input 1; input 0 is the result.
 fn followed_fold_table(nested: bool) -> SolvePureCallTable {
@@ -471,39 +517,9 @@ fn followed_fold_table(nested: bool) -> SolvePureCallTable {
                 let x = b.load(inputs[0], span(1291))?;
                 let q = b.load(inputs[1], span(1292))?;
                 let carried = if nested {
-                    // The guard sits in an inner fold that captures the outer
-                    // carried value.
-                    b.fold(
-                        domain(),
-                        &[q],
-                        &[],
-                        span(1294),
-                        |b, carried, _, _, outputs| {
-                            let value = b.load(carried[0], span(1295))?;
-                            let one = b.constant(SolveValue::real(profile(), 1.0), span(1293))?;
-                            let inner =
-                                b.fold(domain(), &[one], &[value], span(1296), |b, c, k, _, o| {
-                                    let captured = b.load(k[0], span(1297))?;
-                                    check(b, captured)?;
-                                    let kept = b.load(c[0], span(1298))?;
-                                    b.store(o[0], kept, span(1299))
-                                })?;
-                            let _ = inner;
-                            b.store(outputs[0], value, span(1300))
-                        },
-                    )?
+                    b.fold(domain(), &[q], &[], span(1294), nesting_pass)?
                 } else {
-                    b.fold(
-                        domain(),
-                        &[q],
-                        &[],
-                        span(1294),
-                        |b, carried, _, _, outputs| {
-                            let value = b.load(carried[0], span(1295))?;
-                            check(b, value)?;
-                            b.store(outputs[0], value, span(1296))
-                        },
-                    )?
+                    b.fold(domain(), &[q], &[], span(1294), guarded_pass)?
                 };
                 let _ = carried;
                 b.store(outputs[0], x, span(1301))
