@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! SPEC_0022 defines 471 contracts across 18 categories. This framework:
+//! SPEC_0022 defines 472 contracts across 18 categories. This framework:
 //! - Registers all contracts with metadata
 //! - Provides test infrastructure and macros
 //! - Tracks compliance status
@@ -113,6 +113,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "ARR-044",
     "ARR-045",
     "ARR-046",
+    "ARR-047",
     "CLK-001",
     "CLK-002",
     "CLK-003",
@@ -504,11 +505,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 471 contracts
+        // SPEC_0022 defines 472 contracts
         assert_eq!(
             registry.len(),
-            471,
-            "Expected 471 contracts, got {}",
+            472,
+            "Expected 472 contracts, got {}",
             registry.len()
         );
     }
@@ -544,7 +545,7 @@ mod tests {
         );
         assert_eq!(registry.by_category(ContractCategory::Function).count(), 45);
         assert_eq!(registry.by_category(ContractCategory::Type).count(), 36);
-        assert_eq!(registry.by_category(ContractCategory::Array).count(), 46);
+        assert_eq!(registry.by_category(ContractCategory::Array).count(), 47);
         assert_eq!(registry.by_category(ContractCategory::Package).count(), 13);
         assert_eq!(
             registry
