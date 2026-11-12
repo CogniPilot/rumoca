@@ -145,9 +145,12 @@ impl<'a, L: FnMut(RefreshScalarProgramSource) -> Option<&'a [LinearOp]>> Executi
 /// The order the staged value schedule executes rows in. Each assignment row
 /// and each projection stage takes the next slot; `first_producer` holds the
 /// first slot producing each refresh target (`usize::MAX` when no stage does).
-/// An assignment row reads targets produced before its slot; a projection
-/// stage's rows, the plan rows solved for its block's targets, also read the
-/// targets of their own slot.
+/// An assignment row may read targets produced before its slot: earlier
+/// stages and earlier rows of its own stage, never its own target or a later
+/// row's. A projection stage's rows, the plan rows solved for its block's
+/// targets, may read targets of earlier stages and the block's own unknowns,
+/// which its projection solves simultaneously; a target that a later stage or
+/// no stage produces still holds its incoming value there.
 struct StagedOrder<'a> {
     first_producer: BTreeMap<usize, usize>,
     executed: Vec<(&'a AlgebraicRefreshRow, usize)>,

@@ -182,6 +182,74 @@ fn an_assignment_stage_reads_targets_produced_earlier_in_that_stage() {
 }
 
 #[test]
+fn an_assignment_row_reading_its_own_target_refuses_the_staged_schedule() {
+    // An assignment stores its target after evaluating the prefix, so the
+    // prefix would check the target's stale value.
+    let source = source(vec![checked_reader(0, false)]);
+    let plan = RefreshPlan {
+        rows: vec![residual_row(0, 0)],
+        value_stages: vec![RefreshStage::CausalSeedSweep {
+            static_sequence: Default::default(),
+            dynamic_sequence: Default::default(),
+            static_rows: RefreshRowSelection::default(),
+            dynamic_rows: selection(1, [0]),
+        }],
+        ..RefreshPlan::default()
+    };
+    assert_eq!(
+        algebraic_owners(&source, plan)
+            .algebraic()
+            .execution_order_refusal,
+        Some(RefreshExecutionRefusal::ForwardRead {
+            row: RefreshRowOwnerId::checked(0).unwrap(),
+            target: 0,
+            read: 0,
+        })
+    );
+}
+
+#[test]
+fn a_projection_block_reads_a_target_of_an_earlier_stage() {
+    // Row order issues the reader first; the stages project `y1`'s block
+    // before the block whose guard checks `y1`.
+    let source = source(vec![checked_reader(1, true), checked_reader(5, false)]);
+    let plan = projection_plan(
+        vec![residual_row(0, 0), residual_row(1, 1)],
+        vec![block(vec![1], vec![1]), block(vec![0], vec![0])],
+    );
+    let owners = algebraic_owners(&source, plan);
+    assert_eq!(owners.algebraic().execution_order_refusal, None);
+    assert_eq!(
+        owners.algebraic().possible_stage_schedules(),
+        &[
+            RefreshStageSchedule::Certified,
+            RefreshStageSchedule::Uncertified
+        ]
+    );
+}
+
+#[test]
+fn a_projection_block_read_of_a_target_no_stage_produces_refuses() {
+    // `y1` is a refresh target, but no stage produces it: the block's guard
+    // would check whatever value the coordinate held.
+    let source = source(vec![checked_reader(1, true), checked_reader(5, false)]);
+    let plan = projection_plan(
+        vec![residual_row(0, 0), residual_row(1, 1)],
+        vec![block(vec![0], vec![0])],
+    );
+    assert_eq!(
+        algebraic_owners(&source, plan)
+            .algebraic()
+            .execution_order_refusal,
+        Some(RefreshExecutionRefusal::ForwardRead {
+            row: RefreshRowOwnerId::checked(0).unwrap(),
+            target: 0,
+            read: 1,
+        })
+    );
+}
+
+#[test]
 fn a_causal_claim_keeps_the_positional_rule_apart_from_the_staged_one() {
     let (source, mut plan) = simultaneous_value_reads();
     plan.causal_solution_certified = true;
