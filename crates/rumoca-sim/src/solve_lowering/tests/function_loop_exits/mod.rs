@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 
 mod algorithms;
 mod for_breaks;
+mod perfect_nest_breaks;
 mod while_breaks;
 
 /// The run-time arguments of every fixture: five samples and two thresholds.

@@ -9,8 +9,9 @@
 //!
 //! A conjunct of the selection is such an exit test when
 //!
-//! * it reads no binder of the loop and calls no function: the skipped passes
-//!   leave the state it reads unchanged, so it stays false; or
+//! * it reads no binder of the loop and no exit state the body itself stores
+//!   outside every selection, and calls no function: the skipped passes leave
+//!   the state it reads unchanged, so it stays false; or
 //! * it bounds the loop's leading binder in the direction the binder moves
 //!   (`i <= n` while `i` ascends, `i >= n` while it descends) by a value that
 //!   reads no binder of the loop: the leading binder is monotone and the bound
@@ -98,9 +99,25 @@ impl OwnLoop<'_, '_> {
                 ))
                 .then_some(statement)
             });
+        // An exit state the body stores at its own top level (the break state
+        // of a nested loop, reset before each execution of that loop) is not
+        // left unchanged by a pass the selection skips: a conjunct reading it
+        // selects the nested loop, not this one.
+        let stored = plans
+            .iter()
+            .filter_map(|plan| match plan {
+                FunctionStatementPlan::GeneratedBooleanAssignment {
+                    target,
+                    mutable: true,
+                    ..
+                } => Some(target.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let conjuncts = common_selection(selected, &captures)?;
         let (exits, others): (Vec<_>, Vec<_>) = conjuncts
             .into_iter()
+            .filter(|conjunct| !reads_any_name(conjunct, &stored))
             .partition(|conjunct| self.is_exit_test(conjunct));
         // A test the exit leaves out can guard a test that faults without it,
         // so beside such a test only the tests that cannot fault are kept: any
