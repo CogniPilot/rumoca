@@ -130,12 +130,7 @@ end gatedInnerBreak;
 
 #[test]
 fn a_test_guarded_by_what_the_outer_exit_leaves_out_stays_guarded() {
-    let fixture = Fixture::compile(
-        GATED_INNER_BREAK,
-        "",
-        "",
-        &["gatedInnerBreak(limit, stop)"],
-    );
+    let fixture = Fixture::compile(GATED_INNER_BREAK, "", "", &["gatedInnerBreak(limit, stop)"]);
     let at = |gate: f64, divisor: f64| Point::new([0.0; 5], gate).stopping_at(divisor);
     // The gate is closed: the division by zero is never reached.
     assert_eq!(fixture.failure(at(0.0, 0.0)), None);

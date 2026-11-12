@@ -116,7 +116,6 @@ algorithm
 end gridReturnOrBreak;
 "#;
 
-
 /// The nest: a break ends the inner loop, and the next row runs it again.
 fn nest_prefixes(point: Point) -> Vec<f64> {
     let (mut total, mut passes) = (0.0, 0.0);
@@ -151,15 +150,14 @@ fn one_exit_for_the_whole_grid(point: Point) -> Vec<f64> {
 
 fn cube_prefixes(point: Point) -> Vec<f64> {
     let (mut total, mut passes) = (0.0, 0.0);
-    for p in 1..=2 {
-        for r in 1..=2 {
-            for value in point.x {
-                passes += 1.0;
-                if f64::from(p + r) * value > point.limit {
-                    break;
-                }
-                total += f64::from(p + r) * value;
+    // The two outer iterators, in the order the nest runs them.
+    for (p, r) in [(1, 1), (1, 2), (2, 1), (2, 2)] {
+        for value in point.x {
+            passes += 1.0;
+            if f64::from(p + r) * value > point.limit {
+                break;
             }
+            total += f64::from(p + r) * value;
         }
     }
     vec![total, passes]
