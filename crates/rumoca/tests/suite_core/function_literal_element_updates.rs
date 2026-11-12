@@ -115,39 +115,44 @@ equation
 end CheckedValueReached;
 "#;
 
-/// Element updates of every typed owner of `model`, nested regions included:
-/// (run-time `UpdateElement`, static `UpdateSlice`).
-fn element_updates(model: &str) -> (usize, usize) {
-    fn walk(program: &TypedProgram, counts: &mut (usize, usize)) {
-        for spanned in program.operations() {
-            match spanned.operation() {
-                SolveOperation::UpdateElement { .. } => counts.0 += 1,
-                SolveOperation::UpdateSlice { .. } => counts.1 += 1,
-                SolveOperation::Fold {
-                    transition,
-                    continuation,
-                    ..
-                } => {
-                    walk(transition.body(), counts);
-                    for region in continuation {
-                        walk(region.body(), counts);
-                    }
-                }
-                SolveOperation::Map { body, .. } => walk(body.body(), counts),
-                SolveOperation::AssignedConditional { program } => {
-                    walk(program.if_true().body(), counts);
-                    walk(program.if_false().body(), counts);
-                }
-                SolveOperation::Conditional {
-                    if_true, if_false, ..
-                } => {
-                    walk(if_true.body(), counts);
-                    walk(if_false.body(), counts);
-                }
-                _ => {}
-            }
+/// The region bodies of `operation`.
+fn regions(operation: &SolveOperation) -> Vec<&TypedProgram> {
+    match operation {
+        SolveOperation::Fold {
+            transition,
+            continuation,
+            ..
+        } => std::iter::once(transition.body())
+            .chain(continuation.as_deref().map(|region| region.body()))
+            .collect(),
+        SolveOperation::Map { body, .. } => vec![body.body()],
+        SolveOperation::AssignedConditional { program } => {
+            vec![program.if_true().body(), program.if_false().body()]
+        }
+        SolveOperation::Conditional {
+            if_true, if_false, ..
+        } => vec![if_true.body(), if_false.body()],
+        _ => Vec::new(),
+    }
+}
+
+/// Adds the (run-time `UpdateElement`, static `UpdateSlice`) operations of
+/// `program`, nested regions included, to `counts`.
+fn count_updates(program: &TypedProgram, counts: &mut (usize, usize)) {
+    for spanned in program.operations() {
+        match spanned.operation() {
+            SolveOperation::UpdateElement { .. } => counts.0 += 1,
+            SolveOperation::UpdateSlice { .. } => counts.1 += 1,
+            _ => {}
+        }
+        for region in regions(spanned.operation()) {
+            count_updates(region, counts);
         }
     }
+}
+
+/// Element updates of every typed owner of `model`: (run-time, static).
+fn element_updates(model: &str) -> (usize, usize) {
     let compiled = compile(model);
     let lowered = rumoca_phase_solve::lower_solve_model(
         &compiled.dae,
@@ -157,7 +162,7 @@ fn element_updates(model: &str) -> (usize, usize) {
     .unwrap_or_else(|error| panic!("{model} lowers: {error:?}"));
     let mut counts = (0, 0);
     for owner in lowered.model().pure_calls.owners() {
-        walk(owner.body(), &mut counts);
+        count_updates(owner.body(), &mut counts);
     }
     counts
 }
