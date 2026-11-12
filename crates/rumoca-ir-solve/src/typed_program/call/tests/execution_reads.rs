@@ -457,3 +457,74 @@ fn assigned_region_state_captures_retain_their_guard_execution_reads() {
     assert_eq!(site.execution_reads(), &[0]);
     assert!(site.output_dependencies()[0].is_empty());
 }
+
+/// A fold whose passes are followed at their binder values: the guard reads
+/// the carried value, which starts from input 1; input 0 is the result.
+fn followed_fold_table(nested: bool) -> SolvePureCallTable {
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1290 + u64::from(nested)),
+            vec![real(), real()],
+            vec![SolvePureCallOutput::result(real())],
+            span(1290),
+            |b, inputs, outputs| {
+                let x = b.load(inputs[0], span(1291))?;
+                let q = b.load(inputs[1], span(1292))?;
+                let carried = if nested {
+                    // The guard sits in an inner fold that captures the outer
+                    // carried value.
+                    b.fold(domain(), &[q], &[], span(1294), |b, carried, _, _, outputs| {
+                        let value = b.load(carried[0], span(1295))?;
+                        let one = b.constant(SolveValue::real(profile(), 1.0), span(1293))?;
+                        let inner =
+                            b.fold(domain(), &[one], &[value], span(1296), |b, c, k, _, o| {
+                                let captured = b.load(k[0], span(1297))?;
+                                check(b, captured)?;
+                                let kept = b.load(c[0], span(1298))?;
+                                b.store(o[0], kept, span(1299))
+                            })?;
+                        let _ = inner;
+                        b.store(outputs[0], value, span(1300))
+                    })?
+                } else {
+                    b.fold(domain(), &[q], &[], span(1294), |b, carried, _, _, outputs| {
+                        let value = b.load(carried[0], span(1295))?;
+                        check(b, value)?;
+                        b.store(outputs[0], value, span(1296))
+                    })?
+                };
+                let _ = carried;
+                b.store(outputs[0], x, span(1301))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_followed_fold_keeps_the_guard_read_of_its_carried_start() {
+    use crate::typed_program::call::dependency::followed_work;
+    for nested in [false, true] {
+        followed_work::reset();
+        let table = followed_fold_table(nested);
+        assert!(
+            followed_work::most().passes > 0,
+            "the fold's passes are followed at their binder values (nested={nested})"
+        );
+        let site = table.owners()[0].call_site();
+        assert_eq!(site.execution_reads(), &[1], "nested={nested}");
+        assert!(site.has_execution_obligations());
+        assert_eq!(
+            site.output_dependencies()[0]
+                .iter()
+                .flat_map(SolveCallDependency::inputs)
+                .collect::<Vec<_>>(),
+            [0],
+            "nested={nested}"
+        );
+        let replay: SolvePureCallTable =
+            serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap();
+        assert_eq!(replay, table);
+    }
+}
