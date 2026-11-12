@@ -7,12 +7,22 @@ use std::{cell::RefCell, rc::Rc};
 fn component(
     policy: crate::SimExecutionPolicy,
     numerical_fault: bool,
+    event: bool,
 ) -> (FmiComponent, MeRetainedComponent) {
     let source = "function checkedValue input Real x; output Real y; algorithm assert(x>=0,\"original value assertion\"); y:=x; end checkedValue; model OrdinaryRead parameter Real p=-0.0; parameter Integer mode=7; Real x(start=1,fixed=true); output Real pair[2]; equation der(x)=2; pair={checkedValue(x),p}; end OrdinaryRead;";
     let source = if numerical_fault {
         source.replace("y:=x;", "y:=sqrt(x);")
     } else {
         source.into()
+    };
+    // One located state event inside the run, at t=0.0075.
+    let source = if event {
+        source.replace(
+            "p}; end",
+            "p}; when x>1.015 then reinit(x,0.9); end when; end",
+        )
+    } else {
+        source
     };
     let dae = compile(&source, "OrdinaryRead");
     let options = SimOptions {
@@ -55,6 +65,15 @@ fn initialize(retained: &mut MeRetainedComponent) {
 }
 
 fn options() -> MeSessionOptions {
+    session_options(false)
+}
+
+/// Options that record the output trace, for tests that compare trajectories.
+fn traced() -> MeSessionOptions {
+    session_options(true)
+}
+
+fn session_options(records_trace: bool) -> MeSessionOptions {
     MeSessionOptions::new(MeSessionOptionsInput {
         start_time: 0.0,
         stop_time: Some(0.02),
@@ -64,7 +83,7 @@ fn options() -> MeSessionOptions {
         root_scan_resolution: 0.001,
         root_location_tolerance: 1e-10,
         max_wall_seconds: Some(100.0),
-        records_trace: false,
+        records_trace,
     })
     .unwrap()
 }
@@ -75,7 +94,7 @@ fn ordinary_fmi_reads_dynamic_arrays_time_types_and_reset() {
         crate::SimExecutionPolicy::Interpreter,
         crate::SimExecutionPolicy::NativeRequired,
     ] {
-        let (component, mut retained) = component(policy, false);
+        let (component, mut retained) = component(policy, false, false);
         initialize(&mut retained);
         let refs = [
             0,
@@ -107,10 +126,15 @@ fn ordinary_fmi_reads_dynamic_arrays_time_types_and_reset() {
     }
 }
 
+/// Reads ordinary Float64 values during initialization. Without `inner` it
+/// retains the handle for inspection and never steps; with `inner` it passes
+/// the handle to that real integrator and forwards every later call.
 struct ReadOnInitialize {
     reference: u32,
     handle: Rc<RefCell<Option<MeDerivativeHandle>>>,
     fail_source: bool,
+    initializations: usize,
+    inner: Option<Box<dyn MeIntegratorBackend>>,
 }
 
 impl MeIntegratorBackend for ReadOnInitialize {
@@ -135,52 +159,84 @@ impl MeIntegratorBackend for ReadOnInitialize {
             assert_eq!(values, [42.0; 3]);
         } else {
             outcome?;
-            assert_eq!(values, [0.0, 1.0, -0.0]);
+            // The first call is the initial point. A restart after an event
+            // supplies its own point, so every read derives from that point.
+            if self.initializations == 0 {
+                assert_eq!(bits(&values), bits(&[0.0, 1.0, -0.0]));
+            }
+            let current = [point.time(), point.states()[0], -0.0];
+            assert_eq!(bits(&values), bits(&current));
             // SOLVE-C93: the event assertion remains root/action owned; a trial
             // value read does not process that event or replace its timing.
             handle.float64_values_into(point.time(), &[-1.0], &[0, self.reference], &mut values)?;
-            assert_eq!(values, [0.0, -1.0, -0.0]);
+            assert_eq!(bits(&values), bits(&[point.time(), -1.0, -0.0]));
             handle.float64_values_into(
                 point.time(),
                 point.states(),
                 &[0, self.reference],
                 &mut values,
             )?;
+            assert_eq!(
+                bits(&values),
+                bits(&current),
+                "the trial read is not retained"
+            );
         }
-        *self.handle.borrow_mut() = Some(handle);
-        Ok(())
+        self.initializations += 1;
+        match &mut self.inner {
+            Some(inner) => inner.initialize(point, handle),
+            None => {
+                *self.handle.borrow_mut() = Some(handle);
+                Ok(())
+            }
+        }
     }
-    fn advance(&mut self, _: &MeAdvanceRequest) -> Result<MeStepCandidate, MeIntegrationError> {
-        Err(MeIntegrationError::numerical(
-            "ordinary Float64 read control",
-            MeNumericalFailure::Construction,
-            "read fixture never advances",
-        ))
+    fn advance(
+        &mut self,
+        request: &MeAdvanceRequest,
+    ) -> Result<MeStepCandidate, MeIntegrationError> {
+        match &mut self.inner {
+            Some(inner) => inner.advance(request),
+            None => Err(MeIntegrationError::numerical(
+                "ordinary Float64 read control",
+                MeNumericalFailure::Construction,
+                "read fixture never advances",
+            )),
+        }
     }
-    fn sample(&self, _: f64, _: &mut [f64]) -> Result<(), MeIntegrationError> {
-        Err(MeIntegrationError::numerical(
-            "ordinary Float64 read control",
-            MeNumericalFailure::Construction,
-            "read fixture never samples",
-        ))
+    fn sample(&self, time: f64, states: &mut [f64]) -> Result<(), MeIntegrationError> {
+        match &self.inner {
+            Some(inner) => inner.sample(time, states),
+            None => Err(MeIntegrationError::numerical(
+                "ordinary Float64 read control",
+                MeNumericalFailure::Construction,
+                "read fixture never samples",
+            )),
+        }
     }
-    fn truncate_reset(&mut self, _: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        Err(MeIntegrationError::numerical(
-            "ordinary Float64 read control",
-            MeNumericalFailure::Construction,
-            "read fixture never truncates",
-        ))
+    fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
+        match &mut self.inner {
+            Some(inner) => inner.truncate_reset(point),
+            None => Err(MeIntegrationError::numerical(
+                "ordinary Float64 read control",
+                MeNumericalFailure::Construction,
+                "read fixture never truncates",
+            )),
+        }
     }
 }
 
 #[test]
 fn ordinary_fmi_reads_use_actual_host_activation_and_latch_inactive_failure() {
-    let (component, mut retained) = component(crate::SimExecutionPolicy::NativeRequired, false);
+    let (component, mut retained) =
+        component(crate::SimExecutionPolicy::NativeRequired, false, false);
     let handle = Rc::new(RefCell::new(None));
     let plugin = ReadOnInitialize {
         reference: vr(&component, "pair"),
         handle: Rc::clone(&handle),
         fail_source: false,
+        initializations: 0,
+        inner: None,
     };
     let host = retained.lease(options()).unwrap();
     let _session = host.into_session(Some(Box::new(plugin))).unwrap();
@@ -198,12 +254,15 @@ fn ordinary_fmi_reads_use_actual_host_activation_and_latch_inactive_failure() {
 
 #[test]
 fn ordinary_fmi_reads_cannot_swallow_a_public_evaluation_failure() {
-    let (component, mut retained) = component(crate::SimExecutionPolicy::NativeRequired, true);
+    let (component, mut retained) =
+        component(crate::SimExecutionPolicy::NativeRequired, true, false);
     let handle = Rc::new(RefCell::new(None));
     let plugin = ReadOnInitialize {
         reference: vr(&component, "pair"),
         handle,
         fail_source: true,
+        initializations: 0,
+        inner: None,
     };
     let host = retained.lease(options()).unwrap();
     let outcome = host.into_session(Some(Box::new(plugin)));
@@ -214,4 +273,55 @@ fn ordinary_fmi_reads_cannot_swallow_a_public_evaluation_failure() {
         error.to_string().to_lowercase().contains("finite"),
         "{error}"
     );
+}
+
+/// One run of the event variant to its stop time, with the host-default RK45
+/// integrator either alone or behind the initialization reads.
+fn read_trajectory(reads: bool) -> rumoca_solver::SimResult {
+    let (component, mut retained) =
+        component(crate::SimExecutionPolicy::NativeRequired, false, true);
+    let host = retained.lease(traced()).unwrap();
+    let rk45 = rumoca_solver_rk45::model_exchange_integrator(host.numerical_setup(None).unwrap());
+    let plugin: Box<dyn MeIntegratorBackend> = if reads {
+        Box::new(ReadOnInitialize {
+            reference: vr(&component, "pair"),
+            handle: Rc::new(RefCell::new(None)),
+            fail_source: false,
+            initializations: 0,
+            inner: Some(rk45),
+        })
+    } else {
+        rk45
+    };
+    let mut cursor = driver::batch_output_cursor(&traced()).unwrap();
+    let mut session = host.into_session(Some(plugin)).unwrap();
+    session.run_to_stop(&mut cursor).unwrap();
+    session.finish()
+}
+
+fn bits(values: &[f64]) -> Vec<u64> {
+    values.iter().map(|value| value.to_bits()).collect()
+}
+
+#[test]
+fn ordinary_fmi_reads_during_initialization_leave_trajectory_and_event_unchanged() {
+    // The reads include a trial state the component must not keep (SOLVE-C93).
+    let read = read_trajectory(true);
+    let plain = read_trajectory(false);
+    // Both runs record their traces, so the comparison below is not vacuous.
+    assert!(
+        plain.names.iter().any(|name| name == "x"),
+        "{:?}",
+        plain.names
+    );
+    assert!(!plain.times.is_empty());
+    assert_eq!(read.names, plain.names);
+    assert_eq!(bits(&read.times), bits(&plain.times));
+    assert_eq!(read.data.len(), plain.data.len());
+    for (with_reads, without) in read.data.iter().zip(&plain.data) {
+        assert_eq!(bits(with_reads), bits(without));
+    }
+    // Both runs located the reset at t=0.0075: x(0.02) = 0.9 + 2 * 0.0125.
+    let x = plain.names.iter().position(|name| name == "x").unwrap();
+    assert!((plain.data[x].last().unwrap() - 0.925).abs() < 1e-6);
 }

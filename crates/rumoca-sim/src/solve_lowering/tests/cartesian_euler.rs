@@ -156,3 +156,15 @@ fn time_event_reinitializes_velocity_through_the_common_host() {
     assert!((last(&result, "v") - 2.0).abs() < 1e-12);
     assert!((last(&result, "q") - 0.03).abs() < 1e-10);
 }
+
+#[test]
+fn located_state_event_truncates_the_step_and_continues_from_the_reset_point() {
+    // The crossing at t=0.0125 lies inside the [0.010, 0.015] step, so the host
+    // locates it on the plugin's interpolant and truncates the plugin there.
+    let source = "model Case Real q(start=0.0125,fixed=true); Real v(start=-1,fixed=true); equation der(q)=v; der(v)=0; when q<0 then reinit(v,-v); end when; end Case;";
+    let result = run(source, 0.02, 0.005).unwrap();
+    assert!((last(&result, "v") - 1.0).abs() < 1e-12);
+    assert!((last(&result, "q") - 0.0075).abs() < 1e-6);
+    let q = result.names.iter().position(|name| name == "q").unwrap();
+    assert!(result.data[q].iter().all(|value| *value > -1e-6));
+}

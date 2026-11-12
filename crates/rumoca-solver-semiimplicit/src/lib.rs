@@ -3,6 +3,8 @@
 
 mod observation;
 mod quaternion;
+#[cfg(test)]
+mod tests;
 pub use observation::{CartesianWorkCounts, CartesianWorkObserver};
 pub use quaternion::UnitBodyQuaternion;
 
