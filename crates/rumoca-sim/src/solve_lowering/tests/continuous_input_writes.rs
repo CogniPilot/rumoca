@@ -6,7 +6,10 @@ use rumoca_solver::fmi_me::{
     driver::{advance_live_session, live_session_options},
     session::{
         MeRetainedComponent,
-        input_write_audit::{InputWriteAudit, force_input_event, input_write_counts},
+        input_write_audit::{
+            InputWriteAudit, force_input_event, input_write_counts, poison_next_indicator_check,
+            unguarded_input_write_count,
+        },
     },
 };
 
@@ -15,6 +18,9 @@ use super::{SimOptions, SimSolverMode, compile};
 #[derive(Clone, Copy, Debug)]
 enum Step {
     Set(&'static [(&'static str, f64)]),
+    /// A batch whose rollback-free indicator check fails, as an evaluation
+    /// fault of the check itself would; the forced run writes it plainly.
+    SetWithPoisonedCheck(&'static [(&'static str, f64)]),
     Advance(f64),
 }
 
@@ -26,6 +32,8 @@ struct Run {
     trace: String,
     /// Changed batches as `[continuous, input event]`.
     writes: [usize; 2],
+    /// Continuous batches written without a restoration point.
+    unguarded: usize,
 }
 
 fn plugin(solver_mode: SimSolverMode, setup: MeNumericalSetup) -> Box<dyn MeIntegratorBackend> {
@@ -118,11 +126,18 @@ fn run(
     let mut session = host.into_session(plugin).unwrap();
     force_input_event(forced);
     let before = input_write_counts();
+    let unguarded = unguarded_input_write_count();
     let reach = session.input_event_reach().unwrap();
     let mut audits = vec![session.input_write_audit().unwrap()];
     for step in script {
         match *step {
             Step::Set(inputs) => session.set_inputs(inputs).unwrap(),
+            Step::SetWithPoisonedCheck(inputs) => {
+                if !forced {
+                    poison_next_indicator_check();
+                }
+                session.set_inputs(inputs).unwrap();
+            }
             Step::Advance(time) => {
                 advance_live_session(&mut session, time).unwrap();
             }
@@ -140,6 +155,7 @@ fn run(
         audits,
         trace: format!("{:?}", session.finish()),
         writes: [after[0] - before[0], after[1] - before[1]],
+        unguarded: unguarded_input_write_count() - unguarded,
     }
 }
 
@@ -153,6 +169,25 @@ fn assert_paths_agree(
     decoded: bool,
     script: &[Step],
 ) -> Vec<(SimSolverMode, Vec<bool>, [usize; 2], usize)> {
+    assert_paths_agree_counting(source, model, decoded, script)
+        .into_iter()
+        .map(|(solver_mode, reach, writes, deferred, _)| (solver_mode, reach, writes, deferred))
+        .collect()
+}
+
+/// One solver's agreed paths: its mode, the continuous run's reach, write
+/// counts, batches written on a deferred yield, and continuous batches
+/// written without a restoration point.
+type AgreedPaths = (SimSolverMode, Vec<bool>, [usize; 2], usize, usize);
+
+/// [`assert_paths_agree`], also returning how many continuous batches were
+/// written without a restoration point.
+fn assert_paths_agree_counting(
+    source: &str,
+    model: &str,
+    decoded: bool,
+    script: &[Step],
+) -> Vec<AgreedPaths> {
     [SimSolverMode::RkLike, SimSolverMode::Bdf]
         .into_iter()
         .map(|solver_mode| {
@@ -160,6 +195,7 @@ fn assert_paths_agree(
             let event = run(source, model, solver_mode, true, decoded, script);
             assert_eq!(continuous.reach, event.reach);
             assert_eq!(event.writes[0], 0, "{model} {solver_mode:?}: forced run");
+            assert_eq!(event.unguarded, 0, "{model} {solver_mode:?}: forced run");
             assert_eq!(
                 continuous.writes[0] + continuous.writes[1],
                 event.writes[1],
@@ -181,9 +217,18 @@ fn assert_paths_agree(
             let deferred = script
                 .iter()
                 .zip(&continuous.audits)
-                .filter(|(step, before)| matches!(step, Step::Set(_)) && before.deferred_yield)
+                .filter(|(step, before)| {
+                    matches!(step, Step::Set(_) | Step::SetWithPoisonedCheck(_))
+                        && before.deferred_yield
+                })
                 .count();
-            (solver_mode, continuous.reach, continuous.writes, deferred)
+            (
+                solver_mode,
+                continuous.reach,
+                continuous.writes,
+                deferred,
+                continuous.unguarded,
+            )
         })
         .collect()
 }
@@ -520,5 +565,95 @@ fn a_stateless_model_writes_unreached_inputs_continuously() {
             assert_eq!(reach, [true, true, false]);
             assert_eq!(writes, [3, 2], "{solver_mode:?} decoded={decoded}");
         }
+    }
+}
+
+/// A model with event indicators keeps its continuous writes free of a
+/// restoration point when the indicator check, which writes nothing, holds:
+/// a relation at exactly zero and one inside its location tolerance.
+#[test]
+fn indicator_models_write_continuously_without_a_restoration_point() {
+    let script = [
+        Step::Advance(0.1),
+        // `x > 0` sits exactly at zero.
+        Step::Set(&[("u", 1e-13)]),
+        Step::Advance(0.2),
+        // `x` is 1e-14: inside the location tolerance of `x > 0`.
+        Step::Set(&[("u", -1e-13)]),
+        Step::Advance(0.3),
+        Step::Set(&[("u", 1.0)]),
+        Step::Advance(0.4),
+        Step::Set(&[("u", -1.0)]),
+        Step::Advance(0.6),
+    ];
+    for (solver_mode, _, writes, _, unguarded) in
+        assert_paths_agree_counting(STATE_RELATIONS, "StateRelations", false, &script)
+    {
+        assert_eq!(writes, [4, 0], "{solver_mode:?}");
+        assert_eq!(unguarded, 4, "{solver_mode:?}");
+    }
+}
+
+/// `x` moves from 1e-14 through zero to -1e-14, inside the location
+/// tolerance of `x > 0`, before the write.
+#[test]
+fn a_write_after_an_indicator_crossed_inside_its_tolerance_keeps_the_input_event_bits() {
+    let script = [
+        Step::Advance(0.1),
+        Step::Set(&[("u", 1e-13)]),
+        Step::Advance(0.2),
+        Step::Set(&[("u", -1e-13)]),
+        Step::Advance(0.4),
+        Step::Set(&[("u", 1.0)]),
+        Step::Advance(0.5),
+    ];
+    for (solver_mode, _, writes, _, unguarded) in
+        assert_paths_agree_counting(STATE_RELATIONS, "StateRelations", false, &script)
+    {
+        assert_eq!(writes, [3, 0], "{solver_mode:?}");
+        assert_eq!(unguarded, 3, "{solver_mode:?}");
+    }
+}
+
+/// A failed indicator check changes nothing: the write then runs under the
+/// rollback owner exactly as before, and leaves the input event's bits.
+#[test]
+fn a_failed_indicator_check_falls_back_to_the_checkpointed_write() {
+    let script = [
+        Step::Advance(0.1),
+        Step::SetWithPoisonedCheck(&[("u", 1.0)]),
+        Step::Advance(0.2),
+        Step::Set(&[("u", 2.0)]),
+        Step::Advance(0.3),
+    ];
+    for (solver_mode, _, writes, _, unguarded) in
+        assert_paths_agree_counting(STATE_RELATIONS, "StateRelations", false, &script)
+    {
+        assert_eq!(writes, [2, 0], "{solver_mode:?}");
+        assert_eq!(unguarded, 1, "{solver_mode:?}: only the unpoisoned write");
+    }
+}
+
+const TORN_RELATION: &str = "model TornRelation input Real u = 0; \
+    Real x(start=0, fixed=true); Real a; output Real y; \
+    equation a + 0.2*sin(a) = x; der(x) = 1 + u; y = if a > 0.5 then 1 else 0; \
+    end TornRelation;";
+
+/// A refresh that is not an exact causal schedule never takes the
+/// rollback-free write: its input reach already fails closed.
+#[test]
+fn a_model_without_an_exact_causal_refresh_keeps_todays_write() {
+    let script = [
+        Step::Advance(0.1),
+        Step::Set(&[("u", 1.0)]),
+        Step::Advance(0.2),
+        Step::Set(&[("u", 2.0)]),
+        Step::Advance(0.3),
+    ];
+    for (solver_mode, _, writes, _, unguarded) in
+        assert_paths_agree_counting(TORN_RELATION, "TornRelation", false, &script)
+    {
+        assert_eq!(writes, [0, 2], "{solver_mode:?}");
+        assert_eq!(unguarded, 0, "{solver_mode:?}");
     }
 }

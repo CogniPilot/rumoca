@@ -4,18 +4,8 @@ use indexmap::IndexMap;
 
 use super::host_state::{close_excursion, update_discrete_states_to_completion};
 use super::{MeSessionError, MeSessionLoss, MeSimulationSession};
-use crate::fmi_me::kernel::AcceptedInputWrite;
+use crate::fmi_me::kernel::{AcceptedInputWrite, UnguardedContinuousWrite};
 use crate::fmi_me::{MeError, MeEventCause, MeTime, MeValueRef};
-
-/// How a write that stays in Continuous-Time Mode is protected.
-#[derive(Clone, Copy)]
-pub(super) enum ContinuousWrite {
-    /// Always under the component's rollback owner.
-    UnderRollback,
-    /// Without a restoration point when nothing after its first mutation can
-    /// fail, and under the rollback owner otherwise.
-    WithoutRollbackWhereInfallible,
-}
 
 impl MeSimulationSession<'_, '_> {
     /// Apply one declared input through the same transaction as a batch.
@@ -39,12 +29,9 @@ impl MeSimulationSession<'_, '_> {
         self.require_live()?;
         let references = self.input_references(inputs.iter().map(|(name, _)| *name))?;
         let values: Vec<f64> = inputs.iter().map(|(_, value)| *value).collect();
-        self.write_input_frame(
-            &references,
-            &values,
-            ContinuousWrite::UnderRollback,
-            |recorded| record_inputs(recorded, inputs),
-        )
+        self.write_input_frame(&references, &values, |recorded| {
+            record_inputs(recorded, inputs)
+        })
     }
 
     /// The input frame transaction of [`Self::set_inputs`] over resolved
@@ -53,7 +40,6 @@ impl MeSimulationSession<'_, '_> {
         &mut self,
         references: &[MeValueRef],
         values: &[f64],
-        continuous_write: ContinuousWrite,
         record: impl FnOnce(&mut IndexMap<String, f64>),
     ) -> Result<(), MeSessionError> {
         let mut current = vec![0.0; references.len()];
@@ -88,7 +74,7 @@ impl MeSimulationSession<'_, '_> {
             .kernel
             .borrow()?
             .admits_continuous_input_write(changed, self.host.time);
-        if continuous && self.write_continuous_inputs(references, values, continuous_write)? {
+        if continuous && self.write_continuous_inputs(references, values)? {
             #[cfg(any(test, feature = "input-write-audit"))]
             super::input_write_audit::count_input_write(true);
             record(&mut self.host.inputs);
@@ -135,16 +121,16 @@ impl MeSimulationSession<'_, '_> {
 
     /// Write inputs in Continuous-Time Mode; `false`, with nothing written,
     /// when the component needs the input event after all.
+    ///
+    /// The write takes no restoration point when nothing after its first
+    /// mutation can fail (`SolveMeKernel::write_continuous_without_rollback`),
+    /// and runs under the rollback owner otherwise.
     fn write_continuous_inputs(
         &self,
         references: &[MeValueRef],
         values: &[f64],
-        continuous_write: ContinuousWrite,
     ) -> Result<bool, MeSessionError> {
-        if matches!(
-            continuous_write,
-            ContinuousWrite::WithoutRollbackWhereInfallible
-        ) && self
+        let unguarded = self
             .host
             .kernel
             .borrow_mut()?
@@ -153,12 +139,15 @@ impl MeSimulationSession<'_, '_> {
                 &self.host.states,
                 references,
                 values,
-            )?
-            .is_some()
-        {
-            #[cfg(any(test, feature = "input-write-audit"))]
-            super::input_write_audit::count_unguarded_input_write();
-            return Ok(true);
+            )?;
+        match unguarded {
+            UnguardedContinuousWrite::Written => {
+                #[cfg(any(test, feature = "input-write-audit"))]
+                super::input_write_audit::count_unguarded_input_write();
+                return Ok(true);
+            }
+            UnguardedContinuousWrite::NeedsInputEvent => return Ok(false),
+            UnguardedContinuousWrite::NotProven => {}
         }
         self.input_rollback(|scope| {
             scope.write_continuous(

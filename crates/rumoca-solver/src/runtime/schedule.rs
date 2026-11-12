@@ -150,7 +150,7 @@ impl SolveStopSchedule {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn bit_eq(&self, other: &Self) -> bool {
         self.next_idx == other.next_idx
             && option_float_bit_eq(
@@ -176,7 +176,7 @@ impl SolveStopSchedule {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.to_bits() == right.to_bits(),
@@ -186,7 +186,7 @@ fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
 }
 
 impl StopEvent {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     fn bit_eq(&self, other: &Self) -> bool {
         self.time.to_bits() == other.time.to_bits()
             && self.pre_mode == other.pre_mode

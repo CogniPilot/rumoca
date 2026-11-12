@@ -13,7 +13,7 @@ use std::{
 
 use indexmap::IndexMap;
 
-use super::{MeSessionError, MeSimulationSession, inputs::ContinuousWrite};
+use super::{MeSessionError, MeSimulationSession};
 use crate::fmi_me::{MeValueRef, SolveMeKernel};
 
 /// The next binding id of this process; ids start at 1.
@@ -199,10 +199,6 @@ impl MeSimulationSession<'_, '_> {
 
     /// [`Self::set_inputs`] of the bound inputs with `values`, in binding
     /// order: the same validation, unchanged-frame rule and commit.
-    ///
-    /// A continuous write takes no restoration point where nothing after its
-    /// first mutation can fail
-    /// (`SolveMeKernel::write_continuous_without_rollback`).
     pub fn write_bound(&mut self, binding: u32, values: &[f64]) -> Result<(), MeSessionError> {
         self.require_live()?;
         let inputs = self.bindings.inputs(binding)?;
@@ -215,12 +211,9 @@ impl MeSimulationSession<'_, '_> {
                 },
             });
         }
-        self.write_input_frame(
-            &inputs.references,
-            values,
-            ContinuousWrite::WithoutRollbackWhereInfallible,
-            |recorded| inputs.record(recorded, values),
-        )
+        self.write_input_frame(&inputs.references, values, |recorded| {
+            inputs.record(recorded, values)
+        })
     }
 
     /// [`Self::selected_values`] of the bound names into `values`, bit for

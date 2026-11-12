@@ -109,14 +109,72 @@ impl SolveMeKernel {
             if self.copy_cached_root_conditions_into(time, &self.states, params, indicators) {
                 return Ok(());
             }
-            let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, params);
-            self.evaluate_inventory_indicators(time, params, &mut settled_guess, indicators)?;
-            self.apply_indicator_zero_sides(params, indicators);
+            self.indicators_at_parameters(time, params, indicators, |time, params| {
+                self.solver_y_at_parameters(time, params)
+            })?;
             self.cache_root_conditions_at_parameters(time, &self.states, params, indicators);
             Ok(())
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error: MeError| error.at_stage(MeStage::Integration))?;
+        Ok(())
+    }
+
+    /// [`Self::event_indicators_into`] at the current coordinate that writes
+    /// nothing in the kernel: no root cache, no seed resolution and no warm
+    /// start. A settled coordinate the indicators need is solved from a copy
+    /// of the warm start, so this is only exact for a refresh whose settled
+    /// bits no warm start can change
+    /// ([`rumoca_ir_solve::RefreshPlan::is_exact_causal_schedule`]), and for a
+    /// model without delay channels.
+    pub(in crate::fmi_me::kernel) fn event_indicators_without_caching(
+        &self,
+        indicators: &mut [f64],
+    ) -> Result<(), MeError> {
+        if indicators.len() != self.indicator_plan.len() {
+            return Err(contract(format!(
+                "event-indicator buffer has {} entries for {} indicators",
+                indicators.len(),
+                self.indicator_plan.len(),
+            )));
+        }
+        self.require_active_lifecycle("get_event_indicators")?;
+        if indicators.is_empty() {
+            return Ok(());
+        }
+        let time = self.continuous_eval_time();
+        if self.copy_cached_root_conditions_into(time, &self.states, &self.params, indicators) {
+            return Ok(());
+        }
+        let settle = self.numerics_settle();
+        self.indicators_at_parameters(time, &self.params, indicators, |time, params| {
+            let mut guess = self.solver_y_guess.borrow().clone();
+            self.runtime.full_solver_y_with_guess_certified(
+                time,
+                &self.states,
+                params,
+                &mut guess,
+                settle.tol,
+                settle.max_iters,
+            )?;
+            Ok(guess)
+        })
+        .map_err(|error| error.at_stage(MeStage::Integration))
+    }
+
+    /// The indicators at `params`, from the cached settled coordinate when
+    /// one matches and otherwise from the coordinate `settle` solves when the
+    /// inventory needs one.
+    fn indicators_at_parameters(
+        &self,
+        time: f64,
+        params: &[f64],
+        indicators: &mut [f64],
+        settle: impl FnOnce(f64, &[f64]) -> Result<Vec<f64>, MeError>,
+    ) -> Result<(), MeError> {
+        let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, params);
+        self.evaluate_inventory_indicators(time, params, &mut settled_guess, settle, indicators)?;
+        self.apply_indicator_zero_sides(params, indicators);
         Ok(())
     }
 
@@ -132,6 +190,7 @@ impl SolveMeKernel {
         time: f64,
         params: &[f64],
         settled_guess: &mut Option<SettledIndicatorCoordinate>,
+        settle: impl FnOnce(f64, &[f64]) -> Result<Vec<f64>, MeError>,
         indicators: &mut [f64],
     ) -> Result<(), MeError> {
         // A dynamic-time deadline needs a settled coordinate of its own, and
@@ -143,7 +202,7 @@ impl SolveMeKernel {
         if needs_settled && settled_guess.is_none() {
             *settled_guess = Some(SettledIndicatorCoordinate {
                 kind: SettledCoordinateKind::Algebraic,
-                values: self.solver_y_at_parameters(time, params)?,
+                values: settle(time, params)?,
             });
         }
         if self.indicator_plan.reads_deadlines()
@@ -488,7 +547,7 @@ impl SolveMeKernel {
         drop(self.solver_y_guess.borrow_mut());
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn verification_matches_snapshot(&self, saved: &MeFmuState) -> bool {
         if !Rc::ptr_eq(&saved.instance_brand, &self.instance_brand) {
             return false;
@@ -548,7 +607,7 @@ impl SolveMeKernel {
     /// Whether every reduced-chart runtime matches a saved snapshot, in chart
     /// index order. A model with no folding first-integral group compares its
     /// single primary runtime against the single saved snapshot.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     fn chart_runtimes_match_snapshots(
         &self,
         snapshots: &[Option<crate::runtime::solve_runtime::SolveRuntimeSnapshot>],

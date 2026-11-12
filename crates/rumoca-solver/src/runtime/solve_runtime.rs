@@ -645,7 +645,7 @@ impl SolveRuntime {
         self.delay_runtime.restore(&snapshot.delay);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn matches_snapshot(&self, snapshot: &SolveRuntimeSnapshot) -> bool {
         self.runtime_state.matches_snapshot(&snapshot.evaluator)
             && self.delay_runtime.matches_snapshot(&snapshot.delay)

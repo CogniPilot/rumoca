@@ -176,7 +176,7 @@ impl ReducedChartRuntimes {
 
     /// Whether every built runtime matches its snapshot and no unbuilt one has
     /// a snapshot.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(super) fn match_snapshots(&self, snapshots: &[Option<SolveRuntimeSnapshot>]) -> bool {
         self.len() == snapshots.len()
             && snapshots.iter().enumerate().all(|(index, snapshot)| {

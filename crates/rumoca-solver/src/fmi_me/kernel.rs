@@ -11,11 +11,11 @@ mod event_boundary;
 mod input_transaction;
 #[cfg(all(test, feature = "native-wasm"))]
 pub(in crate::fmi_me) use component::fail_initialization_entry;
-pub(in crate::fmi_me) use input_transaction::AcceptedInputWrite;
 #[cfg(test)]
 pub(in crate::fmi_me) use input_transaction::fail_input_restore;
 #[cfg(all(test, feature = "native-wasm"))]
 pub(in crate::fmi_me) use input_transaction::snapshot_count;
+pub(in crate::fmi_me) use input_transaction::{AcceptedInputWrite, UnguardedContinuousWrite};
 #[cfg(feature = "native-wasm")]
 mod native_typed;
 mod solver_guess;
@@ -1418,7 +1418,7 @@ pub(super) fn continuous_state_values_changed(before: &[f64], after: &[f64]) -> 
     !float_slice_bit_eq(before, after)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.to_bits() == right.to_bits(),
@@ -1444,7 +1444,7 @@ pub(super) fn event_update_application_time(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_float_vec_bit_eq(left: &Option<Vec<f64>>, right: &Option<Vec<f64>>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => float_slice_bit_eq(left, right),
@@ -1453,7 +1453,7 @@ fn option_float_vec_bit_eq(left: &Option<Vec<f64>>, right: &Option<Vec<f64>>) ->
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_event_entry_bit_eq(left: Option<MeEventEntry>, right: Option<MeEventEntry>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {
@@ -1466,7 +1466,7 @@ fn option_event_entry_bit_eq(left: Option<MeEventEntry>, right: Option<MeEventEn
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_event_stop_bit_eq(
     left: Option<(f64, RuntimeEventStop)>,
     right: Option<(f64, RuntimeEventStop)>,
@@ -1480,7 +1480,7 @@ fn option_event_stop_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn root_crossings_bit_eq(left: &[RootCrossing], right: &[RootCrossing]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -1490,7 +1490,7 @@ fn root_crossings_bit_eq(left: &[RootCrossing], right: &[RootCrossing]) -> bool 
         })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn derivative_cache_bit_eq(
     left: Option<&CachedDerivative>,
     right: Option<&CachedDerivative>,
@@ -1506,7 +1506,7 @@ fn derivative_cache_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn root_cache_bit_eq(
     left: Option<&CachedRootConditions>,
     right: Option<&CachedRootConditions>,
@@ -1523,7 +1523,7 @@ fn root_cache_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn continuous_linearization_cache_bit_eq(
     left: Option<&CachedContinuousLinearization>,
     right: Option<&CachedContinuousLinearization>,
@@ -1548,7 +1548,7 @@ fn continuous_linearization_cache_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn observations_bit_eq(left: &[MeObservation], right: &[MeObservation]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -1559,7 +1559,7 @@ fn observations_bit_eq(left: &[MeObservation], right: &[MeObservation]) -> bool 
         })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn termination_bit_eq(left: Option<&SimTermination>, right: Option<&SimTermination>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {

@@ -1726,9 +1726,10 @@ fn the_step_path_neither_masks_nor_reprojects_the_root_vector() {
     }
     let evaluation = method_body(COMPONENT_SOURCE, "fn evaluate_inventory_indicators(");
     assert_eq!(
-        evaluation.matches("solver_y_at_parameters").count(),
+        evaluation.matches("settle(time, params)").count(),
         1,
-        "an indicator read settles the full algebraic coordinate at most once"
+        "an indicator read settles the full algebraic coordinate at most once, through the \
+         settling its caller chooses"
     );
     assert!(
         evaluation.contains(

@@ -169,7 +169,7 @@ impl DelayRuntime {
         self.state.borrow_mut().clone_from(&snapshot.0);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn matches_snapshot(&self, snapshot: &DelayRuntimeSnapshot) -> bool {
         self.state.borrow().bit_eq(&snapshot.0)
     }
@@ -498,7 +498,7 @@ impl DelayRuntime {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 impl DelayState {
     fn bit_eq(&self, other: &Self) -> bool {
         self.initialized == other.initialized
@@ -512,7 +512,7 @@ impl DelayState {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 impl DelayChannelHistory {
     fn bit_eq(&self, other: &Self) -> bool {
         self.points_head == other.points_head
@@ -535,14 +535,14 @@ impl DelayChannelHistory {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 impl DelayPoint {
     fn bit_eq(self, other: Self) -> bool {
         self.time.to_bits() == other.time.to_bits() && self.value.to_bits() == other.value.to_bits()
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
@@ -551,7 +551,7 @@ fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
             .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn suppressed_discontinuity_bit_eq(
     left: Option<SuppressedDiscontinuity>,
     right: Option<SuppressedDiscontinuity>,
