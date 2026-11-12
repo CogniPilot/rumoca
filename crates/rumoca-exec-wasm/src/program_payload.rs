@@ -66,6 +66,13 @@ impl ProgramPayload {
     ) {
         (&self.faults, &self.gather, &self.linear)
     }
+    /// Every persisted field that affects code, storage or fault decoding.
+    #[cfg(feature = "precompiled-programs")]
+    pub(crate) fn same_emission(&self, issued: &Self) -> bool {
+        self.bytes == issued.bytes
+            && self.scratch_bytes == issued.scratch_bytes
+            && self.fault_tables() == issued.fault_tables()
+    }
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         self.entry_status_error(status, &self.gather, &self.linear)
     }
