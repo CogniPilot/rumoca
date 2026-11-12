@@ -9,7 +9,9 @@ use crate::{SimOptions, eval_dae_at};
 use rumoca_compile::compile::CompilationResult;
 use std::fmt::Write as _;
 
+mod algorithms;
 mod for_breaks;
+mod while_breaks;
 
 /// The run-time arguments of every fixture: five samples and two thresholds.
 const ARGUMENTS: [&str; 7] = ["x1", "x2", "x3", "x4", "x5", "limit", "stop"];

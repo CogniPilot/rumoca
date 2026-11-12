@@ -14,8 +14,8 @@
 //! end the loop `k0` strictly rises while staying within `[L, U]`, the hull
 //! of those intervals. A uniformly negative change instead proves strictly
 //! decreasing progress over the same interval. In either direction at most
-//! `U - L + 1` such passes run; with an exit flag the pass that ends the loop
-//! is one more. The facts at the loop head
+//! `U - L + 1` such passes run; with an exit flag or a `break` (which ends its
+//! path) the pass that ends the loop is one more. The facts at the loop head
 //! are its invariant (`GuardFacts::while_head`), so `L` covers every pass.
 
 use super::super::super::guard_facts::{FactScope, GuardFacts};
@@ -225,7 +225,9 @@ impl PassProof<'_> {
         }
         let (lower, upper) = start.bounds()?;
         let advancing = upper.checked_sub(lower)?.checked_add(1)?.max(0);
-        advancing.checked_add(i64::from(self.flag.is_some()))
+        advancing.checked_add(i64::from(
+            self.flag.is_some() || statements_break(statements),
+        ))
     }
 
     fn sequence(&self, statements: &[rumoca_core::Statement], mut paths: Paths) -> Option<Paths> {
@@ -236,6 +238,13 @@ impl PassProof<'_> {
                     else_block,
                     ..
                 } => self.conditional(cond_blocks, else_block.as_deref(), paths)?,
+                // The loop ends here: no later statement runs on this path.
+                rumoca_core::Statement::Break { .. } => Paths {
+                    facts: GuardFacts::join(&[]),
+                    exiting: None,
+                    continuing: None,
+                    values: BTreeMap::new(),
+                },
                 _ => self.statement(statement, paths),
             };
         }
