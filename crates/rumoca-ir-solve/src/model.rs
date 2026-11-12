@@ -784,12 +784,6 @@ impl ContinuousStructuralArtifacts {
         self.kinematic_states.states()
     }
 
-    /// The issued partition, with the reason each other state is not
-    /// kinematic.
-    pub const fn kinematic_partition(&self) -> &KinematicStates {
-        &self.kinematic_states
-    }
-
     /// The state Jacobian's certified relation, one row per state derivative
     /// and one column per state.
     pub const fn state_jacobian(&self) -> Option<&StructuralPattern> {

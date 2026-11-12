@@ -207,21 +207,8 @@ impl BoundFmiDerivativeOperation {
     pub fn workspace(&self) -> FmiDerivativeWorkspace {
         self.workspace
     }
-    pub fn static_module_bytes(&self) -> Option<&[u8]> {
-        self.static_program
-            .as_ref()
-            .map(ProgramPayload::module_bytes)
-    }
-    pub fn dynamic_module_bytes(&self) -> Option<&[u8]> {
-        self.dynamic_program
-            .as_ref()
-            .map(ProgramPayload::module_bytes)
-    }
     pub fn value_module_bytes(&self) -> &[u8] {
         self.values.module_bytes()
-    }
-    pub fn kinematic_module_bytes(&self) -> Option<&[u8]> {
-        self.kinematic.as_ref().map(ProgramPayload::module_bytes)
     }
 }
 

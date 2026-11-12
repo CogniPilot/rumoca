@@ -432,18 +432,6 @@ pub fn compile_expression_compute_block_wasm_bytes(
     emit::emit_compute_module(block, layout).map_err(WasmCompileError::Backend)
 }
 
-/// Emit the original derivative tensor's value helper with checked typed calls.
-/// This is a helper for complete-operation assembly, not a derivative operation:
-/// it does not refresh dependencies, validate finite derivatives or publish a
-/// successful FMI result. Call `eval_values(y,p,time,scratch,0)` once; values
-/// occupy the start of its private scratch. A nonzero status leaves that
-/// scratch unpublishable. No scalar host loop or interpreter retry is used.
-pub fn compile_derivative_value_wasm(
-    source: &rumoca_ir_solve::fmi::FmiDerivativeOperationSource<'_>,
-) -> Result<CompiledNativeCallProgramWasm, WasmCompileError> {
-    emit::emit_derivative_value_module(source).map_err(WasmCompileError::Backend)
-}
-
 /// Emit one direct-write function from a construction-issued native schedule.
 ///
 /// The module imports unshared wasm32 `env.memory` and the same supported math

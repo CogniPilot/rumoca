@@ -46,11 +46,6 @@ pub struct FmiKinematicCall<'a> {
 }
 
 impl BoundFmiDerivativeOperation {
-    /// Whether the source issued a kinematic entry.
-    pub fn has_kinematic(&self) -> bool {
-        self.kinematic.is_some()
-    }
-
     /// The kinematic rows over a settled `y`. A refused helper or a non-finite
     /// kinematic row is the same typed failure as a complete evaluation's.
     pub fn call_kinematic(&self, frame: FmiKinematicCall<'_>) -> Result<(), FmiDerivativeFailure> {

@@ -534,24 +534,6 @@ impl MeSimulationSession<'_, '_> {
         Ok(visible)
     }
 
-    /// Whether `name` is a declared **input** of this component.
-    ///
-    /// Causality comes from the model description's input
-    /// inventory, not from the mere existence of a value reference.
-    #[must_use]
-    pub fn has_input(&self, name: &str) -> bool {
-        self.host
-            .kernel
-            .with_model(|model| {
-                model
-                    .problem
-                    .solve_layout
-                    .input_parameter_index(name)
-                    .is_some()
-            })
-            .unwrap_or(false)
-    }
-
     /// Restart the session at `start_time` from the pristine component state.
     ///
     /// Every piece of session-owned evidence and every cache is discarded
