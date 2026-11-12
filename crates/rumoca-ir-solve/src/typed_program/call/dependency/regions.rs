@@ -6,9 +6,9 @@ use crate::SolveProgramRegion;
 mod passes;
 mod pointwise;
 
-#[cfg(test)]
-pub(super) use passes::FOLLOWED_PASSES;
 pub(super) use passes::FOLLOWED_WORK_BUDGET;
+#[cfg(test)]
+pub(super) use passes::{FOLLOWED, FOLLOWED_PASS_BUDGET, FollowedWork};
 
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {

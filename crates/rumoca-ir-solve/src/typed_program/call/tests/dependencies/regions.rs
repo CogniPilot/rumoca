@@ -286,23 +286,31 @@ fn alternate_branch<'p>(
     branch.store(result[0], carry, span(1116))
 }
 
-fn three_passes() -> StructuredIndexDomain {
+fn passes(upper: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
             provenance: IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".into(),
             lower: 1,
-            upper: 3,
+            upper,
             step: 1,
         }],
     }
 }
 
-#[test]
-fn fold_carry_reads_only_the_carries_it_reaches_and_their_captures() {
-    // a' = a + x, b' = b + y, c' = c + a: `c` reaches `a` and so reads `x`;
-    // nothing reaches `b`, so no other carry reads `y`.
+/// The passes of the scalar carry fixtures: a fold short enough to be
+/// followed pass by pass, and one a pass too long for that, which keeps the
+/// closure over its carries of the summary over all passes. Both name the
+/// same leaves.
+fn followed_and_unfollowed_passes() -> [i64; 2] {
+    use crate::typed_program::call::dependency::followed_work;
+    [3, followed_work::PASS_BUDGET as i64 + 1]
+}
+
+/// `a' = a + x, b' = b + y, c' = c + a` over `count` passes: the leaves
+/// each carry reads.
+fn chained_carries(count: i64) -> Vec<Box<[usize]>> {
     let real = real_shape(vec![]);
     let table = SolvePureCallTable::construct(profile(), |table| {
         table.add_owner(
@@ -319,7 +327,7 @@ fn fold_carry_reads_only_the_carries_it_reaches_and_their_captures() {
                 let y = builder.load(inputs[1], span(1302))?;
                 let zero = builder.constant(SolveValue::real(profile(), 0.0), span(1303))?;
                 let values = builder.fold(
-                    three_passes(),
+                    passes(count),
                     &[zero, zero, zero],
                     &[x, y],
                     span(1304),
@@ -345,20 +353,29 @@ fn fold_carry_reads_only_the_carries_it_reaches_and_their_captures() {
         Ok(())
     })
     .unwrap();
-    let leaves = input_leaves(table.owners()[0].call_site().output_dependencies());
-    assert_eq!(
-        leaves,
-        vec![
-            vec![0].into_boxed_slice(),
-            vec![1].into_boxed_slice(),
-            vec![0].into_boxed_slice()
-        ]
-    );
+    input_leaves(table.owners()[0].call_site().output_dependencies())
 }
 
 #[test]
-fn fold_carry_that_reads_every_carry_reads_every_capture() {
-    // c' = c + a + b reaches both other carries, so it reads both captures.
+fn fold_carry_reads_only_the_carries_it_reaches_and_their_captures() {
+    // `c` reaches `a` and so reads `x`; nothing reaches `b`, so no other
+    // carry reads `y`.
+    for count in followed_and_unfollowed_passes() {
+        assert_eq!(
+            chained_carries(count),
+            vec![
+                vec![0].into_boxed_slice(),
+                vec![1].into_boxed_slice(),
+                vec![0].into_boxed_slice()
+            ],
+            "{count} passes"
+        );
+    }
+}
+
+/// `a' = a + x, b' = b + y, c' = c + a + b` over `count` passes: the leaves
+/// each carry reads.
+fn joined_carries(count: i64) -> Vec<Box<[usize]>> {
     let real = real_shape(vec![]);
     let table = SolvePureCallTable::construct(profile(), |table| {
         table.add_owner(
@@ -375,7 +392,7 @@ fn fold_carry_that_reads_every_carry_reads_every_capture() {
                 let y = builder.load(inputs[1], span(1322))?;
                 let zero = builder.constant(SolveValue::real(profile(), 0.0), span(1323))?;
                 let values = builder.fold(
-                    three_passes(),
+                    passes(count),
                     &[zero, zero, zero],
                     &[x, y],
                     span(1324),
@@ -402,20 +419,18 @@ fn fold_carry_that_reads_every_carry_reads_every_capture() {
         Ok(())
     })
     .unwrap();
-    let leaves = input_leaves(table.owners()[0].call_site().output_dependencies());
-    assert_eq!(leaves[2], vec![0, 1].into_boxed_slice());
+    input_leaves(table.owners()[0].call_site().output_dependencies())
 }
 
-fn passes(upper: i64) -> StructuredIndexDomain {
-    StructuredIndexDomain {
-        binders: vec![StructuredIndexBinder {
-            provenance: IndexBinderProvenance::Generated,
-            id: 0,
-            display_name: "i".into(),
-            lower: 1,
-            upper,
-            step: 1,
-        }],
+#[test]
+fn fold_carry_that_reads_every_carry_reads_every_capture() {
+    // `c` reaches both other carries, so it reads both captures.
+    for count in followed_and_unfollowed_passes() {
+        assert_eq!(
+            joined_carries(count)[2],
+            vec![0, 1].into_boxed_slice(),
+            "{count} passes"
+        );
     }
 }
 
@@ -581,9 +596,9 @@ fn sum_level<'p>(
 }
 
 /// `s := 0; for .. loop .. s := s + x; .. end for` with `count` passes at
-/// each of `depth` levels: the leaves its result reads and the most passes
-/// one derivation of it followed.
-fn nested_sum(count: i64, depth: usize) -> (Vec<Box<[usize]>>, usize) {
+/// each of `depth` levels: the leaves its result reads, and the passes one
+/// derivation of it followed with the operations charged for them.
+fn nested_sum(count: i64, depth: usize) -> (Vec<Box<[usize]>>, usize, usize) {
     use crate::typed_program::call::dependency::followed_work;
     let real = real_shape(vec![]);
     followed_work::reset();
@@ -612,33 +627,42 @@ fn nested_sum(count: i64, depth: usize) -> (Vec<Box<[usize]>>, usize) {
     })
     .unwrap();
     let leaves = input_leaves(table.owners()[0].call_site().output_dependencies());
-    (leaves, followed_work::most_passes())
+    let work = followed_work::most();
+    (leaves, work.passes, work.charged)
 }
 
 #[test]
 fn a_nest_of_folds_within_the_work_budget_is_followed_in_every_pass() {
     // 33 outer passes, each following 33 inner passes: more than a backend
     // unrolls, and well inside the analysis budget.
-    let (leaves, passes) = nested_sum(33, 2);
+    use crate::typed_program::call::dependency::followed_work;
+    let (leaves, passes, charged) = nested_sum(33, 2);
     assert_eq!(leaves, vec![vec![0].into_boxed_slice()]);
     assert_eq!(passes, 33 + 33 * 33);
+    // Every pass is charged at least the one operation it walks.
+    assert!((passes..=followed_work::WORK_BUDGET).contains(&charged));
 }
 
 #[test]
 fn nested_followed_folds_draw_on_one_work_budget() {
     use crate::typed_program::call::dependency::followed_work;
     // 33 * 33 * 33 followed passes would walk the innermost body 35,937
-    // times and 64 * 64 * 64 would walk it 262,144 times. Every pass costs
-    // at least one operation of the owner's one budget, so the following
-    // stops there, and the folds that could not be paid for keep the summary
-    // over all passes, which names the same leaf here.
+    // times and 64 * 64 * 64 would walk it 262,144 times. Every pass is
+    // charged the operations it walks to the owner's one budget, so the
+    // following stops when a fold's next pass costs more than is left, and
+    // the folds that could not be paid for keep the summary over all passes,
+    // which names the same leaf here.
     for (count, unbounded) in [
         (33_usize, 33 + 33 * 33 + 33 * 33 * 33),
         (64, 64 + 64 * 64 + 64 * 64 * 64),
     ] {
-        let (leaves, passes) = nested_sum(count as i64, 3);
+        let (leaves, passes, charged) = nested_sum(count as i64, 3);
         assert_eq!(leaves, vec![vec![0].into_boxed_slice()]);
-        assert!(passes <= followed_work::BUDGET, "{count}: {passes}");
+        assert!(
+            charged <= followed_work::WORK_BUDGET,
+            "{count}: {charged} operations charged"
+        );
+        assert!(passes <= charged, "{count}: {passes} passes, {charged}");
         assert!(passes < unbounded, "{count}: {passes} of {unbounded}");
         assert!(
             passes > 0,

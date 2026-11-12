@@ -14,26 +14,30 @@ mod regions;
 mod substitution;
 pub(in crate::typed_program) mod value_projection;
 
-/// The followed passes of derivations on this thread, for tests of the budget.
+/// The followed work of derivations on this thread, for tests of the budgets.
 #[cfg(test)]
 pub(in crate::typed_program::call) mod followed_work {
     use super::regions;
 
-    pub(in crate::typed_program::call) const BUDGET: usize = regions::FOLLOWED_WORK_BUDGET;
+    pub(in crate::typed_program::call) const PASS_BUDGET: usize = regions::FOLLOWED_PASS_BUDGET;
+    pub(in crate::typed_program::call) const WORK_BUDGET: usize = regions::FOLLOWED_WORK_BUDGET;
 
     /// Forget every derivation so far.
     pub(in crate::typed_program::call) fn reset() {
-        regions::FOLLOWED_PASSES.with(|passes| passes.set((0, 0)));
+        regions::FOLLOWED.with(|followed| {
+            followed.set((regions::FollowedWork::NONE, regions::FollowedWork::NONE))
+        });
     }
 
-    /// A derivation starts: its passes are counted from zero.
+    /// A derivation starts: its followed work is counted from nothing.
     pub(super) fn start() {
-        regions::FOLLOWED_PASSES.with(|passes| passes.set((0, passes.get().1)));
+        regions::FOLLOWED
+            .with(|followed| followed.set((regions::FollowedWork::NONE, followed.get().1)));
     }
 
-    /// The most passes one derivation followed since [`reset`].
-    pub(in crate::typed_program::call) fn most_passes() -> usize {
-        regions::FOLLOWED_PASSES.with(|passes| passes.get().1)
+    /// The followed work of the derivation charged the most since [`reset`].
+    pub(in crate::typed_program::call) fn most() -> regions::FollowedWork {
+        regions::FOLLOWED.with(|followed| followed.get().1)
     }
 }
 

@@ -16,17 +16,38 @@ pub(in crate::typed_program::call::dependency) const FOLLOWED_PASS_BUDGET: usize
 /// Most operations the followed passes of one owner's derivation may walk,
 /// over all its folds together. Each followed pass is charged the operations
 /// one walk of its transition visits, nested regions included, so a nest of
-/// short folds cannot multiply the work: when the budget cannot pay for the
-/// next pass, that fold and every fold after it keeps the summary over all
-/// passes, which only adds dependencies.
+/// short folds cannot multiply the work: a fold whose next pass costs more
+/// than is left keeps the summary over all passes, which only adds
+/// dependencies. What is left stays available to the folds after it, so the
+/// passes followed in one derivation never cost more than the budget.
 pub(in crate::typed_program::call::dependency) const FOLLOWED_WORK_BUDGET: usize = 65_536;
 
-// The followed passes of the derivation running on this thread and the most
-// any one derivation followed, for tests of the budget.
+/// What the followed passes of one derivation came to, for tests of the
+/// budgets.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::typed_program::call) struct FollowedWork {
+    /// Passes followed.
+    pub passes: usize,
+    /// Operations charged to the work budget for them.
+    pub charged: usize,
+}
+
+#[cfg(test)]
+impl FollowedWork {
+    pub(in crate::typed_program::call) const NONE: Self = Self {
+        passes: 0,
+        charged: 0,
+    };
+}
+
+// The followed work of the derivation running on this thread and of the
+// derivation charged the most.
 #[cfg(test)]
 thread_local! {
-    pub(in crate::typed_program::call) static FOLLOWED_PASSES: std::cell::Cell<(usize, usize)> =
-        const { std::cell::Cell::new((0, 0)) };
+    pub(in crate::typed_program::call) static FOLLOWED:
+        std::cell::Cell<(FollowedWork, FollowedWork)> =
+        const { std::cell::Cell::new((FollowedWork::NONE, FollowedWork::NONE)) };
 }
 
 /// The operations one walk of `program` visits, nested regions included.
@@ -105,16 +126,23 @@ pub(super) fn follow(
         for (binder, value) in known[binders..].iter_mut().zip(&tuple) {
             *binder = Some(*value);
         }
-        // Charged before the pass is walked; a pass the budget cannot pay
-        // for ends the following of this fold.
+        // Charged before the pass is walked; a pass that costs more than is
+        // left ends the following of this fold and charges nothing.
         let Some(remaining) = context.work.get().checked_sub(cost) else {
             return Ok(None);
         };
         context.work.set(remaining);
         #[cfg(test)]
-        FOLLOWED_PASSES.with(|passes| {
-            let (current, most) = passes.get();
-            passes.set((current + 1, most.max(current + 1)));
+        FOLLOWED.with(|followed| {
+            let (mut current, most) = followed.get();
+            current.passes += 1;
+            current.charged += cost;
+            let most = if current.charged > most.charged {
+                current
+            } else {
+                most
+            };
+            followed.set((current, most));
         });
         let execution = super::super::derive_execution(
             transition.body(),
