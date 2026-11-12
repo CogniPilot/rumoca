@@ -2,8 +2,8 @@
 //! loop the nest of one loop per iterator, so the `break` (MLS §11.2.4) ends
 //! the loop of the last iterator and the next pass of the others runs it again.
 //!
-//! Every function is written twice, with several iterators and as the nest
-//! they stand for, and both must agree with the nest written in plain Rust.
+//! Every expectation is the nest written in plain Rust; the two-iterator grid
+//! is also written in Modelica as the nest it stands for.
 
 use super::{Fixture, Point, SAMPLES};
 

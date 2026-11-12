@@ -98,3 +98,92 @@ fn an_inner_break_in_a_perfect_nest_leaves_the_outer_loop_running() {
     );
     fixture.check(&points, nest);
 }
+
+/// The inner loop's statements wait on `j <= n` before the division. The
+/// outer loop's exit leaves that test out (it reads the inner iterator) and
+/// the inner break state too, so the division must not become an exit test
+/// the outer loop evaluates on its own.
+const GATED_INNER_BREAK: &str = r#"
+function gatedInnerBreak
+  input Real gate;
+  input Real divisor;
+  output Real y;
+protected
+  Integer n;
+  Integer d;
+algorithm
+  n := integer(gate);
+  d := integer(divisor);
+  y := 0;
+  for i in 1:2 loop
+    for j in 1:2 loop
+      if j <= n then
+        if div(1, d) > 0 then
+          y := y + 1;
+          break;
+        end if;
+      end if;
+    end for;
+  end for;
+end gatedInnerBreak;
+"#;
+
+#[test]
+fn a_test_guarded_by_what_the_outer_exit_leaves_out_stays_guarded() {
+    let fixture = Fixture::compile(
+        GATED_INNER_BREAK,
+        "",
+        "",
+        &["gatedInnerBreak(limit, stop)"],
+    );
+    let at = |gate: f64, divisor: f64| Point::new([0.0; 5], gate).stopping_at(divisor);
+    // The gate is closed: the division by zero is never reached.
+    assert_eq!(fixture.failure(at(0.0, 0.0)), None);
+    assert_eq!(fixture.evaluate(at(0.0, 0.0)), [0.0]);
+    // The gate is open and the division holds: each row breaks at once.
+    assert_eq!(fixture.evaluate(at(2.0, 1.0)), [2.0]);
+    // The gate is open: the division by zero is reached and reported.
+    let failure = fixture.failure(at(2.0, 0.0));
+    assert!(
+        failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("Integer binary operation")),
+        "an entered division by zero must fail as a division: {failure:?}"
+    );
+}
+
+/// The same nest without the `break`: the outer loop's exit leaves out only
+/// the test on the inner iterator, which still guards the division.
+const GATED_INNER_SUM: &str = r#"
+function gatedInnerSum
+  input Real gate;
+  input Real divisor;
+  output Real y;
+protected
+  Integer n;
+  Integer d;
+algorithm
+  n := integer(gate);
+  d := integer(divisor);
+  y := 0;
+  for i in 1:2 loop
+    for j in 1:2 loop
+      if j <= n then
+        if div(1, d) > 0 then
+          y := y + 1;
+        end if;
+      end if;
+    end for;
+  end for;
+end gatedInnerSum;
+"#;
+
+#[test]
+fn a_test_guarded_by_the_inner_iterator_stays_guarded_without_a_break() {
+    let fixture = Fixture::compile(GATED_INNER_SUM, "", "", &["gatedInnerSum(limit, stop)"]);
+    let at = |gate: f64, divisor: f64| Point::new([0.0; 5], gate).stopping_at(divisor);
+    assert_eq!(fixture.failure(at(0.0, 0.0)), None);
+    assert_eq!(fixture.evaluate(at(0.0, 0.0)), [0.0]);
+    assert_eq!(fixture.evaluate(at(1.0, 1.0)), [2.0]);
+    assert_eq!(fixture.evaluate(at(2.0, 1.0)), [4.0]);
+}

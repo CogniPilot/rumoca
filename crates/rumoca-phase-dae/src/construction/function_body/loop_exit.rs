@@ -102,7 +102,8 @@ impl OwnLoop<'_, '_> {
         // An exit state the body stores at its own top level (the break state
         // of a nested loop, reset before each execution of that loop) is not
         // left unchanged by a pass the selection skips: a conjunct reading it
-        // selects the nested loop, not this one.
+        // selects the nested loop, not this one. It is a test the exit leaves
+        // out, so it still bars the tests that could fault without it.
         let stored = plans
             .iter()
             .filter_map(|plan| match plan {
@@ -115,10 +116,9 @@ impl OwnLoop<'_, '_> {
             })
             .collect::<Vec<_>>();
         let conjuncts = common_selection(selected, &captures)?;
-        let (exits, others): (Vec<_>, Vec<_>) = conjuncts
-            .into_iter()
-            .filter(|conjunct| !reads_any_name(conjunct, &stored))
-            .partition(|conjunct| self.is_exit_test(conjunct));
+        let (exits, others): (Vec<_>, Vec<_>) = conjuncts.into_iter().partition(|conjunct| {
+            !reads_any_name(conjunct, &stored) && self.is_exit_test(conjunct)
+        });
         // A test the exit leaves out can guard a test that faults without it,
         // so beside such a test only the tests that cannot fault are kept: any
         // false conjunct of the selection ends the fold.

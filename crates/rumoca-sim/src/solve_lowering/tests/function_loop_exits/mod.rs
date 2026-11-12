@@ -82,14 +82,28 @@ impl Fixture {
         }
     }
 
-    /// The results at `point`, through Solve IR.
-    fn evaluate(&self, point: Point) -> Vec<f64> {
+    /// The arguments of the fixture set to `point`.
+    fn overrides(point: Point) -> Vec<(String, f64)> {
         let values = point.x.iter().copied().chain([point.limit, point.stop]);
-        let overrides = ARGUMENTS
+        ARGUMENTS
             .iter()
             .zip(values)
             .map(|(name, value)| ((*name).to_string(), value))
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    /// The error evaluating the results at `point` raises, if it raises one.
+    fn failure(&self, point: Point) -> Option<String> {
+        let overrides = Self::overrides(point);
+        match eval_dae_at(&self.compiled.dae, &SimOptions::default(), &overrides, 0.0) {
+            Ok(probe) => probe.report.error.map(|error| format!("{error:?}")),
+            Err(error) => Some(error.to_string()),
+        }
+    }
+
+    /// The results at `point`, through Solve IR.
+    fn evaluate(&self, point: Point) -> Vec<f64> {
+        let overrides = Self::overrides(point);
         let probe = eval_dae_at(&self.compiled.dae, &SimOptions::default(), &overrides, 0.0)
             .expect("the loop exits lower through Solve IR");
         let report = probe.report;
