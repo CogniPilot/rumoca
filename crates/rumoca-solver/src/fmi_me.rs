@@ -93,6 +93,13 @@ pub use integrator::{
 pub use kernel::SolveMeKernel;
 #[cfg(feature = "native-wasm")]
 pub use kernel::{MePendingNativeComponent, MePendingNativeState};
+// The arithmetic of a fixed step is a model-independent fact the Solve IR
+// issues, not a Solve row, layout or runtime object; a fixed-step plugin
+// interprets it through this contract (SPEC_0038 §Internal Solver Boundary).
+pub use rumoca_ir_solve::fmi::{
+    FIXED_STEP_FOLD_START, FixedStepStateRoles, FixedStepTableau, FixedStepTableauRefusal,
+    FixedStepTerm,
+};
 pub use session::{
     MeAdvanceOutcome, MeComponentHost, MeOutputCursor, MePluginArity, MeRetainedComponent,
     MeSessionError, MeSessionLoss, MeSessionOptions, MeSessionOptionsInput, MeSimulationSession,

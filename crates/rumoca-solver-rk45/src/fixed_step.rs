@@ -21,6 +21,12 @@
 //! state, or no other state, the step is explicit Euler bit for bit and spends
 //! one evaluation; otherwise one full and one kinematic evaluation.
 //!
+//! The stages, their times, the terms each stage state and the endpoint fold,
+//! the fold's starting value and the stage that closes the step are not
+//! written here: the plugin interprets the `FixedStepTableau` the Solve IR
+//! issues for the configured order and scheme, so every executor of a fixed
+//! step reads one definition of its arithmetic.
+//!
 //! There is no error estimate, no step-size control and no rejection: the
 //! step is the caller's choice, clipped only so an accepted interval never
 //! crosses the request's latest accepted coordinate, on which a clipped step
@@ -53,6 +59,8 @@
 
 mod options;
 #[cfg(test)]
+mod reference_tests;
+#[cfg(test)]
 mod semi_implicit_tests;
 #[cfg(test)]
 mod tests;
@@ -61,6 +69,7 @@ pub use options::FixedStepOptionsKey;
 
 use rumoca_solver::BackendOptionsError;
 use rumoca_solver::fmi_me::{
+    FixedStepStateRoles, FixedStepTableau, FixedStepTableauRefusal, FixedStepTerm,
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
     MeIntegratorBackend, MeNumericalFailure, MeNumericalSetup, MeStepCandidate,
     accepted_interval_contains,
@@ -69,8 +78,6 @@ use rumoca_solver::fmi_me::{
 use crate::me_integrator::{evaluate_derivative_in, resize_work, try_copied};
 
 const METHOD: &str = "fixed-step";
-/// Most stages any method here evaluates in one step.
-const MAX_STAGES: usize = 4;
 
 /// Fixed step, order and scheme of the fixed-step plugin.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,54 +114,47 @@ pub enum FixedStepScheme {
     SemiImplicit,
 }
 
-/// The method one configured order and scheme select.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Method {
-    Euler,
-    Heun,
-    Classical,
-    SemiImplicitEuler,
-}
+/// The issued tableau of the method one configured order and scheme select.
+#[derive(Debug, Clone, PartialEq)]
+struct Method(FixedStepTableau);
 
 impl Method {
-    const fn from_order(order: u32) -> Option<Self> {
-        match order {
-            1 => Some(Self::Euler),
-            2 => Some(Self::Heun),
-            4 => Some(Self::Classical),
-            _ => None,
-        }
+    fn from_order(order: u32) -> Option<Self> {
+        FixedStepTableau::issue(order, FixedStepStateRoles::Uniform)
+            .ok()
+            .map(Self)
     }
 
     /// `None` for an order no method implements, `Some(None)` for a scheme
     /// the order does not admit.
-    const fn from_config(order: u32, scheme: FixedStepScheme) -> Option<Option<Self>> {
-        match (Self::from_order(order), scheme) {
-            (None, _) => None,
-            (Some(method), FixedStepScheme::Explicit) => Some(Some(method)),
-            (Some(Self::Euler), FixedStepScheme::SemiImplicit) => {
-                Some(Some(Self::SemiImplicitEuler))
+    fn from_config(order: u32, scheme: FixedStepScheme) -> Option<Option<Self>> {
+        let uniform = Self::from_order(order)?;
+        match scheme {
+            FixedStepScheme::Explicit => Some(Some(uniform)),
+            FixedStepScheme::SemiImplicit => {
+                match FixedStepTableau::issue(order, FixedStepStateRoles::Kinematic) {
+                    Ok(tableau) => Some(Some(Self(tableau))),
+                    Err(FixedStepTableauRefusal::Roles(_)) => Some(None),
+                    Err(_) => None,
+                }
             }
-            (Some(_), FixedStepScheme::SemiImplicit) => Some(None),
         }
     }
 
     /// Local accuracy order of the method's native continuous extension.
-    const fn continuous_extension_order(self) -> u32 {
-        match self {
-            Self::Euler | Self::SemiImplicitEuler => 1,
-            Self::Heun => 2,
-            Self::Classical => 3,
-        }
+    const fn continuous_extension_order(&self) -> u32 {
+        self.0.extension_order()
     }
 
     /// Index of the stage evaluated at the end time, when the method has one.
-    const fn end_stage(self) -> Option<usize> {
-        match self {
-            Self::Euler | Self::SemiImplicitEuler => None,
-            Self::Heun => Some(1),
-            Self::Classical => Some(3),
-        }
+    const fn end_stage(&self) -> Option<usize> {
+        self.0.end_stage()
+    }
+
+    /// Stage slopes the workspace holds: one per stage, and one for the
+    /// kinematic derivative of the partitioned scheme.
+    fn slope_count(&self) -> usize {
+        self.0.stage_count() + usize::from(self.0.roles() == FixedStepStateRoles::Kinematic)
     }
 }
 
@@ -187,10 +187,10 @@ struct FixedStepIntegrator {
     accepted_interval: Option<HermiteInterval>,
 }
 
-#[derive(Default)]
 struct Work {
-    /// Stage derivatives `k_1..k_s` of the current step.
-    slopes: [Vec<f64>; MAX_STAGES],
+    /// Stage derivatives `k_1..k_s` of the current step, then the kinematic
+    /// derivative of the partitioned scheme.
+    slopes: Vec<Vec<f64>>,
     /// The stage state a derivative is evaluated at.
     stage: Vec<f64>,
     /// The step's endpoint.
@@ -259,12 +259,17 @@ impl HermiteInterval {
 
 impl FixedStepIntegrator {
     fn new(width: usize, step: f64, method: Method) -> Self {
+        let work = Work {
+            slopes: vec![Vec::new(); method.slope_count()],
+            stage: Vec::new(),
+            end: Vec::new(),
+        };
         Self {
             width,
             step,
             method,
             derivatives: None,
-            work: Work::default(),
+            work,
             accepted_interval: None,
         }
     }
@@ -279,39 +284,29 @@ impl FixedStepIntegrator {
         end_time: f64,
     ) -> Result<(), MeIntegrationError> {
         let derivatives = self.derivatives.as_ref().ok_or_else(missing_handle)?;
+        let Method(tableau) = &self.method;
         let Work {
             slopes: k,
             stage,
             end,
         } = &mut self.work;
-        evaluate(derivatives, time, state, &mut k[0])?;
-        match self.method {
-            Method::Euler => combine_into(state, step, &[(&k[0], 1.0)], end),
-            Method::SemiImplicitEuler => {
-                combine_into(state, step, &[(&k[0], 1.0)], end);
-                advance_kinematic(derivatives, time, state, step, stage, &mut k[1], end)?;
-            }
-            Method::Heun => {
-                combine_into(state, step, &[(&k[0], 1.0)], stage);
-                evaluate(derivatives, end_time, stage, &mut k[1])?;
-                combine_into(state, step, &[(&k[0], 0.5), (&k[1], 0.5)], end);
-            }
-            Method::Classical => {
-                let midpoint = time + 0.5 * step;
-                combine_into(state, step, &[(&k[0], 0.5)], stage);
-                evaluate(derivatives, midpoint, stage, &mut k[1])?;
-                combine_into(state, step, &[(&k[1], 0.5)], stage);
-                evaluate(derivatives, midpoint, stage, &mut k[2])?;
-                combine_into(state, step, &[(&k[2], 1.0)], stage);
-                evaluate(derivatives, end_time, stage, &mut k[3])?;
-                let weights = [
-                    (k[0].as_slice(), 1.0 / 6.0),
-                    (k[1].as_slice(), 1.0 / 3.0),
-                    (k[2].as_slice(), 1.0 / 3.0),
-                    (k[3].as_slice(), 1.0 / 6.0),
-                ];
-                combine_into(state, step, &weights, end);
-            }
+        for index in 0..tableau.stage_count() {
+            let (done, rest) = k.split_at_mut(index);
+            let terms = tableau.stage_terms(index);
+            // A stage that folds no slope is evaluated at the start state.
+            let point: &[f64] = if terms.is_empty() {
+                state
+            } else {
+                combine_into(tableau, state, step, terms, done, stage);
+                stage
+            };
+            let at = tableau.stage_time(index, time, step, end_time);
+            evaluate(derivatives, at, point, &mut rest[0])?;
+        }
+        combine_into(tableau, state, step, tableau.update_terms(), k, end);
+        if tableau.roles() == FixedStepStateRoles::Kinematic {
+            let slope = &mut k[tableau.stage_count()];
+            advance_kinematic(derivatives, time, state, step, stage, slope, end)?;
         }
         if end.iter().any(|value| !value.is_finite()) {
             return Err(MeIntegrationError::numerical(
@@ -532,13 +527,18 @@ fn overwrite(buffer: &mut Vec<f64>, source: &[f64]) {
     buffer.extend_from_slice(source);
 }
 
-/// `out = state + step * sum(weight * stage)`.
-fn combine_into(state: &[f64], step: f64, stages: &[(&[f64], f64)], out: &mut [f64]) {
+/// `out = state + step * fold(terms)`, the fold `tableau` issues over the
+/// stage `slopes`.
+fn combine_into(
+    tableau: &FixedStepTableau,
+    state: &[f64],
+    step: f64,
+    terms: &[FixedStepTerm],
+    slopes: &[Vec<f64>],
+    out: &mut [f64],
+) {
     for (index, (out, value)) in out.iter_mut().zip(state).enumerate() {
-        let delta: f64 = stages
-            .iter()
-            .map(|(stage, weight)| weight * stage[index])
-            .sum();
+        let delta = tableau.fold(terms, |stage| slopes[stage][index]);
         *out = value + step * delta;
     }
 }

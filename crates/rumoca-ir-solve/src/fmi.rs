@@ -41,6 +41,7 @@ mod co_simulation;
 mod deployment;
 mod derivative_operation;
 mod event_free;
+mod fixed_step_tableau;
 mod indicator_plan;
 mod input_defaults;
 pub use input_defaults::{
@@ -75,6 +76,10 @@ pub use derivative_operation::{
     FmiDerivativeOperationSource, FmiDerivativeStatus, FmiDerivativeWorkspace,
 };
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
+pub use fixed_step_tableau::{
+    FIXED_STEP_FOLD_START, FixedStepStateRoles, FixedStepTableau, FixedStepTableauRefusal,
+    FixedStepTerm,
+};
 pub use indicator_plan::{
     FmiIndicatorPlan, IndicatorEntry, IndicatorPlanError, IndicatorPlanInputs,
     IndicatorPlanRejection, IndicatorReading, IndicatorZeroSide,
