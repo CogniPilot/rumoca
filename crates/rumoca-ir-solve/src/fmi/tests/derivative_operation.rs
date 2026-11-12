@@ -198,3 +198,23 @@ fn the_complete_operation_key_follows_its_source() {
     assert_eq!(original, key(&valued_component(Some(3.0))));
     assert_ne!(original, key(&valued_component(Some(4.0))));
 }
+
+/// The complete operation returns its status as the issued discriminant, and
+/// the host decodes exactly those: each status from its own code, and no
+/// status from any other code.
+#[test]
+fn the_host_decodes_exactly_the_issued_status_codes() {
+    for status in [
+        FmiDerivativeStatus::Success,
+        FmiDerivativeStatus::InvalidBuffers,
+        FmiDerivativeStatus::StaticRefresh,
+        FmiDerivativeStatus::DynamicRefresh,
+        FmiDerivativeStatus::Values,
+        FmiDerivativeStatus::NonFinite,
+    ] {
+        assert_eq!(FmiDerivativeStatus::from_code(status as u32), Some(status));
+    }
+    for code in [6, 7, 255, u32::MAX] {
+        assert_eq!(FmiDerivativeStatus::from_code(code), None, "code {code}");
+    }
+}
