@@ -9,6 +9,7 @@ mod chunks;
 mod compact_owner;
 mod dependency;
 mod exact_source;
+mod execution;
 mod leaf_dependencies;
 mod materialization;
 mod native_assignment;
@@ -39,6 +40,7 @@ pub use assignment_shape::{
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
 pub use exact_source::BoundExactRefreshAssignment;
+pub use execution::RefreshExecutionRefusal;
 pub use leaf_dependencies::LeafDependencies;
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
@@ -415,6 +417,9 @@ pub struct RefreshPlan {
     pub dynamic_causal_seed_rows: RefreshRowSelection,
     pub value_stages: Vec<RefreshStage>,
     pub causal_solution_certified: bool,
+    /// Derived from canonical execution prefixes; never trusted from the wire.
+    #[serde(skip)]
+    pub execution_order_refusal: Option<RefreshExecutionRefusal>,
 }
 
 impl RefreshPlan {
@@ -443,7 +448,8 @@ impl RefreshPlan {
         structural: &crate::ContinuousStructuralArtifacts,
     ) -> bool {
         let blocks = structural.algebraic_projection();
-        self.simultaneous_block_indices.len() == self.simultaneous_plan.blocks.len()
+        self.execution_order_refusal.is_none()
+            && self.simultaneous_block_indices.len() == self.simultaneous_plan.blocks.len()
             && !self.value_stages.is_empty()
             && self
                 .simultaneous_block_indices
@@ -866,6 +872,7 @@ impl ContinuousRefreshOwners {
         clock_events: Vec<RefreshPlan>,
     ) -> Result<Self, ContinuousRefreshConstructionError> {
         let mut owners = Self::checked(algebraic, derivative, root, event, clock_events)?;
+        owners.rederive_execution_orders(implicit_rhs)?;
         owners.validate_sources_against(implicit_rhs)?;
         owners.rebuild_exact_assignment_programs(implicit_rhs)?;
         owners.validate_against(implicit_rhs)?;
@@ -1020,6 +1027,7 @@ impl ContinuousRefreshOwners {
         &mut self,
         implicit_rhs: &ComputeBlock,
     ) -> Result<(), ContinuousRefreshConstructionError> {
+        self.rederive_execution_orders(implicit_rhs)?;
         self.validate_canonical_row_owners()?;
         self.projection_affinities =
             crate::affinity::projection_affinities(implicit_rhs, &self.algebraic);
@@ -1171,6 +1179,7 @@ fn validate_refresh_sources(
     outputs: &source_outputs::SourceOutputs<'_>,
     queries: &mut SourceCertificateQueries<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
+    execution::validate_order(plan, queries.source())?;
     // Each row is checked on its own, so rows are visited grouped by source:
     // the query cache analyzes each source once, however the plan
     // interleaves sources.
@@ -1334,6 +1343,26 @@ fn exact_rows_can_commit_together<'a>(
     let Some((program, _)) = scalar_source_program(block, first.source)? else {
         return Ok(false);
     };
+    let prefix_len = rows
+        .iter()
+        .filter_map(|row| row.assignment_shape.as_ref())
+        .map(TargetAssignmentShape::expr_eval_len)
+        .max()
+        .unwrap_or(0);
+    let Some(prefix) = program.get(..prefix_len) else {
+        return Ok(false);
+    };
+    let Ok(guard_reads) =
+        crate::StructuralPattern::derive_execution_obligation_y_dependency_ranges(prefix, None)
+    else {
+        return Ok(false);
+    };
+    if rows
+        .iter()
+        .any(|row| guard_reads.contains(row.target_index))
+    {
+        return Ok(false);
+    }
     // The source's shared analysis answers when it serves the whole program;
     // otherwise this check analyzes the program itself.
     let own;

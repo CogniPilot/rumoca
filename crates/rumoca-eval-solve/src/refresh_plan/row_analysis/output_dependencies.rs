@@ -11,6 +11,9 @@ pub(super) struct OutputDependencies<'source> {
     source: &'source [solve::LinearOp],
     complete: OnceCell<Option<Vec<Arc<solve::IndexIntervals>>>>,
     stores: Option<solve::ScalarProgramOutputStores>,
+    execution: OnceCell<solve::ScalarProgramExecutionYDependency>,
+    #[cfg(test)]
+    execution_builds: std::cell::Cell<usize>,
     prefix: Option<(usize, solve::ScalarProgramYDependency<'source>)>,
     #[cfg(test)]
     complete_builds: usize,
@@ -25,6 +28,9 @@ impl<'source> OutputDependencies<'source> {
             complete: OnceCell::new(),
             stores: solve::ScalarProgramOutputStores::new(source),
             prefix: None,
+            execution: OnceCell::new(),
+            #[cfg(test)]
+            execution_builds: std::cell::Cell::new(0),
             #[cfg(test)]
             complete_builds: 0,
             #[cfg(test)]
@@ -38,12 +44,26 @@ impl<'source> OutputDependencies<'source> {
             self.complete_builds += 1;
         }
         let complete = self.complete.get_or_init(|| {
-            solve::StructuralPattern::derive_output_y_dependency_ranges(self.source, None).ok()
+            solve::StructuralPattern::derive_output_execution_y_dependency_ranges(self.source, None)
+                .ok()
         });
         if let Some(reads) = complete {
             return reads.get(output).is_none_or(|reads| reads.contains(target));
         }
-        self.prefix_depends_on(output, target)
+        let position = self
+            .stores
+            .as_ref()
+            .and_then(|stores| stores.output(output))
+            .map(|(_, position)| position);
+        let proof = self.execution.get_or_init(|| {
+            #[cfg(test)]
+            self.execution_builds.set(self.execution_builds.get() + 1);
+            solve::ScalarProgramExecutionYDependency::new(self.source)
+        });
+        let guarded = position
+            .and_then(|position| proof.prefix(position))
+            .is_none_or(|reads| reads.contains(target));
+        guarded || self.prefix_depends_on(output, target)
     }
 
     // A refused suffix cannot invalidate an earlier exact store-prefix proof.

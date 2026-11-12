@@ -14,6 +14,7 @@ pub struct CanonicalAssignmentQueries<'source> {
     prefix: Option<(usize, Option<PrefixAnalysis<'source>>)>,
     dependencies: ScalarProgramYDependencyQueries<'source>,
     causal: bool,
+    execution: std::cell::OnceCell<crate::ScalarProgramExecutionYDependency>,
     any_shape: Option<(usize, bool)>,
     #[cfg(test)]
     prefix_builds: usize,
@@ -31,6 +32,7 @@ impl<'source> CanonicalAssignmentQueries<'source> {
             prefix: None,
             dependencies: ScalarProgramYDependencyQueries::new(source),
             causal: !source.iter().any(super::non_causal_assignment_operation),
+            execution: std::cell::OnceCell::new(),
             any_shape: None,
             #[cfg(test)]
             prefix_builds: 0,
@@ -119,6 +121,10 @@ impl<'source> SourceCertificateQueries<'source> {
         }
     }
 
+    pub(in crate::refresh) fn source(&self) -> &'source crate::ComputeBlock {
+        self.source
+    }
+
     pub(in crate::refresh) fn derive(
         &mut self,
         row: &crate::AlgebraicRefreshRow,
@@ -139,9 +145,15 @@ impl<'source> SourceCertificateQueries<'source> {
                     .1
             }
         };
-        Ok((
-            queries.derive(row.output_offset, row.target_index),
-            queries.is_causal(),
-        ))
+        let shape = queries.derive(row.output_offset, row.target_index);
+        let causal = queries.is_causal()
+            && shape.as_ref().is_none_or(|shape| {
+                queries
+                    .execution
+                    .get_or_init(|| crate::ScalarProgramExecutionYDependency::new(queries.source))
+                    .prefix(shape.expr_eval_len())
+                    .is_some_and(|reads| !reads.contains(row.target_index))
+            });
+        Ok((shape, causal))
     }
 }

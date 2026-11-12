@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rumoca_ir_solve as solve;
 
 use crate::EvalSolveError;
-use crate::sparsity::{from_pattern_error, program_output_y_dependencies};
+use crate::sparsity::from_pattern_error;
 
 use super::dependency_domain::CompactYDependencySet;
 use super::{
@@ -18,6 +18,12 @@ use super::{
 /// The solver coordinates seed the event refresh plans. The parameter slots
 /// are collected by the same walk, and only for the input reach
 /// (`solve::InputEventReach`), so both answers come from one consumer list.
+///
+/// Both are execution reads: what can change the outcome of evaluating the
+/// consumer, a guard without a result included, not only what its values
+/// depend on. Whole programs contribute every solver coordinate they load;
+/// a selected output contributes its value reads and its program's
+/// execution obligations.
 #[derive(Default)]
 pub(super) struct EventConsumerReads {
     y: CompactYDependencySet,
@@ -74,7 +80,7 @@ impl EventConsumerReads {
             return Ok(());
         };
         parameters.extend(
-            solve::StructuralPattern::derive_p_dependency_union(program, span)
+            solve::StructuralPattern::derive_execution_p_dependency_union(program, span)
                 .map_err(|error| from_pattern_error(error, span))?,
         );
         Ok(())
@@ -292,10 +298,14 @@ fn extend_selected_scalar_output_dependencies(
                     &block.programs()[position.program_index],
                     block.program_span(position.program_index),
                 )?;
-                entry.insert(program_output_y_dependencies(
-                    &block.programs()[position.program_index],
-                    block.program_span(position.program_index),
-                )?)
+                let span = block.program_span(position.program_index);
+                entry.insert(
+                    solve::StructuralPattern::derive_output_execution_y_dependency_ranges(
+                        &block.programs()[position.program_index],
+                        span,
+                    )
+                    .map_err(|error| from_pattern_error(error, span))?,
+                )
             }
         };
         let selected = output_dependencies
@@ -306,12 +316,7 @@ fn extend_selected_scalar_output_dependencies(
             })?;
         dependencies
             .y
-            .extend_explicit(
-                selected
-                    .iter()
-                    .copied()
-                    .filter(|index| *index >= state_count),
-            )
+            .extend_explicit(selected.iter().filter(|index| *index >= state_count))
             .map_err(|error| {
                 compact_dependency_error(error, block.program_span(position.program_index))
             })?;

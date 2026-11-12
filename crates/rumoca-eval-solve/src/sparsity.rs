@@ -17,8 +17,6 @@
 mod kinematic_tests;
 mod reverse_invalidations;
 
-use std::collections::BTreeSet;
-
 use rumoca_core::Span;
 use rumoca_ir_solve::{
     ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock, StructuralPattern,
@@ -26,7 +24,7 @@ use rumoca_ir_solve::{
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
-use reverse_invalidations::derive_algebraic_reverse_invalidations;
+use reverse_invalidations::derive_algebraic_reverse_invalidations_with_execution;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without
 /// losing the owner span the authority reported it against.
@@ -122,14 +120,6 @@ pub fn row_seed_dependencies(program: &[LinearOp]) -> Result<Vec<usize>, EvalSol
         .map_err(|error| from_pattern_error(error, None))
 }
 
-pub(crate) fn program_output_y_dependencies(
-    program: &[LinearOp],
-    span: Option<Span>,
-) -> Result<Vec<BTreeSet<usize>>, EvalSolveError> {
-    StructuralPattern::derive_output_y_dependencies(program, span)
-        .map_err(|error| from_pattern_error(error, span))
-}
-
 /// Issue the checked pattern owner's canonical coloring for colored construction.
 pub fn derive_column_coloring(
     pattern: &StructuralPattern,
@@ -215,9 +205,10 @@ fn derive_structural_artifacts(
             implicit.as_ref(),
             &problem.continuous.algebraic_projection_plan,
         )?;
-        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
+        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations_with_execution(
             implicit.as_ref(),
             &problem.continuous.algebraic_projection_plan,
+            Some(&to_scalar_program_block(&problem.continuous.implicit_rhs)?),
         )?;
         let manifold_projection = derive_y_projection_patterns(
             manifold.as_ref(),

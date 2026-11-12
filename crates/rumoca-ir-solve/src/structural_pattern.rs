@@ -1,4 +1,7 @@
 // SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (SPEC_0021 follow-up).
+mod execution_reads;
+#[cfg(test)]
+pub(crate) mod execution_reads_tests;
 mod jacobian_product;
 pub use jacobian_product::{
     StateJacobianCompactConstruction, StateJacobianCompactInput, StateJacobianProduct,
@@ -6,6 +9,8 @@ pub use jacobian_product::{
     StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
 };
 mod kinematic_states;
+pub use execution_reads::{ExecutionYReadPrefix, ScalarProgramExecutionYDependency};
+pub(crate) use execution_reads::{conditional_obligation, fold_obligation};
 pub use kinematic_states::{KinematicStates, NonKinematicReason};
 mod register_dependencies;
 #[cfg(test)]
@@ -1034,29 +1039,6 @@ impl StructuralPattern {
             .collect()
     }
 
-    /// Whether each output of one checked scalar program depends on an AD
-    /// seed input.
-    pub fn derive_output_seed_dependencies(
-        program: &[LinearOp],
-        span: Option<Span>,
-    ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Seed)
-    }
-
-    /// Whether each output of one checked scalar program contains an opaque
-    /// runtime operation such as table access or random-state evaluation.
-    ///
-    /// The dependency walk deliberately treats these operations as an effect
-    /// even when their explicit register inputs are constant. This lets cache
-    /// certificates fail closed without making consumers rediscover nested
-    /// function/fold control flow.
-    pub fn derive_output_effect_dependencies(
-        program: &[LinearOp],
-        span: Option<Span>,
-    ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Effect)
-    }
-
     /// Whether each output of one checked scalar program depends on time.
     ///
     /// This uses the same exhaustive compact-operation walk as solver-`Y`
@@ -1890,6 +1872,7 @@ pub(crate) fn program_register_y_dependencies(
         fold_captures: None,
         conditional_captures: None,
         source: DependencySource::SolverY,
+        policy: execution_reads::DependencyPolicy::Value,
     };
     for operation in program {
         apply_dependency_op(&mut walk, operation)?;
@@ -1907,6 +1890,26 @@ fn program_output_dependencies_with_fold(
     conditional_captures: Option<&[DependencyState]>,
     source: DependencySource,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
+    program_dependencies_with_policy(
+        program,
+        span,
+        fold_carried,
+        fold_captures,
+        conditional_captures,
+        source,
+        execution_reads::DependencyPolicy::Value,
+    )
+}
+
+fn program_dependencies_with_policy<'a>(
+    program: &[LinearOp],
+    span: Option<Span>,
+    fold_carried: Option<&'a [DependencyState]>,
+    fold_captures: Option<&'a [DependencyState]>,
+    conditional_captures: Option<&'a [DependencyState]>,
+    source: DependencySource,
+    policy: execution_reads::DependencyPolicy<'a>,
+) -> Result<Vec<DependencyState>, StructuralPatternError> {
     let mut walk = DependencyWalk {
         registers: DependencyRegisters::default(),
         outputs: Vec::new(),
@@ -1916,6 +1919,7 @@ fn program_output_dependencies_with_fold(
         fold_captures,
         conditional_captures,
         source,
+        policy,
     };
     for op in program {
         apply_dependency_op(&mut walk, op)?;
@@ -1943,6 +1947,7 @@ struct DependencyWalk<'a> {
     fold_captures: Option<&'a [DependencyState]>,
     conditional_captures: Option<&'a [DependencyState]>,
     source: DependencySource,
+    policy: execution_reads::DependencyPolicy<'a>,
 }
 
 /// Structural classification of one checked [`LinearOp`].
@@ -1962,6 +1967,7 @@ fn apply_dependency_op(
     walk: &mut DependencyWalk<'_>,
     op: &LinearOp,
 ) -> Result<(), StructuralPatternError> {
+    walk.observe_execution(op)?;
     match op {
         LinearOp::Const { dst, .. } => walk.set_empty(*dst),
         LinearOp::LoadP { dst, index } => walk.load_p(*dst, *index),
@@ -2055,6 +2061,7 @@ fn apply_dependency_op(
             walk.store_output_range(*start, *count, *stride)?,
         LinearOp::StoreOutput { src } => walk.store_output(*src)?,
     }
+    walk.observe_execution_result(op)?;
     Ok(())
 }
 
@@ -2861,8 +2868,14 @@ impl DependencyWalk<'_> {
     ) -> Result<(), StructuralPatternError> {
         let carried = self.register_tuple(initial_start, program.carried_count)?;
         let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
+        let carried = function_fold_dependencies(
+            program,
+            carried,
+            &captures,
+            self.span,
+            self.source,
+            self.policy,
+        )?;
         for (offset, dependency) in carried.into_iter().enumerate() {
             self.set(dst_start + offset as Reg, dependency);
         }
@@ -2880,8 +2893,14 @@ impl DependencyWalk<'_> {
         let activation = self.get(activation)?;
         let carried = self.register_tuple(initial_start, program.carried_count)?;
         let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
+        let carried = function_fold_dependencies(
+            program,
+            carried,
+            &captures,
+            self.span,
+            self.source,
+            self.policy,
+        )?;
         for (offset, dependency) in carried.into_iter().enumerate() {
             self.set(
                 dst_start + offset as Reg,
@@ -2898,13 +2917,14 @@ impl DependencyWalk<'_> {
         program: &[LinearOp],
         captures: &[DependencyState],
     ) -> Result<Vec<DependencyState>, StructuralPatternError> {
-        program_output_dependencies_with_fold(
+        program_dependencies_with_policy(
             program,
             self.span,
             self.fold_carried,
             self.fold_captures,
             Some(captures),
             self.source,
+            self.policy,
         )
     }
 
@@ -2929,6 +2949,9 @@ impl DependencyWalk<'_> {
         }
         let fallback = self.nested_program(&program.fallback, &captures)?;
         union_conditional_results(&mut result, fallback, self.span)?;
+        if self.policy.is_execution() && execution_reads::conditional_obligation(program) {
+            self.policy.include(condition_dependency.clone());
+        }
         for (offset, dependency) in result.into_iter().enumerate() {
             let dependency = dependency.union(condition_dependency.clone());
             self.set(dst_start + offset as Reg, dependency);
@@ -3287,8 +3310,14 @@ impl DependencyWalk<'_> {
             self.push_nested_fold_initial(&mut carried, parent, source)?;
         }
         let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
+        let carried = function_fold_dependencies(
+            program,
+            carried,
+            &captures,
+            self.span,
+            self.source,
+            self.policy,
+        )?;
         let end = result_base
             .checked_add(count)
             .ok_or_else(|| dependency_error("nested fold result range overflow", self.span))?;
@@ -3430,6 +3459,7 @@ fn function_fold_dependencies(
     captures: &[DependencyState],
     span: Option<Span>,
     source: DependencySource,
+    policy: execution_reads::DependencyPolicy<'_>,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
     if carried.len() != program.carried_count {
         return Err(dependency_error(
@@ -3446,13 +3476,14 @@ fn function_fold_dependencies(
         return Ok(carried);
     }
     loop {
-        let updates = program_output_dependencies_with_fold(
+        let updates = program_dependencies_with_policy(
             &program.update,
             span,
             Some(&carried),
             Some(captures),
             None,
             source,
+            policy,
         )?;
         if updates.len() != carried.len() {
             return Err(dependency_error(
@@ -3463,17 +3494,24 @@ fn function_fold_dependencies(
         // A bounded `while` predicate decides whether each pass applies, so
         // every carried value depends on what it reads.
         let control = match &program.continuation {
-            Some(continuation) => program_output_dependencies_with_fold(
+            Some(continuation) => program_dependencies_with_policy(
                 &continuation.ops,
                 span,
                 Some(&carried),
                 Some(captures),
                 None,
                 source,
+                policy,
             )?
             .pop(),
             None => None,
         };
+        if policy.is_execution()
+            && execution_reads::fold_obligation(program)
+            && let Some(control) = &control
+        {
+            policy.include(control.clone());
+        }
         let next = carried
             .iter()
             .cloned()

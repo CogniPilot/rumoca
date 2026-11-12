@@ -76,7 +76,7 @@ impl TypedProgram {
         if body.slots().len() < directional_inputs.len() + directional_outputs.len() {
             return Err(SolveProgramConstructionError::InvalidCallInterface { provenance });
         }
-        let dependencies = crate::typed_program::call::dependency::derive(
+        let dependencies = crate::typed_program::call::dependency::derive_with_execution(
             &body,
             directional_inputs.len(),
             directional_outputs.len(),

@@ -895,11 +895,12 @@ pub use register_versions::{
     RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
 };
 pub use structural_pattern::{
-    ColoredStructuralPattern, ColumnColoring, KinematicStates, NonKinematicReason,
-    PatternDerivation, PatternProvenance, StateJacobianCompactConstruction,
-    StateJacobianCompactInput, StateJacobianProduct, StateJacobianProductConstruction,
-    StateJacobianProductConstructionError, StateJacobianProductDomain, StateJacobianProductInput,
-    StateJacobianProductValue, StructuralPattern, StructuralPatternError, StructuralPatternView,
+    ColoredStructuralPattern, ColumnColoring, ExecutionYReadPrefix, KinematicStates,
+    NonKinematicReason, PatternDerivation, PatternProvenance, ScalarProgramExecutionYDependency,
+    StateJacobianCompactConstruction, StateJacobianCompactInput, StateJacobianProduct,
+    StateJacobianProductConstruction, StateJacobianProductConstructionError,
+    StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
+    StructuralPattern, StructuralPatternError, StructuralPatternView,
 };
 
 #[cfg(test)]
@@ -2495,13 +2496,15 @@ fn validate_observation_refresh_coupling(
     let mut output_ordinal = 0usize;
     for (program_index, program) in system.rhs.programs().iter().enumerate() {
         let span = system.rhs.program_span(program_index);
-        let dependencies = StructuralPattern::derive_output_y_dependency_ranges(program, span)
-            .map_err(|_| SolveProblemShapeContractError::DiscreteCertificate {
-                context: "discrete.observation_refresh_reads_y",
-                row: program_index,
-                detail: "observation dependency program is not certifiable",
-                span,
-            })?;
+        let dependencies = StructuralPattern::derive_output_execution_y_dependency_ranges(
+            program, span,
+        )
+        .map_err(|_| SolveProblemShapeContractError::DiscreteCertificate {
+            context: "discrete.observation_refresh_reads_y",
+            row: program_index,
+            detail: "observation dependency program is not certifiable",
+            span,
+        })?;
         for y_dependencies in dependencies {
             let row = system
                 .rhs

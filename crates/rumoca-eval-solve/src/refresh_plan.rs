@@ -11,6 +11,7 @@ mod causal_dependency_tests;
 mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
+mod execution;
 mod input_event_reach;
 mod output_inventory;
 mod parameter_static;
@@ -46,9 +47,7 @@ use capacity::{
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
 pub use input_event_reach::{InputEventReach, derive_input_event_reach};
-use row_analysis::{
-    AssignmentCertificates, PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row,
-};
+use row_analysis::{PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row};
 use row_candidates::refresh_row_candidates;
 
 #[cfg(test)]
@@ -1059,6 +1058,7 @@ fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
     rows: &mut Vec<AlgebraicRefreshRow>,
 ) -> Result<(), EvalSolveError> {
     let span = block.first_span();
+    let mut analyses = RowAnalysisCache::default();
     let mut claimed_targets = rows
         .iter()
         .map(|row| row.target_index())
@@ -1093,17 +1093,12 @@ fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
         let Some(program) = block.program(position.program_index) else {
             continue;
         };
-        let assignment_shape = crate::prepared::assignment_shape_for_program_output(
+        let (assignment_shape, certificates) = analyses.assignment(
+            position.program_index,
             program,
             position.output_offset,
             *target_index,
-        )?;
-        let certificates = AssignmentCertificates::for_shape(
-            program,
-            position.output_offset,
-            *target_index,
-            assignment_shape.as_ref(),
-        )?;
+        );
         if !certificates.exact {
             continue;
         }
@@ -1200,6 +1195,7 @@ fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
 ) -> Result<(IndexSet<usize>, IndexSet<usize>), EvalSolveError> {
     let span = implicit_block.first_span();
     let exact_rows = issued_exact_assignment_rows(plan);
+    let mut execution = BTreeMap::new();
     let mut stack = initial_deps
         .into_seed_stack(target_to_row.keys().chain(block_by_target.keys()).copied())
         .map_err(|error| compact_dependency_error(error, span))?;
@@ -1231,6 +1227,7 @@ fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
                 row,
                 state_count,
                 &mut stack,
+                &mut execution,
                 span,
             )?;
         } else {
@@ -1267,11 +1264,18 @@ fn issued_exact_assignment_rows(plan: &RefreshPlan) -> BTreeMap<usize, &Algebrai
         .collect()
 }
 
+/// Enqueue what executing one issued exact assignment reads: the value
+/// footprint of its expression prefix and the execution obligations (guards
+/// without a result included) of that same prefix, proven once per source.
 fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
     block: &A,
     row: &AlgebraicRefreshRow,
     state_count: usize,
     stack: &mut Vec<usize>,
+    execution: &mut BTreeMap<
+        solve::RefreshScalarProgramSource,
+        solve::ScalarProgramExecutionYDependency,
+    >,
     span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
     let (Some(program), Some(shape)) = (block.source_program(row.source()), row.assignment_shape())
@@ -1287,9 +1291,16 @@ fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
     let footprint = program.get(..shape.expr_eval_len()).and_then(|prefix| {
         solve::ScalarProgramYDependency::new(prefix).footprint(shape.value_registers())
     });
-    let reads: Box<dyn Iterator<Item = usize>> = match &footprint {
-        Some(footprint) => Box::new(footprint.iter()),
-        None => Box::new(row_y_input_ranges(program).into_iter().flatten()),
+    // A prefix whose execution the walk refuses reads every input as well.
+    let obligations = execution
+        .entry(row.source())
+        .or_insert_with(|| solve::ScalarProgramExecutionYDependency::new(program))
+        .prefix(shape.expr_eval_len());
+    let reads: Box<dyn Iterator<Item = usize>> = match (&footprint, &obligations) {
+        (Some(footprint), Some(obligations)) => {
+            Box::new(footprint.iter().chain(obligations.iter()))
+        }
+        _ => Box::new(row_y_input_ranges(program).into_iter().flatten()),
     };
     for dependency in reads {
         if dependency >= state_count {
@@ -1440,7 +1451,7 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         plan.causal_solution_certified,
         |row, targets| {
             block.source_program(row.source()).map(|operations| {
-                refresh_row_dependency_positions(
+                execution::refresh_row_execution_dependency_positions(
                     row,
                     operations,
                     state_count,
@@ -1676,7 +1687,7 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
                 .filter_map(|(idx, row)| (!emitted[idx]).then_some(row)),
         );
     }
-    Ok(RefreshPlan {
+    let mut plan = RefreshPlan {
         static_causal_sequence: Default::default(),
         dynamic_causal_sequence: Default::default(),
         simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
@@ -1693,7 +1704,10 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
         value_stages: Vec::new(),
         rows: ordered,
         causal_solution_certified,
-    })
+        execution_order_refusal: None,
+    };
+    plan.check_execution_order(|source| block.source_program(source));
+    Ok(plan)
 }
 
 fn refresh_row_dependency_positions<'ops>(
@@ -1746,6 +1760,7 @@ fn refresh_row_dependency_positions<'ops>(
 struct RowDependencyCache<'ops> {
     prefixes: BTreeMap<(usize, usize), solve::ScalarProgramYDependencyQueries<'ops>>,
     inputs: BTreeMap<(usize, usize), Vec<std::ops::Range<usize>>>,
+    execution: BTreeMap<(usize, usize), solve::ScalarProgramExecutionYDependency>,
 }
 
 impl<'ops> RowDependencyCache<'ops> {

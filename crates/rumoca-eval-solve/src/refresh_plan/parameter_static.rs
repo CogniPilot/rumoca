@@ -82,19 +82,15 @@ struct ParameterStaticDependencies {
 
 impl ParameterStaticDependencies {
     fn derive(program: &[solve::LinearOp]) -> Option<Self> {
-        let any = |flags: Vec<bool>| flags.into_iter().any(|flag| flag);
         Some(Self {
-            y: solve::StructuralPattern::derive_y_dependency_union(program, None).ok()?,
-            parameters: solve::StructuralPattern::derive_p_dependency_union(program, None).ok()?,
-            time: any(
-                solve::StructuralPattern::derive_output_time_dependencies(program, None).ok()?,
-            ),
-            seed: any(
-                solve::StructuralPattern::derive_output_seed_dependencies(program, None).ok()?,
-            ),
-            effect: any(
-                solve::StructuralPattern::derive_output_effect_dependencies(program, None).ok()?,
-            ),
+            y: solve::StructuralPattern::derive_execution_y_dependency_union(program, None).ok()?,
+            parameters: solve::StructuralPattern::derive_execution_p_dependency_union(
+                program, None,
+            )
+            .ok()?,
+            time: solve::StructuralPattern::execution_reads_time(program, None).ok()?,
+            seed: solve::StructuralPattern::execution_reads_seed(program, None).ok()?,
+            effect: solve::StructuralPattern::execution_has_effect(program, None).ok()?,
         })
     }
 
@@ -164,4 +160,28 @@ fn parameter_static_y_index(
     static_targets: &BTreeSet<usize>,
 ) -> bool {
     index == target_index || (index >= state_count && static_targets.contains(&index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unused_guard_keeps_its_input_and_time_in_the_static_certificate() {
+        let parameter = crate::execution_read_tests::guarded_program(solve::LinearOp::LoadP {
+            dst: 1,
+            index: 9,
+        });
+        assert!(
+            solve::StructuralPattern::derive_p_dependency_union(&parameter, None)
+                .unwrap()
+                .is_empty(),
+            "the value-only union omits the guard input"
+        );
+        let reads = ParameterStaticDependencies::derive(&parameter).unwrap();
+        assert_eq!(reads.parameters, BTreeSet::from([9]));
+        let time =
+            crate::execution_read_tests::guarded_program(solve::LinearOp::LoadTime { dst: 1 });
+        assert!(ParameterStaticDependencies::derive(&time).unwrap().time);
+    }
 }

@@ -54,7 +54,8 @@ impl RefreshPlan {
     /// certificate already excludes the certified dispatch here.
     #[must_use]
     pub fn possible_stage_schedules(&self) -> &'static [RefreshStageSchedule] {
-        if self.value_stages.is_empty()
+        if self.execution_order_refusal.is_some()
+            || self.value_stages.is_empty()
             || self.simultaneous_block_indices.len() != self.simultaneous_plan.blocks.len()
         {
             &[RefreshStageSchedule::Uncertified]

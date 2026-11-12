@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod admitted_tests;
+#[cfg(test)]
+mod execution_read_tests;
 
 use crate::RuntimeSolveError;
 use crate::runtime::projection::{
@@ -179,7 +181,8 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         let settled = self
             .refreshes_algebraic_reads
             .then(|| {
-                let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+                let blocks =
+                    rows.and_then(|rows| self.runtime.settled_execution_blocks_read_by(rows));
                 self.settled_initial_coordinates(y, p, t, blocks.as_deref())
             })
             .transpose()?;
@@ -274,9 +277,10 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             );
         }
         check_total_seed_len(y, p, seed_len)?;
-        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+        let blocks = rows.and_then(|rows| self.runtime.settled_execution_blocks_read_by(rows));
         let (settled_y, settled_p) =
             self.settled_initial_coordinates(y, p, t, blocks.as_deref())?;
+        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
         unit_jacobian_columns(
             lens,
             y_indices,
@@ -443,9 +447,10 @@ impl InitialProjectionModel<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         check_total_seed_len(y, p, v.len())?;
-        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
+        let blocks = rows.and_then(|rows| self.runtime.settled_execution_blocks_read_by(rows));
         let (settled_y, settled_p) =
             self.settled_initial_coordinates(y, p, t, blocks.as_deref())?;
+        let blocks = rows.and_then(|rows| self.runtime.settled_blocks_read_by(rows));
         self.eval_settled_tangent_jacobian_v((&settled_y, &settled_p, t), v, blocks.as_deref(), out)
     }
 
@@ -632,20 +637,19 @@ impl ScalarExecutionView<'_> {
                         | solve::InitializationRowRole::SurplusAlgebraicCheck
                 )
             })
+            || execution_cones_need_settlement(self.scalar.settled_execution_read_cones.as_deref())
     }
 
     /// Positions, in the algebraic refresh's simultaneous plan, of the blocks
     /// the initialization rows `rows` read: the union of their construction-
     /// issued cones. `None` when every block is needed.
     pub(super) fn settled_blocks_read_by(&self, rows: &[usize]) -> Option<Vec<usize>> {
-        let cones = self.scalar.settled_read_cones.as_deref()?;
-        let mut blocks = Vec::new();
-        for &row in rows {
-            blocks.extend_from_slice(cones.get(row)?);
-        }
-        blocks.sort_unstable();
-        blocks.dedup();
-        Some(blocks)
+        blocks_read_by(self.scalar.settled_read_cones.as_deref()?, rows)
+    }
+
+    /// Primal settlement also executes guards and unused checked call results.
+    pub(super) fn settled_execution_blocks_read_by(&self, rows: &[usize]) -> Option<Vec<usize>> {
+        blocks_read_by(self.scalar.settled_execution_read_cones.as_deref()?, rows)
     }
 
     /// The blocks at `blocks` (positions in the algebraic refresh's
@@ -791,6 +795,20 @@ impl ScalarExecutionView<'_> {
     }
 }
 
+fn execution_cones_need_settlement(cones: Option<&[Box<[usize]>]>) -> bool {
+    cones.is_none_or(|cones| cones.iter().any(|cone| !cone.is_empty()))
+}
+
+fn blocks_read_by(cones: &[Box<[usize]>], rows: &[usize]) -> Option<Vec<usize>> {
+    let mut blocks = Vec::new();
+    for &row in rows {
+        blocks.extend_from_slice(cones.get(row)?);
+    }
+    blocks.sort_unstable();
+    blocks.dedup();
+    Some(blocks)
+}
+
 /// Per initialization residual row, the positions in `plan` of the algebraic
 /// refresh blocks the row reads directly or through other blocks, closed over
 /// the canonical primal value dependencies, issued once when the runtime is
@@ -803,12 +821,40 @@ pub(super) fn settled_read_cones(
     implicit: &solve::ScalarProgramBlock,
     plan: &solve::AlgebraicProjectionPlan,
 ) -> Result<Option<InitialReadCones>, EvalSolveError> {
+    settled_cones(model, residual, implicit, plan, false)
+}
+
+/// Outcome-cache settlement uses execution reads, while tangent propagation
+/// keeps the separate value-read cones. Both retain the issued block order.
+pub(super) fn settled_execution_read_cones(
+    model: &solve::SolveModel,
+    residual: &solve::ScalarProgramBlock,
+    implicit: &solve::ScalarProgramBlock,
+    plan: &solve::AlgebraicProjectionPlan,
+) -> Result<Option<InitialReadCones>, EvalSolveError> {
+    settled_cones(model, residual, implicit, plan, true)
+}
+
+fn settled_cones(
+    model: &solve::SolveModel,
+    residual: &solve::ScalarProgramBlock,
+    implicit: &solve::ScalarProgramBlock,
+    plan: &solve::AlgebraicProjectionPlan,
+    execution: bool,
+) -> Result<Option<InitialReadCones>, EvalSolveError> {
     if updates_read_algebraic_slots(model) {
         return Ok(None);
     }
-    let residual_reads =
-        primal_row_reads(residual, model.problem.initialization.residual().len()?)?;
-    let implicit_reads = primal_row_reads(implicit, model.problem.continuous.implicit_rhs.len()?)?;
+    let residual_reads = row_reads(
+        residual,
+        model.problem.initialization.residual().len()?,
+        execution,
+    )?;
+    let implicit_reads = row_reads(
+        implicit,
+        model.problem.continuous.implicit_rhs.len()?,
+        execution,
+    )?;
     for block in plan.blocks.scalar_blocks() {
         for &row in &block.rows {
             if implicit.output_position(row).is_none() {
@@ -828,11 +874,19 @@ pub(super) fn settled_read_cones(
     )?))
 }
 
-/// Route every primal output through its checked output placement. Guards can
-/// read a coordinate while its derivative is identically zero.
+/// Route value reads through the checked output placement (test oracle).
+#[cfg(test)]
 fn primal_row_reads(
     block: &solve::ScalarProgramBlock,
     row_count: usize,
+) -> Result<Vec<std::collections::BTreeSet<usize>>, EvalSolveError> {
+    row_reads(block, row_count, false)
+}
+
+fn row_reads(
+    block: &solve::ScalarProgramBlock,
+    row_count: usize,
+    execution: bool,
 ) -> Result<Vec<std::collections::BTreeSet<usize>>, EvalSolveError> {
     let mut rows = vec![std::collections::BTreeSet::new(); row_count];
     for (program_index, program) in block.programs().iter().enumerate() {
@@ -842,11 +896,21 @@ fn primal_row_reads(
                 .into(),
             span,
         };
-        let dependencies = solve::StructuralPattern::derive_output_y_dependencies(program, span)
-            .map_err(|failure| EvalSolveError::InvalidRow {
-                message: failure.to_string(),
-                span,
-            })?;
+        let dependencies = if execution {
+            solve::StructuralPattern::derive_output_execution_y_dependency_ranges(program, span)
+                .map(|outputs| {
+                    outputs
+                        .into_iter()
+                        .map(|reads| reads.to_set())
+                        .collect::<Vec<_>>()
+                })
+        } else {
+            solve::StructuralPattern::derive_output_y_dependencies(program, span)
+        }
+        .map_err(|failure| EvalSolveError::InvalidRow {
+            message: failure.to_string(),
+            span,
+        })?;
         let ordinals = block
             .program_output_ordinals(program_index)
             .ok_or_else(error)?;

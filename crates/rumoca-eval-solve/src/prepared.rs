@@ -80,38 +80,6 @@ use support::*;
 pub use target_value_plan::PreparedTargetValuePlan;
 pub use torn_sweep::{PreparedTornSweep, TornSweepComposite, TornSweepStatus};
 
-pub(crate) fn assignment_shape_for_program_output(
-    program: &[LinearOp],
-    output_offset: usize,
-    target_y_index: usize,
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    Ok(rumoca_ir_solve::derive_target_assignment_shape_for_output(
-        program,
-        output_offset,
-        target_y_index,
-    ))
-}
-
-pub(crate) fn program_certifies_direct_target(
-    program: &[LinearOp],
-    output_offset: usize,
-    target_y_index: usize,
-) -> Result<bool, EvalSolveError> {
-    Ok(!program.iter().any(non_causal_linear_op)
-        && assignment_shape_for_program_output(program, output_offset, target_y_index)?
-            .as_ref()
-            .is_some_and(TargetAssignmentShape::is_direct))
-}
-
-pub(crate) fn program_certifies_exact_target(
-    program: &[LinearOp],
-    output_offset: usize,
-    target_y_index: usize,
-) -> Result<bool, EvalSolveError> {
-    Ok(!program.iter().any(non_causal_linear_op)
-        && assignment_shape_for_program_output(program, output_offset, target_y_index)?.is_some())
-}
-
 /// Reusable evaluator for one Solve-IR row block.
 pub struct PreparedScalarProgramBlock {
     block: ScalarProgramBlock,
@@ -122,6 +90,7 @@ pub struct PreparedScalarProgramBlock {
     row_requirements: Vec<RowInputRequirements>,
     row_reverse_y_gradient_supported: Vec<bool>,
     row_is_causal: Vec<bool>,
+    row_execution: Vec<OnceCell<rumoca_ir_solve::ScalarProgramExecutionYDependency>>,
     /// Programs holding an assertion observation, which only the checked
     /// event-action adapter evaluates, so no execution backend compiles them.
     row_requires_checked_observation: Vec<bool>,
@@ -584,7 +553,10 @@ impl PreparedScalarProgramBlock {
         self.is_causal_row(row_idx)
             && self
                 .assignment_shape_for_output(row_idx, output_offset, target_y_index)
-                .is_some_and(TargetAssignmentShape::is_direct)
+                .is_some_and(|shape| {
+                    shape.is_direct()
+                        && self.execution_independent_of_target(row_idx, shape, target_y_index)
+                })
     }
 
     pub fn certifies_exact_target_assignment_output(
@@ -596,7 +568,9 @@ impl PreparedScalarProgramBlock {
         self.is_causal_row(row_idx)
             && self
                 .assignment_shape_for_output(row_idx, output_offset, target_y_index)
-                .is_some()
+                .is_some_and(|shape| {
+                    self.execution_independent_of_target(row_idx, shape, target_y_index)
+                })
     }
 
     /// Whether program `row_idx` holds an assertion observation, a fact fixed
@@ -608,6 +582,23 @@ impl PreparedScalarProgramBlock {
             .get(row_idx)
             .copied()
             .unwrap_or(false)
+    }
+
+    fn execution_independent_of_target(
+        &self,
+        row: usize,
+        shape: &TargetAssignmentShape,
+        target: usize,
+    ) -> bool {
+        let (Some(program), Some(proof)) =
+            (self.block.programs().get(row), self.row_execution.get(row))
+        else {
+            return false;
+        };
+        proof
+            .get_or_init(|| rumoca_ir_solve::ScalarProgramExecutionYDependency::new(program))
+            .prefix(shape.expr_eval_len())
+            .is_some_and(|reads| !reads.contains(target))
     }
 
     fn is_causal_row(&self, row_idx: usize) -> bool {
@@ -625,6 +616,9 @@ impl PreparedScalarProgramBlock {
             return None;
         }
         let shape = self.assignment_shape_for_output(row_idx, output_offset, target_y_index)?;
+        if !self.execution_independent_of_target(row_idx, shape, target_y_index) {
+            return None;
+        }
         let mut program = row
             .get(..shape.expr_eval_len())?
             .iter()

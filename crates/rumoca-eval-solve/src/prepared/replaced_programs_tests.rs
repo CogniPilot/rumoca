@@ -156,3 +156,33 @@ fn nested_conditional_signed_zero_is_a_replacement_in_a_compute_block() {
         assert_eq!(out[0].to_bits(), (-0.0f64).to_bits());
     }
 }
+
+#[test]
+fn replacing_a_program_cannot_reuse_its_previous_execution_proof() {
+    let base = PreparedScalarProgramBlock::new(block(vec![offset(0, 1.0)])).unwrap();
+    assert!(base.certifies_exact_target_assignment_output(0, 0, 0));
+    let mut changed =
+        crate::execution_read_tests::guarded_program(LinearOp::LoadY { dst: 1, index: 0 });
+    changed.pop();
+    changed.extend([
+        LinearOp::LoadY { dst: 3, index: 0 },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 3,
+            rhs: 2,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ]);
+    let target = block(vec![changed]);
+    let replaced =
+        PreparedScalarProgramBlock::with_replaced_programs(&base, target.clone(), &[0]).unwrap();
+    let fresh = PreparedScalarProgramBlock::new(target).unwrap();
+    assert!(!replaced.certifies_exact_target_assignment_output(0, 0, 0));
+    assert!(!fresh.certifies_exact_target_assignment_output(0, 0, 0));
+    assert!(
+        replaced
+            .exact_target_assignment_output_program(0, 0, 0)
+            .is_none()
+    );
+}

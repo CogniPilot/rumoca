@@ -248,8 +248,16 @@ impl SolveRuntime {
             &implicit_scalar_programs,
             &algebraic_refresh.simultaneous_plan,
         )?;
-        let projection_demand =
-            refresh_projection::projection_jacobian_demand(model, settled_read_cones.as_deref())?;
+        let settled_execution_read_cones = initial_projection::settled_execution_read_cones(
+            model,
+            &initial_scalar_residual,
+            &implicit_scalar_programs,
+            &algebraic_refresh.simultaneous_plan,
+        )?;
+        let projection_demand = refresh_projection::projection_jacobian_demand(
+            model,
+            settled_execution_read_cones.as_deref(),
+        )?;
         let compiled_algebraic_jacobians = match primary {
             Some(primary) => chart_sharing::shared_projection_jacobians(
                 primary,
@@ -577,6 +585,7 @@ impl SolveRuntime {
             seed_projection_cache: RefCell::new(SeedProjectionCache::default()),
             algebraic_refresh,
             settled_read_cones,
+            settled_execution_read_cones,
             derivative_refresh,
             root_refresh,
             event_refresh,

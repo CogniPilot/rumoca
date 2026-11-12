@@ -25,6 +25,7 @@ pub(super) struct TargetAssignmentCatalog<'a> {
     block: &'a ScalarProgramBlock,
     positions: IndexMap<usize, OutputRowPosition>,
     exact: RefCell<BTreeMap<(usize, usize), bool>>,
+    analyses: RefCell<super::row_analysis::RowAnalysisCache<'a>>,
 }
 
 impl<'a> TargetAssignmentCatalog<'a> {
@@ -33,6 +34,7 @@ impl<'a> TargetAssignmentCatalog<'a> {
             block,
             positions: output_row_positions(block)?,
             exact: RefCell::new(BTreeMap::new()),
+            analyses: RefCell::new(super::row_analysis::RowAnalysisCache::default()),
         })
     }
 }
@@ -57,12 +59,16 @@ impl ExactAssignmentAccess for TargetAssignmentCatalog<'_> {
                 .programs()
                 .get(position.program_index)
                 .is_some_and(|program| {
-                    crate::prepared::program_certifies_exact_target(
-                        program,
-                        position.output_offset,
-                        target,
-                    )
-                    .unwrap_or(false)
+                    self.analyses
+                        .borrow_mut()
+                        .assignment(
+                            position.program_index,
+                            program,
+                            position.output_offset,
+                            target,
+                        )
+                        .1
+                        .exact
                 })
         });
         self.exact.borrow_mut().insert((row, target), exact);
@@ -91,6 +97,36 @@ impl ExactAssignmentAccess for crate::PreparedScalarProgramBlock {
 mod tests {
     use super::*;
     use rumoca_ir_solve::{BinaryOp, LinearOp};
+
+    #[test]
+    fn target_catalog_shares_guard_free_source_proofs_across_outputs() {
+        let mut operations = vec![
+            LinearOp::LoadY { dst: 0, index: 0 },
+            LinearOp::Const { dst: 1, value: 1.0 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+        ];
+        operations.extend((0..256).map(|_| LinearOp::StoreOutput { src: 2 }));
+        let block = ScalarProgramBlock::with_output_indices(
+            vec![operations],
+            vec![rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("target_catalog.mo"),
+                0,
+                1,
+            )],
+            (0..256).collect(),
+        )
+        .unwrap();
+        let catalog = TargetAssignmentCatalog::new(&block).unwrap();
+        for row in 0..256 {
+            assert!(catalog.is_exact_assignment(row, 0));
+        }
+        assert_eq!(catalog.analyses.borrow().proof_build_counts(), (1, 1));
+    }
 
     #[test]
     fn targeted_catalog_preserves_logical_output_identity_and_prefix_versions() {
