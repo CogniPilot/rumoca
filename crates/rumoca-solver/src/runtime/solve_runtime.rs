@@ -352,6 +352,8 @@ struct ScalarExecutionInventory {
     /// a block Jacobian must carry its direction through every block
     /// ([`initial_projection::settled_read_cones`]).
     settled_read_cones: Option<initial_projection::InitialReadCones>,
+    /// Execution closure for primal outcome reuse; distinct from tangent cones.
+    settled_execution_read_cones: Option<initial_projection::InitialReadCones>,
     derivative_refresh: solve::RefreshPlan,
     root_refresh: solve::RefreshPlan,
     event_refresh: solve::RefreshPlan,
