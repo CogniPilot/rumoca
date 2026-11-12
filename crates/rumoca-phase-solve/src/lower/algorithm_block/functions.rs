@@ -25,8 +25,14 @@ pub(super) struct Signature {
 
 /// The block's functions as callers see them: signatures from the start,
 /// owners and raised signals once each function is lowered.
-#[derive(Default)]
 pub(super) struct Functions {
+    /// The checked block the functions belong to: what the GALEC oracle
+    /// evaluates an expression of the block against.
+    checked: CheckedAlgorithmBlock,
+    /// For each protected function, per input: the least and greatest
+    /// Integer literal it is passed over every call in the block, `None`
+    /// when some call passes anything else (see `literal_arguments`).
+    literal_arguments: BTreeMap<String, Vec<Option<(i64, i64)>>>,
     signatures: BTreeMap<String, Signature>,
     lowered: RefCell<BTreeMap<String, (SolvePureCallOwnerId, BTreeSet<usize>)>>,
     /// What a call can do (faults, effects), callee first.
@@ -35,9 +41,10 @@ pub(super) struct Functions {
 
 impl Functions {
     pub(super) fn declare(
-        block: &Block,
+        checked: &CheckedAlgorithmBlock,
         arithmetic: SolveArithmeticProfile,
     ) -> Result<Self, AlgorithmBlockLowerError> {
+        let block = checked.block();
         let mut signatures = BTreeMap::new();
         for function in user_functions(block) {
             let name = function.name.lexeme();
@@ -66,6 +73,8 @@ impl Functions {
             signatures.insert(name.to_owned(), signature);
         }
         Ok(Self {
+            checked: checked.clone(),
+            literal_arguments: literal_arguments(block),
             signatures,
             lowered: RefCell::default(),
             summaries: RefCell::default(),
@@ -78,6 +87,17 @@ impl Functions {
             .outputs
             .first()
             .cloned()
+    }
+
+    /// The range of Integer literals input `position` of `function` receives
+    /// at every one of its calls, when each call passes one.
+    pub(super) fn literal_argument(&self, function: &str, position: usize) -> Option<(i64, i64)> {
+        *self.literal_arguments.get(function)?.get(position)?
+    }
+
+    /// The checked block these functions are declared in.
+    pub(super) fn checked_block(&self) -> &CheckedAlgorithmBlock {
+        &self.checked
     }
 
     pub(super) fn is_user(&self, call: &FunctionCall) -> bool {
@@ -93,6 +113,59 @@ impl Functions {
             .copied()
             .unwrap_or_else(Summary::anything)
     }
+}
+
+/// The Integer literals each protected function is called with.
+///
+/// A protected function is called only from this block, so an input that
+/// every call passes as an Integer literal takes no other value in its body.
+/// A public function gets no entry: it may be called from outside.
+fn literal_arguments(block: &Block) -> BTreeMap<String, Vec<Option<(i64, i64)>>> {
+    let mut found = BTreeMap::new();
+    let mut record = |call: &FunctionCall| record_literal_arguments(call, &mut found);
+    for method in [&block.startup, &block.recalibrate, &block.do_step] {
+        statement_calls(&method.statements, &mut record);
+    }
+    for function in user_functions(block) {
+        statement_calls(&function.statements, &mut record);
+    }
+    for function in &block.public_functions {
+        found.remove(function.name.lexeme());
+    }
+    found
+}
+
+/// Merge one call's arguments into what its function has been passed so far.
+fn record_literal_arguments(
+    call: &FunctionCall,
+    found: &mut BTreeMap<String, Vec<Option<(i64, i64)>>>,
+) {
+    let literal = |argument: &Expression| {
+        let mut argument = argument;
+        while let Expression::Paren(inner) = argument {
+            argument = inner;
+        }
+        match argument {
+            Expression::Integer(value) => Some((*value, *value)),
+            _ => None,
+        }
+    };
+    let passed = call.arguments.iter().map(literal).collect::<Vec<_>>();
+    found
+        .entry(call.function.lexeme().to_owned())
+        .and_modify(|seen| {
+            // A call with another arity settles nothing about any input.
+            let same_arity = seen.len() == passed.len();
+            for (position, range) in seen.iter_mut().enumerate() {
+                *range = match (*range, passed.get(position).copied().flatten()) {
+                    (Some((low, high)), Some((value, _))) if same_arity => {
+                        Some((low.min(value), high.max(value)))
+                    }
+                    _ => None,
+                };
+            }
+        })
+        .or_insert(passed);
 }
 
 fn user_functions(block: &Block) -> impl Iterator<Item = &UserFunction> {
@@ -216,7 +289,8 @@ pub(super) fn lower_functions(
         let function_scope = function_scope(&status_scope, function)?;
         check_statements(&function_scope, &function.statements)?;
         require_defined_function(&function_scope, function)?;
-        let (summary, split) = function_summary(&function_scope, &function.statements);
+        let inputs = literal_inputs(&function_scope, function);
+        let (summary, split) = function_summary(&function_scope, &function.statements, &inputs);
         scope
             .functions
             .summaries
@@ -341,6 +415,29 @@ fn require_declared_signals(
             function.span,
         ))
     }
+}
+
+/// The static range of each Integer input of `function` that every call in
+/// the block passes as a literal, keyed by the input's local in `scope`.
+fn literal_inputs(scope: &MethodScope<'_>, function: &UserFunction) -> BTreeMap<usize, (i128, i128)> {
+    function
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.direction == Direction::Input)
+        .enumerate()
+        .filter_map(|(position, parameter)| {
+            let (low, high) = scope
+                .scope
+                .functions
+                .literal_argument(function.name.lexeme(), position)?;
+            let local = *scope.local_names.get(parameter.decl.name.lexeme())?;
+            let integer = matches!(
+                scope.locals[local].value_type.element_type(),
+                SolveScalarType::Integer(_)
+            ) && scope.locals[local].dims.is_empty();
+            integer.then_some((local, (low.into(), high.into())))
+        })
+        .collect()
 }
 
 /// The scope every function body shares: only the six status bits, which

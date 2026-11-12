@@ -46,7 +46,7 @@ use rumoca_ir_galec::ast::{
     ProtectedKind, RefPart, Reference, ScalarType, Spanned, Statement, TypeRef,
     VariableDeclaration,
 };
-use rumoca_ir_galec::package::AlgorithmCodePackage;
+use rumoca_ir_galec::package::{AlgorithmCodePackage, CheckedAlgorithmBlock};
 use rumoca_ir_solve::{
     ProgramRegister, ProgramSlot, SolveAlgorithmBlock, SolveAlgorithmBlockConstructionError,
     SolveAlgorithmCodeEntityKind, SolveAlgorithmCodeRef, SolveArithmeticProfile,
@@ -448,7 +448,7 @@ pub fn lower_algorithm_block(
 ) -> Result<SolveAlgorithmBlock, AlgorithmBlockLowerError> {
     let block = package.block();
     require_supported_block(block)?;
-    let scope = block_scope(block, arithmetic)?;
+    let scope = block_scope(package.checked_block(), arithmetic)?;
     // Refuse every unsupported construct before any program is built, so the
     // builder closures below meet only construction errors.
     let checked = |method, body: &BlockMethod| {
@@ -597,9 +597,10 @@ fn block_provenance(block: &Block) -> Option<Span> {
 }
 
 fn block_scope(
-    block: &Block,
+    checked: &CheckedAlgorithmBlock,
     arithmetic: SolveArithmeticProfile,
 ) -> Result<BlockScope, AlgorithmBlockLowerError> {
+    let block = checked.block();
     let mut variables = Vec::new();
     for interface in &block.interface {
         let (storage, lifecycle) = match interface.kind {
@@ -655,7 +656,7 @@ fn block_scope(
         block: variables,
         by_name,
         status,
-        functions: Rc::new(Functions::declare(block, arithmetic)?),
+        functions: Rc::new(Functions::declare(checked, arithmetic)?),
         provenance,
     })
 }

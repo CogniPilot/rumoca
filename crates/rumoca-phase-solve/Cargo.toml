@@ -19,13 +19,13 @@ rumoca-ir-galec = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-eval-solve = { workspace = true }
+rumoca-eval-galec = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
-rumoca-eval-galec = { workspace = true }
 serde = { workspace = true }
 rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 serde_json = { workspace = true }

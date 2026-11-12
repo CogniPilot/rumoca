@@ -187,7 +187,7 @@ fn a_controller_block_refines_into_a_solve_block() {
 #[test]
 fn a_tunable_parameter_is_stored_only_by_startup() {
     let package = package(controller());
-    let scope = block_scope(package.block(), binary32()).unwrap();
+    let scope = block_scope(package.checked_block(), binary32()).unwrap();
     let do_step = method_scope(&scope, Method::DoStep, &package.block().do_step).unwrap();
     let startup = method_scope(&scope, Method::Startup, &package.block().startup).unwrap();
     let gain = startup.resolve(&state("gain")).unwrap();
@@ -205,7 +205,7 @@ fn bounds_are_decided_in_the_binary32_domain() {
     let mut block = controller();
     block.protected[0].decl = ranged(decl(ScalarType::Real, "x", 6), -1.0e60, 0.000001);
     let package = package(block);
-    let scope = block_scope(package.block(), binary32()).unwrap();
+    let scope = block_scope(package.checked_block(), binary32()).unwrap();
     let x = &scope.block[scope.by_name["x"]];
     // No binary32 value lies below -1e60, so that clamp is elided.
     assert_eq!(x.low, None);
@@ -236,7 +236,7 @@ fn an_array_variable_refines_and_an_unsupported_statement_is_refused() {
         .find(|slot| slot.source().qualified_name() == "buffer")
         .unwrap();
     assert_eq!(buffer.value_type().dimensions(), [3]);
-    let scope = block_scope(package.block(), binary32()).unwrap();
+    let scope = block_scope(package.checked_block(), binary32()).unwrap();
     let do_step = method_scope(&scope, Method::DoStep, &package.block().do_step).unwrap();
     let call = rumoca_ir_galec::ast::FunctionCall {
         function: n("solve"),
@@ -555,7 +555,7 @@ fn the_golden_rate_controller_refines_into_a_solve_block() {
         ]
     );
     // Recalibrate may store the dependent gain; DoStep may not.
-    let scope = block_scope(package.block(), binary32()).unwrap();
+    let scope = block_scope(package.checked_block(), binary32()).unwrap();
     let gain = VarId::Block(scope.by_name["integralGain"]);
     let recalibrate =
         method_scope(&scope, Method::Recalibrate, &package.block().recalibrate).unwrap();
@@ -1038,7 +1038,7 @@ fn integer_bounds_are_decided_exactly_in_a_signed64_domain() {
         start: None,
     });
     let exact = package(block.clone());
-    let scope = block_scope(exact.block(), signed64).unwrap();
+    let scope = block_scope(exact.checked_block(), signed64).unwrap();
     let count = &scope.block[scope.by_name["count"]];
     // Neither bound survives an f64 round trip; both stay exact.
     assert_eq!(count.low, Some(Bound::Integer(-9_223_372_036_854_775_807)));
@@ -1049,7 +1049,7 @@ fn integer_bounds_are_decided_exactly_in_a_signed64_domain() {
         start: None,
     });
     let fractional = package(block);
-    let Err(error) = block_scope(fractional.block(), signed64) else {
+    let Err(error) = block_scope(fractional.checked_block(), signed64) else {
         panic!("a fractional Integer bound is refused");
     };
     assert_eq!(error.code(), EL007_UNSUPPORTED_ALGORITHM_CODE);
@@ -1069,7 +1069,7 @@ fn bounds_outside_the_target_domain_are_refused_with_their_feature() {
         start: None,
     });
     let at_edge = package(block.clone());
-    let scope = block_scope(at_edge.block(), binary32()).unwrap();
+    let scope = block_scope(at_edge.checked_block(), binary32()).unwrap();
     let edge = &scope.block[scope.by_name["edge"]];
     // A bound at the int32 edge is unviolable and elided.
     assert_eq!((edge.low, edge.high), (None, None));
@@ -1085,7 +1085,7 @@ fn bounds_outside_the_target_domain_are_refused_with_their_feature() {
         decl: wide,
         start: None,
     });
-    let Err(error) = block_scope(package(outside).block(), binary32()) else {
+    let Err(error) = block_scope(package(outside).checked_block(), binary32()) else {
         panic!("an Integer bound beyond the int32 domain is refused");
     };
     assert_eq!(error.code(), EL007_UNSUPPORTED_ALGORITHM_CODE);
@@ -1097,7 +1097,7 @@ fn bounds_outside_the_target_domain_are_refused_with_their_feature() {
     );
 
     block.protected[0].decl = ranged(decl(ScalarType::Real, "x", 6), 1.0e60, 2.0e60);
-    let Err(error) = block_scope(package(block).block(), binary32()) else {
+    let Err(error) = block_scope(package(block).checked_block(), binary32()) else {
         panic!("a Real min beyond binary32 is refused");
     };
     assert!(
@@ -1259,7 +1259,7 @@ fn declared_signals_become_the_method_escape_set() {
 
     // The checked package derives each clause from GALEC's escape analysis;
     // lowering cross-checks it against what it actually raises.
-    let scope = block_scope(package.block(), binary32()).unwrap();
+    let scope = block_scope(package.checked_block(), binary32()).unwrap();
     let mut undeclared = package.block().do_step.clone();
     undeclared.signals.clear();
     let do_step = method_scope(&scope, Method::DoStep, &undeclared).unwrap();
