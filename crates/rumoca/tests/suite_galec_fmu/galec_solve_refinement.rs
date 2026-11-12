@@ -233,7 +233,7 @@ const SIGNALS: [&str; 6] = [
 const TICKS: usize = 5;
 
 /// The oracle's binary64 Real with the embedded target's signed32 Integer.
-fn profile() -> SolveArithmeticProfile {
+pub(super) fn profile() -> SolveArithmeticProfile {
     SolveArithmeticProfile::construct(
         SolveRealFormat::Binary64,
         SolveIntegerDomain::construct(i32::MIN.into(), i32::MAX.into()).unwrap(),
@@ -251,7 +251,7 @@ pub(super) fn model_name(source: &str) -> &str {
         .expect("fixture declares a model or block")
 }
 
-fn project(source: &str) -> Result<AlgorithmCodePackage, String> {
+pub(super) fn project(source: &str) -> Result<AlgorithmCodePackage, String> {
     let name = model_name(source);
     let compiled = rumoca::Compiler::new()
         .model(name)
@@ -326,7 +326,7 @@ fn literal(start: &Expression) -> Option<(SolveValueKind, Value)> {
 }
 
 /// Write every input (and, before Startup, every tunable) on both sides.
-fn set_external(
+pub(super) fn set_external(
     package: &AlgorithmCodePackage,
     solve: &SolveAlgorithmBlock,
     oracle: &mut Evaluator<'_>,
@@ -377,7 +377,7 @@ fn nest(dims: &[u32], elements: &mut impl Iterator<Item = Value>) -> Value {
     }
 }
 
-fn compare(
+pub(super) fn compare(
     name: &str,
     at: &str,
     solve: &SolveAlgorithmBlock,

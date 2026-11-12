@@ -23,6 +23,11 @@ pub(super) fn derive(
             indices,
         } => update(body, *aggregate, *value, indices, integers)
             .map(|accesses| (*destination, accesses)),
+        SolveOperation::ProjectElementDynamic {
+            destination,
+            aggregate,
+            indices,
+        } => element(body, *aggregate, indices, integers).map(|access| (*destination, access)),
         _ => None,
     };
     let Some((destination, accesses)) = selected else {
@@ -73,6 +78,45 @@ fn assembly(
     (offset == i64::from(output.scalar_count())).then_some(accesses)
 }
 
+/// The zero-based coordinates of an element whose one-based Integer indices
+/// are all known and inside the aggregate.
+fn known_coordinates(
+    dimensions: &[u32],
+    indices: &[SolveRegisterId],
+    integers: &map_access::IntegerValues,
+) -> Option<Vec<i64>> {
+    if dimensions.len() != indices.len() {
+        return None;
+    }
+    indices
+        .iter()
+        .zip(dimensions)
+        .map(|(&index, &extent)| {
+            // Typed evaluation converts Modelica's one-based Integer coordinates.
+            let coordinate = integers.value(index)?.checked_sub(1)?;
+            (0..i64::from(extent))
+                .contains(&coordinate)
+                .then_some(coordinate)
+        })
+        .collect()
+}
+
+/// A read of one element at known coordinates reads that element only.
+fn element(
+    body: &TypedProgram,
+    aggregate: SolveRegisterId,
+    indices: &[SolveRegisterId],
+    integers: &map_access::IntegerValues,
+) -> Option<Accesses> {
+    let dimensions = body.register_types()[aggregate.index()].dimensions();
+    let coordinates = known_coordinates(dimensions, indices, integers)?;
+    let subscripts = coordinates
+        .into_iter()
+        .map(|coordinate| AffineForm::constant(coordinate, 0))
+        .collect();
+    Some(vec![(aggregate, Coordinates::access(0, &[], subscripts))])
+}
+
 fn update(
     body: &TypedProgram,
     aggregate: SolveRegisterId,
@@ -82,16 +126,11 @@ fn update(
 ) -> Option<Accesses> {
     let value_type = &body.register_types()[aggregate.index()];
     let dimensions = value_type.dimensions();
-    if dimensions.len() != indices.len() {
-        return None;
-    }
     let mut offset = 0i64;
-    for (&index, &extent) in indices.iter().zip(dimensions) {
-        // Typed evaluation converts Modelica's one-based Integer coordinates.
-        let coordinate = integers.value(index)?.checked_sub(1)?;
-        if coordinate < 0 || coordinate >= i64::from(extent) {
-            return None;
-        }
+    for (coordinate, &extent) in known_coordinates(dimensions, indices, integers)?
+        .into_iter()
+        .zip(dimensions)
+    {
         offset = offset
             .checked_mul(i64::from(extent))?
             .checked_add(coordinate)?;
