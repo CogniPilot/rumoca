@@ -29,8 +29,8 @@ use std::rc::Rc;
 #[cfg(test)]
 use check::check_statement;
 use check::{
-    Builtin, check_expression, check_statements, check_subscripts, integer_conversion_limits,
-    loop_range, may_fault, static_int,
+    Builtin, Domain, check_expression, check_statements, check_subscripts,
+    integer_conversion_limits, loop_range, may_fault, static_int,
 };
 use definedness::{require_defined_function, require_defined_reads};
 use expressions::{expression_type, lower_expression, lower_lazy_select, may_overflow, raise};

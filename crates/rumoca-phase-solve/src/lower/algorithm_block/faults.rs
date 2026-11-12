@@ -496,7 +496,7 @@ fn int_range(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Opt
         Expression::Paren(inner) => int_range(scope, ctx, inner),
         Expression::Neg(reference) => {
             let (low, high) = int_range(scope, ctx, &Expression::Ref(reference.clone()))?;
-            Some((-high, -low))
+            Some((high.checked_neg()?, low.checked_neg()?))
         }
         Expression::If(if_expression) => if_expression
             .branches
@@ -513,10 +513,17 @@ fn int_range(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Opt
             let (a, b) = int_range(scope, ctx, lhs)?;
             let (c, d) = int_range(scope, ctx, rhs)?;
             match op {
-                BinaryOp::Add => Some((a + c, b + d)),
-                BinaryOp::Sub => Some((a - d, b - c)),
+                // An interval this arithmetic cannot hold is no interval:
+                // the caller keeps "may fault".
+                BinaryOp::Add => Some((a.checked_add(c)?, b.checked_add(d)?)),
+                BinaryOp::Sub => Some((a.checked_sub(d)?, b.checked_sub(c)?)),
                 BinaryOp::Mul => {
-                    let products = [a * c, a * d, b * c, b * d];
+                    let products = [
+                        a.checked_mul(c)?,
+                        a.checked_mul(d)?,
+                        b.checked_mul(c)?,
+                        b.checked_mul(d)?,
+                    ];
                     Some((*products.iter().min()?, *products.iter().max()?))
                 }
                 _ => None,
@@ -648,17 +655,24 @@ fn ranged_names(
         low <= high
     };
     match expression {
-        Expression::Bool(_) | Expression::Integer(_) | Expression::Real(_) => true,
+        Expression::Bool(_) | Expression::Integer(_) => true,
         Expression::Ref(reference) | Expression::Neg(reference) => local(reference),
-        Expression::Size { .. } => false,
+        // A Real literal, a Real-valued operator or a call that reaches a
+        // Real: the oracle's binary64 answer is not the target's.
+        Expression::Real(_) | Expression::Size { .. } => false,
         Expression::Paren(inner) | Expression::Not(inner) => ranged_names(scope, ctx, inner, names),
-        Expression::Binary { lhs, rhs, .. } => {
-            ranged_names(scope, ctx, lhs, names) && ranged_names(scope, ctx, rhs, names)
+        Expression::Binary { op, lhs, rhs } => {
+            !matches!(op, BinaryOp::Div | BinaryOp::Pow)
+                && ranged_names(scope, ctx, lhs, names)
+                && ranged_names(scope, ctx, rhs, names)
         }
-        Expression::Call(call) => call
-            .arguments
-            .iter()
-            .all(|argument| ranged_names(scope, ctx, argument, names)),
+        Expression::Call(call) => {
+            scope.scope.functions.is_real_free(call)
+                && call
+                    .arguments
+                    .iter()
+                    .all(|argument| ranged_names(scope, ctx, argument, names))
+        }
         Expression::Array(items) => items
             .iter()
             .all(|item| ranged_names(scope, ctx, item, names)),

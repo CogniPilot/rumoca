@@ -37,6 +37,9 @@ pub(super) struct Functions {
     lowered: RefCell<BTreeMap<String, (SolvePureCallOwnerId, BTreeSet<usize>)>>,
     /// What a call can do (faults, effects), callee first.
     summaries: RefCell<BTreeMap<String, Summary>>,
+    /// The functions whose evaluation involves no Real value at any depth
+    /// (see `real_free_functions`).
+    real_free: BTreeSet<String>,
     /// Exact settlements already made in this block, by the ranges and the
     /// span-free text of the expression (see `faults::settled`).
     settled: RefCell<BTreeMap<String, Settlement>>,
@@ -78,6 +81,7 @@ impl Functions {
         Ok(Self {
             checked: checked.clone(),
             literal_arguments: literal_arguments(block),
+            real_free: real_free_functions(block, &signatures),
             signatures,
             lowered: RefCell::default(),
             summaries: RefCell::default(),
@@ -97,6 +101,18 @@ impl Functions {
     /// at every one of its calls, when each call passes one.
     pub(super) fn literal_argument(&self, function: &str, position: usize) -> Option<(i64, i64)> {
         *self.literal_arguments.get(function)?.get(position)?
+    }
+
+    /// Whether evaluating `call` involves no Real value at any depth: a user
+    /// function of `real_free_functions`, or an Integer builtin. Only such a
+    /// call has the same value and the same faults under every Real format
+    /// of the arithmetic profile.
+    pub(super) fn is_real_free(&self, call: &FunctionCall) -> bool {
+        if self.is_user(call) {
+            self.real_free.contains(call.function.lexeme())
+        } else {
+            Builtin::of(call).is_some_and(integer_builtin)
+        }
     }
 
     /// The settlement recorded under `key`, if one was made.
@@ -129,6 +145,68 @@ impl Functions {
     }
 }
 
+/// A builtin from Integers to an Integer.
+const fn integer_builtin(builtin: Builtin) -> bool {
+    matches!(
+        builtin,
+        Builtin::Extremum(_, Domain::Integer) | Builtin::IntegerDivision(_)
+    )
+}
+
+/// The user functions whose evaluation involves no Real value at any depth.
+///
+/// Such a function declares only Integer and Boolean parameters and locals,
+/// writes no Real literal and no Real-valued operator, and calls only
+/// functions of this set and Integer builtins. A function left out is not
+/// wrong, only not settled exactly: the GALEC oracle computes Reals in
+/// binary64 whatever the profile's Real format, so its answer for a function
+/// that touches a Real is not the target's.
+fn real_free_functions(
+    block: &Block,
+    signatures: &BTreeMap<String, Signature>,
+) -> BTreeSet<String> {
+    let integral = |declaration: &VariableDeclaration| {
+        matches!(
+            declaration.ty,
+            TypeRef::Primitive(ScalarType::Integer | ScalarType::Boolean)
+        )
+    };
+    let mut free: BTreeSet<String> = user_functions(block)
+        .filter(|function| {
+            let parameters = function.parameters.iter().map(|parameter| &parameter.decl);
+            parameters.chain(&function.locals).all(integral)
+        })
+        .map(|function| function.name.lexeme().to_owned())
+        .collect();
+    // Remove what reaches a Real, until nothing more is removed.
+    loop {
+        let reaches_real = |function: &&UserFunction| {
+            let mut real = false;
+            statement_calls(&function.statements, &mut |reported| {
+                real |= match reported {
+                    Found::Real => true,
+                    Found::Call(call) if signatures.contains_key(call.function.lexeme()) => {
+                        !free.contains(call.function.lexeme())
+                    }
+                    Found::Call(call) => !Builtin::of(call).is_some_and(integer_builtin),
+                };
+            });
+            real
+        };
+        let removed: Vec<String> = user_functions(block)
+            .filter(|function| free.contains(function.name.lexeme()))
+            .filter(reaches_real)
+            .map(|function| function.name.lexeme().to_owned())
+            .collect();
+        if removed.is_empty() {
+            return free;
+        }
+        for name in removed {
+            free.remove(&name);
+        }
+    }
+}
+
 /// The Integer literals each protected function is called with.
 ///
 /// A protected function is called only from this block, so an input that
@@ -139,7 +217,11 @@ impl Functions {
 /// A public function gets no entry: it may be called from outside.
 fn literal_arguments(block: &Block) -> BTreeMap<String, Vec<Option<(i64, i64)>>> {
     let mut found = BTreeMap::new();
-    let mut record = |call: &FunctionCall| record_literal_arguments(call, &mut found);
+    let mut record = |reported: Found<'_>| {
+        if let Found::Call(call) = reported {
+            record_literal_arguments(call, &mut found);
+        }
+    };
     let entities = block
         .compartments
         .iter()
@@ -173,7 +255,7 @@ fn literal_arguments(block: &Block) -> BTreeMap<String, Vec<Option<(i64, i64)>>>
 }
 
 /// The calls in a declaration's own expressions: its dimensions and range.
-fn declaration_calls(declaration: &VariableDeclaration, found: &mut impl FnMut(&FunctionCall)) {
+fn declaration_calls(declaration: &VariableDeclaration, found: &mut impl FnMut(Found<'_>)) {
     let dimensions = declaration
         .dimensions
         .iter()
@@ -710,8 +792,10 @@ fn visit<'b>(
     }
     state.insert(name, Visit::Open);
     let mut callees = BTreeSet::new();
-    statement_calls(&function.statements, &mut |call| {
-        if functions.is_user(call) {
+    statement_calls(&function.statements, &mut |reported| {
+        if let Found::Call(call) = reported
+            && functions.is_user(call)
+        {
             callees.insert(call.function.lexeme().to_owned());
         }
     });
@@ -725,7 +809,15 @@ fn visit<'b>(
     Ok(())
 }
 
-fn statement_calls(statements: &[Spanned<Statement>], found: &mut impl FnMut(&FunctionCall)) {
+/// What the walk over a block's expressions reports.
+enum Found<'a> {
+    /// A call, of a user function or a builtin.
+    Call(&'a FunctionCall),
+    /// A Real literal, or an operator whose result is Real (`/`, `^`).
+    Real,
+}
+
+fn statement_calls(statements: &[Spanned<Statement>], found: &mut impl FnMut(Found<'_>)) {
     for statement in statements {
         match &statement.node {
             Statement::Assignment { target, value } => {
@@ -761,21 +853,21 @@ fn statement_calls(statements: &[Spanned<Statement>], found: &mut impl FnMut(&Fu
     }
 }
 
-fn branch_calls(branch: &IfBranch, found: &mut impl FnMut(&FunctionCall)) {
+fn branch_calls(branch: &IfBranch, found: &mut impl FnMut(Found<'_>)) {
     if let Condition::Expression(condition) = &branch.condition {
         expression_calls(condition, found);
     }
     statement_calls(&branch.body, found);
 }
 
-fn call_calls(call: &FunctionCall, found: &mut impl FnMut(&FunctionCall)) {
-    found(call);
+fn call_calls(call: &FunctionCall, found: &mut impl FnMut(Found<'_>)) {
+    found(Found::Call(call));
     call.arguments
         .iter()
         .for_each(|argument| expression_calls(argument, found));
 }
 
-fn reference_calls(reference: &Reference, found: &mut impl FnMut(&FunctionCall)) {
+fn reference_calls(reference: &Reference, found: &mut impl FnMut(Found<'_>)) {
     let parts: &[RefPart] = match reference {
         Reference::Local(part) => std::slice::from_ref(part),
         Reference::State(parts) => parts,
@@ -787,7 +879,7 @@ fn reference_calls(reference: &Reference, found: &mut impl FnMut(&FunctionCall))
     }
 }
 
-fn expression_calls(expression: &Expression, found: &mut impl FnMut(&FunctionCall)) {
+fn expression_calls(expression: &Expression, found: &mut impl FnMut(Found<'_>)) {
     match expression {
         Expression::Call(call) => call_calls(call, found),
         Expression::Ref(reference) | Expression::Neg(reference) => {
@@ -795,7 +887,10 @@ fn expression_calls(expression: &Expression, found: &mut impl FnMut(&FunctionCal
         }
         Expression::Size { dimension, .. } => expression_calls(dimension, found),
         Expression::Paren(inner) | Expression::Not(inner) => expression_calls(inner, found),
-        Expression::Binary { lhs, rhs, .. } => {
+        Expression::Binary { op, lhs, rhs } => {
+            if matches!(op, BinaryOp::Div | BinaryOp::Pow) {
+                found(Found::Real);
+            }
             expression_calls(lhs, found);
             expression_calls(rhs, found);
         }
@@ -807,6 +902,7 @@ fn expression_calls(expression: &Expression, found: &mut impl FnMut(&FunctionCal
             expression_calls(&if_expression.else_value, found);
         }
         Expression::Array(items) => items.iter().for_each(|item| expression_calls(item, found)),
-        Expression::Bool(_) | Expression::Integer(_) | Expression::Real(_) => {}
+        Expression::Real(_) => found(Found::Real),
+        Expression::Bool(_) | Expression::Integer(_) => {}
     }
 }

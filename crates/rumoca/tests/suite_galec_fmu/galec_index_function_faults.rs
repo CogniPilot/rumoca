@@ -8,6 +8,11 @@
 //! function input. Where some value does fault, or an argument has no static
 //! range, the refusal stays. (A division by a divisor that is not provably
 //! nonzero never reaches this proof: the GALEC projection refuses it.)
+//!
+//! Only Integer and Boolean computation is settled that way. The oracle
+//! computes Reals in binary64 whatever Real format the block is lowered for,
+//! so an index function that reaches a Real is not settled by it. And an
+//! interval the proof's own arithmetic cannot hold is no interval.
 
 use rumoca_eval_galec::Value;
 use rumoca_phase_solve::lower_algorithm_block;
@@ -142,4 +147,85 @@ fn one_literal_that_overflows_among_the_calls_is_still_refused() {
     );
     let error = refused(&source);
     assert!(error.contains("fault after"), "{error}");
+}
+
+#[test]
+fn an_index_function_that_reaches_a_real_is_not_settled_by_the_oracle() {
+    // In binary64 the comparison holds for every i and pick is 1; in binary32
+    // 16777216 + 1 rounds to 16777216, pick is 0 at i = 1 and the read faults.
+    // The oracle's answer is the binary64 one, so it settles nothing here.
+    let source = model(
+        "RealPick",
+        "if i + 16777216.0 > 16777216.0 then m - 1 else 0",
+        "",
+        "    (y, ok) := f(p, 2);\n",
+    );
+    let error = refused(&source);
+    assert!(error.contains("fault after"), "{error}");
+}
+
+#[test]
+fn a_literal_whose_powers_leave_the_interval_arithmetic_is_refused_not_a_panic() {
+    // m = 2147483647: m * m already overflows a 32-bit Integer, and the fifth
+    // power does not fit the proof's own interval arithmetic either.
+    let source = model(
+        "FifthPower",
+        "m * m * m * m * m - m * m * m * m * m + i",
+        "",
+        "    (y, ok) := f(p, 2147483647);\n",
+    );
+    let error = refused(&source);
+    assert!(error.contains("fault after"), "{error}");
+}
+
+/// `f` computes a local index before its loop from the input `m`, which the
+/// block's two calls pass as 0 and 131072 (the second call sits behind a guard
+/// that is false for ordinary inputs). Over the range 0 to 131072 the upper
+/// bound of `m^7 * 256` is 2^127, which the proof's interval arithmetic cannot
+/// hold. For m = 0 the index is 5: the projection raises INVALID_ARGUMENT and
+/// reads the last element.
+const WIDE_RANGE: &str = r#"
+model WideRange
+  function f
+    input Real p[3];
+    input Integer m;
+    output Real y[3];
+    output Boolean ok;
+  protected
+    Integer k;
+  algorithm
+    k := 5 - m * m * m * m * m * m * m * 256;
+    y := zeros(3);
+    ok := true;
+    for i in 1:3 loop
+      if p[i] > 0.0 then
+        ok := false;
+      end if;
+      y[i] := p[k];
+    end for;
+  end f;
+  input Real p[3];
+  output Real y[3](each start = 0.0, each fixed = true);
+  output Boolean ok(start = false, fixed = true);
+  output Real w[3](each start = 0.0, each fixed = true);
+  output Boolean alsoOk(start = false, fixed = true);
+algorithm
+  when sample(0, 0.01) then
+    (y, ok) := f(p, 0);
+    if p[1] > 1.0e300 then
+      (w, alsoOk) := f(p, 131072);
+    end if;
+  end when;
+end WideRange;
+"#;
+
+#[test]
+fn a_range_the_interval_arithmetic_cannot_hold_is_no_range() {
+    // The proof once multiplied such bounds unchecked: a panic where
+    // overflow is checked, a wrapped bound where it is not. Now the local has
+    // no range, the block refines, and it computes what the oracle computes.
+    step_with(WIDE_RANGE, &[1.5, -4.0, 5.0], |oracle| {
+        assert_eq!(reals(oracle, "y"), [5.0, 5.0, 5.0]);
+        assert_eq!(oracle.state("ok"), Ok(&Value::Boolean(false)));
+    });
 }
