@@ -87,6 +87,14 @@ impl MeSimulationSession<'_, '_> {
         Ok(self.host.kernel.borrow()?.audit_input_event_reach())
     }
 
+    /// Why this session's event updates evaluate every owner at every step,
+    /// if they do.
+    pub fn event_owner_refusal(
+        &self,
+    ) -> Result<Option<rumoca_ir_solve::EventReachRefusal>, MeSessionError> {
+        Ok(self.host.kernel.borrow()?.audit_event_owner_refusal())
+    }
+
     /// Read the audit at the session's accepted point.
     pub fn input_write_audit(&self) -> Result<InputWriteAudit, MeSessionError> {
         let visible = self

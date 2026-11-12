@@ -91,6 +91,10 @@ pub(super) struct DiscreteRowEvalInput<'a, 'snapshot> {
 
 #[derive(Default)]
 pub(super) struct EventEvalParamCache {
+    /// Whether the event owner journal observed the coordinate this pass
+    /// reads, so its discrete programs may be taken from their last
+    /// evaluation.
+    pub(super) observed: bool,
     pub(super) program: Option<usize>,
     pub(super) outputs: Vec<f64>,
     pub(super) guarded_program: Option<usize>,

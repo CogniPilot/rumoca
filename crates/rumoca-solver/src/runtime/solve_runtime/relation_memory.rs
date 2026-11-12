@@ -306,6 +306,7 @@ impl ScalarExecutionView<'_> {
             row_filter,
             root_relation_overrides,
         } = input;
+        self.open_event_owner_journal(y, p);
         self.runtime
             .seed_event_entry_pre_params(event_pre_y, event_pre_p, p)?;
         // Clock leaves and clock-owned rows share the same event-pass authority.
@@ -324,6 +325,8 @@ impl ScalarExecutionView<'_> {
             // advances ordinary event history atomically from that pass before
             // starting the next one.  Capture the source before any runtime
             // owner or algebraic projection can mutate the live view.
+            #[cfg(any(test, feature = "input-write-audit"))]
+            crate::runtime::event_owner_audit::count(|counts| counts.outer_passes += 1);
             let iter_pre_y = if event_iteration == 0 {
                 event_pre_y.to_vec()
             } else {
@@ -890,7 +893,9 @@ impl ScalarExecutionView<'_> {
         {
             return Ok(false);
         }
-        let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
+        #[cfg(any(test, feature = "input-write-audit"))]
+        crate::runtime::event_owner_audit::count(|counts| counts.relation_refreshes += 1);
+        let roots = self.eval_event_root_conditions(t, y, p)?;
         let released =
             self.release_reversed_relation_overrides(&roots, root_relation_overrides, |_| true)?;
         let changed =
@@ -905,7 +910,11 @@ impl ScalarExecutionView<'_> {
         p: &mut [f64],
         root_relation_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<bool, RuntimeSolveError> {
-        let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
+        #[cfg(any(test, feature = "input-write-audit"))]
+        crate::runtime::event_owner_audit::count(|counts| {
+            counts.post_commit_relation_refreshes += 1
+        });
+        let roots = self.eval_event_root_conditions(t, y, p)?;
         let algebraic = |root_index| {
             self.model
                 .problem
@@ -1061,6 +1070,8 @@ impl ScalarExecutionView<'_> {
         if root_count == 0 {
             return Ok(Vec::new());
         }
+        #[cfg(any(test, feature = "input-write-audit"))]
+        crate::runtime::event_owner_audit::count(|counts| counts.root_evaluations += 1);
         let model_root_count = self.model.problem.events.root_conditions.len();
         let mut values = zero_runtime_values(root_count, "root condition output")?;
         self.eval_root_conditions_from_refreshed_solver_y(
@@ -1138,6 +1149,8 @@ impl ScalarExecutionView<'_> {
         row_filter: EventUpdateRowFilter,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
         let events = &self.model.problem.events;
+        #[cfg(any(test, feature = "input-write-audit"))]
+        crate::runtime::event_owner_audit::count(|counts| counts.action_evaluations += 1);
         let mut action_p = event_action_params(events, p, event_pre_p)?;
         // A clock ticks in the passes that run its rows: a pass settling only
         // unowned rows (the initialization instant before a phase-zero tick,

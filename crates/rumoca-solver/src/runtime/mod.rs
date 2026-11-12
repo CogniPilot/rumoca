@@ -5,6 +5,8 @@ pub mod eval_at;
 pub(crate) mod event_history;
 #[cfg(not(kani))]
 pub mod event_newton;
+#[cfg(all(not(kani), any(test, feature = "input-write-audit")))]
+pub mod event_owner_audit;
 #[cfg(not(kani))]
 pub mod fallbacks;
 #[cfg(not(kani))]

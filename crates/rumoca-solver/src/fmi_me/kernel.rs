@@ -641,6 +641,13 @@ impl SolveMeKernel {
         (0..reach.len()).map(|input| reach.reaches(input)).collect()
     }
 
+    /// Why this model's event updates evaluate every owner at every step, if
+    /// they do.
+    #[cfg(any(test, feature = "input-write-audit"))]
+    pub(crate) fn audit_event_owner_refusal(&self) -> Option<rumoca_ir_solve::EventReachRefusal> {
+        self.runtime.event_owner_refusal()
+    }
+
     #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn get_continuous_state_derivatives(
         &self,

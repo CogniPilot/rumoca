@@ -128,6 +128,10 @@ impl SolveRuntime {
             clock_activation_cache: RefCell::new(ClockActivationCache::default()),
             pre_bindings: PreBindingPlan::new(&model.problem.solve_layout.pre_param_bindings),
             input_event_reach: std::cell::OnceCell::new(),
+            event_owner_lanes: super::event_owner_journal::EventOwnerLanes::for_problem(
+                &model.problem,
+            ),
+            event_owner_journal: RefCell::default(),
             model,
             execution,
         }
