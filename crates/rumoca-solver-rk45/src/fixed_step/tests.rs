@@ -168,6 +168,12 @@ fn step_halving_converges_at_the_configured_order() {
     }
 }
 
+/// A step taken in place of the probed plugin's own, with the derivative
+/// capability withheld from that plugin.
+pub(super) type StepHook = Box<
+    dyn Fn(&MeDerivativeHandle, &MeAdvanceRequest) -> Result<MeStepCandidate, MeIntegrationError>,
+>;
+
 /// The plugin under test and what [`Shared`] records of it: each step as the
 /// plugin returned it, before the host bound or normalized anything.
 struct Probe {
@@ -179,6 +185,10 @@ struct Probe {
     /// the plugin, as a composing plugin that forwards steps but not the
     /// capability would.
     withholds_capability: bool,
+    /// The capability withheld from the plugin.
+    withheld: Option<MeDerivativeHandle>,
+    /// Every step, when set, instead of the plugin's own.
+    step_hook: Option<StepHook>,
 }
 
 impl Probe {
@@ -205,7 +215,22 @@ impl Probe {
 /// truncation, the host's or the one a reset-mode step emulates, enters
 /// through [`MeIntegratorBackend::truncate_reset`] here and must leave no
 /// interval behind.
-struct Shared(Rc<RefCell<Probe>>);
+pub(super) struct Shared(Rc<RefCell<Probe>>);
+
+impl Shared {
+    /// The wrapper over `inner` whose every step is `hook`, run with the
+    /// capability withheld from `inner`.
+    pub(super) fn stepping_with(inner: Box<dyn MeIntegratorBackend>, hook: StepHook) -> Self {
+        Self(Rc::new(RefCell::new(Probe {
+            inner,
+            raw_steps: Rc::default(),
+            reset_before_each_step: false,
+            withholds_capability: true,
+            withheld: None,
+            step_hook: Some(hook),
+        })))
+    }
+}
 
 impl MeIntegratorBackend for Shared {
     fn continuous_extension_order(&self) -> Option<u32> {
@@ -218,7 +243,9 @@ impl MeIntegratorBackend for Shared {
         derivatives: MeDerivativeHandle,
     ) -> Result<(), MeIntegrationError> {
         let mut probe = self.0.borrow_mut();
-        if !probe.withholds_capability {
+        if probe.withholds_capability {
+            probe.withheld = Some(derivatives);
+        } else {
             probe.inner.initialize(point, derivatives)?;
         }
         probe.assert_no_retained_interval(point.time());
@@ -232,6 +259,15 @@ impl MeIntegratorBackend for Shared {
         if self.0.borrow().reset_before_each_step {
             self.truncate_reset(request.current())?;
         }
+        let probe = self.0.borrow();
+        if let Some(hook) = &probe.step_hook {
+            let derivatives = probe
+                .withheld
+                .as_ref()
+                .expect("a hooked step runs with the withheld capability");
+            return hook(derivatives, request);
+        }
+        drop(probe);
         let mut probe = self.0.borrow_mut();
         let candidate = probe.inner.advance(request)?;
         probe
@@ -261,6 +297,8 @@ fn probe(step: f64, order: u32, reset_before_each_step: bool) -> Rc<RefCell<Prob
         raw_steps: Rc::default(),
         reset_before_each_step,
         withholds_capability: false,
+        withheld: None,
+        step_hook: None,
     }))
 }
 

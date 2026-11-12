@@ -8,6 +8,7 @@ use std::rc::Rc;
 use rumoca_solver::fmi_me::ode_driver::{ContinuousOde, OdeDriveError, OdeRun, integrate_ode};
 use rumoca_solver::{BackendOptionsError, NumericalBackend};
 
+use super::tests::{Shared, StepHook};
 use super::*;
 
 /// `x' = v`, `v' = -x` from `(1, 0)` with `kinematic` declared. The kinematic
@@ -232,59 +233,39 @@ fn the_semi_implicit_scheme_is_refused_with_any_order_but_one() {
     }
 }
 
-/// A plugin that asks for kinematic derivatives at the step's start, before
-/// any full evaluation of the step or, with `after_full`, right after one
-/// there, and then returns the opaque refusal: the host answers with the
-/// typed cause, ahead of whatever the plugin returned.
-struct EagerKinematic {
-    derivatives: Option<MeDerivativeHandle>,
-    after_full: bool,
+/// The step of a plugin that asks for kinematic derivatives at the step's
+/// start, before any full evaluation of the step or, with `after_full`, right
+/// after one there, and then returns the opaque refusal: the host answers
+/// with the typed cause, ahead of whatever the plugin returned.
+fn eager_kinematic(after_full: bool) -> StepHook {
+    Box::new(
+        move |derivatives: &MeDerivativeHandle, request: &MeAdvanceRequest| {
+            let start = request.current();
+            let mut out = vec![0.0; 2];
+            if after_full {
+                derivatives.derivatives_into(start.time(), start.states(), &mut out);
+                let full: Vec<u64> = out.iter().map(|value| value.to_bits()).collect();
+                derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
+                // No kinematic entry to poison: the refusal writes nothing.
+                assert_eq!(
+                    out.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                    full
+                );
+            } else {
+                derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
+                assert!(out[0].is_nan());
+            }
+            Err(MeIntegrationError::DerivativeRefused)
+        },
+    )
 }
 
-impl MeIntegratorBackend for EagerKinematic {
-    fn continuous_extension_order(&self) -> Option<u32> {
-        Some(1)
-    }
-
-    fn initialize(
-        &mut self,
-        _point: &MeContinuousPoint,
-        derivatives: MeDerivativeHandle,
-    ) -> Result<(), MeIntegrationError> {
-        self.derivatives = Some(derivatives);
-        Ok(())
-    }
-
-    fn advance(
-        &mut self,
-        request: &MeAdvanceRequest,
-    ) -> Result<MeStepCandidate, MeIntegrationError> {
-        let derivatives = self.derivatives.as_ref().ok_or_else(missing_handle)?;
-        let start = request.current();
-        let mut out = vec![0.0; 2];
-        if self.after_full {
-            derivatives.derivatives_into(start.time(), start.states(), &mut out);
-            let full: Vec<u64> = out.iter().map(|value| value.to_bits()).collect();
-            derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
-            // No kinematic entry to poison: the refusal writes nothing.
-            assert_eq!(
-                out.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
-                full
-            );
-        } else {
-            derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
-            assert!(out[0].is_nan());
-        }
-        Err(MeIntegrationError::DerivativeRefused)
-    }
-
-    fn sample(&self, _time: f64, _states: &mut [f64]) -> Result<(), MeIntegrationError> {
-        Ok(())
-    }
-
-    fn truncate_reset(&mut self, _point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        Ok(())
-    }
+/// The plugin that steps by `hook`, wrapping the semi-implicit fixed-step
+/// plugin it withholds the derivative capability from.
+fn eager(setup: MeNumericalSetup, after_full: bool) -> Box<dyn MeIntegratorBackend> {
+    let inner = fixed_step_integrator(setup, config(0.1, FixedStepScheme::SemiImplicit))
+        .expect("a valid configuration");
+    Box::new(Shared::stepping_with(inner, eager_kinematic(after_full)))
 }
 
 #[test]
@@ -293,12 +274,7 @@ fn a_kinematic_request_without_a_current_full_evaluation_is_refused() {
     let outcome = integrate_ode(
         source,
         &run(1.0),
-        &|_setup| {
-            Box::new(EagerKinematic {
-                derivatives: None,
-                after_full: false,
-            })
-        },
+        &|setup| eager(setup, false),
         |_interval| Ok(()),
     );
     assert!(
@@ -378,12 +354,7 @@ fn a_kinematic_request_to_a_system_without_kinematic_states_is_refused() {
     let outcome = integrate_ode(
         source,
         &run(1.0),
-        &|_setup| {
-            Box::new(EagerKinematic {
-                derivatives: None,
-                after_full: true,
-            })
-        },
+        &|setup| eager(setup, true),
         |_interval| Ok(()),
     );
     assert!(
