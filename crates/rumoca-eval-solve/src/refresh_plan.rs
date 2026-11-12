@@ -1465,6 +1465,7 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         message: error.to_string(),
         span,
     })?;
+    plan.check_staged_execution_order(|source| block.source_program(source));
     Ok(())
 }
 
@@ -1706,7 +1707,7 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
         causal_solution_certified,
         execution_order_refusal: None,
     };
-    plan.check_execution_order(|source| block.source_program(source));
+    plan.check_causal_execution_order(|source| block.source_program(source));
     Ok(plan)
 }
 
