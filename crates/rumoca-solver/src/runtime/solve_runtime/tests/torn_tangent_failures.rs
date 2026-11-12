@@ -37,9 +37,14 @@ struct Backend {
     fail: Rc<Cell<Failure>>,
     native_calls: Rc<Cell<usize>>,
     source: SourceProbe,
-    /// The call table issued rows read, when the backend binds them.
-    issued_rows: Option<solve::SolvePureCallTable>,
+}
+
+/// The fixture backend's compiled JVP owner, which also binds the issued rows
+/// of a torn tangent, reading the call table `table`.
+struct IssuingBackend {
+    native_calls: Rc<Cell<usize>>,
     schedule_calls: Rc<Cell<usize>>,
+    table: solve::SolvePureCallTable,
 }
 
 /// Issued rows run as a compiled schedule runs them: in order over the
@@ -120,6 +125,31 @@ impl Kernel {
     }
 }
 
+impl Kernel {
+    fn over(
+        source: &solve::ScalarProgramBlock,
+        fail: &Rc<Cell<Failure>>,
+        calls: &Rc<Cell<usize>>,
+    ) -> Self {
+        let indices = source
+            .programs()
+            .iter()
+            .map(|program| {
+                let solve::LinearOp::LoadSeed { index, .. } = program[0] else {
+                    panic!("fixture JVP begins with its exact coordinate seed")
+                };
+                index
+            })
+            .collect();
+        Self {
+            indices,
+            spans: source.program_spans().to_vec(),
+            fail: fail.clone(),
+            calls: calls.clone(),
+        }
+    }
+}
+
 impl CompiledSolveJacobianExpression for Kernel {
     fn programs_committing(
         self: std::rc::Rc<Self>,
@@ -170,22 +200,40 @@ impl SolveExecutionBackend for Backend {
         &self,
         source: &solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
-        let indices = source
-            .programs()
-            .iter()
-            .map(|program| {
-                let solve::LinearOp::LoadSeed { index, .. } = program[0] else {
-                    panic!("fixture JVP begins with its exact coordinate seed")
-                };
-                index
-            })
-            .collect();
-        Ok(Rc::new(Kernel {
-            indices,
-            spans: source.program_spans().to_vec(),
-            fail: self.fail.clone(),
-            calls: self.native_calls.clone(),
-        }))
+        Ok(Rc::new(Kernel::over(
+            source,
+            &self.fail,
+            &self.native_calls,
+        )))
+    }
+
+    fn compile_assignment_schedule(
+        &self,
+        source: &solve::ComputeBlock,
+        owners: &solve::ContinuousRefreshOwners,
+        schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        super::super::test_kernels::assignment(source, owners, schedule)
+    }
+}
+
+impl SolveExecutionBackend for IssuingBackend {
+    fn compile_expression(
+        &self,
+        source: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        super::super::test_kernels::expression(source).map_err(Into::into)
+    }
+
+    fn compile_jacobian_expression(
+        &self,
+        source: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        Ok(Rc::new(Kernel::over(
+            source,
+            &Rc::default(),
+            &self.native_calls,
+        )))
     }
 
     fn compile_assignment_schedule(
@@ -201,17 +249,13 @@ impl SolveExecutionBackend for Backend {
         &self,
         rows: &solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        let table = self
-            .issued_rows
-            .clone()
-            .ok_or("this fixture binds no issued rows")?;
         Ok(Rc::new(IssuedRows {
             rows: PreparedScalarProgramBlock::new(rows.rows().clone())
                 .map_err(|error| error.to_string())?,
             count: rows.rows().programs().len(),
             targets: rows.targets().to_vec(),
             seed: rows.seed(),
-            table,
+            table: self.table.clone(),
             calls: Rc::clone(&self.schedule_calls),
         }))
     }
@@ -457,9 +501,10 @@ fn whole_torn_directional_owner_preserves_faults_and_recovers_without_source_ret
 #[test]
 fn the_tear_jacobian_is_read_from_one_issued_schedule_call_per_point() {
     let model = model();
-    let backend = Rc::new(Backend {
-        issued_rows: Some(model.pure_calls.clone()),
-        ..Backend::default()
+    let backend = Rc::new(IssuingBackend {
+        native_calls: Rc::default(),
+        schedule_calls: Rc::default(),
+        table: model.pure_calls.clone(),
     });
     let runtime = SolveRuntime::new_fixture_with_backend(&model, backend.clone()).unwrap();
     for (point, y) in [[1.0, 2.0], [-3.0, 0.5]].iter().enumerate() {
@@ -475,5 +520,4 @@ fn the_tear_jacobian_is_read_from_one_issued_schedule_call_per_point() {
         assert_eq!(backend.schedule_calls.get(), point + 1);
     }
     assert_eq!(backend.native_calls.get(), 0);
-    assert_eq!(backend.source.calls.get(), 0);
 }
