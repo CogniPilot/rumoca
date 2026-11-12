@@ -4,7 +4,7 @@ use super::*;
 
 /// Compare a lifecycle transition against the independent GALEC evaluator,
 /// including every authored block slot, then check the numerical witness.
-fn compare_step(block: Block, inputs: &[(&str, f64)], expected: &[(&str, f64)]) {
+pub(super) fn compare_step(block: Block, inputs: &[(&str, f64)], expected: &[(&str, f64)]) {
     use rumoca_eval_galec::{Evaluator, IntegerDomain, Value};
     use rumoca_ir_solve::SolveBlockMethodKind;
 

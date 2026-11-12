@@ -10,6 +10,10 @@
 //! assigns under `if c then` and later reads under the same `c`, re-evaluated
 //! with its operands unchanged. Guards compare by their span-free canonical
 //! text; assigning anything a guard reads forgets every conjunction using it.
+//! The path's own evaluation of that guard still took the value it took: it
+//! is renamed to an evaluation no condition spells, so what was proven under
+//! it holds to the end of its `if` (`if a[1] > 0 then t := 1; a[2] := t;
+//! a[3] := t;`) and matches no later evaluation.
 //! A variable written by every branch of an `if` with an `else` is defined
 //! under the outer guards, and a loop nest that writes every element of an
 //! array through plain iterator subscripts over full axes defines the array.
@@ -62,21 +66,17 @@ struct Defs {
     under: BTreeMap<VarId, Vec<BTreeSet<Guard>>>,
     /// What each guard's condition reads.
     guard_reads: BTreeMap<String, BTreeSet<VarId>>,
-    /// Guards on the current path whose operands changed since they were
-    /// evaluated: nothing defined under them now can be proven later.
-    stale: BTreeSet<String>,
     /// Element facts, under guard conjunctions as for `under`.
     elements: BTreeMap<Element, Vec<BTreeSet<Guard>>>,
     /// The value of a short-circuit local: canonical text with known values
     /// expanded, and everything that text reads.
     values: BTreeMap<VarId, (String, BTreeSet<VarId>)>,
+    /// Path evaluations renamed so far, numbering the next one.
+    evaluations: usize,
 }
 
 impl Defs {
     fn define(&mut self, id: VarId, guards: &[Guard]) {
-        if guards.iter().any(|(guard, _)| self.stale.contains(guard)) {
-            return;
-        }
         if guards.is_empty() {
             self.always.insert(id);
         } else {
@@ -88,9 +88,6 @@ impl Defs {
     }
 
     fn define_element(&mut self, element: Element, guards: &[Guard]) {
-        if guards.iter().any(|(guard, _)| self.stale.contains(guard)) {
-            return;
-        }
         self.elements
             .entry(element)
             .or_default()
@@ -115,7 +112,10 @@ impl Defs {
 
     /// `id` changed: a guard reading it no longer repeats its earlier value,
     /// and an element fact whose subscripts read it names another element.
-    fn invalidate(&mut self, id: VarId, path: &[Guard]) {
+    /// The path's evaluations of such a guard are renamed, in `path` and in
+    /// every fact, to one no condition spells; facts under other evaluations
+    /// of it are forgotten.
+    fn invalidate(&mut self, id: VarId, path: &mut [Guard]) {
         self.values
             .retain(|local, (_, reads)| *local != id && !reads.contains(&id));
         self.elements
@@ -129,16 +129,35 @@ impl Defs {
         if stale.is_empty() {
             return;
         }
-        self.stale.extend(
-            path.iter()
-                .filter(|(guard, _)| stale.contains(guard))
-                .map(|(guard, _)| guard.clone()),
-        );
+        let mut evaluations = BTreeMap::new();
+        for (guard, _) in path.iter_mut().filter(|(guard, _)| stale.contains(guard)) {
+            let evaluation = evaluations.entry(guard.clone()).or_insert_with(|| {
+                // No canonical text starts with `#`.
+                self.evaluations += 1;
+                format!("#{}", self.evaluations)
+            });
+            guard.clone_from(evaluation);
+        }
         for conjunctions in self.under.values_mut().chain(self.elements.values_mut()) {
+            for conjunction in conjunctions.iter_mut() {
+                *conjunction = renamed(std::mem::take(conjunction), &evaluations);
+            }
             conjunctions
                 .retain(|conjunction| conjunction.iter().all(|(guard, _)| !stale.contains(guard)));
         }
     }
+}
+
+/// `conjunction` with each guard `evaluations` renames spelled as its
+/// evaluation.
+fn renamed(
+    conjunction: BTreeSet<Guard>,
+    evaluations: &BTreeMap<String, String>,
+) -> BTreeSet<Guard> {
+    conjunction
+        .into_iter()
+        .map(|(guard, polarity)| (evaluations.get(&guard).cloned().unwrap_or(guard), polarity))
+        .collect()
 }
 
 /// Some conjunction holds on `guards`.
@@ -257,13 +276,13 @@ impl Proof<'_, '_> {
         match target {
             LimitTarget::SelfState => {
                 for index in 0..self.scope.scope.block.len() {
-                    self.defs.invalidate(VarId::Block(index), &self.guards);
+                    self.defs.invalidate(VarId::Block(index), &mut self.guards);
                 }
             }
             LimitTarget::Reference(reference) => {
                 self.expression(&Expression::Ref(reference.clone()), span)?;
                 let id = self.scope.resolve(reference)?;
-                self.defs.invalidate(id, &self.guards);
+                self.defs.invalidate(id, &mut self.guards);
             }
         }
         Ok(())
@@ -287,7 +306,7 @@ impl Proof<'_, '_> {
         for subscript in subscripts {
             self.expression(subscript, span)?;
         }
-        self.defs.invalidate(id, &self.guards);
+        self.defs.invalidate(id, &mut self.guards);
         let guards = self.guards.clone();
         if subscripts.is_empty() {
             self.defs.define(id, &guards);
@@ -347,17 +366,16 @@ impl Proof<'_, '_> {
                 .entry(guard.clone())
                 .or_default()
                 .extend(reads);
-            // A fresh evaluation of the condition.
-            self.defs.stale.remove(&guard);
-            self.guards.push((guard.clone(), true));
+            let at = self.guards.len();
+            self.guards.push((guard, true));
             self.statements(&branch.body)?;
             self.defs
                 .values
                 .retain(|id, value| values.get(id) == Some(value));
             arms.push(self.guards.clone());
-            self.guards.pop();
-            // Later branches run where this condition was false.
-            self.guards.push((guard, false));
+            // Later branches run where this evaluation (renamed if the arm
+            // changed its operands) was false.
+            self.guards[at].1 = false;
         }
         if let Some(body) = &if_statement.else_body {
             self.statements(body)?;
@@ -494,10 +512,10 @@ impl Proof<'_, '_> {
             // The iterator is (re)bound here and on every iteration: no fact
             // proven under a guard reading an earlier binding carries over
             // (regression: two loops over `i` at the same depth).
-            self.defs.invalidate(VarId::Loop(depth), &self.guards);
+            self.defs.invalidate(VarId::Loop(depth), &mut self.guards);
             self.statements(&for_loop.body)?;
             let covered = self.covered_by(&for_loop.body, (name.clone(), start, stop, step));
-            self.defs.invalidate(VarId::Loop(depth), &self.guards);
+            self.defs.invalidate(VarId::Loop(depth), &mut self.guards);
             Ok(covered)
         })?;
         self.loops.pop();
