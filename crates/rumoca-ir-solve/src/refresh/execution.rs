@@ -71,10 +71,9 @@ impl RefreshPlan {
             .map(|(position, row)| (row.target_index(), position))
             .collect::<BTreeMap<_, _>>();
         let mut reads = ExecutionReads::new(lookup);
-        self.rows
-            .iter()
-            .enumerate()
-            .find_map(|(position, row)| reads.first_unsettled_read(row, &producers, position))
+        self.rows.iter().enumerate().find_map(|(position, row)| {
+            reads.first_unsettled_read(row, Evaluated::AssignmentPrefix, &producers, position)
+        })
     }
 
     fn staged_execution_refusal<'a>(
@@ -83,11 +82,20 @@ impl RefreshPlan {
     ) -> Option<RefreshExecutionRefusal> {
         let order = StagedOrder::new(self);
         let mut reads = ExecutionReads::new(lookup);
-        order
-            .executed
-            .iter()
-            .find_map(|&(row, limit)| reads.first_unsettled_read(row, &order.first_producer, limit))
+        order.executed.iter().find_map(|&(row, evaluated, limit)| {
+            reads.first_unsettled_read(row, evaluated, &order.first_producer, limit)
+        })
     }
+}
+
+/// What one execution of a row evaluates of its canonical source.
+#[derive(Clone, Copy)]
+enum Evaluated {
+    /// An assignment evaluates the prefix its shape isolates the target from,
+    /// or the whole program when it has none.
+    AssignmentPrefix,
+    /// A projection evaluates the whole residual program.
+    Residual,
 }
 
 /// Execution-read proofs of canonical sources, each analysed once.
@@ -104,11 +112,13 @@ impl<'a, L: FnMut(RefreshScalarProgramSource) -> Option<&'a [LinearOp]>> Executi
         }
     }
 
-    /// The refusal of `row` when its execution prefix is unanalysable or reads
-    /// a target whose producer in `producers` is ordered at or after `limit`.
+    /// The refusal of `row` when what `evaluated` executes of it is
+    /// unanalysable or reads a target whose producer in `producers` is ordered
+    /// at or after `limit`.
     fn first_unsettled_read(
         &mut self,
         row: &AlgebraicRefreshRow,
+        evaluated: Evaluated,
         producers: &BTreeMap<usize, usize>,
         limit: usize,
     ) -> Option<RefreshExecutionRefusal> {
@@ -118,9 +128,12 @@ impl<'a, L: FnMut(RefreshScalarProgramSource) -> Option<&'a [LinearOp]>> Executi
         let Some(program) = (self.lookup)(row.source()) else {
             return Some(unanalysable);
         };
-        let len = row
-            .assignment_shape()
-            .map_or(program.len(), TargetAssignmentShape::expr_eval_len);
+        let len = match evaluated {
+            Evaluated::AssignmentPrefix => row
+                .assignment_shape()
+                .map_or(program.len(), TargetAssignmentShape::expr_eval_len),
+            Evaluated::Residual => program.len(),
+        };
         let proof = self
             .proofs
             .entry(row.source())
@@ -148,12 +161,13 @@ impl<'a, L: FnMut(RefreshScalarProgramSource) -> Option<&'a [LinearOp]>> Executi
 /// An assignment row may read targets produced before its slot: earlier
 /// stages and earlier rows of its own stage, never its own target or a later
 /// row's. A projection stage's rows, the plan rows solved for its block's
-/// targets, may read targets of earlier stages and the block's own unknowns,
+/// targets, are proved on their whole residuals, which the projection
+/// evaluates; they may read targets of earlier stages and the block's unknowns,
 /// which its projection solves simultaneously; a target that a later stage or
 /// no stage produces still holds its incoming value there.
 struct StagedOrder<'a> {
     first_producer: BTreeMap<usize, usize>,
-    executed: Vec<(&'a AlgebraicRefreshRow, usize)>,
+    executed: Vec<(&'a AlgebraicRefreshRow, Evaluated, usize)>,
     rows_by_target: BTreeMap<usize, Vec<&'a AlgebraicRefreshRow>>,
     next_slot: usize,
 }
@@ -207,19 +221,25 @@ impl<'a> StagedOrder<'a> {
     fn push_assignments(&mut self, rows: RefreshRows<'a>) {
         for row in (0..rows.len()).filter_map(|position| rows.get(position)) {
             self.produce(row.target_index());
-            self.executed.push((row, self.next_slot));
+            self.executed
+                .push((row, Evaluated::AssignmentPrefix, self.next_slot));
             self.next_slot += 1;
         }
     }
 
     /// One slot for the whole block, whose rows also read the slot's targets.
+    /// The block's projection evaluates each row's whole residual. Its seeds
+    /// evaluate their assignment prefixes first, which read no more than the
+    /// residual of the same row, under the same bound: a seed reading a block
+    /// unknown only warm-starts the projection that solves it.
     fn push_projection(&mut self, block_plan: &AlgebraicProjectionPlan) {
         let readable = self.next_slot + 1;
         for block in block_plan.blocks.explicit_blocks() {
             for &target in &block.y_indices {
                 self.produce(target);
                 let rows = self.rows_by_target.get(&target).into_iter().flatten();
-                self.executed.extend(rows.map(|&row| (row, readable)));
+                self.executed
+                    .extend(rows.map(|&row| (row, Evaluated::Residual, readable)));
             }
         }
         self.next_slot = readable;

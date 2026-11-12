@@ -68,11 +68,24 @@ fn block(equations: Vec<usize>, targets: Vec<usize>) -> crate::AlgebraicProjecti
     }
 }
 
-/// One value stage per block, each projecting its canonical block.
+/// One value stage per block, each projecting its canonical block after
+/// seeding it, as construction does, with the block's exact rows whose
+/// coefficient is a constant.
 fn projection_plan(
     rows: Vec<AlgebraicRefreshRow>,
     blocks: Vec<crate::AlgebraicProjectionBlock>,
 ) -> RefreshPlan {
+    let seeds = |block: &crate::AlgebraicProjectionBlock| {
+        let seeded = rows.iter().enumerate().filter(|(_, row)| {
+            block.y_indices.contains(&row.target_index)
+                && row.exact_assignment_certified
+                && row
+                    .assignment_shape
+                    .as_ref()
+                    .is_some_and(TargetAssignmentShape::constant_coefficient)
+        });
+        selection(rows.len(), seeded.map(|(index, _)| index))
+    };
     let value_stages = blocks
         .iter()
         .enumerate()
@@ -82,7 +95,7 @@ fn projection_plan(
             plan: AlgebraicProjectionPlan {
                 blocks: (vec![block.clone()]).into(),
             },
-            seed_rows: RefreshRowSelection::default(),
+            seed_rows: seeds(block),
         })
         .collect();
     RefreshPlan {
@@ -247,6 +260,122 @@ fn a_projection_block_read_of_a_target_no_stage_produces_refuses() {
             read: 1,
         })
     );
+}
+
+/// The canonical certificate of `row` as its source issues it.
+fn certified(source: &ComputeBlock, mut row: AlgebraicRefreshRow) -> AlgebraicRefreshRow {
+    let (shape, causal) = SourceCertificateQueries::new(source)
+        .derive(&row, "test")
+        .unwrap();
+    row.exact_assignment_certified = shape.is_some() && causal;
+    row.direct_assignment_certified =
+        row.exact_assignment_certified && shape.as_ref().is_some_and(|shape| shape.is_direct());
+    row.assignment_target = shape.as_ref().map(TargetAssignmentShape::target_y_index);
+    row.assignment_shape = shape;
+    row
+}
+
+/// A coupled block solving `y0` and `y2` from `y2 - y0` (whose direct
+/// assignment prefix ends before an unused call guarding `y[guarded]`) and
+/// `y0*y2*y2 - 1`, and a block producing `y1`, projected in the given order.
+fn coupled_shaped_projection(guarded: usize, y1_first: bool) -> (ComputeBlock, RefreshPlan) {
+    let shaped = vec![
+        crate::LinearOp::LoadY { dst: 0, index: 2 },
+        crate::LinearOp::LoadY { dst: 1, index: 0 },
+        crate::LinearOp::Binary {
+            dst: 2,
+            op: crate::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        crate::LinearOp::Const { dst: 3, value: 1.0 },
+        crate::LinearOp::LoadY {
+            dst: 4,
+            index: guarded,
+        },
+        crate::LinearOp::PureCall {
+            dst_start: 5,
+            input_starts: vec![3, 4].into(),
+            site: crate::structural_pattern::execution_reads_tests::guarded_site(),
+        },
+        crate::LinearOp::StoreOutput { src: 2 },
+    ];
+    let product = vec![
+        crate::LinearOp::LoadY { dst: 0, index: 0 },
+        crate::LinearOp::LoadY { dst: 1, index: 2 },
+        crate::LinearOp::Binary {
+            dst: 2,
+            op: crate::BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        crate::LinearOp::Binary {
+            dst: 3,
+            op: crate::BinaryOp::Mul,
+            lhs: 2,
+            rhs: 1,
+        },
+        crate::LinearOp::Const { dst: 4, value: 1.0 },
+        crate::LinearOp::Binary {
+            dst: 5,
+            op: crate::BinaryOp::Sub,
+            lhs: 3,
+            rhs: 4,
+        },
+        crate::LinearOp::StoreOutput { src: 5 },
+    ];
+    let source = source(vec![shaped, product, checked_reader(5, false)]);
+    let rows = [(0, 0), (2, 1), (1, 2)]
+        .map(|(target, equation)| certified(&source, residual_row(target, equation)));
+    assert!(
+        rows[0].exact_assignment_certified
+            && rows[0].assignment_shape.as_ref().is_some_and(|shape| {
+                shape.is_direct() && shape.constant_coefficient() && shape.expr_eval_len() < 6
+            }),
+        "`y2 - y0` seeds the block through a direct prefix ending before its guarded call"
+    );
+    assert!(!rows[1].exact_assignment_certified && !rows[2].exact_assignment_certified);
+    let coupled = block(vec![0, 1], vec![0, 2]);
+    let y1 = block(vec![2], vec![1]);
+    let blocks = if y1_first {
+        vec![y1, coupled]
+    } else {
+        vec![coupled, y1]
+    };
+    (source, projection_plan(rows.to_vec(), blocks))
+}
+
+#[test]
+fn a_projection_block_proves_the_full_residual_of_a_shaped_row() {
+    // The block evaluates the whole residual, guard included, before the
+    // later block produces `y1`; the direct prefix alone never reaches it.
+    let (source, plan) = coupled_shaped_projection(1, false);
+    let owners = algebraic_owners(&source, plan);
+    assert_eq!(
+        owners.algebraic().execution_order_refusal,
+        Some(RefreshExecutionRefusal::ForwardRead {
+            row: RefreshRowOwnerId::checked(0).unwrap(),
+            target: 0,
+            read: 1,
+        })
+    );
+    assert_eq!(
+        owners.algebraic().possible_stage_schedules(),
+        &[RefreshStageSchedule::Uncertified]
+    );
+}
+
+#[test]
+fn a_shaped_projection_row_guards_an_earlier_stage_or_its_own_unknowns() {
+    for (guarded, y1_first) in [(1, true), (2, false), (0, false)] {
+        let (source, plan) = coupled_shaped_projection(guarded, y1_first);
+        let owners = algebraic_owners(&source, plan);
+        assert_eq!(
+            owners.algebraic().execution_order_refusal,
+            None,
+            "guard on y{guarded}, y1 first: {y1_first}"
+        );
+    }
 }
 
 #[test]
