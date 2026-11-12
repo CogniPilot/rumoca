@@ -123,3 +123,6 @@ fn quaternion_groups(
     }
     Some(groups)
 }
+
+#[cfg(test)]
+mod tests;
