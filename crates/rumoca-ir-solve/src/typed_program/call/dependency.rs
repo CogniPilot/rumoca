@@ -214,18 +214,37 @@ fn may_depend_coordinates(
         .ok_or(SolveProgramConstructionError::InvalidCallInterface { provenance })
 }
 
+/// The two independent facts issued from one checked dependency-flow walk.
+pub(in crate::typed_program) struct Execution {
+    pub(in crate::typed_program) dependencies: Box<[Box<[SolveCallDependency]>]>,
+    pub(in crate::typed_program) execution_reads: super::execution_reads::ExecutionReads,
+}
+
 pub(in crate::typed_program) fn derive(
     body: &TypedProgram,
     input_count: usize,
     output_count: usize,
     available: SolvePureCallTableView<'_>,
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
+    derive_with_execution(body, input_count, output_count, available)
+        .map(|derived| derived.dependencies)
+}
+
+/// Value flow and execution obligations share the same checked register flow.
+pub(in crate::typed_program) fn derive_with_execution(
+    body: &TypedProgram,
+    input_count: usize,
+    output_count: usize,
+    available: SolvePureCallTableView<'_>,
+) -> Result<Execution, SolveProgramConstructionError> {
+    let mut execution = super::execution_reads::ExecutionReadBuilder::default();
     let mut slots = input_dependencies(body, input_count);
     let mut registers = vec![Vec::new(); body.register_types().len()];
     let mut assigned = vec![Vec::new(); body.assigned_state_types().len()];
     let mut integers = map_access::IntegerValues::new(body.register_types().len());
     for (index, spanned) in body.operations().iter().enumerate() {
         let operation = spanned.operation();
+        execution.observe(body, index, &registers, &assigned, available)?;
         integers.track(operation);
         if regions::derive(
             regions::Context {
@@ -300,26 +319,41 @@ pub(in crate::typed_program) fn derive(
                     &assigned,
                 );
             }
-            SolveOperation::Map {
-                domain,
-                captures,
-                destination,
-                body: region,
-            } => {
-                let captured = capture_dependencies(captures, &registers, &integers);
-                if let Some(dependencies) =
-                    map_access::derive(domain, &captured, region, spanned.provenance())
-                {
-                    registers[destination.index()] = dependencies;
-                } else {
-                    operations::derive(body, operation, &mut registers, spanned.provenance())?;
-                }
-            }
+            SolveOperation::Map { .. } => derive_map(body, spanned, &integers, &mut registers)?,
             operation => operations::derive(body, operation, &mut registers, spanned.provenance())?,
         }
         retire_registers(body, operation, index, &mut registers);
     }
-    Ok(output_summaries(body, input_count, output_count, slots))
+    Ok(Execution {
+        dependencies: output_summaries(body, input_count, output_count, slots),
+        execution_reads: execution.finish(),
+    })
+}
+
+/// A map's compact element dependencies when its access is affine, else the
+/// conservative operation summary.
+fn derive_map(
+    body: &TypedProgram,
+    spanned: &crate::SolveSpannedOperation,
+    integers: &map_access::IntegerValues,
+    registers: &mut [Vec<SolveCallDependency>],
+) -> Result<(), SolveProgramConstructionError> {
+    let (operation, provenance) = (spanned.operation(), spanned.provenance());
+    let SolveOperation::Map {
+        domain,
+        captures,
+        destination,
+        body: region,
+    } = operation
+    else {
+        return operations::derive(body, operation, registers, provenance);
+    };
+    let captured = capture_dependencies(captures, registers, integers);
+    match map_access::derive(domain, &captured, region, provenance) {
+        Some(dependencies) => registers[destination.index()] = dependencies,
+        None => operations::derive(body, operation, registers, provenance)?,
+    }
+    Ok(())
 }
 
 fn capture_dependencies(

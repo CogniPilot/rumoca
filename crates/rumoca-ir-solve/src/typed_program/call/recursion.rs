@@ -8,6 +8,7 @@
 
 use super::assertion_flow::CheckedAssertionFlow;
 use super::dependency::{self, SolveCallDependency};
+use super::execution_reads::ExecutionReads;
 use super::{
     SolvePureCallIdentity, SolvePureCallInterface, SolvePureCallOutput, SolvePureCallOutputKind,
     SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallTableView, next_owner_id,
@@ -125,6 +126,7 @@ pub(in crate::typed_program) struct PendingOwner {
     inputs: Arc<[SolveValueType]>,
     outputs: Arc<[SolvePureCallOutput]>,
     dependencies: Box<[Box<[SolveCallDependency]>]>,
+    execution_reads: ExecutionReads,
     assertion_flow: CheckedAssertionFlow,
 }
 
@@ -139,6 +141,7 @@ impl PendingOwner {
             inputs: &self.inputs,
             outputs: &self.outputs,
             dependencies: &self.dependencies,
+            execution_reads: &self.execution_reads,
             projections: None,
             affinity: None,
             assertion_flow: Some(&self.assertion_flow),
@@ -196,6 +199,7 @@ pub(super) fn construct_group(
             inputs: member.inputs.clone().into(),
             outputs: member.outputs.clone().into(),
             dependencies: vec![Box::default(); member.outputs.len()].into(),
+            execution_reads: ExecutionReads::recursive(),
             assertion_flow: CheckedAssertionFlow::empty(),
         });
     }
@@ -235,6 +239,7 @@ pub(super) fn construct_group(
             input_coordinate,
             assertion_flow: Some(pending.assertion_flow),
             dependencies: Arc::from(pending.dependencies),
+            execution_reads: Arc::new(pending.execution_reads),
             projections: None,
             affinity: None,
             id: pending.id,
@@ -325,12 +330,24 @@ fn least_dependencies(
         let mut next = Vec::with_capacity(bodies.len());
         for (body, member) in bodies.iter().zip(pending.iter()) {
             let view = SolvePureCallTableView::with_pending(owners, pending);
-            let derived =
-                dependency::derive(body, member.inputs.len(), member.outputs.len(), view)?;
-            next.push(dependency::widen(derived));
+            let dependency::Execution {
+                dependencies: derived,
+                execution_reads: mut execution,
+            } = dependency::derive_with_execution(
+                body,
+                member.inputs.len(),
+                member.outputs.len(),
+                view,
+            )?;
+            execution.retain_recursive_obligation();
+            next.push((dependency::widen(derived), execution));
         }
         let mut changed = false;
-        for (member, dependencies) in pending.iter_mut().zip(next) {
+        for (member, (dependencies, execution)) in pending.iter_mut().zip(next) {
+            if member.execution_reads != execution {
+                member.execution_reads = execution;
+                changed = true;
+            }
             if member.dependencies != dependencies {
                 member.dependencies = dependencies;
                 changed = true;

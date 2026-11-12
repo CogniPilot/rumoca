@@ -76,6 +76,11 @@ fn mutual_recursion_forms_one_checked_group_that_replays() {
     for owner in &table.owners()[1..] {
         assert!(group.contains(owner.id()));
         assert!(owner.directional().is_none());
+        assert_eq!(
+            owner.call_site().execution_reads(),
+            &[0],
+            "the recursion depth guard depends on the branch predicate"
+        );
         // Least fixed point: each result depends on the whole Integer input.
         let dependencies = owner.call_site().output_dependencies().to_vec();
         assert_eq!(dependencies.len(), 1);
