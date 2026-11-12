@@ -169,6 +169,12 @@ pub trait CompiledSolveEventObservation {
 }
 
 pub trait SolveExecutionBackend {
+    /// Whether this backend can bind the issued FMI operations at all; a
+    /// receipt reports their adoption only for a backend that can.
+    fn binds_issued_operations(&self) -> bool {
+        false
+    }
+
     /// Only an original correlated component can issue the complete operation.
     /// Unsupported capability is distinct from preparation failure.
     fn compile_fmi_derivative_operation(

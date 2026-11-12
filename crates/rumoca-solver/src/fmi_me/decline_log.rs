@@ -98,6 +98,9 @@ impl SolveExecutionBackend for RecordingBackend {
             "fmi_derivative_operation",
             self.inner.compile_fmi_derivative_operation(root.clone()),
         );
+        if !self.inner.binds_issued_operations() {
+            return result;
+        }
         match &result {
             Ok(Some(operation)) => {
                 self.log.adopt(COMPLETE, Ok(()));
@@ -133,6 +136,10 @@ impl SolveExecutionBackend for RecordingBackend {
             self.log.record("model_state_jacobian", reason);
         }
         Ok(result)
+    }
+
+    fn binds_issued_operations(&self) -> bool {
+        self.inner.binds_issued_operations()
     }
 
     fn validate_model_context(&self, model: &solve::SolveModel) -> Result<(), String> {

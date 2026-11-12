@@ -191,6 +191,9 @@ struct BindingBackend {
     bind: bool,
 }
 impl SolveExecutionBackend for BindingBackend {
+    fn binds_issued_operations(&self) -> bool {
+        true
+    }
     fn compile_fmi_derivative_operation(
         &self,
         _: solve::RetainedAssertionRoot,
