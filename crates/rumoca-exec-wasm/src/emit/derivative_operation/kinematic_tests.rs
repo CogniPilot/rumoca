@@ -274,9 +274,19 @@ fn kinematic_rows_over_a_settled_coordinate_match_the_complete_values_bit_for_bi
 #[test]
 fn an_unissued_kinematic_entry_carries_its_typed_reason() {
     use rumoca_ir_solve::fmi::FmiKinematicRefusal;
-    for (name, source, refusal) in [
-        ("Full", FULL, FmiKinematicRefusal::EveryStateKinematic),
-        ("Empty", EMPTY, FmiKinematicRefusal::NoKinematicStates),
+    for (name, source, refusal, reason) in [
+        (
+            "Full",
+            FULL,
+            FmiKinematicRefusal::EveryStateKinematic,
+            "every state is kinematic",
+        ),
+        (
+            "Empty",
+            EMPTY,
+            FmiKinematicRefusal::NoKinematicStates,
+            "the kinematic partition is empty",
+        ),
     ] {
         let component = component(name, source);
         let root = component.runtime_view().retain_assertion_root();
@@ -285,7 +295,14 @@ fn an_unissued_kinematic_entry_carries_its_typed_reason() {
             .unwrap()
             .try_causal_operation()
             .unwrap();
-        assert_eq!(op.kinematic_issuance().err(), Some(refusal), "{name}");
+        let issued = op.kinematic_issuance();
+        assert_eq!(issued.err(), Some(refusal), "{name}");
+        // The reason an adoption receipt reports for the unbound entry.
+        assert_eq!(
+            issued.map(|_| ()).map_err(|refusal| refusal.to_string()),
+            Err(reason.to_owned()),
+            "{name}"
+        );
     }
     let component = component("Mixed", MIXED);
     let root = component.runtime_view().retain_assertion_root();
