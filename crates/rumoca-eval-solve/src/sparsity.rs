@@ -24,7 +24,7 @@ use rumoca_ir_solve::{
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
-use reverse_invalidations::derive_algebraic_reverse_invalidations;
+use reverse_invalidations::derive_algebraic_reverse_invalidations_with_execution;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without
 /// losing the owner span the authority reported it against.
@@ -205,9 +205,10 @@ fn derive_structural_artifacts(
             implicit.as_ref(),
             &problem.continuous.algebraic_projection_plan,
         )?;
-        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
+        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations_with_execution(
             implicit.as_ref(),
             &problem.continuous.algebraic_projection_plan,
+            Some(&to_scalar_program_block(&problem.continuous.implicit_rhs)?),
         )?;
         let manifold_projection = derive_y_projection_patterns(
             manifold.as_ref(),
