@@ -321,6 +321,23 @@ mod tests {
         );
     }
 
+    /// Emptiness is the input extent the fact covers, never its bits: a
+    /// problem without inputs has an empty reach, while inputs that no event
+    /// owner reads give a reach that is not empty and reaches nothing.
+    #[test]
+    fn the_reach_is_empty_only_for_a_problem_without_inputs() {
+        let without_inputs = derive_input_event_reach(&solve::SolveProblem::default());
+        assert!(without_inputs.is_empty());
+        assert_eq!(without_inputs.len(), 0);
+        let reads_no_input = vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let unreached = reach_with_root(reads_no_input, 0, &certified());
+        assert!(!unreached.is_empty());
+        assert_eq!(bits(&unreached), [false, false]);
+    }
+
     #[test]
     fn an_uncertified_algebraic_refresh_marks_every_input() {
         let reads_w = vec![
