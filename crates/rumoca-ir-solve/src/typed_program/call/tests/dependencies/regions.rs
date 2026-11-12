@@ -405,3 +405,149 @@ fn fold_carry_that_reads_every_carry_reads_every_capture() {
     let leaves = input_leaves(table.owners()[0].call_site().output_dependencies());
     assert_eq!(leaves[2], vec![0, 1].into_boxed_slice());
 }
+
+fn passes(upper: i64) -> StructuredIndexDomain {
+    StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            provenance: IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".into(),
+            lower: 1,
+            upper,
+            step: 1,
+        }],
+    }
+}
+
+/// `r := y; for i in 1:count loop r[i] := x[i]; r[2 + i] := r[2 + i] * x[i];
+/// end for` over `x[2]` (scalars 0, 1) and `y[4]` (scalars 2..5).
+fn rows_written_at_binder_offsets(count: i64) -> Vec<BTreeSet<usize>> {
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1400),
+            vec![real_shape(vec![2]), real_shape(vec![4])],
+            vec![SolvePureCallOutput::result(real_shape(vec![4]))],
+            span(1400),
+            |builder, inputs, outputs| {
+                let x = builder.load(inputs[0], span(1401))?;
+                let y = builder.load(inputs[1], span(1402))?;
+                let values = builder.fold(
+                    passes(count),
+                    &[y],
+                    &[x],
+                    span(1403),
+                    |region, carried, captures, binders, result| {
+                        let rows = region.load(carried[0], span(1404))?;
+                        let x = region.load(captures[0], span(1405))?;
+                        let i = region.load(binders[0], span(1406))?;
+                        let two = region
+                            .constant(SolveValue::integer(profile(), 2).unwrap(), span(1407))?;
+                        let row = region.binary(SolveBinaryOperator::Add, two, i, span(1408))?;
+                        let value = region.project_element_dynamic(x, &[i], span(1409))?;
+                        let rows = region.update_element(rows, value, &[i], span(1410))?;
+                        let old = region.project_element_dynamic(rows, &[row], span(1411))?;
+                        let scaled =
+                            region.binary(SolveBinaryOperator::Multiply, old, value, span(1412))?;
+                        let rows = region.update_element(rows, scaled, &[row], span(1413))?;
+                        region.store(result[0], rows, span(1414))
+                    },
+                )?;
+                builder.store(outputs[0], values[0], span(1415))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    output_coordinates(table.owners()[0].call_site(), false)
+}
+
+#[test]
+fn fold_element_written_at_a_binder_index_reads_only_what_its_pass_stored() {
+    assert_eq!(
+        rows_written_at_binder_offsets(2),
+        vec![
+            BTreeSet::from([0]),
+            BTreeSet::from([1]),
+            BTreeSet::from([0, 4]),
+            BTreeSet::from([1, 5]),
+        ]
+    );
+}
+
+#[test]
+fn fold_followed_for_one_pass_leaves_the_unwritten_elements_on_their_initial_value() {
+    assert_eq!(
+        rows_written_at_binder_offsets(1),
+        vec![
+            BTreeSet::from([0]),
+            BTreeSet::from([3]),
+            BTreeSet::from([0, 4]),
+            BTreeSet::from([5]),
+        ]
+    );
+}
+
+/// `k := 0; a := y; for i in 1:count loop k := k + 1; a[k] := x[k]; end for`
+/// over `x[n]` and `y[n]`: the counter is a carried Integer the passes fix.
+fn rows_written_at_a_carried_counter(count: i64, size: u32) -> Vec<BTreeSet<usize>> {
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1420),
+            vec![real_shape(vec![size]), real_shape(vec![size])],
+            vec![SolvePureCallOutput::result(real_shape(vec![size]))],
+            span(1420),
+            |builder, inputs, outputs| {
+                let x = builder.load(inputs[0], span(1421))?;
+                let y = builder.load(inputs[1], span(1422))?;
+                let zero =
+                    builder.constant(SolveValue::integer(profile(), 0).unwrap(), span(1423))?;
+                let values = builder.fold(
+                    passes(count),
+                    &[zero, y],
+                    &[x],
+                    span(1424),
+                    |region, carried, captures, _, result| {
+                        let k = region.load(carried[0], span(1425))?;
+                        let rows = region.load(carried[1], span(1426))?;
+                        let x = region.load(captures[0], span(1427))?;
+                        let one = region
+                            .constant(SolveValue::integer(profile(), 1).unwrap(), span(1428))?;
+                        let k = region.binary(SolveBinaryOperator::Add, k, one, span(1429))?;
+                        let value = region.project_element_dynamic(x, &[k], span(1430))?;
+                        let rows = region.update_element(rows, value, &[k], span(1431))?;
+                        region.store(result[0], k, span(1432))?;
+                        region.store(result[1], rows, span(1433))
+                    },
+                )?;
+                builder.store(outputs[0], values[1], span(1434))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    output_coordinates(table.owners()[0].call_site(), false)
+}
+
+#[test]
+fn fold_element_written_at_a_carried_counter_is_followed_through_the_counter() {
+    assert_eq!(
+        rows_written_at_a_carried_counter(2, 3),
+        vec![
+            BTreeSet::from([0]),
+            BTreeSet::from([1]),
+            BTreeSet::from([5]),
+        ]
+    );
+}
+
+#[test]
+fn fold_longer_than_the_followed_budget_keeps_the_summary_over_all_passes() {
+    // 65 passes are not followed: every element may be written from any
+    // element of `x`, and keeps its own initial value's array.
+    let size = 65;
+    let every = (0..2 * size as usize).collect::<BTreeSet<_>>();
+    assert_eq!(
+        rows_written_at_a_carried_counter(65, size),
+        vec![every; size as usize]
+    );
+}

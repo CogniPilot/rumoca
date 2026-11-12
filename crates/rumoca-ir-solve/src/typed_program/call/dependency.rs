@@ -220,28 +220,54 @@ pub(in crate::typed_program) fn derive(
     output_count: usize,
     available: SolvePureCallTableView<'_>,
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
+    Ok(derive_execution(body, input_count, output_count, available, &[])?.summaries)
+}
+
+/// The summaries of one execution of a body and the Integer values it leaves
+/// in its outputs.
+struct Execution {
+    summaries: Box<[Box<[SolveCallDependency]>]>,
+    /// Per output: its value, when the known inputs fix it.
+    integers: Vec<Option<i64>>,
+}
+
+/// [`derive`] for the executions whose leading inputs hold `known` Integer
+/// values (`None` where an input is not fixed): one pass of a loop at its
+/// binder values, a branch under known captures. Every summary it returns is
+/// one `derive` would return for a body with those inputs replaced by
+/// literals, so it is a summary of exactly those executions.
+fn derive_execution(
+    body: &TypedProgram,
+    input_count: usize,
+    output_count: usize,
+    available: SolvePureCallTableView<'_>,
+    known: &[Option<i64>],
+) -> Result<Execution, SolveProgramConstructionError> {
     let mut slots = input_dependencies(body, input_count);
     let mut registers = vec![Vec::new(); body.register_types().len()];
     let mut assigned = vec![Vec::new(); body.assigned_state_types().len()];
-    let mut integers = map_access::IntegerValues::new(body.register_types().len());
+    let mut integers = map_access::IntegerValues::new(
+        body.register_types().len(),
+        body.slots().len(),
+        &known[..known.len().min(input_count)],
+    );
     for (index, spanned) in body.operations().iter().enumerate() {
         let operation = spanned.operation();
         integers.track(operation);
-        if regions::derive(
-            regions::Context {
-                body,
-                available,
-                provenance: spanned.provenance(),
-            },
-            operation,
-            &mut registers,
-        )? || assembly::derive(
+        let context = regions::Context {
             body,
-            operation,
-            &integers,
-            &mut registers,
-            spanned.provenance(),
-        )? {
+            available,
+            provenance: spanned.provenance(),
+        };
+        if regions::derive(context, operation, &mut integers, &mut registers)?
+            || assembly::derive(
+                body,
+                operation,
+                &integers,
+                &mut registers,
+                spanned.provenance(),
+            )?
+        {
             retire_registers(body, operation, index, &mut registers);
             continue;
         }
@@ -300,26 +326,45 @@ pub(in crate::typed_program) fn derive(
                     &assigned,
                 );
             }
-            SolveOperation::Map {
-                domain,
-                captures,
-                destination,
-                body: region,
-            } => {
-                let captured = capture_dependencies(captures, &registers, &integers);
-                if let Some(dependencies) =
-                    map_access::derive(domain, &captured, region, spanned.provenance())
-                {
-                    registers[destination.index()] = dependencies;
-                } else {
-                    operations::derive(body, operation, &mut registers, spanned.provenance())?;
-                }
+            SolveOperation::Map { .. } => {
+                derive_map(context, operation, &integers, &mut registers)?
             }
             operation => operations::derive(body, operation, &mut registers, spanned.provenance())?,
         }
         retire_registers(body, operation, index, &mut registers);
     }
-    Ok(output_summaries(body, input_count, output_count, slots))
+    Ok(Execution {
+        integers: (input_count..input_count + output_count)
+            .map(|slot| integers.slot(slot))
+            .collect(),
+        summaries: output_summaries(body, input_count, output_count, slots),
+    })
+}
+
+/// A map by its binders' access to its captures where that is exact, else
+/// the whole-operand summary every other operation gets.
+fn derive_map(
+    context: regions::Context<'_>,
+    operation: &SolveOperation,
+    integers: &map_access::IntegerValues,
+    registers: &mut [Vec<SolveCallDependency>],
+) -> Result<(), SolveProgramConstructionError> {
+    if let SolveOperation::Map {
+        domain,
+        captures,
+        destination,
+        body: region,
+    } = operation
+    {
+        let captured = capture_dependencies(captures, registers, integers);
+        if let Some(dependencies) =
+            map_access::derive(domain, &captured, region, context.provenance)
+        {
+            registers[destination.index()] = dependencies;
+            return Ok(());
+        }
+    }
+    operations::derive(context.body, operation, registers, context.provenance)
 }
 
 fn capture_dependencies(
@@ -435,38 +480,60 @@ fn substitute_call(
     }
     let mut substitution = substitution::Substitution::default();
     for (output_index, (destination, inputs)) in destinations.iter().zip(summaries).enumerate() {
-        let output = interface.outputs[output_index].value_type();
-        let result = match substitution.finished(inputs, output) {
-            Some(result) => result.clone(),
-            None => {
-                let reads = inputs
-                    .iter()
-                    .flat_map(|input| input.inputs().map(move |leaf| (input, leaf)))
-                    .map(|(input, leaf)| {
-                        let argument = arguments.get(leaf).ok_or_else(error)?;
-                        let projected = projected_argument(input, output, &interface.inputs[leaf]);
-                        Ok((argument.index(), projected))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let result = substitution.output(
-                    reads
-                        .iter()
-                        .map(|(register, projected)| substitution::Read {
-                            register: *register,
-                            access: projected.coordinates.as_ref(),
-                        }),
-                    registers,
-                    |source, access| may_depend_coordinates(source, access, provenance),
-                    error,
-                )?;
-                substitution.finish(inputs, output, &result);
-                result
-            }
-        };
+        let result = substitute_output(
+            &mut substitution,
+            inputs,
+            interface.outputs[output_index].value_type(),
+            interface.inputs,
+            |leaf| arguments.get(leaf).map(|argument| argument.index()),
+            registers,
+            provenance,
+        )?;
         registers[destination.index()] = result;
         substitution.assigned(destination.index());
     }
     Ok(())
+}
+
+/// One output of a summary over its arguments: each relation composed with
+/// the relations of the argument it reads. `argument` names the entry of
+/// `registers` that holds the dependencies of an input leaf. A call and one
+/// followed pass of a loop are both this substitution.
+fn substitute_output(
+    substitution: &mut substitution::Substitution,
+    summary: &[SolveCallDependency],
+    output: &SolveValueType,
+    inputs: &[SolveValueType],
+    argument: impl Fn(usize) -> Option<usize>,
+    registers: &[Vec<SolveCallDependency>],
+    provenance: Span,
+) -> Result<Vec<SolveCallDependency>, SolveProgramConstructionError> {
+    let error = || SolveProgramConstructionError::InvalidCallInterface { provenance };
+    if let Some(result) = substitution.finished(summary, output) {
+        return Ok(result.clone());
+    }
+    let reads = summary
+        .iter()
+        .flat_map(|input| input.inputs().map(move |leaf| (input, leaf)))
+        .map(|(input, leaf)| {
+            let register = argument(leaf).ok_or_else(error)?;
+            let input_type = inputs.get(leaf).ok_or_else(error)?;
+            Ok((register, projected_argument(input, output, input_type)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let result = substitution.output(
+        reads
+            .iter()
+            .map(|(register, projected)| substitution::Read {
+                register: *register,
+                access: projected.coordinates.as_ref(),
+            }),
+        registers,
+        |source, access| may_depend_coordinates(source, access, provenance),
+        error,
+    )?;
+    substitution.finish(summary, output, &result);
+    Ok(result)
 }
 
 fn projected_argument(

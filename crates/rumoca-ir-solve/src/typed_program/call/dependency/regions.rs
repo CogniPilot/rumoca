@@ -3,6 +3,7 @@ use super::substitution::{Read, Substitution};
 use super::*;
 use crate::SolveProgramRegion;
 
+mod passes;
 mod pointwise;
 
 #[derive(Clone, Copy)]
@@ -15,6 +16,7 @@ pub(super) struct Context<'a> {
 pub(super) fn derive(
     context: Context<'_>,
     operation: &SolveOperation,
+    integers: &mut map_access::IntegerValues,
     registers: &mut [Vec<SolveCallDependency>],
 ) -> Result<bool, SolveProgramConstructionError> {
     match operation {
@@ -30,25 +32,35 @@ pub(super) fn derive(
             captures,
             destinations,
             [if_true, if_false],
+            integers,
             registers,
         )?,
         SolveOperation::Fold {
+            domain,
             initial,
             captures,
             state_captures,
             destinations,
             transition,
             continuation,
-            ..
-        } if state_captures.is_empty() => fold(
-            context,
-            initial,
-            captures,
-            destinations,
-            transition,
-            continuation.as_deref(),
-            registers,
-        )?,
+        } if state_captures.is_empty() => {
+            let values = fold(
+                context,
+                Fold {
+                    domain,
+                    initial,
+                    captures,
+                    destinations,
+                    transition,
+                    continuation: continuation.as_deref(),
+                },
+                integers,
+                registers,
+            )?;
+            for (destination, value) in destinations.iter().zip(values) {
+                integers.set(*destination, value);
+            }
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -60,16 +72,21 @@ fn merge(out: &mut Dependencies, dependencies: Vec<SolveCallDependency>) {
     }
 }
 
+/// The summaries of a region over every execution whose leading inputs hold
+/// the `known` Integer values.
 fn region_summaries(
     region: &SolveProgramRegion,
     available: SolvePureCallTableView<'_>,
+    known: &[Option<i64>],
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
-    super::derive(
+    Ok(super::derive_execution(
         region.body(),
         region.inputs().len(),
         region.outputs().len(),
         available,
-    )
+        known,
+    )?
+    .summaries)
 }
 
 fn insert_operand(
@@ -141,11 +158,18 @@ pub(super) fn conditional(
     captures: &[SolveRegisterId],
     destinations: &[SolveRegisterId],
     branches: [&SolveProgramRegion; 2],
+    integers: &map_access::IntegerValues,
     registers: &mut [Vec<SolveCallDependency>],
 ) -> Result<(), SolveProgramConstructionError> {
+    // A branch runs with the captures of this execution, so a capture whose
+    // Integer value is known here is known in the branch.
+    let known: Vec<_> = captures
+        .iter()
+        .map(|capture| integers.value(*capture))
+        .collect();
     let summaries = [
-        region_summaries(branches[0], context.available)?,
-        region_summaries(branches[1], context.available)?,
+        region_summaries(branches[0], context.available, &known)?,
+        region_summaries(branches[1], context.available, &known)?,
     ];
     let mut results = Vec::new();
     let mut reads = Reads {
@@ -179,18 +203,51 @@ pub(super) fn conditional(
     Ok(())
 }
 
-pub(super) fn fold(
+/// The parts of a fold operation its dependencies derive from.
+struct Fold<'a> {
+    domain: &'a rumoca_core::StructuredIndexDomain,
+    initial: &'a [SolveRegisterId],
+    captures: &'a [SolveRegisterId],
+    destinations: &'a [SolveRegisterId],
+    transition: &'a SolveProgramRegion,
+    continuation: Option<&'a SolveProgramRegion>,
+}
+
+/// Derive the destinations of a fold and return the Integer value each one
+/// holds afterwards, where the loop fixes it.
+fn fold(
     context: Context<'_>,
-    initial: &[SolveRegisterId],
-    captures: &[SolveRegisterId],
-    destinations: &[SolveRegisterId],
-    transition: &SolveProgramRegion,
-    continuation: Option<&SolveProgramRegion>,
+    fold: Fold<'_>,
+    integers: &map_access::IntegerValues,
     registers: &mut [Vec<SolveCallDependency>],
-) -> Result<(), SolveProgramConstructionError> {
-    let mut regions = vec![(transition, region_summaries(transition, context.available)?)];
+) -> Result<Vec<Option<i64>>, SolveProgramConstructionError> {
+    let Fold {
+        domain,
+        initial,
+        captures,
+        destinations,
+        transition,
+        continuation,
+    } = fold;
+    // Without an early exit every pass of the static domain runs, so a loop
+    // within the budget is followed pass by pass, which is exact per element.
+    if continuation.is_none()
+        && let Some(followed) = passes::follow(
+            context, domain, initial, captures, transition, integers, registers,
+        )?
+    {
+        for (destination, result) in destinations.iter().zip(followed.carried) {
+            registers[destination.index()] = result;
+        }
+        return Ok(followed.integers);
+    }
+    let unknown = vec![None; destinations.len()];
+    let mut regions = vec![(
+        transition,
+        region_summaries(transition, context.available, &[])?,
+    )];
     if let Some(region) = continuation {
-        regions.push((region, region_summaries(region, context.available)?));
+        regions.push((region, region_summaries(region, context.available, &[])?));
     }
     let mut results = Vec::new();
     let mut reads = Reads {
@@ -233,12 +290,16 @@ pub(super) fn fold(
             )?;
         }
         for (position, (region, summaries)) in regions.iter().enumerate() {
-            for (component, (output, summary)) in
-                region.outputs().iter().zip(summaries.iter()).enumerate()
+            let unreached =
+                |component: &usize| position == 0 && reached.get(*component) == Some(&false);
+            for (output, summary) in region
+                .outputs()
+                .iter()
+                .zip(summaries.iter())
+                .enumerate()
+                .filter(|(component, _)| !unreached(component))
+                .map(|(_, pair)| pair)
             {
-                if position == 0 && reached.get(component) == Some(&false) {
-                    continue;
-                }
                 let consume = operations::whole_access(rank, output.dimensions());
                 merge(
                     &mut out,
@@ -259,8 +320,11 @@ pub(super) fn fold(
     for (destination, result) in destinations.iter().zip(results) {
         registers[destination.index()] = result;
     }
-    Ok(())
+    Ok(unknown)
 }
+
+/// A region with the dependency summary of each of its outputs.
+type RegionSummaries<'a> = (&'a SolveProgramRegion, Box<[Box<[SolveCallDependency]>]>);
 
 /// The carried components whose values can flow into carry `selected` over
 /// any number of passes: the smallest set that contains it and every carry an
@@ -272,11 +336,7 @@ pub(super) fn fold(
 /// function of the carried inputs its transition output reads, so by induction
 /// it depends only on the initial values of this set and on the captures the
 /// set's transition outputs read. The fixpoint visits each carry once.
-fn carried_reach(
-    selected: usize,
-    carries: usize,
-    regions: &[(&SolveProgramRegion, Box<[Box<[SolveCallDependency]>]>)],
-) -> Vec<bool> {
+fn carried_reach(selected: usize, carries: usize, regions: &[RegionSummaries<'_>]) -> Vec<bool> {
     let carried_reads = |summary: &[SolveCallDependency]| {
         summary
             .iter()
@@ -298,7 +358,10 @@ fn carried_reach(
         if std::mem::replace(seen, true) {
             continue;
         }
-        if let Some(summary) = regions.first().and_then(|(_, summaries)| summaries.get(component)) {
+        if let Some(summary) = regions
+            .first()
+            .and_then(|(_, summaries)| summaries.get(component))
+        {
             pending.extend(carried_reads(summary));
         }
     }

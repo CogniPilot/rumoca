@@ -34,22 +34,57 @@ enum Symbol {
     Mapped(Vec<SolveCallDependency>),
 }
 
-/// Integer registers of an owner body whose values its construction fixes:
-/// literals and their sums, differences, products, and negations. A map that
-/// captures one reads it as a known coordinate offset.
-pub(super) struct IntegerValues(Vec<Option<i64>>);
+/// Integer registers and slots of a body whose values its construction
+/// fixes: literals, the inputs one execution is derived for (the binder
+/// values of a loop pass, a known capture), and their sums, differences,
+/// products, and negations. A map that captures one reads it as a known
+/// coordinate offset; an element read or update at known coordinates touches
+/// exactly that element.
+pub(super) struct IntegerValues {
+    registers: Vec<Option<i64>>,
+    slots: Vec<Option<i64>>,
+}
 
 impl IntegerValues {
-    pub(super) fn new(registers: usize) -> Self {
-        Self(vec![None; registers])
+    /// `inputs` gives the known value of each leading slot, `None` where the
+    /// execution does not fix one.
+    pub(super) fn new(registers: usize, slots: usize, inputs: &[Option<i64>]) -> Self {
+        let mut slots = vec![None; slots];
+        for (slot, input) in slots.iter_mut().zip(inputs) {
+            *slot = *input;
+        }
+        Self {
+            registers: vec![None; registers],
+            slots,
+        }
     }
 
     pub(super) fn value(&self, register: SolveRegisterId) -> Option<i64> {
-        self.0.get(register.index()).copied().flatten()
+        self.registers.get(register.index()).copied().flatten()
+    }
+
+    /// The known value slot `slot` holds now.
+    pub(super) fn slot(&self, slot: usize) -> Option<i64> {
+        self.slots.get(slot).copied().flatten()
+    }
+
+    /// Record the value an operation outside [`Self::track`] fixes.
+    pub(super) fn set(&mut self, register: SolveRegisterId, value: Option<i64>) {
+        if let Some(known) = self.registers.get_mut(register.index()) {
+            *known = value;
+        }
     }
 
     pub(super) fn track(&mut self, operation: &SolveOperation) {
         let (destination, value) = match operation {
+            SolveOperation::Load { destination, slot } => (destination, self.slot(slot.index())),
+            SolveOperation::Store { slot, source } => {
+                let value = self.value(*source);
+                if let Some(known) = self.slots.get_mut(slot.index()) {
+                    *known = value;
+                }
+                return;
+            }
             SolveOperation::Constant { destination, value } => match value.kind() {
                 crate::SolveValueKind::Integer(value) => (destination, Some(value)),
                 _ => return,
@@ -78,9 +113,7 @@ impl IntegerValues {
             } => (destination, self.value(*operand).and_then(i64::checked_neg)),
             _ => return,
         };
-        if let Some(slot) = self.0.get_mut(destination.index()) {
-            *slot = value;
-        }
+        self.set(*destination, value);
     }
 }
 
