@@ -36,7 +36,7 @@ pub struct FmiDerivativeCausalOperation<'source> {
     static_targets: IndexIntervals,
     parameter_keys: Box<[usize]>,
     parameter_runs: Vec<(usize, usize, usize)>,
-    kinematic: Option<super::FmiKinematicDerivativeOperation>,
+    kinematic: Result<super::FmiKinematicDerivativeOperation, super::FmiKinematicRefusal>,
 }
 
 impl<'source> FmiDerivativeOperationSource<'source> {
@@ -114,7 +114,13 @@ impl<'source> FmiDerivativeCausalOperation<'source> {
     /// The kinematic rows over the settled coordinate, when the source issues
     /// a proper partition (see [`super::FmiKinematicDerivativeOperation`]).
     pub fn kinematic(&self) -> Option<&super::FmiKinematicDerivativeOperation> {
-        self.kinematic.as_ref()
+        self.kinematic.as_ref().ok()
+    }
+    /// The kinematic entry, or why none was issued.
+    pub fn kinematic_issuance(
+        &self,
+    ) -> Result<&super::FmiKinematicDerivativeOperation, super::FmiKinematicRefusal> {
+        self.kinematic.as_ref().map_err(|refusal| *refusal)
     }
 
     /// Child executables report their actual private scratch demand. These

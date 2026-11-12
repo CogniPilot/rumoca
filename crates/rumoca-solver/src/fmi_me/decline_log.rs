@@ -11,23 +11,35 @@ use rumoca_eval_solve as solve_eval;
 use rumoca_eval_solve::RowEvalContext;
 use rumoca_ir_solve as solve;
 
-use crate::SimNativeDecline;
 use crate::{
     CompiledSolveAssignmentSchedule, CompiledSolveEventTransaction, CompiledSolveExpression,
     CompiledSolveJacobianExpression, CompiledSolveTargetValues, SolveExecutionBackend,
 };
+use crate::{SimNativeDecline, SimProgramAdoption};
 
-/// Declined requests, shared by every clone of one backend handle.
+/// The issued programs the receipt reports adoption of.
+const COMPLETE: &str = "fmi_derivative_operation";
+const KINEMATIC: &str = "fmi_kinematic_derivative";
+
+/// Declined requests and issued-program adoption, shared by every clone of
+/// one backend handle.
 #[derive(Clone, Default)]
-pub(super) struct DeclineLog(Rc<RefCell<Vec<SimNativeDecline>>>);
+pub(super) struct DeclineLog {
+    declines: Rc<RefCell<Vec<SimNativeDecline>>>,
+    programs: Rc<RefCell<Vec<SimProgramAdoption>>>,
+}
 
 impl DeclineLog {
     pub(super) fn snapshot(&self) -> Vec<SimNativeDecline> {
-        self.0.borrow().clone()
+        self.declines.borrow().clone()
+    }
+
+    pub(super) fn programs(&self) -> Vec<SimProgramAdoption> {
+        self.programs.borrow().clone()
     }
 
     fn record(&self, program: &str, reason: &str) {
-        let mut log = self.0.borrow_mut();
+        let mut log = self.declines.borrow_mut();
         match log
             .iter_mut()
             .find(|entry| entry.program == program && entry.reason == reason)
@@ -39,6 +51,18 @@ impl DeclineLog {
                 count: 1,
             }),
         }
+    }
+
+    /// Record whether `program` is bound, replacing an earlier record of it:
+    /// the last preparation of a runtime is the one the session runs.
+    fn adopt(&self, program: &str, outcome: Result<(), String>) {
+        let mut programs = self.programs.borrow_mut();
+        programs.retain(|entry| entry.program != program);
+        programs.push(SimProgramAdoption {
+            program: program.to_owned(),
+            bound: outcome.is_ok(),
+            reason: outcome.err(),
+        });
     }
 
     fn observe<T, E: std::fmt::Display>(
@@ -70,10 +94,34 @@ impl SolveExecutionBackend for RecordingBackend {
         &self,
         root: solve::RetainedAssertionRoot,
     ) -> Result<Option<Rc<dyn crate::CompiledSolveDerivativeOperation>>, String> {
-        self.log.observe(
+        let result = self.log.observe(
             "fmi_derivative_operation",
-            self.inner.compile_fmi_derivative_operation(root),
-        )
+            self.inner.compile_fmi_derivative_operation(root.clone()),
+        );
+        match &result {
+            Ok(Some(operation)) => {
+                self.log.adopt(COMPLETE, Ok(()));
+                self.log.adopt(KINEMATIC, operation.kinematic_entry());
+            }
+            Ok(None) => {
+                // Solve IR's own refusal names why, when it issues none.
+                let reason = root
+                    .try_derivative_operation()
+                    .map_err(|error| error.to_string())
+                    .and_then(|source| {
+                        source
+                            .try_causal_operation()
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    })
+                    .err()
+                    .unwrap_or_else(|| "the execution backend binds no complete operation".into());
+                self.log.adopt(COMPLETE, Err(reason.clone()));
+                self.log.adopt(KINEMATIC, Err(reason));
+            }
+            Err(_) => {}
+        }
+        result
     }
 
     fn compile_model_state_jacobian(

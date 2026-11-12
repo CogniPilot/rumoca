@@ -270,3 +270,29 @@ fn kinematic_rows_over_a_settled_coordinate_match_the_complete_values_bit_for_bi
     assert_eq!(runner.record(0), Status::NonFinite as u32);
     assert_eq!(runner.record(8), first as u32);
 }
+
+#[test]
+fn an_unissued_kinematic_entry_carries_its_typed_reason() {
+    use rumoca_ir_solve::fmi::FmiKinematicRefusal;
+    for (name, source, refusal) in [
+        ("Full", FULL, FmiKinematicRefusal::EveryStateKinematic),
+        ("Empty", EMPTY, FmiKinematicRefusal::NoKinematicStates),
+    ] {
+        let component = component(name, source);
+        let root = component.runtime_view().retain_assertion_root();
+        let op = root
+            .try_derivative_operation()
+            .unwrap()
+            .try_causal_operation()
+            .unwrap();
+        assert_eq!(op.kinematic_issuance().err(), Some(refusal), "{name}");
+    }
+    let component = component("Mixed", MIXED);
+    let root = component.runtime_view().retain_assertion_root();
+    let op = root
+        .try_derivative_operation()
+        .unwrap()
+        .try_causal_operation()
+        .unwrap();
+    assert!(op.kinematic_issuance().is_ok());
+}

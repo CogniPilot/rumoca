@@ -177,6 +177,18 @@ pub struct SimNativeDecline {
     pub count: usize,
 }
 
+/// Whether one issued program, which a session runs in place of its host
+/// path when bound, is bound in this session.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SimProgramAdoption {
+    /// The issued program.
+    pub program: String,
+    /// Whether the session runs it.
+    pub bound: bool,
+    /// Why it is not bound: Solve IR issued none, or the backend binds none.
+    pub reason: Option<String>,
+}
+
 /// The typed record of which engine a simulation selected and, when compiled
 /// execution was refused for an admissible request, why.
 ///
@@ -191,6 +203,10 @@ pub struct SimExecutionReceipt {
     /// Optional optimized entries declined by the selected backend. Their
     /// required compiled base entries remain prepared and executable.
     pub declined: Vec<SimNativeDecline>,
+    /// Issued programs a session may adopt, each with whether it is bound
+    /// and, when not, the typed reason Solve IR or the backend gave.
+    #[serde(default)]
+    pub programs: Vec<SimProgramAdoption>,
 }
 
 impl SimExecutionReceipt {
@@ -215,6 +231,7 @@ impl SimExecutionReceipt {
                 engine: compiled,
                 refusal: None,
                 declined: Vec::new(),
+                programs: Vec::new(),
             };
         };
         Self::interpreter(Some(refusal))
@@ -225,6 +242,7 @@ impl SimExecutionReceipt {
             engine: SimExecutionEngine::Interpreter,
             refusal,
             declined: Vec::new(),
+            programs: Vec::new(),
         }
     }
 
@@ -232,6 +250,12 @@ impl SimExecutionReceipt {
     #[must_use]
     pub fn with_declined(mut self, declined: Vec<SimNativeDecline>) -> Self {
         self.declined = declined;
+        self
+    }
+
+    #[must_use]
+    pub fn with_programs(mut self, programs: Vec<SimProgramAdoption>) -> Self {
+        self.programs = programs;
         self
     }
 

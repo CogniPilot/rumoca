@@ -74,7 +74,7 @@ pub use derivative_operation::{
     FmiDerivativeCausalOperation, FmiDerivativeCausalRefusal, FmiDerivativeControlInstruction,
     FmiDerivativeControlPlan, FmiDerivativeHelper, FmiDerivativeOperationRefusal,
     FmiDerivativeOperationSource, FmiDerivativeStatus, FmiDerivativeWorkspace,
-    FmiKinematicDerivativeOperation,
+    FmiKinematicDerivativeOperation, FmiKinematicRefusal,
 };
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
 pub use fixed_step_tableau::{

@@ -97,12 +97,13 @@ impl BackendSimulationSession {
     /// The engine selection with the compile requests the backend has declined
     /// so far; compilation is lazy, so the list can grow as the session runs.
     pub(crate) fn execution_receipt(&self) -> SimExecutionReceipt {
-        let declined = self
-            .execution_backend
-            .as_ref()
-            .map(MeExecutionBackend::declined)
-            .unwrap_or_default();
-        self.execution.clone().with_declined(declined)
+        let Some(backend) = self.execution_backend.as_ref() else {
+            return self.execution.clone();
+        };
+        self.execution
+            .clone()
+            .with_declined(backend.declined())
+            .with_programs(backend.programs())
     }
 
     pub(crate) fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {

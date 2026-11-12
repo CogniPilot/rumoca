@@ -123,8 +123,8 @@ pub use runtime::trajectory_objective::{
 pub use solver::{
     DEFAULT_CHECKPOINT_BUDGET_BYTES, MODEL_MESSAGE_CODE, SimBackend, SimDiagnostic,
     SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
-    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimTermination,
-    SimVariableMeta, WARNING_ASSERTION_CODE,
+    SimNativeRefusal, SimOptions, SimPacingMode, SimProgramAdoption, SimResult, SimSolverMode,
+    SimTermination, SimVariableMeta, WARNING_ASSERTION_CODE,
 };
 
 #[cfg(test)]

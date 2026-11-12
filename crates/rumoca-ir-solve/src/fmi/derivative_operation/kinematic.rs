@@ -19,23 +19,54 @@ pub struct FmiKinematicDerivativeOperation {
     values: ComputeBlock,
 }
 
+/// Why a complete causal operation issues no kinematic entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FmiKinematicRefusal {
+    /// The partition has no kinematic state.
+    NoKinematicStates,
+    /// Every state is kinematic: a partitioned step is one explicit step.
+    EveryStateKinematic,
+    /// A kinematic row is placed by no node of the derivative values.
+    UnplacedRow,
+    /// Dropping the other rows would move a node placed after the nodes
+    /// before it.
+    MovedPlacement,
+    /// The derivative values' placements could not be read or rebuilt.
+    Placement,
+}
+
+impl std::fmt::Display for FmiKinematicRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoKinematicStates => "the kinematic partition is empty",
+            Self::EveryStateKinematic => "every state is kinematic",
+            Self::UnplacedRow => "a kinematic row has no placed derivative value",
+            Self::MovedPlacement => "dropping the other rows would move a placed derivative value",
+            Self::Placement => "the derivative value placements could not be selected",
+        })
+    }
+}
+
 impl FmiKinematicDerivativeOperation {
-    /// `None` when the partition is empty or covers every state (a partitioned
-    /// step is then one explicit step), or when removing the other rows would
-    /// move a node whose placement follows the nodes before it. The selection
-    /// fails closed: a source it cannot place issues no operation.
-    pub(super) fn issue(source: &FmiDerivativeOperationSource<'_>) -> Option<Self> {
+    /// The selection fails closed: a source it cannot place issues no
+    /// operation, with the reason.
+    pub(super) fn issue(
+        source: &FmiDerivativeOperationSource<'_>,
+    ) -> Result<Self, FmiKinematicRefusal> {
         let kinematic = source
             .model
             .artifacts
             .continuous
             .structural
             .kinematic_states();
-        if kinematic.is_empty() || kinematic.len() >= source.vector_extent() {
-            return None;
+        if kinematic.is_empty() {
+            return Err(FmiKinematicRefusal::NoKinematicStates);
+        }
+        if kinematic.len() >= source.vector_extent() {
+            return Err(FmiKinematicRefusal::EveryStateKinematic);
         }
         let rows = kinematic.iter().copied().collect::<BTreeSet<_>>();
-        let original = node_images(source.values()).ok()?;
+        let original = node_images(source.values()).map_err(|_| FmiKinematicRefusal::Placement)?;
         let mut nodes = Vec::new();
         let mut kept_images = Vec::new();
         for (node, image) in source.values().nodes.iter().zip(&original) {
@@ -47,7 +78,8 @@ impl FmiKinematicDerivativeOperation {
                 kept_images.push(image.clone());
                 continue;
             };
-            let (programs, image) = kinematic_programs(block, image, &rows)?;
+            let (programs, image) =
+                kinematic_programs(block, image, &rows).ok_or(FmiKinematicRefusal::Placement)?;
             nodes.push(ComputeNode::ScalarPrograms(programs));
             kept_images.push(image);
         }
@@ -58,12 +90,15 @@ impl FmiKinematicDerivativeOperation {
             .collect::<BTreeSet<_>>()
             .is_superset(&rows)
         {
-            return None;
+            return Err(FmiKinematicRefusal::UnplacedRow);
         }
         let values = ComputeBlock { nodes };
         // A matrix or dense node is placed after the nodes before it; dropping
         // those must leave every kept output where the complete values put it.
-        (node_images(&values).ok()? == kept_images).then(|| Self {
+        if node_images(&values).map_err(|_| FmiKinematicRefusal::Placement)? != kept_images {
+            return Err(FmiKinematicRefusal::MovedPlacement);
+        }
+        Ok(Self {
             rows: IndexIntervals::of(kinematic.iter().copied()),
             values,
         })

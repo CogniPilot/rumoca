@@ -281,6 +281,13 @@ impl MeExecutionBackend {
         self.declines.snapshot()
     }
 
+    /// Whether each issued program the runtime may adopt is bound, with the
+    /// typed reason when not.
+    #[must_use]
+    pub fn programs(&self) -> Vec<crate::SimProgramAdoption> {
+        self.declines.programs()
+    }
+
     pub(crate) fn into_runtime_backend(self) -> Rc<dyn crate::SolveExecutionBackend> {
         self.backend
     }

@@ -82,6 +82,11 @@ pub trait CompiledSolveDerivativeOperation {
     ) -> Option<Result<(), SolveDerivativeOperationFailure>> {
         None
     }
+
+    /// Whether the issued kinematic entry is bound; `Err` names why not.
+    fn kinematic_entry(&self) -> Result<(), String> {
+        Err("the compiled operation binds no kinematic entry".into())
+    }
 }
 
 /// Backend-neutral callable for a causally ordered set of exact assignments.

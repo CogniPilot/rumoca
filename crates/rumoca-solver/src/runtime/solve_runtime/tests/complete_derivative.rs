@@ -186,3 +186,80 @@ fn complete_preparation_receives_the_original_correlated_root() {
     .unwrap();
     assert_eq!(calls.get(), 1);
 }
+
+struct BindingBackend {
+    bind: bool,
+}
+impl SolveExecutionBackend for BindingBackend {
+    fn compile_fmi_derivative_operation(
+        &self,
+        _: solve::RetainedAssertionRoot,
+    ) -> Result<Option<Rc<dyn CompiledSolveDerivativeOperation>>, String> {
+        Ok(self.bind.then(|| {
+            Rc::new(Entry {
+                calls: Rc::default(),
+                fail: false,
+            }) as Rc<_>
+        }))
+    }
+    fn compile_expression(
+        &self,
+        source: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, crate::CompileRefusal> {
+        test_kernels::expression(source).map_err(Into::into)
+    }
+    fn compile_jacobian_expression(
+        &self,
+        source: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, crate::CompileRefusal> {
+        test_kernels::jacobian(source).map_err(Into::into)
+    }
+}
+
+#[test]
+fn the_receipt_reports_whether_the_complete_and_kinematic_entries_are_bound() {
+    let adoption = |bind: bool| {
+        let mut model = solve::SolveModel::default();
+        model.problem.continuous.refresh_owners =
+            rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+                .unwrap();
+        let component = solve::fmi::FmiComponent::construct(model, vec![]).unwrap();
+        let root = component.runtime_view().retain_assertion_root();
+        let handle = crate::fmi_me::MeExecutionBackend::new(Rc::new(BindingBackend { bind }));
+        let _runtime = SolveRuntime::construct(
+            SolveRuntimeModel::retained(root),
+            Some(handle.clone().into_runtime_backend()),
+            ModelStateJacobianRequest::NotRequested,
+            None,
+        )
+        .unwrap();
+        handle
+            .programs()
+            .into_iter()
+            .map(|entry| (entry.program, entry.bound, entry.reason))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        adoption(true),
+        [
+            ("fmi_derivative_operation".to_owned(), true, None),
+            (
+                "fmi_kinematic_derivative".to_owned(),
+                false,
+                Some("the compiled operation binds no kinematic entry".to_owned())
+            ),
+        ]
+    );
+    let unbound = Some("the execution backend binds no complete operation".to_owned());
+    assert_eq!(
+        adoption(false),
+        [
+            (
+                "fmi_derivative_operation".to_owned(),
+                false,
+                unbound.clone()
+            ),
+            ("fmi_kinematic_derivative".to_owned(), false, unbound),
+        ]
+    );
+}

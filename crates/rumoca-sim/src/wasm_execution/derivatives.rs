@@ -13,7 +13,7 @@ use std::cell::RefCell;
 pub(super) struct WasmDerivative {
     root: RetainedAssertionRoot,
     compiled: BoundFmiDerivativeOperation,
-    kinematic_rows: Option<Box<[usize]>>,
+    kinematic_rows: Result<Box<[usize]>, String>,
     workspace: RefCell<Vec<u64>>,
 }
 impl WasmDerivative {
@@ -40,8 +40,9 @@ impl WasmDerivative {
                 .map_err(|error| error.to_string())?
         };
         let kinematic_rows = operation
-            .kinematic()
-            .map(|kinematic| kinematic.rows().iter().collect());
+            .kinematic_issuance()
+            .map(|kinematic| kinematic.rows().iter().collect())
+            .map_err(|refusal| refusal.to_string());
         let count = (compiled.workspace().bytes() as usize).div_ceil(8);
         let mut workspace = Vec::new();
         workspace
@@ -112,6 +113,13 @@ impl CompiledSolveDerivativeOperation for WasmDerivative {
             .map_err(|error| self.failure(error))
     }
 
+    fn kinematic_entry(&self) -> Result<(), String> {
+        self.kinematic_rows
+            .as_ref()
+            .map(|_| ())
+            .map_err(Clone::clone)
+    }
+
     fn call_kinematic(
         &self,
         y: &[f64],
@@ -121,7 +129,7 @@ impl CompiledSolveDerivativeOperation for WasmDerivative {
         rows: &[usize],
         output: &mut [f64],
     ) -> Option<Result<(), SolveDerivativeOperationFailure>> {
-        if self.kinematic_rows.as_deref() != Some(rows) {
+        if self.kinematic_rows.as_deref() != Ok(rows) {
             return None;
         }
         let early = |error| SolveDerivativeOperationFailure { phase: None, error };

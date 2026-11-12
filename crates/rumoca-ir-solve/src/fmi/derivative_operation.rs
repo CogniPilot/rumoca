@@ -16,7 +16,7 @@ pub use control_plan::{
     FmiDerivativeControlPlan, Helper as FmiDerivativeHelper,
     Instruction as FmiDerivativeControlInstruction,
 };
-pub use kinematic::FmiKinematicDerivativeOperation;
+pub use kinematic::{FmiKinematicDerivativeOperation, FmiKinematicRefusal};
 
 use super::{FmiMetadata, FmiRuntimeView};
 use crate::{
