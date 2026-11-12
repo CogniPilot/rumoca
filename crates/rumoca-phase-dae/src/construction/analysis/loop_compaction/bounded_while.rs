@@ -19,7 +19,7 @@
 //! * a top-level conjunct of `c` is `k < N`, `k <= N`, `N > k`, or `N >= k`,
 //!   with `N` settled at translation (a literal, a shape extent, an evaluable
 //!   parameter) and not written by `S`;
-//! * `S` has no `return`, writes `k` once at top level as
+//! * `S` writes `k` once at top level as
 //!   `k := k + d` with a positive Integer literal `d`, writes `k` after that
 //!   statement nowhere, and before it only as `k := N` (the `isEqual` early
 //!   exit), which cannot lower `k` while `c` holds;
@@ -38,13 +38,14 @@
 //! Integer greater than one reaches zero. A loop without a proof is left as
 //! written and keeps its typed rejection.
 //!
-//! A `break` of the loop (MLS §11.2.4) leaves the counter and division
-//! proofs intact: they bound the passes by the counter values a pass can
-//! start from, every pass that goes on moves the counter at top level, and a
-//! pass that breaks is the last one. The progress form follows each path of a
-//! pass, so it ends a breaking path there and counts that pass like the one
-//! an exit flag ends. The `break` then belongs to the generated `for`, which
-//! is the innermost loop around it as the `while` was.
+//! A `break` of the loop (MLS §11.2.4) or a `return` (MLS §11.2.6) leaves
+//! the counter and division proofs intact: they bound the passes by the
+//! counter values a pass can start from, every pass that goes on moves the
+//! counter at top level, and a pass that exits is the last one. The progress
+//! form follows each path of a pass, so it ends an exiting path there and
+//! counts that pass like the one an exit flag ends. The `break` then belongs
+//! to the generated `for`, which is the innermost loop around it as the
+//! `while` was.
 
 use super::super::function_returns::{contains_return, statements_break};
 use super::super::guard_facts::{FactScope, GuardFacts};
@@ -209,9 +210,6 @@ fn iteration_bound(
         && head.assuming(&block.cond, true, scope).is_unreachable()
     {
         return Some(0);
-    }
-    if contains_return(&block.stmts) {
-        return None;
     }
     counter_bound(block, entry, scope)
         .or_else(|| progress_bound(block, head, scope))

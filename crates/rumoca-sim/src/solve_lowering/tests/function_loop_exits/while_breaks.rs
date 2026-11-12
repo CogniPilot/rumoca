@@ -1,5 +1,6 @@
-//! `break` in `while` loops whose pass bound is proven (MLS §11.2.3): the
-//! loop ends at the pass that breaks or where its condition first fails.
+//! `break` and `return` in `while` loops whose pass bound is proven (MLS
+//! §11.2.3): the loop ends at the pass that exits or where its condition
+//! first fails.
 
 use super::{Fixture, Point, SAMPLES};
 
@@ -122,4 +123,50 @@ fn a_while_bounded_by_its_progress_ends_at_the_pass_that_breaks() {
             "{point:?}"
         );
     }
+}
+
+const WHILE_RETURN: &str = r#"
+function whileReturn
+  input Real x[:];
+  input Real limit;
+  output Real total;
+protected
+  Integer i;
+algorithm
+  total := 0;
+  i := 1;
+  while i <= size(x, 1) loop
+    total := total + x[i];
+    if total > limit then
+      return;
+    end if;
+    i := i + 1;
+  end while;
+  total := total + 1000;
+end whileReturn;
+"#;
+
+fn while_return(point: Point) -> f64 {
+    let mut total = 0.0;
+    for value in point.x {
+        total += value;
+        if total > point.limit {
+            return total;
+        }
+    }
+    total + 1000.0
+}
+
+/// MLS §11.2.6: a `return` inside a `while` ends the function at its pass.
+#[test]
+fn a_return_inside_a_while_ends_the_function() {
+    let fixture = Fixture::compile(
+        WHILE_RETURN,
+        "",
+        "",
+        &[&format!("whileReturn({SAMPLES}, limit)")],
+    );
+    let points =
+        [0.5, 1.5, 4.5, 9.5, 14.5, 100.0].map(|limit| Point::new([1.0, 2.0, 3.0, 4.0, 5.0], limit));
+    fixture.check(&points, |point| vec![while_return(point)]);
 }

@@ -19,16 +19,17 @@
 use super::*;
 
 /// Whether `statements` leave a loop early: a `break`, or a `return` inside a
-/// `for` loop.
+/// `for` or `while` loop.
 pub(in crate::construction::analysis) fn contains_loop_exit(
     statements: &[rumoca_core::Statement],
 ) -> bool {
-    contains_break(statements) || contains_for_return(statements)
+    contains_break(statements) || contains_loop_return(statements)
 }
 
-fn contains_for_return(statements: &[rumoca_core::Statement]) -> bool {
+fn contains_loop_return(statements: &[rumoca_core::Statement]) -> bool {
     statements.iter().any(|statement| match statement {
         rumoca_core::Statement::For { equations, .. } => contains_return(equations),
+        rumoca_core::Statement::While { block, .. } => contains_return(&block.stmts),
         rumoca_core::Statement::If {
             cond_blocks,
             else_block,
@@ -36,8 +37,8 @@ fn contains_for_return(statements: &[rumoca_core::Statement]) -> bool {
         } => {
             cond_blocks
                 .iter()
-                .any(|block| contains_for_return(&block.stmts))
-                || else_block.as_deref().is_some_and(contains_for_return)
+                .any(|block| contains_loop_return(&block.stmts))
+                || else_block.as_deref().is_some_and(contains_loop_return)
         }
         _ => false,
     })
@@ -266,23 +267,17 @@ impl LoopExits {
                     .transpose()?,
                 span,
             },
-            rumoca_core::Statement::While { block, .. } if contains_return(&block.stmts) => {
-                return Err(unsupported_statement(
-                    statement,
-                    "function while return",
-                    "function return",
-                    "a return inside a while requires a checked exit owner",
-                ));
-            }
             // Loop compaction lowers every `while` whose pass bound it proves
             // to a `for` first; one that is left has no bound.
-            rumoca_core::Statement::While { block, .. } if statements_break(&block.stmts) => {
+            rumoca_core::Statement::While { block, .. }
+                if statements_break(&block.stmts) || contains_return(&block.stmts) =>
+            {
                 return Err(unsupported_statement(
                     statement,
                     "unbounded function while loop",
                     "function loop domain",
                     format!(
-                        "a `while` loop that leaves through `break` has no translation-time iteration bound: its condition {}",
+                        "a `while` loop that leaves through `break` or `return` has no translation-time iteration bound: its condition {}",
                         super::super::loop_compaction::UNBOUNDED_LOOP_DOMAIN
                     ),
                 ));

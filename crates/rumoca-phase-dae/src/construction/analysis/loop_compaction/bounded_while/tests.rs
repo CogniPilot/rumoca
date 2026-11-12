@@ -282,9 +282,10 @@ fn a_break_keeps_the_counter_bound_and_adds_its_pass_to_progress() {
     assert_eq!(bound(Some(8), window, vec![leave, fall]), Some(10));
 }
 
-/// A `return` leaves the function, not the loop, and keeps the refusal.
+/// MLS §11.2.6: a pass that returns is the last one too, so the counter
+/// form keeps its bound and the progress form counts that pass once more.
 #[test]
-fn a_return_in_the_body_has_no_bound() {
+fn a_return_keeps_the_counter_bound_and_adds_its_pass_to_progress() {
     let ret = exit_when(
         binary(OpBinary::Eq, var("k"), integer(2)),
         rumoca_core::Statement::Return { span: span() },
@@ -293,9 +294,18 @@ fn a_return_in_the_body_has_no_bound() {
         bound(
             Some(1),
             binary(OpBinary::Lt, var("k"), integer(5)),
-            vec![ret, step(OpBinary::Add, 1)]
+            vec![ret.clone(), step(OpBinary::Add, 1)]
         ),
-        None
+        Some(5)
+    );
+    let window = binary(
+        OpBinary::And,
+        binary(OpBinary::Ge, var("k"), integer(0)),
+        binary(OpBinary::Le, var("k"), integer(8)),
+    );
+    assert_eq!(
+        bound(Some(8), window, vec![ret, step(OpBinary::Sub, 1)]),
+        Some(10)
     );
 }
 
