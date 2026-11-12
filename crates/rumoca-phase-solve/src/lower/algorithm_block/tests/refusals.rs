@@ -1,6 +1,8 @@
 //! Refusals and their admitted neighbours: definedness, fault-visible state,
 //! element coverage, and the power-of-two lowering.
 
+mod guard_operand_writes;
+
 use super::*;
 
 /// Inputs `flag` (Boolean) and `v` (Real), output `y`, a Real DoStep local

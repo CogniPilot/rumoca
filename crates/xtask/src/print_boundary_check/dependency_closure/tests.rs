@@ -216,6 +216,13 @@ fn actual_locked_cargo_resolution_binds_optional_target_build_and_renamed_edges(
             "--format-version",
             "1",
         ]);
+        // Cargo queries `rustc -vV` through any inherited compiler wrapper,
+        // and a CI wrapper such as sccache may need a network cache service.
+        // An empty value overrides any wrapper from the environment or Cargo
+        // config, so this offline, path-only resolution needs no service.
+        command
+            .env("RUSTC_WRAPPER", "")
+            .env("RUSTC_WORKSPACE_WRAPPER", "");
         if locked {
             command.arg("--locked");
         }
