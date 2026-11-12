@@ -315,10 +315,22 @@ jobs:
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu \
             .#checks.x86_64-linux.python-cargo-deps
-          # A cached fixed-output result can belong to an older lockfile.
-          # Rebuild the staging fetch to verify this source, even on cache hits.
-          nix build --rebuild --print-build-logs \
-            .#checks.x86_64-linux.python-cargo-deps.vendorStaging
+          # python-cargo-deps is importCargoLock's vendor directory. Its leaves
+          # are fixed outputs addressed by this lock: registry crates by their
+          # Cargo.lock checksums, git sources by locked revision and flake output
+          # hash. Cached leaves are not refetched (a --rebuild would only recheck
+          # assembly), so verify that the vendor directory carries this exact
+          # lockfile and replaces every locked git source.
+          deps=$(nix build --no-link --print-out-paths \
+            .#checks.x86_64-linux.python-cargo-deps)
+          cmp Cargo.lock "$deps/Cargo.lock"
+          { grep '^source = "git+' Cargo.lock || true; } | sed 's/^source = //' | sort -u |
+            while read -r git_source; do
+              grep -qF "[source.$git_source]" "$deps/.cargo/config.toml" || {
+                echo "vendor config lacks locked source $git_source" >&2
+                exit 1
+              }
+            done
 
       - name: Compare humanoid native speed and task fidelity with MuJoCo
         if: github.event_name == 'pull_request'

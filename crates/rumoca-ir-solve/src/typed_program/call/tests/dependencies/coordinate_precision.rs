@@ -220,7 +220,7 @@ fn coordinate_precision_cross_carry_retains_transitive_iteration_reads() {
 }
 
 #[test]
-fn coordinate_precision_permuted_carry_retains_other_coordinate_reads() {
+fn coordinate_precision_permuted_carry_follows_each_pass() {
     let vector = real_shape(vec![2]);
     let table = SolvePureCallTable::construct(profile(), |table| {
         table.add_owner(
@@ -250,8 +250,9 @@ fn coordinate_precision_permuted_carry_retains_other_coordinate_reads() {
         Ok(())
     })
     .unwrap();
+    // Two followed passes swap the pair twice, so each element reads itself.
     assert_eq!(
         output_coordinates(table.owners()[0].call_site(), false),
-        vec![BTreeSet::from([0, 1]), BTreeSet::from([0, 1])]
+        vec![BTreeSet::from([0]), BTreeSet::from([1])]
     );
 }
