@@ -152,7 +152,7 @@ fn coupled_matrix_and_force_setup_remain_one_exact_source() {
         ]
     );
     let coefficients = plan.coefficient_program(&source).unwrap();
-    let ComputeNode::LinSolve { setup_ops, .. } = &source.nodes[1] else {
+    let ComputeNode::LinSolve { setup_ops, .. } = &source.nodes[plan.dynamics_node()] else {
         unreachable!()
     };
     let original = bincode::serialize(setup_ops).unwrap();
