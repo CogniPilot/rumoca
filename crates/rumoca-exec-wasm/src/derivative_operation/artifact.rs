@@ -29,7 +29,11 @@ pub struct BoundFmiDerivativeOperation {
     runtime: runtime::DerivativeRuntime,
     bytes: Vec<u8>,
     workspace: FmiDerivativeWorkspace,
+    // The refresh helpers are kept to explain a status their call returned,
+    // which only the target with an engine can receive.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     static_program: Option<ProgramPayload>,
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     dynamic_program: Option<ProgramPayload>,
     values: ProgramPayload,
     kinematic: Option<ProgramPayload>,
@@ -130,7 +134,9 @@ impl PrecompiledFmiDerivativeOperation {
             runtime,
             bytes: self.bytes.clone(),
             workspace,
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             static_program: self.static_program.clone(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             dynamic_program: self.dynamic_program.clone(),
             values: self.values.clone(),
             kinematic: self.kinematic.clone(),
