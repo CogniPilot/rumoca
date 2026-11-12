@@ -192,25 +192,8 @@ impl BodyEmitter<'_> {
             .and_then(|n| i32::try_from(n).ok())
             .ok_or("native concatenate result width overflow")?;
         #[cfg(feature = "diagnostic-root-scalar-locals")]
-        {
-            let mut runs = vec![dst_start];
-            runs.extend(sources.iter().map(|source| source.start));
-            if self.has_value_local(&runs)? {
-                let result_cells = dimensions[axis] as usize * inner;
-                let mut axis_offset = 0usize;
-                for source in &sources {
-                    let source_cells = source.dimensions[axis] as usize * inner;
-                    let count = source
-                        .dimensions
-                        .iter()
-                        .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
-                        .ok_or("native concatenate count overflow")?;
-                    let placement = [source_cells, result_cells, axis_offset * inner];
-                    self.value_concatenate_source(dst_start, source.start, count, placement)?;
-                    axis_offset += source.dimensions[axis] as usize;
-                }
-                return Ok(());
-            }
+        if self.value_concatenate(dst_start, &sources, &dimensions, [axis, lanes, inner])? {
+            return Ok(());
         }
         let counter = self.arena_plan()?.counter;
         let mut axis_offset = 0usize;
@@ -255,6 +238,36 @@ impl BodyEmitter<'_> {
 
 #[cfg(feature = "diagnostic-root-scalar-locals")]
 impl BodyEmitter<'_> {
+    /// The concatenation with every cell named statically when any run has an
+    /// issued local home; `false`, emitting nothing, when none has.
+    fn value_concatenate(
+        &mut self,
+        dst_start: Reg,
+        sources: &[rumoca_ir_solve::TensorConcatenateSource],
+        dimensions: &[u32],
+        [axis, lanes, inner]: [usize; 3],
+    ) -> Result<bool, String> {
+        let mut runs = vec![dst_start];
+        runs.extend(sources.iter().map(|source| source.start));
+        if !self.has_value_local(&runs)? {
+            return Ok(false);
+        }
+        let result_cells = dimensions[axis] as usize * inner;
+        let mut axis_offset = 0usize;
+        for source in sources {
+            let source_cells = source.dimensions[axis] as usize * inner;
+            let count = source
+                .dimensions
+                .iter()
+                .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
+                .ok_or("native concatenate count overflow")?;
+            let placement = [source_cells, result_cells, axis_offset * inner];
+            self.value_concatenate_source(dst_start, source.start, count, placement)?;
+            axis_offset += source.dimensions[axis] as usize;
+        }
+        Ok(true)
+    }
+
     /// One concatenation source in the element order of its counted loop,
     /// with every source and target cell named statically.
     fn value_concatenate_source(
