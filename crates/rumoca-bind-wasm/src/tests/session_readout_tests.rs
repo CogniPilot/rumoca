@@ -93,6 +93,59 @@ fn typed_readout_refuses_unknown_names_and_invalid_requests_without_mutation() {
     clear_source_root_cache().unwrap();
 }
 
+/// Bound frames and reads through the typed-array calls equal the named
+/// calls of the same names; a reset makes the bindings stale and another
+/// session's are refused.
+#[test]
+fn bound_frames_and_reads_equal_the_named_calls() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let mut named = create();
+    let mut bound = create();
+    let names = r#"["y","u","x","y"]"#;
+    let inputs = bound.bind_inputs(r#"["u"]"#).unwrap();
+    let outputs = bound.bind_outputs(names).unwrap();
+    for (time, u) in [(0.1, -3.0), (0.2, -3.0), (0.25, 0.5)] {
+        named.set_inputs(&format!(r#"[["u",{u}]]"#)).unwrap();
+        bound.write_bound(inputs, &[u]).unwrap();
+        named.advance_to(time).unwrap();
+        bound.advance_to(time).unwrap();
+        let expected = named.read_values(names).unwrap();
+        let actual = bound.read_bound(outputs).unwrap();
+        assert_eq!(
+            actual
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(bound.state_json().unwrap(), named.state_json().unwrap());
+    }
+    let before = bound.state_json().unwrap();
+    let foreign = named.bind_inputs(r#"["u"]"#).unwrap();
+    for refused in [
+        bound.write_bound(inputs, &[f64::NAN]),
+        bound.write_bound(inputs, &[1.0, 2.0]),
+        bound.write_bound(outputs, &[1.0]),
+        bound.write_bound(foreign, &[1.0]),
+    ] {
+        assert!(refused.is_err());
+        assert_eq!(bound.state_json().unwrap(), before);
+    }
+    assert!(bound.bind_inputs(r#"["y"]"#).is_err());
+    assert!(bound.bind_outputs(r#"["missing"]"#).is_err());
+    bound.reset().unwrap();
+    let error = bound.read_bound(outputs).unwrap_err();
+    assert!(
+        error.message().contains("before the session restarted"),
+        "{error}"
+    );
+    clear_source_root_cache().unwrap();
+}
+
 const DECAY: &str = "model Decay Real x(start=1, fixed=true); equation der(x) = -x; end Decay;";
 
 /// `x(0.5)` of the decay and the accepted steps taken, for one options
