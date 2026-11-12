@@ -7,6 +7,7 @@ use crate::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnosti
 
 mod array_storage_views;
 mod array_trajectories;
+mod binder_guard_families;
 mod block_residual_split;
 mod coincident_strict;
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,6 +29,7 @@ mod parameter_bindings;
 mod probe_jacobian;
 #[cfg(feature = "solver-rk45")]
 mod quotient_root_capture;
+mod reduced_selection_starts;
 #[cfg(feature = "solver-velimplicit")]
 mod refresh_validation;
 scheduled_executor_items! {
