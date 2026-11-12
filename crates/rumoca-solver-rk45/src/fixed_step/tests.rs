@@ -158,11 +158,12 @@ fn step_halving_converges_at_the_configured_order() {
     }
 }
 
-/// Forwards to the plugin and records what it returned before the host bound
-/// or normalized anything; optionally truncates the plugin before every step.
+/// The plugin under test and what [`Shared`] records of it: each step as the
+/// plugin returned it, before the host bound or normalized anything.
 struct Probe {
     inner: Box<dyn MeIntegratorBackend>,
     raw_steps: Rc<RefCell<Vec<(f64, f64)>>>,
+    /// Truncate the plugin at the current point before every step.
     reset_before_each_step: bool,
 }
 
@@ -184,9 +185,17 @@ impl Probe {
     }
 }
 
-impl MeIntegratorBackend for Probe {
+/// The plugin as the host holds it: forwards every call to the probed plugin.
+/// One probe can be shared by several driven runs, so a later run
+/// re-initializes a plugin that still holds the previous run's history. A
+/// truncation, the host's or the one a reset-mode step emulates, enters
+/// through [`MeIntegratorBackend::truncate_reset`] here and must leave no
+/// interval behind.
+struct Shared(Rc<RefCell<Probe>>);
+
+impl MeIntegratorBackend for Shared {
     fn continuous_extension_order(&self) -> Option<u32> {
-        self.inner.continuous_extension_order()
+        self.0.borrow().inner.continuous_extension_order()
     }
 
     fn initialize(
@@ -194,8 +203,9 @@ impl MeIntegratorBackend for Probe {
         point: &MeContinuousPoint,
         derivatives: MeDerivativeHandle,
     ) -> Result<(), MeIntegrationError> {
-        self.inner.initialize(point, derivatives)?;
-        self.assert_no_retained_interval(point.time());
+        let mut probe = self.0.borrow_mut();
+        probe.inner.initialize(point, derivatives)?;
+        probe.assert_no_retained_interval(point.time());
         Ok(())
     }
 
@@ -203,56 +213,27 @@ impl MeIntegratorBackend for Probe {
         &mut self,
         request: &MeAdvanceRequest,
     ) -> Result<MeStepCandidate, MeIntegrationError> {
-        if self.reset_before_each_step {
-            self.inner.truncate_reset(request.current())?;
-            self.assert_no_retained_interval(request.current().time());
+        if self.0.borrow().reset_before_each_step {
+            self.truncate_reset(request.current())?;
         }
-        let candidate = self.inner.advance(request)?;
-        self.raw_steps
+        let mut probe = self.0.borrow_mut();
+        let candidate = probe.inner.advance(request)?;
+        probe
+            .raw_steps
             .borrow_mut()
             .push((request.current().time(), candidate.accepted_time()));
         Ok(candidate)
     }
 
     fn sample(&self, time: f64, states: &mut [f64]) -> Result<(), MeIntegrationError> {
-        self.inner.sample(time, states)
+        self.0.borrow().inner.sample(time, states)
     }
 
     fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        self.inner.truncate_reset(point)
-    }
-}
-
-/// One instance shared by several driven runs, so a later run re-initializes
-/// a plugin that still holds the previous run's history.
-struct Shared(Rc<RefCell<Probe>>);
-
-impl MeIntegratorBackend for Shared {
-    fn continuous_extension_order(&self) -> Option<u32> {
-        self.0.borrow().continuous_extension_order()
-    }
-
-    fn initialize(
-        &mut self,
-        point: &MeContinuousPoint,
-        derivatives: MeDerivativeHandle,
-    ) -> Result<(), MeIntegrationError> {
-        self.0.borrow_mut().initialize(point, derivatives)
-    }
-
-    fn advance(
-        &mut self,
-        request: &MeAdvanceRequest,
-    ) -> Result<MeStepCandidate, MeIntegrationError> {
-        self.0.borrow_mut().advance(request)
-    }
-
-    fn sample(&self, time: f64, states: &mut [f64]) -> Result<(), MeIntegrationError> {
-        self.0.borrow().sample(time, states)
-    }
-
-    fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        self.0.borrow_mut().truncate_reset(point)
+        let mut probe = self.0.borrow_mut();
+        probe.inner.truncate_reset(point)?;
+        probe.assert_no_retained_interval(point.time());
+        Ok(())
     }
 }
 
@@ -390,7 +371,10 @@ fn the_continuous_extension_meets_both_ends_and_has_its_declared_order() {
 fn the_declared_extension_order_is_known_before_the_first_step() {
     for (order, declared) in [(1, 1), (2, 2), (4, 3)] {
         let shared = probe(0.125, order, false);
-        assert_eq!(shared.borrow().continuous_extension_order(), Some(declared));
+        assert_eq!(
+            shared.borrow().inner.continuous_extension_order(),
+            Some(declared)
+        );
         shared.borrow().assert_no_retained_interval(0.0);
     }
 }
