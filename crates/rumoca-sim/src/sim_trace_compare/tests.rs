@@ -1,5 +1,6 @@
 //! Unit tests for trace comparison and reference-scale normalization.
 
+mod json_loading;
 mod json_roundtrip;
 mod phasor;
 

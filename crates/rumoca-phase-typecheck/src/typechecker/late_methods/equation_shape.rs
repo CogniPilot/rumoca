@@ -135,12 +135,16 @@ impl TypeChecker {
         args: &[Expression],
         type_table: &TypeTable,
     ) -> Option<Vec<usize>> {
-        let name = comp
-            .parts
-            .last()
-            .map(|part| part.ident.text.as_ref())
-            .unwrap_or_default();
+        let name = (comp.parts.len() == 1).then(|| comp.parts[0].ident.text.as_ref())?;
+        if comp.root_def_id().is_some() && self.user_function_definition(comp, name).is_some() {
+            return None;
+        }
         match name {
+            "min" | "max" if args.len() == 1 => Some(Vec::new()),
+            "min" | "max" if args.len() == 2 => Self::merge_binary_shapes(
+                self.infer_expression_shape(&args[0], type_table),
+                self.infer_expression_shape(&args[1], type_table),
+            ),
             "sum" | "product" | "scalar" if args.len() == 1 => Some(Vec::new()),
             "der" | "pre" | "noEvent" | "actualStream" if args.len() == 1 => {
                 self.infer_expression_shape(&args[0], type_table)

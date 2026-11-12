@@ -19,7 +19,7 @@ use crate::lower::typed_functions::formal_stages::FormalStageProgram;
 /// Lowest eligible priority of a state-class column: a source state or a
 /// `prefer` coordinate (see `choice`). An `always` coordinate is forced
 /// independent and never exchanged.
-const STATE_CLASS_PRIORITY: u8 = 4;
+const STATE_CLASS_PRIORITY: u8 = super::eligible_priority(super::STATE_CLASS, super::GUESS_SEED);
 
 /// One single exchange over stage column indices: the primary reconstructs
 /// `dependent` and integrates `incoming`; the alternate reverses both roles.
@@ -409,10 +409,21 @@ impl ExchangePlan {
 mod tests {
     use super::*;
 
-    const STATE: ColumnChoice = ColumnChoice::Eligible(4);
-    const STATED_STATE: ColumnChoice = ColumnChoice::Eligible(5);
-    const ALGEBRAIC: ColumnChoice = ColumnChoice::Eligible(2);
-    const AVOID: ColumnChoice = ColumnChoice::Eligible(0);
+    use super::super::{
+        ALGEBRAIC_CLASS, AVOID_CLASS, GUESS_SEED, PREFER_CLASS, STATE_CLASS, STATED_SEED,
+        eligible_priority,
+    };
+
+    const STATE: ColumnChoice = ColumnChoice::Eligible(eligible_priority(STATE_CLASS, GUESS_SEED));
+    const STATED_STATE: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(STATE_CLASS, STATED_SEED));
+    const ALGEBRAIC: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(ALGEBRAIC_CLASS, GUESS_SEED));
+    const AVOID: ColumnChoice = ColumnChoice::Eligible(eligible_priority(AVOID_CLASS, GUESS_SEED));
+    const PREFER: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(PREFER_CLASS, GUESS_SEED));
+    const STATED_PREFER: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(PREFER_CLASS, STATED_SEED));
 
     fn all_shared(_: usize, _: usize) -> usize {
         1
@@ -454,7 +465,7 @@ mod tests {
         assert_eq!(ranked, RankedExchanges::default());
         // A `prefer` coordinate and a stated-initial `prefer` coordinate are
         // state-class dependents.
-        let choices = [ColumnChoice::Eligible(7), ColumnChoice::Eligible(6), STATE];
+        let choices = [STATED_PREFER, PREFER, STATE];
         let ranked = rank_exchanges(&choices, &[2], all_shared);
         assert_eq!(
             ranked
@@ -470,9 +481,7 @@ mod tests {
     fn a_prefer_column_may_be_exchanged_out_but_a_forced_always_state_may_not() {
         // MLS 3.7 §4.9.7.1 makes `prefer` a preference, so an alternate may
         // reconstruct it; `always` is forced (§3.7.3) and never is.
-        let prefer = ColumnChoice::Eligible(6);
-        let stated_prefer = ColumnChoice::Eligible(7);
-        for incoming in [prefer, stated_prefer] {
+        for incoming in [PREFER, STATED_PREFER] {
             let ranked = rank_exchanges(&[STATE, incoming], &[1], all_shared);
             assert_eq!(
                 ranked.issued,

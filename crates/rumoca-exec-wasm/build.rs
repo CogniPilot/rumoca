@@ -44,9 +44,6 @@ fn main() {
         }
         capture_tree(root, &package.join("src"), &mut files);
     }
-    // The root's existing patch must remain resolvable even when the fixed guest
-    // does not select that package. It is not substituted or upgraded here.
-    capture_tree(root, &root.join("vendor/diffsol"), &mut files);
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     files.dedup_by(|a, b| a.relative == b.relative);
     let mut generated = String::from("static FIXED_SOURCES: &[(&str, &[u8])] = &[\n");

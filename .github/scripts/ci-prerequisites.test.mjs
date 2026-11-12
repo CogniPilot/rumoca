@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 const action = readFileSync(new URL('../actions/apt-install/action.yml', import.meta.url), 'utf8');
 const script = action.split('      run: |\n')[1].replace(/^        /gm, '');
 
-function runApt(statuses) {
+function runApt(statuses, dnsAttempts = []) {
   const dir = mkdtempSync(join(tmpdir(), 'rumoca-apt-'));
   try {
     const commands = {
@@ -22,6 +22,9 @@ printf '%s\\n' "$*" >> "$LOG"
 n=$(cat "$COUNT" 2>/dev/null || echo 0)
 n=$((n + 1)); echo "$n" > "$COUNT"
 status=$(sed -n "\${n}p" "$STATUSES")
+case ",${dnsAttempts.join(',')}," in
+  *",$n,"*) echo "E: Failed to fetch archive: Temporary failure resolving 'archive.ubuntu.com'" >&2 ;;
+esac
 exit "\${status:-99}"`,
     };
     for (const [name, body] of Object.entries(commands)) {
@@ -57,6 +60,24 @@ test('persistent install failure remains fatal after bounded retries', () => {
   assert.equal(r.status, 1);
   assert.equal(r.commands.trim().split('\n').length, 7);
   assert.match(r.stdout, /installation failed after bounded retries/);
+});
+
+test('exhausted DNS setup is explicitly marked without changing failure status', () => {
+  const r = runApt([100, 100, 100, 100], [1, 2, 3, 4]);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /::error title=APT mirror DNS failure::/);
+});
+
+test('an earlier DNS error cannot mark a later permanent package failure', () => {
+  const r = runApt([100, 0, 100, 0, 100, 0, 100], [1]);
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.stdout, /::error title=APT mirror DNS failure::/);
+});
+
+test('recovered DNS setup does not emit a failure marker', () => {
+  const r = runApt([100, 0, 0], [1]);
+  assert.equal(r.status, 0);
+  assert.doesNotMatch(r.stdout, /::error title=APT mirror DNS failure::/);
 });
 
 test('the macOS/Windows clippy step runs after setup-python with its interpreter bound', () => {

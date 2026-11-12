@@ -1,0 +1,44 @@
+name: Retry transient apt DNS setup
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: apt-dns-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure' &&
+          github.event.workflow_run.run_attempt == 1 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      # A workflow_run token can write even when CI came from a fork. Never
+      # check out the triggering head or execute its scripts or artifacts.
+      - name: Check out retry policy from the default branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Retry only marked DNS setup failures once
+        uses: actions/github-script@v8
+        with:
+          retries: 0
+          script: |
+            const { pathToFileURL } = require('url');
+            const helper = await import(pathToFileURL(process.cwd() + '/.github/scripts/ci-apt-dns-retry.mjs'));
+            if (!await helper.retryAptDnsRun({ github, context, core })) {
+              core.info('No eligible first-attempt apt DNS failure; CI is unchanged.');
+            }

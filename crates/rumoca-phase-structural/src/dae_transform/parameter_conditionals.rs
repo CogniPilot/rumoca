@@ -7,7 +7,10 @@
 //! is retained, never differentiated. Parameters and literals are constant; a
 //! relation is piecewise constant because MLS §8.5 makes it change only at its
 //! event, and a discrete or condition coordinate changes only at events; Boolean
-//! operators preserve the property.
+//! operators preserve the property. A binder coordinate is an index of a
+//! structured family or comprehension scalar view (it can only be created from
+//! a domain); each scalar instance fixes its value, so it never varies with
+//! time and is invariant like a parameter.
 
 use rumoca_eval_dae::FunctionCallContext;
 use rumoca_ir_dae as dae;
@@ -111,7 +114,9 @@ fn invariant_guard<'dae>(
     };
     match node.operation() {
         dae::ExpressionOperation::Literal(_)
-        | dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(_)) => true,
+        | dae::ExpressionOperation::Coordinate(
+            dae::CoordinateView::Parameter(_) | dae::CoordinateView::Binder(_),
+        ) => true,
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(parameter)) => {
             context
                 .parameter_argument(parameter)

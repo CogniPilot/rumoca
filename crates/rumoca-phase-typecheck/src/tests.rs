@@ -16,6 +16,7 @@ mod instanced_dimension_tests;
 mod instanced_expression_tests;
 mod instanced_semantics_tests;
 mod instanced_type_name_tests;
+mod min_max_tests;
 mod modifier_tests;
 mod parameter_if_branch_tests;
 mod record_constructor_alias_tests;
