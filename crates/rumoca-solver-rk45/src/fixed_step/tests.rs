@@ -73,13 +73,15 @@ fn plugin(setup: MeNumericalSetup, step: f64, order: u32) -> Box<dyn MeIntegrato
 }
 
 /// What the driver observed of one run: every accepted endpoint, the
-/// evaluations spent by then, and each step's declared extension order.
+/// evaluations spent by then, each step's declared extension order and the
+/// continuous extension at each interval's midpoint.
 #[derive(Debug, Default, PartialEq)]
 struct Trace {
     end_times: Vec<u64>,
     end_states: Vec<Vec<u64>>,
     evaluations: Vec<usize>,
     orders: Vec<u32>,
+    midpoints: Vec<Vec<u64>>,
 }
 
 impl Trace {
@@ -103,6 +105,14 @@ fn integrate_with(
             .push(interval.end_state().iter().map(|v| v.to_bits()).collect());
         trace.evaluations.push(system.evaluations.get());
         trace.orders.push(interval.extension_order());
+        let mut midpoint = [0.0; 2];
+        interval
+            .sample(
+                0.5 * (interval.start_time() + interval.end_time()),
+                &mut midpoint,
+            )
+            .map_err(|error| error.to_string())?;
+        trace.midpoints.push(bits(&midpoint));
         Ok(())
     })?;
     Ok(trace)
@@ -158,12 +168,17 @@ fn step_halving_converges_at_the_configured_order() {
     }
 }
 
-/// Forwards to the plugin and records what it returned before the host bound
-/// or normalized anything; optionally truncates the plugin before every step.
+/// The plugin under test and what [`Shared`] records of it: each step as the
+/// plugin returned it, before the host bound or normalized anything.
 struct Probe {
     inner: Box<dyn MeIntegratorBackend>,
     raw_steps: Rc<RefCell<Vec<(f64, f64)>>>,
+    /// Truncate the plugin at the current point before every step.
     reset_before_each_step: bool,
+    /// Keep the derivative capability the host issues at `initialize` from
+    /// the plugin, as a composing plugin that forwards steps but not the
+    /// capability would.
+    withholds_capability: bool,
 }
 
 impl Probe {
@@ -184,9 +199,17 @@ impl Probe {
     }
 }
 
-impl MeIntegratorBackend for Probe {
+/// The plugin as the host holds it: forwards every call to the probed plugin.
+/// One probe can be shared by several driven runs, so a later run
+/// re-initializes a plugin that still holds the previous run's history. A
+/// truncation, the host's or the one a reset-mode step emulates, enters
+/// through [`MeIntegratorBackend::truncate_reset`] here and must leave no
+/// interval behind.
+struct Shared(Rc<RefCell<Probe>>);
+
+impl MeIntegratorBackend for Shared {
     fn continuous_extension_order(&self) -> Option<u32> {
-        self.inner.continuous_extension_order()
+        self.0.borrow().inner.continuous_extension_order()
     }
 
     fn initialize(
@@ -194,8 +217,11 @@ impl MeIntegratorBackend for Probe {
         point: &MeContinuousPoint,
         derivatives: MeDerivativeHandle,
     ) -> Result<(), MeIntegrationError> {
-        self.inner.initialize(point, derivatives)?;
-        self.assert_no_retained_interval(point.time());
+        let mut probe = self.0.borrow_mut();
+        if !probe.withholds_capability {
+            probe.inner.initialize(point, derivatives)?;
+        }
+        probe.assert_no_retained_interval(point.time());
         Ok(())
     }
 
@@ -203,56 +229,27 @@ impl MeIntegratorBackend for Probe {
         &mut self,
         request: &MeAdvanceRequest,
     ) -> Result<MeStepCandidate, MeIntegrationError> {
-        if self.reset_before_each_step {
-            self.inner.truncate_reset(request.current())?;
-            self.assert_no_retained_interval(request.current().time());
+        if self.0.borrow().reset_before_each_step {
+            self.truncate_reset(request.current())?;
         }
-        let candidate = self.inner.advance(request)?;
-        self.raw_steps
+        let mut probe = self.0.borrow_mut();
+        let candidate = probe.inner.advance(request)?;
+        probe
+            .raw_steps
             .borrow_mut()
             .push((request.current().time(), candidate.accepted_time()));
         Ok(candidate)
     }
 
     fn sample(&self, time: f64, states: &mut [f64]) -> Result<(), MeIntegrationError> {
-        self.inner.sample(time, states)
+        self.0.borrow().inner.sample(time, states)
     }
 
     fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        self.inner.truncate_reset(point)
-    }
-}
-
-/// One instance shared by several driven runs, so a later run re-initializes
-/// a plugin that still holds the previous run's history.
-struct Shared(Rc<RefCell<Probe>>);
-
-impl MeIntegratorBackend for Shared {
-    fn continuous_extension_order(&self) -> Option<u32> {
-        self.0.borrow().continuous_extension_order()
-    }
-
-    fn initialize(
-        &mut self,
-        point: &MeContinuousPoint,
-        derivatives: MeDerivativeHandle,
-    ) -> Result<(), MeIntegrationError> {
-        self.0.borrow_mut().initialize(point, derivatives)
-    }
-
-    fn advance(
-        &mut self,
-        request: &MeAdvanceRequest,
-    ) -> Result<MeStepCandidate, MeIntegrationError> {
-        self.0.borrow_mut().advance(request)
-    }
-
-    fn sample(&self, time: f64, states: &mut [f64]) -> Result<(), MeIntegrationError> {
-        self.0.borrow().sample(time, states)
-    }
-
-    fn truncate_reset(&mut self, point: &MeContinuousPoint) -> Result<(), MeIntegrationError> {
-        self.0.borrow_mut().truncate_reset(point)
+        let mut probe = self.0.borrow_mut();
+        probe.inner.truncate_reset(point)?;
+        probe.assert_no_retained_interval(point.time());
+        Ok(())
     }
 }
 
@@ -263,6 +260,7 @@ fn probe(step: f64, order: u32, reset_before_each_step: bool) -> Rc<RefCell<Prob
         inner: plugin(setup, step, order),
         raw_steps: Rc::default(),
         reset_before_each_step,
+        withholds_capability: false,
     }))
 }
 
@@ -324,6 +322,32 @@ fn a_reinitialized_plugin_restarts_without_the_previous_history() {
         integrate_shared(&shared, 0.75);
         let again = integrate_shared(&shared, 0.5);
         assert_eq!(again, fresh, "order {order}");
+    }
+}
+
+/// A plugin asked to step without the derivative capability the host issues
+/// at `initialize` refuses with its typed construction failure before it
+/// evaluates anything or accepts a step.
+#[test]
+fn a_step_without_the_issued_capability_is_the_typed_construction_refusal() {
+    for order in ORDERS {
+        let shared = probe(0.125, order, false);
+        shared.borrow_mut().withholds_capability = true;
+        let system = Rc::new(Oscillator::default());
+        let outcome = integrate_with(&system, 1.0, &|_| Box::new(Shared(Rc::clone(&shared))));
+        assert!(
+            matches!(
+                outcome,
+                Err(OdeDriveError::Integration(MeIntegrationError::Numerical {
+                    method: METHOD,
+                    category: MeNumericalFailure::Construction,
+                    ..
+                }))
+            ),
+            "order {order}: {outcome:?}"
+        );
+        assert_eq!(system.evaluations.get(), 0, "order {order}");
+        assert!(shared.borrow().raw_steps.borrow().is_empty());
     }
 }
 
@@ -390,7 +414,10 @@ fn the_continuous_extension_meets_both_ends_and_has_its_declared_order() {
 fn the_declared_extension_order_is_known_before_the_first_step() {
     for (order, declared) in [(1, 1), (2, 2), (4, 3)] {
         let shared = probe(0.125, order, false);
-        assert_eq!(shared.borrow().continuous_extension_order(), Some(declared));
+        assert_eq!(
+            shared.borrow().inner.continuous_extension_order(),
+            Some(declared)
+        );
         shared.borrow().assert_no_retained_interval(0.0);
     }
 }

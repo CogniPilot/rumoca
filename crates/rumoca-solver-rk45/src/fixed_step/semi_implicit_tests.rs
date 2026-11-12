@@ -232,10 +232,13 @@ fn the_semi_implicit_scheme_is_refused_with_any_order_but_one() {
     }
 }
 
-/// A plugin that asks for kinematic derivatives before any full evaluation
-/// of the step gets the typed refusal, ahead of whatever it returned.
+/// A plugin that asks for kinematic derivatives at the step's start, before
+/// any full evaluation of the step or, with `after_full`, right after one
+/// there, and then returns the opaque refusal: the host answers with the
+/// typed cause, ahead of whatever the plugin returned.
 struct EagerKinematic {
     derivatives: Option<MeDerivativeHandle>,
+    after_full: bool,
 }
 
 impl MeIntegratorBackend for EagerKinematic {
@@ -259,8 +262,19 @@ impl MeIntegratorBackend for EagerKinematic {
         let derivatives = self.derivatives.as_ref().ok_or_else(missing_handle)?;
         let start = request.current();
         let mut out = vec![0.0; 2];
-        derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
-        assert!(out[0].is_nan());
+        if self.after_full {
+            derivatives.derivatives_into(start.time(), start.states(), &mut out);
+            let full: Vec<u64> = out.iter().map(|value| value.to_bits()).collect();
+            derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
+            // No kinematic entry to poison: the refusal writes nothing.
+            assert_eq!(
+                out.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                full
+            );
+        } else {
+            derivatives.kinematic_derivatives_into(start.time(), start.states(), &mut out);
+            assert!(out[0].is_nan());
+        }
         Err(MeIntegrationError::DerivativeRefused)
     }
 
@@ -279,7 +293,12 @@ fn a_kinematic_request_without_a_current_full_evaluation_is_refused() {
     let outcome = integrate_ode(
         source,
         &run(1.0),
-        &|_setup| Box::new(EagerKinematic { derivatives: None }),
+        &|_setup| {
+            Box::new(EagerKinematic {
+                derivatives: None,
+                after_full: false,
+            })
+        },
         |_interval| Ok(()),
     );
     assert!(
@@ -288,6 +307,91 @@ fn a_kinematic_request_without_a_current_full_evaluation_is_refused() {
             Err(OdeDriveError::Integration(
                 MeIntegrationError::NoEvaluatedPoint { .. }
             ))
+        ),
+        "{outcome:?}"
+    );
+}
+
+/// `x' = v`, `v' = -x` declaring nothing about kinematic states: its
+/// partition is the `ContinuousOde` default.
+#[derive(Default)]
+struct Undeclared {
+    full: Cell<usize>,
+}
+
+impl ContinuousOde for Undeclared {
+    fn width(&self) -> usize {
+        2
+    }
+
+    fn derivatives_into(&self, _time: f64, state: &[f64], out: &mut [f64]) -> Result<(), String> {
+        self.full.set(self.full.get() + 1);
+        out[0] = state[1];
+        out[1] = -state[0];
+        Ok(())
+    }
+}
+
+/// A system that declares no kinematic states has the empty default
+/// partition, so the semi-implicit scheme takes explicit Euler steps bit for
+/// bit at one evaluation each and never asks for a kinematic derivative.
+#[test]
+fn a_system_without_a_declared_partition_steps_as_explicit_euler() {
+    let drive = |scheme| {
+        let system = Rc::new(Undeclared::default());
+        let source: Rc<dyn ContinuousOde> = Rc::clone(&system) as Rc<dyn ContinuousOde>;
+        let mut ends = Vec::new();
+        integrate_ode(
+            source,
+            &run(1.0),
+            &|setup| {
+                fixed_step_integrator(setup, config(0.125, scheme)).expect("a valid configuration")
+            },
+            |interval| {
+                ends.push(
+                    interval
+                        .end_state()
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            },
+        )
+        .expect("the oscillator integrates");
+        (ends, system.full.get())
+    };
+    let (explicit, explicit_evaluations) = drive(FixedStepScheme::Explicit);
+    let (semi_implicit, semi_implicit_evaluations) = drive(FixedStepScheme::SemiImplicit);
+    assert_eq!(explicit.len(), 8);
+    assert_eq!(semi_implicit, explicit);
+    assert_eq!(explicit_evaluations, 8);
+    assert_eq!(semi_implicit_evaluations, explicit_evaluations);
+}
+
+/// A kinematic request to a system that declares no kinematic states, even
+/// right after a full evaluation at the same point, is the system's own typed
+/// refusal rather than any value.
+#[test]
+fn a_kinematic_request_to_a_system_without_kinematic_states_is_refused() {
+    let source: Rc<dyn ContinuousOde> = Rc::new(Undeclared::default());
+    let outcome = integrate_ode(
+        source,
+        &run(1.0),
+        &|_setup| {
+            Box::new(EagerKinematic {
+                derivatives: None,
+                after_full: true,
+            })
+        },
+        |_interval| Ok(()),
+    );
+    assert!(
+        matches!(
+            &outcome,
+            Err(OdeDriveError::Integration(MeIntegrationError::Component(
+                rumoca_solver::fmi_me::MeError::Evaluation { message }
+            ))) if message == "the system has no kinematic states"
         ),
         "{outcome:?}"
     );

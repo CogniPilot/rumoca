@@ -7,6 +7,9 @@ mod observations;
 mod outer_scalar_fold;
 mod refusal_provenance;
 mod shared_scratch;
+// A native host admits no engine for compiled schedules.
+#[cfg(not(target_arch = "wasm32"))]
+mod torn_tangents;
 mod tuples;
 use super::*;
 use rumoca_core::{SourceId, Span};

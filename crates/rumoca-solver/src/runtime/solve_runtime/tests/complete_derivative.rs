@@ -88,6 +88,32 @@ fn complete_value_failure_is_retained_without_retrying_the_old_expression() {
     assert_eq!(calls.get(), 1);
 }
 
+/// A complete operation that binds no kinematic entry leaves a kinematic-row
+/// read at a settled coordinate to the ordinary derivative rows, bit for bit
+/// what a runtime without the operation reads, and never calls the operation.
+#[test]
+fn kinematic_rows_without_a_bound_entry_are_read_from_the_ordinary_rows() {
+    let model = warm_start_test_model();
+    let settled = [10., 42.];
+    let read = |runtime: &SolveRuntime| {
+        let mut output = [-1.];
+        runtime
+            .eval_derivative_rows_at_settled_y(0.5, &settled, &[], &[0], &mut output)
+            .unwrap();
+        output.map(f64::to_bits)
+    };
+    let reference = read(&SolveRuntime::new_fixture(&model).unwrap());
+    assert_eq!(reference, [10f64.to_bits()]);
+    let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let calls = Rc::new(Cell::new(0));
+    runtime.scalar_fixture_mut().compiled_derivative_operation = Some(Rc::new(Entry {
+        calls: calls.clone(),
+        fail: false,
+    }));
+    assert_eq!(read(&runtime), reference);
+    assert_eq!(calls.get(), 0);
+}
+
 struct SourceBackend {
     expected: solve::RetainedAssertionRoot,
     calls: Rc<Cell<usize>>,

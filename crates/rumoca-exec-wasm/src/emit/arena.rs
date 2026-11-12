@@ -348,6 +348,7 @@ impl BodyEmitter<'_> {
             .checked_mul(8)
             .and_then(|n| u32::try_from(n).ok())
             .ok_or("native output address overflow")?;
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
         if self.has_value_local(&[start])? {
             for element in 0..count {
                 let offset = u64::try_from(element)

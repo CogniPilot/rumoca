@@ -5,32 +5,18 @@ use std::rc::Rc;
 use super::{MeSessionError, MeSimulationSession};
 use crate::fmi_me::{MeError, instance::MeKernelCell};
 
-/// What one selected read answers: the requested values, and how many values
-/// the full read holds at the same observation.
-type SelectedRead = (Vec<Option<f64>>, usize);
-
-/// The component answered with a different number of values than it declares.
-pub(super) fn output_arity_mismatch(returned: usize, declared: usize) -> MeSessionError {
-    MeSessionError::Contract {
-        reason: format!(
-            "the component returned {returned} output values for {declared} declared outputs"
-        ),
-    }
-}
-
 /// The selected counterpart of the full output read: one observation, the
 /// getter over `names` alone, and the same single warning report after it.
 fn read_selected_outputs<N: AsRef<str>>(
     kernel: &Rc<MeKernelCell>,
     names: &[N],
-) -> Result<SelectedRead, MeError> {
+) -> Result<Vec<Option<f64>>, MeError> {
     let kernel = kernel.borrow()?;
     let observation = kernel.observe()?;
     let mut values = Vec::new();
-    let returned =
-        kernel.get_selected_outputs(&observation, observation.time(), names, &mut values)?;
+    kernel.get_selected_outputs(&observation, observation.time(), names, &mut values)?;
     kernel.report_warnings(&observation)?;
-    Ok((values, returned))
+    Ok(values)
 }
 
 impl MeSimulationSession<'_, '_> {
@@ -46,11 +32,8 @@ impl MeSimulationSession<'_, '_> {
     ) -> Result<Vec<Option<f64>>, MeSessionError> {
         // Borrowed before anything is read, so a kernel that is not active
         // refuses a selected read exactly as it refuses `output_names`.
-        let declared = self.host.kernel.borrow()?.declared_output_count();
-        let (mut values, returned) = self.observe_selected(names)?;
-        if declared != returned {
-            return Err(output_arity_mismatch(returned, declared));
-        }
+        drop(self.host.kernel.borrow()?);
+        let mut values = self.observe_selected(names)?;
         for (name, value) in names.iter().zip(&mut values) {
             if let Some(input) = self.host.inputs.get(name.as_ref()) {
                 *value = Some(*input);
@@ -59,7 +42,10 @@ impl MeSimulationSession<'_, '_> {
         Ok(values)
     }
 
-    fn observe_selected<N: AsRef<str>>(&self, names: &[N]) -> Result<SelectedRead, MeSessionError> {
+    fn observe_selected<N: AsRef<str>>(
+        &self,
+        names: &[N],
+    ) -> Result<Vec<Option<f64>>, MeSessionError> {
         self.require_live()?;
         let read = |kernel: &Rc<MeKernelCell>| read_selected_outputs(kernel, names);
         match self.off_point_observation() {

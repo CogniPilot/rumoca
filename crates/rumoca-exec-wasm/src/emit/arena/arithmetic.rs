@@ -45,6 +45,7 @@ impl BodyEmitter<'_> {
                 );
             }
         };
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
         if self.has_value_local(&[dst_start, lhs_start, rhs_start])? {
             for element in 0..count {
                 self.push_reg(cell(lhs_start, element, lhs_stride)?)?;
@@ -86,6 +87,7 @@ impl BodyEmitter<'_> {
         let count = rows
             .checked_mul(columns)
             .ok_or("native matrix count overflow")?;
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
         if self.has_value_local(&[dst_start, lhs_start, rhs_start])? {
             return self.value_matrix(dst_start, lhs_start, rhs_start, [count, inner, columns]);
         }
@@ -184,6 +186,7 @@ impl BodyEmitter<'_> {
 
     /// The matrix product in the element and term order of the counted loop,
     /// with every cell named statically so an issued local home needs no address.
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
     fn value_matrix(
         &mut self,
         dst_start: Reg,
@@ -209,6 +212,7 @@ impl BodyEmitter<'_> {
     }
 
     /// Every term after the first joins the running sum on the stack.
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
     fn push_sum_after_first(&mut self, term: usize) {
         if term != 0 {
             self.push(Instruction::F64Add);
@@ -230,6 +234,7 @@ impl BodyEmitter<'_> {
 }
 
 /// The register of one statically named element of a strided run.
+#[cfg(feature = "diagnostic-root-scalar-locals")]
 pub(in crate::emit) fn cell(start: Reg, element: usize, stride: usize) -> Result<Reg, String> {
     element
         .checked_mul(stride)

@@ -11,9 +11,15 @@ fn fixture_span() -> rumoca_core::Span {
 }
 
 fn state_component(with_values: bool) -> FmiComponent {
+    valued_component(with_values.then_some(3.0))
+}
+
+/// The one-state component whose two derivative outputs are `value`, or that
+/// has no derivative vector without one.
+fn valued_component(value: Option<f64>) -> FmiComponent {
     let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_state();
     model.problem.events.delays = crate::SolveDelayPartition::default();
-    if with_values {
+    if let Some(value) = value {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
                 provenance: IndexBinderProvenance::Generated,
@@ -29,7 +35,7 @@ fn state_component(with_values: bool) -> FmiComponent {
                 output_map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
                 domain,
                 base_ops: vec![
-                    LinearOp::Const { dst: 0, value: 3.0 },
+                    LinearOp::Const { dst: 0, value },
                     LinearOp::StoreOutput { src: 0 },
                 ],
                 load_strides: Vec::new(),
@@ -168,4 +174,47 @@ fn causal_workspace_checks_complete_private_demand_and_keeps_counted_control() {
     })
     .unwrap();
     assert!(operation.control_plan([65536], capacity).is_err());
+}
+
+/// The persisted-product key of the complete operation is its source
+/// identity: the component built again from equal source keeps it, and one
+/// whose derivative values differ does not.
+#[test]
+fn the_complete_operation_key_follows_its_source() {
+    let key = |component: &FmiComponent| {
+        let operation = component
+            .runtime_view()
+            .try_derivative_operation()
+            .unwrap()
+            .try_causal_operation()
+            .unwrap();
+        let source = operation.source();
+        crate::PreparedKernelSource::new(&source.problem().layout, source.calls())
+            .unwrap()
+            .fmi_derivative(&operation)
+            .unwrap()
+    };
+    let original = key(&valued_component(Some(3.0)));
+    assert_eq!(original, key(&valued_component(Some(3.0))));
+    assert_ne!(original, key(&valued_component(Some(4.0))));
+}
+
+/// The complete operation returns its status as the issued discriminant, and
+/// the host decodes exactly those: each status from its own code, and no
+/// status from any other code.
+#[test]
+fn the_host_decodes_exactly_the_issued_status_codes() {
+    for status in [
+        FmiDerivativeStatus::Success,
+        FmiDerivativeStatus::InvalidBuffers,
+        FmiDerivativeStatus::StaticRefresh,
+        FmiDerivativeStatus::DynamicRefresh,
+        FmiDerivativeStatus::Values,
+        FmiDerivativeStatus::NonFinite,
+    ] {
+        assert_eq!(FmiDerivativeStatus::from_code(status as u32), Some(status));
+    }
+    for code in [6, 7, 255, u32::MAX] {
+        assert_eq!(FmiDerivativeStatus::from_code(code), None, "code {code}");
+    }
 }

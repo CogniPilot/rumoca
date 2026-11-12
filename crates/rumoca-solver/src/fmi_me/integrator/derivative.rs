@@ -956,6 +956,34 @@ mod tests {
         );
     }
 
+    /// A component that issues no kinematic partition hands the plugin an
+    /// empty one. A kinematic request before the call's full evaluation has no
+    /// evaluated point to reuse; after one at the same point it reaches the
+    /// component, whose typed refusal is latched. Neither writes an entry.
+    #[test]
+    fn a_component_without_kinematic_states_refuses_a_kinematic_request() {
+        let controller = controller();
+        let handle = controller.issue_handle();
+        assert!(handle.kinematic_states().is_empty());
+        let _window = controller.activate();
+        let mut out = [42.0];
+        handle.kinematic_derivatives_into(1.0, &[2.0], &mut out);
+        assert_eq!(out, [42.0]);
+        assert!(matches!(
+            controller.take_error(),
+            Some(MeIntegrationError::NoEvaluatedPoint { .. })
+        ));
+        handle.derivatives_into(1.0, &[2.0], &mut out);
+        assert_eq!(out, [3.0]);
+        handle.kinematic_derivatives_into(1.0, &[2.0], &mut out);
+        assert_eq!(out, [3.0]);
+        assert!(matches!(
+            controller.take_error(),
+            Some(MeIntegrationError::Component(MeError::Contract { reason }))
+                if reason == "the component issues no kinematic states"
+        ));
+    }
+
     /// The first failure is the one that survives: a later consequence must not
     /// overwrite the cause.
     #[test]

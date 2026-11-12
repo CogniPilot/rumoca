@@ -161,3 +161,58 @@ fn invalid_or_misdirected_options_are_typed_refusals_before_any_model_work() {
         }
     );
 }
+
+/// The undamped spring `der(x) = v`, `der(v) = -x`: `v` is a velocity
+/// coordinate, so the Solve IR issues `x` as the one kinematic state.
+fn spring() -> std::sync::Arc<rumoca_ir_dae::Dae> {
+    let mut compiler = rumoca_compile::compile::Session::new(Default::default());
+    compiler
+        .add_document(
+            "spring.mo",
+            "model Spring Real x(start=1, fixed=true); Real v(start=0, fixed=true); \
+             equation der(x)=v; der(v)=-x; end Spring;",
+        )
+        .unwrap();
+    compiler.compile_model("Spring").unwrap().dae
+}
+
+/// The session serves the semi-implicit scheme the kinematic partition and
+/// the kinematic derivatives of its own component: every step advances `v`
+/// from the full evaluation and then `x` from the already advanced `v`, bit
+/// for bit the partitioned Euler recursion, where the explicit scheme moves
+/// `x` with the old `v`.
+#[test]
+fn the_semi_implicit_session_advances_positions_with_the_new_velocities() {
+    let step = 0.03125;
+    let at_one = |backend_options| {
+        let opts = options("fixed-step", Some(backend_options));
+        let mut session = SimulationSession::new(&spring(), opts).expect("the session prepares");
+        session.advance_to(1.0).expect("the session advances");
+        ["x", "v"].map(|name| {
+            session
+                .get(name)
+                .unwrap()
+                .expect("the state is visible")
+                .to_bits()
+        })
+    };
+    let (mut x, mut v) = (1.0_f64, 0.0_f64);
+    let (mut explicit_x, mut explicit_v) = (1.0_f64, 0.0_f64);
+    for _ in 0..32 {
+        v += step * -x;
+        x += step * v;
+        (explicit_x, explicit_v) = (
+            explicit_x + step * explicit_v,
+            explicit_v + step * -explicit_x,
+        );
+    }
+    assert_eq!(
+        at_one(crate::fixed_step_semi_implicit_backend_options(step, 1)),
+        [x.to_bits(), v.to_bits()]
+    );
+    assert_eq!(
+        at_one(fixed_step_backend_options(step, 1)),
+        [explicit_x.to_bits(), explicit_v.to_bits()]
+    );
+    assert_ne!(x.to_bits(), explicit_x.to_bits());
+}
