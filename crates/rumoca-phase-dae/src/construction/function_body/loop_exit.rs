@@ -16,8 +16,12 @@
 //!   reads no binder of the loop: the leading binder is monotone and the bound
 //!   is unchanged by skipped passes, so the test stays false.
 //!
-//! The continuation is the conjunction of the exit tests. The selection itself
-//! stays in the body, so the continuation only ends the fold early.
+//! The continuation is the conjunction of the exit tests, each evaluated only
+//! where the ones before it hold, in the order the body's nested selections
+//! evaluate them, so it evaluates no test in a state where the body would
+//! not: a test an outer selection guards may fault where that selection is
+//! false. The selection itself stays in the body, so the continuation only
+//! ends the fold early.
 
 use super::*;
 use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Statement};
@@ -112,12 +116,15 @@ impl OwnLoop<'_, '_> {
         if exits.is_empty() {
             return None;
         }
-        let mut exits = exits.into_iter();
-        let first = exits.next()?.clone();
-        Some(exits.fold(first, |lhs, rhs| Expression::Binary {
-            op: OpBinary::And,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs.clone()),
+        // The conjuncts are in the order the selections evaluate them.
+        let mut exits = exits.into_iter().rev();
+        let last = exits.next()?.clone();
+        Some(exits.fold(last, |rest, test| Expression::If {
+            branches: vec![(test.clone(), rest)],
+            else_branch: Box::new(Expression::Literal {
+                value: Literal::Boolean(false),
+                span,
+            }),
             span,
         }))
     }
