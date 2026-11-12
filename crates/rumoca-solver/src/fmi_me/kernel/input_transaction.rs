@@ -151,6 +151,11 @@ impl SolveMeKernel {
             );
             match held {
                 Ok(true) => {}
+                // Defensive: Continuous-Time Mode is entered with the domains
+                // seeded at the settled coordinate, every completed step
+                // refreezes them or enters Event Mode, and a continuous write
+                // changes no input an indicator reads, so a kernel standing at
+                // the host point holds its domains.
                 Ok(false) => return Ok(NeedsInputEvent),
                 Err(_) => return Ok(NotProven),
             }

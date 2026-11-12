@@ -547,6 +547,14 @@ impl SolveMeKernel {
         drop(self.solver_y_guess.borrow_mut());
     }
 
+    /// Invert every frozen indicator domain, leaving the coordinate as it is.
+    #[cfg(test)]
+    pub(crate) fn verification_invert_frozen_indicator_domains(&mut self) {
+        for positive in &mut self.frozen_indicator_positive {
+            *positive = !*positive;
+        }
+    }
+
     #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn verification_matches_snapshot(&self, saved: &MeFmuState) -> bool {
         if !Rc::ptr_eq(&saved.instance_brand, &self.instance_brand) {

@@ -1645,6 +1645,39 @@ impl MeSimulationSession<'_, '_> {
         (time, states)
     }
 
+    /// Invert every indicator domain the component froze, leaving it standing
+    /// where it is.
+    pub(super) fn verification_invert_frozen_indicator_domains(&self) {
+        self.host
+            .kernel
+            .borrow_mut()
+            .expect("verification requires an active session")
+            .verification_invert_frozen_indicator_domains();
+    }
+
+    /// The rollback-free continuous write of declared input `name` at the
+    /// session's point, as a changed frame would attempt it.
+    pub(super) fn verification_unguarded_continuous_write(
+        &self,
+        name: &str,
+        value: f64,
+    ) -> super::kernel::UnguardedContinuousWrite {
+        let references = self
+            .input_references(std::iter::once(name))
+            .expect("a declared input");
+        self.host
+            .kernel
+            .borrow_mut()
+            .expect("verification requires an active session")
+            .write_continuous_without_rollback(
+                super::MeTime::at(self.host.time),
+                &self.host.states,
+                &references,
+                &[value],
+            )
+            .expect("the write is admissible")
+    }
+
     /// The component's complete checkpoint, as the input rollback owner takes
     /// it, and the host's applied inputs.
     pub(super) fn verification_checkpoint(&self) -> (super::MeFmuState, Vec<(String, u64)>) {
