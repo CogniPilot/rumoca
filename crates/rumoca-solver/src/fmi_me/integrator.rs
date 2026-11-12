@@ -33,11 +33,15 @@ pub(super) mod conformance;
 /// controller. SPEC_0044 §6's ruling keeps the concrete component source and
 /// the handle constructor inside the common host.
 mod derivative;
+mod fixed_step_tableau;
 pub mod time_only;
 
 pub(super) use derivative::{MeDerivativeComponent, MeDerivativeController};
 pub use derivative::{
     MeDerivativeHandle, MeDerivativeRefused, reset_trial_discard_count, trial_discard_count,
+};
+pub use fixed_step_tableau::{
+    MeFixedStepRefusal, MeFixedStepRoles, MeFixedStepTableau, MeFixedStepTerms,
 };
 
 #[cfg(test)]

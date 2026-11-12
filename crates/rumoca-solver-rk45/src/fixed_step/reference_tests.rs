@@ -397,9 +397,9 @@ fn every_method_reproduces_its_recorded_run_bit_for_bit() {
 /// the tableau issues and the plugin now folds from.
 #[test]
 fn the_sum_the_references_were_recorded_with_started_where_the_tableau_folds_from() {
-    let start = rumoca_solver::fmi_me::FIXED_STEP_FOLD_START.to_bits();
+    let tableau = MeFixedStepTableau::issue(1, MeFixedStepRoles::Uniform).unwrap();
+    let start = tableau.fold_start().to_bits();
+    assert_eq!(start, (-0.0_f64).to_bits());
     assert_eq!(std::iter::empty::<f64>().sum::<f64>().to_bits(), start);
     assert_eq!([-0.0_f64].into_iter().sum::<f64>().to_bits(), start);
-    let tableau = FixedStepTableau::issue(1, FixedStepStateRoles::Uniform).unwrap();
-    assert_eq!(tableau.fold_start().to_bits(), start);
 }

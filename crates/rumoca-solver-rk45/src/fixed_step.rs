@@ -23,7 +23,7 @@
 //!
 //! The stages, their times, the terms each stage state and the endpoint fold,
 //! the fold's starting value and the stage that closes the step are not
-//! written here: the plugin interprets the `FixedStepTableau` the Solve IR
+//! written here: the plugin interprets the `MeFixedStepTableau` the Solve IR
 //! issues for the configured order and scheme, so every executor of a fixed
 //! step reads one definition of its arithmetic.
 //!
@@ -69,10 +69,9 @@ pub use options::FixedStepOptionsKey;
 
 use rumoca_solver::BackendOptionsError;
 use rumoca_solver::fmi_me::{
-    FixedStepStateRoles, FixedStepTableau, FixedStepTableauRefusal, FixedStepTerm,
-    MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
-    MeIntegratorBackend, MeNumericalFailure, MeNumericalSetup, MeStepCandidate,
-    accepted_interval_contains,
+    MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeFixedStepRoles, MeFixedStepTableau,
+    MeFixedStepTerms, MeIntegrationError, MeIntegratorBackend, MeNumericalFailure,
+    MeNumericalSetup, MeStepCandidate, accepted_interval_contains,
 };
 
 use crate::me_integrator::{evaluate_derivative_in, resize_work, try_copied};
@@ -116,11 +115,11 @@ pub enum FixedStepScheme {
 
 /// The issued tableau of the method one configured order and scheme select.
 #[derive(Debug, Clone, PartialEq)]
-struct Method(FixedStepTableau);
+struct Method(MeFixedStepTableau);
 
 impl Method {
     fn from_order(order: u32) -> Option<Self> {
-        FixedStepTableau::issue(order, FixedStepStateRoles::Uniform)
+        MeFixedStepTableau::issue(order, MeFixedStepRoles::Uniform)
             .ok()
             .map(Self)
     }
@@ -132,9 +131,9 @@ impl Method {
         match scheme {
             FixedStepScheme::Explicit => Some(Some(uniform)),
             FixedStepScheme::SemiImplicit => {
-                match FixedStepTableau::issue(order, FixedStepStateRoles::Kinematic) {
+                match MeFixedStepTableau::issue(order, MeFixedStepRoles::Kinematic) {
                     Ok(tableau) => Some(Some(Self(tableau))),
-                    Err(FixedStepTableauRefusal::Roles(_)) => Some(None),
+                    Err(refusal) if refusal.roles_not_admitted() => Some(None),
                     Err(_) => None,
                 }
             }
@@ -154,7 +153,7 @@ impl Method {
     /// Stage slopes the workspace holds: one per stage, and one for the
     /// kinematic derivative of the partitioned scheme.
     fn slope_count(&self) -> usize {
-        self.0.stage_count() + usize::from(self.0.roles() == FixedStepStateRoles::Kinematic)
+        self.0.stage_count() + usize::from(self.0.roles() == MeFixedStepRoles::Kinematic)
     }
 }
 
@@ -304,7 +303,7 @@ impl FixedStepIntegrator {
             evaluate(derivatives, at, point, &mut rest[0])?;
         }
         combine_into(tableau, state, step, tableau.update_terms(), k, end);
-        if tableau.roles() == FixedStepStateRoles::Kinematic {
+        if tableau.roles() == MeFixedStepRoles::Kinematic {
             let slope = &mut k[tableau.stage_count()];
             advance_kinematic(derivatives, time, state, step, stage, slope, end)?;
         }
@@ -530,10 +529,10 @@ fn overwrite(buffer: &mut Vec<f64>, source: &[f64]) {
 /// `out = state + step * fold(terms)`, the fold `tableau` issues over the
 /// stage `slopes`.
 fn combine_into(
-    tableau: &FixedStepTableau,
+    tableau: &MeFixedStepTableau,
     state: &[f64],
     step: f64,
-    terms: &[FixedStepTerm],
+    terms: MeFixedStepTerms<'_>,
     slopes: &[Vec<f64>],
     out: &mut [f64],
 ) {
