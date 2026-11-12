@@ -36,10 +36,11 @@ impl EventConsumerReads {
         }
     }
 
-    /// The non-state solver coordinates, the parameter slots, and whether the
-    /// parameter reads of some consumer are not analysable.
-    pub(super) fn into_parts(self) -> (CompactYDependencySet, BTreeSet<usize>, bool) {
-        (self.y, self.p.unwrap_or_default(), self.opaque)
+    /// The non-state solver coordinates, the parameter slots when these reads
+    /// collected them, and whether the parameter reads of some consumer are
+    /// not analysable.
+    pub(super) fn into_parts(self) -> (CompactYDependencySet, Option<BTreeSet<usize>>, bool) {
+        (self.y, self.p, self.opaque)
     }
 
     pub(super) fn extend_block(

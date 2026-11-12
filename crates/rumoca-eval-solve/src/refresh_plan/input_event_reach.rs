@@ -164,10 +164,11 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
     if !extend_instant_owner_reads(&mut reads, problem, state_count)? {
         return Ok(None);
     }
-    let (solver_reads, mut parameters, opaque) = reads.into_parts();
-    if opaque {
+    let (solver_reads, parameters, opaque) = reads.into_parts();
+    // Reads without their parameter slots cannot bound the reach.
+    let Some(mut parameters) = parameters.filter(|_| !opaque) else {
         return Ok(None);
-    }
+    };
     let span = implicit_block.first_span();
     let target_to_row = dependency_target_rows(algebraic, span)?;
     let block_by_target = dependency_blocks_by_target(problem, algebraic, state_count, span)?;
