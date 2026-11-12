@@ -129,8 +129,8 @@ fn element_updates(model: &str) -> (usize, usize) {
                     ..
                 } => {
                     walk(transition.body(), counts);
-                    if let Some(continuation) = continuation {
-                        walk(continuation.body(), counts);
+                    for region in continuation {
+                        walk(region.body(), counts);
                     }
                 }
                 SolveOperation::Map { body, .. } => walk(body.body(), counts),
