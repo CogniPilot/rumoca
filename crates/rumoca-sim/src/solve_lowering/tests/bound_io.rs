@@ -343,8 +343,8 @@ fn bound_calls_match_named_calls_on_writes_at_a_time_event() {
     ];
     for (kind, named, _) in assert_calls_agree(TICKS, "Ticks", &script) {
         if matches!(kind, Plugin::Adaptive) {
-            // The ticks at 0.1 and 0.2 are still due when those writes arrive.
-            assert_eq!(named.writes, [1, 2]);
+            // The ticks at 0.1 and 0.2 are processed when those writes arrive.
+            assert_eq!(named.writes, [3, 0]);
         }
     }
 }

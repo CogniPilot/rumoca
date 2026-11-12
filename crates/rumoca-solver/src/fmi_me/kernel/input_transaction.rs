@@ -30,11 +30,15 @@ impl SolveMeKernel {
     ///
     /// It may when no changed input reaches an event owner in the same
     /// instant (`InputEventReach`, derived from this model's refresh owners),
-    /// no time event is due at `time` (the input event would consume it), the
-    /// model has no delay channels (Event Mode holds their history) and no
-    /// retained state constraints (an event projects the states onto them),
-    /// and no native stateless transport owns the event boundary. The indicator
-    /// domains are checked at the write itself
+    /// no time event is still due at `time` (an unconsumed scheduled
+    /// coincidence or the announced pending stop; the input event would
+    /// consume it), the model has no delay channels (Event Mode holds their
+    /// history) and no retained state constraints (an event projects the
+    /// states onto them), and no native stateless transport owns the event
+    /// boundary. A scheduled instant already processed does not refuse: the
+    /// schedule consumes every coincident event of an instant at once, and an
+    /// input event there runs only the rows no schedule owns, as at any other
+    /// instant. The indicator domains are checked at the write itself
     /// ([`AcceptedInputWrite::write_continuous`]).
     pub(in crate::fmi_me) fn admits_continuous_input_write<'reference>(
         &self,
@@ -54,7 +58,7 @@ impl SolveMeKernel {
             || self.runtime.requires_state_manifold_projection()
             || self
                 .stop_schedule
-                .scheduled_event_coincidence_at(time)
+                .unconsumed_coincident_event_at(time)
                 .is_some()
             || self
                 .pending_event_stop
@@ -120,9 +124,30 @@ impl SolveMeKernel {
         self.event_boundary = time.event_boundary;
         self.states.copy_from_slice(states);
         self.store_float64_inputs(&indices, values);
+        self.write_input_event_clock_lanes();
         self.clear_callback_value_caches();
         self.commit_seed();
         Ok(Some(()))
+    }
+
+    /// The periodic-clock activation lanes an input event at the current time
+    /// leaves: its passes tick no clock at an instant whose scheduled event was
+    /// already processed, and write the lanes of the current time otherwise.
+    fn write_input_event_clock_lanes(&mut self) {
+        let row_filter = if self
+            .stop_schedule
+            .scheduled_event_coincidence_at(self.time)
+            .is_some()
+        {
+            EventUpdateRowFilter::UnownedOnly
+        } else {
+            EventUpdateRowFilter::All
+        };
+        row_filter.write_pass_clock_activation_params(
+            self.runtime.model(),
+            &mut self.params,
+            self.time,
+        );
     }
 
     /// Whether every event indicator at the current coordinate still lies in
@@ -174,9 +199,10 @@ impl AcceptedInputWrite<'_> {
     /// Returns `false`, having written no input, when an indicator left its
     /// frozen domain: the input event would latch that crossing. Otherwise the
     /// component ends where the input event's exit would leave it: the cells
-    /// written and every value cache cleared, scheduled root relation memory
-    /// cleared, and the committed seed restarted from the current coordinate,
-    /// which drops the derivative it resolved under the old inputs.
+    /// written and every value cache cleared, the clock activation lanes its
+    /// passes write, scheduled root relation memory cleared, and the committed
+    /// seed restarted from the current coordinate, which drops the derivative
+    /// it resolved under the old inputs.
     pub(in crate::fmi_me) fn write_continuous(
         &mut self,
         time: MeTime,
@@ -190,6 +216,7 @@ impl AcceptedInputWrite<'_> {
             return Ok(false);
         }
         self.kernel.set_float64(references, values)?;
+        self.kernel.write_input_event_clock_lanes();
         self.kernel.clear_all_scheduled_root_relation_memory()?;
         self.kernel.clear_callback_value_caches();
         self.kernel.commit_seed();

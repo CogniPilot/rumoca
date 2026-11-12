@@ -580,6 +580,33 @@ mod tests {
         assert_eq!(found.event.pre_mode, EventPreMode::EventEntry);
     }
 
+    /// The schedule consumes an instant: two clocks ticking at it merge into
+    /// one coincident event, and one consumption covers both, so one cannot
+    /// stay due after the other was processed.
+    #[test]
+    fn coincident_ticks_of_two_clocks_are_consumed_together() {
+        let mut problem = solve::SolveProblem::default();
+        for period in [0.1, 0.05] {
+            problem
+                .clocks
+                .periodic_event_schedules
+                .push(periodic(period, 0.0));
+        }
+        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
+        let tick = schedule
+            .unconsumed_coincident_event_at(0.1)
+            .expect("the shared tick is due before it is processed");
+        assert!(schedule.unconsumed_coincident_event_at(0.05).is_some());
+        schedule.advance_past(tick.time);
+        assert!(schedule.unconsumed_coincident_event_at(0.1).is_none());
+        assert_eq!(
+            schedule
+                .scheduled_event_coincidence_at(0.1)
+                .map(|coincidence| coincidence.consumption),
+            Some(ScheduledEventConsumption::Consumed)
+        );
+    }
+
     #[test]
     fn unconsumed_coincident_tick_is_available_exactly_once() {
         let mut problem = solve::SolveProblem::default();

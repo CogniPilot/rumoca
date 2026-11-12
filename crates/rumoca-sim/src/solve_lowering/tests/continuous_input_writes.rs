@@ -336,6 +336,8 @@ const TICKS: &str = "model Ticks input Real u = 0; Real x(start=0, fixed=true); 
     discrete Real s(start=0, fixed=true); \
     equation der(x) = u; when sample(0, 0.1) then s = pre(s) + x; end when; end Ticks;";
 
+/// Every advance processes the ticks due where it ends before it returns, so
+/// each write here follows a tick already processed at its instant.
 #[test]
 fn a_write_on_a_periodic_tick_keeps_the_input_event_bits() {
     let script = [
@@ -349,8 +351,63 @@ fn a_write_on_a_periodic_tick_keeps_the_input_event_bits() {
     ];
     for (solver_mode, reach, writes, _) in assert_paths_agree(TICKS, "Ticks", false, &script) {
         assert_eq!(reach, [false]);
-        // The ticks at 0.1 and 0.2 are still due when those writes arrive.
-        assert_eq!(writes, [1, 2], "{solver_mode:?}");
+        // The ticks at 0.1 and 0.2 are processed when those writes arrive.
+        assert_eq!(writes, [3, 0], "{solver_mode:?}");
+    }
+}
+
+const TICK_BODY: &str = "model TickBody input Real u = 0; Real x(start=0, fixed=true); \
+    discrete Real s(start=1, fixed=true); output Real y; \
+    equation der(x) = u*s; y = u + s; \
+    when sample(0, 0.1) then s = pre(s) + 1; end when; end TickBody;";
+
+/// The tick changes `s`, which the derivative and the output read together
+/// with the written input.
+#[test]
+fn a_write_after_a_tick_that_changed_its_dependants_keeps_the_input_event_bits() {
+    let script = [
+        Step::Advance(0.1),
+        Step::Set(&[("u", 1.0)]),
+        Step::Set(&[("u", 2.0)]),
+        Step::Advance(0.2),
+        Step::Set(&[("u", -1.0)]),
+        Step::Advance(0.25),
+        Step::Set(&[("u", 0.5)]),
+        Step::Advance(0.3),
+        Step::Set(&[("u", 3.0)]),
+        Step::Advance(0.45),
+    ];
+    for (solver_mode, reach, writes, _) in assert_paths_agree(TICK_BODY, "TickBody", false, &script)
+    {
+        assert_eq!(reach, [false]);
+        assert_eq!(writes, [5, 0], "{solver_mode:?}");
+    }
+}
+
+const TWO_CLOCKS: &str = "model TwoClocks input Real u = 0; Real x(start=0, fixed=true); \
+    discrete Real s(start=0, fixed=true); discrete Real r(start=0, fixed=true); \
+    output Real y; equation der(x) = u + s + r; y = x + u; \
+    when sample(0, 0.1) then s = pre(s) + 1; end when; \
+    when sample(0, 0.05) then r = pre(r) + x; end when; end TwoClocks;";
+
+/// Both clocks tick at 0.1; the schedule consumes an instant, not a clock,
+/// so a write there follows both ticks.
+#[test]
+fn a_write_after_two_coincident_ticks_keeps_the_input_event_bits() {
+    let script = [
+        Step::Advance(0.05),
+        Step::Set(&[("u", 1.0)]),
+        Step::Advance(0.1),
+        Step::Set(&[("u", 2.0)]),
+        Step::Advance(0.15),
+        Step::Set(&[("u", -1.0)]),
+        Step::Advance(0.3),
+    ];
+    for (solver_mode, reach, writes, _) in
+        assert_paths_agree(TWO_CLOCKS, "TwoClocks", false, &script)
+    {
+        assert_eq!(reach, [false]);
+        assert_eq!(writes, [3, 0], "{solver_mode:?}");
     }
 }
 

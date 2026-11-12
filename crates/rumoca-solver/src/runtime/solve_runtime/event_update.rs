@@ -33,6 +33,26 @@ impl EventUpdateRowFilter {
             Self::Hold => false,
         }
     }
+
+    /// Write the periodic-clock activation lanes one event pass under this
+    /// filter sees at `t`: a clock leaf is active only in a pass that admits
+    /// the clock's tick. This also covers unowned Boolean sample expressions
+    /// (MLS §3.7.5/§8.6): an optional `initial()` slot cannot supply the
+    /// pass's timing authority. Returns whether the pass ticks clocks.
+    pub(crate) fn write_pass_clock_activation_params(
+        self,
+        model: &solve::SolveModel,
+        p: &mut [f64],
+        t: f64,
+    ) -> bool {
+        let clocks_tick = self.accepts(EventPreMode::EventEntry, true);
+        if clocks_tick {
+            crate::runtime::solve_ops::write_clock_activation_params(model, p, t);
+        } else {
+            crate::runtime::solve_ops::write_observation_clock_activation_params(model, p);
+        }
+        clocks_tick
+    }
 }
 
 pub struct ProjectedEventUpdateInput<'a> {

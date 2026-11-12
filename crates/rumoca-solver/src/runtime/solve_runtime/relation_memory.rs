@@ -1118,22 +1118,15 @@ impl ScalarExecutionView<'_> {
         Ok(outcome)
     }
 
-    /// A clock leaf is active only in a pass that admits the clock's tick.
-    /// This also covers unowned Boolean sample expressions (MLS §3.7.5/§8.6):
-    /// an optional `initial()` slot cannot supply the pass's timing authority.
+    /// [`EventUpdateRowFilter::write_pass_clock_activation_params`] of this
+    /// runtime's model.
     fn write_event_pass_clock_params(
         &self,
         p: &mut [f64],
         t: f64,
         row_filter: EventUpdateRowFilter,
     ) -> bool {
-        let clocks_tick = row_filter.accepts(crate::EventPreMode::EventEntry, true);
-        if clocks_tick {
-            write_clock_activation_params(&self.model, p, t);
-        } else {
-            crate::runtime::solve_ops::write_observation_clock_activation_params(&self.model, p);
-        }
-        clocks_tick
+        row_filter.write_pass_clock_activation_params(&self.model, p, t)
     }
 
     pub fn eval_event_actions(
