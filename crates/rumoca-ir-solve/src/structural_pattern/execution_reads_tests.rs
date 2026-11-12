@@ -1,6 +1,20 @@
 use super::*;
 
 pub(crate) fn guarded_site() -> crate::SolvePureCallSite {
+    site(Guard::Input)
+}
+
+/// What the owner of [`site`] checks before returning its first input.
+#[derive(Clone, Copy, Debug)]
+enum Guard {
+    None,
+    /// Its second input is finite.
+    Input,
+    /// A constant is finite: an obligation that reads no input.
+    Constant,
+}
+
+fn site(guard: Guard) -> crate::SolvePureCallSite {
     let profile = crate::SolvePureCallTable::default().arithmetic();
     let real = crate::SolveValueType::scalar(crate::SolveScalarType::real(profile));
     let span = crate::source_span_from_offsets(812, 1, 2);
@@ -13,7 +27,16 @@ pub(crate) fn guarded_site() -> crate::SolvePureCallSite {
             |b, inputs, outputs| {
                 let x = b.load(inputs[0], span)?;
                 let q = b.load(inputs[1], span)?;
-                b.check_finite(q, crate::SolveFiniteCheck::Derivative, span)?;
+                let checked = match guard {
+                    Guard::None => None,
+                    Guard::Input => Some(q),
+                    Guard::Constant => {
+                        Some(b.constant(crate::SolveValue::real(profile, f64::NAN), span)?)
+                    }
+                };
+                if let Some(checked) = checked {
+                    b.check_finite(checked, crate::SolveFiniteCheck::Derivative, span)?;
+                }
                 b.store(outputs[0], x, span)
             },
         )?;
@@ -259,4 +282,79 @@ fn an_unused_failable_scalar_operation_retains_its_operands() {
         StructuralPattern::derive_execution_p_dependency_union(&ops, None).unwrap(),
         BTreeSet::from([7])
     );
+}
+
+/// `if p[9] then f'(1, 0, p[7], 0) else 1`, a directional call in a lazy
+/// branch whose value nothing uses: the program stores a constant.
+fn lazy_directional_call(guard: Guard) -> Vec<LinearOp> {
+    let site = site(guard).directional().unwrap().clone();
+    let branch = vec![
+        LinearOp::LoadFunctionConditionalCaptureRange {
+            dst_start: 0,
+            index_start: 0,
+            count: 4,
+        },
+        LinearOp::PureCallDirectional {
+            dst_start: 4,
+            input_starts: vec![0, 1, 2, 3].into(),
+            site,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let program = crate::FunctionConditionalProgram::checked(
+        5,
+        vec![1],
+        vec![(
+            vec![
+                LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 4 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            branch,
+        )],
+        vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .unwrap();
+    vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::LoadP { dst: 2, index: 7 },
+        LinearOp::Const { dst: 3, value: 0.0 },
+        LinearOp::LoadP { dst: 4, index: 9 },
+        LinearOp::FunctionConditional {
+            dst_start: 5,
+            capture_start: 0,
+            program: Arc::new(program),
+        },
+        LinearOp::Const { dst: 6, value: 2.0 },
+        LinearOp::StoreOutput { src: 6 },
+    ]
+}
+
+#[test]
+fn a_directional_obligation_in_a_lazy_branch_keeps_its_control_and_captures() {
+    // Whether the branch runs, and so whether its guard can fail, depends on
+    // its control p[9]; the guard sees what the branch captured (p[7]). A
+    // guard that reads no input (a constant check) is still an obligation,
+    // known only from the directional site's presence flag.
+    for (guard, expected) in [
+        (Guard::None, BTreeSet::new()),
+        (Guard::Input, BTreeSet::from([7, 9])),
+        (Guard::Constant, BTreeSet::from([7, 9])),
+    ] {
+        let ops = lazy_directional_call(guard);
+        assert!(
+            StructuralPattern::derive_p_dependency_union(&ops, None)
+                .unwrap()
+                .is_empty(),
+            "the stored value reads nothing ({guard:?})"
+        );
+        assert_eq!(
+            StructuralPattern::derive_execution_p_dependency_union(&ops, None).unwrap(),
+            expected,
+            "{guard:?}"
+        );
+    }
 }
