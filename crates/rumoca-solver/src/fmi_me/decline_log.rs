@@ -138,10 +138,6 @@ impl SolveExecutionBackend for RecordingBackend {
         Ok(result)
     }
 
-    fn binds_issued_operations(&self) -> bool {
-        self.inner.binds_issued_operations()
-    }
-
     fn validate_model_context(&self, model: &solve::SolveModel) -> Result<(), String> {
         self.inner.validate_model_context(model)
     }
