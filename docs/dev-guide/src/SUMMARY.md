@@ -14,6 +14,7 @@
 # Runtime and Backends
 
 - [Simulation Runtime](./runtime/simulation-runtime.md)
+- [Diffsol Maintenance](./runtime/diffsol-maintenance.md)
 - [Code Generation Engine](./runtime/codegen.md)
 - [WASM, LSP, and Editors](./runtime/wasm-lsp.md)
 
@@ -31,6 +32,7 @@
 
 # Tooling
 
+- [Native Emission Diagnostics](./tooling/native-expansion-report.md)
 - [Docs and Pages](./tooling/docs-and-pages.md)
 - [Scenario Config and VS Code](./tooling/scenario-config.md)
 - [MSL Quality Gate](./tooling/msl-quality-gate.md)
