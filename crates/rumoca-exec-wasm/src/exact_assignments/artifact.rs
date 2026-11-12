@@ -29,14 +29,18 @@ impl PrecompiledExactAssignments {
         }
     }
 
+    /// Bind a captured schedule to the actual source, owners and selected
+    /// schedule of the current build.
     pub fn bind(
         &self,
-        key: &rumoca_ir_solve::PreparedKernelSource,
         source: &ComputeBlock,
+        owners: &ContinuousRefreshOwners,
+        schedule: &ExactRefreshAssignmentSchedule,
         layout: &VarLayout,
+        table: &SolvePureCallTable,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-        let expected = key
-            .exact_assignments(source)
+        let expected = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|key| key.exact_assignment_schedule(source, owners, schedule))
             .map_err(WasmCompileError::Input)?;
         self.bind_expected(&expected, layout)
     }
@@ -44,12 +48,12 @@ impl PrecompiledExactAssignments {
     /// Bind captured issued rows to the same issued rows of the current build.
     pub fn bind_issued(
         &self,
-        key: &rumoca_ir_solve::PreparedKernelSource,
         rows: &IssuedAssignmentRows,
         layout: &VarLayout,
+        table: &SolvePureCallTable,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-        let expected = key
-            .issued_assignment_rows(rows)
+        let expected = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|key| key.issued_assignment_rows(rows))
             .map_err(WasmCompileError::Input)?;
         self.bind_expected(&expected, layout)
     }

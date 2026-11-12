@@ -36,12 +36,9 @@ impl WasmAssignments {
         calls: &rumoca_ir_solve::SolvePureCallTable,
         mode: Option<&super::precompiled::ProgramMode>,
     ) -> Result<Self, String> {
-        let key = rumoca_ir_solve::PreparedKernelSource::new(layout, calls).inspect_err(|_| {
-            if let Some(mode) = mode {
-                mode.unsupported("assignment source identity refused");
-            }
-        })?;
-        if let Some(result) = mode.and_then(|mode| mode.exact(&key, source, layout)) {
+        if let Some(result) =
+            mode.and_then(|mode| mode.exact(source, owners, schedule, layout, calls))
+        {
             return Self::from_compiled(result?, InputExtent::of(layout));
         }
         let compiled = rumoca_exec_wasm::compile_exact_assignment_schedule_wasm(
@@ -80,12 +77,7 @@ impl WasmAssignments {
         mode: Option<&super::precompiled::ProgramMode>,
     ) -> Result<Self, String> {
         let slots = slot_layout(rows, layout);
-        let key = rumoca_ir_solve::PreparedKernelSource::new(&slots, calls).inspect_err(|_| {
-            if let Some(mode) = mode {
-                mode.unsupported("issued rows source identity refused");
-            }
-        })?;
-        if let Some(result) = mode.and_then(|mode| mode.issued(&key, rows, &slots)) {
+        if let Some(result) = mode.and_then(|mode| mode.issued(rows, &slots, calls)) {
             return Self::from_compiled(result?, InputExtent::of(&slots));
         }
         let compiled = rumoca_exec_wasm::compile_issued_assignment_rows_wasm(rows, &slots, calls)

@@ -96,7 +96,7 @@ pub fn compile_exact_assignment_schedule_wasm(
             .map_err(WasmCompileError::Backend)?;
     CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
         rumoca_ir_solve::PreparedKernelSource::new(layout, table)
-            .and_then(|source_key| source_key.exact_assignments(source))
+            .and_then(|source_key| source_key.exact_assignment_schedule(source, owners, schedule))
     })
 }
 
