@@ -30,18 +30,18 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.7 CONN contracts | 577–611 | Connection rules (30 contracts) |
 | §4.8 FUNC contracts | 612–661 | Function rules (45 contracts) |
 | §4.9 TYPE contracts | 662–702 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 703–753 | Array rules (46 contracts) |
-| §4.11 PKG contracts | 754–771 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 772–788 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 789–803 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 804–828 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 829–846 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 847–953 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 954–975 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 976–991 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 992–1017 | Category counts and totals |
-| §6. Compiler Phases | 1018–1067 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1068–1095 | MLS chapter → contract category mapping |
+| §4.10 ARR contracts | 703–754 | Array rules (47 contracts) |
+| §4.11 PKG contracts | 755–772 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 773–789 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 790–804 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 805–829 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 830–847 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 848–954 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 955–976 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 977–992 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 993–1018 | Category counts and totals |
+| §6. Compiler Phases | 1019–1068 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1069–1096 | MLS chapter → contract category mapping |
 
 ## Specification
 
@@ -750,6 +750,7 @@ Defines state-to-state transitions with priority and timing control.
 | ARR-044 | der and pre element-wise shape | §3.7.4, §3.7.5 | "der(expr) ... If expr is an array, the operator is applied to all elements of the array" (§3.7.4; likewise `pre(y)`, §3.7.5), so the result has the operand shape and an equation between zero-sized operands has no scalar equations. Tested in `suite_core/record_array_equation.rs` |
 | ARR-045 | zeros/ones are Integer arrays | §10.3.3 | "zeros(n1, n2, n3, ...) Returns the n1 x n2 x n3 x ... Integer array with all elements equal to zero"; `ones` likewise with one. Rumoca: the DAE types `zeros` and `ones` as Integer arrays, so `Integer jpvt[n] = zeros(n)` (the pivot vector of `Matrices.LAPACK.dgelsy_vec`) is well typed and a Real context converts them as any Integer expression. Tested in `arr_contracts.rs` |
 | ARR-046 | size of an array expression | §10.3.1 | "size(A, i) Returns the size of dimension i of array expression A". Rumoca: with a translation-time dimension index, `size(e, i)` of any array expression is the Integer extent the checked type of `e` fixes, so `e` (a function call result, for example) is not evaluated for it. Tested in `suite_core/size_of_call_results.rs` |
+| ARR-047 | min/max call forms | §10.3.4 | "min(A): Returns the least element of array expression A"; "min(x, y): Returns the least element of the scalars x and y"; likewise `max`, besides the reduction form `min(e(i) for i in u)`. Rumoca: typecheck rejects zero or three-or-more arguments (ET008), and a known scalar as the single argument or a known array in the two-argument form (ET009); an argument whose shape is not inferred is left to later phases, and a resolved user function or a qualified call named `min`/`max` keeps its own signature. Tested in `rumoca-phase-typecheck` `tests/min_max_tests.rs` and `rumoca-contracts` `tests/arr_contracts.rs` |
 
 ### 4.11 Package/Import Contracts (PKG)
 
@@ -1002,7 +1003,7 @@ areas.
 | Connections | CONN | 30 |
 | Functions | FUNC | 45 |
 | Types/Interfaces | TYPE | 36 |
-| Arrays | ARR | 46 |
+| Arrays | ARR | 47 |
 | Packages | PKG | 13 |
 | Operator Records | OPREC | 12 |
 | Simulation | SIM | 10 |
@@ -1011,7 +1012,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **471** |
+| **Total** | | **472** |
 
 ---
 
@@ -1100,5 +1101,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 471 |
+| Total Contracts | 472 |
 | MLS Chapters Referenced | 21 |

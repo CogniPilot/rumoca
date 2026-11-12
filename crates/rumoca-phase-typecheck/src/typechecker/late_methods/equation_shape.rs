@@ -135,11 +135,10 @@ impl TypeChecker {
         args: &[Expression],
         type_table: &TypeTable,
     ) -> Option<Vec<usize>> {
-        let name = comp
-            .parts
-            .last()
-            .map(|part| part.ident.text.as_ref())
-            .unwrap_or_default();
+        let name = (comp.parts.len() == 1).then(|| comp.parts[0].ident.text.as_ref())?;
+        if comp.root_def_id().is_some() && self.user_function_definition(comp, name).is_some() {
+            return None;
+        }
         match name {
             "sum" | "product" | "scalar" if args.len() == 1 => Some(Vec::new()),
             "der" | "pre" | "noEvent" | "actualStream" if args.len() == 1 => {

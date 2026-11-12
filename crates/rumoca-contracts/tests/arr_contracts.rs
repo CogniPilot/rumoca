@@ -1800,3 +1800,52 @@ fn arr_046_size_of_a_call_result() {
     );
     assert!((trace.final_value("x") - 3.0).abs() < 1e-12);
 }
+
+// =============================================================================
+// ARR-047: min/max call forms (MLS §10.3.4)
+// =============================================================================
+
+#[test]
+fn arr_047_min_max_array_scalar_pair_and_reduction_accepted() {
+    expect_success(
+        r#"
+        model Test
+            Real v[3] = {1, 2, 3};
+            Real a = min(v);
+            Real b = max(2.0, 3.0);
+            Real c = max(v[i] for i in 1:3);
+            Integer d = min(1, 2);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn arr_047_min_max_three_arguments_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real y = min(1.0, 2.0, 3.0);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET008",
+    );
+}
+
+#[test]
+fn arr_047_min_max_scalar_single_argument_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real s = 1.0;
+            Real y = max(s);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET009",
+    );
+}
