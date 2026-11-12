@@ -6,6 +6,8 @@ mod call;
 pub use call::{FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod runtime;
+#[cfg(test)]
+mod tampering_tests;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -299,6 +301,3 @@ mod tests {
         assert!(oversized.bind(&operation).is_err());
     }
 }
-
-#[cfg(test)]
-mod tampering;
