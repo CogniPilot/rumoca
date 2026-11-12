@@ -23,6 +23,7 @@ mod string_conversion;
 mod structured_quotients;
 mod temporal_wire;
 mod type_arena;
+mod vectorized_extrema;
 mod wire_buffers;
 mod wire_roundtrip_verification;
 

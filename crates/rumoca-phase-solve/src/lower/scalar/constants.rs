@@ -311,8 +311,20 @@ impl<'dae> ScalarSelector<'dae> {
                 Ok(lhs.atan2(rhs))
             }
             dae::PureBuiltin::Min | dae::PureBuiltin::Max if arguments.len() == 2 => {
-                let lhs = self.constant_real_inner(argument(0)?, scalar, reach, active)?;
-                let rhs = self.constant_real_inner(argument(1)?, scalar, reach, active)?;
+                let lhs = argument(0)?;
+                let rhs = argument(1)?;
+                let lhs = self.constant_real_inner(
+                    lhs,
+                    scalar_operand(self.view, lhs, scalar),
+                    reach,
+                    active,
+                )?;
+                let rhs = self.constant_real_inner(
+                    rhs,
+                    scalar_operand(self.view, rhs, scalar),
+                    reach,
+                    active,
+                )?;
                 Ok(if builtin == dae::PureBuiltin::Min {
                     lhs.min(rhs)
                 } else {

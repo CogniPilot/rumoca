@@ -1849,3 +1849,58 @@ fn arr_047_min_max_scalar_single_argument_rejected() {
         "ET009",
     );
 }
+
+#[test]
+fn arr_047_min_max_vectorized_arrays_and_scalar_broadcast_accepted() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model Test
+            function clip
+                input Real values[2];
+                output Real result[2];
+            algorithm
+                result := min(max(values, 1.5), 2.5);
+            end clip;
+            Real left[2] = {time, time + 1.0};
+            Real right[2] = {2.0, 3.0};
+            Real pairs[2] = min(left, right);
+            Real upper[2] = max(left, right);
+            Real scalar_left[2] = max(2.0, left);
+            Real scalar_right[2] = min(right, 2.0);
+            Real function_result[2] = clip(left);
+        end Test;
+    "#,
+        "Test",
+        1.0,
+    );
+    for (name, expected) in [
+        ("pairs[1]", 1.0),
+        ("pairs[2]", 2.0),
+        ("upper[1]", 2.0),
+        ("upper[2]", 3.0),
+        ("scalar_left[1]", 2.0),
+        ("scalar_left[2]", 2.0),
+        ("scalar_right[1]", 2.0),
+        ("scalar_right[2]", 2.0),
+        ("function_result[1]", 1.5),
+        ("function_result[2]", 2.0),
+    ] {
+        assert!((trace.final_value(name) - expected).abs() < 1e-12, "{name}");
+    }
+}
+
+#[test]
+fn arr_047_min_max_mismatched_vector_shapes_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model Test
+            Real left[2];
+            Real right[3];
+            Real y[2] = max(left, right);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Typecheck,
+        "ET009",
+    );
+}
