@@ -450,3 +450,34 @@ fn bindings_through_array_and_transparent_builtins_fold_to_their_values() {
         "every admitted parameter is folded: {read:?}"
     );
 }
+
+/// MLS 3.7 §10.6.13: an Integer actual of a function's Real input is a Real
+/// inside the body, so a `final` parameter bound to `cube(2097152)` is the
+/// finite Real `2^63`, evaluated at translation, not an Integer overflow that
+/// leaves the parameter unevaluated.
+#[test]
+fn an_integer_actual_of_a_real_input_is_evaluated_as_a_real() {
+    let source = compile(
+        "function cube
+           input Real x;
+           output Real y;
+         algorithm
+           y := x * x * x;
+         end cube;
+         model RealInputs
+           final parameter Real big = cube(2097152);
+           Real x(start = 1, fixed = true);
+         equation
+           der(x) = -big * 1e-19 * x;
+         end RealInputs;",
+        "RealInputs",
+    );
+    assert_eq!(evaluable(&source), ["big"]);
+    let folded = fold_evaluable_parameters(&source)
+        .unwrap()
+        .expect("RealInputs reads an evaluable parameter");
+    assert_eq!(
+        folded_value(&folded, "big"),
+        (vec![2f64.powi(63)], Vec::new())
+    );
+}

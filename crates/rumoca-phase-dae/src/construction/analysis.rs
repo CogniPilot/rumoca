@@ -1601,6 +1601,9 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
 /// enumeration ordinals, with no variable values yet.
 fn seeded_eval_context(flat: &flat::Model) -> EvalContext {
     let mut context = EvalContext::with_capacity(flat.variables.len(), 0, flat.functions.len() * 2);
+    if flat.predefined_types.is_complete() {
+        context.set_predefined_types(flat.predefined_types);
+    }
     for function in flat.functions.values() {
         context.add_function(function.clone());
     }
@@ -1652,7 +1655,9 @@ fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
             {
                 continue;
             }
-            let Ok(value) = eval_expr(binding, &context) else {
+            let Ok(value) = eval_expr(binding, &context)
+                .and_then(|value| declared_parameter_value(flat, variable, value))
+            else {
                 continue;
             };
             context.add_instance_parameter(variable.instance_id, name.to_string(), value);
@@ -1666,6 +1671,29 @@ fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
         }
     }
     evaluable
+}
+
+/// `value` as a value of `variable`'s declared predefined scalar type: an
+/// Integer settled for a Real declaration is the Real it denotes (MLS 3.7
+/// §10.6.13), so every later evaluation that reads it computes in Real
+/// arithmetic; a value of another type is refused.
+fn declared_parameter_value(
+    flat: &flat::Model,
+    variable: &flat::Variable,
+    value: EvalValue,
+) -> Result<EvalValue, rumoca_eval_flat::constant::EvalError> {
+    let declared = flat
+        .predefined_types
+        .is_complete()
+        .then(|| flat.effective_types.get(&variable.type_id))
+        .flatten()
+        .and_then(|effective| {
+            rumoca_eval_flat::constant::DeclaredScalar::of(effective, &flat.predefined_types)
+        });
+    match declared {
+        Some(declared) => declared.convert(value, variable.source_span),
+        None => Ok(value),
+    }
 }
 
 /// Whether every variable `binding` reads by value is a constant or an

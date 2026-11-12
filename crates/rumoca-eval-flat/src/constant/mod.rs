@@ -18,6 +18,7 @@ mod array_construction;
 mod builtin_dispatch;
 mod comprehension_eval;
 mod context;
+mod declared_type;
 mod environment;
 mod expr_eval;
 mod matrix_ops;
@@ -30,6 +31,7 @@ mod tests;
 
 pub use builtins::{eval_builtin, is_builtin};
 pub use context::EvalContext;
+pub use declared_type::DeclaredScalar;
 pub use environment::EvalEnvironment;
 pub use errors::{DeferredParameterSource, EvalError, RuntimeDependentReason};
 pub use expr_eval::{

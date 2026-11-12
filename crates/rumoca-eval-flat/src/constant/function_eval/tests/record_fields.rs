@@ -36,7 +36,7 @@ fn record_fold(
     fields: Vec<rumoca_core::FunctionParam>,
     args: Vec<Value>,
 ) -> Result<Value, EvalError> {
-    let mut ctx = EvalContext::new();
+    let mut ctx = super::declared_types::typed_context();
     ctx.add_function(record_constructor(fields));
     eval_function(func, args, &ctx, &EvalLimits::default(), 0, Span::DUMMY)
 }
@@ -206,4 +206,65 @@ fn unassigned_record_output_field_is_not_invented() {
     func.add_output(real_param("y"));
     func.body = vec![assign(component_reference("y"), var_ref("r.m"))];
     assert!(record_fold(&func, vec![real_param("m")], vec![Value::Real(1.0)]).is_err());
+}
+
+/// `test.R(a, b)`, the record constructor called as a declaration binding.
+fn constructed(a: f64, b: f64) -> Expression {
+    Expression::FunctionCall {
+        name: rumoca_core::Reference::new("test.R"),
+        args: vec![real_literal(a), real_literal(b)],
+        is_constructor: true,
+        span: Span::DUMMY,
+    }
+}
+
+/// A record declared with a binding keeps the binding's fields and takes a
+/// later field write (`output R r = R(1, 2); algorithm r.a := 3;`); an Integer
+/// written to its Real field reads back as a Real.
+#[test]
+fn an_initialised_record_output_takes_a_field_update() {
+    let mut output = record_param("r");
+    output.default = Some(constructed(1.0, 2.0));
+    let mut func = Function::new("test.update", Span::DUMMY);
+    func.add_input(real_param("total"));
+    func.add_output(output);
+    func.pure = true;
+    func.body = vec![assign(field_target("r", "a"), integer_literal(3))];
+    let result = record_fold(
+        &func,
+        vec![real_param("a"), real_param("b")],
+        vec![Value::Real(1.0)],
+    )
+    .expect("the field update folds");
+    let fields = result.as_record().expect("record value");
+    assert_eq!(fields.get("a"), Some(&Value::Real(3.0)));
+    assert_eq!(fields.get("b"), Some(&Value::Real(2.0)));
+}
+
+/// The same for a protected local record read back through a Real output.
+#[test]
+fn an_initialised_record_local_takes_a_field_update() {
+    let mut local = record_param("q");
+    local.default = Some(constructed(1.0, 2.0));
+    let mut func = Function::new("test.localUpdate", Span::DUMMY);
+    func.add_input(real_param("total"));
+    func.add_local(local);
+    func.add_output(real_param("y"));
+    func.pure = true;
+    func.body = vec![
+        assign(field_target("q", "b"), integer_literal(5)),
+        assign(
+            component_reference("y"),
+            binary(rumoca_core::OpBinary::Add, var_ref("q.a"), var_ref("q.b")),
+        ),
+    ];
+    assert_eq!(
+        record_fold(
+            &func,
+            vec![real_param("a"), real_param("b")],
+            vec![Value::Real(1.0)],
+        )
+        .expect("the local field update folds"),
+        Value::Real(6.0)
+    );
 }

@@ -35,7 +35,7 @@ pub(super) fn assign_array_slice(
         .map(|(subscript, extent)| target_selection(subscript, extent, env, eval))
         .collect::<Result<Vec<_>, _>>()?;
     let new_value = write_selection(target, &selections, value, eval.span)?;
-    if !env.set(base_name, new_value) {
+    if !env.set(base_name, new_value, eval.span)? {
         return Err(EvalError::function_error(
             format!("cannot assign to array: {}", base_name),
             eval.span,

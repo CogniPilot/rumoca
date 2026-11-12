@@ -683,6 +683,10 @@ impl EvalEnvironment for ShapeAwareValues<'_> {
     fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource> {
         self.values.deferred_parameter(name)
     }
+
+    fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {
+        self.values.predefined_types()
+    }
 }
 
 impl std::ops::Index<&VarName> for ShapeEnvironment {

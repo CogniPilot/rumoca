@@ -28,6 +28,8 @@ mod record_fields;
 mod slice_assignment;
 mod statement_calls;
 use record_fields::{RecordField, record_layout};
+
+use super::DeclaredScalar;
 use slice_assignment::assign_array_slice;
 use statement_calls::{eval_assert_stmt, eval_fn_call_stmt};
 
@@ -235,6 +237,9 @@ struct FunctionEnv {
     /// without a binding, from its record constructor; `None` when no
     /// constructor is in scope, so no field layout is known.
     record_layouts: IndexMap<String, Option<Vec<RecordField>>>,
+    /// The predefined scalar type of every input, output and local whose
+    /// declared type is one; a value stored in it is converted to that type.
+    declared: IndexMap<String, DeclaredScalar>,
 }
 
 /// Function-call argument after expression evaluation.
@@ -263,7 +268,28 @@ impl FunctionEnv {
         args: Vec<FunctionCallArg>,
         eval: &EvalState<'_>,
     ) -> Result<Self, EvalError> {
-        let inputs = Self::bind_inputs(func, args, eval.span)?;
+        let declared: IndexMap<String, DeclaredScalar> = eval
+            .ctx
+            .predefined_types()
+            .map(|predefined| {
+                func.inputs
+                    .iter()
+                    .chain(&func.outputs)
+                    .chain(&func.locals)
+                    .filter_map(|param| {
+                        DeclaredScalar::of(&param.effective_type, &predefined)
+                            .map(|declared| (param.name.clone(), declared))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut inputs = Self::bind_inputs(func, args, eval.span)?;
+        for (name, value) in &mut inputs {
+            if let Some(declared) = declared.get(name) {
+                *value =
+                    declared.convert(std::mem::replace(value, Value::Integer(0)), eval.span)?;
+            }
+        }
         let mut env = Self {
             inputs,
             outputs: IndexMap::new(),
@@ -271,6 +297,7 @@ impl FunctionEnv {
             source_iterators: Vec::new(),
             source_iterator_declarations: std::collections::HashSet::new(),
             record_layouts: IndexMap::new(),
+            declared,
         };
         env.bind_omitted_input_defaults(func, eval)?;
         env.declare_all(func, eval)?;
@@ -321,6 +348,7 @@ impl FunctionEnv {
                 .as_ref()
                 .expect("bind_inputs proved every unbound formal has a default");
             let value = eval_expr_in_function(default, self, eval)?;
+            let value = self.declared_value(&param.name, value, eval.span)?;
             self.inputs.insert(param.name.clone(), value);
         }
         Ok(())
@@ -491,8 +519,11 @@ impl FunctionEnv {
                 Some(default) => eval_expr_in_function(default, self, eval)?,
                 None => self.shaped_default(param, eval)?,
             };
-            if param.default.is_none()
-                && matches!(&value, Value::Record(fields) if fields.is_empty())
+            let value = self.declared_value(&param.name, value, eval.span)?;
+            // A scalar record keeps its declared field layout whether it is
+            // declared with a binding or not (MLS 3.6 §11.2.1).
+            if param.type_class == Some(rumoca_core::ClassType::Record)
+                && param.dimensions().is_empty()
             {
                 self.record_layouts
                     .insert(param.name.clone(), record_layout(param, eval));
@@ -609,17 +640,29 @@ impl FunctionEnv {
             .or_else(|| self.locals.get(name))
     }
 
-    /// Set a variable value (must be output or local, not input).
-    fn set(&mut self, name: &str, value: Value) -> bool {
-        if self.outputs.contains_key(name) {
-            self.outputs.insert(name.to_string(), value);
-            true
-        } else if self.locals.contains_key(name) {
-            self.locals.insert(name.to_string(), value);
-            true
-        } else {
-            false
+    /// `value` converted to the declared scalar type of `name`, when that is
+    /// a predefined type (see [`DeclaredScalar::convert`]).
+    fn declared_value(&self, name: &str, value: Value, span: Span) -> Result<Value, EvalError> {
+        match self.declared.get(name) {
+            Some(declared) => declared.convert(value, span),
+            None => Ok(value),
         }
+    }
+
+    /// Set a variable value (must be output or local, not input), converted
+    /// to its declared type; `Ok(false)` when `name` is not an output or a
+    /// local.
+    fn set(&mut self, name: &str, value: Value, span: Span) -> Result<bool, EvalError> {
+        let value = self.declared_value(name, value, span)?;
+        let slot = match self.outputs.get_mut(name) {
+            Some(slot) => slot,
+            None => match self.locals.get_mut(name) {
+                Some(slot) => slot,
+                None => return Ok(false),
+            },
+        };
+        *slot = value;
+        Ok(true)
     }
 
     /// Get the return value (single output or tuple of outputs).
@@ -946,9 +989,9 @@ fn eval_assignment(
         // MLS 3.6 §11.2.1: the target may select a field of a record
         // component, so `head.m := e` writes the field `m` of `head`.
         [root, fields @ ..] if !fields.is_empty() && fields.iter().all(|f| f.subs.is_empty()) => {
-            env.set_field(&root.ident, fields, val)
+            env.set_field(&root.ident, fields, val, eval.span)?
         }
-        _ => env.set(&name, val),
+        _ => env.set(&name, val, eval.span)?,
     };
     if assigned {
         return Ok(FlowControl::Continue);
@@ -1053,7 +1096,7 @@ fn assign_multiple_outputs(
             continue;
         };
         let name = component_ref_to_name(output);
-        if !env.set(&name, val.clone()) {
+        if !env.set(&name, val.clone(), eval.span)? {
             return Err(EvalError::function_error(
                 format!("cannot assign to output variable: {}", name),
                 eval.span,
@@ -1071,7 +1114,7 @@ fn assign_single_output(
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
     let name = component_ref_to_name(output);
-    if !env.set(&name, result) {
+    if !env.set(&name, result, eval.span)? {
         return Err(EvalError::function_error(
             format!("cannot assign to output variable: {}", name),
             eval.span,
@@ -1550,6 +1593,7 @@ fn eval_array_comprehension(
         source_iterators: env.source_iterators.clone(),
         source_iterator_declarations: env.source_iterator_declarations.clone(),
         record_layouts: env.record_layouts.clone(),
+        declared: env.declared.clone(),
     };
 
     local_env
@@ -1797,7 +1841,7 @@ fn assign_array_element(
         .ok_or_else(|| EvalError::unknown_variable(base_name, eval.span))?
         .clone();
     let new_arr = set_array_element(arr, indices, value, eval.span)?;
-    if !env.set(base_name, new_arr) {
+    if !env.set(base_name, new_arr, eval.span)? {
         return Err(EvalError::function_error(
             format!("cannot assign to array: {}", base_name),
             eval.span,

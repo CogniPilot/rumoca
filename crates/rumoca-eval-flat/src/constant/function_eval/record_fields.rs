@@ -8,9 +8,9 @@ use super::*;
 #[derive(Debug, Clone)]
 pub(super) struct RecordField {
     name: String,
-    /// A scalar of the field's declared type, the target of a write's
-    /// conversion (MLS 3.6 §10.6.13).
-    element: Value,
+    /// The field's predefined scalar type, the target of a write's
+    /// conversion; `None` for a field of another type.
+    declared: Option<DeclaredScalar>,
     /// The field declares a default, which this interpreter does not evaluate.
     defaulted: bool,
     /// The field is itself a record.
@@ -30,40 +30,44 @@ impl RecordField {
 
 impl FunctionEnv {
     /// Write `value` into the field `fields` of the record output or local
-    /// `root`, converted to the field's declared type; `false` when `root` has
-    /// no declared field layout, the field is not declared, or the target is
-    /// a field of a nested record.
+    /// `root`, converted to the field's declared type; `Ok(false)` when
+    /// `root` has no declared field layout, the field is not declared, or the
+    /// target is a field of a nested record.
     pub(super) fn set_field(
         &mut self,
         root: &str,
         fields: &[ComponentRefPart],
         value: Value,
-    ) -> bool {
+        span: Span,
+    ) -> Result<bool, EvalError> {
         let [field] = fields else {
-            return false;
+            return Ok(false);
         };
         let Some(Some(layout)) = self.record_layouts.get(root) else {
-            return false;
+            return Ok(false);
         };
         let Some(declared) = layout
             .iter()
             .find(|declared| declared.name == field.ident && !declared.record)
         else {
-            return false;
+            return Ok(false);
         };
-        let value = convert_to_element(&declared.element, value);
+        let value = match declared.declared {
+            Some(declared) => declared.convert(value, span)?,
+            None => value,
+        };
         let slot = match self.outputs.get_mut(root) {
             Some(slot) => slot,
             None => match self.locals.get_mut(root) {
                 Some(slot) => slot,
-                None => return false,
+                None => return Ok(false),
             },
         };
         let Value::Record(record) = slot else {
-            return false;
+            return Ok(false);
         };
         record.insert(field.ident.clone(), value);
-        true
+        Ok(true)
     }
 
     /// The value of the record `name` once every declared field has one, in
@@ -119,32 +123,18 @@ pub(super) fn record_layout(
         .ctx
         .get_function(&param.type_name)
         .filter(|function| function.is_constructor)?;
+    let predefined = eval.ctx.predefined_types();
     Some(
         constructor
             .inputs
             .iter()
             .map(|field| RecordField {
                 name: field.name.clone(),
-                element: type_default_value(&field.type_name, &[]),
+                declared: predefined
+                    .and_then(|predefined| DeclaredScalar::of(&field.effective_type, &predefined)),
                 defaulted: field.default.is_some(),
                 record: field.type_class == Some(rumoca_core::ClassType::Record),
             })
             .collect(),
     )
-}
-
-/// `value` written into a component whose declared scalar type is that of
-/// `element`: an Integer, alone or in an array, becomes Real in a Real
-/// component (MLS 3.6 §10.6.13).
-fn convert_to_element(element: &Value, value: Value) -> Value {
-    match (element, value) {
-        (Value::Real(_), Value::Integer(written)) => Value::Real(written as f64),
-        (Value::Real(_), Value::Array(written)) => Value::Array(
-            written
-                .into_iter()
-                .map(|written| convert_to_element(element, written))
-                .collect(),
-        ),
-        (_, value) => value,
-    }
 }
