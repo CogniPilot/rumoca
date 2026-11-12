@@ -102,11 +102,6 @@ impl KinematicStates {
         &self.states
     }
 
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.states.is_empty()
-    }
-
     /// Why `state` is not kinematic; `None` for a kinematic state and for
     /// every state of a partition that was not issued.
     #[must_use]
