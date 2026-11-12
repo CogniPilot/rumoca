@@ -45,6 +45,24 @@ impl IndexIntervals {
         Self(intervals)
     }
 
+    /// Compact construction without enumerating the scalar members of ranges.
+    pub(crate) fn of_intervals(intervals: impl IntoIterator<Item = RangeInclusive<usize>>) -> Self {
+        let mut sorted = intervals
+            .into_iter()
+            .filter(|range| !range.is_empty())
+            .map(|range| (*range.start(), *range.end()))
+            .collect::<Vec<_>>();
+        sorted.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (start, last) in sorted {
+            match merged.last_mut() {
+                Some((_, end)) if end.saturating_add(1) >= start => *end = (*end).max(last),
+                _ => merged.push((start, last)),
+            }
+        }
+        Self(merged)
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

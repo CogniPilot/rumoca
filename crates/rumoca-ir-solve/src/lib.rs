@@ -895,11 +895,12 @@ pub use register_versions::{
     RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
 };
 pub use structural_pattern::{
-    ColoredStructuralPattern, ColumnColoring, KinematicStates, NonKinematicReason,
-    PatternDerivation, PatternProvenance, StateJacobianCompactConstruction,
-    StateJacobianCompactInput, StateJacobianProduct, StateJacobianProductConstruction,
-    StateJacobianProductConstructionError, StateJacobianProductDomain, StateJacobianProductInput,
-    StateJacobianProductValue, StructuralPattern, StructuralPatternError, StructuralPatternView,
+    ColoredStructuralPattern, ColumnColoring, ExecutionYReadPrefix, KinematicStates,
+    NonKinematicReason, PatternDerivation, PatternProvenance, ScalarProgramExecutionYDependency,
+    StateJacobianCompactConstruction, StateJacobianCompactInput, StateJacobianProduct,
+    StateJacobianProductConstruction, StateJacobianProductConstructionError,
+    StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
+    StructuralPattern, StructuralPatternError, StructuralPatternView,
 };
 
 #[cfg(test)]
