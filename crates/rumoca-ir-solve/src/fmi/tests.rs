@@ -1,6 +1,7 @@
 use super::*;
 use crate::SolveVariableValueKind;
 
+mod articulated_bindings;
 mod c_profile_refusals;
 mod component_plans;
 mod finite_target_admission;
