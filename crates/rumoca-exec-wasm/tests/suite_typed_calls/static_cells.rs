@@ -129,7 +129,12 @@ fn count(value_type: &solve::SolveValueType) -> usize {
 }
 
 /// Compile both ways and compare with the evaluator over many inputs.
-fn check(inputs: &[solve::SolveValueType], output: solve::SolveValueType, build: &Build) {
+fn check(
+    class: Class,
+    inputs: &[solve::SolveValueType],
+    output: solve::SolveValueType,
+    build: &Build,
+) {
     for through_child in [false, true] {
         let (table, site) = table(inputs, &output, through_child, build);
         let compiled = compile_pure_call_wasm(&table, &site).unwrap();
@@ -155,7 +160,7 @@ fn check(inputs: &[solve::SolveValueType], output: solve::SolveValueType, build:
             match oracle(&table, &site, &arguments) {
                 Ok(expected) => {
                     assert_eq!(status, 0, "{inputs:?} through child {through_child}");
-                    same_cells(&actual, &expected, &output);
+                    same_cells(class, &actual, &expected, &output);
                 }
                 Err(_) => assert_ne!(status, 0, "{inputs:?} through child {through_child}"),
             }
@@ -163,11 +168,21 @@ fn check(inputs: &[solve::SolveValueType], output: solve::SolveValueType, build:
     }
 }
 
-/// Equal bits in every cell, except that a Real cell may hold a NaN of either
-/// sign where the evaluator holds one: the sign and payload of a NaN an
-/// arithmetic operation produces are not specified by WebAssembly, and the
-/// host evaluator and the WebAssembly engine differ in them.
-fn same_cells(actual: &[u8], expected: &[u8], output: &solve::SolveValueType) {
+/// How an operation produces its result cells.
+#[derive(Clone, Copy)]
+enum Class {
+    /// It moves cells or computes them exactly (negation, absolute value,
+    /// Integer arithmetic): every bit must match.
+    Exact,
+    /// It computes Real values arithmetically. WebAssembly leaves the sign of
+    /// a NaN an arithmetic instruction produces unspecified, and the engine
+    /// and the host evaluator differ in it (the base tree's emitter shows the
+    /// same difference); every other bit, the NaN payload included, must match.
+    Arithmetic,
+}
+
+/// Equal bits in every cell, up to what `class` leaves unspecified.
+fn same_cells(class: Class, actual: &[u8], expected: &[u8], output: &solve::SolveValueType) {
     assert_eq!(actual.len(), expected.len());
     let real = matches!(output.element_type(), solve::SolveScalarType::Real { .. });
     for (cell, (actual, expected)) in actual
@@ -179,9 +194,15 @@ fn same_cells(actual: &[u8], expected: &[u8], output: &solve::SolveValueType) {
             f64::from_le_bytes(actual.try_into().unwrap()),
             f64::from_le_bytes(expected.try_into().unwrap()),
         );
-        if !(real && a.is_nan() && e.is_nan()) {
-            assert_eq!(a.to_bits(), e.to_bits(), "cell {cell} of {output:?}");
-        }
+        let sign = match class {
+            Class::Arithmetic if real && a.is_nan() && e.is_nan() => 1 << 63,
+            _ => 0,
+        };
+        assert_eq!(
+            a.to_bits() | sign,
+            e.to_bits() | sign,
+            "cell {cell} of {output:?}"
+        );
     }
 }
 
@@ -211,16 +232,23 @@ fn elementwise_unary_binary_broadcast_and_scale_match_the_evaluator_bit_for_bit(
             solve::SolveUnaryOperator::Negate,
             solve::SolveUnaryOperator::Abs,
         ] {
-            check(std::slice::from_ref(&ty), ty.clone(), &move |b, r| {
-                b.unary(operator, r[0], span(26102))
-            });
+            check(
+                Class::Exact,
+                std::slice::from_ref(&ty),
+                ty.clone(),
+                &move |b, r| b.unary(operator, r[0], span(26102)),
+            );
         }
-        check(&[ty.clone(), real_type(&[])], ty.clone(), &|b, r| {
-            b.scale(r[0], r[1], span(26103))
-        });
+        check(
+            Class::Arithmetic,
+            &[ty.clone(), real_type(&[])],
+            ty.clone(),
+            &|b, r| b.scale(r[0], r[1], span(26103)),
+        );
         let integers = integer_type(shape);
         for operator in [B::Add, B::Multiply] {
             check(
+                Class::Exact,
                 &[integers.clone(), integers.clone()],
                 integers.clone(),
                 &move |b, r| b.binary(operator, r[0], r[1], span(26104)),
@@ -231,13 +259,19 @@ fn elementwise_unary_binary_broadcast_and_scale_match_the_evaluator_bit_for_bit(
 
 /// One binary operator between two aggregates and broadcast either way.
 fn check_binary(ty: &solve::SolveValueType, operator: solve::SolveBinaryOperator) {
-    check(&[ty.clone(), ty.clone()], ty.clone(), &move |b, r| {
-        b.binary(operator, r[0], r[1], span(26100))
-    });
+    check(
+        Class::Arithmetic,
+        &[ty.clone(), ty.clone()],
+        ty.clone(),
+        &move |b, r| b.binary(operator, r[0], r[1], span(26100)),
+    );
     for scalar_on_lhs in [false, true] {
-        check(&[ty.clone(), real_type(&[])], ty.clone(), &move |b, r| {
-            b.broadcast_binary(operator, r[0], r[1], scalar_on_lhs, span(26101))
-        });
+        check(
+            Class::Arithmetic,
+            &[ty.clone(), real_type(&[])],
+            ty.clone(),
+            &move |b, r| b.broadcast_binary(operator, r[0], r[1], scalar_on_lhs, span(26101)),
+        );
     }
 }
 
@@ -246,13 +280,19 @@ fn reductions_match_the_evaluator_bit_for_bit() {
     use solve::SolveReductionOperator as R;
     for extent in [1, 3, 9, 32, 33, 34, 36] {
         for operator in [R::Sum, R::Product, R::Minimum, R::Maximum] {
-            check(&[real_type(&[extent])], real_type(&[]), &move |b, r| {
-                b.reduce(operator, r[0], span(26200))
-            });
+            check(
+                Class::Arithmetic,
+                &[real_type(&[extent])],
+                real_type(&[]),
+                &move |b, r| b.reduce(operator, r[0], span(26200)),
+            );
         }
-        check(&[integer_type(&[extent])], integer_type(&[]), &|b, r| {
-            b.reduce(R::Sum, r[0], span(26201))
-        });
+        check(
+            Class::Exact,
+            &[integer_type(&[extent])],
+            integer_type(&[]),
+            &|b, r| b.reduce(R::Sum, r[0], span(26201)),
+        );
     }
 }
 
@@ -272,6 +312,7 @@ fn matrix_products_match_the_evaluator_bit_for_bit() {
         (&[1][..], &[1][..], &[][..]),
     ] {
         check(
+            Class::Arithmetic,
             &[real_type(left), real_type(right)],
             real_type(output),
             &|b, r| b.matrix_multiply(r[0], r[1], span(26300)),
@@ -290,21 +331,32 @@ fn transposes_identities_and_diagonals_match_the_evaluator_bit_for_bit() {
         (&[6, 6][..], &[6, 6][..]),
         (&[2, 3, 3][..], &[3, 2, 3][..]),
     ] {
-        check(&[real_type(shape)], real_type(transposed), &|b, r| {
-            b.transpose(r[0], span(26400))
-        });
+        check(
+            Class::Exact,
+            &[real_type(shape)],
+            real_type(transposed),
+            &|b, r| b.transpose(r[0], span(26400)),
+        );
     }
     for extent in [1, 3, 4, 5, 6] {
         let shape = [extent, extent];
-        check(&[real_type(&[])], real_type(&shape), &move |b, r| {
-            let identity =
-                b.identity(solve::SolveScalarType::real(profile()), extent, span(26401))?;
-            // Keep the scalar input live so every case has one argument.
-            b.broadcast_binary(B::Multiply, identity, r[0], false, span(26402))
-        });
-        check(&[real_type(&[extent])], real_type(&shape), &|b, r| {
-            b.diagonal(r[0], span(26403))
-        });
+        check(
+            Class::Arithmetic,
+            &[real_type(&[])],
+            real_type(&shape),
+            &move |b, r| {
+                let identity =
+                    b.identity(solve::SolveScalarType::real(profile()), extent, span(26401))?;
+                // Keep the scalar input live so every case has one argument.
+                b.broadcast_binary(B::Multiply, identity, r[0], false, span(26402))
+            },
+        );
+        check(
+            Class::Exact,
+            &[real_type(&[extent])],
+            real_type(&shape),
+            &|b, r| b.diagonal(r[0], span(26403)),
+        );
     }
 }
 
@@ -318,6 +370,7 @@ fn concatenations_slices_and_views_match_the_evaluator_bit_for_bit() {
         (0, &[2, 3][..], &[1, 3][..], &[3, 3][..]),
     ] {
         check(
+            Class::Exact,
             &[real_type(left), real_type(right)],
             real_type(output),
             &move |b, r| b.concatenate(axis, &[r[0], r[1]], span(26500)),
@@ -329,10 +382,14 @@ fn concatenations_slices_and_views_match_the_evaluator_bit_for_bit() {
         (&[40][..], &[2][..], &[33][..]),
         (&[9, 9][..], &[0, 3][..], &[3, 6][..]),
     ] {
-        check(&[real_type(shape)], real_type(dimensions), &|b, r| {
-            b.project_slice(r[0], origin.to_vec(), dimensions.to_vec(), span(26501))
-        });
         check(
+            Class::Exact,
+            &[real_type(shape)],
+            real_type(dimensions),
+            &|b, r| b.project_slice(r[0], origin.to_vec(), dimensions.to_vec(), span(26501)),
+        );
+        check(
+            Class::Exact,
             &[real_type(shape), real_type(dimensions)],
             real_type(shape),
             &|b, r| b.update_slice(r[0], r[1], origin.to_vec(), span(26502)),
@@ -342,11 +399,13 @@ fn concatenations_slices_and_views_match_the_evaluator_bit_for_bit() {
     for (rows, columns) in [(3, 3), (6, 6), (2, 33)] {
         let index = integer_type(&[]);
         check(
+            Class::Exact,
             &[real_type(&[rows, columns]), index.clone()],
             real_type(&[columns]),
             &move |b, r| b.project_view(r[0], &row_axes(r[1], columns), span(26504)),
         );
         check(
+            Class::Exact,
             &[real_type(&[rows, columns]), real_type(&[columns]), index],
             real_type(&[rows, columns]),
             &move |b, r| b.update_view(r[0], r[1], &row_axes(r[2], columns), span(26505)),
@@ -372,11 +431,13 @@ fn seven_axis_slices_and_five_operand_concatenations_match_the_evaluator_bit_for
     // Counted: 128 cells over seven axes of extent two.
     let (shape, origin, dimensions) = ([3; 7], [1, 0, 1, 0, 1, 0, 1], [2; 7]);
     check(
+        Class::Exact,
         &[real_type(&shape)],
         real_type(&dimensions),
         &move |b, r| b.project_slice(r[0], origin.to_vec(), dimensions.to_vec(), span(26600)),
     );
     check(
+        Class::Exact,
         &[real_type(&shape), real_type(&dimensions)],
         real_type(&shape),
         &move |b, r| b.update_slice(r[0], r[1], origin.to_vec(), span(26601)),
@@ -385,7 +446,7 @@ fn seven_axis_slices_and_five_operand_concatenations_match_the_evaluator_bit_for
     for (rows, output) in [(3, [3, 10]), (33, [33, 10])] {
         let operand = real_type(&[rows, 2]);
         let operands: [_; 5] = std::array::from_fn(|_| operand.clone());
-        check(&operands, real_type(&output), &|b, r| {
+        check(Class::Exact, &operands, real_type(&output), &|b, r| {
             b.concatenate(1, r, span(26602))
         });
     }
