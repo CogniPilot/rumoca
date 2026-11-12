@@ -73,13 +73,15 @@ fn plugin(setup: MeNumericalSetup, step: f64, order: u32) -> Box<dyn MeIntegrato
 }
 
 /// What the driver observed of one run: every accepted endpoint, the
-/// evaluations spent by then, and each step's declared extension order.
+/// evaluations spent by then, each step's declared extension order and the
+/// continuous extension at each interval's midpoint.
 #[derive(Debug, Default, PartialEq)]
 struct Trace {
     end_times: Vec<u64>,
     end_states: Vec<Vec<u64>>,
     evaluations: Vec<usize>,
     orders: Vec<u32>,
+    midpoints: Vec<Vec<u64>>,
 }
 
 impl Trace {
@@ -103,6 +105,14 @@ fn integrate_with(
             .push(interval.end_state().iter().map(|v| v.to_bits()).collect());
         trace.evaluations.push(system.evaluations.get());
         trace.orders.push(interval.extension_order());
+        let mut midpoint = [0.0; 2];
+        interval
+            .sample(
+                0.5 * (interval.start_time() + interval.end_time()),
+                &mut midpoint,
+            )
+            .map_err(|error| error.to_string())?;
+        trace.midpoints.push(bits(&midpoint));
         Ok(())
     })?;
     Ok(trace)
@@ -165,6 +175,10 @@ struct Probe {
     raw_steps: Rc<RefCell<Vec<(f64, f64)>>>,
     /// Truncate the plugin at the current point before every step.
     reset_before_each_step: bool,
+    /// Keep the derivative capability the host issues at `initialize` from
+    /// the plugin, as a composing plugin that forwards steps but not the
+    /// capability would.
+    withholds_capability: bool,
 }
 
 impl Probe {
@@ -204,7 +218,9 @@ impl MeIntegratorBackend for Shared {
         derivatives: MeDerivativeHandle,
     ) -> Result<(), MeIntegrationError> {
         let mut probe = self.0.borrow_mut();
-        probe.inner.initialize(point, derivatives)?;
+        if !probe.withholds_capability {
+            probe.inner.initialize(point, derivatives)?;
+        }
         probe.assert_no_retained_interval(point.time());
         Ok(())
     }
@@ -244,6 +260,7 @@ fn probe(step: f64, order: u32, reset_before_each_step: bool) -> Rc<RefCell<Prob
         inner: plugin(setup, step, order),
         raw_steps: Rc::default(),
         reset_before_each_step,
+        withholds_capability: false,
     }))
 }
 
@@ -305,6 +322,32 @@ fn a_reinitialized_plugin_restarts_without_the_previous_history() {
         integrate_shared(&shared, 0.75);
         let again = integrate_shared(&shared, 0.5);
         assert_eq!(again, fresh, "order {order}");
+    }
+}
+
+/// A plugin asked to step without the derivative capability the host issues
+/// at `initialize` refuses with its typed construction failure before it
+/// evaluates anything or accepts a step.
+#[test]
+fn a_step_without_the_issued_capability_is_the_typed_construction_refusal() {
+    for order in ORDERS {
+        let shared = probe(0.125, order, false);
+        shared.borrow_mut().withholds_capability = true;
+        let system = Rc::new(Oscillator::default());
+        let outcome = integrate_with(&system, 1.0, &|_| Box::new(Shared(Rc::clone(&shared))));
+        assert!(
+            matches!(
+                outcome,
+                Err(OdeDriveError::Integration(MeIntegrationError::Numerical {
+                    method: METHOD,
+                    category: MeNumericalFailure::Construction,
+                    ..
+                }))
+            ),
+            "order {order}: {outcome:?}"
+        );
+        assert_eq!(system.evaluations.get(), 0, "order {order}");
+        assert!(shared.borrow().raw_steps.borrow().is_empty());
     }
 }
 
