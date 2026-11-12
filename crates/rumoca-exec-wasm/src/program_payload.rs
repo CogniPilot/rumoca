@@ -33,6 +33,8 @@ impl From<CompiledNativeCallProgramWasm> for ProgramPayload {
     }
 }
 
+/// The persisted operation artifact keeps its compiled helpers, so it copies them.
+#[cfg(feature = "precompiled-programs")]
 impl From<&CompiledNativeCallProgramWasm> for ProgramPayload {
     fn from(module: &CompiledNativeCallProgramWasm) -> Self {
         Self {
