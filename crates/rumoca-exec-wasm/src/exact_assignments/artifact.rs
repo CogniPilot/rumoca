@@ -1,8 +1,10 @@
 //! Mechanical persisted form of the original emitted assignment module.
-use super::*;
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+mod tampering;
 #[cfg(all(test, feature = "host-engine"))]
 mod tests;
+use super::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,36 +31,43 @@ impl PrecompiledExactAssignments {
         }
     }
 
+    /// Bind a captured schedule to the actual source, owners and selected
+    /// schedule of the current build.
     pub fn bind(
         &self,
-        key: &rumoca_ir_solve::PreparedKernelSource,
         source: &ComputeBlock,
+        owners: &ContinuousRefreshOwners,
+        schedule: &ExactRefreshAssignmentSchedule,
         layout: &VarLayout,
+        table: &SolvePureCallTable,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-        let expected = key
-            .exact_assignments(source)
+        let expected = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|key| key.exact_assignment_schedule(source, owners, schedule))
             .map_err(WasmCompileError::Input)?;
-        self.bind_expected(&expected, layout)
+        self.check_header(&expected, layout)?;
+        let emitted =
+            crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
+                .map_err(WasmCompileError::Backend)?;
+        self.bind_emitted(emitted)
     }
 
     /// Bind captured issued rows to the same issued rows of the current build.
     pub fn bind_issued(
         &self,
-        key: &rumoca_ir_solve::PreparedKernelSource,
         rows: &IssuedAssignmentRows,
         layout: &VarLayout,
+        table: &SolvePureCallTable,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-        let expected = key
-            .issued_assignment_rows(rows)
+        let expected = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|key| key.issued_assignment_rows(rows))
             .map_err(WasmCompileError::Input)?;
-        self.bind_expected(&expected, layout)
+        self.check_header(&expected, layout)?;
+        let emitted = crate::emit::emit_issued_assignment_module(rows, layout, table)
+            .map_err(WasmCompileError::Backend)?;
+        self.bind_emitted(emitted)
     }
 
-    fn bind_expected(
-        &self,
-        expected: &str,
-        layout: &VarLayout,
-    ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
+    fn check_header(&self, expected: &str, layout: &VarLayout) -> Result<(), WasmCompileError> {
         if self.version != 1
             || self.source_key != expected
             || self.y != layout.y_scalars()
@@ -69,6 +78,25 @@ impl PrecompiledExactAssignments {
         {
             return Err(WasmCompileError::Input(
                 "precompiled assignments belong to another checked source or extent".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Compare the saved program with the current source's emission, which
+    /// activates nothing, before any saved code is linked; a difference is
+    /// refused, never replaced by the fresh emission.
+    fn bind_emitted(
+        &self,
+        emitted: crate::native_program::CompiledNativeCallProgramWasm,
+    ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
+        if self.payload.scratch_bytes() > emitted.capacity_policy.public_scratch_bytes()
+            || self.gather != emitted.gather_faults
+            || self.linear != emitted.linear_solve_faults
+            || !self.payload.same_emission(&emitted.into())
+        {
+            return Err(WasmCompileError::Input(
+                "precompiled assignments differ from their authoritative issued emission".into(),
             ));
         }
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

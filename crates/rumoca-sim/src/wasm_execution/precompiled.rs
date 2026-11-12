@@ -4,7 +4,10 @@ use rumoca_exec_wasm::{
     CompiledExactAssignmentWasm, CompiledPrivateProgramWasm, CompiledRetainedEventWasm,
     PrecompiledExactAssignments, PrecompiledPrivatePrograms, PrecompiledRetainedEvent,
 };
-use rumoca_ir_solve::{ComputeBlock, PreparedKernelSource, ScalarProgramBlock, VarLayout};
+use rumoca_ir_solve::{
+    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, PreparedKernelSource,
+    ScalarProgramBlock, SolvePureCallTable, VarLayout,
+};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
@@ -207,9 +210,11 @@ impl ProgramMode {
     }
     pub(crate) fn exact(
         &self,
-        key: &PreparedKernelSource,
         source: &ComputeBlock,
+        owners: &ContinuousRefreshOwners,
+        schedule: &ExactRefreshAssignmentSchedule,
         layout: &VarLayout,
+        calls: &SolvePureCallTable,
     ) -> Option<Result<CompiledExactAssignmentWasm, String>> {
         let Self::Load(programs) = self else {
             return None;
@@ -221,7 +226,7 @@ impl ProgramMode {
             })
             .and_then(|program| {
                 program
-                    .bind(key, source, layout)
+                    .bind(source, owners, schedule, layout, calls)
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = &result {
@@ -239,9 +244,9 @@ impl ProgramMode {
     }
     pub(crate) fn issued(
         &self,
-        key: &PreparedKernelSource,
         rows: &rumoca_ir_solve::IssuedAssignmentRows,
         layout: &VarLayout,
+        calls: &SolvePureCallTable,
     ) -> Option<Result<CompiledExactAssignmentWasm, String>> {
         let Self::Load(programs) = self else {
             return None;
@@ -254,7 +259,7 @@ impl ProgramMode {
             })
             .and_then(|program| {
                 program
-                    .bind_issued(key, rows, layout)
+                    .bind_issued(rows, layout, calls)
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = &result {

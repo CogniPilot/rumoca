@@ -96,7 +96,7 @@ pub fn compile_exact_assignment_schedule_wasm(
             .map_err(WasmCompileError::Backend)?;
     CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
         rumoca_ir_solve::PreparedKernelSource::new(layout, table)
-            .and_then(|source_key| source_key.exact_assignments(source))
+            .and_then(|source_key| source_key.exact_assignment_schedule(source, owners, schedule))
     })
 }
 
@@ -125,6 +125,9 @@ impl CompiledExactAssignmentWasm {
     ) -> Result<Self, WasmCompileError> {
         #[cfg(not(feature = "precompiled-programs"))]
         let _ = source_key;
+        // The key is settled before the emitted module is activated.
+        #[cfg(feature = "precompiled-programs")]
+        let source_key = source_key().map_err(WasmCompileError::Input)?;
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime =
             crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
@@ -137,7 +140,7 @@ impl CompiledExactAssignmentWasm {
             linear_solve_faults: artifact.linear_solve_faults.clone(),
             artifact: artifact.into(),
             #[cfg(feature = "precompiled-programs")]
-            source_key: source_key().map_err(WasmCompileError::Input)?,
+            source_key,
             y_count: layout.y_scalars(),
             p_count: layout.p_scalars(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -16,6 +16,7 @@ mod native_assignment;
 mod output_stores;
 mod projection;
 mod range_assignment;
+mod schedule_identity;
 mod shared_schedule;
 mod singleton_coverage;
 mod source_outputs;
