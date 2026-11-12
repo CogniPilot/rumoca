@@ -1,0 +1,14 @@
+[package]
+name = "rumoca-solver-semiimplicit"
+description = "Opt-in Cartesian semi-implicit Euler numerical plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-solver = { workspace = true }
+
+[lints]
+workspace = true

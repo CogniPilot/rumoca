@@ -146,6 +146,7 @@ const SOLVER_CONTRACT_BANNED_DEPENDENCIES: &[&str] = &[
     "diffsol",
     "rumoca-solver-diffsol",
     "rumoca-solver-rk45",
+    "rumoca-solver-semiimplicit",
 ];
 
 /// Every way `manifest` breaks the runtime-contract crate's dependency rule.

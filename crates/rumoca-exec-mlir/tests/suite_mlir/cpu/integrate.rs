@@ -75,6 +75,8 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         rumoca_ir_solve::SolveModel {
             problem: SolveProblem {
                 schema_version: rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
+                cartesian_pairs: None,
+                mechanical_step: None,
                 layout: integrate_fixture::named_y_layout(
                     rumoca_ir_solve::VarLayout::from_parts(Default::default(), 1, 1),
                     vec!["x".into()],

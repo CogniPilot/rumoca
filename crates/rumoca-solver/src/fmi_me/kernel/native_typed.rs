@@ -4,6 +4,7 @@ mod adoption;
 #[cfg(test)]
 mod owner_fixture;
 mod preinitialization;
+mod public_real;
 mod real;
 pub use preinitialization::{MePendingNativeComponent, MePendingNativeState};
 mod request;

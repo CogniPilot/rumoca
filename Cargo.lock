@@ -4954,6 +4954,7 @@ dependencies = [
  "rumoca-solver",
  "rumoca-solver-diffsol",
  "rumoca-solver-rk45",
+ "rumoca-solver-semiimplicit",
  "rumoca-solver-velimplicit",
  "rumoca-transport-udp",
  "rumoca-transport-websocket",
@@ -5003,6 +5004,13 @@ dependencies = [
 
 [[package]]
 name = "rumoca-solver-rk45"
+version = "0.10.4"
+dependencies = [
+ "rumoca-solver",
+]
+
+[[package]]
+name = "rumoca-solver-semiimplicit"
 version = "0.10.4"
 dependencies = [
  "rumoca-solver",

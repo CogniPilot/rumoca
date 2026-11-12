@@ -232,6 +232,8 @@ pub(super) fn construct_group(
         .zip(coordinates)
     {
         owners.push(SolvePureCallOwner {
+            articulated: None,
+            quaternion: None,
             input_coordinate,
             assertion_flow: Some(pending.assertion_flow),
             dependencies: Arc::from(pending.dependencies),
