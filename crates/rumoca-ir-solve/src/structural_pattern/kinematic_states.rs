@@ -23,7 +23,7 @@
 //! The kinematic states are the rest. A system with no seed has every state
 //! kinematic and an empty `R`, which a partitioned step treats as one explicit
 //! step. Reads are the primal read relation of each output
-//! ([`StructuralPattern::derive_output_y_dependency_ranges`]), not the
+//! ([`StructuralPattern::derive_output_execution_y_dependency_ranges`]), not the
 //! sensitivity relation the state Jacobian closes over: a state read only
 //! inside a condition has no tangent but still changes the value.
 //!
@@ -316,8 +316,8 @@ fn output_reads(programs: &ScalarProgramBlock, rows: usize) -> Option<Vec<Output
 /// be derived yields no outputs, so each of its rows is unanalysable.
 fn program_reads(program: &[LinearOp], span: Option<rumoca_core::Span>) -> Vec<OutputReads> {
     let (Ok(reads), Ok(effects)) = (
-        StructuralPattern::derive_output_y_dependency_ranges(program, span),
-        StructuralPattern::derive_output_effect_dependencies(program, span),
+        StructuralPattern::derive_output_execution_y_dependency_ranges(program, span),
+        StructuralPattern::execution_has_effect(program, span),
     ) else {
         return Vec::new();
     };
@@ -325,7 +325,7 @@ fn program_reads(program: &[LinearOp], span: Option<rumoca_core::Span>) -> Vec<O
     let copies = output_copies(program);
     reads
         .into_iter()
-        .zip(effects)
+        .zip(std::iter::repeat(effects))
         .enumerate()
         .map(|(position, (columns, effect))| OutputReads {
             columns,

@@ -1038,29 +1038,6 @@ impl StructuralPattern {
             .collect()
     }
 
-    /// Whether each output of one checked scalar program depends on an AD
-    /// seed input.
-    pub fn derive_output_seed_dependencies(
-        program: &[LinearOp],
-        span: Option<Span>,
-    ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Seed)
-    }
-
-    /// Whether each output of one checked scalar program contains an opaque
-    /// runtime operation such as table access or random-state evaluation.
-    ///
-    /// The dependency walk deliberately treats these operations as an effect
-    /// even when their explicit register inputs are constant. This lets cache
-    /// certificates fail closed without making consumers rediscover nested
-    /// function/fold control flow.
-    pub fn derive_output_effect_dependencies(
-        program: &[LinearOp],
-        span: Option<Span>,
-    ) -> Result<Vec<bool>, StructuralPatternError> {
-        derive_output_dependency_presence(program, span, DependencySource::Effect)
-    }
-
     /// Whether each output of one checked scalar program depends on time.
     ///
     /// This uses the same exhaustive compact-operation walk as solver-`Y`

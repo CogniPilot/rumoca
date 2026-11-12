@@ -337,13 +337,12 @@ fn dependency_backed_indicator_sources(
     let mut output_ordinal = 0usize;
     for (program_index, program) in block.programs().iter().enumerate() {
         let span = block.program_span(program_index);
-        let dependencies = crate::StructuralPattern::derive_output_y_dependency_ranges(
-            program, span,
-        )
-        .map_err(|error| FmiComponentError::EventIndicatorInventory {
-            message: error.to_string(),
-            span,
-        })?;
+        let dependencies =
+            crate::StructuralPattern::derive_output_execution_y_dependency_ranges(program, span)
+                .map_err(|error| FmiComponentError::EventIndicatorInventory {
+                    message: error.to_string(),
+                    span,
+                })?;
         for dependencies in dependencies {
             let output_index = block
                 .output_indices()

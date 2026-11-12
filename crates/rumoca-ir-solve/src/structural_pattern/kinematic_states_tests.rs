@@ -296,3 +296,35 @@ fn a_derivative_row_without_a_program_is_not_kinematic() {
         Some(NonKinematicReason::Unanalysable)
     );
 }
+
+#[test]
+fn a_guard_only_algebraic_read_keeps_its_nonkinematic_closure() {
+    let guarded = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::LoadY { dst: 1, index: 3 },
+        LinearOp::PureCall {
+            dst_start: 2,
+            input_starts: vec![0, 1].into(),
+            site: super::execution_reads_tests::guarded_site(),
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let constant = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let system = system(
+        vec![guarded, copy(2), constant],
+        vec![residual(3, 2, 1.0)],
+        projection(vec![(vec![0], vec![3])]),
+    );
+    let partition = partition(&system, 3, 4);
+    assert!(
+        !partition.states().contains(&0),
+        "the guarded algebraic must be refreshed after its nonkinematic producer changes"
+    );
+    assert!(matches!(
+        partition.reason(0),
+        Some(NonKinematicReason::Closure { through: 2 })
+    ));
+}
