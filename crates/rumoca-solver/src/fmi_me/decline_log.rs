@@ -66,6 +66,16 @@ impl RecordingBackend {
 }
 
 impl SolveExecutionBackend for RecordingBackend {
+    fn compile_fmi_derivative_operation(
+        &self,
+        root: solve::RetainedAssertionRoot,
+    ) -> Result<Option<Rc<dyn crate::CompiledSolveDerivativeOperation>>, String> {
+        self.log.observe(
+            "fmi_derivative_operation",
+            self.inner.compile_fmi_derivative_operation(root),
+        )
+    }
+
     fn compile_model_state_jacobian(
         &self,
         source: solve::SolveExecutionSource,

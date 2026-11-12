@@ -235,6 +235,7 @@ impl BodyEmitter<'_> {
         self.loop_start(counter, plan.count)?;
         self.emit_coordinates(&plan.extents, counter)?;
         for (position, op) in ops.iter().enumerate() {
+            self.operation_ordinal = position;
             match *op {
                 LinearOp::LoadY { dst, index }
                 | LinearOp::LoadP { dst, index }

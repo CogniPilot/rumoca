@@ -1,6 +1,7 @@
 mod compact_projection_replay;
 mod exact_source;
 mod range_assignment;
+mod static_cache;
 mod streamed_materialization;
 
 use super::*;

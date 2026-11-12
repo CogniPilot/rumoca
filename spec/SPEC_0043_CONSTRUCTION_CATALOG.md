@@ -610,6 +610,8 @@ exist. Neither query alone nor a partial draft proves a finalized stage.
 
 ### 6a. Continuous Refresh Construction
 
+A complete causal FMI derivative operation borrows the original correlated root. Its Solve IR constructor retains the canonical static/dynamic schedules, global parameter-static cache key domain across every refresh family, tensor result and full-vector finite check order. It issues memory32 control, disjoint snapshot/helper regions and a checked print bound; targets print those instructions and relocate original helper functions. Refresh errors restore the incoming coordinate; later value errors retain the refreshed coordinate. A required projection is never dropped to issue a causal operation.
+
 Continuous refresh optimizations require constructor-issued facts bound to the
 canonical residual and unknown inventories; wire replay rederives those facts,
 and consumers may use only the property proved by the certificate.

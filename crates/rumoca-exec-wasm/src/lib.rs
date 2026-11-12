@@ -6,6 +6,7 @@ pub const HOST_ENGINE_ENTRY: bool = cfg!(all(feature = "host-engine", not(target
 
 mod component_build;
 mod cost_model;
+mod derivative_operation;
 #[cfg(feature = "component-build")]
 pub use component_build::NativeLinkableModelLibrary;
 #[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
@@ -18,6 +19,15 @@ pub use component_build::{
 #[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
 pub use component_build::{
     FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
+};
+pub use derivative_operation::{
+    CompiledFmiDerivativeOperationWasm, compile_fmi_derivative_operation_wasm,
+};
+
+#[cfg(feature = "precompiled-programs")]
+pub use derivative_operation::{
+    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure,
+    PrecompiledFmiDerivativeOperation,
 };
 
 mod emit;
@@ -39,10 +49,7 @@ mod math_abi;
 mod native_capacity;
 mod native_program;
 mod outline;
-pub use native_capacity::{
-    CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest, decode_native_source_envelope,
-    encode_native_source_envelope,
-};
+pub use native_capacity::{decode_native_source_envelope, encode_native_source_envelope};
 mod private_program;
 #[cfg(feature = "precompiled-programs")]
 pub use private_program::PrecompiledPrivatePrograms;
@@ -103,7 +110,9 @@ pub use typed_call::{
     TypedCallLayout, compile_checked_assertion_wasm, compile_pure_call_wasm,
 };
 
-use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
+#[cfg(test)]
+use rumoca_ir_solve::NativeWasmCapacityRequest;
+use rumoca_ir_solve::{CheckedNativeWasmCapacityPolicy, ScalarProgramBlock, VarLayout};
 
 #[derive(Debug)]
 pub enum WasmCompileError {
@@ -421,6 +430,18 @@ pub fn compile_expression_compute_block_wasm_bytes(
     layout: &VarLayout,
 ) -> Result<Vec<u8>, WasmCompileError> {
     emit::emit_compute_module(block, layout).map_err(WasmCompileError::Backend)
+}
+
+/// Emit the original derivative tensor's value helper with checked typed calls.
+/// This is a helper for complete-operation assembly, not a derivative operation:
+/// it does not refresh dependencies, validate finite derivatives or publish a
+/// successful FMI result. Call `eval_values(y,p,time,scratch,0)` once; values
+/// occupy the start of its private scratch. A nonzero status leaves that
+/// scratch unpublishable. No scalar host loop or interpreter retry is used.
+pub fn compile_derivative_value_wasm(
+    source: &rumoca_ir_solve::fmi::FmiDerivativeOperationSource<'_>,
+) -> Result<CompiledNativeCallProgramWasm, WasmCompileError> {
+    emit::emit_derivative_value_module(source).map_err(WasmCompileError::Backend)
 }
 
 /// Emit one direct-write function from a construction-issued native schedule.

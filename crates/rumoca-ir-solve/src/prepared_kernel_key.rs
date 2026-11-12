@@ -43,6 +43,19 @@ impl PreparedKernelSource {
         self.key(&("issued-rows-v1", rows))
     }
 
+    /// Identity of the complete original FMI operation, never a wire plan.
+    pub fn fmi_derivative(
+        &self,
+        operation: &crate::fmi::FmiDerivativeCausalOperation<'_>,
+    ) -> Result<String, String> {
+        self.key(&(
+            "fmi-derivative-v1",
+            operation.source().problem(),
+            operation.source().vector_extent(),
+            operation.parameter_keys(),
+        ))
+    }
+
     pub fn retained_event(&self, source: &crate::RetainedEventProgram) -> Result<String, String> {
         self.key(&(
             "retained-event-v1",

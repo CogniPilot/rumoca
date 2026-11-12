@@ -3,9 +3,11 @@
 mod execution_backend;
 
 pub use execution_backend::{
-    CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
-    CompiledSolveModelStateJacobian, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
-    ModelStateJacobianPreparation, ModelStateJacobianRequest, SolveExecutionBackend,
+    CompiledSolveAssignmentSchedule, CompiledSolveDerivativeOperation,
+    CompiledSolveEventObservation, CompiledSolveEventTransaction, CompiledSolveModelStateJacobian,
+    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, ModelStateJacobianPreparation,
+    ModelStateJacobianRequest, SolveDerivativeCacheView, SolveDerivativeOperationFailure,
+    SolveExecutionBackend,
 };
 use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
@@ -103,6 +105,9 @@ mod reference_reverse;
 mod refresh_batch;
 mod refresh_execution;
 mod refresh_projection;
+mod refresh_static_cache;
+use refresh_static_cache::StaticRefreshCache;
+mod complete_derivative;
 mod relation_memory;
 pub use reference_reverse::ReferenceReverseExecution;
 mod seed_linearization;
@@ -130,7 +135,6 @@ use plans::{
     copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_value,
     direct_visible_value, root_condition_plan, total_root_condition_count, visible_value_plan,
 };
-use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
 #[cfg(test)]
@@ -329,6 +333,7 @@ struct ScalarExecutionInventory {
     /// by [`Self::reverse_state_derivative_vjp`] to form the reverse-mode VJP
     /// `(∂der/∂[solver_y|p])ᵀ·λ` (Track A scalar reverse core).
     derivative_scalar: EvaluationPrimal,
+    compiled_derivative_operation: Option<Rc<dyn CompiledSolveDerivativeOperation>>,
     /// Per-row forward-mode AD Jacobian-vector product of `implicit_rhs`
     /// (`d(residual_row)/d[y|p]·v`). Used to propagate state and parameter seeds
     /// through the algebraic projection row by row.
@@ -1084,6 +1089,9 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.update_solver_y_guess_from_state(guess, state)?;
+        if let Some(result) = self.try_complete_derivative(t, guess, params, out) {
+            return result;
+        }
         self.refresh_derivative_dependencies(t, guess, params, tol, max_iters)?;
         self.eval_derivative_rhs_from_solver_y(t, guess, params, out)
     }

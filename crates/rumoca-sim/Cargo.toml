@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+fmi-derivative-operation = ["precompiled-runtime"]
 default = ["native-solvers"]
 native-solvers = ["solver-diffsol", "solver-rk45", "solver-velimplicit"]
 fmi = []

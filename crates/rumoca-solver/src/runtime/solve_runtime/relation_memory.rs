@@ -1453,6 +1453,9 @@ impl ScalarExecutionView<'_> {
         solver_y: &mut [f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if let Some(result) = self.try_complete_derivative(t, solver_y, params, out) {
+            return result;
+        }
         self.refresh_derivative_dependencies(t, solver_y, params, tol, max_iters)?;
         // `eval_derivative_rhs_from_solver_y` fills `out` and *then* rejects
         // non-finite derivatives, so trace before propagating: on failure `out`

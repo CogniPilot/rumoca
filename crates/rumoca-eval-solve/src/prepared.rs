@@ -63,13 +63,14 @@ use assignment_shape::eval_assignment_shape;
 use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
 pub use construction::{PreparedEvaluationBlock, replaced_programs};
-use dependency::{parameter_static_y_gradient, row_parameter_indices};
+use dependency::parameter_static_y_gradient;
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 pub use isolation_program::{TargetIsolationProgram, TornSweepRun};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::AlgebraicRefreshRow;
 #[cfg(test)]
 use rumoca_ir_solve::BinaryOp;
+use rumoca_ir_solve::program_parameter_indices as row_parameter_indices;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
     ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,

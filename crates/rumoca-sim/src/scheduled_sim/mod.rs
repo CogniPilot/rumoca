@@ -12,9 +12,7 @@ use std::path::PathBuf;
 use std::thread;
 
 use crate::scenario_config::SimulationConfig;
-use crate::{
-    SimOptions, SimSolverMode, SimulationDiagnosticError, SimulationSession,
-};
+use crate::{SimOptions, SimSolverMode, SimulationDiagnosticError, SimulationSession};
 use anyhow::{Context, Result};
 use rumoca_compile::compile::{DaeCompilationResult, Session, SourceRootKind};
 use rumoca_compile::source_roots::{

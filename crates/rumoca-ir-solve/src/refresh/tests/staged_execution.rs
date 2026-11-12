@@ -184,3 +184,62 @@ fn grouped_rows_report_their_source_output_offsets() {
         .collect::<Vec<_>>();
     assert_eq!(offsets, [0, 1]);
 }
+
+fn derivative_component(plan: RefreshPlan) -> crate::fmi::FmiComponent {
+    let mut model = crate::SolveModel::default();
+    model.problem.layout = crate::VarLayout::from_parts(Default::default(), 2, 0);
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model.initial_y = crate::SolveInitialValues::repeat(0.0, 2).unwrap();
+    model.problem.continuous.implicit_rhs = two_output_source(false);
+    model.problem.continuous.implicit_row_targets =
+        vec![Some(crate::scalar_slot_y(0)), Some(crate::scalar_slot_y(1))].into();
+    model.problem.continuous.algebraic_projection_plan.blocks = (0..2)
+        .map(|row| crate::AlgebraicProjectionBlock {
+            rows: vec![row],
+            y_indices: vec![row],
+            ..Default::default()
+        })
+        .collect::<Vec<_>>()
+        .into();
+    model.problem.continuous.refresh_owners = ContinuousRefreshOwners::checked_for_source(
+        &model.problem.continuous.implicit_rhs,
+        RefreshPlan::default(),
+        plan,
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    crate::fmi::FmiComponent::construct(model, Vec::new()).unwrap()
+}
+
+#[test]
+fn derivative_operation_keeps_the_uncertified_complete_projection_step() {
+    let component = derivative_component(two_row_dynamic_plan());
+    let source = component.runtime_view().try_derivative_operation().unwrap();
+    let owners = &source.problem().continuous.refresh_owners;
+    let steps = source.staged_dependencies().unwrap();
+    assert_eq!(settled(owners, &steps), ["assign [0, 1]", "complete"]);
+    let StagedRefreshStep::Assignments(schedule) = steps[0] else {
+        panic!("the canonical causal warm start must precede projection")
+    };
+    assert!(std::ptr::eq(
+        schedule,
+        owners
+            .exact_assignment_schedule(source.dependencies().dynamic_causal_sequence)
+            .unwrap()
+    ));
+}
+
+#[test]
+fn derivative_operation_reads_its_own_causal_certificate_without_projection() {
+    let mut plan = two_row_dynamic_plan();
+    plan.causal_solution_certified = true;
+    let component = derivative_component(plan);
+    let source = component.runtime_view().try_derivative_operation().unwrap();
+    let owners = &source.problem().continuous.refresh_owners;
+    assert_eq!(
+        settled(owners, &source.staged_dependencies().unwrap()),
+        ["assign [0, 1]"]
+    );
+}

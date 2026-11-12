@@ -1,4 +1,5 @@
 use super::*;
+mod derivative_operation;
 use crate::SolveVariableValueKind;
 
 mod c_profile_refusals;

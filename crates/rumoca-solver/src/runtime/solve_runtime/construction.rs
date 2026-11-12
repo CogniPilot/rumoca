@@ -192,6 +192,19 @@ impl SolveRuntime {
                     .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let compiled_derivative_operation =
+            match (
+                execution_backend.as_ref(),
+                model_owner.retained_assertion_root(),
+            ) {
+                (Some(backend), Some(root)) => backend
+                    .compile_fmi_derivative_operation(root.clone())
+                    .map_err(|message| EvalSolveError::CompiledExecution {
+                        message,
+                        span: None,
+                    })?,
+                _ => None,
+            };
         let derivative_scalar = EvaluationPrimal::prepare(
             "derivative_rhs",
             derivative_scalar_rhs.clone(),
@@ -257,18 +270,24 @@ impl SolveRuntime {
         for (clock, plan) in clock_event_refresh.iter().enumerate() {
             trace_refresh_plan(model, &format!("clock-event-{clock}"), plan);
         }
-        let mut refresh_plans = vec![
-            &algebraic_refresh,
-            &derivative_refresh,
-            &root_refresh,
-            &event_refresh,
-        ];
-        refresh_plans.extend(clock_event_refresh.iter());
-        let static_refresh_parameter_indices = static_refresh_parameter_indices(
-            implicit_scalar_rhs.source(),
-            refresh_plans,
-            &refresh_program_rows,
-        );
+        let static_refresh_parameter_indices = refresh_owners
+            .static_cache_parameters(&model.problem.continuous.implicit_rhs)
+            .map_err(|error| EvalSolveError::InvalidRow {
+                message: error.to_string(),
+                span: None,
+            })?;
+        let mut static_refresh_cache = StaticRefreshCache::default();
+        if compiled_derivative_operation.is_some() {
+            static_refresh_cache
+                .prepare_operation_storage(
+                    model.problem.layout.y_scalars(),
+                    static_refresh_parameter_indices.len(),
+                )
+                .map_err(|message| EvalSolveError::CompiledExecution {
+                    message,
+                    span: None,
+                })?;
+        }
         let root_refresh_after_derivative = refresh_owners.root_after_derivative().cloned();
         let root_refresh_after_algebraic = refresh_owners.root_after_algebraic().cloned();
         let algebraic_refresh_after_derivative =
@@ -508,6 +527,7 @@ impl SolveRuntime {
         );
         let mut scalar = ScalarExecutionInventory {
             model_jacobian,
+            compiled_derivative_operation,
             initial_binding_rows,
             coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
                 &model.artifacts.discrete,
@@ -618,7 +638,7 @@ impl SolveRuntime {
             refresh_snapshot_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
             refresh_tensor_scratch: RefCell::new(Vec::new()),
-            static_refresh_cache: RefCell::new(StaticRefreshCache::default()),
+            static_refresh_cache: RefCell::new(static_refresh_cache),
             static_refresh_parameter_indices,
             parameter_static_gradient_cache: RefCell::new(ParameterStaticGradientCache::default()),
             torn_sweep_cache: TornSweepCache::default(),

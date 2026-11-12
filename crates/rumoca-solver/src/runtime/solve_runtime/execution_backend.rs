@@ -40,6 +40,34 @@ pub trait CompiledSolveProjectionJacobian {
     ) -> Result<(), crate::RuntimeSolveError>;
 }
 
+/// Borrowed columns of the runtime's one shared parameter-static cache.
+pub struct SolveDerivativeCacheView<'a> {
+    pub valid: &'a mut bool,
+    pub key_parameters: &'a mut [f64],
+    pub values: &'a mut [f64],
+    pub present: &'a mut [u8],
+}
+
+/// The source-issued phase preserves refresh rollback and later diagnostics.
+#[derive(Debug)]
+pub struct SolveDerivativeOperationFailure {
+    pub phase: Option<solve::fmi::FmiDerivativeStatus>,
+    pub error: RuntimeSolveError,
+}
+
+/// Complete original-root refresh, derivative vector and finite validation.
+pub trait CompiledSolveDerivativeOperation {
+    fn call(
+        &self,
+        y: &mut [f64],
+        parameters: &[f64],
+        time: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        output: &mut [f64],
+        cache: SolveDerivativeCacheView<'_>,
+    ) -> Result<(), SolveDerivativeOperationFailure>;
+}
+
 /// Backend-neutral callable for a causally ordered set of exact assignments.
 /// Program outputs write directly to the flattened solver-Y target list, so
 /// subsequent programs observe earlier assignments while multiple outputs of
@@ -120,6 +148,15 @@ pub trait CompiledSolveEventObservation {
 }
 
 pub trait SolveExecutionBackend {
+    /// Only an original correlated component can issue the complete operation.
+    /// Unsupported capability is distinct from preparation failure.
+    fn compile_fmi_derivative_operation(
+        &self,
+        _root: solve::RetainedAssertionRoot,
+    ) -> Result<Option<Rc<dyn CompiledSolveDerivativeOperation>>, String> {
+        Ok(None)
+    }
+
     /// Prepare one model product from the runtime's exact immutable owner.
     /// An error is fatal; it must not be converted to an unsupported capability.
     fn compile_model_state_jacobian(

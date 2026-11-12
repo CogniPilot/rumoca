@@ -34,6 +34,8 @@ mod prepared_kernel_key;
 pub use prepared_kernel_key::PreparedKernelSource;
 mod parameter_reads;
 mod program_occurrences;
+mod program_parameter_reads;
+pub use program_parameter_reads::program_parameter_indices;
 mod projection_stages;
 mod quotient_memory;
 mod refresh;
@@ -54,6 +56,8 @@ mod tangent_workspace;
 mod typed_program;
 mod variable_bounds;
 mod visible;
+mod wasm_capacity;
+pub use wasm_capacity::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
 pub mod visitor;
 
 use rumoca_core::{

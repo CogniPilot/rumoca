@@ -243,6 +243,19 @@ impl WasmExecutionBackend {
 }
 
 impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
+    #[cfg(all(
+        feature = "fmi-derivative-operation",
+        target_arch = "wasm32",
+        target_os = "unknown"
+    ))]
+    fn compile_fmi_derivative_operation(
+        &self,
+        root: rumoca_ir_solve::RetainedAssertionRoot,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveDerivativeOperation>>, String> {
+        super::derivatives::WasmDerivative::prepare(root, self.batch.mode())
+            .map(|compiled| compiled.map(|compiled| Rc::new(compiled) as Rc<_>))
+    }
+
     fn validate_model_context(&self, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
         if !self.layout().same_execution_layout(&model.problem.layout) {
             return Err("portable kernel layout differs from the model execution layout".into());

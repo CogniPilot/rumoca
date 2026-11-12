@@ -19,6 +19,7 @@ mod shared_schedule;
 mod singleton_coverage;
 mod source_outputs;
 mod staged_execution;
+mod static_cache;
 
 use std::collections::BTreeMap;
 use std::fmt;

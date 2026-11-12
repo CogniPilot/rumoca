@@ -39,6 +39,7 @@ mod c_codegen;
 pub const FMI3_TIME_VALUE_REFERENCE: u32 = 0;
 mod co_simulation;
 mod deployment;
+mod derivative_operation;
 mod event_free;
 mod indicator_plan;
 mod input_defaults;
@@ -67,6 +68,11 @@ pub use co_simulation::{
 };
 pub use deployment::{
     FmiDeploymentCapabilities, FmiDeploymentError, FmiDeploymentView, FmiInterfaceProfile,
+};
+pub use derivative_operation::{
+    FmiDerivativeCausalOperation, FmiDerivativeCausalRefusal, FmiDerivativeControlInstruction,
+    FmiDerivativeControlPlan, FmiDerivativeHelper, FmiDerivativeOperationRefusal,
+    FmiDerivativeOperationSource, FmiDerivativeStatus, FmiDerivativeWorkspace,
 };
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
 pub use indicator_plan::{

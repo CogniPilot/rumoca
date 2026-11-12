@@ -1,4 +1,5 @@
 //! WASM emitter for residual linear-op rows.
+pub(crate) mod derivative_operation;
 
 mod arena;
 mod compute;
@@ -7,6 +8,7 @@ mod gather;
 mod linear_solve;
 mod seed;
 mod tensor;
+pub(super) use compute::emit_derivative_value_module;
 pub(super) use compute::{
     AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
     emit_exact_assignment_module, emit_issued_assignment_module, emit_private_entries_modules,

@@ -33,6 +33,18 @@ impl From<CompiledNativeCallProgramWasm> for ProgramPayload {
     }
 }
 
+impl From<&CompiledNativeCallProgramWasm> for ProgramPayload {
+    fn from(module: &CompiledNativeCallProgramWasm) -> Self {
+        Self {
+            bytes: module.bytes.clone(),
+            scratch_bytes: module.scratch_bytes,
+            faults: module.faults.clone(),
+            gather: module.gather_faults.clone(),
+            linear: module.linear_solve_faults.clone(),
+        }
+    }
+}
+
 impl ProgramPayload {
     pub(crate) fn module_bytes(&self) -> &[u8] {
         &self.bytes

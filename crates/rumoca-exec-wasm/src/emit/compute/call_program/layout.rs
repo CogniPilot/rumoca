@@ -161,6 +161,15 @@ impl CallProgramLayout {
         y: usize,
         last: u32,
     ) -> Result<Self, String> {
+        Self::derive_source_ordered(rows, helpers, y, last)?.with_memos(rows, helpers)
+    }
+
+    fn derive_source_ordered(
+        rows: &[Vec<LinearOp>],
+        helpers: &ProgramHelpers,
+        y: usize,
+        last: u32,
+    ) -> Result<Self, String> {
         let mut calls = Vec::new();
         let mut directional_calls = Vec::new();
         let (mut input, mut output, mut scratch) = (0, 0, 0);
@@ -220,16 +229,13 @@ impl CallProgramLayout {
         let scratch_offset = output_offset
             .checked_add(output)
             .ok_or("native call output overflow")?;
-        let mut bytes = scratch_offset
+        let bytes = scratch_offset
             .checked_add(scratch)
             .ok_or("native whole-program scratch overflows memory32")?;
-        let calls_end = bytes;
-        let memos = super::memo::derive(rows, helpers, &mut bytes)?;
         let y_reads = y_read_bytes(rows)?;
         components.call_input = input;
         components.call_output = output;
         components.call_scratch = scratch;
-        components.memos = bytes - calls_end;
         Ok(Self {
             bytes,
             components,
@@ -250,7 +256,7 @@ impl CallProgramLayout {
             integer: last.checked_add(3).ok_or("native local overflow")?,
             helpers: calls,
             directional_helpers: directional_calls,
-            memos,
+            memos: Vec::new(),
             carried: Vec::new(),
             carried_lanes: Vec::new(),
             pieces: Default::default(),
@@ -258,6 +264,17 @@ impl CallProgramLayout {
             flag_end: 0,
             call_outputs,
         })
+    }
+
+    fn with_memos(
+        mut self,
+        rows: &[Vec<LinearOp>],
+        helpers: &ProgramHelpers,
+    ) -> Result<Self, String> {
+        let before = self.bytes;
+        self.memos = super::memo::derive(rows, helpers, &mut self.bytes)?;
+        self.components.memos = self.bytes - before;
+        Ok(self)
     }
 
     /// Publish `host_y` of the work scalars to the host Y buffer and stage
@@ -489,6 +506,18 @@ impl CallProgramPlan {
         policy: crate::CheckedNativeWasmCapacityPolicy,
     ) -> Result<Self, String> {
         CallProgramLayout::derive(rows, helpers, y, last)?.admit(policy)
+    }
+
+    /// Storage for the original invocation order, without cross-occurrence
+    /// reuse. Tensor points may bind different cells through affine strides.
+    pub(in crate::emit) fn source_ordered(
+        rows: &[Vec<LinearOp>],
+        helpers: &ProgramHelpers,
+        y: usize,
+        last: u32,
+    ) -> Result<Self, String> {
+        CallProgramLayout::derive_source_ordered(rows, helpers, y, last)?
+            .admit(crate::CheckedNativeWasmCapacityPolicy::default())
     }
 
     #[cfg(test)]

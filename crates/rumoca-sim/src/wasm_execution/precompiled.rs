@@ -15,6 +15,7 @@ pub(crate) struct CorePrograms {
     exact: Vec<PrecompiledExactAssignments>,
     issued: Vec<PrecompiledExactAssignments>,
     observations: Vec<PrecompiledRetainedEvent>,
+    derivatives: Vec<rumoca_exec_wasm::PrecompiledFmiDerivativeOperation>,
     uncompiled: Vec<String>,
 }
 
@@ -23,6 +24,7 @@ pub(crate) struct LoadedPrograms {
     exact: RefCell<VecDeque<PrecompiledExactAssignments>>,
     issued: RefCell<VecDeque<PrecompiledExactAssignments>>,
     observations: RefCell<VecDeque<PrecompiledRetainedEvent>>,
+    derivatives: RefCell<VecDeque<rumoca_exec_wasm::PrecompiledFmiDerivativeOperation>>,
     errors: RefCell<Vec<String>>,
 }
 
@@ -70,6 +72,7 @@ impl ProgramScope {
             exact: RefCell::new(programs.exact.into()),
             issued: RefCell::new(programs.issued.into()),
             observations: RefCell::new(programs.observations.into()),
+            derivatives: RefCell::new(programs.derivatives.into()),
             errors: RefCell::new(Vec::new()),
         })))
     }
@@ -101,6 +104,7 @@ impl ProgramScope {
             || !programs.exact.borrow().is_empty()
             || !programs.issued.borrow().is_empty()
             || !programs.observations.borrow().is_empty()
+            || !programs.derivatives.borrow().is_empty()
         {
             return Err("precompiled kernel inventory has unconsumed entries".into());
         }
@@ -264,6 +268,37 @@ impl ProgramMode {
                 .borrow_mut()
                 .issued
                 .push(PrecompiledExactAssignments::from_compiled(program));
+        }
+    }
+}
+
+#[cfg(all(feature = "fmi-derivative-operation", target_os = "unknown"))]
+impl ProgramMode {
+    pub(crate) fn derivative_operation(
+        &self,
+        operation: &rumoca_ir_solve::fmi::FmiDerivativeCausalOperation<'_>,
+    ) -> Result<rumoca_exec_wasm::BoundFmiDerivativeOperation, String> {
+        use rumoca_exec_wasm::{
+            PrecompiledFmiDerivativeOperation, compile_fmi_derivative_operation_wasm,
+        };
+        match self {
+            Self::Capture(output) => {
+                let compiled = compile_fmi_derivative_operation_wasm(operation)
+                    .map_err(|error| error.to_string())?;
+                let wire = PrecompiledFmiDerivativeOperation::from_compiled(&compiled);
+                let bound = wire.bind(operation).map_err(|error| error.to_string())?;
+                output.borrow_mut().derivatives.push(wire);
+                Ok(bound)
+            }
+            Self::Load(input) => {
+                let result = input.derivatives.borrow_mut().pop_front()
+                    .ok_or_else(|| "precompiled complete derivative inventory is exhausted; compilation is disabled".to_owned())
+                    .and_then(|wire| wire.bind(operation).map_err(|error| error.to_string()));
+                if let Err(error) = &result {
+                    input.errors.borrow_mut().push(error.clone());
+                }
+                result
+            }
         }
     }
 }
