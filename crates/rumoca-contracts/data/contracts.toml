@@ -749,6 +749,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'ARR-047'
+category = 'Array'
+name = 'min/max call forms'
+mls_ref = '§3.7.1, §10.3.4, §12.4.6'
+requirement = 'min(A)/max(A) reduce one array; min(x, y)/max(x, y) vectorize their scalar-pair form over matching arrays or scalar/array operands; other arities, scalar single arguments and unequal known non-scalar shapes are rejected'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'CLK-001'
 category = 'Clock'
 name = 'Clock not in function'

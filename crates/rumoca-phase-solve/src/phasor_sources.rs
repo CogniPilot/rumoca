@@ -17,6 +17,7 @@
 //! equation is matched to, so it is independent of causalization. A scalar
 //! two equations would record differently is left unrecorded.
 
+mod aliases;
 mod literal;
 mod proof;
 mod scoped;
@@ -43,29 +44,43 @@ struct AngleOperands {
 }
 
 /// Visible scalars defined as a function of a phasor's angle.
-pub(crate) struct PhasorSources {
-    sources: HashMap<ScalarCoordinate, Option<solve::SolvePhasor>>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PhasorFact {
+    function: solve::SolvePhasorFunction,
+    operands: AngleOperands,
 }
 
-impl PhasorSources {
+pub(crate) struct PhasorSources<'dae> {
+    view: dae::DaeView<'dae>,
+    sources: HashMap<u32, Vec<(usize, PhasorFact)>>,
+}
+
+impl<'dae> PhasorSources<'dae> {
     pub(crate) fn declaration_sources(
         &self,
-        id: dae::VariableId<'_>,
+        id: dae::VariableId<'dae>,
     ) -> Vec<(usize, solve::SolvePhasor)> {
-        let mut facts = self
-            .sources
-            .iter()
-            .filter_map(|(&(declaration, ordinal), fact)| {
-                (declaration == id.index())
-                    .then(|| fact.clone().map(|fact| (ordinal, fact)))
-                    .flatten()
+        if self.view.variable(id).is_none() {
+            return Vec::new();
+        }
+        self.sources
+            .get(&id.index())
+            .into_iter()
+            .flatten()
+            .filter_map(|(ordinal, fact)| {
+                Some((
+                    *ordinal,
+                    solve::SolvePhasor {
+                        function: fact.function,
+                        re: scalar_name(self.view, fact.operands.re)?,
+                        im: scalar_name(self.view, fact.operands.im)?,
+                    },
+                ))
             })
-            .collect::<Vec<_>>();
-        facts.sort_by_key(|fact| fact.0);
-        facts
+            .collect()
     }
 
-    pub(crate) fn of(view: dae::DaeView<'_>) -> Self {
+    pub(crate) fn of(view: dae::DaeView<'dae>) -> Self {
         let mut sources = HashMap::new();
         for (target, phasor) in view
             .continuous_owners()
@@ -88,7 +103,23 @@ impl PhasorSources {
                 *recorded = None;
             }
         }
-        Self { sources }
+        aliases::inherit(view, &mut sources);
+        let mut declarations: HashMap<u32, Vec<(usize, PhasorFact)>> = HashMap::new();
+        for ((declaration, ordinal), fact) in sources {
+            if let Some(fact) = fact {
+                declarations
+                    .entry(declaration)
+                    .or_default()
+                    .push((ordinal, fact));
+            }
+        }
+        for facts in declarations.values_mut() {
+            facts.sort_by_key(|fact| fact.0);
+        }
+        Self {
+            view,
+            sources: declarations,
+        }
     }
 }
 
@@ -98,7 +129,7 @@ fn phasor_of<'dae>(
     view: dae::DaeView<'dae>,
     value: dae::ExprId<'dae>,
     target: ScalarCoordinate,
-) -> Option<solve::SolvePhasor> {
+) -> Option<PhasorFact> {
     let query = ProofQuery::default();
     let (function, operands) = match view.expression(value)?.operation() {
         dae::ExpressionOperation::Builtin {
@@ -116,11 +147,7 @@ fn phasor_of<'dae>(
     if operands.im == target || operands.re == target || operands.im == operands.re {
         return None;
     }
-    Some(solve::SolvePhasor {
-        function,
-        re: scalar_name(view, operands.re)?,
-        im: scalar_name(view, operands.im)?,
-    })
+    Some(PhasorFact { function, operands })
 }
 
 fn scalar_name(view: dae::DaeView<'_>, (variable, scalar): ScalarCoordinate) -> Option<String> {

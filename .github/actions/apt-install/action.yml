@@ -64,8 +64,10 @@ runs:
           fi
         fi
 
+        last_apt_dns_failure=0
         bounded_apt() {
-          local started=$SECONDS status=0
+          local started=$SECONDS status=0 log_file
+          log_file=$(mktemp)
           echo "apt stage=$1 started (wall limit ${APT_TIMEOUT_SECONDS}s)"
           sudo env DEBIAN_FRONTEND=noninteractive \
             timeout --signal=TERM --kill-after=15s "${APT_TIMEOUT_SECONDS}s" \
@@ -74,7 +76,12 @@ runs:
             -o Acquire::http::Timeout=20 \
             -o Acquire::https::Timeout=20 \
             -o DPkg::Lock::Timeout=60 \
-            "$@" || status=$?
+            "$@" 2>&1 | tee "$log_file" || status=$?
+          last_apt_dns_failure=0
+          if (( status != 0 )) && grep -Fq 'Temporary failure resolving' "$log_file"; then
+            last_apt_dns_failure=1
+          fi
+          rm -f "$log_file"
           echo "apt stage=$1 exit=$status elapsed=$((SECONDS - started))s"
           if (( status == 124 || status == 137 )); then
             echo "::warning::apt $1 exceeded its wall-clock limit"
@@ -123,5 +130,8 @@ runs:
           exit 0
         fi
 
+        if (( last_apt_dns_failure )); then
+          echo "::error title=APT mirror DNS failure::apt mirror DNS resolution failed after bounded retries"
+        fi
         echo "::error::apt package installation failed after bounded retries"
         exit 1

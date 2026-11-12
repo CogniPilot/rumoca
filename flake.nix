@@ -49,10 +49,16 @@
         # rumoca's default shell remains pinned by rust-toolchain.toml.
         kaniVersion = "0.67.0";
         kaniSupported = system == "x86_64-linux";
-        kaniRustToolchain = fenix.packages.${system}.fromToolchainFile {
-          file = ./rust-toolchain-kani.toml;
-          sha256 = "sha256-P39FCgpfDT04989+ZTNEdM/k/AE869JKSB4qjatYTSs=";
-        };
+        kaniRustToolchain =
+          (fenix.packages.${system}.fromToolchainName {
+            name = "nightly-2025-11-21";
+            sha256 = "sha256-P39FCgpfDT04989+ZTNEdM/k/AE869JKSB4qjatYTSs=";
+          }).withComponents [
+            "rustc"
+            "cargo"
+            "rust-std"
+            "rust-src"
+          ];
         kaniCli = pkgs.rustPlatform.buildRustPackage {
           pname = "kani-verifier";
           version = kaniVersion;
@@ -159,10 +165,6 @@
               && !(pkgs.lib.hasInfix "node_modules" rel)
             )
             || pkgs.lib.hasPrefix ".cargo" rel
-            # vendor/diffsol is a patched path dependency the workspace builds
-            # from source; keep its tree (and the vendor dir so it is walked).
-            || rel == "vendor"
-            || pkgs.lib.hasPrefix "vendor/diffsol" rel
             || rel == "Cargo.toml"
             || rel == "Cargo.lock"
             || rel == "rust-toolchain.toml";
@@ -235,11 +237,11 @@
           inherit src;
           sourceRoot = "rumoca-src/crates/rumoca-bind-python";
           cargoRoot = "../..";
-          cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-            inherit src;
-            cargoRoot = ".";
-            name = "rumoca-${rumocaVersion}-cargo-vendor";
-            hash = "sha256-gdgPO8wn56OM11ehB6OfpvlJAZ1rGM49QaqX5J0DKI4=";
+          cargoDeps = pkgs.rustPlatform.importCargoLock {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "diffsol-0.13.2" = "sha256-XWK/wwmryo2aZaJdKqoU6PXoEpuM1Yie51q/022un3k=";
+            };
           };
           nativeBuildInputs = [
             rustToolchain

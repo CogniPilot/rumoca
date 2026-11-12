@@ -63,7 +63,7 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 21,500 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 21,750 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 6,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
 | `dae-total-loc` | 14,250 | 28,000 | Both items above; total follows their sum |
 
@@ -72,6 +72,15 @@ The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-11-11 current-main acknowledgment:** at `9afab3be`, the §1a
+measurement is 21,534 core + 6,432 wire = 27,966 production lines. The §1b
+rule derives ceilings of 21,750 / 6,500 / 28,000, so only the stale core
+acknowledgment moves. Relative to the `f9661d5c` measurement below, the
+existing main sources add 92 core and 39 wire lines. This records current
+source size; it adds no production code and does not discharge the required
+module review. Review triggers, counting exclusions, reduction owners and
+totality-debt ceilings remain unchanged.
 
 **2026-11-03 source-presentation acknowledgment (#583):** at source head
 `f9661d5c`, the §1a measurement is 21,442 core + 6,393 wire = 27,835

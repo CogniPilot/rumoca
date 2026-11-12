@@ -284,7 +284,7 @@ struct RuntimeVectorBuilder<'model, 'dae, 'supplied, F> {
     input_policy: dae::InputInitializationPolicy,
     overrides: &'supplied HashMap<String, f64>,
     state_coordinates: StateCoordinateSources<'dae>,
-    phasors: crate::phasor_sources::PhasorSources,
+    phasors: crate::phasor_sources::PhasorSources<'dae>,
 }
 
 impl<'dae, F> RuntimeVectorBuilder<'_, 'dae, '_, F>

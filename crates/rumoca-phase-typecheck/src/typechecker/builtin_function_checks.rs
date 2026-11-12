@@ -202,6 +202,7 @@ impl TypeChecker {
             | "acos" | "sinh" | "cosh" | "tanh" | "atan" | "der" | "pre" | "edge" | "change"
             | "noEvent" | "pure" | "identity" => (1, 1),
             "atan2" | "div" | "mod" | "rem" | "cross" => (2, 2),
+            "min" | "max" => (1, 2),
             "skew" => (1, 1),
             "semiLinear" => (3, 3),
             "initial" | "terminal" => (0, 0),
@@ -918,6 +919,40 @@ impl TypeChecker {
         args: &[Expression],
         type_table: &TypeTable,
     ) {
+        // MLS §10.3.4 defines array reduction and scalar-pair forms. The
+        // latter vectorizes under §3.7.1 / §12.4.6: scalars broadcast and
+        // known array operands must have the same shape. Inference stays conservative;
+        // unsupported expression forms stay unchecked here and can be
+        // diagnosed by a later phase without inventing a scalar/array shape.
+        match args {
+            [arg]
+                if self
+                    .infer_expression_shape(arg, type_table)
+                    .is_some_and(|shape| shape.is_empty()) =>
+            {
+                self.emit_array_builtin_error(
+                    comp,
+                    format!("{name}() with one argument requires an array argument (MLS §10.3.4)"),
+                );
+            }
+            [lhs, rhs]
+                if matches!(
+                    (
+                        self.infer_expression_shape(lhs, type_table),
+                        self.infer_expression_shape(rhs, type_table),
+                    ),
+                    (Some(lhs), Some(rhs))
+                        if !lhs.is_empty() && !rhs.is_empty() && lhs != rhs
+                ) =>
+            {
+                self.emit_array_builtin_error(
+                    comp,
+                    format!("{name}() array argument shapes must match (MLS §12.4.6)"),
+                );
+            }
+            _ => {}
+        }
+
         for arg in args {
             let Some(found) = self.infer_expression_type(arg, type_table) else {
                 continue;

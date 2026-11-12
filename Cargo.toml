@@ -8,7 +8,7 @@ resolver = "2"
 # workspace root can resolve a package to a worktree copy instead of the
 # checkout, producing a binary that does not match the source under review.
 # Third-party source stays outside first-party workspace test/lint policy.
-exclude = ["infra/fuzz", ".claude/worktrees", "vendor/diffsol"]
+exclude = ["infra/fuzz", ".claude/worktrees"]
 members = [
     "crates/rumoca",
     "crates/rumoca-worker",
@@ -304,6 +304,6 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-# Correct the accepted BDF state at its owner; see the provenance and patch
-# inventory in vendor/diffsol/RUMOCA_PATCH.md.
-diffsol = { path = "vendor/diffsol" }
+# Keep the numerical corrections in the maintained 0.13.2 fork.
+# Provenance: docs/dev-guide/src/runtime/diffsol-maintenance.md.
+diffsol = { git = "https://github.com/CogniPilot/diffsol", rev = "4a8aebb83e088cc454d1716c81768eb36386292f" }

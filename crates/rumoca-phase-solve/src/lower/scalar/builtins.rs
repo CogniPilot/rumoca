@@ -171,24 +171,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ),
             dae::PureBuiltin::Min | dae::PureBuiltin::Max => {
-                let reduction = if builtin == dae::PureBuiltin::Min {
-                    ReductionKind::Minimum
-                } else {
-                    ReductionKind::Maximum
-                };
-                if arguments.len() == 1 {
-                    self.reduction(
-                        arguments.get(0).expect("checked reduction argument"),
-                        reduction,
-                        span,
-                    )
-                } else {
-                    let values = arguments
-                        .iter()
-                        .map(|argument| self.expression(argument, scalar))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    self.fold_registers(values, reduction.operator(), span)
-                }
+                self.extremum(builtin, arguments, scalar, span)
             }
             dae::PureBuiltin::Size => self.size_builtin(arguments, scalar, span),
             dae::PureBuiltin::Zeros => self.constant(0.0, span),
@@ -649,6 +632,35 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         } else {
             Ok(value)
         }
+    }
+
+    fn extremum(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let reduction = if builtin == dae::PureBuiltin::Min {
+            ReductionKind::Minimum
+        } else {
+            ReductionKind::Maximum
+        };
+        if arguments.len() == 1 {
+            return self.reduction(
+                arguments.get(0).expect("checked reduction argument"),
+                reduction,
+                span,
+            );
+        }
+        let values = arguments
+            .iter()
+            .map(|argument| {
+                let scalar = scalar_operand(self.view, argument, scalar);
+                self.expression(argument, scalar)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.fold_registers(values, reduction.operator(), span)
     }
 
     fn reduction(

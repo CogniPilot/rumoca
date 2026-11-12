@@ -714,11 +714,7 @@ fn select<'formal>(
         let choices = coordinates
             .iter()
             .map(|&(coordinate, scalar)| {
-                choice(
-                    formal,
-                    coordinate,
-                    point.has_stated_initial_value(coordinate, scalar),
-                )
+                choice(formal, coordinate, initial_seed(&point, coordinate, scalar))
             })
             .collect::<Vec<_>>();
         let selected = matrix
@@ -941,10 +937,49 @@ fn requests_forced_state(variable: dae::VariableView<'_>) -> bool {
     variable.continuous_state_select() == Some(StateSelect::Always)
 }
 
+/// Priority classes of an eligible coordinate, lowest first (MLS 3.7
+/// §4.9.7.1: `avoid` < `default` < `prefer`; a source state ranks above a
+/// default algebraic).
+pub(super) const AVOID_CLASS: u8 = 0;
+pub(super) const ALGEBRAIC_CLASS: u8 = 1;
+pub(super) const STATE_CLASS: u8 = 2;
+pub(super) const PREFER_CLASS: u8 = 3;
+
+/// How much initial-value information a coordinate scalar carries. Within a
+/// priority class, a stated initial value (`fixed = true` or an initial pin)
+/// precedes a nonzero unfixed `start`, which precedes a default guess, so a
+/// reduced selection integrates the coordinate whose start the author wrote,
+/// as the unreduced selection does. A nonzero start is the same seed
+/// information the alias quotient anchors on (SPEC_0040 STRUCT-T02); DAE
+/// construction gives every unstarted declaration a zero start, so zero
+/// carries none.
+pub(super) const GUESS_SEED: u8 = 0;
+pub(super) const START_SEED: u8 = 1;
+pub(super) const STATED_SEED: u8 = 2;
+
+/// The eligible priority of a coordinate in `class` carrying `seed`.
+pub(super) const fn eligible_priority(class: u8, seed: u8) -> u8 {
+    class * (STATED_SEED + 1) + seed
+}
+
+fn initial_seed(
+    point: &TrialPoint,
+    coordinate: FormalStageCoordinate<'_, '_>,
+    scalar: usize,
+) -> u8 {
+    if point.has_stated_initial_value(coordinate, scalar) {
+        STATED_SEED
+    } else if point.has_nonzero_start(coordinate, scalar) {
+        START_SEED
+    } else {
+        GUESS_SEED
+    }
+}
+
 fn choice<'source, 'formal>(
     formal: FormalDerivativeView<'_, 'source, 'formal>,
     coordinate: FormalStageCoordinate<'source, 'formal>,
-    stated_initial_value: bool,
+    seed: u8,
 ) -> ColumnChoice {
     let source = coordinate.source_variable();
     if coordinate.order() == 0 {
@@ -960,13 +995,13 @@ fn choice<'source, 'formal>(
     {
         return ColumnChoice::Dependent;
     }
-    let priority = match source.state_select() {
-        StateSelect::Prefer => 6,
-        StateSelect::Avoid => 0,
-        _ if source.role() == dae::VariableRole::State => 4,
-        _ => 2,
+    let class = match source.state_select() {
+        StateSelect::Prefer => PREFER_CLASS,
+        StateSelect::Avoid => AVOID_CLASS,
+        _ if source.role() == dae::VariableRole::State => STATE_CLASS,
+        _ => ALGEBRAIC_CLASS,
     };
-    ColumnChoice::Eligible(priority + u8::from(stated_initial_value))
+    ColumnChoice::Eligible(eligible_priority(class, seed))
 }
 
 fn failure(error: impl std::fmt::Display) -> StructuralError {

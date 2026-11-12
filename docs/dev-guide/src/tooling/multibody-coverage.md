@@ -3825,7 +3825,7 @@ before success. Armijo backtracking, tolerances, iteration budgets, and the
 existing Jacobian/timestep estimate-reset policy remain unchanged. Frozen
 upstream commit `7036380f908dbd93baa4253d2e0a34aa115cbbb5` retains the original
 behavior; the dependency patch and provenance are recorded in
-`vendor/diffsol/RUMOCA_PATCH.md`.
+[the maintained Diffsol patch inventory](../runtime/diffsol-maintenance.md).
 
 All eight direct dependency tests, 162 simulation tests, both sampled-integral
 event-entry regressions, and affected-package all-target/all-feature Clippy
@@ -10914,7 +10914,7 @@ pass, followed by all 458 core tests. Evidence is in
 `native-bdf-endpoint-{red,green}-1.log`, `sampled-integral-{red,green}-1.log`,
 `sampled-integral-omc/analytic-comparison.json`, and `bdf-endpoint-core-1.log`.
 
-`vendor/diffsol/RUMOCA_PATCH.md` records the immutable upstream revision,
+[the maintained Diffsol patch inventory](../runtime/diffsol-maintenance.md) records the immutable upstream revision,
 published archive checksum, one-line source change, license, and release
 limitation. The archive audit verifies that every original package file is
 present, with only `src/ode_solver/bdf.rs` changed. A workspace patch cannot
@@ -11262,8 +11262,8 @@ each new BDF attempt, then reapplies any closer hard stop. The difference
 table is rescaled to the actual new step size. Error-driven reductions retain
 the existing minimum-step failure; no model, state-error setting, comparator
 policy, or FMI adapter workaround changes. The local dependency patch remains
-confined to `vendor/diffsol/src/ode_solver/bdf.rs`, with provenance recorded in
-`vendor/diffsol/RUMOCA_PATCH.md`. Current upstream commit
+confined to `diffsol/src/ode_solver/bdf.rs` in the maintenance fork, with provenance recorded in
+[the maintained Diffsol patch inventory](../runtime/diffsol-maintenance.md). Current upstream commit
 `a33f02a4952c6837979754cab92eef70763a2f41` retains the original interaction;
 no upstream submission has been made.
 

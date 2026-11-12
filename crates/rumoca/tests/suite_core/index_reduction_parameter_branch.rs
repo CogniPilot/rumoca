@@ -196,6 +196,62 @@ fn relation_guards_without_an_owned_event_keep_the_refusal() {
     }
 }
 
+/// A `for` binder compared with a parameter selects one fixed branch per
+/// scalar instance (MLS §3.6.5). End-to-end smoke coverage only, not a guard
+/// for the binder rule itself: scalar row owners (flatten's binder-selected
+/// families) already pass without the binder rule in `parameter_conditionals`,
+/// which `dae_transform::tests::binder_guards` pins directly.
+#[test]
+fn binder_selected_family_rows_keep_branch_derivatives_end_to_end() {
+    let source = "model BinderBranchKinematics
+          parameter Integer k = 1;
+          Real q(start=0.4, fixed=true, stateSelect=StateSelect.always);
+          Real v(start=0.3, fixed=true, stateSelect=StateSelect.always);
+          Real x[2];
+          Real velocity[2];
+        equation
+          der(q) = v;
+          der(v) = -q;
+          for i in 1:2 loop
+            x[i] = if i == k then q else 0;
+          end for;
+          velocity = der(x);
+        end BinderBranchKinematics;";
+    let compiled = Compiler::new()
+        .model("BinderBranchKinematics")
+        .compile_str(source, "binder_branch.mo")
+        .unwrap();
+    if let Err(error) = rumoca_phase_structural::prepare_for_solve(&compiled.dae) {
+        panic!("a binder guard is fixed per instance: {error:?}");
+    }
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.01),
+        ..Default::default()
+    };
+    let result = simulate_dae_with_diagnostics(&compiled.dae, &options).unwrap();
+    let column = |name: &str| {
+        let index = result.names.iter().position(|value| value == name);
+        &result.data[index.unwrap_or_else(|| panic!("missing output {name}"))]
+    };
+    for (row, &time) in result.times.iter().enumerate() {
+        let q = 0.4 * time.cos() + 0.3 * time.sin();
+        let v = -0.4 * time.sin() + 0.3 * time.cos();
+        for (name, expected) in [
+            ("x[1]", q),
+            ("x[2]", 0.0),
+            ("velocity[1]", v),
+            ("velocity[2]", 0.0),
+        ] {
+            let actual = column(name)[row];
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "{name}({time}): {actual} != {expected}"
+            );
+        }
+    }
+}
+
 fn check_motion(source: &str, start: f64, sign: f64) {
     check_motion_shape(source, start, sign, false);
 }

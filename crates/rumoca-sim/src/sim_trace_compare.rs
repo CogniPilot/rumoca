@@ -421,16 +421,25 @@ pub enum TraceCompareError {
 }
 
 pub fn load_trace_json(path: &Path) -> Result<SimTrace, TraceCompareError> {
-    let payload = std::fs::read_to_string(path).map_err(|source| TraceCompareError::Read {
+    let file = std::fs::File::open(path).map_err(|source| TraceCompareError::Read {
         path: path.display().to_string(),
         source,
     })?;
-    let trace: SimTrace =
-        serde_json::from_str(&payload).map_err(|source| TraceCompareError::Parse {
-            path: path.display().to_string(),
-            source,
-        })?;
-    Ok(trace)
+    // Large traces already need their decoded channel storage. Do not retain
+    // another complete copy of the JSON while constructing those arrays.
+    serde_json::from_reader(std::io::BufReader::new(file)).map_err(|source| {
+        if source.is_io() {
+            TraceCompareError::Read {
+                path: path.display().to_string(),
+                source: source.into(),
+            }
+        } else {
+            TraceCompareError::Parse {
+                path: path.display().to_string(),
+                source,
+            }
+        }
+    })
 }
 
 pub fn compare_model_traces(
@@ -552,8 +561,8 @@ fn compare_common_channels(
 struct TracePair<'a> {
     rumoca: &'a SimTrace,
     omc: &'a SimTrace,
-    rumoca_series: HashMap<String, Vec<Option<f64>>>,
-    omc_series: HashMap<String, Vec<Option<f64>>>,
+    rumoca_series: HashMap<String, &'a [Option<f64>]>,
+    omc_series: HashMap<String, &'a [Option<f64>]>,
     rumoca_discrete_channels: HashSet<String>,
     omc_discrete_channels: HashSet<String>,
     common: BTreeSet<String>,
@@ -716,7 +725,7 @@ fn comparison_window(rumoca_times: &[f64], omc_times: &[f64]) -> Option<(f64, f6
 /// replaces.
 fn reference_array_group_floors(
     omc_times: &[f64],
-    omc_series: &HashMap<String, Vec<Option<f64>>>,
+    omc_series: &HashMap<String, &[Option<f64>]>,
     names: &BTreeSet<String>,
     rumoca_discrete_channels: &HashSet<String>,
     omc_discrete_channels: &HashSet<String>,
@@ -983,12 +992,12 @@ pub fn count_channel_agreement_bands_default(
     )
 }
 
-fn series_map(trace: &SimTrace) -> HashMap<String, Vec<Option<f64>>> {
+fn series_map(trace: &SimTrace) -> HashMap<String, &[Option<f64>]> {
     trace
         .names
         .iter()
         .cloned()
-        .zip(trace.data.iter().cloned())
+        .zip(trace.data.iter().map(Vec::as_slice))
         .collect()
 }
 
