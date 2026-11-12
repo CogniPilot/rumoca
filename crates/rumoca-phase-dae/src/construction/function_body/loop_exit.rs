@@ -9,15 +9,20 @@
 //!
 //! A conjunct of the selection is such an exit test when
 //!
-//! * it reads no binder of the loop and calls no function: the skipped passes
-//!   leave the state it reads unchanged, so it stays false; or
+//! * it reads no binder of the loop and no exit state the body itself stores
+//!   outside every selection, and calls no function: the skipped passes leave
+//!   the state it reads unchanged, so it stays false; or
 //! * it bounds the loop's leading binder in the direction the binder moves
 //!   (`i <= n` while `i` ascends, `i >= n` while it descends) by a value that
 //!   reads no binder of the loop: the leading binder is monotone and the bound
 //!   is unchanged by skipped passes, so the test stays false.
 //!
-//! The continuation is the conjunction of the exit tests. The selection itself
-//! stays in the body, so the continuation only ends the fold early.
+//! The continuation is the conjunction of the exit tests, each evaluated only
+//! where the ones before it hold, in the order the body's nested selections
+//! evaluate them, so it evaluates no test in a state where the body would
+//! not: a test an outer selection guards may fault where that selection is
+//! false. The selection itself stays in the body, so the continuation only
+//! ends the fold early.
 
 use super::*;
 use rumoca_core::{BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Statement};
@@ -94,10 +99,26 @@ impl OwnLoop<'_, '_> {
                 ))
                 .then_some(statement)
             });
+        // An exit state the body stores at its own top level (the break state
+        // of a nested loop, reset before each execution of that loop) is not
+        // left unchanged by a pass the selection skips: a conjunct reading it
+        // selects the nested loop, not this one. It is a test the exit leaves
+        // out, so it still bars the tests that could fault without it.
+        let stored = plans
+            .iter()
+            .filter_map(|plan| match plan {
+                FunctionStatementPlan::GeneratedBooleanAssignment {
+                    target,
+                    mutable: true,
+                    ..
+                } => Some(target.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let conjuncts = common_selection(selected, &captures)?;
-        let (exits, others): (Vec<_>, Vec<_>) = conjuncts
-            .into_iter()
-            .partition(|conjunct| self.is_exit_test(conjunct));
+        let (exits, others): (Vec<_>, Vec<_>) = conjuncts.into_iter().partition(|conjunct| {
+            !reads_any_name(conjunct, &stored) && self.is_exit_test(conjunct)
+        });
         // A test the exit leaves out can guard a test that faults without it,
         // so beside such a test only the tests that cannot fault are kept: any
         // false conjunct of the selection ends the fold.
@@ -112,12 +133,15 @@ impl OwnLoop<'_, '_> {
         if exits.is_empty() {
             return None;
         }
-        let mut exits = exits.into_iter();
-        let first = exits.next()?.clone();
-        Some(exits.fold(first, |lhs, rhs| Expression::Binary {
-            op: OpBinary::And,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs.clone()),
+        // The conjuncts are in the order the selections evaluate them.
+        let mut exits = exits.into_iter().rev();
+        let last = exits.next()?.clone();
+        Some(exits.fold(last, |rest, test| Expression::If {
+            branches: vec![(test.clone(), rest)],
+            else_branch: Box::new(Expression::Literal {
+                value: Literal::Boolean(false),
+                span,
+            }),
             span,
         }))
     }

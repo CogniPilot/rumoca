@@ -42,6 +42,12 @@ pub fn function_return_state_name(source_start: usize) -> VarName {
     VarName::new(format!("__rumoca_return_state_{source_start}"))
 }
 
+/// Mutable function-local state for the `break` of one loop; the catalog ID
+/// keeps loops that share a source position distinct.
+pub fn function_break_state_name(source_start: usize, catalog_id: usize) -> VarName {
+    VarName::new(format!("__rumoca_break_state_{source_start}_{catalog_id}"))
+}
+
 /// Boolean snapshot inserted at one non-leading function return.
 pub fn function_return_guard_name(source_start: usize) -> VarName {
     VarName::new(format!("__rumoca_return_guard_{source_start}"))
