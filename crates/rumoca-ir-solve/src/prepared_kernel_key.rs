@@ -1,6 +1,9 @@
 //! Identity of checked executable source retained by a precompiled product.
 //! This selects no storage, lowering, omission, caching or execution policy.
-use crate::{ComputeBlock, ScalarProgramBlock, SolvePureCallTable, VarLayout};
+use crate::{
+    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, ScalarProgramBlock,
+    SolvePureCallTable, VarLayout,
+};
 use std::io::Write;
 
 fn serialized_digest(source: &impl serde::Serialize) -> Result<String, String> {
@@ -30,8 +33,20 @@ impl PreparedKernelSource {
         self.key(&("private-v1", source, seed))
     }
 
+    /// Bare source fingerprint; this does not identify an executable schedule.
     pub fn exact_assignments(&self, source: &ComputeBlock) -> Result<String, String> {
         self.key(&("exact-v1", source))
+    }
+
+    /// The complete original source and the specific constructor-issued schedule.
+    /// Unlike the bare source fingerprint, this names owners, order and chunks.
+    pub fn exact_assignment_schedule(
+        &self,
+        source: &ComputeBlock,
+        owners: &ContinuousRefreshOwners,
+        schedule: &ExactRefreshAssignmentSchedule,
+    ) -> Result<String, String> {
+        self.key(&("exact-schedule-v2", source, owners, schedule.key_identity()))
     }
 
     /// Issued ordered assignment rows: their programs, slot targets, function
