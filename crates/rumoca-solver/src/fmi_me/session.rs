@@ -41,7 +41,6 @@ pub use options::{MeAdvanceOutcome, MeOutputCursor, MeSessionOptions, MeSessionO
 
 use error::latched_failure;
 use options::trace_capacity;
-use selected_values::output_arity_mismatch;
 
 use super::{
     MeEventCause, MeExecutionBackend, MeInstanceConfig, MeModelSource, MeTime, SolveMeKernel,
@@ -525,7 +524,13 @@ impl MeSimulationSession<'_, '_> {
         let names = self.output_names()?;
         let values = self.output_values()?;
         if names.len() != values.len() {
-            return Err(output_arity_mismatch(values.len(), names.len()));
+            return Err(MeSessionError::Contract {
+                reason: format!(
+                    "the component returned {} output values for {} declared outputs",
+                    values.len(),
+                    names.len()
+                ),
+            });
         }
         let mut visible: IndexMap<String, f64> = names.into_iter().zip(values).collect();
         for (name, value) in &self.host.inputs {

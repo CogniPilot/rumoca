@@ -926,23 +926,23 @@ impl SolveMeKernel {
     }
 
     /// The outputs `names` select at `observation`, in request order; `None`
-    /// for a name the component does not expose. Returns how many values
-    /// [`Self::get_outputs`] holds at the same observation.
+    /// for a name the component does not expose.
     pub(crate) fn get_selected_outputs<N: AsRef<str>>(
         &self,
         observation: &MeObservation,
         sample_time: f64,
         names: &[N],
         values: &mut Vec<Option<f64>>,
-    ) -> Result<usize, MeError> {
+    ) -> Result<(), MeError> {
         self.require_output_getter(observation)?;
-        Ok(self.runtime.visible_values_selected(
+        self.runtime.visible_values_selected(
             &observation.solver_y,
             &observation.parameters,
             sample_time,
             names,
             values,
-        )?)
+        )?;
+        Ok(())
     }
 
     /// What either output getter requires of the component and the observation.
@@ -956,12 +956,6 @@ impl SolveMeKernel {
             ));
         }
         Ok(())
-    }
-
-    /// How many outputs the component declares: the length of its output
-    /// names, without materializing them.
-    pub(crate) fn declared_output_count(&self) -> usize {
-        self.runtime.model().visible_projection.scalar_count()
     }
 
     pub(crate) fn set_float64(
