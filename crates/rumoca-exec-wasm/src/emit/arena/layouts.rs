@@ -1,5 +1,6 @@
 //! Compact tensor loads, replication and row-major permutations.
 
+#[cfg(feature = "diagnostic-root-scalar-locals")]
 use super::arithmetic::cell;
 use super::*;
 use rumoca_ir_solve::TensorInputKind;
@@ -23,6 +24,7 @@ impl BodyEmitter<'_> {
             TensorInputKind::Y => Y_PTR_PARAM,
             TensorInputKind::P => P_PTR_PARAM,
         };
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
         if self.has_value_local(&[dst_start])? {
             for element in 0..count {
                 let index = input_start
@@ -125,6 +127,7 @@ impl BodyEmitter<'_> {
             .checked_mul(columns)
             .and_then(|n| n.checked_mul(element_width))
             .ok_or("native transpose count overflow")?;
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
         if self.has_value_local(&[dst_start, src_start])? {
             for index in 0..count {
                 let row = index / (columns * element_width);
@@ -188,23 +191,26 @@ impl BodyEmitter<'_> {
             .checked_mul(inner)
             .and_then(|n| i32::try_from(n).ok())
             .ok_or("native concatenate result width overflow")?;
-        let mut runs = vec![dst_start];
-        runs.extend(sources.iter().map(|source| source.start));
-        if self.has_value_local(&runs)? {
-            let result_cells = dimensions[axis] as usize * inner;
-            let mut axis_offset = 0usize;
-            for source in &sources {
-                let source_cells = source.dimensions[axis] as usize * inner;
-                let count = source
-                    .dimensions
-                    .iter()
-                    .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
-                    .ok_or("native concatenate count overflow")?;
-                let placement = [source_cells, result_cells, axis_offset * inner];
-                self.value_concatenate_source(dst_start, source.start, count, placement)?;
-                axis_offset += source.dimensions[axis] as usize;
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        {
+            let mut runs = vec![dst_start];
+            runs.extend(sources.iter().map(|source| source.start));
+            if self.has_value_local(&runs)? {
+                let result_cells = dimensions[axis] as usize * inner;
+                let mut axis_offset = 0usize;
+                for source in &sources {
+                    let source_cells = source.dimensions[axis] as usize * inner;
+                    let count = source
+                        .dimensions
+                        .iter()
+                        .try_fold(lanes, |n, d| n.checked_mul(*d as usize))
+                        .ok_or("native concatenate count overflow")?;
+                    let placement = [source_cells, result_cells, axis_offset * inner];
+                    self.value_concatenate_source(dst_start, source.start, count, placement)?;
+                    axis_offset += source.dimensions[axis] as usize;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
         let counter = self.arena_plan()?.counter;
         let mut axis_offset = 0usize;
@@ -247,6 +253,7 @@ impl BodyEmitter<'_> {
     }
 }
 
+#[cfg(feature = "diagnostic-root-scalar-locals")]
 impl BodyEmitter<'_> {
     /// One concatenation source in the element order of its counted loop,
     /// with every source and target cell named statically.
