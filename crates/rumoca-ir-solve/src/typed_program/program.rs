@@ -1703,6 +1703,40 @@ impl<'program> TypedProgramBuilder<'program> {
         Ok(destination)
     }
 
+    /// Whether zero-based `indices` address one element of `aggregate`: a
+    /// full-rank index inside every extent (never true for an empty extent).
+    pub fn element_in_bounds(&self, aggregate: ProgramRegister<'program>, indices: &[u32]) -> bool {
+        !indices.is_empty()
+            && self
+                .register_types
+                .get(aggregate.id.0 as usize)
+                .is_some_and(|value_type| indices_in_bounds(value_type.dimensions(), indices))
+    }
+
+    /// Replace the element at zero-based `indices` of `aggregate` by `value`
+    /// when those indices are proved in bounds: the one-element aggregate of
+    /// `value` written by a static slice update, which cannot fault. An index
+    /// that is not proved in bounds is refused here; the caller keeps the
+    /// checked run-time `update_element` for it.
+    pub fn update_element_static(
+        &mut self,
+        aggregate: ProgramRegister<'program>,
+        value: ProgramRegister<'program>,
+        indices: Vec<u32>,
+        provenance: Span,
+    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+        require_provenance(provenance)?;
+        let element_type =
+            SolveValueType::scalar(self.register_type(aggregate, provenance)?.element_type());
+        if !self.element_in_bounds(aggregate, &indices)
+            || *self.register_type(value, provenance)? != element_type
+        {
+            return Err(SolveProgramConstructionError::InvalidProjection { provenance });
+        }
+        let cell = self.construct_aggregate(&[value], vec![1; indices.len()], provenance)?;
+        self.update_slice(aggregate, cell, indices, provenance)
+    }
+
     pub fn update_slice(
         &mut self,
         aggregate: ProgramRegister<'program>,
