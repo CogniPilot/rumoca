@@ -13,6 +13,9 @@
 //! (the input event reach), and which owners an event update may take from
 //! their last evaluation because no lane they read changed bits since.
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     IndexIntervals, LinearOp, PreParamSource, RefreshPlan, ScalarProgramBlock, SolveProblem,
     StructuralPattern,
@@ -383,6 +386,3 @@ pub fn issue_event_owner_reach(problem: &mut SolveProblem) {
     let reach = EventOwnerReach::derive(problem);
     problem.events.owner_reach = IssuedEventOwnerReach(Some(reach));
 }
-
-#[cfg(test)]
-mod tests;

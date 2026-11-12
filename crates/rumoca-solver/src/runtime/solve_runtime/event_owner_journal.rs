@@ -14,6 +14,9 @@
 //! same bits is not. Changes are observed by comparing the lanes themselves,
 //! so no writer has to report what it wrote.
 
+#[cfg(test)]
+mod tests;
+
 use rumoca_ir_solve as solve;
 
 use super::{
@@ -403,6 +406,3 @@ fn reset<T: Copy>(values: &mut Vec<T>, len: usize, value: T) {
     values.clear();
     values.resize(len, value);
 }
-
-#[cfg(test)]
-mod tests;
