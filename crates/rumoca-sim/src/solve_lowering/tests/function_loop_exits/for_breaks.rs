@@ -425,6 +425,64 @@ fn a_return_in_an_inner_loop_ends_the_function() {
     }
 }
 
+const PARTITIONED_RETURN: &str = r#"
+function partitionedReturn
+  input Real x[:];
+  input Real limit;
+  output Real y[size(x, 1)];
+  output Real z[size(x, 1)];
+algorithm
+  y := zeros(size(x, 1));
+  z := zeros(size(x, 1));
+  for i in 1:size(x, 1) loop
+    for j in 1:2 loop
+      y[i] := y[i] + j * x[i];
+      if y[i] > limit then
+        return;
+      end if;
+    end for;
+    for k in 1:2 loop
+      z[i] := z[i] + k * x[i];
+    end for;
+  end for;
+end partitionedReturn;
+"#;
+
+fn partitioned_return(point: Point) -> Vec<f64> {
+    let (mut y, mut z) = ([0.0; 5], [0.0; 5]);
+    'outer: for i in 0..5 {
+        for j in 1..=2 {
+            y[i] += f64::from(j) * point.x[i];
+            if y[i] > point.limit {
+                break 'outer;
+            }
+        }
+        for k in 1..=2 {
+            z[i] += f64::from(k) * point.x[i];
+        }
+    }
+    y.iter().chain(&z).copied().collect()
+}
+
+/// A `return` in the first of two inner loops ends the function before the
+/// second runs for that outer pass, while every earlier pass ran both: the
+/// outer loop is not split into one loop per inner loop.
+#[test]
+fn a_return_in_one_inner_loop_skips_the_rest_of_its_outer_pass() {
+    let results = (1..=5)
+        .map(|i| format!("y[{i}]"))
+        .chain((1..=5).map(|i| format!("z[{i}]")))
+        .collect::<Vec<_>>();
+    let fixture = Fixture::compile(
+        PARTITIONED_RETURN,
+        "  Real y[5];\n  Real z[5];\n",
+        &format!("  (y, z) = partitionedReturn({SAMPLES}, limit);\n"),
+        &results.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let points = [0.5, 3.5, 5.5, 100.0].map(|limit| Point::new([1.0, 2.0, 3.0, 4.0, 5.0], limit));
+    fixture.check(&points, partitioned_return);
+}
+
 /// The loop stays one compact fold whose continuation ends it at the pass
 /// after the `break`, so every executor stops there.
 #[test]
