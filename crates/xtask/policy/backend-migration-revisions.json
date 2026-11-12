@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "revisions": [
+    {
+      "id": "R001",
+      "decision": "d-pr633-generator-change-20261112",
+      "change": "Embedded-C GALEC frame overlays consume SolveAlgorithmBlock::call_levels issued by rumoca-ir-solve; the renderer no longer derives call levels from serialized programs.",
+      "resolves": ["D007"],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/solve_block_renderer.rs",
+          "before": "b5b0ea0689fe4b4ce7e031418eb2b79b918019e0d9c8ef0469c29248dc3e454f",
+          "after": "90c11ccf484fb9dc8912197f1ecc1b0c8897540cc7dc33abae8e8ac16c171e0a"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/solve_block_renderer/call_level_tests.rs",
+          "before": null,
+          "after": "4fffa1f98836594d5dd47ed06f586979c0b34c0ba6a4dbf557c82cade2769de4"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/embedded-c-galec/model.c.jinja",
+          "before": "6aea335b4d3c383705154a6562884735dcdd3e34b96bc9d40c04b996c05af63b",
+          "after": "93511e6691abd6766667024011478756b190dc879a09254bfc28a49e4bc3f4fe"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/embedded-c-galec/model.h.jinja",
+          "before": "fbb70cc04045cddb163c2f78599415a5d9c2b57d0609b4f9f5ba5a7cebba0cfe",
+          "after": "07eadb0de65336e24341b190f01c1a3c8d243fde8fd0f6221b2f1ead17797663"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/tests/galec_c_working_memory.rs",
+          "before": "be9c13665b7a72130002da7dbe31d252d3fb65f6f96a0b78db913b114ec3a27e",
+          "after": "0a25240ba51799480b90621c90a5908796f33d60ddd188d1ea2e25a0dff0ff71"
+        }
+      ]
+    }
+  ]
+}
