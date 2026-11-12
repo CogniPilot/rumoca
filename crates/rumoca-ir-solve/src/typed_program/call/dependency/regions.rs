@@ -216,9 +216,14 @@ pub(super) fn fold(
             .dimensions()
             .len();
         let mut out = Dependencies::default();
-        // Any carried component may flow to any other across later iterations.
-        // Include all initial values; readonly capture read sets cannot grow.
-        for operand in initial {
+        // A carried component reaches this destination only through the carries
+        // its transition reads, transitively, so only those initial values and
+        // only the capture reads of those updates can flow into it.
+        let reached = carried_reach(index, initial.len(), &regions);
+        for (component, operand) in initial.iter().enumerate() {
+            if !reached[component] {
+                continue;
+            }
             insert_operand(
                 &mut out,
                 &reads.registers[operand.index()],
@@ -227,8 +232,13 @@ pub(super) fn fold(
                 context.provenance,
             )?;
         }
-        for (region, summaries) in &regions {
-            for (output, summary) in region.outputs().iter().zip(summaries.iter()) {
+        for (position, (region, summaries)) in regions.iter().enumerate() {
+            for (component, (output, summary)) in
+                region.outputs().iter().zip(summaries.iter()).enumerate()
+            {
+                if position == 0 && reached.get(component) == Some(&false) {
+                    continue;
+                }
                 let consume = operations::whole_access(rank, output.dimensions());
                 merge(
                     &mut out,
@@ -250,4 +260,47 @@ pub(super) fn fold(
         registers[destination.index()] = result;
     }
     Ok(())
+}
+
+/// The carried components whose values can flow into carry `selected` over
+/// any number of passes: the smallest set that contains it and every carry an
+/// early-exit predicate reads, closed under "the transition output of `c`
+/// reads carried input `j`". Region inputs below `carries` are the carried
+/// values of the pass; any other leaf is a readonly capture.
+///
+/// After zero passes a carry is its initial value; after a pass it is a
+/// function of the carried inputs its transition output reads, so by induction
+/// it depends only on the initial values of this set and on the captures the
+/// set's transition outputs read. The fixpoint visits each carry once.
+fn carried_reach(
+    selected: usize,
+    carries: usize,
+    regions: &[(&SolveProgramRegion, Box<[Box<[SolveCallDependency]>]>)],
+) -> Vec<bool> {
+    let carried_reads = |summary: &[SolveCallDependency]| {
+        summary
+            .iter()
+            .flat_map(SolveCallDependency::inputs)
+            .filter(|&leaf| leaf < carries)
+            .collect::<Vec<_>>()
+    };
+    let mut reached = vec![false; carries];
+    let mut pending = vec![selected];
+    for (_, summaries) in regions.iter().skip(1) {
+        for summary in summaries.iter() {
+            pending.extend(carried_reads(summary));
+        }
+    }
+    while let Some(component) = pending.pop() {
+        let Some(seen) = reached.get_mut(component) else {
+            continue;
+        };
+        if std::mem::replace(seen, true) {
+            continue;
+        }
+        if let Some(summary) = regions.first().and_then(|(_, summaries)| summaries.get(component)) {
+            pending.extend(carried_reads(summary));
+        }
+    }
+    reached
 }
