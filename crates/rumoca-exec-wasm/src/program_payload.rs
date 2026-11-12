@@ -55,6 +55,17 @@ impl ProgramPayload {
     pub(crate) fn faults(&self) -> &[TypedCallFault] {
         &self.faults
     }
+    /// Every fault table the payload decodes a failure status with.
+    #[cfg(feature = "precompiled-programs")]
+    pub(crate) fn fault_tables(
+        &self,
+    ) -> (
+        &[TypedCallFault],
+        &[NativeGatherFault],
+        &[NativeLinearSolveFault],
+    ) {
+        (&self.faults, &self.gather, &self.linear)
+    }
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         self.entry_status_error(status, &self.gather, &self.linear)
     }

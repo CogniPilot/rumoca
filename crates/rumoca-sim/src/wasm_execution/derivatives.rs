@@ -1,7 +1,7 @@
 //! Runtime adapter retaining the original source and borrowing the global cache.
 use rumoca_exec_wasm::{
     BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall,
-    PrecompiledFmiDerivativeOperation, compile_fmi_derivative_operation_wasm,
+    compile_fmi_derivative_operation_wasm,
 };
 use rumoca_ir_solve::{RetainedAssertionRoot, fmi::FmiDerivativeCausalRefusal};
 use rumoca_solver::{
@@ -33,10 +33,8 @@ impl WasmDerivative {
         let compiled = if let Some(mode) = mode {
             mode.derivative_operation(&operation)?
         } else {
-            let code = compile_fmi_derivative_operation_wasm(&operation)
-                .map_err(|error| error.to_string())?;
-            PrecompiledFmiDerivativeOperation::from_compiled(&code)
-                .bind(&operation)
+            compile_fmi_derivative_operation_wasm(&operation)
+                .and_then(|code| code.bind())
                 .map_err(|error| error.to_string())?
         };
         let kinematic_rows = operation

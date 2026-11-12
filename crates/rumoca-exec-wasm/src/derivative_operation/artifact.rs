@@ -46,6 +46,10 @@ impl PrecompiledFmiDerivativeOperation {
         }
     }
 
+    /// Bind persisted bytes to `operation`. Every persisted byte, the control
+    /// module and each helper's module, scratch and fault tables, is emitted
+    /// again from the issued source and must be equal; nothing persisted is
+    /// trusted and no part is reused when one differs.
     pub fn bind(
         &self,
         operation: &FmiDerivativeCausalOperation<'_>,
@@ -56,49 +60,141 @@ impl PrecompiledFmiDerivativeOperation {
                 .and_then(|key| key.fmi_derivative(operation))
                 .map_err(WasmCompileError::Input)?;
         let policy = CheckedNativeWasmCapacityPolicy::default();
-        let helpers = self
-            .static_program
-            .iter()
-            .chain(self.dynamic_program.iter())
-            .chain(std::iter::once(&self.values))
-            .chain(self.kinematic.iter());
-        if self.version != 2
-            || self.source_key != expected
-            || self.static_program.is_some() != operation.static_schedule().is_some()
-            || self.dynamic_program.is_some() != operation.dynamic_schedule().is_some()
-            || self.kinematic.is_some() != operation.kinematic().is_some()
-            || self.bytes.len() > (8 << 20)
-            || helpers.clone().any(|p| {
-                p.module_bytes().len() > (8 << 20)
-                    || p.scratch_bytes() > policy.public_scratch_bytes()
-            })
-        {
+        let oversized = std::iter::once(self.bytes.len())
+            .chain(
+                self.helpers()
+                    .map(|(_, p)| p.map_or(0, |p| p.module_bytes().len())),
+            )
+            .any(|bytes| bytes > (8 << 20))
+            || self
+                .helpers()
+                .filter_map(|(_, p)| p)
+                .any(|p| p.scratch_bytes() > policy.public_scratch_bytes());
+        if self.version != 2 || self.source_key != expected || oversized {
             return Err(WasmCompileError::Input(
                 "precompiled FMI derivative belongs to another source, capability or extent".into(),
             ));
         }
-        let control = operation
-            .control_plan(helpers.map(ProgramPayload::scratch_bytes), policy)
-            .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-        // Reprinting the issuer's primitives checks their exact byte identity;
-        // there is no code-generation fallback for a missing/foreign artifact.
-        if self.bytes != crate::emit::derivative_operation::emit(operation, &control) {
-            return Err(WasmCompileError::Input(
-                "precompiled FMI derivative control differs from its original issued plan".into(),
-            ));
+        let issued = compile_fmi_derivative_operation_wasm(operation)?;
+        if let Some(mismatch) = self.mismatch(&Self::from_compiled(&issued)) {
+            return Err(WasmCompileError::Input(format!(
+                "precompiled FMI derivative differs from its issued emission: {mismatch}"
+            )));
         }
+        self.bound(issued.workspace)
+    }
+
+    fn helpers(&self) -> impl Iterator<Item = (FmiDerivativeHelperRole, Option<&ProgramPayload>)> {
+        [
+            (
+                FmiDerivativeHelperRole::StaticRefresh,
+                self.static_program.as_ref(),
+            ),
+            (
+                FmiDerivativeHelperRole::DynamicRefresh,
+                self.dynamic_program.as_ref(),
+            ),
+            (FmiDerivativeHelperRole::Values, Some(&self.values)),
+            (FmiDerivativeHelperRole::Kinematic, self.kinematic.as_ref()),
+        ]
+        .into_iter()
+    }
+
+    /// The first persisted part that differs from `issued`, in persisted order.
+    fn mismatch(&self, issued: &Self) -> Option<FmiDerivativeArtifactMismatch> {
+        if self.bytes != issued.bytes {
+            return Some(FmiDerivativeArtifactMismatch::Control);
+        }
+        self.helpers()
+            .zip(issued.helpers())
+            .find_map(|((helper, persisted), (_, issued))| {
+                let part = match (persisted, issued) {
+                    (None, None) => return None,
+                    (Some(persisted), Some(issued)) => helper_mismatch(persisted, issued)?,
+                    _ => FmiHelperMismatch::Presence,
+                };
+                Some(FmiDerivativeArtifactMismatch::Helper { helper, part })
+            })
+    }
+
+    fn bound(
+        &self,
+        workspace: FmiDerivativeWorkspace,
+    ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime = runtime::DerivativeRuntime::new(self)?;
         Ok(BoundFmiDerivativeOperation {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             runtime,
             bytes: self.bytes.clone(),
-            workspace: control.workspace(),
+            workspace,
             static_program: self.static_program.clone(),
             dynamic_program: self.dynamic_program.clone(),
             values: self.values.clone(),
             kinematic: self.kinematic.clone(),
         })
+    }
+}
+
+impl CompiledFmiDerivativeOperationWasm {
+    /// Bind code this build has just emitted from its issued source; only
+    /// persisted bytes need the re-emission [`PrecompiledFmiDerivativeOperation::bind`]
+    /// performs.
+    pub fn bind(&self) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
+        PrecompiledFmiDerivativeOperation::from_compiled(self).bound(self.workspace)
+    }
+}
+
+/// A helper the complete operation links.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FmiDerivativeHelperRole {
+    StaticRefresh,
+    DynamicRefresh,
+    Values,
+    Kinematic,
+}
+
+/// What of a persisted helper differs from its issued emission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FmiHelperMismatch {
+    Presence,
+    Module,
+    Scratch,
+    Faults,
+}
+
+/// The first part of a persisted complete operation that differs from what
+/// its issued source emits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FmiDerivativeArtifactMismatch {
+    Control,
+    Helper {
+        helper: FmiDerivativeHelperRole,
+        part: FmiHelperMismatch,
+    },
+}
+
+impl std::fmt::Display for FmiDerivativeArtifactMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Control => f.write_str("control module"),
+            Self::Helper { helper, part } => write!(f, "{helper:?} helper {part:?}"),
+        }
+    }
+}
+
+fn helper_mismatch(
+    persisted: &ProgramPayload,
+    issued: &ProgramPayload,
+) -> Option<FmiHelperMismatch> {
+    if persisted.module_bytes() != issued.module_bytes() {
+        Some(FmiHelperMismatch::Module)
+    } else if persisted.scratch_bytes() != issued.scratch_bytes() {
+        Some(FmiHelperMismatch::Scratch)
+    } else if persisted.fault_tables() != issued.fault_tables() {
+        Some(FmiHelperMismatch::Faults)
+    } else {
+        None
     }
 }
 
@@ -203,3 +299,6 @@ mod tests {
         assert!(oversized.bind(&operation).is_err());
     }
 }
+
+#[cfg(test)]
+mod tampering;

@@ -286,7 +286,7 @@ impl ProgramMode {
                 let compiled = compile_fmi_derivative_operation_wasm(operation)
                     .map_err(|error| error.to_string())?;
                 let wire = PrecompiledFmiDerivativeOperation::from_compiled(&compiled);
-                let bound = wire.bind(operation).map_err(|error| error.to_string())?;
+                let bound = compiled.bind().map_err(|error| error.to_string())?;
                 output.borrow_mut().derivatives.push(wire);
                 Ok(bound)
             }
