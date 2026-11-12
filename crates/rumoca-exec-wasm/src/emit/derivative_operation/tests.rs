@@ -343,10 +343,9 @@ fn a_projection_is_never_dropped_to_issue_the_causal_operation() {
         rumoca_phase_solve::fmi::lower_to_fmi_component(&compiled.dae, &Default::default())
             .unwrap();
     let source = component.runtime_view().try_derivative_operation().unwrap();
-    let refusal = source
-        .try_causal_operation()
-        .err()
-        .expect("the operation needs its projection");
+    let Err(refusal) = source.try_causal_operation() else {
+        panic!("the operation needs its projection");
+    };
     assert!(matches!(
         refusal,
         rumoca_ir_solve::fmi::FmiDerivativeCausalRefusal::ProjectionRequired
