@@ -124,10 +124,10 @@ fn hamilton_call_issues_the_quaternion_and_angular_velocity_states_it_reads() {
 
     let calls_wire: SolvePureCallTable =
         serde_json::from_str(&serde_json::to_string(&calls).unwrap()).unwrap();
-    let source_wire: ComputeBlock =
-        serde_json::from_str(&serde_json::to_string(&source).unwrap()).unwrap();
+    // A call site decodes only inside a wire whose pure calls come first, so the
+    // replay rebuilds the block on the decoded table and derives the plan again.
     assert_eq!(
-        GeometricStepPlan::from_derivative(&source_wire, 7, &calls_wire),
+        GeometricStepPlan::from_derivative(&derivative(&calls_wire, true), 7, &calls_wire),
         Some(plan)
     );
 }
