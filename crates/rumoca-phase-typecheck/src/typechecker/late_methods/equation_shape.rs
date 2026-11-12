@@ -140,6 +140,11 @@ impl TypeChecker {
             return None;
         }
         match name {
+            "min" | "max" if args.len() == 1 => Some(Vec::new()),
+            "min" | "max" if args.len() == 2 => Self::merge_binary_shapes(
+                self.infer_expression_shape(&args[0], type_table),
+                self.infer_expression_shape(&args[1], type_table),
+            ),
             "sum" | "product" | "scalar" if args.len() == 1 => Some(Vec::new()),
             "der" | "pre" | "noEvent" | "actualStream" if args.len() == 1 => {
                 self.infer_expression_shape(&args[0], type_table)

@@ -1653,10 +1653,7 @@ impl<'dae> Projection<'_, 'dae> {
                         .expect("checked reduction has one argument"),
                 ),
             dae::PureBuiltin::Min | dae::PureBuiltin::Max => {
-                for argument in arguments.iter() {
-                    self.expression(argument, scalar_index)?;
-                }
-                Ok(())
+                self.vectorized_arguments(arguments, scalar_index)
             }
             dae::PureBuiltin::Size => {
                 if let Some(dimension) = arguments.get(1) {
@@ -1816,6 +1813,22 @@ impl<'dae> Projection<'_, 'dae> {
             scalar_index,
         );
         self.expression(argument, scalar)
+    }
+
+    fn vectorized_arguments(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        for argument in arguments.iter() {
+            let index = if self.scalar_count(argument) == 1 {
+                0
+            } else {
+                scalar_index
+            };
+            self.expression(argument, index)?;
+        }
+        Ok(())
     }
 
     fn scalar_arguments(
