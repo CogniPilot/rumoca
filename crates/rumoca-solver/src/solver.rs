@@ -205,7 +205,7 @@ pub struct SimExecutionReceipt {
     pub declined: Vec<SimNativeDecline>,
     /// Issued programs a session may adopt, each with whether it is bound
     /// and, when not, the typed reason Solve IR or the backend gave.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub programs: Vec<SimProgramAdoption>,
 }
 
