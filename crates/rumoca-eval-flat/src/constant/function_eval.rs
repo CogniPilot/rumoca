@@ -14,8 +14,8 @@
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Reference,
-    Span, Statement, StatementBlock, Subscript,
+    ComponentRefPart, ComponentReference, ComprehensionIndex, Expression, ForIndex, Function,
+    Literal, Reference, Span, Statement, StatementBlock, Subscript,
 };
 
 use rumoca_core::ExpressionVisitor;
@@ -503,6 +503,11 @@ impl FunctionEnv {
         eval: &EvalState<'_>,
     ) -> Result<Value, EvalError> {
         let dimensions = self.declared_dimensions(param, eval)?;
+        // A scalar record component starts with no field values; its fields
+        // are assigned one by one (MLS 3.6 §11.2.1).
+        if dimensions.is_empty() && param.type_class == Some(rumoca_core::ClassType::Record) {
+            return Ok(Value::Record(IndexMap::new()));
+        }
         let budget = i64::try_from(eval.limits.max_iterations).unwrap_or(i64::MAX);
         let elements = dimensions
             .iter()
@@ -602,6 +607,20 @@ impl FunctionEnv {
         }
     }
 
+    /// Write `value` into the field `fields` of the record held by the output
+    /// or local `root`; `false` when `root` holds no record with that field
+    /// path.
+    fn set_field(&mut self, root: &str, fields: &[ComponentRefPart], value: Value) -> bool {
+        let slot = match self.outputs.get_mut(root) {
+            Some(slot) => slot,
+            None => match self.locals.get_mut(root) {
+                Some(slot) => slot,
+                None => return false,
+            },
+        };
+        set_record_field(slot, fields, value)
+    }
+
     /// Get the return value (single output or tuple of outputs).
     fn return_value(&self, span: Span) -> Result<Value, EvalError> {
         if self.outputs.len() == 1 {
@@ -613,6 +632,22 @@ impl FunctionEnv {
             Ok(Value::Array(self.outputs.values().cloned().collect()))
         }
     }
+}
+
+/// Write `value` at the field path `fields` inside the record `slot`. An
+/// intermediate field must already hold a record: its type is not known here,
+/// so it is never invented.
+fn set_record_field(slot: &mut Value, fields: &[ComponentRefPart], value: Value) -> bool {
+    let (Value::Record(record), Some((field, rest))) = (slot, fields.split_first()) else {
+        return false;
+    };
+    if rest.is_empty() {
+        record.insert(field.ident.clone(), value);
+        return true;
+    }
+    record
+        .get_mut(&field.ident)
+        .is_some_and(|inner| set_record_field(inner, rest, value))
 }
 
 /// Create a default value for a given type.
@@ -917,7 +952,15 @@ fn eval_assignment(
         return Ok(FlowControl::Continue);
     }
     let name = component_ref_to_name(comp);
-    if env.set(&name, val) {
+    let assigned = match comp.parts() {
+        // MLS 3.6 §11.2.1: the target may select a field of a record
+        // component, so `head.m := e` writes the field `m` of `head`.
+        [root, fields @ ..] if !fields.is_empty() && fields.iter().all(|f| f.subs.is_empty()) => {
+            env.set_field(&root.ident, fields, val)
+        }
+        _ => env.set(&name, val),
+    };
+    if assigned {
         return Ok(FlowControl::Continue);
     }
     Err(EvalError::function_error(

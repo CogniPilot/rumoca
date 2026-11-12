@@ -872,6 +872,79 @@ fn exact_record_output_projection_is_not_read_as_a_record_field() {
     );
 }
 
+/// `head.field` as an assignment target: one exact part per component.
+fn field_target(record: &str, field: &str) -> ComponentReference {
+    let part = |ident: &str, id: u32| rumoca_core::ComponentRefPart {
+        ident: ident.to_string(),
+        span: test_span(),
+        subs: Vec::new(),
+        def_id: rumoca_core::DefId::new(id),
+    };
+    ComponentReference::construct(false, test_span(), vec![part(record, 31), part(field, 32)])
+        .expect("fixture field target is exact")
+}
+
+/// MLS 3.6 §11.2.1 and §12.2: a record output is assigned field by field, and
+/// a later statement reads the field it wrote (the MSL-style
+/// `head.m := total - jaw; head.c := ... / head.m` of a mass split).
+#[test]
+fn record_output_is_assigned_field_by_field() {
+    let mut func = Function::new("test.split", Span::DUMMY);
+    func.add_input(real_param("total"));
+    func.add_output(
+        function_param("head", "MassProperties", rumoca_core::TypeId::new(20))
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    func.pure = true;
+    func.body = vec![
+        assign(
+            field_target("head", "m"),
+            binary(
+                rumoca_core::OpBinary::Sub,
+                var_ref("total"),
+                real_literal(0.5),
+            ),
+        ),
+        assign(
+            field_target("head", "c"),
+            binary(
+                rumoca_core::OpBinary::Mul,
+                var_ref("head.m"),
+                real_literal(2.0),
+            ),
+        ),
+    ];
+
+    let result = eval_function(
+        &func,
+        vec![Value::Real(2.0)],
+        &EvalContext::new(),
+        &EvalLimits::default(),
+        0,
+        Span::DUMMY,
+    )
+    .expect("a record output assigned field by field folds");
+    let fields = result.as_record().expect("record value");
+    assert_eq!(fields.get("m"), Some(&Value::Real(1.5)));
+    assert_eq!(fields.get("c"), Some(&Value::Real(3.0)));
+    assert_eq!(fields.len(), 2);
+}
+
+/// A field read before any statement wrote it has no value: the record
+/// output is not given an invented default.
+#[test]
+fn unassigned_record_output_field_is_not_invented() {
+    let mut func = Function::new("test.unset", Span::DUMMY);
+    func.add_output(
+        function_param("head", "MassProperties", rumoca_core::TypeId::new(20))
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    func.add_output(real_param("y"));
+    func.pure = true;
+    func.body = vec![assign(component_reference("y"), var_ref("head.m"))];
+    assert!(fold(&func).is_err());
+}
+
 /// MLS 3.6 §12.2: a record local's field is read through the joined
 /// reference Flat renders, so `z.im` is the field `im` of the bound `z`.
 ///

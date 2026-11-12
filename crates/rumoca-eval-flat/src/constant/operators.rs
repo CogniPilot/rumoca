@@ -188,7 +188,7 @@ pub(super) fn eval_add(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Ev
     }
 }
 
-fn eval_sub(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
+pub(super) fn eval_sub(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
         (Value::Integer(a), Value::Integer(b)) => a
             .checked_sub(*b)
@@ -219,7 +219,7 @@ fn eval_sub(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     }
 }
 
-fn eval_mul(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
+pub(super) fn eval_mul(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     match (lhs, rhs) {
         (Value::Integer(a), Value::Integer(b)) => a
             .checked_mul(*b)
@@ -369,7 +369,7 @@ fn eval_exp(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
     }
 }
 
-fn eval_negate(v: &Value, span: Span) -> Result<Value, EvalError> {
+pub(super) fn eval_negate(v: &Value, span: Span) -> Result<Value, EvalError> {
     match v {
         Value::Integer(x) => x
             .checked_neg()

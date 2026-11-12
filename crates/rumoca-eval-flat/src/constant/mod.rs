@@ -13,6 +13,7 @@ pub mod errors;
 pub mod function_eval;
 pub mod value;
 
+mod array_builtins;
 mod array_construction;
 mod builtin_dispatch;
 mod comprehension_eval;
