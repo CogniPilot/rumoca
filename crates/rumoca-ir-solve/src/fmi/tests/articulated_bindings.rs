@@ -242,8 +242,10 @@ fn count(shape: &[u32]) -> usize {
 }
 
 fn model(increment: f64, targets: usize) -> SolveModel {
-    let mut model = SolveModel::default();
-    model.pure_calls = calls();
+    let mut model = SolveModel {
+        pure_calls: calls(),
+        ..Default::default()
+    };
     let operations = program(increment, targets, model.pure_calls.owners()[0].call_site());
     let shapes = derive_target_assignment_shapes(&operations);
     let rows = (0..targets).map(|k| row(k, &shapes)).collect();
