@@ -14,6 +14,29 @@ mod regions;
 mod substitution;
 pub(in crate::typed_program) mod value_projection;
 
+/// The followed passes of derivations on this thread, for tests of the budget.
+#[cfg(test)]
+pub(in crate::typed_program::call) mod followed_work {
+    use super::regions;
+
+    pub(in crate::typed_program::call) const BUDGET: usize = regions::FOLLOWED_WORK_BUDGET;
+
+    /// Forget every derivation so far.
+    pub(in crate::typed_program::call) fn reset() {
+        regions::FOLLOWED_PASSES.with(|passes| passes.set((0, 0)));
+    }
+
+    /// A derivation starts: its passes are counted from zero.
+    pub(super) fn start() {
+        regions::FOLLOWED_PASSES.with(|passes| passes.set((0, passes.get().1)));
+    }
+
+    /// The most passes one derivation followed since [`reset`].
+    pub(in crate::typed_program::call) fn most_passes() -> usize {
+        regions::FOLLOWED_PASSES.with(|passes| passes.get().1)
+    }
+}
+
 use super::{SolveOperation, SolveProgramConstructionError, SolvePureCallTableView, TypedProgram};
 use crate::{SolvePureCallOwnerId, SolveRegisterId, SolveValueKind, SolveValueType};
 use accumulator::Dependencies;
@@ -220,7 +243,12 @@ pub(in crate::typed_program) fn derive(
     output_count: usize,
     available: SolvePureCallTableView<'_>,
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
-    Ok(derive_execution(body, input_count, output_count, available, &[])?.summaries)
+    // One budget for the whole derivation: every followed pass of every fold
+    // in this body, however nested, draws on it.
+    let work = std::cell::Cell::new(regions::FOLLOWED_WORK_BUDGET);
+    #[cfg(test)]
+    followed_work::start();
+    Ok(derive_execution(body, input_count, output_count, available, &[], &work)?.summaries)
 }
 
 /// The summaries of one execution of a body and the Integer values it leaves
@@ -242,6 +270,7 @@ fn derive_execution(
     output_count: usize,
     available: SolvePureCallTableView<'_>,
     known: &[Option<i64>],
+    work: &std::cell::Cell<usize>,
 ) -> Result<Execution, SolveProgramConstructionError> {
     let mut slots = input_dependencies(body, input_count);
     let mut registers = vec![Vec::new(); body.register_types().len()];
@@ -258,6 +287,7 @@ fn derive_execution(
             body,
             available,
             provenance: spanned.provenance(),
+            work,
         };
         if regions::derive(context, operation, &mut integers, &mut registers)?
             || assembly::derive(

@@ -13,10 +13,48 @@ use super::*;
 /// all passes, which only adds dependencies.
 pub(in crate::typed_program::call::dependency) const FOLLOWED_PASS_BUDGET: usize = 64;
 
-/// Most operations the followed passes of one loop may walk: the passes
-/// times the operations one pass emits. Nested loops are bounded each by
-/// their own passes.
-pub(in crate::typed_program::call::dependency) const FOLLOWED_OPERATION_BUDGET: usize = 16_384;
+/// Most operations the followed passes of one owner's derivation may walk,
+/// over all its folds together. Each followed pass is charged the operations
+/// one walk of its transition visits, nested regions included, so a nest of
+/// short folds cannot multiply the work: when the budget cannot pay for the
+/// next pass, that fold and every fold after it keeps the summary over all
+/// passes, which only adds dependencies.
+pub(in crate::typed_program::call::dependency) const FOLLOWED_WORK_BUDGET: usize = 65_536;
+
+// The followed passes of the derivation running on this thread and the most
+// any one derivation followed, for tests of the budget.
+#[cfg(test)]
+thread_local! {
+    pub(in crate::typed_program::call) static FOLLOWED_PASSES: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The operations one walk of `program` visits, nested regions included.
+fn walked_operations(program: &TypedProgram) -> usize {
+    program
+        .operations()
+        .iter()
+        .fold(0, |count: usize, spanned| {
+            let nested = match spanned.operation() {
+                SolveOperation::Conditional {
+                    if_true, if_false, ..
+                } => walked_operations(if_true.body())
+                    .saturating_add(walked_operations(if_false.body())),
+                SolveOperation::Fold {
+                    transition,
+                    continuation,
+                    ..
+                } => walked_operations(transition.body()).saturating_add(
+                    continuation
+                        .as_ref()
+                        .map_or(0, |region| walked_operations(region.body())),
+                ),
+                SolveOperation::Map { body, .. } => walked_operations(body.body()),
+                _ => 0,
+            };
+            count.saturating_add(1).saturating_add(nested)
+        })
+}
 
 /// The carried tuple after the last pass.
 pub(super) struct Followed {
@@ -26,7 +64,8 @@ pub(super) struct Followed {
 }
 
 /// Follow every pass of a fold without an early exit, or `None` when the
-/// loop is outside the budgets.
+/// loop has more passes than [`FOLLOWED_PASS_BUDGET`] or the owner's
+/// [`FOLLOWED_WORK_BUDGET`] cannot pay for one of its passes.
 pub(super) fn follow(
     context: Context<'_>,
     domain: &rumoca_core::StructuredIndexDomain,
@@ -42,10 +81,10 @@ pub(super) fn follow(
     let Ok(passes) = domain.scalar_count() else {
         return Ok(None);
     };
-    let weight = transition.body().emitted_weight().max(1);
-    if passes > FOLLOWED_PASS_BUDGET || passes.saturating_mul(weight) > FOLLOWED_OPERATION_BUDGET {
+    if passes > FOLLOWED_PASS_BUDGET {
         return Ok(None);
     }
+    let cost = walked_operations(transition.body()).max(1);
     let binders = initial.len() + captures.len();
     let inputs = transition.inputs();
     if inputs.len() != binders + domain.binders.len() || transition.outputs().len() != initial.len()
@@ -66,12 +105,24 @@ pub(super) fn follow(
         for (binder, value) in known[binders..].iter_mut().zip(&tuple) {
             *binder = Some(*value);
         }
+        // Charged before the pass is walked; a pass the budget cannot pay
+        // for ends the following of this fold.
+        let Some(remaining) = context.work.get().checked_sub(cost) else {
+            return Ok(None);
+        };
+        context.work.set(remaining);
+        #[cfg(test)]
+        FOLLOWED_PASSES.with(|passes| {
+            let (current, most) = passes.get();
+            passes.set((current + 1, most.max(current + 1)));
+        });
         let execution = super::super::derive_execution(
             transition.body(),
             inputs.len(),
             initial.len(),
             context.available,
             &known,
+            context.work,
         )?;
         let mut substitution = Substitution::default();
         let next = execution

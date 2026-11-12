@@ -6,11 +6,18 @@ use crate::SolveProgramRegion;
 mod passes;
 mod pointwise;
 
+#[cfg(test)]
+pub(super) use passes::FOLLOWED_PASSES;
+pub(super) use passes::FOLLOWED_WORK_BUDGET;
+
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {
     pub body: &'a TypedProgram,
     pub available: SolvePureCallTableView<'a>,
     pub provenance: Span,
+    /// The operations followed passes of this owner's derivation may still
+    /// walk; see [`FOLLOWED_WORK_BUDGET`].
+    pub work: &'a std::cell::Cell<usize>,
 }
 
 pub(super) fn derive(
@@ -76,15 +83,16 @@ fn merge(out: &mut Dependencies, dependencies: Vec<SolveCallDependency>) {
 /// the `known` Integer values.
 fn region_summaries(
     region: &SolveProgramRegion,
-    available: SolvePureCallTableView<'_>,
+    context: Context<'_>,
     known: &[Option<i64>],
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
     Ok(super::derive_execution(
         region.body(),
         region.inputs().len(),
         region.outputs().len(),
-        available,
+        context.available,
         known,
+        context.work,
     )?
     .summaries)
 }
@@ -168,8 +176,8 @@ pub(super) fn conditional(
         .map(|capture| integers.value(*capture))
         .collect();
     let summaries = [
-        region_summaries(branches[0], context.available, &known)?,
-        region_summaries(branches[1], context.available, &known)?,
+        region_summaries(branches[0], context, &known)?,
+        region_summaries(branches[1], context, &known)?,
     ];
     let mut results = Vec::new();
     let mut reads = Reads {
@@ -242,12 +250,9 @@ fn fold(
         return Ok(followed.integers);
     }
     let unknown = vec![None; destinations.len()];
-    let mut regions = vec![(
-        transition,
-        region_summaries(transition, context.available, &[])?,
-    )];
+    let mut regions = vec![(transition, region_summaries(transition, context, &[])?)];
     if let Some(region) = continuation {
-        regions.push((region, region_summaries(region, context.available, &[])?));
+        regions.push((region, region_summaries(region, context, &[])?));
     }
     let mut results = Vec::new();
     let mut reads = Reads {

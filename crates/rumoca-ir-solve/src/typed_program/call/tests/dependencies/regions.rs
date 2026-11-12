@@ -551,3 +551,98 @@ fn fold_longer_than_the_followed_budget_keeps_the_summary_over_all_passes() {
         vec![every; size as usize]
     );
 }
+
+/// One level of a nest of folds around `sum := sum + x`: `levels` more
+/// folds of `count` passes, then the sum itself.
+fn sum_level<'p>(
+    builder: &mut crate::TypedProgramBuilder<'p>,
+    carried: &[crate::ProgramSlot<'p>],
+    captures: &[crate::ProgramSlot<'p>],
+    result: &[crate::ProgramSlot<'p>],
+    count: i64,
+    levels: usize,
+) -> Result<(), SolveProgramConstructionError> {
+    let sum = builder.load(carried[0], span(1504))?;
+    let x = builder.load(captures[0], span(1505))?;
+    let next = if levels == 0 {
+        builder.binary(SolveBinaryOperator::Add, sum, x, span(1506))?
+    } else {
+        builder.fold(
+            passes(count),
+            &[sum],
+            &[x],
+            span(1507),
+            |region, carried, captures, _, result| {
+                sum_level(region, carried, captures, result, count, levels - 1)
+            },
+        )?[0]
+    };
+    builder.store(result[0], next, span(1508))
+}
+
+/// `s := 0; for .. loop .. s := s + x; .. end for` with `count` passes at
+/// each of `depth` levels: the leaves its result reads and the most passes
+/// one derivation of it followed.
+fn nested_sum(count: i64, depth: usize) -> (Vec<Box<[usize]>>, usize) {
+    use crate::typed_program::call::dependency::followed_work;
+    let real = real_shape(vec![]);
+    followed_work::reset();
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1500),
+            vec![real.clone()],
+            vec![SolvePureCallOutput::result(real.clone())],
+            span(1500),
+            |builder, inputs, outputs| {
+                let x = builder.load(inputs[0], span(1501))?;
+                let zero = builder.constant(SolveValue::real(profile(), 0.0), span(1502))?;
+                let values = builder.fold(
+                    passes(count),
+                    &[zero],
+                    &[x],
+                    span(1503),
+                    |region, carried, captures, _, result| {
+                        sum_level(region, carried, captures, result, count, depth - 1)
+                    },
+                )?;
+                builder.store(outputs[0], values[0], span(1509))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let leaves = input_leaves(table.owners()[0].call_site().output_dependencies());
+    (leaves, followed_work::most_passes())
+}
+
+#[test]
+fn a_nest_of_folds_within_the_work_budget_is_followed_in_every_pass() {
+    // 33 outer passes, each following 33 inner passes: more than a backend
+    // unrolls, and well inside the analysis budget.
+    let (leaves, passes) = nested_sum(33, 2);
+    assert_eq!(leaves, vec![vec![0].into_boxed_slice()]);
+    assert_eq!(passes, 33 + 33 * 33);
+}
+
+#[test]
+fn nested_followed_folds_draw_on_one_work_budget() {
+    use crate::typed_program::call::dependency::followed_work;
+    // 33 * 33 * 33 followed passes would walk the innermost body 35,937
+    // times and 64 * 64 * 64 would walk it 262,144 times. Every pass costs
+    // at least one operation of the owner's one budget, so the following
+    // stops there, and the folds that could not be paid for keep the summary
+    // over all passes, which names the same leaf here.
+    for (count, unbounded) in [
+        (33_usize, 33 + 33 * 33 + 33 * 33 * 33),
+        (64, 64 + 64 * 64 + 64 * 64 * 64),
+    ] {
+        let (leaves, passes) = nested_sum(count as i64, 3);
+        assert_eq!(leaves, vec![vec![0].into_boxed_slice()]);
+        assert!(passes <= followed_work::BUDGET, "{count}: {passes}");
+        assert!(passes < unbounded, "{count}: {passes} of {unbounded}");
+        assert!(
+            passes > 0,
+            "{count}: the nest is followed until the budget runs out"
+        );
+    }
+}
