@@ -20,7 +20,7 @@ These are current APIs, not a proposed authorization type.
 
 | Existing API | Source | Established fact |
 |---|---|---|
-| `migration_ledger::run(root: &Path) -> Result<()>` | `crates/xtask/src/migration_ledger.rs` | Complete unchanged snapshot; 96 unresolved audit groups |
+| `migration_ledger::run(root: &Path) -> Result<()>` | `crates/xtask/src/migration_ledger.rs` | Complete snapshot unchanged except pinned revision R001; 95 unresolved audit groups |
 | `FrozenBaseline::checked`, `FrozenBaseline::source` | `crates/xtask/src/migration_ledger/baseline.rs` | Immutable ledger and exact borrowed old bytes |
 | `captured::check_unchanged_capture` | `crates/xtask/src/migration_ledger/captured.rs` | Frozen directory inventory in one retained capture |
 | `source_closure::capture`, `SourceClosure::tree` | `crates/xtask/src/print_boundary_check/source_closure.rs` | Bounded complete retained bytes, including unexpected descendants |

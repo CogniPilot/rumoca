@@ -617,7 +617,7 @@ rumoca_galec_fault:
 static int {{ symbol(c_symbols, solve_block.function_names[owner.id]) }}(
 {%- for parameter in signature.parameters %}{{ parameter }}{% if not loop.last %},{% if loop.index % 4 == 0 %}
     {% else %} {% endif %}{% endif %}{% endfor %}) {
-    struct {{ c_model }}RumocaGalecFn{{ owner.id }} *const ctx = &scratch->level{{ owner.level }}.fn{{ owner.id }};
+    struct {{ c_model }}RumocaGalecFn{{ owner.id }} *const ctx = &scratch->level{{ solve_block.call_levels[owner.id] }}.fn{{ owner.id }};
     (void)ctx;
     (void)scratch;
 {#- An input the body never reads is marked used: only that one, since

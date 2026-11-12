@@ -12,7 +12,11 @@ fn audited_capture() -> SourceClosure {
         .unwrap();
     capture(
         root,
-        &BTreeSet::from([PathBuf::from(BACKEND), PathBuf::from(LEDGER_PATH)]),
+        &BTreeSet::from([
+            PathBuf::from(BACKEND),
+            PathBuf::from(LEDGER_PATH),
+            PathBuf::from(REVISIONS_PATH),
+        ]),
     )
     .unwrap()
 }
@@ -26,8 +30,9 @@ fn copy_capture(source: &SourceClosure, root: &Path) {
 }
 
 #[test]
-fn full_retained_snapshot_keeps_all_96_groups_unresolved() {
-    assert_eq!(check_unchanged_capture(&audited_capture()).unwrap(), 96);
+fn full_retained_snapshot_keeps_every_unrevised_group_unresolved() {
+    // R001 resolves D007 only; the other 95 groups stay open.
+    assert_eq!(check_unchanged_capture(&audited_capture()).unwrap(), 95);
 }
 
 #[test]
@@ -45,7 +50,7 @@ fn expected_file_subset_cannot_hide_an_unexpected_backend_file() {
     assert!(check_unchanged_capture(&subset).is_err());
     let complete = capture(
         root.path(),
-        &BTreeSet::from([BACKEND.into(), LEDGER_PATH.into()]),
+        &BTreeSet::from([BACKEND.into(), LEDGER_PATH.into(), REVISIONS_PATH.into()]),
     )
     .unwrap();
     let error = check_unchanged_capture(&complete).unwrap_err().to_string();
@@ -58,7 +63,7 @@ fn changed_removed_and_tampered_ledger_bytes_refuse_in_the_same_capture() {
     let root = tempfile::tempdir().unwrap();
     copy_capture(&source, root.path());
     let path = format!("{BACKEND}/src/templates/fmi-ls-wasm/model.c.jinja");
-    let roots = BTreeSet::from([BACKEND.into(), LEDGER_PATH.into()]);
+    let roots = BTreeSet::from([BACKEND.into(), LEDGER_PATH.into(), REVISIONS_PATH.into()]);
     fs::write(root.path().join(&path), "changed").unwrap();
     let changed = capture(root.path(), &roots).unwrap();
     assert!(
@@ -85,5 +90,5 @@ fn changed_removed_and_tampered_ledger_bytes_refuse_in_the_same_capture() {
     );
     // A retained snapshot remains a fact about those captured bytes only. This
     // PASS proves no live checkout/build correspondence or migration authority.
-    assert_eq!(check_unchanged_capture(&source).unwrap(), 96);
+    assert_eq!(check_unchanged_capture(&source).unwrap(), 95);
 }

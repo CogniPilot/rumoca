@@ -138,6 +138,7 @@ omission. Format-specific omission belongs in an explicit `Serialize` keyed on
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Lowering Scope |
 | Checked DAE causal-discrete orientation and dependency plan | `rumoca-phase-structural` | One target/value authority shared by Solve and GALEC; ambiguous residuals remain unowned. Solve supplies its structurally matched derivative source rows to the same-instant read query; the query follows those rows and exact aliases, retaining history and issued entry/storage exclusions. Matching and derivative substitution remain Solve-owned. |
 | Typed executable programs plus distinct `SolveProblem` and `SolveAlgorithmBlock` (pending: 2026-08-08 plan, M3-4) roots | `rumoca-ir-solve` | Backend-neutral numerical and controller execution IR |
+| Checked algorithm function call levels (`SolveAlgorithmBlock::call_levels`) | `rumoca-ir-solve` | The renderer consumes the same checked root's issued levels; serialized call text does not rederive them |
 | DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering (pending: 2026-08-08 plan, M3-4) | `rumoca-phase-solve` | Exhaustive semantic lowering only, not structural mutation or rendering |
 | Checked DAE pure-function graph → numerical `SolveProblem` typed program regions and pure-call owners | `rumoca-phase-solve` | Numerical Solve lowering is distinct from the GALEC-first Algorithm Code refinement path |
 | Formal derivative stage residual kernels and directional AD | `rumoca-phase-solve` shared typed expression lowering | Bound to formal source owners; numerical analysis alone cannot admit an executable model |
@@ -292,6 +293,7 @@ The initial legacy decision freeze is a migration boundary, not compliance:
 | Keep D001–D096 and every covered source hash in `crates/xtask/policy/backend-migration-ledger.json` | migration ledger | Counts alone do not preserve identity |
 | Refuse new, changed, removed or symlinked covered files, including literal template bodies and comments | freeze checker | Moving or relabeling code is not retirement |
 | No baseline update or approval flag may authorize migration | source-bound retirement gate | Requires real issued-plan API authorization and full instruction conformance |
+| An owner-directed revision MUST be a pinned entry in `crates/xtask/policy/backend-migration-revisions.json` naming its decision, the exact before/after SHA-256 of every changed or new covered path, and only findings in those paths it resolves | revision record | The audit ledger stays byte-identical; no flag, wildcard or count admits a change |
 | Report unresolved groups and partial coverage on success | gate output | Freeze acceptance is not print-only compliance |
 
 The snapshot covers only `crates/rumoca-phase-codegen` at
@@ -300,6 +302,10 @@ It provides no retirement switch. A successor must integrate the real
 plan/API/conformance checks before replacing this snapshot. Cranelift,
 external helpers and arbitrary template routes are outside this initial
 coverage; no WCET or complete migration claim follows from a pass.
+
+R001 (decision `d-pr633-generator-change-20261112`) is the only revision:
+embedded-C GALEC frame overlays consume `SolveAlgorithmBlock::call_levels`, so
+D007 is resolved. Every other group, including D085, remains open.
 
 The non-active successor design is DRAFT
 [SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement),
