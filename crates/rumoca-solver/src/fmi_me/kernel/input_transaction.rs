@@ -74,6 +74,57 @@ impl SolveMeKernel {
             })
     }
 
+    /// Derive the input event reach
+    /// [`Self::admits_continuous_input_write`] consults now, so no later write
+    /// derives it.
+    pub(in crate::fmi_me) fn derive_input_event_reach(&self) {
+        self.runtime.input_event_reach();
+    }
+
+    /// [`AcceptedInputWrite::write_continuous`] without a restoration point,
+    /// for a write [`Self::admits_continuous_input_write`] admitted.
+    ///
+    /// Every check runs before the first mutation, and the write is taken only
+    /// where nothing after that mutation can fail: no indicator to evaluate at
+    /// the positioned coordinate, no scheduled root relation memory to clear
+    /// (its slots are checked while it clears them), no delay point to commit
+    /// and no native coordinates to synchronize. Otherwise `None`, with nothing
+    /// changed, and the write belongs under the rollback owner.
+    pub(in crate::fmi_me) fn write_continuous_without_rollback(
+        &mut self,
+        time: MeTime,
+        states: &[f64],
+        references: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<Option<()>, MeError> {
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            return Ok(None);
+        }
+        if !self.indicator_plan.is_empty()
+            || self.runtime.has_delay_channels()
+            || !self
+                .runtime
+                .model()
+                .problem
+                .events
+                .scheduled_root_conditions
+                .is_empty()
+        {
+            return Ok(None);
+        }
+        self.check_time(time)?;
+        self.check_continuous_states(states)?;
+        let indices = self.admitted_float64_inputs(references, values)?;
+        self.time = time.time;
+        self.event_boundary = time.event_boundary;
+        self.states.copy_from_slice(states);
+        self.store_float64_inputs(&indices, values);
+        self.clear_callback_value_caches();
+        self.commit_seed();
+        Ok(Some(()))
+    }
+
     /// Whether every event indicator at the current coordinate still lies in
     /// the domain the component froze, so an input event would latch no
     /// crossing.

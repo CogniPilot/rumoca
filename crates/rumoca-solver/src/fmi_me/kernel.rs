@@ -571,6 +571,14 @@ impl SolveMeKernel {
     }
 
     pub(crate) fn set_time(&mut self, time: MeTime) -> Result<(), MeError> {
+        self.check_time(time)?;
+        self.time = time.time;
+        self.event_boundary = time.event_boundary;
+        Ok(())
+    }
+
+    /// The admission [`Self::set_time`] applies, proved without writing.
+    fn check_time(&self, time: MeTime) -> Result<(), MeError> {
         self.require_active_lifecycle("set_time")?;
         if !time.time.is_finite() {
             return Err(contract("set_time requires a finite time"));
@@ -581,12 +589,18 @@ impl SolveMeKernel {
         {
             return Err(contract("set_time event boundary must be finite"));
         }
-        self.time = time.time;
-        self.event_boundary = time.event_boundary;
         Ok(())
     }
 
     pub(crate) fn set_continuous_states(&mut self, states: &[f64]) -> Result<(), MeError> {
+        self.check_continuous_states(states)?;
+        self.states.copy_from_slice(states);
+        Ok(())
+    }
+
+    /// The admission [`Self::set_continuous_states`] applies, proved without
+    /// writing.
+    fn check_continuous_states(&self, states: &[f64]) -> Result<(), MeError> {
         self.require_active_lifecycle("set_continuous_states")?;
         if states.len() != self.state_count {
             return Err(contract(format!(
@@ -598,7 +612,6 @@ impl SolveMeKernel {
         if states.iter().any(|value| !value.is_finite()) {
             return Err(contract("continuous state values must all be finite"));
         }
-        self.states.copy_from_slice(states);
         Ok(())
     }
 
@@ -945,6 +958,31 @@ impl SolveMeKernel {
         )?)
     }
 
+    /// [`Self::get_selected_outputs`] over outputs resolved once through
+    /// [`Self::visible_output_position`], each with its name.
+    pub(crate) fn get_resolved_outputs<'name>(
+        &self,
+        observation: &MeObservation,
+        sample_time: f64,
+        outputs: impl ExactSizeIterator<Item = (Option<usize>, &'name str)>,
+        values: &mut Vec<Option<f64>>,
+    ) -> Result<usize, MeError> {
+        self.require_output_getter(observation)?;
+        Ok(self.runtime.visible_values_at(
+            &observation.solver_y,
+            &observation.parameters,
+            sample_time,
+            outputs,
+            values,
+        )?)
+    }
+
+    /// The position [`Self::get_selected_outputs`] reads visible output `name`
+    /// from; `None` when the component does not expose it.
+    pub(crate) fn visible_output_position(&self, name: &str) -> Result<Option<usize>, MeError> {
+        Ok(self.runtime.visible_output_position(name)?)
+    }
+
     /// What either output getter requires of the component and the observation.
     fn require_output_getter(&self, observation: &MeObservation) -> Result<(), MeError> {
         self.require_active_lifecycle("get_outputs")?;
@@ -969,15 +1007,7 @@ impl SolveMeKernel {
         refs: &[MeValueRef],
         values: &[f64],
     ) -> Result<(), MeError> {
-        self.require_active_lifecycle("set_float64")?;
-        if refs.len() != values.len() {
-            return Err(contract(format!(
-                "{} value references do not match {} values",
-                refs.len(),
-                values.len()
-            )));
-        }
-        let indices = self.writable_float64_inputs(refs, values)?;
+        let indices = self.admitted_float64_inputs(refs, values)?;
         #[cfg(feature = "native-wasm")]
         if self.native_transport.is_some() {
             let batches: Vec<_> = indices
@@ -988,10 +1018,7 @@ impl SolveMeKernel {
             return self.commit_native_float64_inputs(&batches);
         }
         let checkpoint = self.fmu_state()?;
-        for (index, value) in indices.iter().zip(values.iter().copied()) {
-            self.params[*index] = value;
-        }
-        self.clear_runtime_caches();
+        self.store_float64_inputs(&indices, values);
         #[cfg(feature = "native-wasm")]
         if let Err(error) = self.sync_native_coordinates() {
             return Err(self.restore_after_failed_write(&checkpoint, error));
@@ -1002,6 +1029,15 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// The infallible part of [`Self::set_float64`]: the admitted cells and
+    /// the value caches they invalidate.
+    fn store_float64_inputs(&mut self, indices: &[usize], values: &[f64]) {
+        for (index, value) in indices.iter().zip(values.iter().copied()) {
+            self.params[*index] = value;
+        }
+        self.clear_runtime_caches();
+    }
+
     /// The admission [`Self::set_float64`] applies, proved without writing, so
     /// the host can refuse a batch before it moves anything (issue #513).
     pub(crate) fn check_float64_inputs(
@@ -1009,6 +1045,16 @@ impl SolveMeKernel {
         refs: &[MeValueRef],
         values: &[f64],
     ) -> Result<(), MeError> {
+        self.admitted_float64_inputs(refs, values).map(|_| ())
+    }
+
+    /// Parameter index of every reference when [`Self::set_float64`] admits
+    /// the whole batch.
+    fn admitted_float64_inputs(
+        &self,
+        refs: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<Vec<usize>, MeError> {
         self.require_active_lifecycle("set_float64")?;
         if refs.len() != values.len() {
             return Err(contract(format!(
@@ -1017,7 +1063,7 @@ impl SolveMeKernel {
                 values.len()
             )));
         }
-        self.writable_float64_inputs(refs, values).map(|_| ())
+        self.writable_float64_inputs(refs, values)
     }
 
     /// Every reference belongs to this instance and addresses a readable native cell.

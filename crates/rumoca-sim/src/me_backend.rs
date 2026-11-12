@@ -110,6 +110,24 @@ impl BackendSimulationSession {
         self.session.set_inputs(inputs).map_err(Into::into)
     }
 
+    pub(crate) fn bind_inputs(&mut self, names: &[String]) -> Result<u32, SimError> {
+        self.session.bind_inputs(names).map_err(Into::into)
+    }
+
+    pub(crate) fn bind_outputs(&mut self, names: &[String]) -> Result<u32, SimError> {
+        self.session.bind_outputs(names).map_err(Into::into)
+    }
+
+    pub(crate) fn write_bound(&mut self, binding: u32, values: &[f64]) -> Result<(), SimError> {
+        self.session
+            .write_bound(binding, values)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn read_bound(&self, binding: u32, values: &mut Vec<f64>) -> Result<(), SimError> {
+        self.session.read_bound(binding, values).map_err(Into::into)
+    }
+
     pub(crate) fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
         advance_live_session(&mut self.session, target_time)?;
         Ok(())

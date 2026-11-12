@@ -178,6 +178,96 @@ fn a_batched_read_equals_the_state_after_each_reset() {
     }
 }
 
+fn binding_of(event: SessionEvent) -> u32 {
+    match event {
+        SessionEvent::Bound { binding } => binding,
+        other => panic!("expected a binding, got {other:?}"),
+    }
+}
+
+/// A bound frame and a bound read are the named ones of the bound names;
+/// a restart makes the bindings stale, and another session's are foreign.
+#[test]
+fn bound_frames_and_reads_equal_the_named_commands() {
+    for &mode in MODES {
+        let mut named = session(mode);
+        let mut bound = session(mode);
+        let names: Vec<String> = ["y", "u", "y", "v"].map(String::from).to_vec();
+        let inputs = binding_of(bound.apply(SessionCommand::BindInputs {
+            names: vec!["v".into(), "u".into()],
+        }));
+        let outputs = binding_of(bound.apply(SessionCommand::BindOutputs {
+            names: names.clone(),
+        }));
+        for (step, (u, v)) in [(1.0, 0.0), (1.0, 0.0), (-0.5, 2.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let time = 0.25 * (step + 1) as f64;
+            named.apply(SessionCommand::SetInputs {
+                inputs: vec![("v".into(), v), ("u".into(), u)],
+            });
+            assert_eq!(
+                time_of(bound.apply(SessionCommand::WriteBound {
+                    binding: inputs,
+                    values: vec![v, u],
+                })),
+                time - 0.25
+            );
+            named.apply(SessionCommand::AdvanceTo { time });
+            bound.apply(SessionCommand::AdvanceTo { time });
+            let SessionEvent::Values { values, .. } = named.apply(SessionCommand::Values {
+                names: names.clone(),
+            }) else {
+                panic!("values");
+            };
+            assert_eq!(
+                bound.apply(SessionCommand::ReadBound { binding: outputs }),
+                SessionEvent::BoundValues {
+                    time,
+                    values: values.into_iter().map(Option::unwrap).collect(),
+                },
+                "{mode:?} step {step}"
+            );
+        }
+        for command in [
+            SessionCommand::WriteBound {
+                binding: inputs,
+                values: vec![1.0],
+            },
+            SessionCommand::WriteBound {
+                binding: inputs,
+                values: vec![f64::NAN, 1.0],
+            },
+            SessionCommand::WriteBound {
+                binding: outputs,
+                values: vec![1.0, 1.0],
+            },
+            SessionCommand::ReadBound { binding: inputs },
+        ] {
+            assert_eq!(error_code(bound.apply(command)), "EX001");
+        }
+        let foreign = binding_of(named.apply(SessionCommand::BindOutputs {
+            names: names.clone(),
+        }));
+        assert!(
+            matches!(
+                bound.apply(SessionCommand::ReadBound { binding: foreign }),
+                SessionEvent::Error { message, .. } if message.contains("not issued by this session")
+            ),
+            "{mode:?}: foreign binding"
+        );
+        bound.apply(SessionCommand::Reset { time: None });
+        assert!(
+            matches!(
+                bound.apply(SessionCommand::ReadBound { binding: outputs }),
+                SessionEvent::Error { message, .. } if message.contains("before the session restarted")
+            ),
+            "{mode:?}: stale binding"
+        );
+    }
+}
+
 #[test]
 fn set_inputs_applies_the_whole_frame() {
     let mut s = session(MODES[0]);
@@ -447,6 +537,24 @@ fn wire_forms_are_stable() {
         })
         .unwrap(),
         r#"{"event":"values","time":1.0,"values":[0.5,null]}"#
+    );
+    let command: SessionCommand =
+        serde_json::from_str(r#"{"command":"write_bound","binding":3,"values":[0.5,1.0]}"#)
+            .unwrap();
+    assert_eq!(
+        command,
+        SessionCommand::WriteBound {
+            binding: 3,
+            values: vec![0.5, 1.0]
+        }
+    );
+    assert_eq!(
+        serde_json::to_string(&SessionEvent::BoundValues {
+            time: 1.0,
+            values: vec![0.5, 2.0]
+        })
+        .unwrap(),
+        r#"{"event":"bound_values","time":1.0,"values":[0.5,2.0]}"#
     );
 }
 

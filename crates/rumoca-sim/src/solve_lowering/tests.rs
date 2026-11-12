@@ -9,6 +9,8 @@ mod array_storage_views;
 mod array_trajectories;
 mod binder_guard_families;
 mod block_residual_split;
+#[cfg(feature = "solver-rk45")]
+mod bound_io;
 mod coincident_strict;
 #[cfg(not(target_arch = "wasm32"))]
 mod compiled_messages;

@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use super::{MeSessionError, MeSimulationSession};
-use crate::fmi_me::{MeError, instance::MeKernelCell};
+use crate::fmi_me::{MeError, MeObservation, SolveMeKernel, instance::MeKernelCell};
 
 /// What one selected read answers: the requested values, and how many values
 /// the full read holds at the same observation.
@@ -19,16 +19,15 @@ pub(super) fn output_arity_mismatch(returned: usize, declared: usize) -> MeSessi
 }
 
 /// The selected counterpart of the full output read: one observation, the
-/// getter over `names` alone, and the same single warning report after it.
-fn read_selected_outputs<N: AsRef<str>>(
+/// getter `select` runs on it, and the same single warning report after it.
+fn read_selected_outputs(
     kernel: &Rc<MeKernelCell>,
-    names: &[N],
+    select: impl FnOnce(&SolveMeKernel, &MeObservation, &mut Vec<Option<f64>>) -> Result<usize, MeError>,
 ) -> Result<SelectedRead, MeError> {
     let kernel = kernel.borrow()?;
     let observation = kernel.observe()?;
     let mut values = Vec::new();
-    let returned =
-        kernel.get_selected_outputs(&observation, observation.time(), names, &mut values)?;
+    let returned = select(&kernel, &observation, &mut values)?;
     kernel.report_warnings(&observation)?;
     Ok((values, returned))
 }
@@ -44,13 +43,9 @@ impl MeSimulationSession<'_, '_> {
         &self,
         names: &[N],
     ) -> Result<Vec<Option<f64>>, MeSessionError> {
-        // Borrowed before anything is read, so a kernel that is not active
-        // refuses a selected read exactly as it refuses `output_names`.
-        let declared = self.host.kernel.borrow()?.declared_output_count();
-        let (mut values, returned) = self.observe_selected(names)?;
-        if declared != returned {
-            return Err(output_arity_mismatch(returned, declared));
-        }
+        let mut values = self.observe_outputs(|kernel, observation, values| {
+            kernel.get_selected_outputs(observation, observation.time(), names, values)
+        })?;
         for (name, value) in names.iter().zip(&mut values) {
             if let Some(input) = self.host.inputs.get(name.as_ref()) {
                 *value = Some(*input);
@@ -59,12 +54,28 @@ impl MeSimulationSession<'_, '_> {
         Ok(values)
     }
 
-    fn observe_selected<N: AsRef<str>>(&self, names: &[N]) -> Result<SelectedRead, MeSessionError> {
+    /// The outputs `select` reads from one observation at the coordinate
+    /// [`Self::output_values`] reads, checked against the declared count.
+    pub(super) fn observe_outputs(
+        &self,
+        select: impl FnOnce(
+            &SolveMeKernel,
+            &MeObservation,
+            &mut Vec<Option<f64>>,
+        ) -> Result<usize, MeError>,
+    ) -> Result<Vec<Option<f64>>, MeSessionError> {
+        // Borrowed before anything is read, so a kernel that is not active
+        // refuses a selected read exactly as it refuses `output_names`.
+        let declared = self.host.kernel.borrow()?.declared_output_count();
         self.require_live()?;
-        let read = |kernel: &Rc<MeKernelCell>| read_selected_outputs(kernel, names);
-        match self.off_point_observation() {
-            Some((time, states)) => self.host.anchor().read_settled(time, states, read),
-            None => Ok(read(&self.host.kernel)?),
+        let read = |kernel: &Rc<MeKernelCell>| read_selected_outputs(kernel, select);
+        let (values, returned) = match self.off_point_observation() {
+            Some((time, states)) => self.host.anchor().read_settled(time, states, read)?,
+            None => read(&self.host.kernel)?,
+        };
+        if declared != returned {
+            return Err(output_arity_mismatch(returned, declared));
         }
+        Ok(values)
     }
 }

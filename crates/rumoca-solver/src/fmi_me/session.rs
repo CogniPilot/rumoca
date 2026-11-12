@@ -12,6 +12,7 @@
 //! carries the same borrow. A second host, a reset, or a mutation behind a live
 //! session is therefore a compile error rather than a runtime hazard
 
+mod bindings;
 mod deferred_crossing;
 mod error;
 mod host_state;
@@ -36,6 +37,7 @@ use indexmap::IndexMap;
 use super::instance::MeKernelCell;
 use host_state::{InitializationOutcome, MeHostState, run_fmi_initialization};
 
+pub use bindings::MeBindingRefusal;
 pub use error::{MePluginArity, MeSessionError, MeSessionLoss};
 pub use options::{MeAdvanceOutcome, MeOutputCursor, MeSessionOptions, MeSessionOptionsInput};
 
@@ -425,6 +427,8 @@ pub struct MeSimulationSession<'lease, 'plugin> {
     /// The exact yield a deferring session reported when its committed point
     /// ended within roundoff of it (issue #513): the caller sees its own time.
     snapped_yield: Option<f64>,
+    /// Input and output sets resolved once; a restart makes them stale.
+    bindings: bindings::SessionBindings,
     lease: PhantomData<&'lease ()>,
 }
 
@@ -565,6 +569,7 @@ impl MeSimulationSession<'_, '_> {
         let options = self.host.options.restarted_at(start_time)?;
         self.deferred = None;
         self.snapped_yield = None;
+        self.bindings.restart();
         let restarted = self.restart_session(options);
         self.host.guard_mutation(MeSessionLoss::Restart, restarted)
     }
@@ -1638,6 +1643,44 @@ impl MeSimulationSession<'_, '_> {
             .expect("verification requires an active session")
             .verification_observable_state();
         (time, states)
+    }
+
+    /// The component's complete checkpoint, as the input rollback owner takes
+    /// it, and the host's applied inputs.
+    pub(super) fn verification_checkpoint(&self) -> (super::MeFmuState, Vec<(String, u64)>) {
+        let checkpoint = self
+            .host
+            .kernel
+            .borrow()
+            .expect("verification requires an active session")
+            .fmu_state()
+            .expect("the checkpoint is taken");
+        let inputs = self
+            .host
+            .inputs
+            .iter()
+            .map(|(name, value)| (name.clone(), value.to_bits()))
+            .collect();
+        (checkpoint, inputs)
+    }
+
+    /// Whether the component and the host's applied inputs still hold
+    /// `checkpoint` bit for bit.
+    pub(super) fn verification_matches_checkpoint(
+        &self,
+        (checkpoint, inputs): &(super::MeFmuState, Vec<(String, u64)>),
+    ) -> bool {
+        self.host
+            .kernel
+            .borrow()
+            .expect("verification requires an active session")
+            .verification_matches_snapshot(checkpoint)
+            && self
+                .host
+                .inputs
+                .iter()
+                .map(|(name, value)| (name.clone(), value.to_bits()))
+                .eq(inputs.iter().cloned())
     }
 
     /// Whether the component and not just the host flag reached FMI

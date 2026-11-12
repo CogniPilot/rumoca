@@ -85,6 +85,73 @@ impl SimulationSession {
         }
     }
 
+    /// Resolve declared inputs once; the id addresses them in
+    /// [`Self::write_bound`].
+    pub fn bind_inputs(&mut self, names: &[String]) -> Result<u32, SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .bind_inputs(names)
+                .map_err(SimulationDiagnosticError::from),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .bind_inputs(names)
+                .map_err(SimulationDiagnosticError::from),
+        }
+    }
+
+    /// Resolve readable names once; the id addresses them in
+    /// [`Self::read_bound`].
+    pub fn bind_outputs(&mut self, names: &[String]) -> Result<u32, SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .bind_outputs(names)
+                .map_err(SimulationDiagnosticError::from),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .bind_outputs(names)
+                .map_err(SimulationDiagnosticError::from),
+        }
+    }
+
+    /// [`Self::set_inputs`] of the bound inputs, `values` in binding order.
+    pub fn write_bound(
+        &mut self,
+        binding: u32,
+        values: &[f64],
+    ) -> Result<(), SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .write_bound(binding, values)
+                .map_err(SimulationDiagnosticError::from),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .write_bound(binding, values)
+                .map_err(SimulationDiagnosticError::from),
+        }
+    }
+
+    /// [`Self::selected_values`] of the bound names into `values`, bit for
+    /// bit.
+    pub fn read_bound(
+        &self,
+        binding: u32,
+        values: &mut Vec<f64>,
+    ) -> Result<(), SimulationDiagnosticError> {
+        match &self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .read_bound(binding, values)
+                .map_err(SimulationDiagnosticError::from),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .read_bound(binding, values)
+                .map_err(SimulationDiagnosticError::from),
+        }
+    }
+
     pub fn reset(&mut self, t_start: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]

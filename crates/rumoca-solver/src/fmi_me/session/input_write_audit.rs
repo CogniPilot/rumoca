@@ -13,6 +13,7 @@ use super::{MeSessionError, MeSimulationSession};
 thread_local! {
     static FORCE_INPUT_EVENT: Cell<bool> = const { Cell::new(false) };
     static INPUT_WRITES: Cell<[usize; 2]> = const { Cell::new([0; 2]) };
+    static UNGUARDED_INPUT_WRITES: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Route every changed input batch on this thread through the input event.
@@ -37,6 +38,17 @@ pub(crate) fn count_input_write(continuous: bool) {
 #[must_use]
 pub fn input_write_counts() -> [usize; 2] {
     INPUT_WRITES.with(Cell::get)
+}
+
+pub(crate) fn count_unguarded_input_write() {
+    UNGUARDED_INPUT_WRITES.with(|count| count.set(count.get() + 1));
+}
+
+/// The continuous batches on this thread so far that the component wrote
+/// without a restoration point.
+#[must_use]
+pub fn unguarded_input_write_count() -> usize {
+    UNGUARDED_INPUT_WRITES.with(Cell::get)
 }
 
 /// The bits a session holds at its accepted point.
