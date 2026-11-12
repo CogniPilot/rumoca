@@ -222,7 +222,12 @@ impl LoopExits {
         Ok(match statement {
             rumoca_core::Statement::Return { .. } => {
                 let Some(state) = &active.returned else {
-                    unreachable!("a sequence holding a return has the return state")
+                    return Err(unsupported_statement(
+                        statement,
+                        "function return",
+                        "function loop exit",
+                        "a `return` was met in a sequence that was not found to return",
+                    ));
                 };
                 self.store(state, true, span)
             }
