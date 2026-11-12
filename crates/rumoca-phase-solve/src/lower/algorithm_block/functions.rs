@@ -180,22 +180,9 @@ fn real_free_functions(
         .collect();
     // Remove what reaches a Real, until nothing more is removed.
     loop {
-        let reaches_real = |function: &&UserFunction| {
-            let mut real = false;
-            statement_calls(&function.statements, &mut |reported| {
-                real |= match reported {
-                    Found::Real => true,
-                    Found::Call(call) if signatures.contains_key(call.function.lexeme()) => {
-                        !free.contains(call.function.lexeme())
-                    }
-                    Found::Call(call) => !Builtin::of(call).is_some_and(integer_builtin),
-                };
-            });
-            real
-        };
         let removed: Vec<String> = user_functions(block)
             .filter(|function| free.contains(function.name.lexeme()))
-            .filter(reaches_real)
+            .filter(|function| reaches_real(function, signatures, &free))
             .map(|function| function.name.lexeme().to_owned())
             .collect();
         if removed.is_empty() {
@@ -205,6 +192,34 @@ fn real_free_functions(
             free.remove(&name);
         }
     }
+}
+
+/// Whether a function's statements hold a Real, or a call that may compute one.
+fn reaches_real(
+    function: &UserFunction,
+    signatures: &BTreeMap<String, Signature>,
+    free: &BTreeSet<String>,
+) -> bool {
+    let mut real = false;
+    statement_calls(&function.statements, &mut |reported| {
+        real |= leaves_integers(&reported, signatures, free);
+    });
+    real
+}
+
+/// Whether one reported item takes a computation out of the Integers.
+fn leaves_integers(
+    reported: &Found<'_>,
+    signatures: &BTreeMap<String, Signature>,
+    free: &BTreeSet<String>,
+) -> bool {
+    let Found::Call(call) = reported else {
+        return true;
+    };
+    if signatures.contains_key(call.function.lexeme()) {
+        return !free.contains(call.function.lexeme());
+    }
+    !Builtin::of(call).is_some_and(integer_builtin)
 }
 
 /// The Integer literals each protected function is called with.
