@@ -97,3 +97,27 @@ fn rows_the_plan_names_but_the_block_lacks_refuse_the_schedule() {
         Err(TornTangentScheduleRefusal::MissingProgram { .. })
     ));
 }
+
+/// The persisted-product key of issued rows is their source identity: the
+/// same plan over a fresh owner of the same JVP rows keeps it, while the plan
+/// issued over another solver Y, whose slots and targets move, does not.
+#[test]
+fn the_issued_rows_key_follows_the_issued_source() {
+    let (plan, jvp) = plan();
+    let key = |plan: &TornTangentPlan, jvp: &ScalarProgramBlock, y_len| {
+        let schedule = plan.issue_schedule(jvp, y_len).unwrap();
+        crate::PreparedKernelSource::new(
+            &crate::VarLayout::default(),
+            &crate::SolvePureCallTable::default(),
+        )
+        .unwrap()
+        .issued_assignment_rows(schedule.rows())
+        .unwrap()
+    };
+    let replay: ScalarProgramBlock =
+        serde_json::from_slice(&serde_json::to_vec(&jvp).unwrap()).unwrap();
+    assert!(!jvp.shares_program_owner(&replay));
+    let original = key(&plan, &jvp, 3);
+    assert_eq!(original, key(&plan, &replay, 3));
+    assert_ne!(original, key(&plan, &jvp, 4));
+}
