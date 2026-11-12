@@ -37,6 +37,9 @@ pub(super) struct Functions {
     lowered: RefCell<BTreeMap<String, (SolvePureCallOwnerId, BTreeSet<usize>)>>,
     /// What a call can do (faults, effects), callee first.
     summaries: RefCell<BTreeMap<String, Summary>>,
+    /// Exact settlements already made in this block, by the ranges and the
+    /// span-free text of the expression (see `faults::settled`).
+    settled: RefCell<BTreeMap<String, Settlement>>,
 }
 
 impl Functions {
@@ -78,6 +81,7 @@ impl Functions {
             signatures,
             lowered: RefCell::default(),
             summaries: RefCell::default(),
+            settled: RefCell::default(),
         })
     }
 
@@ -93,6 +97,16 @@ impl Functions {
     /// at every one of its calls, when each call passes one.
     pub(super) fn literal_argument(&self, function: &str, position: usize) -> Option<(i64, i64)> {
         *self.literal_arguments.get(function)?.get(position)?
+    }
+
+    /// The settlement recorded under `key`, if one was made.
+    pub(super) fn settlement(&self, key: &str) -> Option<Settlement> {
+        self.settled.borrow().get(key).copied()
+    }
+
+    /// Record the settlement made under `key`.
+    pub(super) fn settle(&self, key: String, settlement: Settlement) {
+        self.settled.borrow_mut().insert(key, settlement);
     }
 
     /// The checked block these functions are declared in.

@@ -34,7 +34,7 @@ use check::{
 };
 use definedness::{require_defined_function, require_defined_reads};
 use expressions::{expression_type, lower_expression, lower_lazy_select, may_overflow, raise};
-use faults::{Summary, function_summary, require_fault_visible_state};
+use faults::{Settlement, Summary, function_summary, require_fault_visible_state};
 use functions::{
     Functions, check_call_statement, check_user_call, lower_functions, lower_user_call,
 };
