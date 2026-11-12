@@ -55,6 +55,28 @@ cargo xtask docs serve        # local books with live examples and WASM package
 The Pages deployment copies the WASM package, the playground, and both
 books into one artifact — see [Docs and Pages](../tooling/docs-and-pages.md).
 
+## Offline Fixed Native Guest Builds
+
+The native fixed-guest builder captures its first-party source, root Cargo
+manifest, lockfile, and issuing compiler identity. It runs Cargo with
+`--locked --offline`; the caller's Cargo cache must already contain the
+registry packages and the exact pinned Diffsol Git source. Prepare these
+workspace inputs from the exact checkout used to build the source tool:
+
+```bash
+nix develop .#default --command cargo fetch --locked
+```
+
+Use the same `CARGO_HOME` for preparation and the tool invocation. A registry-only
+cache can fail while resolving the root Git patch, even when the guest itself
+does not select Diffsol. Missing inputs remain an offline error.
+
+Installing the tool through Nix does not populate the invoking user's Cargo Git
+cache. A relocated executable also requires its captured compiler path and
+version to remain available; the executable alone is not a portable guest-build
+kit. The qualified guest build still needs its documented target, compiler, and
+native-tool prerequisites. Offline metadata checks do not qualify the full build.
+
 ## One Language Definition
 
 Monaco's Modelica language definition (tokenizer, comments, brackets) lives

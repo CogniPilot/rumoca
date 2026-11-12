@@ -86,6 +86,11 @@ impl FixedNativeGuestCore {
 
 /// Build the fixed source once, without accepting any external source or artifact.
 /// The two directories are owned scratch storage, not source authority.
+///
+/// The caller must prepare its Cargo registry and pinned Git sources with
+/// `cargo fetch --locked` from the issuing checkout before offline operation,
+/// using the same `CARGO_HOME`. An installed or relocated tool does not carry
+/// that cache; the captured compiler path and version must also remain usable.
 pub fn build_fixed_native_guest_core(
     staging_parent: &Path,
     target_parent: &Path,
@@ -116,7 +121,7 @@ fn build(
     materialize(&staging)?;
     let _lease = super::cache_lease::acquire(target_parent)?;
     // Empty first-party output avoids the demonstrated cross-worktree stale
-    // artifact reuse. Registry inputs may still use the caller's owned cache.
+    // artifact reuse. Registry and pinned Git inputs use the caller's owned cache.
     let target = tempfile::Builder::new()
         .prefix("fixed-native-target-")
         .tempdir_in(target_parent)
