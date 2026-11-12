@@ -137,6 +137,11 @@ pub struct Bdf<
     op: Option<BdfCallable<&'a Eqn>>,
     n_equal_steps: usize,
     y_delta: Eqn::V,
+    y_candidate: Eqn::V,
+    trial_diff: M,
+    trial_y: Eqn::V,
+    trial_dy: Eqn::V,
+    trial_rhs: Eqn::V,
     g_delta: Eqn::V,
     y_predict: Eqn::V,
     t_predict: Eqn::T,
@@ -210,6 +215,11 @@ where
             s_op,
             n_equal_steps: self.n_equal_steps,
             y_delta: self.y_delta.clone(),
+            y_candidate: self.y_candidate.clone(),
+            trial_diff: self.trial_diff.clone(),
+            trial_y: self.trial_y.clone(),
+            trial_dy: self.trial_dy.clone(),
+            trial_rhs: self.trial_rhs.clone(),
             g_delta: self.g_delta.clone(),
             y_predict: self.y_predict.clone(),
             t_predict: self.t_predict,
@@ -343,6 +353,7 @@ where
         let nstates = problem.eqn.rhs().nstates();
         let diff_tmp = M::zeros(nstates, BdfState::<Eqn::V, M>::MAX_ORDER + 3, ctx.clone());
         let y_delta = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
+        let y_candidate = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
         let y_predict = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
 
         let nout = if problem.integrate_out {
@@ -368,6 +379,11 @@ where
             gdiff_tmp,
             sgdiff_tmp: M::zeros(0, 0, ctx.clone()),
             y_delta,
+            y_candidate,
+            trial_diff: M::zeros(nstates, BdfState::<Eqn::V, M>::MAX_ORDER + 3, ctx.clone()),
+            trial_y: Eqn::V::zeros(nstates, ctx.clone()),
+            trial_dy: Eqn::V::zeros(nstates, ctx.clone()),
+            trial_rhs: Eqn::V::zeros(nstates, ctx.clone()),
             y_predict,
             t_predict: Eqn::T::zero(),
             s_predict: Eqn::V::zeros(0, ctx.clone()),
@@ -857,7 +873,47 @@ where
         }
     }
 
-    fn error_control(&self) -> Eqn::T {
+    // Check the native extension against the ODE in state units. The midpoint
+    // residual is a local estimator, using the requested error weights.
+    fn continuous_defect_control(&mut self) -> Eqn::T {
+        let state = &self.state;
+        self.trial_diff.copy_from(&state.diff);
+        Self::_update_diff(state.order, &self.y_delta, &mut self.trial_diff);
+        let mid = state.t + state.h * Eqn::T::from_f64(0.5).unwrap();
+        Self::interpolate_from_diff(
+            mid,
+            &self.trial_diff,
+            self.t_predict,
+            state.h,
+            state.order,
+            &mut self.trial_y,
+        );
+        Self::interpolate_derivative_from_diff(
+            mid,
+            &self.trial_diff,
+            self.t_predict,
+            state.h,
+            state.order,
+            &mut self.trial_dy,
+        );
+        self.ode_problem
+            .eqn
+            .rhs()
+            .call_inplace(&self.trial_y, mid, &mut self.trial_rhs);
+        self.trial_dy -= &self.trial_rhs;
+        self.trial_dy *= scale(state.h);
+        self.trial_dy
+            .squared_norm(&self.trial_y, &self.ode_problem.atol, self.ode_problem.rtol)
+    }
+
+    fn error_control(&mut self) -> Eqn::T {
+        // P' - f is an ODE residual only for an identity mass matrix.
+        // General mass-matrix/DAE equations retain their existing LTE control.
+        let defect_norm = if self.op.is_some() && self.ode_problem.eqn.mass().is_none() {
+            self.continuous_defect_control()
+        } else {
+            Eqn::T::zero()
+        };
         let state = &self.state;
         let order = state.order;
         let output_in_error_control = self.ode_problem.output_in_error_control();
@@ -879,8 +935,13 @@ where
         if self.op.is_some() {
             let atol = &self.ode_problem.atol;
             let rtol = self.ode_problem.rtol;
-            error_norm +=
-                self.y_delta.squared_norm(&state.y, atol, rtol) * self.error_const2[order];
+            let lte =
+                self.y_delta.squared_norm(&self.y_candidate, atol, rtol) * self.error_const2[order];
+            error_norm += if defect_norm.is_nan() || defect_norm > lte {
+                defect_norm
+            } else {
+                lte
+            };
             ncontrib += 1;
             if output_in_error_control {
                 let rtol = self.ode_problem.out_rtol.unwrap();
@@ -1093,6 +1154,8 @@ where
         );
         let old_order = self.state.order;
         self.state = state;
+        // The replaced difference table has no accepted equal-size steps yet.
+        self.n_equal_steps = 0;
         self.accepted_extension = None;
 
         if let Some(op) = self.op.as_mut() {
@@ -1397,6 +1460,8 @@ where
                     // combine eq 3, 4 and 6 from [1] to obtain error
                     // Note that error = C_k * h^{k+1} y^{k+1}
                     // and d = D^{k+1} y_{n+1} \approx h^{k+1} y^{k+1}
+                    // Relative error weights belong to the solved new point.
+                    self.y_candidate.copy_from(&self.y_delta);
                     self.y_delta -= &self.y_predict;
 
                     // deal with output equations
@@ -1484,7 +1549,9 @@ where
                     * error_norm.pow(
                         <Eqn::T as FromPrimitive>::from_f64(-0.5 / (order as f64 + 1.0)).unwrap(),
                     );
-                if factor < self.config.minimum_timestep_shrink {
+                // A refused midpoint can make the error estimate NaN. Choose
+                // a finite rejection before rescaling the retained history.
+                if factor.is_nan() || factor < self.config.minimum_timestep_shrink {
                     factor = self.config.minimum_timestep_shrink;
                 }
                 debug!(
