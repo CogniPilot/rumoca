@@ -414,15 +414,16 @@ mod tests {
         eligible_priority,
     };
 
-    const fn eligible(class: u8, seed: u8) -> ColumnChoice {
-        ColumnChoice::Eligible(eligible_priority(class, seed))
-    }
-    const STATE: ColumnChoice = eligible(STATE_CLASS, GUESS_SEED);
-    const STATED_STATE: ColumnChoice = eligible(STATE_CLASS, STATED_SEED);
-    const ALGEBRAIC: ColumnChoice = eligible(ALGEBRAIC_CLASS, GUESS_SEED);
-    const AVOID: ColumnChoice = eligible(AVOID_CLASS, GUESS_SEED);
-    const PREFER: ColumnChoice = eligible(PREFER_CLASS, GUESS_SEED);
-    const STATED_PREFER: ColumnChoice = eligible(PREFER_CLASS, STATED_SEED);
+    const STATE: ColumnChoice = ColumnChoice::Eligible(eligible_priority(STATE_CLASS, GUESS_SEED));
+    const STATED_STATE: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(STATE_CLASS, STATED_SEED));
+    const ALGEBRAIC: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(ALGEBRAIC_CLASS, GUESS_SEED));
+    const AVOID: ColumnChoice = ColumnChoice::Eligible(eligible_priority(AVOID_CLASS, GUESS_SEED));
+    const PREFER: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(PREFER_CLASS, GUESS_SEED));
+    const STATED_PREFER: ColumnChoice =
+        ColumnChoice::Eligible(eligible_priority(PREFER_CLASS, STATED_SEED));
 
     fn all_shared(_: usize, _: usize) -> usize {
         1
