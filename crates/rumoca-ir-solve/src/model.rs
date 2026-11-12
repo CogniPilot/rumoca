@@ -1364,6 +1364,10 @@ pub struct SolveEventPartition {
     pub actions: Vec<SolveEventAction>,
     pub has_terminal_event: bool,
     pub delays: SolveDelayPartition,
+    /// What each event owner reads, issued from this problem's own owners
+    /// ([`crate::issue_event_owner_reach`]); not on the wire.
+    #[serde(skip)]
+    pub owner_reach: crate::IssuedEventOwnerReach,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]

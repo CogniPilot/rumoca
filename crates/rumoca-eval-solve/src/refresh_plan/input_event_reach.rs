@@ -7,22 +7,23 @@ use rumoca_ir_solve as solve;
 
 use crate::EvalSolveError;
 
-use super::event_dependencies::{EventConsumerReads, extend_event_consumer_reads};
+use super::dependency_domain::CompactYDependencySet;
 use super::{
     CanonicalScalarProgramCatalog, OutputRowPosition, RefreshPlan, RefreshProgramAccess,
-    collect_dependency_closure, dependency_blocks_by_target, dependency_target_rows,
+    collect_dependency_closure, compact_dependency_error, dependency_blocks_by_target,
+    dependency_target_rows,
 };
 
 /// One bit per declared input scalar: whether a write to it can change an
 /// operand of any event owner in the same instant.
 ///
-/// The event owners are the consumers the event refresh plans close over
-/// (root conditions, discrete rows, runtime, post-commit and guarded
-/// assignments, action conditions and messages) together with the dynamic
-/// time-event rows, the delay rows, the clock-partition intermediates and the
-/// `pre` copies. A bit is set when one of them reads the input's parameter
-/// slot or a non-state solver coordinate whose algebraic definition reads it;
-/// a continuous state is never input-dependent within one instant.
+/// The event owners and what each reads are the problem's issued
+/// [`solve::EventOwnerReach`]: root conditions, discrete rows, runtime,
+/// post-commit and guarded assignments, action conditions and messages, the
+/// dynamic time-event rows, the delay rows, the clock-partition intermediates
+/// and the `pre` copies. A bit is set when one of them reads the input's
+/// parameter slot or a non-state solver coordinate whose algebraic definition
+/// reads it; a continuous state is never input-dependent within one instant.
 ///
 /// The only way to obtain one is [`derive_input_event_reach`] over a checked
 /// problem: no constructor takes caller-supplied reads or bits, and nothing
@@ -109,13 +110,13 @@ pub fn derive_input_event_reach(problem: &solve::SolveProblem) -> InputEventReac
     }
 }
 
-/// Issue the input reach of `problem` from the event-consumer list and the
-/// closure its event refresh plans are built from.
+/// Issue the input reach of `problem` from its issued event owner reach and
+/// the closure its event refresh plans are built from.
 ///
-/// It fails closed: every input reaches when the dependency owner refuses a
-/// program, when a structured update or an event transaction is present, when
-/// a `pre` copy reads a solver coordinate, or when the algebraic refresh is
-/// not an exact causal schedule.
+/// It fails closed: every input reaches when the owner reach is refused (an
+/// unanalysable program, a structured update or an event transaction, a
+/// `pre` copy of a solver coordinate, or a reach not issued for this
+/// problem), or when the algebraic refresh is not an exact causal schedule.
 fn issue_input_event_reach<A: RefreshProgramAccess + ?Sized>(
     problem: &solve::SolveProblem,
     implicit_block: &A,
@@ -147,22 +148,18 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
     if !algebraic.is_exact_causal_schedule() {
         return Ok(None);
     }
+    let Ok(owner_reach) = problem.events.owner_reach.checked_for(problem) else {
+        return Ok(None);
+    };
+    let Ok(instant) = owner_reach.instant_reads() else {
+        return Ok(None);
+    };
     let state_count = problem.solve_layout.state_scalar_count();
-    let mut reads = EventConsumerReads::with_parameters();
-    extend_event_consumer_reads(&mut reads, problem, state_count, None)?;
-    for clock_index in 0..problem.clocks.periodic_event_schedules.len() {
-        let Some(clock) = problem.clocks.periodic_clock_id(clock_index) else {
-            return Ok(None);
-        };
-        extend_event_consumer_reads(&mut reads, problem, state_count, Some(clock))?;
-    }
-    if !extend_instant_owner_reads(&mut reads, problem, state_count)? {
-        return Ok(None);
-    }
-    let (solver_reads, mut parameters, opaque) = reads.into_parts();
-    if opaque {
-        return Ok(None);
-    }
+    let mut solver_reads = CompactYDependencySet::default();
+    solver_reads
+        .extend_explicit(instant.y.iter().filter(|index| *index >= state_count))
+        .map_err(|error| compact_dependency_error(error, None))?;
+    let mut parameters = instant.p.to_set();
     let span = implicit_block.first_span();
     let target_to_row = dependency_target_rows(algebraic, span)?;
     let block_by_target = dependency_blocks_by_target(problem, algebraic, state_count, span)?;
@@ -214,34 +211,6 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
     Ok(Some(parameters))
 }
 
-/// The owners an event instant evaluates beside the event-consumer list:
-/// dynamic time-event rows, delay rows, clock-partition intermediates and
-/// `pre` copies. Returns `false` for a `pre` copy of a solver coordinate,
-/// which every event exit latches again whatever the inputs are.
-fn extend_instant_owner_reads(
-    reads: &mut EventConsumerReads,
-    problem: &solve::SolveProblem,
-    state_count: usize,
-) -> Result<bool, EvalSolveError> {
-    let delays = &problem.events.delays;
-    for block in [
-        &problem.events.dynamic_time_event_rhs,
-        &delays.source_rhs,
-        &delays.delay_time_rhs,
-        &delays.delay_max_rhs,
-        &problem.discrete.clock_partition_intermediates,
-    ] {
-        reads.extend_block(block, state_count)?;
-    }
-    for binding in &problem.solve_layout.pre_param_bindings {
-        match binding.source {
-            solve::PreParamSource::P { index } => reads.insert_parameter(index),
-            solve::PreParamSource::Y { .. } => return Ok(false),
-        }
-    }
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +233,7 @@ mod tests {
             vec![0],
         )
         .expect("one root condition is a scalar-program owner");
+        solve::issue_event_owner_reach(&mut problem);
         let catalog = CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs)
             .expect("an empty implicit block has a catalog");
         issue_input_event_reach(&problem, &catalog, algebraic, catalog.positions())

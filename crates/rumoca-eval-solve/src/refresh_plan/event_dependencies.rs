@@ -1,11 +1,11 @@
 //! Event- and clock-specific continuous refresh dependency construction.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use rumoca_ir_solve as solve;
 
 use crate::EvalSolveError;
-use crate::sparsity::{from_pattern_error, program_output_y_dependencies};
+use crate::sparsity::program_output_y_dependencies;
 
 use super::dependency_domain::CompactYDependencySet;
 use super::{
@@ -13,45 +13,21 @@ use super::{
     extend_scalar_block_dependencies, first_block_span, output_row_positions,
 };
 
-/// What the event consumers of one model read.
-///
-/// The solver coordinates seed the event refresh plans. The parameter slots
-/// are collected by the same walk, and only for the input reach
-/// (`solve::InputEventReach`), so both answers come from one consumer list.
+/// The solver coordinates the event consumers of one model read: the seeds
+/// of the event refresh plans. What each owner reads, parameters included, is
+/// the problem's issued `solve::EventOwnerReach`.
 #[derive(Default)]
-pub(super) struct EventConsumerReads {
+struct EventConsumerReads {
     y: CompactYDependencySet,
-    p: Option<BTreeSet<usize>>,
-    /// Set by a consumer whose parameter reads the dependency owner does not
-    /// analyse: a structured update or an event transaction.
-    opaque: bool,
 }
 
 impl EventConsumerReads {
-    /// Reads that also collect parameter slots.
-    pub(super) fn with_parameters() -> Self {
-        Self {
-            p: Some(BTreeSet::new()),
-            ..Self::default()
-        }
-    }
-
-    /// The non-state solver coordinates, the parameter slots, and whether the
-    /// parameter reads of some consumer are not analysable.
-    pub(super) fn into_parts(self) -> (CompactYDependencySet, BTreeSet<usize>, bool) {
-        (self.y, self.p.unwrap_or_default(), self.opaque)
-    }
-
-    pub(super) fn extend_block(
+    fn extend_block(
         &mut self,
         block: &solve::ScalarProgramBlock,
         state_count: usize,
     ) -> Result<(), EvalSolveError> {
-        extend_scalar_block_dependencies(&mut self.y, block, state_count)?;
-        for (index, program) in block.programs().iter().enumerate() {
-            self.extend_parameters(program, block.program_span(index))?;
-        }
-        Ok(())
+        extend_scalar_block_dependencies(&mut self.y, block, state_count)
     }
 
     fn extend_program(
@@ -60,33 +36,7 @@ impl EventConsumerReads {
         state_count: usize,
         span: Option<rumoca_core::Span>,
     ) -> Result<(), EvalSolveError> {
-        extend_program_dependencies(&mut self.y, program, state_count, span)?;
-        self.extend_parameters(program, span)
-    }
-
-    pub(super) fn extend_parameters(
-        &mut self,
-        program: &[solve::LinearOp],
-        span: Option<rumoca_core::Span>,
-    ) -> Result<(), EvalSolveError> {
-        let Some(parameters) = &mut self.p else {
-            return Ok(());
-        };
-        parameters.extend(
-            solve::StructuralPattern::derive_p_dependency_union(program, span)
-                .map_err(|error| from_pattern_error(error, span))?,
-        );
-        Ok(())
-    }
-
-    pub(super) fn insert_parameter(&mut self, index: usize) {
-        if let Some(parameters) = &mut self.p {
-            parameters.insert(index);
-        }
-    }
-
-    pub(super) fn mark_opaque(&mut self) {
-        self.opaque = true;
+        extend_program_dependencies(&mut self.y, program, state_count, span)
     }
 }
 
@@ -100,9 +50,9 @@ pub(super) fn event_consumer_dependencies(
     Ok(reads.y)
 }
 
-/// The one list of event consumers: every owner the event iteration of
-/// `clock_owner` (the unclocked iteration for `None`) evaluates.
-pub(super) fn extend_event_consumer_reads(
+/// The event consumers the event iteration of `clock_owner` (the unclocked
+/// iteration for `None`) evaluates.
+fn extend_event_consumer_reads(
     dependencies: &mut EventConsumerReads,
     problem: &solve::SolveProblem,
     state_count: usize,
@@ -181,7 +131,6 @@ fn extend_structured_update_dependencies(
             })?;
         let mut node_dependencies = CompactYDependencySet::default();
         extend_compute_node_dependencies(&mut node_dependencies, node, state_count)?;
-        dependencies.mark_opaque();
         dependencies
             .y
             .extend(node_dependencies)
@@ -219,7 +168,6 @@ fn extend_transaction_dependencies(
             None => !transaction.is_clock_owned(),
         })
     {
-        dependencies.mark_opaque();
         for input in transaction.inputs() {
             let solve::ScalarSlot::Y { index, .. } = input.source() else {
                 continue;
@@ -285,12 +233,6 @@ fn extend_selected_scalar_output_dependencies(
         let output_dependencies = match by_program.entry(position.program_index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                // Parameter reads are taken per program: a selected output
-                // counts every parameter its program reads.
-                dependencies.extend_parameters(
-                    &block.programs()[position.program_index],
-                    block.program_span(position.program_index),
-                )?;
                 entry.insert(program_output_y_dependencies(
                     &block.programs()[position.program_index],
                     block.program_span(position.program_index),

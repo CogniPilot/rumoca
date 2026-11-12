@@ -17,6 +17,7 @@ mod compact_pattern;
 mod compute_block_tests;
 mod continuous_wire;
 mod event_iteration;
+mod event_owner_reach;
 mod event_writes;
 mod exact_initial_values;
 mod fault;
@@ -89,6 +90,10 @@ pub use certificate::{
 };
 pub use chart_delta::{ChartDeltaError, ChartPlanDelta};
 pub use compact_pattern::CompactPatternLayout;
+pub use event_owner_reach::{
+    EventInstantReads, EventOwner, EventOwnerReach, EventOwnerReads, EventReachRefusal,
+    IssuedEventOwnerReach, issue_event_owner_reach,
+};
 pub use event_writes::{EventWrites, event_writes};
 pub use exact_initial_values::{
     SolveDeclarationStart, SolveExactInitialRun, SolveExactInitialValues,
@@ -1025,6 +1030,8 @@ impl<'de> Deserialize<'de> for SolveProblem {
         {
             issue_native_assignment_schedule(&mut problem);
         }
+        // Derived data, absent from the wire: the replayed owners issue it.
+        issue_event_owner_reach(&mut problem);
         Ok(problem)
     }
 }

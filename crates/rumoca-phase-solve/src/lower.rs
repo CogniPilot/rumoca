@@ -120,6 +120,7 @@ pub(crate) fn lower_solve_problem(
             },
         )?;
     solve::issue_native_assignment_schedule_with_calls(&mut problem, &pure_calls);
+    solve::issue_event_owner_reach(&mut problem);
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     Ok((problem, pure_calls))
 }

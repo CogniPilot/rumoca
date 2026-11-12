@@ -1653,6 +1653,8 @@ pub(super) fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
     model.problem.continuous.refresh_owners =
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("ME fixture refresh owners construct");
+    // Lowering issues the event owner reach once the refresh owners are final.
+    solve::issue_event_owner_reach(&mut model.problem);
     model
 }
 
