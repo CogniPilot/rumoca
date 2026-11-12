@@ -320,3 +320,54 @@ fn the_issuer_refuses_a_multi_lane_plan_and_missing_programs() {
         Err(solve::TornTangentScheduleRefusal::MissingProgram { .. })
     ));
 }
+
+/// The host reads a Jacobian only from slots a call left in the issued shape:
+/// another slot extent, a progress that is not a committed group count, and a
+/// successful return before every coefficient committed are each the typed
+/// defect; a committed coefficient that is not finite still stops first.
+#[test]
+fn a_call_that_leaves_malformed_slots_is_a_typed_schedule_defect() {
+    let mut case = Case::new(false);
+    let (y, p) = ([0.75, -1.25, 1.5, 4.0, -0.5, 7.0], [0.5, 0.25, 2.0]);
+    let layout = case.schedule.slots();
+    let mut slots = vec![0.0; layout.total];
+    slots[..Y].copy_from_slice(&y);
+    let (status, after) = case.runner.run(&slots, &p);
+    assert_eq!(status, 0);
+    let outcome = |slots: &[f64]| {
+        torn_tangent_schedule_outcome::<EvalSolveError>(&case.schedule, slots, Ok(()))
+    };
+    let defect = |slots: &[f64]| match outcome(slots) {
+        Err(EvalSolveError::InvalidRow {
+            message,
+            span: None,
+        }) => message,
+        other => panic!("expected a schedule defect, got {other:?}"),
+    };
+    let expected = case.per_row(&y, &p).unwrap().unwrap();
+    assert_eq!(bits(&outcome(&after).unwrap().unwrap()), bits(&expected));
+
+    assert_eq!(
+        defect(&after[..layout.total - 1]),
+        "torn tangent schedule slots differ from the issued layout"
+    );
+    let committed = after[layout.progress];
+    assert!(committed >= 2.0, "every group committed: {committed}");
+    for progress in [0.5, -1.0, f64::NAN, committed + 1.0] {
+        let mut malformed = after.clone();
+        malformed[layout.progress] = progress;
+        assert_eq!(
+            defect(&malformed),
+            "torn tangent schedule progress is not a committed group count",
+            "progress {progress}"
+        );
+    }
+    let mut early = after.clone();
+    early[layout.progress] = 1.0;
+    assert_eq!(
+        defect(&early),
+        "torn tangent schedule returned before committing every coefficient"
+    );
+    early[layout.coefficient] = f64::NAN;
+    assert!(outcome(&early).unwrap().is_none());
+}
