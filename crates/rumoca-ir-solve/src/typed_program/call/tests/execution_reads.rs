@@ -473,25 +473,37 @@ fn followed_fold_table(nested: bool) -> SolvePureCallTable {
                 let carried = if nested {
                     // The guard sits in an inner fold that captures the outer
                     // carried value.
-                    b.fold(domain(), &[q], &[], span(1294), |b, carried, _, _, outputs| {
-                        let value = b.load(carried[0], span(1295))?;
-                        let one = b.constant(SolveValue::real(profile(), 1.0), span(1293))?;
-                        let inner =
-                            b.fold(domain(), &[one], &[value], span(1296), |b, c, k, _, o| {
-                                let captured = b.load(k[0], span(1297))?;
-                                check(b, captured)?;
-                                let kept = b.load(c[0], span(1298))?;
-                                b.store(o[0], kept, span(1299))
-                            })?;
-                        let _ = inner;
-                        b.store(outputs[0], value, span(1300))
-                    })?
+                    b.fold(
+                        domain(),
+                        &[q],
+                        &[],
+                        span(1294),
+                        |b, carried, _, _, outputs| {
+                            let value = b.load(carried[0], span(1295))?;
+                            let one = b.constant(SolveValue::real(profile(), 1.0), span(1293))?;
+                            let inner =
+                                b.fold(domain(), &[one], &[value], span(1296), |b, c, k, _, o| {
+                                    let captured = b.load(k[0], span(1297))?;
+                                    check(b, captured)?;
+                                    let kept = b.load(c[0], span(1298))?;
+                                    b.store(o[0], kept, span(1299))
+                                })?;
+                            let _ = inner;
+                            b.store(outputs[0], value, span(1300))
+                        },
+                    )?
                 } else {
-                    b.fold(domain(), &[q], &[], span(1294), |b, carried, _, _, outputs| {
-                        let value = b.load(carried[0], span(1295))?;
-                        check(b, value)?;
-                        b.store(outputs[0], value, span(1296))
-                    })?
+                    b.fold(
+                        domain(),
+                        &[q],
+                        &[],
+                        span(1294),
+                        |b, carried, _, _, outputs| {
+                            let value = b.load(carried[0], span(1295))?;
+                            check(b, value)?;
+                            b.store(outputs[0], value, span(1296))
+                        },
+                    )?
                 };
                 let _ = carried;
                 b.store(outputs[0], x, span(1301))
