@@ -12,6 +12,7 @@ mod array_storage_views;
 mod array_trajectories;
 mod binder_guard_families;
 mod block_residual_split;
+mod call_dependency_precision;
 #[cfg(feature = "solver-rk45")]
 mod cartesian_euler;
 mod coincident_strict;

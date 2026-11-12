@@ -2,7 +2,7 @@
 //! also constrains; they are proved on the admission itself.
 
 use super::*;
-use crate::{LinearOp, ScalarProgramBlock};
+use crate::{LinearOp, ScalarProgramBlock, TypedProgram};
 
 fn rows(programs: Vec<Vec<LinearOp>>) -> ScalarProgramBlock {
     let span = rumoca_core::Span::from_offsets(
@@ -183,4 +183,142 @@ fn tensor_kernels_settle_from_their_complete_operand_ranges() {
         &[true; 5],
     );
     assert_eq!(settled, Some(vec![false, true, true, false]));
+}
+
+/// What the early-exit predicate of `counted_fold` reads each pass.
+#[derive(Clone, Copy)]
+enum ExitTest {
+    /// The counter against the captured input.
+    CounterBelowInput,
+    /// The counter against a constant.
+    CounterBelowConstant,
+}
+
+/// How `counted_fold` updates its second carry each pass.
+#[derive(Clone, Copy)]
+enum Counter {
+    /// `p := p + 1`.
+    Steps,
+    /// `p := p + x` for the captured input `x`.
+    AddsInput,
+}
+
+/// `a := a + 1` with a second carry `p` over `1:3`, tested before each pass
+/// by `test`; the output is `a` and the one input is the capture `x`.
+fn counted_fold(test: ExitTest, counter: Counter) -> TypedProgram {
+    use crate::{
+        SolveArithmeticProfile, SolveBinaryOperator, SolveCompareOperator, SolveIntegerDomain,
+        SolveRealFormat, SolveScalarType, SolveSlotAccess, SolveStorageClass, SolveValue,
+        SolveValueType,
+    };
+    use rumoca_core::{IndexBinderProvenance, StructuredIndexBinder, StructuredIndexDomain};
+    let span = |start| {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("fmi_static_fold.mo"),
+            start,
+            start + 1,
+        )
+    };
+    let arithmetic =
+        SolveArithmeticProfile::construct(SolveRealFormat::Binary64, SolveIntegerDomain::FULL);
+    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            provenance: IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 3,
+            step: 1,
+        }],
+    };
+    TypedProgram::construct(arithmetic, |builder| {
+        let input = builder.declare_slot(
+            real.clone(),
+            SolveStorageClass::Input,
+            SolveSlotAccess::ReadOnly,
+            span(0),
+        )?;
+        let output = builder.declare_slot(
+            real.clone(),
+            SolveStorageClass::Output,
+            SolveSlotAccess::ReadWrite,
+            span(1),
+        )?;
+        let x = builder.load(input, span(2))?;
+        let a = builder.constant(SolveValue::real(arithmetic, 0.0), span(3))?;
+        let p = builder.constant(SolveValue::real(arithmetic, 0.0), span(3))?;
+        let results = builder.fold_while(
+            domain.clone(),
+            &[a, p],
+            &[x],
+            span(4),
+            |region, carried, captures, _, outputs| {
+                let counter = region.load(carried[1], span(5))?;
+                let bound = match test {
+                    ExitTest::CounterBelowInput => region.load(captures[0], span(6))?,
+                    ExitTest::CounterBelowConstant => {
+                        region.constant(SolveValue::real(arithmetic, 3.0), span(6))?
+                    }
+                };
+                let below = region.compare(SolveCompareOperator::Less, counter, bound, span(7))?;
+                region.store(outputs[0], below, span(7))
+            },
+            |region, carried, captures, _, outputs| {
+                let a = region.load(carried[0], span(8))?;
+                let p = region.load(carried[1], span(8))?;
+                let one = region.constant(SolveValue::real(arithmetic, 1.0), span(9))?;
+                let step = match counter {
+                    Counter::Steps => one,
+                    Counter::AddsInput => region.load(captures[0], span(9))?,
+                };
+                let a = region.binary(SolveBinaryOperator::Add, a, one, span(10))?;
+                let p = region.binary(SolveBinaryOperator::Add, p, step, span(11))?;
+                region.store(outputs[0], a, span(10))?;
+                region.store(outputs[1], p, span(11))
+            },
+        )?;
+        builder.store(output, results[0], span(12))
+    })
+    .expect("a bounded fold with an early-exit predicate constructs")
+}
+
+/// Whether the output of `counted_fold(test, counter)` is stable when the
+/// captured input is `stable_input`.
+fn counted_fold_is_stable(test: ExitTest, counter: Counter, stable_input: bool) -> bool {
+    let program = counted_fold(test, counter);
+    let stable = typed_dependencies::outputs(
+        &crate::SolvePureCallTable::default(),
+        &program,
+        &[stable_input],
+    );
+    assert_eq!(stable.len(), 1, "one output");
+    stable[0]
+}
+
+/// The stop count decides the value of `a`, so a predicate that follows an
+/// input which can change makes `a` follow it, although the transition reads
+/// no input at all.
+#[test]
+fn a_fold_whose_exit_test_reads_a_changing_input_is_not_stable() {
+    let test = ExitTest::CounterBelowInput;
+    assert!(!counted_fold_is_stable(test, Counter::Steps, false));
+    assert!(counted_fold_is_stable(test, Counter::Steps, true));
+}
+
+#[test]
+fn a_fold_whose_exit_test_reads_only_stable_values_stays_stable() {
+    let test = ExitTest::CounterBelowConstant;
+    // A changing input the passes and the exit test never read stays out of it.
+    assert!(counted_fold_is_stable(test, Counter::Steps, false));
+    assert!(counted_fold_is_stable(test, Counter::Steps, true));
+}
+
+/// The exit test reads only the counter, which the passes update from the
+/// input: the input still decides the stop count.
+#[test]
+fn a_fold_whose_exit_test_reads_a_carry_updated_from_a_changing_input_is_not_stable() {
+    let test = ExitTest::CounterBelowConstant;
+    assert!(!counted_fold_is_stable(test, Counter::AddsInput, false));
+    assert!(counted_fold_is_stable(test, Counter::AddsInput, true));
 }
