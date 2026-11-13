@@ -12,6 +12,7 @@
 
 mod actual_native_linkage;
 mod assertion_order;
+mod bench;
 mod internal_linkage;
 mod logging;
 mod native_fmi;
@@ -313,6 +314,7 @@ fn main() -> Result<()> {
         "actual-native-linkage" => actual_native_linkage::run(component_path, token),
         "native-fmi" => native_fmi::run(component_path, token, &args[3..]),
         "native-fmi-capacity" => native_fmi_capacity::run(component_path, token, &args[3..]),
+        "bench" => bench::run(component_path, token, &args[3..]),
         "lifecycle" => run_lifecycle(component_path, token),
         "trace" => run_trace(component_path, token, &args[3..], false),
         "trace-bits" => run_trace(component_path, token, &args[3..], true),
