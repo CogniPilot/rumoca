@@ -9,7 +9,7 @@ mod linking;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
 mod publication;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
-pub use linking::LinkedNativeFmiLsComponent;
+pub use linking::{LinkedNativeFmiLsComponent, LinkedScalarFmiLsComponent};
 
 /// The existing canonical source projection and encoding failure owners.
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +48,44 @@ impl PreparedNativeFmiLsModel {
 
     pub fn library(&self) -> &NativeModelLibrary {
         &self.library
+    }
+
+    /// The canonical, uncompressed source wire.
+    pub fn capsule_bytes(&self) -> &[u8] {
+        &self.capsule
+    }
+}
+
+/// A stateful (scalar-product) component's retained root paired with its
+/// internally encoded source capsule: the same canonical wire as the native
+/// product, without a native library. Preparation only, as the native pair.
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::RetainedAssertionRoot;
+/// use rumoca_sim::PreparedScalarFmiLsModel;
+/// fn forge(root: RetainedAssertionRoot, capsule: Vec<u8>) -> PreparedScalarFmiLsModel {
+///     PreparedScalarFmiLsModel { root, capsule }
+/// }
+/// ```
+pub struct PreparedScalarFmiLsModel {
+    root: rumoca_ir_solve::RetainedAssertionRoot,
+    capsule: Vec<u8>,
+}
+
+impl PreparedScalarFmiLsModel {
+    /// Encode the component's own retained root with the canonical wire.
+    pub fn from_component(
+        component: &rumoca_ir_solve::fmi::FmiComponent,
+    ) -> Result<Self, NativeFmiLsPreparationError> {
+        let root = component.runtime_view().retain_assertion_root();
+        let capsule = serde_json::to_vec(
+            &rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)?,
+        )?;
+        Ok(Self { root, capsule })
+    }
+
+    pub fn root(&self) -> &rumoca_ir_solve::RetainedAssertionRoot {
+        &self.root
     }
 
     /// The canonical, uncompressed source wire.
