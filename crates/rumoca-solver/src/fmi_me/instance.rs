@@ -1,6 +1,8 @@
 //! One private component resource shared by the retained host and its controller.
 
 use std::cell::{Ref, RefCell, RefMut};
+#[cfg(feature = "native-wasm")]
+use std::collections::BTreeMap;
 
 use super::{MeError, MeFmuState, MeInstanceConfig, SolveMeKernel};
 
@@ -11,6 +13,12 @@ pub(super) struct MeKernelCell {
     resource: RefCell<MeKernelResource>,
     configuration: RefCell<Option<MeInstanceConfig>>,
     scalar_pristine: Option<MeFmuState>,
+    /// The String values a host installed in a scalar instance, by value
+    /// reference; every other String reads its literal start (the generated C
+    /// kernel's instance text table). Reset and restart return to the starts,
+    /// as they return to the pristine snapshot.
+    #[cfg(feature = "native-wasm")]
+    scalar_texts: RefCell<BTreeMap<u32, Vec<String>>>,
 }
 
 enum MeKernelResource {
@@ -75,6 +83,8 @@ impl MeKernelCell {
             resource: RefCell::new(MeKernelResource::Active(Box::new(kernel))),
             configuration: RefCell::new(Some(configuration)),
             scalar_pristine,
+            #[cfg(feature = "native-wasm")]
+            scalar_texts: RefCell::default(),
         }
     }
 
@@ -84,6 +94,7 @@ impl MeKernelCell {
             resource: RefCell::new(MeKernelResource::Prepared(Box::new(pending))),
             configuration: RefCell::new(None),
             scalar_pristine: None,
+            scalar_texts: RefCell::default(),
         }
     }
 
@@ -223,10 +234,61 @@ impl MeKernelCell {
             return reset_native(&mut slot);
         };
         match &mut *slot {
-            MeKernelResource::Active(kernel) => kernel.reset_to_fmu_state(pristine),
+            MeKernelResource::Active(kernel) => {
+                kernel.reset_to_fmu_state(pristine)?;
+                #[cfg(feature = "native-wasm")]
+                self.scalar_texts.borrow_mut().clear();
+                Ok(())
+            }
             #[cfg(feature = "native-wasm")]
             MeKernelResource::Prepared(_) | MeKernelResource::Vacated => Err(prepared_refusal()),
         }
+    }
+
+    /// `fmi3GetString` of a scalar instance: each checked String's installed
+    /// value, else its literal start.
+    #[cfg(feature = "native-wasm")]
+    pub(super) fn get_scalar_string(&self, references: &[u32]) -> Result<Vec<String>, MeError> {
+        let kernel = self.borrow()?;
+        let installed = self.scalar_texts.borrow();
+        let mut values = Vec::new();
+        for variable in kernel.scalar_text_variables(references)? {
+            let texts = installed
+                .get(&variable.value_reference_fmi3())
+                .map(Vec::as_slice)
+                .or_else(|| variable.text_start())
+                .ok_or_else(|| MeError::Contract {
+                    reason: format!("String {} has no literal start", variable.name()),
+                })?;
+            values.extend_from_slice(texts);
+        }
+        Ok(values)
+    }
+
+    /// `fmi3SetString` of a scalar instance: the whole batch is checked, by
+    /// the same causality and lifecycle window as every other typed write,
+    /// before any value is installed. No evaluation reads a String.
+    #[cfg(feature = "native-wasm")]
+    pub(super) fn set_scalar_string(
+        &self,
+        references: &[u32],
+        values: &[String],
+    ) -> Result<(), MeError> {
+        let kernel = self.borrow()?;
+        let variables = kernel.scalar_text_targets(references, values.len())?;
+        let mut installed = self.scalar_texts.borrow_mut();
+        let mut pending = values.iter();
+        for variable in variables {
+            let count = variable
+                .storage()
+                .expect("request checked original storage")
+                .scalar_count();
+            installed.insert(
+                variable.value_reference_fmi3(),
+                pending.by_ref().take(count).cloned().collect(),
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn prepare_host(&self, start: f64, stop: Option<f64>) -> Result<(), MeError> {
@@ -278,7 +340,10 @@ impl MeKernelCell {
         #[cfg(not(feature = "native-wasm"))]
         self.restart_configuration(start, stop)?;
         if let Some(pristine) = &self.scalar_pristine {
-            return self.borrow_mut()?.restart_from_fmu_state(pristine, start);
+            self.borrow_mut()?.restart_from_fmu_state(pristine, start)?;
+            #[cfg(feature = "native-wasm")]
+            self.scalar_texts.borrow_mut().clear();
+            return Ok(());
         }
         #[cfg(feature = "native-wasm")]
         {

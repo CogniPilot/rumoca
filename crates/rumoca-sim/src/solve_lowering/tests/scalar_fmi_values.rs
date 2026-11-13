@@ -160,3 +160,115 @@ fn integer_and_boolean_values_read_and_write_through_the_scalar_route() {
     session.get_scalar_boolean(&[enable], &mut written).unwrap();
     assert_eq!(written, [false]);
 }
+
+/// An enumeration answers the Int64 accessors with its literal's ordinal and
+/// accepts only its literals' ordinals; a String parameter answers the String
+/// accessors with its literal start until a host installs another text. Both
+/// are writable only in the parameter window, Reset returns both to their
+/// starts, and the installed ordinal is the one the dynamics read.
+#[test]
+fn enumeration_and_string_values_read_and_write_through_the_scalar_route() {
+    let dae = super::compile(
+        "model Labelled type Mode = enumeration(off, slow, fast); \
+         parameter Mode mode = Mode.slow; parameter String label = \"a\"; \
+         Real x(start = 1, fixed = true); \
+         equation der(x) = if mode == Mode.fast then -2 * x else -x; end Labelled;",
+        "Labelled",
+    );
+    let component =
+        crate::lower_fmi_scalar_export_component(&dae, &rumoca_solver::SimOptions::default())
+            .unwrap();
+    let (mode, label) = (
+        value_reference(&component, "mode"),
+        value_reference(&component, "label"),
+    );
+    let der_x = component.derivative_value_reference_base_fmi3();
+    let config = MeInstanceConfig::new("labelled", 1.0e-6, 0.0, 1.0).unwrap();
+    let mut retained =
+        MeRetainedComponent::instantiate(MeModelSource::new(&component), &config, None).unwrap();
+
+    let mut ordinal = [0_i64];
+    retained.get_scalar_integer(&[mode], &mut ordinal).unwrap();
+    assert_eq!(ordinal, [2], "Mode.slow is the second literal");
+    let mut boolean = [false];
+    assert!(
+        retained.get_scalar_boolean(&[mode], &mut boolean).is_err(),
+        "an enumeration is not read as a Boolean"
+    );
+    let mut real = [7.0];
+    assert!(
+        retained.get_scalar_float64(&[mode], &mut real).is_err(),
+        "an enumeration is not read as a Float64"
+    );
+    assert_eq!(real, [7.0]);
+    for outside in [0, 4] {
+        assert!(
+            retained.set_scalar_integer(&[mode], &[outside]).is_err(),
+            "{outside} is not an ordinal of Mode"
+        );
+    }
+    retained.get_scalar_integer(&[mode], &mut ordinal).unwrap();
+    assert_eq!(ordinal, [2], "a refused write changes nothing");
+
+    let mut text = [String::from("unread")];
+    retained.get_scalar_string(&[label], &mut text).unwrap();
+    assert_eq!(text, ["a"]);
+    assert!(
+        retained.get_scalar_string(&[mode], &mut text).is_err(),
+        "an enumeration is not read as a String"
+    );
+    assert!(
+        retained.get_scalar_integer(&[label], &mut ordinal).is_err(),
+        "a String is not read as an Int64"
+    );
+    assert!(
+        retained
+            .set_scalar_string(&[label], &["b".into(), "c".into()])
+            .is_err(),
+        "a String batch must cover its scalars exactly"
+    );
+    retained.get_scalar_string(&[label], &mut text).unwrap();
+    assert_eq!(text, ["a"], "a refused write installs nothing");
+
+    retained.set_scalar_integer(&[mode], &[3]).unwrap();
+    retained.set_scalar_string(&[label], &["b".into()]).unwrap();
+    retained.reset().unwrap();
+    retained.get_scalar_integer(&[mode], &mut ordinal).unwrap();
+    retained.get_scalar_string(&[label], &mut text).unwrap();
+    assert_eq!(
+        (ordinal, &text),
+        ([2], &["a".to_owned()]),
+        "Reset restores the starts"
+    );
+
+    retained.set_scalar_integer(&[mode], &[3]).unwrap();
+    retained.set_scalar_string(&[label], &["b".into()]).unwrap();
+    retained.enter_initialization_mode(&config).unwrap();
+    let options = retained.initialization_options().unwrap();
+    let mut session = retained
+        .complete_scalar_initialization_with_integrator_retaining(options, |_, setup| {
+            Ok(rumoca_solver_rk45::model_exchange_integrator(setup))
+        })
+        .map_err(|(_, error)| error)
+        .unwrap();
+
+    session.get_scalar_integer(&[mode], &mut ordinal).unwrap();
+    assert_eq!(ordinal, [3]);
+    let mut derivative = [0.0];
+    session
+        .get_scalar_float64(&[der_x], &mut derivative)
+        .unwrap();
+    assert_eq!(derivative, [-2.0], "the dynamics read Mode.fast");
+    session.get_scalar_string(&[label], &mut text).unwrap();
+    assert_eq!(text, ["b"]);
+    assert!(
+        session.set_scalar_integer(&[mode], &[1]).is_err(),
+        "parameters are not writable after initialization"
+    );
+    assert!(
+        session.set_scalar_string(&[label], &["c".into()]).is_err(),
+        "String parameters are not writable after initialization"
+    );
+    session.get_scalar_string(&[label], &mut text).unwrap();
+    assert_eq!(text, ["b"]);
+}

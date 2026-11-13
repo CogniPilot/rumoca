@@ -6,27 +6,55 @@
 //! duration, and each state's derivative at the derivative value-reference
 //! base plus the state's declaration ordinal (the shared FMI 3 template's
 //! numbering). Values come from one branded observation, or before
-//! initialization from the host-written cells only. Integer and Boolean
-//! variables are read and written through the same request owner, each cell
-//! holding its value as the generated C kernel holds it ([`ScalarCell`]).
+//! initialization from the host-written cells only. Integer, Boolean and
+//! enumeration variables are read and written through the same request owner,
+//! each cell holding its value as the generated C kernel holds it
+//! ([`ScalarCell`]); an enumeration is served through the Int64 accessors and
+//! holds one of its literals' ordinals. String variables are checked by the
+//! same owner; their values are never evaluated (see the instance cell).
 
+use rumoca_core::EnumerationDeclaration;
 use rumoca_ir_solve::SolveVariableValueKind;
-use rumoca_ir_solve::fmi::{FmiMetadata, FmiStorageColumn, FmiStorageRun};
+use rumoca_ir_solve::fmi::{FmiMetadata, FmiStorageColumn, FmiStorageRun, FmiVariable};
 
 use super::super::{MeError, MeFloat64Backing, MeObservation, MeValueRef, SolveMeKernel, contract};
-use super::request::{self, Access, ReadMember};
+use super::request::{self, Access, ReadMember, Served};
 use crate::fmi_me::lifecycle::MeState;
 
 /// An Integer or Boolean FMI value held in a scalar instance's numeric cell,
 /// encoded as the generated C kernel encodes it (the fmi3 template's
 /// `RMC_GET_NUMERIC`/`RMC_SET_NUMERIC`): a Boolean cell holds exactly 0 or 1;
 /// an Int64 cell reads as a finite integral value in [-2^63, 2^63) and is
-/// written only within the exact range ±2^53. A cell or value outside its
-/// type is refused, never rounded or converted.
-pub(crate) trait ScalarCell: Copy + PartialEq {
+/// written only within the exact range ±2^53. An enumeration cell or value
+/// is also one of its literals' ordinals (`rmc_integer_public_value`,
+/// `rmc_ordinal_valid`). A cell or value outside its type is refused, never
+/// rounded or converted.
+pub(crate) trait ScalarCell: Copy + PartialEq + std::fmt::Display {
     const KIND: SolveVariableValueKind;
     fn decode(cell: f64) -> Result<Self, MeError>;
     fn encode(self) -> Result<f64, MeError>;
+    /// The enumeration ordinal this value denotes, if its type has ordinals.
+    fn ordinal(self) -> Option<i64>;
+}
+
+/// Refuse `value` unless it is a literal of `enumeration`, when there is one.
+fn require_literal<T: ScalarCell>(
+    value: T,
+    enumeration: Option<&EnumerationDeclaration>,
+) -> Result<T, MeError> {
+    match enumeration {
+        Some(enumeration)
+            if !value
+                .ordinal()
+                .is_some_and(|ordinal| enumeration.contains_ordinal(ordinal)) =>
+        {
+            Err(contract(format!(
+                "{value} is not an ordinal of enumeration {}",
+                enumeration.name
+            )))
+        }
+        _ => Ok(value),
+    }
 }
 
 /// The largest magnitude every Int64 write keeps exact in its cell.
@@ -54,6 +82,10 @@ impl ScalarCell for i64 {
             )))
         }
     }
+
+    fn ordinal(self) -> Option<i64> {
+        Some(self)
+    }
 }
 
 impl ScalarCell for bool {
@@ -72,17 +104,25 @@ impl ScalarCell for bool {
     fn encode(self) -> Result<f64, MeError> {
         Ok(if self { 1.0 } else { 0.0 })
     }
+
+    fn ordinal(self) -> Option<i64> {
+        None
+    }
 }
+
+/// One checked typed member: its storage run and, for an enumeration, the
+/// declaration whose literals its cells hold.
+type TypedRun<'inventory> = (FmiStorageRun, Option<&'inventory EnumerationDeclaration>);
 
 /// Decode every cell of `runs`, in request order, from the column each names.
 fn decode_runs<'cells, T: ScalarCell>(
-    runs: &[FmiStorageRun],
+    runs: &[TypedRun<'_>],
     mut cells: impl FnMut(FmiStorageRun) -> Result<&'cells [f64], MeError>,
 ) -> Result<Vec<T>, MeError> {
     let mut values = Vec::new();
-    for &run in runs {
+    for &(run, enumeration) in runs {
         for &cell in cells(run)? {
-            values.push(T::decode(cell)?);
+            values.push(require_literal(T::decode(cell)?, enumeration)?);
         }
     }
     Ok(values)
@@ -367,23 +407,46 @@ impl SolveMeKernel {
         self.scalar_targets(references, value_count, SolveVariableValueKind::Real)
     }
 
+    /// The window is this instance's actual lifecycle state (see
+    /// [`Self::scalar_float64_targets`]).
+    fn scalar_write_access(&self) -> Access {
+        match self.initialization_state() {
+            MeState::Instantiated | MeState::InitializationMode => Access::WriteInputsAndParameters,
+            _ => Access::WriteInputs,
+        }
+    }
+
+    fn scalar_write_variables(
+        &self,
+        references: &[u32],
+        value_count: usize,
+        kind: SolveVariableValueKind,
+    ) -> Result<Vec<&FmiVariable>, MeError> {
+        request::checked_request_served(
+            self.scalar_inventory()?,
+            references,
+            value_count,
+            kind,
+            self.scalar_write_access(),
+            Served::Fmi3,
+        )
+    }
+
     fn scalar_targets(
         &self,
         references: &[u32],
         value_count: usize,
         kind: SolveVariableValueKind,
     ) -> Result<Vec<MeValueRef>, MeError> {
-        let access = match self.initialization_state() {
-            MeState::Instantiated | MeState::InitializationMode => Access::WriteInputsAndParameters,
-            _ => Access::WriteInputs,
-        };
-        let variables = request::checked_request(
-            self.scalar_inventory()?,
-            references,
-            value_count,
-            kind,
-            access,
-        )?;
+        let variables = self.scalar_write_variables(references, value_count, kind)?;
+        Ok(self.input_parameter_targets(&variables, value_count))
+    }
+
+    fn input_parameter_targets(
+        &self,
+        variables: &[&FmiVariable],
+        value_count: usize,
+    ) -> Vec<MeValueRef> {
         let mut targets = Vec::with_capacity(value_count);
         for variable in variables {
             let storage = variable
@@ -396,27 +459,36 @@ impl SolveMeKernel {
                 }),
             );
         }
-        Ok(targets)
+        targets
     }
 
     /// The storage runs of a checked Integer or Boolean request, in request
-    /// order. Only declared variables of `kind` answer; before initialization
-    /// only the host-written ones (`pending`).
+    /// order, with each enumeration's declaration. Only declared variables of
+    /// `kind` answer, and enumerations to an Int64 request; before
+    /// initialization only the host-written ones (`pending`).
     fn scalar_typed_runs(
         &self,
         references: &[u32],
         kind: SolveVariableValueKind,
         pending: bool,
-    ) -> Result<Vec<FmiStorageRun>, MeError> {
-        let (members, _) =
-            request::read_request(self.scalar_inventory()?, references, kind, pending)?;
+    ) -> Result<Vec<TypedRun<'_>>, MeError> {
+        let (members, _) = request::read_request_served(
+            self.scalar_inventory()?,
+            references,
+            kind,
+            pending,
+            Served::Fmi3,
+        )?;
         members
             .iter()
             .map(|member| {
-                member
+                let variable = member
                     .variable()
-                    .and_then(rumoca_ir_solve::fmi::FmiVariable::storage)
-                    .ok_or_else(|| contract("a typed request member has no storage run"))
+                    .ok_or_else(|| contract("a typed request member is not a variable"))?;
+                let run = variable
+                    .storage()
+                    .ok_or_else(|| contract("a typed request member has no storage run"))?;
+                Ok((run, variable.enumeration()))
             })
             .collect()
     }
@@ -459,21 +531,67 @@ impl SolveMeKernel {
     }
 
     /// The branded input-parameter references and encoded cells of a checked
-    /// Integer or Boolean write, one per scalar in request order, by the same
-    /// causality and lifecycle window as a Float64 write. Every value is
-    /// encoded before anything is written.
+    /// Integer, Boolean or enumeration write, one per scalar in request order,
+    /// by the same causality and lifecycle window as a Float64 write. Every
+    /// value is checked against its variable's type and encoded before
+    /// anything is written.
     pub(crate) fn scalar_typed_targets<T: ScalarCell>(
         &self,
         references: &[u32],
         values: &[T],
     ) -> Result<(Vec<MeValueRef>, Vec<f64>), MeError> {
         self.require_active_lifecycle("scalar_typed_targets")?;
-        let targets = self.scalar_targets(references, values.len(), T::KIND)?;
-        let cells = values
+        let variables = self.scalar_write_variables(references, values.len(), T::KIND)?;
+        let mut cells = Vec::with_capacity(values.len());
+        let mut pending = values.iter();
+        for variable in &variables {
+            let count = variable
+                .storage()
+                .expect("request checked original storage")
+                .scalar_count();
+            for &value in pending.by_ref().take(count) {
+                cells.push(require_literal(value, variable.enumeration())?.encode()?);
+            }
+        }
+        Ok((
+            self.input_parameter_targets(&variables, values.len()),
+            cells,
+        ))
+    }
+
+    /// The checked String variables of a read, in request order. A String
+    /// value is never evaluated (the scalar deployment admits only parameters
+    /// and constants with a literal start), so every active state reads it.
+    pub(crate) fn scalar_text_variables(
+        &self,
+        references: &[u32],
+    ) -> Result<Vec<&FmiVariable>, MeError> {
+        self.require_active_lifecycle("scalar_text_variables")?;
+        let (members, _) = request::read_request(
+            self.scalar_inventory()?,
+            references,
+            SolveVariableValueKind::String,
+            false,
+        )?;
+        members
             .iter()
-            .map(|value| value.encode())
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((targets, cells))
+            .map(|member| {
+                member
+                    .variable()
+                    .ok_or_else(|| contract("a String request member is not a variable"))
+            })
+            .collect()
+    }
+
+    /// The checked String variables of a write of `value_count` values, by the
+    /// same causality and lifecycle window as every other typed write.
+    pub(crate) fn scalar_text_targets(
+        &self,
+        references: &[u32],
+        value_count: usize,
+    ) -> Result<Vec<&FmiVariable>, MeError> {
+        self.require_active_lifecycle("scalar_text_targets")?;
+        self.scalar_write_variables(references, value_count, SolveVariableValueKind::String)
     }
 
     /// Scalar count of a checked batch, by the same owner as its reads.
@@ -483,9 +601,26 @@ impl SolveMeKernel {
         kind: SolveVariableValueKind,
         pending: bool,
     ) -> Result<usize, MeError> {
+        if kind == SolveVariableValueKind::String {
+            return Ok(self
+                .scalar_text_variables(references)?
+                .iter()
+                .map(|variable| {
+                    variable
+                        .storage()
+                        .expect("request checked original storage")
+                        .scalar_count()
+                })
+                .sum());
+        }
         if kind != SolveVariableValueKind::Real {
-            let (_, count) =
-                request::read_request(self.scalar_inventory()?, references, kind, pending)?;
+            let (_, count) = request::read_request_served(
+                self.scalar_inventory()?,
+                references,
+                kind,
+                pending,
+                Served::Fmi3,
+            )?;
             return Ok(count);
         }
         let (_, count) = self.scalar_read_request(references, pending)?;

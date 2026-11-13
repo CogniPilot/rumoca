@@ -356,10 +356,9 @@ fn a_stateful_model_renders_a_co_simulation_only_scalar_description() {
 /// The scalar route owns Real, Integer and Boolean variables: a stateful model
 /// with an Integer parameter, a Boolean input and a Boolean output renders
 /// each under its own FMI 3 type with its own start, and advertises those
-/// kinds. A kind it has no owner for (String) is refused by name before any
-/// description is rendered, never hidden.
+/// kinds.
 #[test]
-fn integer_and_boolean_variables_render_in_the_scalar_view_and_strings_refuse() {
+fn integer_and_boolean_variables_render_in_the_scalar_view() {
     let root = scalar_root(
         "model Selector\n  parameter Integer n = 3;\n  input Boolean enable = true;\n  \
          output Boolean active;\n  Real x(start = 1, fixed = true);\nequation\n  \
@@ -394,16 +393,63 @@ fn integer_and_boolean_variables_render_in_the_scalar_view_and_strings_refuse() 
     ] {
         assert!(xml.contains(present), "scalar description lacks {present}");
     }
+}
 
-    let texted = scalar_root(
-        "model Texted\n  parameter String label = \"a\";\n  Real x(start = 1);\n\
-         equation\n  der(x) = -x;\nend Texted;\n",
-        "Texted",
+/// The scalar route also owns enumerations, served as FMI 3 Int64 ordinals
+/// under their declared type, and String parameters with a literal start: a
+/// stateful model with both renders each with its start and advertises both
+/// kinds. A String without a literal start has no value the route could serve
+/// (String values are never evaluated), so it is refused by name before any
+/// description is rendered, never hidden.
+#[test]
+fn enumeration_and_literal_string_parameters_render_in_the_scalar_view() {
+    let root = scalar_root(
+        "model Labelled\n  type Mode = enumeration(off, slow, fast);\n  \
+         parameter Mode mode = Mode.slow;\n  parameter String label = \"a<b\";\n  \
+         Real x(start = 1, fixed = true);\nequation\n  \
+         der(x) = if mode == Mode.fast then -2 * x else -x;\nend Labelled;\n",
+        "Labelled",
     );
-    let error = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&texted)
+    let view = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&root).unwrap();
+    assert_eq!(
+        view.capabilities().variable_kinds,
+        [
+            rumoca_ir_solve::SolveVariableValueKind::Real,
+            rumoca_ir_solve::SolveVariableValueKind::Enumeration,
+            rumoca_ir_solve::SolveVariableValueKind::String,
+        ]
+    );
+    let prepared = prepare_metadata_with(
+        NativeFmiTemplateRenderer::new_scalar(view).unwrap(),
+        "Labelled",
+    )
+    .unwrap();
+    let xml = std::str::from_utf8(
+        prepared
+            .rendered_file(Path::new("modelDescription.xml"))
+            .unwrap(),
+    )
+    .unwrap();
+    for present in [
+        "<Item name=\"slow\" value=\"2\"/>",
+        "<Enumeration name=\"mode\"",
+        "start=\"2\"",
+        "<String name=\"label\"",
+        "<Start value=\"a&lt;b\"/>",
+    ] {
+        assert!(xml.contains(present), "scalar description lacks {present}");
+    }
+
+    let computed = scalar_root(
+        "model Computed\n  parameter Integer n = 3;\n  \
+         parameter String label = if n > 2 then \"many\" else \"few\";\n  \
+         Real x(start = 1, fixed = true);\nequation\n  der(x) = -n * x;\nend Computed;\n",
+        "Computed",
+    );
+    let error = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&computed)
         .err()
-        .expect("a String variable has no scalar owner");
-    assert!(error.to_string().contains("(label, String"), "{error}");
+        .expect("a String without a literal start has no value to serve");
+    assert!(error.to_string().contains("(label) is not one"), "{error}");
 }
 
 /// Scalar preparation admits exactly the complement of the native profile:

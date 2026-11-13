@@ -36,6 +36,26 @@ impl Access {
     }
 }
 
+/// Which declared kinds the FMI accessor of a typed batch serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Served {
+    /// Exactly the requested kind: the native route's typed preflight.
+    Exact,
+    /// The requested kind and, for an Int64 batch, enumeration ordinals too,
+    /// which FMI 3 reads and writes through the Int64 accessors (the fmi3
+    /// template's `RMC_KIND_INT64` for both): the scalar route.
+    Fmi3,
+}
+
+impl Served {
+    fn serves(self, requested: SolveVariableValueKind, declared: SolveVariableValueKind) -> bool {
+        declared == requested
+            || (self == Self::Fmi3
+                && requested == SolveVariableValueKind::Integer
+                && declared == SolveVariableValueKind::Enumeration)
+    }
+}
+
 pub(super) fn checked_request<'inventory>(
     metadata: &'inventory FmiMetadata,
     references: &[u32],
@@ -43,10 +63,28 @@ pub(super) fn checked_request<'inventory>(
     kind: SolveVariableValueKind,
     access: Access,
 ) -> Result<Vec<&'inventory FmiVariable>, MeError> {
+    checked_request_served(
+        metadata,
+        references,
+        value_count,
+        kind,
+        access,
+        Served::Exact,
+    )
+}
+
+pub(super) fn checked_request_served<'inventory>(
+    metadata: &'inventory FmiMetadata,
+    references: &[u32],
+    value_count: usize,
+    kind: SolveVariableValueKind,
+    access: Access,
+    served: Served,
+) -> Result<Vec<&'inventory FmiVariable>, MeError> {
     let mut variables = Vec::with_capacity(references.len());
     let mut expected = 0usize;
     for &reference in references {
-        let variable = lookup(metadata, reference, kind, access)?;
+        let variable = lookup(metadata, reference, kind, access, served)?;
         expected = expected
             .checked_add(
                 variable
@@ -72,13 +110,14 @@ fn lookup(
     reference: u32,
     kind: SolveVariableValueKind,
     access: Access,
+    served: Served,
 ) -> Result<&FmiVariable, MeError> {
     let variable = reference
         .checked_sub(1)
         .and_then(|index| metadata.variables().get(index as usize))
         .filter(|variable| variable.value_reference_fmi3() == reference)
         .ok_or_else(|| contract(format!("value reference {reference} is undeclared")))?;
-    if variable.value_kind() != kind {
+    if !served.serves(kind, variable.value_kind()) {
         return Err(contract(format!(
             "value reference {reference} has a different FMI type"
         )));
@@ -133,6 +172,16 @@ pub(super) fn read_request<'inventory>(
     kind: SolveVariableValueKind,
     pending: bool,
 ) -> Result<(Vec<ReadMember<'inventory>>, usize), MeError> {
+    read_request_served(metadata, references, kind, pending, Served::Exact)
+}
+
+pub(super) fn read_request_served<'inventory>(
+    metadata: &'inventory FmiMetadata,
+    references: &[u32],
+    kind: SolveVariableValueKind,
+    pending: bool,
+    served: Served,
+) -> Result<(Vec<ReadMember<'inventory>>, usize), MeError> {
     let mut members = Vec::with_capacity(references.len());
     let mut count = 0usize;
     for &reference in references {
@@ -156,6 +205,7 @@ pub(super) fn read_request<'inventory>(
                 } else {
                     Access::Read
                 },
+                served,
             )?)
         };
         count = count.checked_add(member.scalar_count()).ok_or_else(|| {

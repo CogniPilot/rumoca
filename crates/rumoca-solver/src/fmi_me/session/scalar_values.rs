@@ -1,9 +1,12 @@
-//! Float64, Int64 and Boolean values of a scalar instance by FMI value
-//! reference, read the way [`super::MeSimulationSession::selected_values`]
-//! reads names: one observation at the coordinate the session publishes (an
-//! off-point excursion is closed back onto the accepted point), the whole
-//! checked batch projected from it, and the same single warning report after
-//! it. Every type writes through the same accepted-input transaction.
+//! Float64, Int64 (enumerations included) and Boolean values of a scalar
+//! instance by FMI value reference, read the way
+//! [`super::MeSimulationSession::selected_values`] reads names: one
+//! observation at the coordinate the session publishes (an off-point
+//! excursion is closed back onto the accepted point), the whole checked batch
+//! projected from it, and the same single warning report after it. Every
+//! such type writes through the same accepted-input transaction. String
+//! values are never evaluated: they are the instance's installed texts or
+//! literal starts, read without an observation.
 
 use std::rc::Rc;
 
@@ -32,7 +35,7 @@ fn project_typed<T: ScalarCell>(
 }
 
 /// Copy a staged batch out only when it fills the caller's result exactly.
-fn deliver<T: Copy>(staged: Vec<T>, values: &mut [T]) -> Result<(), MeError> {
+fn deliver<T: Clone>(staged: Vec<T>, values: &mut [T]) -> Result<(), MeError> {
     if staged.len() != values.len() {
         return Err(MeError::Contract {
             reason: format!(
@@ -42,7 +45,7 @@ fn deliver<T: Copy>(staged: Vec<T>, values: &mut [T]) -> Result<(), MeError> {
             ),
         });
     }
-    values.copy_from_slice(&staged);
+    values.clone_from_slice(&staged);
     Ok(())
 }
 
@@ -148,6 +151,29 @@ impl MeSimulationSession<'_, '_> {
         values: &[bool],
     ) -> Result<(), MeSessionError> {
         self.set_scalar_typed(references, values)
+    }
+
+    /// `fmi3GetString` of a scalar instance after initialization.
+    pub fn get_scalar_string(
+        &self,
+        references: &[u32],
+        values: &mut [String],
+    ) -> Result<(), MeSessionError> {
+        self.require_live()?;
+        let staged = self.host.kernel.get_scalar_string(references)?;
+        Ok(deliver(staged, values)?)
+    }
+
+    /// `fmi3SetString` of an executing scalar instance: inputs only, and the
+    /// scalar deployment serves no String input, so every batch is refused by
+    /// the same window check.
+    pub fn set_scalar_string(
+        &mut self,
+        references: &[u32],
+        values: &[String],
+    ) -> Result<(), MeSessionError> {
+        self.require_live()?;
+        Ok(self.host.kernel.set_scalar_string(references, values)?)
     }
 
     /// The Float64 read's checks and observation for one Integer or Boolean
@@ -288,6 +314,25 @@ impl MeRetainedComponent {
         values: &[bool],
     ) -> Result<(), MeError> {
         self.set_scalar_typed(references, values)
+    }
+
+    /// `fmi3GetString` of a scalar instance before initialization completes.
+    pub fn get_scalar_string(
+        &self,
+        references: &[u32],
+        values: &mut [String],
+    ) -> Result<(), MeError> {
+        deliver(self.kernel.get_scalar_string(references)?, values)
+    }
+
+    /// `fmi3SetString` of a scalar instance before initialization completes:
+    /// settable String parameters.
+    pub fn set_scalar_string(
+        &mut self,
+        references: &[u32],
+        values: &[String],
+    ) -> Result<(), MeError> {
+        self.kernel.set_scalar_string(references, values)
     }
 
     fn set_scalar_typed<T: ScalarCell>(

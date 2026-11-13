@@ -1,7 +1,9 @@
 //! Co-Simulation deployment of a stateful (scalar-product) component.
 
 use super::*;
-use crate::{RetainedAssertionRoot, SolveVariableValueKind as Kind};
+use crate::{
+    RetainedAssertionRoot, SolveVariableStorageRole as Role, SolveVariableValueKind as Kind,
+};
 use serde::ser::SerializeMap;
 
 /// Scalar deployment refusal: the neutral admission refusal, or the exact
@@ -20,12 +22,17 @@ pub enum ScalarDeploymentError {
         kind: Kind,
         storage: &'static str,
     },
+    #[error(
+        "the scalar FMI route serves a String only as a parameter or constant with a literal \
+         start; VR {value_reference} ({name}) is not one"
+    )]
+    UnservedString { value_reference: u32, name: String },
 }
 
 /// The correlated retained root of a stateful component, admitted for the
 /// fixed Co-Simulation adapter's scalar product: Co-Simulation only, no FMU
-/// state, Real, Integer and Boolean variables (the kinds the scalar route
-/// owns). States stay internal to the component; its
+/// state, and the variable kinds the scalar route owns. States stay internal
+/// to the component; its
 /// complete checked metadata (variables, initial values, model structure) is
 /// rendered unchanged. No deserialization or caller capability constructor.
 #[derive(Clone, Debug)]
@@ -36,12 +43,20 @@ pub struct FmiScalarDeploymentView {
 
 impl FmiScalarDeploymentView {
     /// Admit `root`, refusing any advertised variable the scalar route cannot
-    /// serve: an Enumeration or String, or a storage-less entry other than the
-    /// declared maximum step duration (independent time is not a metadata
-    /// variable). The admitted kinds are Real and those present of Integer
-    /// and Boolean.
+    /// serve: a storage-less entry other than the declared maximum step
+    /// duration (independent time is not a metadata variable), or a String
+    /// that is not a parameter or constant with a literal start (the generated
+    /// C kernel's String profile: String values are never evaluated). The
+    /// admitted kinds are Real and those present of Integer, Boolean,
+    /// Enumeration and String.
     pub fn from_root(root: &RetainedAssertionRoot) -> Result<Self, ScalarDeploymentError> {
-        const OWNED: [Kind; 3] = [Kind::Real, Kind::Integer, Kind::Boolean];
+        const OWNED: [Kind; 5] = [
+            Kind::Real,
+            Kind::Integer,
+            Kind::Boolean,
+            Kind::Enumeration,
+            Kind::String,
+        ];
         let metadata = root.metadata();
         let max_step_duration = metadata.max_step_duration();
         for variable in metadata.variables() {
@@ -53,6 +68,15 @@ impl FmiScalarDeploymentView {
                     name: variable.name().to_owned(),
                     kind: variable.value_kind(),
                     storage: if storage_less { ", no storage" } else { "" },
+                });
+            }
+            if variable.value_kind() == Kind::String
+                && (!matches!(variable.role(), Some(Role::Parameter | Role::Constant))
+                    || variable.text_start().is_none())
+            {
+                return Err(ScalarDeploymentError::UnservedString {
+                    value_reference: variable.value_reference_fmi3(),
+                    name: variable.name().to_owned(),
                 });
             }
         }

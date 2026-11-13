@@ -368,6 +368,49 @@ typed_accessors!(
     bool
 );
 
+/// `fmi3SetString`/`fmi3GetString`: a scalar product's String owner. A
+/// native product serves no String through this resource.
+impl FmiLsResource {
+    pub fn set_string(
+        &mut self,
+        references: &[u32],
+        values: &[String],
+    ) -> Result<(), FmiLsResourceError> {
+        match self.owner.as_mut().expect("resource is owned") {
+            ResourceOwner::Retained(component) if component.is_scalar_product() => component
+                .set_scalar_string(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Session(session) if session.is_scalar_product() => session
+                .set_scalar_string(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Retained(_) | ResourceOwner::Session(_) => Err(native_string_refusal()),
+        }
+    }
+
+    pub fn get_string(
+        &self,
+        references: &[u32],
+        values: &mut [String],
+    ) -> Result<(), FmiLsResourceError> {
+        match self.owner.as_ref().expect("resource is owned") {
+            ResourceOwner::Retained(component) if component.is_scalar_product() => component
+                .get_scalar_string(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Session(session) if session.is_scalar_product() => session
+                .get_scalar_string(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Retained(_) | ResourceOwner::Session(_) => Err(native_string_refusal()),
+        }
+    }
+}
+
+fn native_string_refusal() -> FmiLsResourceError {
+    MeSessionError::Contract {
+        reason: "a native product serves no String values through this resource".to_owned(),
+    }
+    .into()
+}
+
 /// The plugin a component's Co-Simulation step plan names. The fixed-step
 /// backend checks its configuration before any step; a plan no plugin here
 /// executes is refused, never run by another method.

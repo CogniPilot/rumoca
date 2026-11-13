@@ -242,6 +242,16 @@ impl GuestCoSimulationInstance for Instance {
     fn set_boolean(&self, refs: Vec<u32>, values: Vec<bool>) -> Status {
         self.status(|resource| resource.set_boolean(&refs, &values))
     }
+    fn get_string(&self, refs: Vec<u32>) -> Result<Vec<String>, Status> {
+        self.get(
+            &refs,
+            SolveVariableValueKind::String,
+            FmiLsResource::get_string,
+        )
+    }
+    fn set_string(&self, refs: Vec<u32>, values: Vec<String>) -> Status {
+        self.status(|resource| resource.set_string(&refs, &values))
+    }
     fn get_int32(&self, _: Vec<u32>) -> Result<Vec<i32>, Status> {
         Err(self.refuse("get_int32"))
     }
@@ -268,9 +278,6 @@ impl GuestCoSimulationInstance for Instance {
     }
     fn get_uint64(&self, _: Vec<u32>) -> Result<Vec<u64>, Status> {
         Err(self.refuse("get_uint64"))
-    }
-    fn get_string(&self, _: Vec<u32>) -> Result<Vec<String>, Status> {
-        Err(self.refuse("get_string"))
     }
     fn get_binary(&self, _: Vec<u32>) -> Result<Vec<Vec<u8>>, Status> {
         Err(self.refuse("get_binary"))
@@ -301,9 +308,6 @@ impl GuestCoSimulationInstance for Instance {
     }
     fn set_uint64(&self, _: Vec<u32>, _: Vec<u64>) -> Status {
         self.refuse("set_uint64")
-    }
-    fn set_string(&self, _: Vec<u32>, _: Vec<String>) -> Status {
-        self.refuse("set_string")
     }
     fn set_binary(&self, _: Vec<u32>, _: Vec<Vec<u8>>) -> Status {
         self.refuse("set_binary")
