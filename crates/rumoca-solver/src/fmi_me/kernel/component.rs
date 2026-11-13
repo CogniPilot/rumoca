@@ -1085,6 +1085,7 @@ impl SolveMeKernel {
     /// with the current state prefix, parameters before the refresh), computed
     /// on copies: nothing is committed and the accepted bound is unchanged.
     /// `None` means the step is actually unconstrained.
+    #[cfg(feature = "native-wasm")]
     pub(super) fn observation_step_bound(&self) -> Result<Option<f64>, MeError> {
         if !self.runtime.has_delay_channels() {
             return Ok(None);
