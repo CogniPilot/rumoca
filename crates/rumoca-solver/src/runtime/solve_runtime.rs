@@ -75,6 +75,7 @@ use compiled_inventory::{CompiledExpressions, PreparedExpressions, require_prepa
 use compiled_lifecycle::CompiledLifecycle;
 mod coupled_event;
 mod discrete_rows;
+mod event_owner_journal;
 mod event_transactions;
 pub use event_transactions::EventTransactionExecution;
 use event_transactions::PreparedEventTransactionCoverage;
@@ -284,6 +285,12 @@ pub struct SolveRuntime {
     /// Which inputs a same-instant write can carry into an event owner,
     /// derived from this runtime's own model on first use.
     input_event_reach: std::cell::OnceCell<solve_eval::refresh_plan::InputEventReach>,
+    /// What the root conditions and discrete rows read, from this model's
+    /// issued event owner reach, or why its event updates evaluate every
+    /// owner at every step.
+    event_owner_lanes: Result<event_owner_journal::EventOwnerLanes, solve::EventReachRefusal>,
+    /// The lanes the current event update has observed.
+    event_owner_journal: RefCell<event_owner_journal::EventOwnerJournal>,
     execution: RuntimeExecutionInventory,
 }
 
@@ -462,6 +469,13 @@ impl SolveRuntime {
     /// The immutable source owner whose execution was prepared by construction.
     pub fn model(&self) -> &SolveRuntimeModel {
         &self.model
+    }
+
+    /// Why this model's event updates evaluate every owner at every step, if
+    /// they do.
+    #[cfg(any(test, feature = "input-write-audit"))]
+    pub(crate) fn event_owner_refusal(&self) -> Option<solve::EventReachRefusal> {
+        self.event_owner_lanes.as_ref().err().copied()
     }
 
     /// The input event reach of the model this runtime executes, derived once
@@ -647,7 +661,7 @@ impl SolveRuntime {
         self.delay_runtime.restore(&snapshot.delay);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn matches_snapshot(&self, snapshot: &SolveRuntimeSnapshot) -> bool {
         self.runtime_state.matches_snapshot(&snapshot.evaluator)
             && self.delay_runtime.matches_snapshot(&snapshot.delay)

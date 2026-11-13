@@ -42,6 +42,7 @@ impl MeComponentHost<'_> {
             scan_workspace: RefCell::new(RootScanWorkspace::default()),
             deferred: None,
             snapped_yield: None,
+            bindings: Default::default(),
             lease: PhantomData,
         };
         session.start_plugin()?;
@@ -92,7 +93,8 @@ fn session_failure_category(error: &MeSessionError) -> FailureCategory {
         MeSessionError::Allocation { .. } => FailureCategory::Allocation,
         MeSessionError::Options { .. }
         | MeSessionError::Contract { .. }
-        | MeSessionError::PluginArity { .. } => FailureCategory::Contract,
+        | MeSessionError::PluginArity { .. }
+        | MeSessionError::Binding { .. } => FailureCategory::Contract,
         MeSessionError::RootApplicationUnavailable { .. }
         | MeSessionError::RootScanUnrepresentable { .. }
         | MeSessionError::EventIterationDiverged { .. }

@@ -12,6 +12,7 @@
 //! carries the same borrow. A second host, a reset, or a mutation behind a live
 //! session is therefore a compile error rather than a runtime hazard
 
+mod bindings;
 mod deferred_crossing;
 mod error;
 mod host_state;
@@ -24,6 +25,8 @@ mod numerical_observation;
 mod options;
 mod recovery;
 mod selected_values;
+#[cfg(test)]
+mod verification;
 
 use std::{
     cell::{Cell, RefCell},
@@ -36,6 +39,7 @@ use indexmap::IndexMap;
 use super::instance::MeKernelCell;
 use host_state::{InitializationOutcome, MeHostState, run_fmi_initialization};
 
+pub use bindings::MeBindingRefusal;
 pub use error::{MePluginArity, MeSessionError, MeSessionLoss};
 pub use options::{MeAdvanceOutcome, MeOutputCursor, MeSessionOptions, MeSessionOptionsInput};
 
@@ -424,6 +428,8 @@ pub struct MeSimulationSession<'lease, 'plugin> {
     /// The exact yield a deferring session reported when its committed point
     /// ended within roundoff of it (issue #513): the caller sees its own time.
     snapped_yield: Option<f64>,
+    /// Input and output sets resolved once; a restart makes them stale.
+    bindings: bindings::SessionBindings,
     lease: PhantomData<&'lease ()>,
 }
 
@@ -552,6 +558,7 @@ impl MeSimulationSession<'_, '_> {
         let options = self.host.options.restarted_at(start_time)?;
         self.deferred = None;
         self.snapped_yield = None;
+        self.bindings.restart();
         let restarted = self.restart_session(options);
         self.host.guard_mutation(MeSessionLoss::Restart, restarted)
     }
@@ -1596,91 +1603,6 @@ impl MeSimulationSession<'_, '_> {
             cursor.advance();
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-impl MeSimulationSession<'_, '_> {
-    /// The session's own accepted point, bit-exact.
-    pub(super) fn verification_session_point(&self) -> (u64, Vec<u64>) {
-        (
-            self.host.time.to_bits(),
-            self.host
-                .states
-                .iter()
-                .map(|value| value.to_bits())
-                .collect(),
-        )
-    }
-
-    /// The coordinate the *component* is standing on, bit-exact.
-    ///
-    /// ME-BUF-001 makes this and [`Self::verification_session_point`] one fact;
-    /// an ablation asserts they agree after every failure
-    pub(super) fn verification_component_point(&self) -> (u64, Vec<u64>) {
-        let (_, time, states, _) = self
-            .host
-            .kernel
-            .borrow()
-            .expect("verification requires an active session")
-            .verification_observable_state();
-        (time, states)
-    }
-
-    /// Whether the component and not just the host flag reached FMI
-    /// Terminated.  This is deliberately a boolean: the private lifecycle type
-    /// does not become part of the session API merely to support an ablation.
-    pub(super) fn verification_component_is_terminated(&self) -> bool {
-        self.host
-            .kernel
-            .borrow()
-            .expect("verification requires an active session")
-            .verification_observable_state()
-            .0
-            == super::lifecycle::MeState::Terminated
-    }
-
-    /// Expire the wall budget now without sleeping: a zero-length deadline is
-    /// already reached at every later check.
-    pub(super) fn verification_expire_budget(&mut self) {
-        self.host.budget = TimeoutBudget::new(Some(f64::MIN_POSITIVE));
-    }
-
-    /// Whether the retained derivative capability is currently reachable.
-    pub(super) fn verification_capability_is_active(&self) -> bool {
-        self.host.derivatives.is_active()
-    }
-
-    /// Issue `fmi3Terminate` on the component underneath the session.
-    ///
-    /// `fmi3Terminate` is an ordinary standard call; the master algorithm simply
-    /// never issues it mid-run, so this is the only way to reach the cases where
-    /// an excursion's own body *and* its restoration both fail. It moves nothing
-    /// and decides nothing: every later operation an ablation drives is a
-    /// production one.
-    pub(super) fn verification_terminate_component(&mut self) {
-        self.host
-            .kernel
-            .borrow_mut()
-            .expect("verification requires an active session")
-            .terminate()
-            .expect("fmi3Terminate is legal once");
-    }
-
-    /// Run one off-point observation against a component that has been
-    /// terminated underneath the session.
-    ///
-    /// The excursion is the production one — nothing here is a test-only branch
-    /// inside the master algorithm.
-    pub(super) fn verification_observe_off_point_after_terminate(
-        &mut self,
-        time: f64,
-        states: &[f64],
-    ) -> MeSessionError {
-        self.verification_terminate_component();
-        self.host
-            .observe_off_point(time, states)
-            .expect_err("a terminated component refuses the observation and the restoration")
     }
 }
 

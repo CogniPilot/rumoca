@@ -1160,9 +1160,11 @@ impl ScalarExecutionView<'_> {
         p: &mut [f64],
         t: f64,
     ) -> Result<bool, RuntimeSolveError> {
+        #[cfg(any(test, feature = "input-write-audit"))]
+        crate::runtime::event_owner_audit::count(|counts| counts.condition_memory_passes += 1);
         let eval_y = copy_runtime_values(y, "condition-memory advance y snapshot")?;
         let eval_p = copy_runtime_values(p, "condition-memory advance p snapshot")?;
-        let mut eval_p_cache = EventEvalParamCache::default();
+        let mut eval_p_cache = self.observed_event_eval_param_cache(y, p);
         let mut writes = Vec::new();
         for row_idx in 0..self.model.problem.discrete.rhs.len() {
             if self.scalar.event_transaction_coverage.discrete_rows[row_idx]
@@ -1375,6 +1377,10 @@ impl ScalarExecutionView<'_> {
         input: &mut DiscreteRowsSettleInput<'_>,
         project_algebraics: &mut ProjectAlgebraics<'_>,
     ) -> Result<bool, RuntimeSolveError> {
+        #[cfg(any(test, feature = "input-write-audit"))]
+        if step == solve::SettleStep::DiscreteOwners {
+            crate::runtime::event_owner_audit::count(|counts| counts.discrete_passes += 1);
+        }
         match step {
             solve::SettleStep::DiscreteOwners => self.apply_discrete_rows_for_pre_snapshot(
                 snapshot,
@@ -1435,7 +1441,7 @@ impl ScalarExecutionView<'_> {
         self.validate_discrete_row_eval_scope(scope)?;
         let eval_y = copy_runtime_values(y, "discrete row eval y snapshot")?;
         let eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
-        let mut eval_p_cache = EventEvalParamCache::default();
+        let mut eval_p_cache = self.observed_event_eval_param_cache(y, p);
         let mut evaluated_transactions = self.evaluate_event_transactions_for_snapshot(
             snapshot,
             scope.observation_only,
@@ -1747,11 +1753,15 @@ impl ScalarExecutionView<'_> {
                 snapshot.root_relation_overrides,
                 base_p,
             )?;
-            self.eval_discrete_program_outputs(
+            self.eval_event_discrete_program(
+                eval_p_cache.observed,
                 program,
-                eval_y,
-                row_p,
-                t,
+                RowEvalPoint {
+                    y: eval_y,
+                    p: row_p,
+                    t,
+                },
+                snapshot.root_relation_overrides,
                 &mut eval_p_cache.outputs,
             )?;
             eval_p_cache.program = Some(program);

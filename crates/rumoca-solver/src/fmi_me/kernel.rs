@@ -11,11 +11,11 @@ mod event_boundary;
 mod input_transaction;
 #[cfg(all(test, feature = "native-wasm"))]
 pub(in crate::fmi_me) use component::fail_initialization_entry;
-pub(in crate::fmi_me) use input_transaction::AcceptedInputWrite;
 #[cfg(test)]
 pub(in crate::fmi_me) use input_transaction::fail_input_restore;
 #[cfg(all(test, feature = "native-wasm"))]
 pub(in crate::fmi_me) use input_transaction::snapshot_count;
+pub(in crate::fmi_me) use input_transaction::{AcceptedInputWrite, UnguardedContinuousWrite};
 #[cfg(feature = "native-wasm")]
 mod native_typed;
 mod solver_guess;
@@ -571,6 +571,14 @@ impl SolveMeKernel {
     }
 
     pub(crate) fn set_time(&mut self, time: MeTime) -> Result<(), MeError> {
+        self.check_time(time)?;
+        self.time = time.time;
+        self.event_boundary = time.event_boundary;
+        Ok(())
+    }
+
+    /// The admission [`Self::set_time`] applies, proved without writing.
+    fn check_time(&self, time: MeTime) -> Result<(), MeError> {
         self.require_active_lifecycle("set_time")?;
         if !time.time.is_finite() {
             return Err(contract("set_time requires a finite time"));
@@ -581,12 +589,18 @@ impl SolveMeKernel {
         {
             return Err(contract("set_time event boundary must be finite"));
         }
-        self.time = time.time;
-        self.event_boundary = time.event_boundary;
         Ok(())
     }
 
     pub(crate) fn set_continuous_states(&mut self, states: &[f64]) -> Result<(), MeError> {
+        self.check_continuous_states(states)?;
+        self.states.copy_from_slice(states);
+        Ok(())
+    }
+
+    /// The admission [`Self::set_continuous_states`] applies, proved without
+    /// writing.
+    fn check_continuous_states(&self, states: &[f64]) -> Result<(), MeError> {
         self.require_active_lifecycle("set_continuous_states")?;
         if states.len() != self.state_count {
             return Err(contract(format!(
@@ -598,7 +612,6 @@ impl SolveMeKernel {
         if states.iter().any(|value| !value.is_finite()) {
             return Err(contract("continuous state values must all be finite"));
         }
-        self.states.copy_from_slice(states);
         Ok(())
     }
 
@@ -626,6 +639,13 @@ impl SolveMeKernel {
     pub(crate) fn audit_input_event_reach(&self) -> Vec<bool> {
         let reach = self.runtime.input_event_reach();
         (0..reach.len()).map(|input| reach.reaches(input)).collect()
+    }
+
+    /// Why this model's event updates evaluate every owner at every step, if
+    /// they do.
+    #[cfg(any(test, feature = "input-write-audit"))]
+    pub(crate) fn audit_event_owner_refusal(&self) -> Option<rumoca_ir_solve::EventReachRefusal> {
+        self.runtime.event_owner_refusal()
     }
 
     #[cfg(any(test, feature = "input-write-audit"))]
@@ -945,6 +965,32 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// [`Self::get_selected_outputs`] over outputs resolved once through
+    /// [`Self::visible_output_position`], each with its name.
+    pub(crate) fn get_resolved_outputs<'name>(
+        &self,
+        observation: &MeObservation,
+        sample_time: f64,
+        outputs: impl ExactSizeIterator<Item = (Option<usize>, &'name str)>,
+        values: &mut Vec<Option<f64>>,
+    ) -> Result<(), MeError> {
+        self.require_output_getter(observation)?;
+        self.runtime.visible_values_at(
+            &observation.solver_y,
+            &observation.parameters,
+            sample_time,
+            outputs,
+            values,
+        )?;
+        Ok(())
+    }
+
+    /// The position [`Self::get_selected_outputs`] reads visible output `name`
+    /// from; `None` when the component does not expose it.
+    pub(crate) fn visible_output_position(&self, name: &str) -> Result<Option<usize>, MeError> {
+        Ok(self.runtime.visible_output_position(name)?)
+    }
+
     /// What either output getter requires of the component and the observation.
     fn require_output_getter(&self, observation: &MeObservation) -> Result<(), MeError> {
         self.require_active_lifecycle("get_outputs")?;
@@ -963,15 +1009,7 @@ impl SolveMeKernel {
         refs: &[MeValueRef],
         values: &[f64],
     ) -> Result<(), MeError> {
-        self.require_active_lifecycle("set_float64")?;
-        if refs.len() != values.len() {
-            return Err(contract(format!(
-                "{} value references do not match {} values",
-                refs.len(),
-                values.len()
-            )));
-        }
-        let indices = self.writable_float64_inputs(refs, values)?;
+        let indices = self.admitted_float64_inputs(refs, values)?;
         #[cfg(feature = "native-wasm")]
         if self.native_transport.is_some() {
             let batches: Vec<_> = indices
@@ -982,10 +1020,7 @@ impl SolveMeKernel {
             return self.commit_native_float64_inputs(&batches);
         }
         let checkpoint = self.fmu_state()?;
-        for (index, value) in indices.iter().zip(values.iter().copied()) {
-            self.params[*index] = value;
-        }
-        self.clear_runtime_caches();
+        self.store_float64_inputs(&indices, values);
         #[cfg(feature = "native-wasm")]
         if let Err(error) = self.sync_native_coordinates() {
             return Err(self.restore_after_failed_write(&checkpoint, error));
@@ -996,6 +1031,15 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// The infallible part of [`Self::set_float64`]: the admitted cells and
+    /// the value caches they invalidate.
+    fn store_float64_inputs(&mut self, indices: &[usize], values: &[f64]) {
+        for (index, value) in indices.iter().zip(values.iter().copied()) {
+            self.params[*index] = value;
+        }
+        self.clear_runtime_caches();
+    }
+
     /// The admission [`Self::set_float64`] applies, proved without writing, so
     /// the host can refuse a batch before it moves anything (issue #513).
     pub(crate) fn check_float64_inputs(
@@ -1003,6 +1047,16 @@ impl SolveMeKernel {
         refs: &[MeValueRef],
         values: &[f64],
     ) -> Result<(), MeError> {
+        self.admitted_float64_inputs(refs, values).map(|_| ())
+    }
+
+    /// Parameter index of every reference when [`Self::set_float64`] admits
+    /// the whole batch.
+    fn admitted_float64_inputs(
+        &self,
+        refs: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<Vec<usize>, MeError> {
         self.require_active_lifecycle("set_float64")?;
         if refs.len() != values.len() {
             return Err(contract(format!(
@@ -1011,7 +1065,7 @@ impl SolveMeKernel {
                 values.len()
             )));
         }
-        self.writable_float64_inputs(refs, values).map(|_| ())
+        self.writable_float64_inputs(refs, values)
     }
 
     /// Every reference belongs to this instance and addresses a readable native cell.
@@ -1366,7 +1420,7 @@ pub(super) fn continuous_state_values_changed(before: &[f64], after: &[f64]) -> 
     !float_slice_bit_eq(before, after)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.to_bits() == right.to_bits(),
@@ -1392,7 +1446,7 @@ pub(super) fn event_update_application_time(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_float_vec_bit_eq(left: &Option<Vec<f64>>, right: &Option<Vec<f64>>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => float_slice_bit_eq(left, right),
@@ -1401,7 +1455,7 @@ fn option_float_vec_bit_eq(left: &Option<Vec<f64>>, right: &Option<Vec<f64>>) ->
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_event_entry_bit_eq(left: Option<MeEventEntry>, right: Option<MeEventEntry>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {
@@ -1414,7 +1468,7 @@ fn option_event_entry_bit_eq(left: Option<MeEventEntry>, right: Option<MeEventEn
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_event_stop_bit_eq(
     left: Option<(f64, RuntimeEventStop)>,
     right: Option<(f64, RuntimeEventStop)>,
@@ -1428,7 +1482,7 @@ fn option_event_stop_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn root_crossings_bit_eq(left: &[RootCrossing], right: &[RootCrossing]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -1438,7 +1492,7 @@ fn root_crossings_bit_eq(left: &[RootCrossing], right: &[RootCrossing]) -> bool 
         })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn derivative_cache_bit_eq(
     left: Option<&CachedDerivative>,
     right: Option<&CachedDerivative>,
@@ -1454,7 +1508,7 @@ fn derivative_cache_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn root_cache_bit_eq(
     left: Option<&CachedRootConditions>,
     right: Option<&CachedRootConditions>,
@@ -1471,7 +1525,7 @@ fn root_cache_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn continuous_linearization_cache_bit_eq(
     left: Option<&CachedContinuousLinearization>,
     right: Option<&CachedContinuousLinearization>,
@@ -1496,7 +1550,7 @@ fn continuous_linearization_cache_bit_eq(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn observations_bit_eq(left: &[MeObservation], right: &[MeObservation]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -1507,7 +1561,7 @@ fn observations_bit_eq(left: &[MeObservation], right: &[MeObservation]) -> bool 
         })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn termination_bit_eq(left: Option<&SimTermination>, right: Option<&SimTermination>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {

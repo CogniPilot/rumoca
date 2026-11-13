@@ -9,12 +9,16 @@ mod array_storage_views;
 mod array_trajectories;
 mod binder_guard_families;
 mod block_residual_split;
+#[cfg(feature = "solver-rk45")]
+mod bound_io;
 mod call_dependency_precision;
 mod coincident_strict;
 #[cfg(not(target_arch = "wasm32"))]
 mod compiled_messages;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod continuous_input_writes;
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod event_owner_reach;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
 mod function_returns;

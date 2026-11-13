@@ -21,23 +21,43 @@ impl ScalarExecutionView<'_> {
         names: &[N],
         selected: &mut Vec<Option<f64>>,
     ) -> Result<usize, RuntimeSolveError> {
-        selected.clear();
-        reserve_runtime_vec_capacity(selected, names.len(), "selected visible values")?;
         let index = &self.scalar.visible_name_index;
+        let outputs = names.iter().map(|name| {
+            let name = name.as_ref();
+            (index.get(name).copied(), name)
+        });
+        self.visible_values_at(y, params, t, outputs, selected)
+    }
+
+    /// The position of visible output `name` in the index
+    /// [`Self::visible_values_selected`] resolves names through.
+    pub fn visible_output_position(&self, name: &str) -> Option<usize> {
+        self.scalar.visible_name_index.get(name).copied()
+    }
+
+    /// [`Self::visible_values_selected`] over outputs already resolved through
+    /// [`Self::visible_output_position`], each with the name it was resolved
+    /// from; `None` for a name that is no visible output.
+    pub fn visible_values_at<'name>(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        outputs: impl ExactSizeIterator<Item = (Option<usize>, &'name str)>,
+        selected: &mut Vec<Option<f64>>,
+    ) -> Result<usize, RuntimeSolveError> {
+        selected.clear();
+        reserve_runtime_vec_capacity(selected, outputs.len(), "selected visible values")?;
         let mut values = self.scalar.visible_scratch.borrow_mut();
         let Some(plan) = &self.scalar.visible_value_plan else {
             self.visible_values_into(y, params, t, &mut values)?;
-            selected.extend(names.iter().map(|name| {
-                let output = *index.get(name.as_ref())?;
-                values.get(output).copied()
-            }));
+            selected.extend(outputs.map(|(output, _)| values.get(output?).copied()));
             return Ok(values.len());
         };
         // Request positions still waiting for the value of a source row.
         let mut pending = Vec::new();
-        for (position, name) in names.iter().enumerate() {
-            let name = name.as_ref();
-            let Some(&output) = index.get(name) else {
+        for (position, (output, name)) in outputs.enumerate() {
+            let Some(output) = output else {
                 selected.push(None);
                 continue;
             };

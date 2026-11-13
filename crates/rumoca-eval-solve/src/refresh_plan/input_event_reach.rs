@@ -144,12 +144,7 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
     // An event iteration settles a simultaneous block from its own warm start
     // and commits the result as the continuous-time seed, so with such a
     // block the settled coordinate itself is an operand every input reaches.
-    if !algebraic.causal_solution_certified
-        || algebraic
-            .value_stages
-            .iter()
-            .any(|stage| matches!(stage, solve::RefreshStage::ProjectionBlock { .. }))
-    {
+    if !algebraic.is_exact_causal_schedule() {
         return Ok(None);
     }
     let state_count = problem.solve_layout.state_scalar_count();

@@ -7,7 +7,7 @@ use rumoca_solver::fmi_me::numerical_observation::{ConstructionPurpose, Settings
 
 use super::{
     BDF_INTEGRATOR, BuildSimulationTimings, PreparedSimulation, SimError, SimFailureStage,
-    build_simulation_artifact, diagnostic_sim_error,
+    build_simulation_artifact, diagnostics::diagnostic_sim_error,
 };
 use crate::me_backend::{batch_options, plugin_for_host_with_observation};
 use crate::solve_lowering::{
