@@ -10,7 +10,11 @@
 //!       Instantiates with every import defined as a trap, so the init export can
 //!       reach no WASI and no FMI callback; calls it once, snapshots, drops the
 //!       init export and writes `<out>` (never overwritten). The output's
-//!       top-level exports must be the input's minus the init export.
+//!       top-level exports must be the input's minus the init export, and the
+//!       output must instantiate under the canonical `co-simulation-fmu`
+//!       bindings, which type-check every world import and export. Wizer has
+//!       removed the start functions, so that instantiation runs no guest code.
+//!       The publication gate stays the compiler's own interface check.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::io::Write;
@@ -76,11 +80,10 @@ pub(super) fn run_preinit(component_path: &str, init_export: &str, output: &str)
             .any(|export| export.name == init_export && export.kind == "func"),
         "no top-level function export `{init_export}`"
     );
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(output)
-        .with_context(|| format!("create {output} (never overwritten)"))?;
+    ensure!(
+        !std::path::Path::new(output).exists(),
+        "{output} exists; a snapshot is never overwritten"
+    );
 
     let mut config = Config::new();
     config.wasm_component_model(true);
@@ -99,13 +102,42 @@ pub(super) fn run_preinit(component_path: &str, init_export: &str, output: &str)
         after == expected,
         "snapshot exports differ from the input's minus `{init_export}`: {after:?} versus {expected:?}"
     );
-    file.write_all(&snapshot).context("write snapshot")?;
+    check_public_world(&engine, &snapshot)?;
+    // Written only after every check, so a refused snapshot leaves no file.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .and_then(|mut file| file.write_all(&snapshot))
+        .with_context(|| format!("write {output} (never overwritten)"))?;
     println!(
         "PREINIT_OK in_bytes={} out_bytes={} exports={}",
         bytes.len(),
         snapshot.len(),
         after.len()
     );
+    Ok(())
+}
+
+/// Typed lookup of every import and export of the canonical world.
+fn check_public_world(engine: &Engine, snapshot: &[u8]) -> Result<()> {
+    let component = Component::new(engine, snapshot).context("compile snapshot")?;
+    let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+    super::CoSimulationFmu::add_to_linker::<
+        super::HostState,
+        wasmtime::component::HasSelf<super::HostState>,
+    >(&mut linker, |state| state)?;
+    let mut store = Store::new(
+        engine,
+        super::HostState {
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build(),
+            table: wasmtime::component::ResourceTable::new(),
+            messages: Vec::new(),
+        },
+    );
+    super::CoSimulationFmu::instantiate(&mut store, &component, &linker)
+        .context("snapshot does not match the canonical co-simulation-fmu world")?;
     Ok(())
 }
 
