@@ -207,6 +207,10 @@ fn enumeration_and_string_values_read_and_write_through_the_scalar_route() {
             "{outside} is not an ordinal of Mode"
         );
     }
+    assert!(
+        retained.set_scalar_integer(&[mode, mode], &[3, 9]).is_err(),
+        "one value outside the literals refuses the whole batch"
+    );
     retained.get_scalar_integer(&[mode], &mut ordinal).unwrap();
     assert_eq!(ordinal, [2], "a refused write changes nothing");
 
@@ -226,6 +230,12 @@ fn enumeration_and_string_values_read_and_write_through_the_scalar_route() {
             .set_scalar_string(&[label], &["b".into(), "c".into()])
             .is_err(),
         "a String batch must cover its scalars exactly"
+    );
+    assert!(
+        retained
+            .set_scalar_string(&[label, mode], &["b".into(), "c".into()])
+            .is_err(),
+        "a batch naming a non-String refuses as a whole"
     );
     retained.get_scalar_string(&[label], &mut text).unwrap();
     assert_eq!(text, ["a"], "a refused write installs nothing");

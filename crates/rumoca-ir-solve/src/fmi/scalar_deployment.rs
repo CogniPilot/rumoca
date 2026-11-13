@@ -44,9 +44,11 @@ pub struct FmiScalarDeploymentView {
 impl FmiScalarDeploymentView {
     /// Admit `root`, refusing any advertised variable the scalar route cannot
     /// serve: a storage-less entry other than the declared maximum step
-    /// duration (independent time is not a metadata variable), or a String
-    /// that is not a parameter or constant with a literal start (the generated
-    /// C kernel's String profile: String values are never evaluated). The
+    /// duration (independent time is not a metadata variable), a non-Real
+    /// entry outside P (the typed request owner reads and writes only P
+    /// cells; lowering places every discrete value there), or a String that
+    /// is not a parameter or constant with a literal start (the generated C
+    /// kernel's String profile: String values are never evaluated). The
     /// admitted kinds are Real and those present of Integer, Boolean,
     /// Enumeration and String.
     pub fn from_root(root: &RetainedAssertionRoot) -> Result<Self, ScalarDeploymentError> {
@@ -62,12 +64,22 @@ impl FmiScalarDeploymentView {
         for variable in metadata.variables() {
             let storage_less = variable.storage().is_none()
                 && !max_step_duration.is_some_and(|declared| std::ptr::eq(declared, variable));
-            if !OWNED.contains(&variable.value_kind()) || storage_less {
+            let typed_outside_p = variable.value_kind() != Kind::Real
+                && variable
+                    .storage()
+                    .is_some_and(|run| run.column() != FmiStorageColumn::P);
+            if !OWNED.contains(&variable.value_kind()) || storage_less || typed_outside_p {
                 return Err(ScalarDeploymentError::Unowned {
                     value_reference: variable.value_reference_fmi3(),
                     name: variable.name().to_owned(),
                     kind: variable.value_kind(),
-                    storage: if storage_less { ", no storage" } else { "" },
+                    storage: if storage_less {
+                        ", no storage"
+                    } else if typed_outside_p {
+                        ", outside P"
+                    } else {
+                        ""
+                    },
                 });
             }
             if variable.value_kind() == Kind::String
