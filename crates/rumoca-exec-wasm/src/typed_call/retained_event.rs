@@ -1,6 +1,6 @@
 //! Source-owned event execution keeps actual invocation carriers private.
 #[cfg(all(test, feature = "host-engine", not(target_arch = "wasm32")))]
-mod tests;
+pub(crate) mod tests;
 use super::observations::ObservationPlan;
 use super::*;
 use crate::WasmCompileError;

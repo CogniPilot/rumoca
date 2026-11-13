@@ -15,7 +15,7 @@ fn span(at: usize) -> Span {
         at + 1,
     )
 }
-fn source() -> s::SolveExecutionSource {
+pub(crate) fn source() -> s::SolveExecutionSource {
     let p = s::SolveArithmeticProfile::construct(
         s::SolveRealFormat::Binary64,
         s::SolveIntegerDomain::FULL,

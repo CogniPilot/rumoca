@@ -32,6 +32,7 @@ pub use derivative_operation::{
 
 mod emit;
 mod exact_assignments;
+mod linked;
 #[cfg(feature = "precompiled-programs")]
 pub use exact_assignments::PrecompiledExactAssignments;
 #[cfg(any(
