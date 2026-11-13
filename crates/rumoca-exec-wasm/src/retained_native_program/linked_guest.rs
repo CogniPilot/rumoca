@@ -92,6 +92,18 @@ fn check_publication_token(expected: &str, token: &str) -> Result<(), WasmCompil
 #[doc(hidden)]
 pub fn receive_fixed_scalar_guest_model() -> Result<LinkedScalarGuestModel, WasmCompileError> {
     let (component, _capacity) = replay_linked_source()?;
+    // The product kind must agree with the received component: one the
+    // stateless native profile admits belongs to that profile, not this one.
+    if component
+        .runtime_view()
+        .retain_assertion_root()
+        .native_preparation()
+        .is_ok()
+    {
+        return Err(WasmCompileError::Input(
+            "a stateless component belongs to the native product, not the scalar product".into(),
+        ));
+    }
     Ok(LinkedScalarGuestModel {
         component,
         publication_token: publication_token()?,

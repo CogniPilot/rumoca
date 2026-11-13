@@ -122,7 +122,7 @@ impl GuestCoSimulationInstance for Instance {
         {
             Err("requested instance capabilities are outside the fixed native profile".to_owned())
         } else {
-            super::bootstrap::prepare(&instantiation_token)
+            super::bootstrap::prepare(&instantiation_token, &instance_name)
         };
         match prepared {
             Ok(component) => Some(CoSimulationInstance::new(Self {

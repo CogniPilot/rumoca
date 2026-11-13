@@ -1,10 +1,21 @@
 //! One actual receiver inventory shared by instances; publication is not entry authority.
-use rumoca_exec_wasm::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
+//!
+//! The product kind is fixed when the guest is built: the default is the
+//! stateless native product; `scalar-product` receives a stateful component
+//! instead, and each receiver refuses a component of the other kind.
+#[cfg(not(feature = "scalar-product"))]
+use rumoca_exec_wasm::{
+    LinkedNativeGuestModel as GuestModel, receive_fixed_native_guest_model as receive,
+};
+#[cfg(feature = "scalar-product")]
+use rumoca_exec_wasm::{
+    LinkedScalarGuestModel as GuestModel, receive_fixed_scalar_guest_model as receive,
+};
 use rumoca_solver::fmi_me::{MeModelSource, MeRetainedComponent};
 use std::cell::OnceCell;
 
 thread_local! {
-    static MODEL: OnceCell<Result<LinkedNativeGuestModel, String>> = const { OnceCell::new() };
+    static MODEL: OnceCell<Result<GuestModel, String>> = const { OnceCell::new() };
     /// Latched at the exported instantiate entry, before any refusal.
     #[cfg(feature = "preinit")]
     static INSTANTIATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -15,17 +26,13 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-fn with_model<T>(
-    query: impl FnOnce(&LinkedNativeGuestModel) -> Result<T, String>,
-) -> Result<T, String> {
-    MODEL.with(|slot| {
-        match slot
-            .get_or_init(|| receive_fixed_native_guest_model().map_err(|error| error.to_string()))
-        {
+fn with_model<T>(query: impl FnOnce(&GuestModel) -> Result<T, String>) -> Result<T, String> {
+    MODEL.with(
+        |slot| match slot.get_or_init(|| receive().map_err(|error| error.to_string())) {
             Ok(model) => query(model),
             Err(error) => Err(error.clone()),
-        }
-    })
+        },
+    )
 }
 
 /// Record an instantiation attempt; any attempt ends pre-initialisation.
@@ -34,26 +41,68 @@ pub(super) fn note_instantiation() {
     INSTANTIATED.with(|instantiated| instantiated.set(true));
 }
 
-pub(super) fn prepare(token: &str) -> Result<MeRetainedComponent, String> {
+pub(super) fn prepare(token: &str, instance_name: &str) -> Result<MeRetainedComponent, String> {
     with_model(|model| {
         model
             .validate_instantiation_token(token)
             .map_err(|error| error.to_string())?;
         #[cfg(feature = "preinit")]
         if let Some(component) = PREBUILT.with(|slot| slot.borrow_mut().take()) {
-            return Ok(component);
+            return adopt(component, instance_name);
         }
-        construct(model)
+        construct(model, instance_name)
     })
 }
 
+/// The adopted component was constructed before its instance existed; a
+/// scalar product binds the instance name now.
+#[cfg(feature = "preinit")]
+fn adopt(
+    mut component: MeRetainedComponent,
+    instance_name: &str,
+) -> Result<MeRetainedComponent, String> {
+    if cfg!(feature = "scalar-product") {
+        component
+            .bind_instance_name(instance_name)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(component)
+}
+
 /// The one construction every instance runs, at instantiation or pre-initialisation.
-fn construct(model: &LinkedNativeGuestModel) -> Result<MeRetainedComponent, String> {
+#[cfg(not(feature = "scalar-product"))]
+fn construct(model: &GuestModel, _instance_name: &str) -> Result<MeRetainedComponent, String> {
     MeRetainedComponent::prepare_retained_native_wasm(
         MeModelSource::new(model.component()),
         model.prepared_code(),
     )
     .map_err(|error| error.to_string())
+}
+
+/// The start coordinate a scalar instance is constructed at. A host request
+/// for another start time is refused at initialization until supported.
+#[cfg(feature = "scalar-product")]
+const SCALAR_START_TIME: f64 = 0.0;
+
+/// The one construction every instance runs, at instantiation or
+/// pre-initialisation. INTERPRETED (bring-up stage M1a): the explicit
+/// `Interpreter` execution policy admits no compiled backend, so every
+/// program runs in the Solve IR interpreter and no compiled entry is
+/// executed. Linked compiled entries replace this through dispatch (M1b).
+#[cfg(feature = "scalar-product")]
+fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedComponent, String> {
+    use rumoca_solver::SimExecutionPolicy;
+    use rumoca_solver::fmi_me::{MeInstanceConfig, admit_execution_backend};
+    let backend = admit_execution_backend(SimExecutionPolicy::Interpreter, None)
+        .map_err(|error| error.to_string())?;
+    let config = MeInstanceConfig::open_ended(
+        instance_name,
+        model.component().co_simulation().default_tolerance(),
+        SCALAR_START_TIME,
+    )
+    .map_err(|error| error.to_string())?;
+    MeRetainedComponent::instantiate(MeModelSource::new(model.component()), &config, backend)
+        .map_err(|error| error.to_string())
 }
 
 pub(super) fn default_tolerance() -> Result<f64, String> {
@@ -70,7 +119,8 @@ pub(super) fn preinitialize() {
         !INSTANTIATED.with(std::cell::Cell::get),
         "pre-initialisation after an instantiation"
     );
-    match with_model(construct) {
+    // The scalar product binds the real instance name at adoption.
+    match with_model(|model| construct(model, "rumoca-preinit")) {
         Ok(component) => PREBUILT.with(|slot| {
             assert!(
                 slot.replace(Some(component)).is_none(),
