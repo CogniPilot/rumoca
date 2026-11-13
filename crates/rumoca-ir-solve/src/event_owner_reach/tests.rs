@@ -146,3 +146,56 @@ fn a_pre_copy_of_a_solver_coordinate_refuses_the_input_reach_only() {
         Some(EventReachRefusal::SolverPreCopy)
     );
 }
+
+/// `f(y[3], q)`, where `f` returns its first input and checks that its
+/// second is finite: `q` is read only by the call's guard.
+fn guarded(q: LinearOp) -> Vec<LinearOp> {
+    let mut program = crate::structural_pattern::execution_reads_tests::guarded_program();
+    program[1] = q;
+    program
+}
+
+#[test]
+fn a_read_made_only_by_a_guard_inside_a_call_is_a_read_of_its_owner() {
+    let reads_p = guarded(LinearOp::LoadP { dst: 1, index: 7 });
+    assert!(
+        StructuralPattern::derive_p_dependency_union(&reads_p, None)
+            .unwrap()
+            .is_empty(),
+        "no output value reads the guarded parameter"
+    );
+    let mut problem = SolveProblem::default();
+    problem.events.root_conditions = block(vec![reads_p.clone()]);
+    problem.discrete.rhs = block(vec![
+        reads_p,
+        guarded(LinearOp::LoadY { dst: 1, index: 5 }),
+        guarded(LinearOp::LoadTime { dst: 1 }),
+    ]);
+    issue_event_owner_reach(&mut problem);
+    let reach = problem
+        .events
+        .owner_reach
+        .checked_for(&problem)
+        .expect("the issued reach is the problem's own");
+    let lanes = |owner| {
+        let reads = reads_of(reach, owner);
+        (
+            reads.y().iter().collect::<Vec<_>>(),
+            reads.p().iter().collect::<Vec<_>>(),
+            reads.reads_time(),
+        )
+    };
+    assert_eq!(
+        lanes(EventOwner::RootCondition(0)),
+        (vec![3], vec![7], false)
+    );
+    assert_eq!(lanes(EventOwner::DiscreteRow(0)), (vec![3], vec![7], false));
+    assert_eq!(
+        lanes(EventOwner::DiscreteRow(1)),
+        (vec![3, 5], vec![], false)
+    );
+    assert_eq!(lanes(EventOwner::DiscreteRow(2)), (vec![3], vec![], true));
+    let instant = reach.instant_reads().expect("every owner is analysable");
+    assert_eq!(instant.y.iter().collect::<Vec<_>>(), [3, 5]);
+    assert_eq!(instant.p.iter().collect::<Vec<_>>(), [7]);
+}

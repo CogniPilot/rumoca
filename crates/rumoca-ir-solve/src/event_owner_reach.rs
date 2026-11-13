@@ -5,8 +5,12 @@
 //! action conditions and messages, the dynamic time-event rows, the delay
 //! rows, the clock-partition intermediates and the `pre` copies. This module
 //! is the one walk over that list. It records, per owner program, the solver
-//! coordinates, parameter slots and time its outputs depend on, and whether it
-//! contains an operation whose result is not a function of those reads.
+//! coordinates, parameter slots and time its execution reads, and whether it
+//! evaluates an operation whose result is not a function of those reads.
+//! Execution reads are what its outputs depend on together with what its
+//! execution obligations read (a finite check, an assertion or an operation
+//! that can fault, inside a call included), whether or not an output uses
+//! them: a lane only a guard reads still decides whether the owner fails.
 //!
 //! Two questions are answered from the same records, so they cannot disagree:
 //! whether a write to an input can reach any event owner in the same instant
@@ -47,7 +51,7 @@ pub enum EventOwner {
     ClockIntermediate(usize),
 }
 
-/// What one owner program's outputs depend on.
+/// What one owner program's execution reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EventOwnerReads {
     y: IndexIntervals,
@@ -74,7 +78,7 @@ impl EventOwnerReads {
         self.time
     }
 
-    /// Whether an output contains an operation (table access, random state)
+    /// Whether execution evaluates an operation (table access, random state)
     /// whose result is not a function of the reads above.
     #[must_use]
     pub fn has_effect(&self) -> bool {
@@ -82,16 +86,14 @@ impl EventOwnerReads {
     }
 
     fn of_program(program: &[LinearOp], span: Option<rumoca_core::Span>) -> Option<Self> {
-        let union = |sets: Vec<std::sync::Arc<IndexIntervals>>| {
-            sets.iter()
-                .fold(IndexIntervals::default(), |all, set| all.union(set))
-        };
         Some(Self {
-            y: union(StructuralPattern::derive_output_y_dependency_ranges(program, span).ok()?),
-            p: union(StructuralPattern::derive_output_p_dependency_ranges(program, span).ok()?),
-            time: StructuralPattern::derive_output_time_dependencies(program, span)
-                .ok()?
-                .contains(&true),
+            y: std::sync::Arc::unwrap_or_clone(
+                StructuralPattern::derive_execution_y_dependency_ranges(program, span).ok()?,
+            ),
+            p: std::sync::Arc::unwrap_or_clone(
+                StructuralPattern::derive_execution_p_dependency_ranges(program, span).ok()?,
+            ),
+            time: StructuralPattern::execution_reads_time(program, span).ok()?,
             effect: StructuralPattern::execution_has_effect(program, span).ok()?,
         })
     }
