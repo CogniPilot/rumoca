@@ -550,7 +550,7 @@ mod tests {
         ));
         assert!(state.import(imported).is_err());
         assert!(
-            state.finish().is_err(),
+            state.finish(super::super::GuestProfile::Native).is_err(),
             "heap imports cannot replace receiver slots"
         );
     }
