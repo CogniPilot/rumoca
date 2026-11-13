@@ -7,6 +7,7 @@ mod preinitialization;
 mod real;
 pub use preinitialization::{MePendingNativeComponent, MePendingNativeState};
 mod request;
+mod scalar;
 mod values;
 
 use rumoca_ir_solve::SolveVariableValueKind;

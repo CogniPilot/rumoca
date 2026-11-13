@@ -89,11 +89,41 @@ impl FmiLsResource {
         kind: rumoca_ir_solve::SolveVariableValueKind,
     ) -> Result<usize, FmiLsResourceError> {
         match self.owner.as_ref().expect("resource is owned") {
+            ResourceOwner::Retained(component) if component.is_scalar_product() => component
+                .scalar_value_count(references, kind)
+                .map_err(Into::into),
             ResourceOwner::Retained(component) => component
                 .native_value_count(references, kind)
                 .map_err(Into::into),
+            ResourceOwner::Session(session) if session.is_scalar_product() => session
+                .scalar_value_count(references, kind)
+                .map_err(Into::into),
             ResourceOwner::Session(session) => session
                 .native_value_count(references, kind)
+                .map_err(Into::into),
+        }
+    }
+
+    /// `fmi3GetFloat64` by the product kind fixed at construction: a scalar
+    /// product reads its host cells before initialization and one checked
+    /// observation after it; a native product keeps its native getter.
+    pub fn get_float64(
+        &self,
+        references: &[u32],
+        values: &mut [f64],
+    ) -> Result<(), FmiLsResourceError> {
+        match self.owner.as_ref().expect("resource is owned") {
+            ResourceOwner::Retained(component) if component.is_scalar_product() => component
+                .get_scalar_float64(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Retained(component) => component
+                .get_native_float64(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Session(session) if session.is_scalar_product() => session
+                .get_scalar_float64(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Session(session) => session
+                .get_native_float64(references, values)
                 .map_err(Into::into),
         }
     }

@@ -216,7 +216,7 @@ impl GuestCoSimulationInstance for Instance {
         self.get(
             &refs,
             SolveVariableValueKind::Real,
-            FmiLsResource::get_native_float64,
+            FmiLsResource::get_float64,
         )
     }
     fn set_float64(&self, refs: Vec<u32>, values: Vec<f64>) -> Status {

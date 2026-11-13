@@ -23,6 +23,8 @@ mod native_inputs;
 mod numerical_observation;
 mod options;
 mod recovery;
+#[cfg(feature = "native-wasm")]
+mod scalar_values;
 mod selected_values;
 
 use std::{
