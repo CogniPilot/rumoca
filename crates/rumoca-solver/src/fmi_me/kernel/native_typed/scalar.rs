@@ -9,6 +9,7 @@ use rumoca_ir_solve::fmi::{FmiMetadata, FmiStorageColumn};
 
 use super::super::{MeError, MeFloat64Backing, MeObservation, MeValueRef, SolveMeKernel, contract};
 use super::request::{self, Access, ReadMember};
+use crate::fmi_me::lifecycle::MeState;
 
 impl SolveMeKernel {
     fn scalar_inventory(&self) -> Result<&FmiMetadata, MeError> {
@@ -93,19 +94,20 @@ impl SolveMeKernel {
 
     /// The branded input-parameter references of a checked Float64 write, one
     /// per scalar in request order. Causality and the lifecycle window are
-    /// checked first, by the request owner: before initialization completes
-    /// inputs and settable parameters are writable, afterwards inputs only.
+    /// checked first, by the request owner. The window is this instance's
+    /// actual lifecycle state, not who holds it: in Instantiated and
+    /// Initialization Mode inputs and settable parameters are writable,
+    /// otherwise (including after a failed ExitInitializationMode that left
+    /// a later state) inputs only.
     pub(crate) fn scalar_float64_targets(
         &self,
         references: &[u32],
         value_count: usize,
-        executing: bool,
     ) -> Result<Vec<MeValueRef>, MeError> {
         self.require_active_lifecycle("scalar_float64_targets")?;
-        let access = if executing {
-            Access::WriteInputs
-        } else {
-            Access::WriteInputsAndParameters
+        let access = match self.initialization_state() {
+            MeState::Instantiated | MeState::InitializationMode => Access::WriteInputsAndParameters,
+            _ => Access::WriteInputs,
         };
         let variables = request::checked_request(
             self.scalar_inventory()?,

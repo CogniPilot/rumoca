@@ -345,7 +345,6 @@ fn reset_native(_slot: &mut MeKernelResource) -> Result<(), MeError> {
     Err(no_scalar_snapshot())
 }
 
-#[cfg(not(feature = "native-wasm"))]
 fn no_scalar_snapshot() -> MeError {
     MeError::Contract {
         reason: "a non-native instance has no scalar pristine snapshot".to_owned(),

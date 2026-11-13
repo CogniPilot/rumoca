@@ -48,6 +48,22 @@ impl MeSimulationSession<'_, '_> {
         values: &mut [f64],
     ) -> Result<(), MeSessionError> {
         self.require_live()?;
+        // The whole request and its cardinality are checked before any
+        // observation or off-point excursion moves the component.
+        let count = self.host.kernel.borrow()?.scalar_value_count(
+            references,
+            SolveVariableValueKind::Real,
+            false,
+        )?;
+        if count != values.len() {
+            return Err(MeError::Contract {
+                reason: format!(
+                    "typed FMI batch requires {count} values, got {}",
+                    values.len()
+                ),
+            }
+            .into());
+        }
         let read = |kernel: &Rc<MeKernelCell>| project_checked(kernel, references);
         let staged = match self.off_point_observation() {
             Some((time, states)) => self.host.anchor().read_settled(time, states, read)?,
@@ -67,7 +83,7 @@ impl MeSimulationSession<'_, '_> {
         let (targets, unchanged) = {
             let kernel = self.host.kernel.borrow()?;
             // Causality is checked even when the proposed bits already match.
-            let targets = kernel.scalar_float64_targets(references, values.len(), true)?;
+            let targets = kernel.scalar_float64_targets(references, values.len())?;
             let current = kernel.read_scalar_host_cells(references)?;
             let unchanged = current
                 .iter()
@@ -120,7 +136,7 @@ impl MeRetainedComponent {
         values: &[f64],
     ) -> Result<(), MeError> {
         let mut kernel = self.kernel.borrow_mut()?;
-        let targets = kernel.scalar_float64_targets(references, values.len(), false)?;
+        let targets = kernel.scalar_float64_targets(references, values.len())?;
         kernel.set_float64(&targets, values)
     }
 
