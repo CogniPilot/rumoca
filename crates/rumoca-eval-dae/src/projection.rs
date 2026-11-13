@@ -2,14 +2,19 @@ mod array_update;
 mod coordinate_query;
 mod dependencies;
 mod domain_context;
+mod error;
 mod fold_graph;
+mod fold_nodes;
 mod function_conditionals;
 mod indexed_write_fold;
 mod integer;
 mod literal_bindings;
+mod literal_profile;
 mod pruned;
 pub use coordinate_query::CoordinateQuery;
 use coordinate_query::ProjectionQuery;
+pub use error::ProjectionError;
+use error::{external_projection_error, unsupported_record_operation};
 pub use pruned::PrunedScalarCoordinateProjection;
 mod literal_update_sweeps;
 #[cfg(test)]
@@ -17,11 +22,13 @@ mod merge_profile_tests;
 mod parameter_fragments;
 mod query;
 mod record_fields;
+mod replay_fold;
 use record_fields::FieldPath;
 mod scalar_selection;
 #[cfg(test)]
 mod tests;
 mod visited;
+mod whole_visit;
 mod zero_coefficients;
 pub use literal_bindings::{LiteralBinding, literal_bindings};
 pub use zero_coefficients::{
@@ -33,114 +40,6 @@ use std::sync::Arc;
 
 use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
-
-/// Failure to derive one exact scalar view from a checked DAE expression.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum ProjectionError {
-    #[error("scalar projection {index} is outside an expression containing {count} scalars")]
-    ScalarOutOfBounds {
-        index: usize,
-        count: usize,
-        span: Span,
-    },
-    #[error("array subscript is not compile-time computable")]
-    DynamicSubscript { span: Span },
-    #[error("Modelica index {index} is outside an axis of extent {extent}")]
-    IndexOutOfBounds { index: i64, extent: u32, span: Span },
-    #[error("integer evaluation overflowed during scalar projection")]
-    IntegerOverflow { span: Span },
-    #[error("function scalar projection exceeded the checked recursion limit")]
-    FunctionRecursion { span: Span },
-    #[error(
-        "record field `{target}` cannot be read one field at a time: its value comes from {operation}, which this compiler does not project per record field"
-    )]
-    UnsupportedRecordOperation {
-        target: String,
-        operation: &'static str,
-        span: Span,
-    },
-    #[error(
-        "external {language} function `{name}` calls `{symbol}`, which this runtime cannot execute"
-    )]
-    ExternalFunction {
-        name: String,
-        language: &'static str,
-        symbol: String,
-        span: Span,
-    },
-}
-
-impl ProjectionError {
-    /// The source span retained by the exact scalar projection owner.
-    #[must_use]
-    pub const fn span(&self) -> Span {
-        match self {
-            Self::ScalarOutOfBounds { span, .. }
-            | Self::DynamicSubscript { span }
-            | Self::IndexOutOfBounds { span, .. }
-            | Self::IntegerOverflow { span }
-            | Self::FunctionRecursion { span }
-            | Self::UnsupportedRecordOperation { span, .. }
-            | Self::ExternalFunction { span, .. } => *span,
-        }
-    }
-}
-
-/// Report an MLS §12.9 external body that projection cannot look through.
-///
-/// Projection resolves a call by continuing into the callee's result
-/// definition. An external body has none, so the exact interface is reported
-/// instead of a silently empty incidence set.
-fn external_projection_error(
-    definition: dae::FunctionView<'_>,
-    external: dae::ExternalFunctionView<'_>,
-    span: Span,
-) -> ProjectionError {
-    ProjectionError::ExternalFunction {
-        name: definition.name().to_string(),
-        language: external.language().as_str(),
-        symbol: external.symbol().to_string(),
-        span,
-    }
-}
-
-/// Report a record value whose definition projection cannot split per field.
-///
-/// The rejected value is named the way the source names it, `Record.field`
-/// where the DAE retained both names, so a reader can find the declaration
-/// without reading IR. The definition form is named too, because that is what
-/// decides whether the source has to change or the compiler does.
-fn unsupported_record_operation(node: dae::ExpressionView<'_>, field: usize) -> ProjectionError {
-    let value_type = node.value_type();
-    let target = match (
-        value_type.record_name(),
-        value_type.record_field_name(field),
-    ) {
-        (Some(record), Some(name)) => format!("{record}.{name}"),
-        (Some(record), None) => format!("{record} field {field}"),
-        (None, Some(name)) => name.to_string(),
-        (None, None) => format!("field {field}"),
-    };
-    ProjectionError::UnsupportedRecordOperation {
-        target,
-        operation: record_definition_form(node.operation()),
-        span: node.provenance().span(),
-    }
-}
-
-/// Name the definition form a record field projection could not look through.
-const fn record_definition_form(operation: dae::ExpressionOperation<'_>) -> &'static str {
-    match operation {
-        dae::ExpressionOperation::Field { .. } => "a field of an enclosing record",
-        dae::ExpressionOperation::Coordinate(_) => "a coordinate of the model",
-        dae::ExpressionOperation::Builtin { .. } => "a built-in operator result",
-        dae::ExpressionOperation::Binary { .. } | dae::ExpressionOperation::Unary { .. } => {
-            "an arithmetic result"
-        }
-        dae::ExpressionOperation::ClockTransfer { .. } => "a clocked transfer",
-        _ => "a definition form record projection does not cover",
-    }
-}
 
 /// Visit every coordinate on which one scalar result depends.
 ///
@@ -182,11 +81,20 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     #[cfg(test)]
     plain_argument_cache_lookups: std::cell::Cell<u64>,
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
+    fold_nodes: fold_nodes::Nodes<'dae>,
+    fold_recipes: HashMap<fold_nodes::Node<'dae>, fold_graph::FoldRecipe<'dae>>,
+    #[cfg(test)]
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
     parameter_eligibility: parameter_fragments::SharedEligibility,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
+    #[cfg(test)]
+    uncached_whole_visits: bool,
+    #[cfg(test)]
+    whole_visit_hits: u64,
+    #[cfg(test)]
+    all_scalar_entries: u64,
     #[cfg(test)]
     uncached_fold_reference: bool,
     #[cfg(test)]
@@ -508,6 +416,7 @@ enum FunctionParameterDependency {
 #[derive(Debug)]
 struct FunctionSummaryCapture<'dae> {
     function: u32,
+    integer_profile: Arc<[IntegerBinding]>,
     dependencies: dependencies::OrderedDependencies,
     needed_integers: Vec<(u32, usize)>,
     cacheable: bool,
@@ -817,12 +726,8 @@ impl<'dae> Projection<'_, 'dae> {
                 .collect();
             let previous = self.domain_contexts.replace(parent);
             self.fold_summary_capture(function).unwrap().visited.clear();
-            #[cfg(test)]
-            {
-                self.cache.fold_walks += 1;
-            }
             let projected = self.with_activation(node.activation, |projection| {
-                projection.project_fold_node(&node)
+                projection.project_or_replay_fold_node(&node)
             });
             self.domain_contexts.replace(previous);
             let capture = self.fold_summary_capture(function).unwrap();
@@ -1143,7 +1048,7 @@ impl<'dae> Projection<'_, 'dae> {
         arguments: Vec<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<(), ProjectionError> {
-        let mut integers: Vec<IntegerBinding> = Vec::new();
+        let mut integers = literal_profile::arguments(self.view, &arguments);
         loop {
             let key = FunctionSummaryKey {
                 activation: self.activation,
@@ -1277,16 +1182,13 @@ impl<'dae> Projection<'_, 'dae> {
         if !self.function_call_active.insert(dependency.clone()) {
             return Err(ProjectionError::FunctionRecursion { span });
         }
-        // These local caches do not bind Integer profiles. A specialized
-        // invocation cannot import generic facts or publish into their cache.
-        let isolated = (!integers.is_empty()).then(|| {
-            (
-                std::mem::take(&mut self.cache.completed_folds),
-                std::mem::take(&mut self.cache.parameter_fragments),
-            )
-        });
+        // Fold nodes carry the exact Integer profile; fragment keys do not.
+        // Only fragments still require isolation for a specialized invocation.
+        let isolated =
+            (!integers.is_empty()).then(|| std::mem::take(&mut self.cache.parameter_fragments));
         self.function_summary_captures.push(FunctionSummaryCapture {
             function: function.index(),
+            integer_profile: Arc::from(integers),
             dependencies: dependencies::OrderedDependencies::default(),
             needed_integers: Vec::new(),
             cacheable: true,
@@ -1312,8 +1214,7 @@ impl<'dae> Projection<'_, 'dae> {
             .pop()
             .expect("function summary capture was just pushed");
         self.function_call_active.remove(dependency);
-        if let Some((folds, fragments)) = isolated {
-            self.cache.completed_folds = folds;
+        if let Some(fragments) = isolated {
             self.cache.parameter_fragments = fragments;
         }
         projected?;
@@ -1334,8 +1235,13 @@ impl<'dae> Projection<'_, 'dae> {
             for (key, values) in capture.fragments.into_reusable() {
                 self.cache.parameter_fragments.insert(key, values);
             }
-            self.cache.completed_folds.extend(capture.folds.completed());
         }
+        let available = 65_536usize.saturating_sub(self.cache.fold_recipes.len());
+        for (node, recipe) in capture.folds.recipes(available) {
+            self.cache.fold_recipes.insert(node, recipe);
+        }
+        #[cfg(test)]
+        self.cache.completed_folds.extend(capture.folds.completed());
         Ok(FunctionSummaryEntry::Complete(
             capture.dependencies.into_values(),
         ))
@@ -1831,8 +1737,23 @@ impl<'dae> Projection<'_, 'dae> {
     }
 
     fn all_scalars(&mut self, expression: dae::ExprId<'dae>) -> Result<(), ProjectionError> {
+        let whole = self.whole_visit(expression);
+        if whole.as_ref().is_some_and(|(_, completed)| *completed) {
+            #[cfg(test)]
+            {
+                self.cache.whole_visit_hits += 1;
+            }
+            return Ok(());
+        }
         for index in 0..self.scalar_count(expression) {
+            #[cfg(test)]
+            {
+                self.cache.all_scalar_entries += 1;
+            }
             self.expression(expression, index)?;
+        }
+        if let Some((visit, _)) = whole {
+            self.finish_whole_visit(visit);
         }
         Ok(())
     }

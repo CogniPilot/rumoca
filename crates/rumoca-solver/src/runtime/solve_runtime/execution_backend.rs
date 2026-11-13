@@ -40,6 +40,55 @@ pub trait CompiledSolveProjectionJacobian {
     ) -> Result<(), crate::RuntimeSolveError>;
 }
 
+/// Borrowed columns of the runtime's one shared parameter-static cache.
+pub struct SolveDerivativeCacheView<'a> {
+    pub valid: &'a mut bool,
+    pub key_parameters: &'a mut [f64],
+    pub values: &'a mut [f64],
+    pub present: &'a mut [u8],
+}
+
+/// The source-issued phase preserves refresh rollback and later diagnostics.
+#[derive(Debug)]
+pub struct SolveDerivativeOperationFailure {
+    pub phase: Option<solve::fmi::FmiDerivativeStatus>,
+    pub error: RuntimeSolveError,
+}
+
+/// Complete original-root refresh, derivative vector and finite validation.
+pub trait CompiledSolveDerivativeOperation {
+    fn call(
+        &self,
+        y: &mut [f64],
+        parameters: &[f64],
+        time: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        output: &mut [f64],
+        cache: SolveDerivativeCacheView<'_>,
+    ) -> Result<(), SolveDerivativeOperationFailure>;
+
+    /// The kinematic rows over a coordinate a derivative refresh settled, when
+    /// the source issued a kinematic entry for exactly `rows`; `None`
+    /// otherwise. Only the `rows` entries of `output` are written, and `y` is
+    /// not.
+    fn call_kinematic(
+        &self,
+        _y: &[f64],
+        _parameters: &[f64],
+        _time: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+        _rows: &[usize],
+        _output: &mut [f64],
+    ) -> Option<Result<(), SolveDerivativeOperationFailure>> {
+        None
+    }
+
+    /// Whether the issued kinematic entry is bound; `Err` names why not.
+    fn kinematic_entry(&self) -> Result<(), String> {
+        Err("the compiled operation binds no kinematic entry".into())
+    }
+}
+
 /// Backend-neutral callable for a causally ordered set of exact assignments.
 /// Program outputs write directly to the flattened solver-Y target list, so
 /// subsequent programs observe earlier assignments while multiple outputs of
@@ -120,6 +169,21 @@ pub trait CompiledSolveEventObservation {
 }
 
 pub trait SolveExecutionBackend {
+    /// Whether this backend can bind the issued FMI operations at all; a
+    /// receipt reports their adoption only for a backend that can.
+    fn binds_issued_operations(&self) -> bool {
+        false
+    }
+
+    /// Only an original correlated component can issue the complete operation.
+    /// Unsupported capability is distinct from preparation failure.
+    fn compile_fmi_derivative_operation(
+        &self,
+        _root: solve::RetainedAssertionRoot,
+    ) -> Result<Option<Rc<dyn CompiledSolveDerivativeOperation>>, String> {
+        Ok(None)
+    }
+
     /// Prepare one model product from the runtime's exact immutable owner.
     /// An error is fatal; it must not be converted to an unsupported capability.
     fn compile_model_state_jacobian(
@@ -210,16 +274,16 @@ pub trait SolveExecutionBackend {
         Err("assignment schedules are not compiled by this backend".into())
     }
 
-    /// Compile a causally ordered list of single-output isolator rows whose
-    /// outputs write to the paired solver-Y targets, so later rows observe
-    /// earlier writes. Torn back-substitution batches through this; the
-    /// default declines so existing backends stay untouched.
-    fn compile_torn_assignment_rows(
+    /// Compile issued ordered assignment rows: each row's outputs commit to
+    /// its slot targets before the next row runs, and seeded rows read their
+    /// AD seed from the issued seed slots. A torn sweep's causal chain and a
+    /// torn block's tangent sweep batch through this; the default declines so
+    /// existing backends stay untouched.
+    fn compile_issued_assignment_rows(
         &self,
-        _rows: &[Vec<solve::LinearOp>],
-        _target_y_indices: &[usize],
+        _rows: &solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
-        Err("torn assignment rows are not compiled by this backend".to_string())
+        Err("issued assignment rows are not compiled by this backend".to_string())
     }
 
     fn compile_event_transaction(

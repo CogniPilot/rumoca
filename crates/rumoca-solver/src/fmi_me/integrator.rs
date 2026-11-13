@@ -33,11 +33,15 @@ pub(super) mod conformance;
 /// controller. SPEC_0044 §6's ruling keeps the concrete component source and
 /// the handle constructor inside the common host.
 mod derivative;
+mod fixed_step_tableau;
 pub mod time_only;
 
 pub(super) use derivative::{MeDerivativeComponent, MeDerivativeController};
 pub use derivative::{
     MeDerivativeHandle, MeDerivativeRefused, reset_trial_discard_count, trial_discard_count,
+};
+pub use fixed_step_tableau::{
+    MeFixedStepRefusal, MeFixedStepRoles, MeFixedStepTableau, MeFixedStepTerms,
 };
 
 #[cfg(test)]
@@ -155,6 +159,12 @@ pub enum MeIntegrationError {
          initialize, one advance, or truncate/reset"
     )]
     DerivativeCapabilityInactive { operation: &'static str },
+
+    /// The plugin requested kinematic state derivatives at a point that is not
+    /// the last full evaluation of the current host call with only the other
+    /// states changed, so no settled algebraic refresh may be reused.
+    #[error("no full derivative evaluation at t={time} with these kinematic states is current")]
+    NoEvaluatedPoint { time: f64 },
 
     /// A backend propagated the opaque refusal of a retained-handle
     /// evaluation.

@@ -1,13 +1,16 @@
 //! Source-issued register families. Operand views own the versions they read.
 use crate::register_versions::{RegisterVersionInventory, RegisterVersionPiece};
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::{DependencyState, StructuralPatternError};
 use crate::Reg;
 
 mod projection;
 use projection::Selection;
+#[cfg(test)]
+mod tests;
 
 #[derive(Default)]
 pub(crate) struct DependencyRegisters {
@@ -46,6 +49,12 @@ enum FamilyKind {
     },
     Call {
         inputs: Box<[CallInput]>,
+        /// Output cells already projected. Projecting a cell evaluates every
+        /// input relation's guards, and the family and the views it captured
+        /// never change, so each cell is projected once however many
+        /// registers, walk operations, or consumers reach it. The other
+        /// families select their sources arithmetically and retain no cells.
+        projected: Mutex<BTreeMap<usize, DependencyState>>,
     },
     Concatenate {
         inputs: Box<[ConcatenateInput]>,
@@ -164,6 +173,7 @@ impl DependencyRegisters {
             count,
             FamilyKind::Call {
                 inputs: inputs.into(),
+                projected: Mutex::default(),
             },
         );
     }
@@ -371,7 +381,7 @@ impl FamilyKind {
             Self::Product { lhs, rhs, shape } => {
                 shape.inner == 0 || (lhs.source_empty() && rhs.source_empty())
             }
-            Self::Call { inputs } => inputs.iter().all(|input| match input {
+            Self::Call { inputs, .. } => inputs.iter().all(|input| match input {
                 CallInput::Whole(state) => matches!(state, DependencyState::Empty),
                 CallInput::Projected { source, .. } => source.source_empty(),
             }),
@@ -380,6 +390,27 @@ impl FamilyKind {
 }
 
 impl Family {
+    /// The retained projection of one call-output cell.
+    fn projected(&self, cell: usize) -> Option<DependencyState> {
+        let FamilyKind::Call { projected, .. } = &self.kind else {
+            return None;
+        };
+        projected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&cell)
+            .cloned()
+    }
+
+    fn retain_projected(&self, cell: usize, state: &DependencyState) {
+        if let FamilyKind::Call { projected, .. } = &self.kind {
+            projected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(cell, state.clone());
+        }
+    }
+
     fn state(&self, index: usize) -> Option<Cow<'_, DependencyState>> {
         match &self.kind {
             FamilyKind::Uniform(state) => Some(Cow::Borrowed(state)),
@@ -457,7 +488,7 @@ fn take_children(kind: FamilyKind) -> Vec<Arc<Family>> {
             .chain(rhs.pieces)
             .map(|(_, _, piece)| piece.family)
             .collect(),
-        FamilyKind::Call { inputs } => inputs
+        FamilyKind::Call { inputs, .. } => inputs
             .into_vec()
             .into_iter()
             .flat_map(|input| match input {

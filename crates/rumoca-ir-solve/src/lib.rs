@@ -24,6 +24,8 @@ mod feature_query;
 pub mod fmi;
 mod initial_values;
 mod initialization;
+mod issued_assignment_rows;
+pub use issued_assignment_rows::{IssuedAssignmentRows, IssuedAssignmentRowsError};
 mod layout;
 mod linear_op;
 mod model;
@@ -32,6 +34,8 @@ mod prepared_kernel_key;
 pub use prepared_kernel_key::PreparedKernelSource;
 mod parameter_reads;
 mod program_occurrences;
+mod program_parameter_reads;
+pub use program_parameter_reads::program_parameter_indices;
 mod projection_stages;
 mod quotient_memory;
 mod refresh;
@@ -52,6 +56,8 @@ mod tangent_workspace;
 mod typed_program;
 mod variable_bounds;
 mod visible;
+mod wasm_capacity;
+pub use wasm_capacity::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
 pub mod visitor;
 
 use rumoca_core::{
@@ -129,7 +135,8 @@ pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use static_parameters::ContinuousStaticParameters;
 pub use tangent_lanes::{
     ColoredLaneCall, ColoredTangentPlan, TangentLaneCatalog, TangentLaneError, TangentLaneProgram,
-    TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
+    TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentSchedule,
+    TornTangentScheduleRefusal, TornTangentSlots, TornTangentStep, tensor_lanes,
 };
 pub use tangent_workspace::{
     SolveTangentOccurrence, SolveTangentSchedule, SolveTangentWorkspace, SolveTangentWorkspaceError,
@@ -881,12 +888,15 @@ fn validate_function_conditional_owners(
 mod index_intervals;
 pub use index_intervals::{IndexIntervals, SettledIntervals};
 mod register_versions;
+mod root_storage;
+pub use root_storage::{RootRegisterLayout, RootRegisterTarget};
 mod structural_pattern;
 pub use register_versions::{
     RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
 };
 pub use structural_pattern::{
-    ColoredStructuralPattern, ColumnColoring, PatternDerivation, PatternProvenance,
+    ColoredStructuralPattern, ColumnColoring, ExecutionYReadPrefix, KinematicStates,
+    NonKinematicReason, PatternDerivation, PatternProvenance, ScalarProgramExecutionYDependency,
     StateJacobianCompactConstruction, StateJacobianCompactInput, StateJacobianProduct,
     StateJacobianProductConstruction, StateJacobianProductConstructionError,
     StateJacobianProductDomain, StateJacobianProductInput, StateJacobianProductValue,
@@ -2486,13 +2496,15 @@ fn validate_observation_refresh_coupling(
     let mut output_ordinal = 0usize;
     for (program_index, program) in system.rhs.programs().iter().enumerate() {
         let span = system.rhs.program_span(program_index);
-        let dependencies = StructuralPattern::derive_output_y_dependency_ranges(program, span)
-            .map_err(|_| SolveProblemShapeContractError::DiscreteCertificate {
-                context: "discrete.observation_refresh_reads_y",
-                row: program_index,
-                detail: "observation dependency program is not certifiable",
-                span,
-            })?;
+        let dependencies = StructuralPattern::derive_output_execution_y_dependency_ranges(
+            program, span,
+        )
+        .map_err(|_| SolveProblemShapeContractError::DiscreteCertificate {
+            context: "discrete.observation_refresh_reads_y",
+            row: program_index,
+            detail: "observation dependency program is not certifiable",
+            span,
+        })?;
         for y_dependencies in dependencies {
             let row = system
                 .rhs

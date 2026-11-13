@@ -7,6 +7,9 @@ mod observations;
 mod outer_scalar_fold;
 mod refusal_provenance;
 mod shared_scratch;
+// A native host admits no engine for compiled schedules.
+#[cfg(not(target_arch = "wasm32"))]
+mod torn_tangents;
 mod tuples;
 use super::*;
 use rumoca_core::{SourceId, Span};
@@ -150,5 +153,47 @@ fn complete_expression_owns_code_for_every_original_program() {
             .selected
             .iter()
             .all(|entry| !entry.0.code().unwrap().module_bytes().is_empty())
+    );
+}
+
+#[test]
+fn products_share_their_batch_layout_and_keep_no_copy_of_their_own() {
+    let layout = VarLayout::from_parts(Default::default(), 2, 1);
+    let backend = WasmExecutionBackend::new(
+        layout.clone(),
+        Rc::new(rumoca_ir_solve::SolvePureCallTable::default()),
+    );
+    let span = Span::from_offsets(SourceId::from_source_name("shared_layout.mo"), 3, 17);
+    let source = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::LoadY { dst: 0, index: 1 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![span],
+    )
+    .unwrap();
+    let shared = backend.batch.layout();
+    // Issued from the backend's own layout or from an equal copy of it.
+    for issued in [backend.layout(), &layout, backend.layout()] {
+        let expression =
+            WasmExpression::compile_deferred(&source, issued, &backend.batch, None).unwrap();
+        assert!(Rc::ptr_eq(&expression.layout, shared));
+    }
+    assert!(
+        WasmExpression::compile_deferred(
+            &source,
+            &VarLayout::from_parts(Default::default(), 3, 1),
+            &backend.batch,
+            None
+        )
+        .is_err()
+    );
+    // A product holding a layout by value would be at least one layout wide.
+    let layout_size = std::mem::size_of::<VarLayout>();
+    assert!(std::mem::size_of::<super::super::target_values::WasmTargetValues>() < layout_size);
+    assert!(
+        std::mem::size_of::<assignments::WasmAssignments>()
+            - std::mem::size_of::<rumoca_exec_wasm::CompiledExactAssignmentWasm>()
+            < layout_size
     );
 }

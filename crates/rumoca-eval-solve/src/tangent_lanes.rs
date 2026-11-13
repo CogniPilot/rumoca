@@ -422,6 +422,49 @@ fn seed_group(
     }
 }
 
+/// The per-row tangent's outcome from the slots of one issued tangent
+/// schedule call ([`rumoca_ir_solve::TornTangentSchedule`]) that ended with
+/// `called`: `None` when a coefficient committed before the call ended is not
+/// finite (the per-row sweep stops at that group and runs no later program),
+/// otherwise the call's fault, otherwise the reduced Jacobian.
+pub fn torn_tangent_schedule_outcome<E: From<EvalSolveError>>(
+    schedule: &rumoca_ir_solve::TornTangentSchedule,
+    slots: &[f64],
+    called: Result<(), E>,
+) -> Result<Option<TornTangentJacobian>, E> {
+    let layout = schedule.slots();
+    let (steps, tears) = (schedule.steps(), schedule.tears());
+    if slots.len() != layout.total {
+        return Err(schedule_defect("slots differ from the issued layout"));
+    }
+    let committed = schedule
+        .committed_steps(slots[layout.progress])
+        .ok_or_else(|| schedule_defect("progress is not a committed group count"))?;
+    if slots[layout.coefficient..layout.coefficient + committed]
+        .iter()
+        .any(|coefficient| !causal_coefficient_is_finite(*coefficient))
+    {
+        return Ok(None);
+    }
+    called?;
+    if committed != steps {
+        return Err(schedule_defect(
+            "returned before committing every coefficient",
+        ));
+    }
+    Ok(Some(TornTangentJacobian {
+        residual: slots[layout.residual..layout.residual + tears * tears].to_vec(),
+        recovered: slots[layout.recovered..layout.recovered + steps * tears].to_vec(),
+    }))
+}
+
+fn schedule_defect<E: From<EvalSolveError>>(what: &str) -> E {
+    E::from(EvalSolveError::InvalidRow {
+        message: format!("torn tangent schedule {what}"),
+        span: None,
+    })
+}
+
 /// A [`ColoredTangentPlan`] prepared for repeated evaluation.
 pub struct ColoredTangentEvaluator {
     plan: ColoredTangentPlan,

@@ -15,8 +15,15 @@ pub(super) struct ModuleBatch {
     mode: Option<super::precompiled::ProgramMode>,
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
     source: Result<rumoca_ir_solve::PreparedKernelSource, String>,
-    #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-    layout: VarLayout,
+    // The one layout every product of this preparation checks its inputs
+    // against; products share it and never keep a copy of their own.
+    layout: Rc<VarLayout>,
+    // The one scratch every entry runs on. An entry's scratch spans its whole
+    // module, so a buffer per entry grew with the entry count. Entries run one
+    // at a time, read nothing a previous call left in the buffer, and their
+    // callers copy results out before the next call, so the buffer, grown on
+    // demand to the widest entry called, serves all of them.
+    scratch: Rc<RefCell<Vec<f64>>>,
 }
 
 pub(super) struct Entry {
@@ -51,9 +58,17 @@ impl ModuleBatch {
             mode,
             #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
             source,
-            #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-            layout,
+            layout: Rc::new(layout),
+            scratch: Rc::default(),
         })
+    }
+
+    pub(super) fn layout(&self) -> &Rc<VarLayout> {
+        &self.layout
+    }
+
+    pub(super) fn scratch(&self) -> Rc<RefCell<Vec<f64>>> {
+        Rc::clone(&self.scratch)
     }
 
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]

@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod closure;
 mod fragments;
 
@@ -8,6 +9,7 @@ use rumoca_ir_dae as dae;
 
 use super::dependencies::OrderedDependencies;
 use super::domain_context::Context;
+use super::fold_nodes::Node;
 use super::{FieldPath, FunctionParameterDependency};
 
 /// One source transition at an exact lexical parent environment. The selected
@@ -15,6 +17,7 @@ use super::{FieldPath, FunctionParameterDependency};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct FoldNode<'dae> {
     pub(super) activation: super::Activation,
+    pub(super) integer_profile: Arc<[super::IntegerBinding]>,
     pub(super) fold: dae::FunctionFoldId<'dae>,
     pub(super) carried: u32,
     pub(super) field: Option<FieldPath>,
@@ -24,12 +27,26 @@ pub(super) struct FoldNode<'dae> {
     pub(super) parent: Arc<Context>,
 }
 
+/// One fully checked node body, preserving both direct reads and edge order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FoldRecipe<'dae> {
+    direct: Arc<[FunctionParameterDependency]>,
+    edges: Arc<[Node<'dae>]>,
+}
+
+impl<'dae> FoldRecipe<'dae> {
+    pub(super) fn direct(&self) -> &[FunctionParameterDependency] {
+        &self.direct
+    }
+}
+
 /// A reachable dependency graph, not a collection of reusable partial walks.
 /// Pending and cyclic edges are retained until every node has been checked.
 #[derive(Debug, Default)]
 pub(super) struct FoldGraph<'dae> {
-    inventory: HashMap<FoldNode<'dae>, usize>,
-    nodes: Vec<FoldNode<'dae>>,
+    inventory: HashMap<Node<'dae>, usize>,
+    nodes: Vec<Node<'dae>>,
+    from_source: Vec<bool>,
     edges: Vec<Vec<usize>>,
     direct: Vec<Arc<[FunctionParameterDependency]>>,
     direct_inventory: fragments::Inventories,
@@ -39,11 +56,30 @@ pub(super) struct FoldGraph<'dae> {
     cursor: usize,
     #[cfg(test)]
     pub(super) repeated_edges: usize,
+    #[cfg(test)]
+    pub(super) recorded_edges: usize,
+    #[cfg(test)]
+    pub(super) replayed_edges: usize,
+    #[cfg(test)]
+    pub(super) recipe_emissions: std::cell::Cell<usize>,
 }
 
 impl<'dae> FoldGraph<'dae> {
-    pub(super) fn enqueue(&mut self, node: FoldNode<'dae>) {
-        let index = if let Some(index) = self.inventory.get(&node) {
+    pub(super) fn enqueue(&mut self, node: Node<'dae>) {
+        let index = self.node_index(node);
+        if let Some(active) = self.active
+            && self.edge_membership[active].insert(index)
+        {
+            self.edges[active].push(index);
+            #[cfg(test)]
+            {
+                self.recorded_edges += 1;
+            }
+        }
+    }
+
+    fn node_index(&mut self, node: Node<'dae>) -> usize {
+        if let Some(index) = self.inventory.get(&node) {
             #[cfg(test)]
             {
                 self.repeated_edges += 1;
@@ -53,19 +89,37 @@ impl<'dae> FoldGraph<'dae> {
             let index = self.nodes.len();
             self.inventory.insert(node.clone(), index);
             self.nodes.push(node);
+            self.from_source.push(true);
             self.edges.push(Vec::new());
             self.edge_membership.push(HashSet::default());
             self.direct.push(Arc::from([]));
             index
-        };
-        if let Some(active) = self.active
-            && self.edge_membership[active].insert(index)
-        {
-            self.edges[active].push(index);
         }
     }
 
-    pub(super) fn begin_next(&mut self) -> Option<FoldNode<'dae>> {
+    /// A recipe's constructor has already issued its unique ordered edges.
+    /// Re-interning their immutable handles preserves that uniqueness, so the
+    /// replay arm needs no second edge-membership proof or allocation.
+    pub(super) fn replay_edges(&mut self, recipe: &FoldRecipe<'dae>) {
+        let active = self.active.expect("a replay has one active node");
+        assert!(
+            self.edges[active].is_empty(),
+            "replay replaces no source walk"
+        );
+        self.edges[active] = recipe
+            .edges
+            .iter()
+            .cloned()
+            .map(|node| self.node_index(node))
+            .collect();
+        self.from_source[active] = false;
+        #[cfg(test)]
+        {
+            self.replayed_edges += recipe.edges.len();
+        }
+    }
+
+    pub(super) fn begin_next(&mut self) -> Option<Node<'dae>> {
         let node = self.nodes.get(self.cursor)?.clone();
         self.active = Some(self.cursor);
         self.cursor += 1;
@@ -97,17 +151,53 @@ impl<'dae> FoldGraph<'dae> {
     pub(super) fn ordered_edges(&self) -> Vec<(FoldNode<'dae>, Vec<FoldNode<'dae>>)> {
         self.nodes
             .iter()
-            .cloned()
+            .map(|node| (**node).clone())
             .zip(self.edges.iter().map(|edges| {
                 edges
                     .iter()
-                    .map(|index| self.nodes[*index].clone())
+                    .map(|index| (*self.nodes[*index]).clone())
                     .collect()
             }))
             .collect()
     }
 
-    /// Complete every reachable closure before publishing reusable results.
+    /// Issue new retained source bodies only after the whole graph succeeds.
+    /// Replayed bodies already own their recipe. Capacity limits construction
+    /// itself, before cloning any edge vector.
+    pub(super) fn recipes(
+        &self,
+        available: usize,
+    ) -> impl Iterator<Item = (Node<'dae>, FoldRecipe<'dae>)> + '_ {
+        assert_eq!(
+            self.cursor,
+            self.nodes.len(),
+            "the whole reachable graph was checked"
+        );
+        assert!(self.active.is_none(), "an active node cannot be published");
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(index, node)| self.from_source[*index] && node.retained())
+            .take(available)
+            .map(|(index, node)| {
+                #[cfg(test)]
+                self.recipe_emissions.set(self.recipe_emissions.get() + 1);
+                let edges = self.edges[index]
+                    .iter()
+                    .map(|edge| self.nodes[*edge].clone())
+                    .collect::<Vec<_>>();
+                (
+                    node.clone(),
+                    FoldRecipe {
+                        direct: Arc::clone(&self.direct[index]),
+                        edges: edges.into(),
+                    },
+                )
+            })
+    }
+
+    /// Completed closures are a test oracle, never a production replay path.
+    #[cfg(test)]
     pub(super) fn completed(self) -> Vec<(FoldNode<'dae>, Arc<[FunctionParameterDependency]>)> {
         assert_eq!(
             self.cursor,
@@ -116,6 +206,10 @@ impl<'dae> FoldGraph<'dae> {
         );
         assert!(self.active.is_none(), "no active node can be completed");
         let (closures, _) = closure::complete(&self.edges, &self.direct);
-        self.nodes.into_iter().zip(closures).collect()
+        self.nodes
+            .into_iter()
+            .map(|node| (*node).clone())
+            .zip(closures)
+            .collect()
     }
 }

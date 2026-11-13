@@ -87,15 +87,17 @@ pub use runtime::solve_ops::{
 #[cfg(not(kani))]
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, BlockResidualSplitCounts, CompileRefusal,
-    CompiledProgramsCommitting, CompiledSolveAssignmentSchedule, CompiledSolveEventObservation,
-    CompiledSolveEventTransaction, CompiledSolveExpression, CompiledSolveJacobianExpression,
-    CompiledSolveModelStateJacobian, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
-    EventTransactionExecution, EventUpdateRowFilter, InitialEventObservation,
-    ModelStateJacobianPreparation, ModelStateJacobianRequest, PrecompiledSolveBackend,
-    PrecompiledSolveBackendBuilder, ProgramOutputCommit, ProjectedEventUpdateInput,
-    ProjectedInitialEventInput, ProjectedInitialEventOutcome, ProjectedPostInitialEventInput,
-    ReferenceReverseExecution, ScalarExecutionView, SolveExecutionBackend, SolveRuntime,
-    SolveRuntimeModel, block_residual_split_counts, reset_block_residual_split_counts,
+    CompiledProgramsCommitting, CompiledSolveAssignmentSchedule, CompiledSolveDerivativeOperation,
+    CompiledSolveEventObservation, CompiledSolveEventTransaction, CompiledSolveExpression,
+    CompiledSolveJacobianExpression, CompiledSolveModelStateJacobian,
+    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, EventTransactionExecution,
+    EventUpdateRowFilter, InitialEventObservation, ModelStateJacobianPreparation,
+    ModelStateJacobianRequest, PrecompiledSolveBackend, PrecompiledSolveBackendBuilder,
+    ProgramOutputCommit, ProjectedEventUpdateInput, ProjectedInitialEventInput,
+    ProjectedInitialEventOutcome, ProjectedPostInitialEventInput, ReferenceReverseExecution,
+    ScalarExecutionView, SolveDerivativeCacheView, SolveDerivativeOperationFailure,
+    SolveExecutionBackend, SolveRuntime, SolveRuntimeModel, block_residual_split_counts,
+    reset_block_residual_split_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{
@@ -121,8 +123,8 @@ pub use runtime::trajectory_objective::{
 pub use solver::{
     DEFAULT_CHECKPOINT_BUDGET_BYTES, MODEL_MESSAGE_CODE, SimBackend, SimDiagnostic,
     SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
-    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimTermination,
-    SimVariableMeta, WARNING_ASSERTION_CODE,
+    SimNativeRefusal, SimOptions, SimPacingMode, SimProgramAdoption, SimResult, SimSolverMode,
+    SimTermination, SimVariableMeta, WARNING_ASSERTION_CODE,
 };
 
 #[cfg(test)]

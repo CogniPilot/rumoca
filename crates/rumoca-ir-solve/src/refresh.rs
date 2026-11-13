@@ -9,16 +9,19 @@ mod chunks;
 mod compact_owner;
 mod dependency;
 mod exact_source;
+mod execution;
 mod leaf_dependencies;
 mod materialization;
 mod native_assignment;
 mod output_stores;
 mod projection;
 mod range_assignment;
+mod schedule_identity;
 mod shared_schedule;
 mod singleton_coverage;
 mod source_outputs;
 mod staged_execution;
+mod static_cache;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -38,6 +41,7 @@ pub use assignment_shape::{
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
 pub use exact_source::BoundExactRefreshAssignment;
+pub use execution::RefreshExecutionRefusal;
 pub use leaf_dependencies::LeafDependencies;
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
@@ -300,7 +304,7 @@ pub struct ExactRefreshAssignmentSchedule {
     chunk_ends: Box<[usize]>,
 }
 
-pub use chunks::EXACT_ASSIGNMENT_CHUNK_OPS;
+pub use chunks::{EXACT_ASSIGNMENT_CHUNK_OPS, assignment_program_chunk_ends};
 
 impl ExactRefreshAssignmentSchedule {
     pub const fn sequence_id(&self) -> RefreshSequenceId {
@@ -414,6 +418,11 @@ pub struct RefreshPlan {
     pub dynamic_causal_seed_rows: RefreshRowSelection,
     pub value_stages: Vec<RefreshStage>,
     pub causal_solution_certified: bool,
+    /// Why the staged value schedule cannot certify its execution reads,
+    /// derived from canonical execution prefixes over the final stages; never
+    /// trusted from the wire.
+    #[serde(skip)]
+    pub execution_order_refusal: Option<RefreshExecutionRefusal>,
 }
 
 impl RefreshPlan {
@@ -442,7 +451,8 @@ impl RefreshPlan {
         structural: &crate::ContinuousStructuralArtifacts,
     ) -> bool {
         let blocks = structural.algebraic_projection();
-        self.simultaneous_block_indices.len() == self.simultaneous_plan.blocks.len()
+        self.execution_order_refusal.is_none()
+            && self.simultaneous_block_indices.len() == self.simultaneous_plan.blocks.len()
             && !self.value_stages.is_empty()
             && self
                 .simultaneous_block_indices
@@ -865,6 +875,7 @@ impl ContinuousRefreshOwners {
         clock_events: Vec<RefreshPlan>,
     ) -> Result<Self, ContinuousRefreshConstructionError> {
         let mut owners = Self::checked(algebraic, derivative, root, event, clock_events)?;
+        owners.rederive_execution_orders(implicit_rhs)?;
         owners.validate_sources_against(implicit_rhs)?;
         owners.rebuild_exact_assignment_programs(implicit_rhs)?;
         owners.validate_against(implicit_rhs)?;
@@ -1019,6 +1030,7 @@ impl ContinuousRefreshOwners {
         &mut self,
         implicit_rhs: &ComputeBlock,
     ) -> Result<(), ContinuousRefreshConstructionError> {
+        self.rederive_execution_orders(implicit_rhs)?;
         self.validate_canonical_row_owners()?;
         self.projection_affinities =
             crate::affinity::projection_affinities(implicit_rhs, &self.algebraic);
@@ -1170,6 +1182,7 @@ fn validate_refresh_sources(
     outputs: &source_outputs::SourceOutputs<'_>,
     queries: &mut SourceCertificateQueries<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
+    execution::validate_order(plan, queries.source())?;
     // Each row is checked on its own, so rows are visited grouped by source:
     // the query cache analyzes each source once, however the plan
     // interleaves sources.
@@ -1217,8 +1230,9 @@ fn validate_refresh_assignment_certificate(
 }
 
 /// The exact programs issued while one owner set's schedules are built, keyed
-/// by their rows, and the dependency analyses they share: rows of one source
-/// issued as separate programs reuse that source's analysis.
+/// by their rows, and the dependency analyses they share: the check that one
+/// source's rows may commit together and the programs issued for those rows,
+/// together or separately, reuse that source's analysis.
 #[derive(Default)]
 struct ExactProgramInventory<'a> {
     by_rows: BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
@@ -1321,9 +1335,10 @@ fn scalar_source_owner(
     })
 }
 
-fn exact_rows_can_commit_together(
-    block: &ComputeBlock,
+fn exact_rows_can_commit_together<'a>(
+    block: &'a ComputeBlock,
     rows: &[&AlgebraicRefreshRow],
+    dependencies: &mut AssignmentDependencies<'a>,
 ) -> Result<bool, ContinuousRefreshConstructionError> {
     let Some(first) = rows.first() else {
         return Ok(false);
@@ -1331,7 +1346,36 @@ fn exact_rows_can_commit_together(
     let Some((program, _)) = scalar_source_program(block, first.source)? else {
         return Ok(false);
     };
-    let dependencies = ScalarProgramYDependency::new(program);
+    let prefix_len = rows
+        .iter()
+        .filter_map(|row| row.assignment_shape.as_ref())
+        .map(TargetAssignmentShape::expr_eval_len)
+        .max()
+        .unwrap_or(0);
+    let Some(prefix) = program.get(..prefix_len) else {
+        return Ok(false);
+    };
+    let Ok(guard_reads) =
+        crate::StructuralPattern::derive_execution_obligation_y_dependency_ranges(prefix, None)
+    else {
+        return Ok(false);
+    };
+    if rows
+        .iter()
+        .any(|row| guard_reads.contains(row.target_index))
+    {
+        return Ok(false);
+    }
+    // The source's shared analysis answers when it serves the whole program;
+    // otherwise this check analyzes the program itself.
+    let own;
+    let dependencies = match dependencies.whole_program(first.source, program) {
+        Some(shared) => shared,
+        None => {
+            own = ScalarProgramYDependency::new(program);
+            &own
+        }
+    };
     // A row conflicts with another when its value reads the other's target;
     // each row's read footprint is met with the targets once, not per pair.
     let mut owners_by_target: BTreeMap<usize, Vec<_>> = BTreeMap::new();
@@ -1660,7 +1704,9 @@ fn append_exact_assignment_schedule<'a>(
         let source_rows = (position..end)
             .map(|position| &rows[position])
             .collect::<Vec<_>>();
-        if source_rows.len() > 1 && exact_rows_can_commit_together(block, &source_rows)? {
+        if source_rows.len() > 1
+            && exact_rows_can_commit_together(block, &source_rows, &mut inventory.dependencies)?
+        {
             append_exact_assignment_program(
                 block,
                 programs,
@@ -1813,13 +1859,13 @@ fn validate_refresh_plan(
                         "{label} refresh stage refers to unowned BLT block {block_index}"
                     ));
                 };
-                let Some(block) = plan.simultaneous_plan.blocks.explicit_block_at(local) else {
+                let Some(block) = plan.simultaneous_plan.blocks.scalar_block_at(local) else {
                     return refresh_error(format!(
-                        "{label} scalar projection stage refers to a compact singleton run"
+                        "{label} scalar projection stage has no canonical scalar block"
                     ));
                 };
                 if stage_plan.blocks.stages()
-                    != std::slice::from_ref(&crate::ProjectionStage::Explicit(block.clone()))
+                    != std::slice::from_ref(&crate::ProjectionStage::Explicit(block.into_owned()))
                 {
                     return refresh_error(format!(
                         "{label} refresh stage does not replay canonical BLT block {block_index}"

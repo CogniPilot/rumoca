@@ -9,11 +9,14 @@ mod indexed_write_fold;
 mod integer_calls;
 mod linear_solve;
 mod literal_update_sweeps;
+mod ordered_fold_replay;
 mod parameter_fragment_reuse;
+mod profiled_folds;
 mod query;
 mod record_comprehension;
 pub(super) mod shape_only_size;
 mod shared_dag;
+mod whole_visit;
 mod zero_coefficients;
 
 use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName};

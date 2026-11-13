@@ -23,23 +23,13 @@ impl WasmKernelRuntime {
         module_bytes: &[u8],
         exports: &[S],
     ) -> Result<Vec<Self>, WasmCompileError> {
-        use js_sys::Reflect;
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen::JsValue;
-
         let instance = instantiate(module_bytes)?;
-        let exported = instance.exports();
         exports
             .iter()
             .map(|export| {
-                let export = export.as_ref();
-                let eval = Reflect::get(&exported, &JsValue::from_str(export)).map_err(|err| {
-                    WasmCompileError::Backend(format!("missing eval export: {err:?}"))
-                })?;
-                let eval_function = eval.dyn_into::<js_sys::Function>().map_err(|_| {
-                    WasmCompileError::Backend(format!("{export} export is not a callable function"))
-                })?;
-                Ok(Self { eval_function })
+                Ok(Self {
+                    eval_function: exported_function(&instance, export.as_ref())?,
+                })
             })
             .collect()
     }
@@ -181,7 +171,24 @@ impl WasmKernelRuntime {
     }
 }
 
-fn instantiate(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
+pub(crate) fn instantiate(
+    module_bytes: &[u8],
+) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
+    instantiate_imports(module_bytes, None)
+}
+
+#[cfg(feature = "precompiled-programs")]
+pub(crate) fn instantiate_with_operations(
+    module_bytes: &[u8],
+    operations: &js_sys::Object,
+) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
+    instantiate_imports(module_bytes, Some(operations))
+}
+
+fn instantiate_imports(
+    module_bytes: &[u8],
+    operations: Option<&js_sys::Object>,
+) -> Result<js_sys::WebAssembly::Instance, WasmCompileError> {
     let _instantiate =
         rumoca_core::browser_profile::Span::new("kernel_module_compile_and_instantiate");
     use js_sys::Object;
@@ -203,11 +210,16 @@ fn instantiate(module_bytes: &[u8]) -> Result<js_sys::WebAssembly::Instance, Was
     Reflect::set(&imports, &JsValue::from_str("env"), &env)
         .map_err(|err| WasmCompileError::Backend(format!("env import set failed: {err:?}")))?;
 
+    if let Some(operations) = operations {
+        Reflect::set(&imports, &JsValue::from_str("operation"), operations).map_err(|err| {
+            WasmCompileError::Backend(format!("operation import set failed: {err:?}"))
+        })?;
+    }
     WebAssembly::Instance::new(&module, &imports)
         .map_err(|err| WasmCompileError::Backend(format!("module instantiate failed: {err:?}")))
 }
 
-fn status_value(result: wasm_bindgen::JsValue) -> Result<u32, WasmCompileError> {
+pub(crate) fn status_value(result: wasm_bindgen::JsValue) -> Result<u32, WasmCompileError> {
     let value = result
         .as_f64()
         .filter(|value| {
@@ -244,7 +256,20 @@ fn install_math_abi(env: &js_sys::Object) -> Result<(), WasmCompileError> {
     Ok(())
 }
 
-fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
+pub(crate) fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
     u32::try_from(ptr as usize)
         .map_err(|_| WasmCompileError::Backend("pointer offset does not fit wasm32".to_string()))
+}
+
+/// The function keeps its original Wasm instance alive, including direct imports.
+pub(crate) fn exported_function(
+    instance: &js_sys::WebAssembly::Instance,
+    export: &str,
+) -> Result<js_sys::Function, WasmCompileError> {
+    use wasm_bindgen::{JsCast, JsValue};
+    let value = js_sys::Reflect::get(&instance.exports(), &JsValue::from_str(export))
+        .map_err(|err| WasmCompileError::Backend(format!("missing eval export: {err:?}")))?;
+    value.dyn_into::<js_sys::Function>().map_err(|_| {
+        WasmCompileError::Backend(format!("{export} export is not a callable function"))
+    })
 }

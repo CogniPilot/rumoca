@@ -10,6 +10,8 @@ homepage.workspace = true
 [features]
 precompiled-programs = ["dep:blake3", "dep:serde_json", "dep:serde", "dep:serde_bytes"]
 default = []
+# Measurement-only root-register placement; not a production profile.
+diagnostic-root-scalar-locals = []
 component-build = ["dep:blake3", "dep:tempfile", "dep:serde_json", "dep:wit-component", "dep:wit-parser", "dep:wasmparser"]
 fixed-native-guest-build = ["component-build"]
 fixed-native-guest-receiver = ["dep:rumoca-eval-solve", "dep:serde_json"]

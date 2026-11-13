@@ -3,9 +3,11 @@
 mod execution_backend;
 
 pub use execution_backend::{
-    CompiledSolveAssignmentSchedule, CompiledSolveEventObservation, CompiledSolveEventTransaction,
-    CompiledSolveModelStateJacobian, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
-    ModelStateJacobianPreparation, ModelStateJacobianRequest, SolveExecutionBackend,
+    CompiledSolveAssignmentSchedule, CompiledSolveDerivativeOperation,
+    CompiledSolveEventObservation, CompiledSolveEventTransaction, CompiledSolveModelStateJacobian,
+    CompiledSolveProjectionJacobian, CompiledSolveTargetValues, ModelStateJacobianPreparation,
+    ModelStateJacobianRequest, SolveDerivativeCacheView, SolveDerivativeOperationFailure,
+    SolveExecutionBackend,
 };
 use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
@@ -103,6 +105,9 @@ mod reference_reverse;
 mod refresh_batch;
 mod refresh_execution;
 mod refresh_projection;
+mod refresh_static_cache;
+use refresh_static_cache::StaticRefreshCache;
+mod complete_derivative;
 mod relation_memory;
 pub use reference_reverse::ReferenceReverseExecution;
 mod seed_linearization;
@@ -110,6 +115,7 @@ mod sensitivity;
 mod singular_mode;
 mod support;
 mod tangent_evaluators;
+mod visible_selection;
 mod warnings;
 use discrete_rows::PreparedStructuredDiscreteRows;
 pub use discrete_rows::SeededConditionMemory;
@@ -129,7 +135,6 @@ use plans::{
     copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_value,
     direct_visible_value, root_condition_plan, total_root_condition_count, visible_value_plan,
 };
-use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
 #[cfg(test)]
@@ -141,7 +146,10 @@ use support::{
     resize_runtime_values, validate_finite_runtime_output, validate_runtime_output_len,
     visible_value_index_error, zero_runtime_values,
 };
-use tangent_evaluators::{colored_tangent_evaluators, torn_tangent_evaluators};
+use tangent_evaluators::{
+    CompiledTornTangent, colored_tangent_evaluators, compiled_torn_tangents,
+    torn_tangent_evaluators,
+};
 
 #[derive(Clone)]
 struct CompiledDiscreteSpecialization {
@@ -273,6 +281,9 @@ pub struct SolveRuntime {
     clock_activation_cache: RefCell<ClockActivationCache>,
     /// The model's `pre()` bindings as copy runs, built once at construction.
     pre_bindings: PreBindingPlan,
+    /// Which inputs a same-instant write can carry into an event owner,
+    /// derived from this runtime's own model on first use.
+    input_event_reach: std::cell::OnceCell<solve_eval::refresh_plan::InputEventReach>,
     execution: RuntimeExecutionInventory,
 }
 
@@ -285,6 +296,9 @@ struct ScalarExecutionInventory {
     /// Tangent plan of each algebraic projection block's tearing, aligned
     /// with the block list; `None` for an untorn block or one without a plan.
     torn_tangents: Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]>,
+    /// The compiled one-call tangent schedule of each torn block, aligned
+    /// with `torn_tangents`; `None` keeps the evaluator's per-row tangent.
+    compiled_torn_tangents: Rc<[Option<Rc<CompiledTornTangent>>]>,
     /// Colored tangent plan of each algebraic projection block, aligned with
     /// the block list and its structural artifacts.
     colored_tangents: Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]>,
@@ -319,6 +333,7 @@ struct ScalarExecutionInventory {
     /// by [`Self::reverse_state_derivative_vjp`] to form the reverse-mode VJP
     /// `(∂der/∂[solver_y|p])ᵀ·λ` (Track A scalar reverse core).
     derivative_scalar: EvaluationPrimal,
+    compiled_derivative_operation: Option<Rc<dyn CompiledSolveDerivativeOperation>>,
     /// Per-row forward-mode AD Jacobian-vector product of `implicit_rhs`
     /// (`d(residual_row)/d[y|p]·v`). Used to propagate state and parameter seeds
     /// through the algebraic projection row by row.
@@ -337,6 +352,8 @@ struct ScalarExecutionInventory {
     /// a block Jacobian must carry its direction through every block
     /// ([`initial_projection::settled_read_cones`]).
     settled_read_cones: Option<initial_projection::InitialReadCones>,
+    /// Execution closure for primal outcome reuse; distinct from tangent cones.
+    settled_execution_read_cones: Option<initial_projection::InitialReadCones>,
     derivative_refresh: solve::RefreshPlan,
     root_refresh: solve::RefreshPlan,
     event_refresh: solve::RefreshPlan,
@@ -445,6 +462,14 @@ impl SolveRuntime {
     /// The immutable source owner whose execution was prepared by construction.
     pub fn model(&self) -> &SolveRuntimeModel {
         &self.model
+    }
+
+    /// The input event reach of the model this runtime executes, derived once
+    /// from its checked refresh owners
+    /// (`rumoca_eval_solve::refresh_plan::derive_input_event_reach`).
+    pub(crate) fn input_event_reach(&self) -> &solve_eval::refresh_plan::InputEventReach {
+        self.input_event_reach
+            .get_or_init(|| solve_eval::refresh_plan::derive_input_event_reach(&self.model.problem))
     }
 
     /// `pre_params::commit_pre_params_after_event_at` over
@@ -867,6 +892,16 @@ impl ScalarExecutionView<'_> {
                 .is_some_and(|block| block.tearing.as_ref() == Some(tearing)),
             "a torn block index names the plan block that owns its tearing"
         );
+        if let Some(compiled) = self
+            .scalar
+            .compiled_torn_tangents
+            .get(index)
+            .and_then(Option::as_ref)
+        {
+            return compiled
+                .eval((y, p, t), self.model.external_tables.as_slice())
+                .map(Some);
+        }
         let evaluator = self
             .scalar
             .torn_tangents
@@ -1056,6 +1091,9 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.update_solver_y_guess_from_state(guess, state)?;
+        if let Some(result) = self.try_complete_derivative(t, guess, params, out) {
+            return result;
+        }
         self.refresh_derivative_dependencies(t, guess, params, tol, max_iters)?;
         self.eval_derivative_rhs_from_solver_y(t, guess, params, out)
     }

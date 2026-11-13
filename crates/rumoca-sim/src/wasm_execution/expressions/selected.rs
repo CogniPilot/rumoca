@@ -8,7 +8,7 @@ use std::cell::RefMut;
 mod tests;
 
 /// A program's module entry and the private scratch it runs on. The scratch is
-/// shared by every program of one expression (see `WasmExpression::compile_deferred`).
+/// shared by every entry of one module batch (see `WasmExpression::compile_deferred`).
 pub(super) type Program = (Rc<super::super::batch::Entry>, Rc<RefCell<Vec<f64>>>);
 
 pub(super) fn scratch_cells(

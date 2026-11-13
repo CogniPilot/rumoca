@@ -8,6 +8,7 @@ pub(super) use fixture_owners::{
 mod admitted_errors;
 mod backend_capabilities;
 mod compact_owner_preparation;
+mod complete_derivative;
 mod execution_owner_queries;
 mod lifecycle_preparation;
 mod mixed_seed_schedules;

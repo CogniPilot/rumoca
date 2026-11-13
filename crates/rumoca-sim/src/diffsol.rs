@@ -62,6 +62,13 @@ fn configured_integrator(
             }
             .into());
         }
+        #[cfg(feature = "solver-rk45")]
+        crate::backend_options::ValidatedOptions::FixedStep(_) => {
+            return Err(rumoca_solver::BackendOptionsError::ConcreteType {
+                backend: rumoca_solver::NumericalBackend::Bdf,
+            }
+            .into());
+        }
     };
     match config.method {
         rumoca_solver_diffsol::DiffsolMethod::Bdf => Ok(
@@ -378,6 +385,10 @@ impl SimulationSession {
             time: self.time(),
             values: self.inner.visible_values()?,
         })
+    }
+
+    pub(crate) fn selected_values(&self, names: &[String]) -> Result<Vec<Option<f64>>, SimError> {
+        self.inner.selected_values(names)
     }
 
     scheduled_executor_items! {

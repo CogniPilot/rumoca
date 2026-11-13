@@ -1,4 +1,5 @@
 //! Source-issued tensor construction and typed scaling in private SSA storage.
+use super::cells::Index;
 use super::emit::{CELL, Emitter};
 use super::numbers::Operand;
 use super::{TypedCallCompileError, TypedCallFaultKind};
@@ -59,6 +60,23 @@ impl Emitter<'_> {
         });
     }
 
+    /// Push the cell value `on` pushes on the diagonal of a square matrix
+    /// iteration (axes 0 and 1) and zero bits elsewhere.
+    pub(super) fn diagonal_select(&mut self, on: impl FnOnce(&mut Self)) {
+        match (self.axis(0), self.axis(1)) {
+            (Index::At(row), Index::At(column)) if row == column => on(self),
+            (Index::At(_), Index::At(_)) => self.push(I::I64Const(0)),
+            (row, column) => {
+                on(self);
+                self.push(I::I64Const(0));
+                self.push_index(row);
+                self.push_index(column);
+                self.push(I::I32Eq);
+                self.push(I::Select);
+            }
+        }
+    }
+
     fn identity(&mut self, destination: solve::SolveRegisterId) {
         let extent = self.program.register_types()[destination.index()].dimensions()[0];
         let one = if matches!(
@@ -70,18 +88,9 @@ impl Emitter<'_> {
             1
         };
         let destination = self.reg(destination);
-        self.cells(destination.bytes / 8, |e| {
+        self.cells_shaped(&[extent, extent], |e| {
             e.cell_address(destination);
-            e.push(I::I64Const(one));
-            e.push(I::I64Const(0));
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(extent as i32));
-            e.push(I::I32DivU);
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(extent as i32));
-            e.push(I::I32RemU);
-            e.push(I::I32Eq);
-            e.push(I::Select);
+            e.diagonal_select(|e| e.push(I::I64Const(one)));
             e.push(I::I64Store(CELL));
         });
     }

@@ -1,4 +1,5 @@
 use super::*;
+mod derivative_operation;
 use crate::SolveVariableValueKind;
 
 mod c_profile_refusals;
@@ -1051,4 +1052,25 @@ mod native_typed_inventory_gap {
                 .contains("(p, Integer, CalculatedParameter)")
         );
     }
+}
+
+#[test]
+fn indicator_inventory_retains_a_guard_only_solver_read() {
+    let mut program = crate::structural_pattern::execution_reads_tests::guarded_program();
+    program[0] = crate::LinearOp::Const { dst: 0, value: 1.0 };
+    program[1] = crate::LinearOp::LoadY { dst: 1, index: 7 };
+    let block = crate::ScalarProgramBlock::with_program_spans(
+        vec![program],
+        vec![crate::source_span_from_offsets(815, 1, 2)],
+    )
+    .unwrap();
+    let sources =
+        dependency_backed_indicator_sources(&block, &crate::IndexIntervals::default(), |index| {
+            Some(FmiEventIndicatorSource::DynamicTimeEvent { index })
+        })
+        .unwrap();
+    assert!(matches!(
+        sources.as_slice(),
+        [FmiEventIndicatorSource::DynamicTimeEvent { index: 0 }]
+    ));
 }

@@ -7,9 +7,18 @@ use rumoca_ir_solve::{AlgebraicProjectionPlan, StructuralPattern, StructuralPatt
 
 use super::{EvalSolveError, sparsity_error};
 
+#[cfg(test)]
 pub(super) fn derive_algebraic_reverse_invalidations(
     source: Option<&StructuralPattern>,
     plan: &AlgebraicProjectionPlan,
+) -> Result<Vec<bool>, EvalSolveError> {
+    derive_algebraic_reverse_invalidations_with_execution(source, plan, None)
+}
+
+pub(super) fn derive_algebraic_reverse_invalidations_with_execution(
+    source: Option<&StructuralPattern>,
+    plan: &AlgebraicProjectionPlan,
+    primal: Option<&rumoca_ir_solve::ScalarProgramBlock>,
 ) -> Result<Vec<bool>, EvalSolveError> {
     let Some(source) = source else {
         return Ok(Vec::new());
@@ -17,6 +26,7 @@ pub(super) fn derive_algebraic_reverse_invalidations(
     if plan.blocks.is_empty() {
         return Ok(Vec::new());
     }
+    let obligations = execution_rows(primal, source)?;
     let mut earlier = PriorRowDependencies::new(source);
     let mut invalidations = Vec::with_capacity(plan.blocks.len());
     for block in plan.blocks.scalar_blocks() {
@@ -30,6 +40,9 @@ pub(super) fn derive_algebraic_reverse_invalidations(
         invalidations.push(invalidates);
         for &row in &block.rows {
             earlier.include(row)?;
+            if let Some(reads) = obligations.get(row).and_then(Option::as_ref) {
+                earlier.mark_affected(reads);
+            }
         }
     }
     Ok(invalidations)
@@ -65,6 +78,14 @@ impl<'source> PriorRowDependencies<'source> {
         Ok(self.all_columns_affected || affected)
     }
 
+    /// Columns an earlier row's execution obligations read: a later block
+    /// that changes one invalidates it, without a Jacobian edge.
+    fn mark_affected(&mut self, reads: &rumoca_ir_solve::IndexIntervals) {
+        for column in reads.iter() {
+            self.affected_columns[column] = true;
+        }
+    }
+
     fn include(&mut self, row: usize) -> Result<(), EvalSolveError> {
         let row_count = self.included_rows.len();
         let Some(included) = self.included_rows.get_mut(row) else {
@@ -88,4 +109,61 @@ impl<'source> PriorRowDependencies<'source> {
         }
         Ok(())
     }
+}
+
+/// Whole program obligations accompany every output that evaluates that owner.
+/// They do not enter the value/Jacobian relation used for numerical projection.
+fn execution_rows(
+    block: Option<&rumoca_ir_solve::ScalarProgramBlock>,
+    source: &StructuralPattern,
+) -> Result<Vec<Option<std::sync::Arc<rumoca_ir_solve::IndexIntervals>>>, EvalSolveError> {
+    let Some(block) = block else {
+        return Ok(Vec::new());
+    };
+    if block.output_count() != source.rows() as usize {
+        return Err(sparsity_error(
+            "execution invalidation output extent differs from its Jacobian",
+            Some(source.provenance().span()),
+        ));
+    }
+    let mut rows = vec![None; block.output_count()];
+    let mut ordinal = 0;
+    for (program_index, program) in block.programs().iter().enumerate() {
+        let span = block.program_span(program_index);
+        let reads =
+            StructuralPattern::derive_execution_obligation_y_dependency_ranges(program, span)
+                .map_err(|error| super::from_pattern_error(error, span))?;
+        if reads
+            .iter()
+            .any(|column| column >= source.columns() as usize)
+        {
+            return Err(sparsity_error(
+                "execution invalidation read is outside solver columns",
+                span,
+            ));
+        }
+        for _ in 0..rumoca_ir_solve::ScalarProgramBlock::program_output_count(program) {
+            let row = *block.output_indices().get(ordinal).ok_or_else(|| {
+                sparsity_error("execution invalidation output lacks identity", span)
+            })?;
+            let slot = rows.get_mut(row).ok_or_else(|| {
+                sparsity_error("execution invalidation output is out of bounds", span)
+            })?;
+            if slot.is_some() {
+                return Err(sparsity_error(
+                    "execution invalidation output is duplicated",
+                    span,
+                ));
+            }
+            *slot = Some(reads.clone());
+            ordinal += 1;
+        }
+    }
+    if ordinal != block.output_indices().len() {
+        return Err(sparsity_error(
+            "execution invalidation output inventory differs",
+            Some(source.provenance().span()),
+        ));
+    }
+    Ok(rows)
 }

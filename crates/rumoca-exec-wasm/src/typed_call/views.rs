@@ -70,32 +70,15 @@ impl Emitter<'_> {
             .try_fold(1u32, |n, extent| n.checked_mul(*extent))
             .ok_or(TypedCallCompileError::SizeLimit)?;
         let (destination, source) = (self.reg(destination), self.reg(operand));
-        self.cells(destination.bytes / 8, |e| {
+        // Destination axes: column, row, then the trailing cells.
+        self.cells_shaped(&[columns, rows, width], |e| {
             e.cell_address(destination);
-            e.address(source);
-            // Source ordinal = ((row * columns + column) * width) + trailing.
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(width as i32));
-            e.push(I::I32DivU);
-            e.push(I::I32Const(rows as i32));
-            e.push(I::I32RemU);
-            e.push(I::I32Const(columns as i32));
-            e.push(I::I32Mul);
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(width as i32));
-            e.push(I::I32DivU);
-            e.push(I::I32Const(rows as i32));
-            e.push(I::I32DivU);
-            e.push(I::I32Add);
-            e.push(I::I32Const(width as i32));
-            e.push(I::I32Mul);
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(width as i32));
-            e.push(I::I32RemU);
-            e.push(I::I32Add);
-            e.push(I::I32Const(8));
-            e.push(I::I32Mul);
-            e.push(I::I32Add);
+            let (column, row, trailing) = (e.axis(0), e.axis(1), e.axis(2));
+            e.cell_at(
+                source,
+                0,
+                &[(row, columns * width), (column, width), (trailing, 1)],
+            );
             e.push(I::I64Load(CELL));
             e.push(I::I64Store(CELL));
         });
@@ -124,13 +107,15 @@ impl Emitter<'_> {
                     provenance,
                 )
             });
-        self.view_origin(axes, &bounds, &strides, status);
+        let origin = self.view_origin(axes, &bounds, &strides, status);
         let destination = self.reg(destination);
         let source = self.reg(aggregate);
-        let spans = retained_spans(axes, &strides, destination.bytes / 8);
-        self.cells(destination.bytes / 8, |e| {
-            e.view_offset(&spans);
-            e.copy_view_cell(destination, source);
+        let (shape, spans) = retained_spans(axes, &strides);
+        self.cells_shaped(&shape, |e| {
+            e.cell_address(destination);
+            e.view_cell(source, origin, &spans);
+            e.push(I::I64Load(CELL));
+            e.push(I::I64Store(CELL));
         });
         Ok(())
     }
@@ -191,53 +176,61 @@ impl Emitter<'_> {
                 )
             });
         // Resolve all one-based indices in source-axis order before writing the result.
-        self.view_origin(&axes, &bounds, &strides, status);
+        let origin = self.view_origin(&axes, &bounds, &strides, status);
         let (destination, aggregate, value) = (
             self.reg(*destination),
             self.reg(*aggregate),
             self.reg(*value),
         );
         self.copy(destination, aggregate);
-        let spans = retained_spans(&axes, &strides, value.bytes / 8);
-        self.cells(value.bytes / 8, |e| {
-            e.view_offset(&spans);
-            e.address(destination);
-            e.push(I::LocalGet(4));
-            e.push(I::I32WrapI64);
-            e.push(I::I32Const(8));
-            e.push(I::I32Mul);
-            e.push(I::I32Add);
+        let (shape, spans) = retained_spans(&axes, &strides);
+        self.cells_shaped(&shape, |e| {
+            e.view_cell(destination, origin, &spans);
             e.load_cell(value, false);
             e.push(I::I64Store(CELL));
         });
         Ok(())
     }
 
-    fn view_offset(&mut self, spans: &[(u32, u32, u32)]) {
-        self.push(I::LocalGet(6));
-        self.push(I::LocalSet(4));
-        for &(stride, extent, output_stride) in spans {
-            self.push(I::LocalGet(4));
-            self.push(I::LocalGet(3));
-            self.push(I::I32Const(output_stride as i32));
-            self.push(I::I32DivU);
-            self.push(I::I32Const(extent as i32));
-            self.push(I::I32RemU);
-            self.push(I::I64ExtendI32U);
-            self.push(I::I64Const(i64::from(stride)));
-            self.push(I::I64Mul);
-            self.push(I::I64Add);
-            self.push(I::LocalSet(4));
+    /// Push the address of the cell of `range` at the view origin plus each
+    /// retained axis index times its stride.
+    fn view_cell(&mut self, range: CellRange, origin: Option<u32>, spans: &[u32]) {
+        let terms = spans
+            .iter()
+            .enumerate()
+            .map(|(axis, stride)| (self.axis(axis), *stride))
+            .collect::<Vec<_>>();
+        self.cell_at(range, origin.unwrap_or(0), &terms);
+        if origin.is_none() {
+            // The runtime origin resolved by `view_origin` (local 6).
+            self.push(I::LocalGet(6));
+            self.push(I::I32WrapI64);
+            self.push(I::I32Const(8));
+            self.push(I::I32Mul);
+            self.push(I::I32Add);
         }
     }
 
+    /// The view's first source cell: a constant when every axis is a span,
+    /// otherwise resolved at run time into local 6.
     fn view_origin(
         &mut self,
         axes: &[solve::SolveTensorViewAxis],
         bounds: &[u32],
         strides: &[u32],
         status: Option<u32>,
-    ) {
+    ) -> Option<u32> {
+        if status.is_none() {
+            return Some(
+                axes.iter()
+                    .zip(strides)
+                    .map(|(axis, stride)| match axis {
+                        solve::SolveTensorViewAxis::Span { origin, .. } => origin * stride,
+                        solve::SolveTensorViewAxis::Index(_) => unreachable!("span-only view"),
+                    })
+                    .sum(),
+            );
+        }
         self.push(I::I64Const(0));
         self.push(I::LocalSet(6));
         // Resolve every checked runtime axis before publishing any view cell.
@@ -271,18 +264,7 @@ impl Emitter<'_> {
             self.push(I::I64Add);
             self.push(I::LocalSet(6));
         }
-    }
-
-    fn copy_view_cell(&mut self, destination: CellRange, source: CellRange) {
-        self.cell_address(destination);
-        self.address(source);
-        self.push(I::LocalGet(4));
-        self.push(I::I32WrapI64);
-        self.push(I::I32Const(8));
-        self.push(I::I32Mul);
-        self.push(I::I32Add);
-        self.push(I::I64Load(CELL));
-        self.push(I::I64Store(CELL));
+        None
     }
 }
 
@@ -298,20 +280,13 @@ fn row_major_strides(shape: &[u32]) -> Result<Vec<u32>, TypedCallCompileError> {
     Ok(result)
 }
 
-fn retained_spans(
-    axes: &[solve::SolveTensorViewAxis],
-    strides: &[u32],
-    count: u32,
-) -> Vec<(u32, u32, u32)> {
-    let mut remaining = count;
+/// The extent and source stride of each retained (span) axis of a view.
+fn retained_spans(axes: &[solve::SolveTensorViewAxis], strides: &[u32]) -> (Vec<u32>, Vec<u32>) {
     axes.iter()
         .zip(strides)
         .filter_map(|(axis, stride)| match *axis {
             solve::SolveTensorViewAxis::Index(_) => None,
-            solve::SolveTensorViewAxis::Span { extent, .. } => {
-                remaining /= extent;
-                Some((*stride, extent, remaining))
-            }
+            solve::SolveTensorViewAxis::Span { extent, .. } => Some((extent, *stride)),
         })
-        .collect()
+        .unzip()
 }

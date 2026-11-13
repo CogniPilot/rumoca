@@ -57,6 +57,11 @@ fn harness(body: impl FnOnce(&mut Emitter<'_>)) -> Vec<u8> {
         intervals: linked.plan(root).unwrap().intervals.clone(),
         pending_known: None,
         linked: &linked,
+        cell_levels: Vec::new(),
+        cell_bases: None,
+        straight_cells: false,
+        cell_local_base: 13,
+        cell_locals: 16,
         local_floor: super::super::layout::LocalCounts::default(),
         local_total: linked.plan(root).unwrap().demand,
         fault_offset: 0,
@@ -64,7 +69,13 @@ fn harness(body: impl FnOnce(&mut Emitter<'_>)) -> Vec<u8> {
     };
     body(&mut emitter);
     emitter.push(I::End);
-    let locals = [(1, ValType::I32), (4, ValType::I64), (2, ValType::F64)];
+    let locals = [
+        (1, ValType::I32),
+        (4, ValType::I64),
+        (2, ValType::F64),
+        (3, ValType::I32),
+        (16, ValType::I32),
+    ];
     module(
         vec![super::Chunk::function_with(&locals, &emitter.code)],
         0,
@@ -246,33 +257,168 @@ fn larger_copy_keeps_bulk_memory_overlap_semantics() {
 }
 
 #[test]
-fn single_cell_runs_once_at_zero_and_leaves_index_one_without_loop() {
-    for count in [0, 1, 2] {
+fn cells_visit_each_cell_once_in_order_in_both_issued_forms() {
+    for (count, straight) in [0, 1, 2, 17]
+        .into_iter()
+        .flat_map(|n| [(n, false), (n, true)])
+    {
+        let range = CellRange {
+            base: 0,
+            offset: 128,
+            bytes: count * 8,
+        };
         let module = harness(|e| {
+            e.straight_cells = straight;
             e.cells(count, |e| {
+                // Count the visits, and write each cell's ordinal into it.
                 e.push(I::I32Const(64));
                 e.push(I::I32Const(64));
                 e.push(I::I64Load(CELL));
                 e.push(I::I64Const(1));
                 e.push(I::I64Add);
                 e.push(I::I64Store(CELL));
-                e.push(I::I32Const(80));
-                e.push(I::LocalGet(3));
-                e.push(I::I32Store(MemArg { align: 2, ..CELL }));
+                e.cell_address(range);
+                let index = e.axis(0);
+                e.push_index(index);
+                e.push(I::I64ExtendI32U);
+                e.push(I::I64Store(CELL));
             });
-            e.push(I::LocalGet(3));
+            e.push(I::I32Const(0));
         });
-        assert_eq!(op_counts(&module).1, usize::from(count != 1));
+        assert_eq!(op_counts(&module).1, usize::from(!straight && count > 1));
         let (trap, status, actual) = execute(&module, &vec![0; 65536], (0, 0, 0));
         assert!(!trap);
-        assert_eq!(status, Some(count as i32));
+        assert_eq!(status, Some(0));
         assert_eq!(
             u64::from_le_bytes(actual[64..72].try_into().unwrap()),
             u64::from(count)
         );
+        for cell in 0..count as usize {
+            let at = 128 + 8 * cell;
+            assert_eq!(
+                u64::from_le_bytes(actual[at..at + 8].try_into().unwrap()),
+                cell as u64
+            );
+        }
+    }
+}
+
+#[test]
+fn counted_cells_give_each_of_eight_axes_its_own_counter_in_row_major_order() {
+    let shape = [2u32; 8];
+    let range = CellRange {
+        base: 0,
+        offset: 128,
+        bytes: 256 * 8,
+    };
+    let module = harness(|e| {
+        e.cells_shaped(&shape, |e| {
+            e.cell_address(range);
+            // Write the cell's row-major ordinal rebuilt from its axes.
+            e.push(I::I32Const(0));
+            for axis in 0..shape.len() {
+                e.push(I::I32Const(2));
+                e.push(I::I32Mul);
+                let index = e.axis(axis);
+                e.push_index(index);
+                e.push(I::I32Add);
+            }
+            e.push(I::I64ExtendI32U);
+            e.push(I::I64Store(CELL));
+        });
+        e.push(I::I32Const(0));
+    });
+    assert_eq!(op_counts(&module).1, 8);
+    assert!(
+        !operators(&module)
+            .iter()
+            .any(|name| name.contains("DivU") || name.contains("RemU"))
+    );
+    let (trap, status, actual) = execute(&module, &vec![0; 65536], (0, 0, 0));
+    assert!(!trap);
+    assert_eq!(status, Some(0));
+    for cell in 0..256 {
+        let at = 128 + 8 * cell;
         assert_eq!(
-            u32::from_le_bytes(actual[80..84].try_into().unwrap()),
-            count.saturating_sub(1)
+            u64::from_le_bytes(actual[at..at + 8].try_into().unwrap()),
+            cell as u64
         );
     }
+}
+
+#[test]
+fn every_base_reached_by_reference_is_loaded_once_per_operation() {
+    // Six ranges of three cells, each reached through its own pointer cell in
+    // the input tuple at 8 * k; range k lives at 1024 + 64 * k.
+    const RANGES: u32 = 6;
+    let range = |k: u32| CellRange {
+        base: super::super::layout::POINTER_BASE + 8 * k,
+        offset: 0,
+        bytes: 24,
+    };
+    let output = CellRange {
+        base: 0,
+        offset: 512,
+        bytes: 24,
+    };
+    let ranges = (0..RANGES).map(range).collect::<Vec<_>>();
+    for straight in [false, true] {
+        let module = harness(|e| {
+            e.straight_cells = straight;
+            e.cells(3, |e| sum_cells(e, output, &ranges));
+            e.push(I::I32Const(0));
+        });
+        let loads = operators(&module)
+            .iter()
+            .filter(|name| name.starts_with("I32Load"))
+            .count();
+        assert_eq!(loads, RANGES as usize);
+        let mut memory = vec![0; 65536];
+        for k in 0..RANGES as usize {
+            let at = 1024 + 64 * k;
+            memory[8 * k..8 * k + 4].copy_from_slice(&(at as u32).to_le_bytes());
+            for cell in 0..3 {
+                let value = (1u64 << (8 * k)) * (cell as u64 + 1);
+                memory[at + 8 * cell..at + 8 * cell + 8].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let (trap, status, actual) = execute(&module, &memory, (0, 0, 0));
+        assert!(!trap);
+        assert_eq!(status, Some(0));
+        for cell in 0..3usize {
+            let expected = (0..RANGES as usize)
+                .map(|k| (1u64 << (8 * k)) * (cell as u64 + 1))
+                .sum::<u64>();
+            let at = 512 + 8 * cell;
+            assert_eq!(
+                u64::from_le_bytes(actual[at..at + 8].try_into().unwrap()),
+                expected
+            );
+        }
+    }
+}
+
+/// Store into the cell of `output` the sum of the same cell of every range.
+fn sum_cells(e: &mut Emitter<'_>, output: CellRange, ranges: &[CellRange]) {
+    e.cell_address(output);
+    e.push(I::I64Const(0));
+    for range in ranges {
+        e.cell_address(*range);
+        e.push(I::I64Load(CELL));
+        e.push(I::I64Add);
+    }
+    e.push(I::I64Store(CELL));
+}
+
+/// The operator names of the module's one function body.
+fn operators(bytes: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
+            for operator in body.get_operators_reader().unwrap() {
+                names.push(format!("{:?}", operator.unwrap()));
+            }
+        }
+    }
+    names
 }

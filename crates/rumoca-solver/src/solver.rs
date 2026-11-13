@@ -10,6 +10,9 @@ pub enum SimSolverMode {
     /// Opt-in fixed-step linearly implicit Euler with a reused Jacobian
     /// (MuJoCo-style; `rumoca-solver-velimplicit`, 1 ms step, Jacobian reuse 200).
     VelImplicit,
+    /// Opt-in fixed-step explicit Runge-Kutta (`rumoca-solver-rk45`'s
+    /// `fixed_step` plugin; 1 ms step and classical fourth order by default).
+    FixedStep,
 }
 
 impl SimSolverMode {
@@ -25,6 +28,9 @@ impl SimSolverMode {
         let normalized = lower.replace(['-', '_', ' '], "");
         if normalized == "velimplicit" {
             return Self::VelImplicit;
+        }
+        if normalized == "fixedstep" {
+            return Self::FixedStep;
         }
         // The ESDIRK34 / TR-BDF2 names are *implicit* tableaus, not the explicit
         // rk45 backend, so they land in `Bdf` here rather than `RkLike`.
@@ -171,6 +177,18 @@ pub struct SimNativeDecline {
     pub count: usize,
 }
 
+/// Whether one issued program, which a session runs in place of its host
+/// path when bound, is bound in this session.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SimProgramAdoption {
+    /// The issued program.
+    pub program: String,
+    /// Whether the session runs it.
+    pub bound: bool,
+    /// Why it is not bound: Solve IR issued none, or the backend binds none.
+    pub reason: Option<String>,
+}
+
 /// The typed record of which engine a simulation selected and, when compiled
 /// execution was refused for an admissible request, why.
 ///
@@ -185,6 +203,10 @@ pub struct SimExecutionReceipt {
     /// Optional optimized entries declined by the selected backend. Their
     /// required compiled base entries remain prepared and executable.
     pub declined: Vec<SimNativeDecline>,
+    /// Issued programs a session may adopt, each with whether it is bound
+    /// and, when not, the typed reason Solve IR or the backend gave.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<SimProgramAdoption>,
 }
 
 impl SimExecutionReceipt {
@@ -209,6 +231,7 @@ impl SimExecutionReceipt {
                 engine: compiled,
                 refusal: None,
                 declined: Vec::new(),
+                programs: Vec::new(),
             };
         };
         Self::interpreter(Some(refusal))
@@ -219,6 +242,7 @@ impl SimExecutionReceipt {
             engine: SimExecutionEngine::Interpreter,
             refusal,
             declined: Vec::new(),
+            programs: Vec::new(),
         }
     }
 
@@ -226,6 +250,12 @@ impl SimExecutionReceipt {
     #[must_use]
     pub fn with_declined(mut self, declined: Vec<SimNativeDecline>) -> Self {
         self.declined = declined;
+        self
+    }
+
+    #[must_use]
+    pub fn with_programs(mut self, programs: Vec<SimProgramAdoption>) -> Self {
+        self.programs = programs;
         self
     }
 
@@ -439,6 +469,30 @@ mod tests {
         assert_eq!(
             SimSolverMode::from_external_name("dopri5"),
             SimSolverMode::RkLike
+        );
+    }
+
+    /// The fixed-step explicit plugin is selected only by its own name; the
+    /// method-family names the heuristic already routes keep their solver.
+    #[test]
+    fn the_fixed_step_name_selects_its_own_mode_and_no_other_name_does() {
+        for name in ["fixed-step", "Fixed_Step", "fixed step", " FIXEDSTEP "] {
+            assert_eq!(
+                SimSolverMode::from_external_name(name),
+                SimSolverMode::FixedStep,
+                "{name}"
+            );
+        }
+        for name in ["rk4", "euler", "heun", "rk-like", "midpoint"] {
+            assert_ne!(
+                SimSolverMode::from_external_name(name),
+                SimSolverMode::FixedStep,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            SimSolverMode::from_external_name("velimplicit"),
+            SimSolverMode::VelImplicit
         );
     }
 

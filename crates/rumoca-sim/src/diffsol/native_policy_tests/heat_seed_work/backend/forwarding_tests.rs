@@ -82,9 +82,13 @@ fn torn_assignments_delegate_ordered_fresh_state() {
             L::StoreOutput { src: 2 },
         ],
     ];
-    let compiled = backend
-        .compile_torn_assignment_rows(&rows, &[0, 1])
-        .unwrap();
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("counted-backend.mo"),
+        0,
+        1,
+    );
+    let rows = solve::IssuedAssignmentRows::new(rows, vec![span; 2], vec![0, 1], 2).unwrap();
+    let compiled = backend.compile_issued_assignment_rows(&rows).unwrap();
     for (p, t) in [(3.0, 2.0), (-7.0, 0.5)] {
         let mut y = [99.0, 88.0];
         compiled.call(&mut y, &[p], t, &[]).unwrap();

@@ -3,44 +3,6 @@ mod dispatch_tests;
 
 use super::*;
 
-pub(super) fn static_refresh_parameter_indices<'a>(
-    implicit: ProgramAnalysis<'_>,
-    plans: impl IntoIterator<Item = &'a solve::RefreshPlan>,
-    program_rows: &FxHashMap<solve::RefreshScalarProgramSource, usize>,
-) -> Box<[usize]> {
-    let mut row_indices = BTreeSet::new();
-    for plan in plans {
-        row_indices.extend(
-            plan.static_causal_rows()
-                .iter()
-                .filter_map(|row| program_rows.get(&row.source()).copied()),
-        );
-        for stage in &plan.value_stages {
-            match stage {
-                solve::RefreshStage::CausalSeedSweep { static_rows, .. }
-                | solve::RefreshStage::ExactAssignments { static_rows, .. } => {
-                    row_indices.extend(
-                        plan.selected_rows(static_rows)
-                            .iter()
-                            .filter_map(|row| program_rows.get(&row.source()).copied()),
-                    );
-                }
-                solve::RefreshStage::ProjectionBlock { .. } => {}
-            }
-        }
-    }
-    let mut parameters = BTreeSet::new();
-    for row in row_indices {
-        if let Some(indices) = implicit.row_parameter_indices(row) {
-            parameters.extend(indices.iter().copied());
-        }
-    }
-    parameters
-        .into_iter()
-        .collect::<Vec<_>>()
-        .into_boxed_slice()
-}
-
 impl ScalarExecutionView<'_> {
     pub(super) fn refresh_program_row(
         &self,
@@ -312,8 +274,7 @@ impl ScalarExecutionView<'_> {
                     .iter()
                     .filter_map(|&index| params.get(index).copied()),
             );
-            cache.values.clear();
-            cache.values.resize(solver_len, None);
+            cache.values.reset(solver_len);
         }
     }
 
@@ -327,12 +288,8 @@ impl ScalarExecutionView<'_> {
     ) -> Result<(), RuntimeSolveError> {
         let fully_cached = {
             let cache = self.scalar.static_refresh_cache.borrow();
-            rows.iter().all(|row| {
-                cache
-                    .values
-                    .get(row.target_index())
-                    .is_some_and(Option::is_some)
-            })
+            rows.iter()
+                .all(|row| cache.values.get(row.target_index()).is_some())
         };
         if fully_cached {
             let cache = self.scalar.static_refresh_cache.borrow();
@@ -346,7 +303,9 @@ impl ScalarExecutionView<'_> {
         self.refresh_slots_once(rows, sequence, t, solver_y, params)?;
         let mut cache = self.scalar.static_refresh_cache.borrow_mut();
         for row in rows.iter() {
-            cache.values[row.target_index()] = Some(solver_y[row.target_index()]);
+            cache
+                .values
+                .set(row.target_index(), solver_y[row.target_index()]);
         }
         Ok(())
     }

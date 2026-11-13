@@ -22,7 +22,11 @@ pub(super) enum DirectVisibleSource {
 #[derive(Clone, Copy)]
 pub(super) enum VisibleValuePlanEntry {
     Direct(DirectVisibleSource),
-    Expression,
+    /// Holds the value of expression row `source_row`: its own row, or the
+    /// first row that runs the same program.
+    Expression {
+        source_row: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -85,9 +89,8 @@ pub(super) fn visible_value_plan(
             entries.push(VisibleValuePlanEntry::Direct(source));
             continue;
         }
-        entries.push(VisibleValuePlanEntry::Expression);
         let fingerprint = visible_program_fingerprint(row)?;
-        match visible_expression_group_index(
+        let source_row = match visible_expression_group_index(
             rows,
             &expression_groups,
             expression_groups_by_fingerprint
@@ -95,7 +98,10 @@ pub(super) fn visible_value_plan(
                 .map_or(&[], Vec::as_slice),
             row,
         ) {
-            Some(group_idx) => expression_groups[group_idx].output_indices.push(row_idx),
+            Some(group_idx) => {
+                expression_groups[group_idx].output_indices.push(row_idx);
+                expression_groups[group_idx].row_index
+            }
             None => {
                 expression_rows.push(row_idx);
                 let group_index = expression_groups.len();
@@ -107,8 +113,10 @@ pub(super) fn visible_value_plan(
                     .entry(fingerprint)
                     .or_default()
                     .push(group_index);
+                row_idx
             }
-        }
+        };
+        entries.push(VisibleValuePlanEntry::Expression { source_row });
     }
     Some(VisibleValuePlan {
         entries,

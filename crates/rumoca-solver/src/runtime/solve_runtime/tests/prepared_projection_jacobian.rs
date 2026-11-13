@@ -134,7 +134,7 @@ fn prepare(runtime: &mut SolveRuntime, native: Rc<PreparedNative>) {
             ),
             &refresh_projection::projection_jacobian_demand(
                 &view.model,
-                view.scalar.settled_read_cones.as_deref(),
+                view.scalar.settled_execution_read_cones.as_deref(),
             )
             .unwrap(),
         )

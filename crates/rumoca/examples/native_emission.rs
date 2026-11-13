@@ -104,11 +104,11 @@ fn arguments_and_policy(
         &str,
         &str,
         &str,
-        rumoca_exec_wasm::CheckedNativeWasmCapacityPolicy,
+        rumoca_ir_solve::CheckedNativeWasmCapacityPolicy,
     ),
     Box<dyn Error>,
 > {
-    use rumoca_exec_wasm::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
+    use rumoca_ir_solve::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
     match arguments {
         [_, source, model, output] => Ok((
             source,

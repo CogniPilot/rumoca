@@ -12,6 +12,7 @@ pub enum NumericalBackend {
     Bdf,
     Rk45,
     VelImplicit,
+    FixedStep,
 }
 
 trait OptionPayload: fmt::Debug + Send + Sync {
@@ -134,6 +135,10 @@ mod tests {
             BackendOptionsError::InvalidValue {
                 backend: NumericalBackend::VelImplicit,
                 field: "step",
+            },
+            BackendOptionsError::InvalidValue {
+                backend: NumericalBackend::FixedStep,
+                field: "order",
             },
         ];
         for error in errors {

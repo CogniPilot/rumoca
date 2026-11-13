@@ -1,6 +1,8 @@
 //! What a session and its owners answer without advancing: horizon, output
 //! metadata, new diagnostics, native request counts and termination.
 
+mod selected_values;
+
 use rumoca_ir_solve as solve;
 
 use super::{block, fixture_instance_config, harmonic_oscillator, refresh_owned};

@@ -7,6 +7,7 @@
 
 mod committed_seed;
 mod failure_atomicity;
+mod kinematic_derivatives;
 mod manifold;
 mod on_demand_derivatives;
 mod precompiled;

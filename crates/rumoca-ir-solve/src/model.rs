@@ -715,6 +715,9 @@ pub struct ContinuousStructuralArtifacts {
     /// The state Jacobian `d(der)/d(states)`, derived from `derivative`
     /// through the algebraic projection ([`StructuralPattern::derive_state_jacobian`]).
     state_jacobian: Option<StructuralPattern>,
+    /// The states a partitioned step may advance from the updated slots of
+    /// the other states without a new algebraic refresh ([`KinematicStates`]).
+    kinematic_states: KinematicStates,
 }
 
 impl ContinuousStructuralArtifacts {
@@ -742,6 +745,7 @@ impl ContinuousStructuralArtifacts {
                 .collect(),
             derivative: derivative.map(JacobianStructure::derived),
             state_jacobian: None,
+            kinematic_states: KinematicStates::default(),
         }
     }
 
@@ -765,6 +769,19 @@ impl ContinuousStructuralArtifacts {
             None => None,
         };
         Ok(self)
+    }
+
+    /// Issue the kinematic state partition ([`KinematicStates::derive`]).
+    #[must_use]
+    pub fn with_kinematic_states(mut self, kinematic_states: KinematicStates) -> Self {
+        self.kinematic_states = kinematic_states;
+        self
+    }
+
+    /// The kinematic continuous states, ascending: empty when the system has
+    /// none or the partition was not issued.
+    pub fn kinematic_states(&self) -> &[usize] {
+        self.kinematic_states.states()
     }
 
     /// The state Jacobian's certified relation, one row per state derivative

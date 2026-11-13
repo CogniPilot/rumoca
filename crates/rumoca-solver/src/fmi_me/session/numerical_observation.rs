@@ -109,6 +109,7 @@ fn integration_failure_category(error: &MeIntegrationError) -> FailureCategory {
         MeIntegrationError::Numerical { category, .. } => FailureCategory::Numerical(*category),
         MeIntegrationError::Contract { .. } => FailureCategory::Contract,
         MeIntegrationError::DerivativeCapabilityInactive { .. }
+        | MeIntegrationError::NoEvaluatedPoint { .. }
         | MeIntegrationError::DerivativeRefused => FailureCategory::DerivativeCapability,
         MeIntegrationError::Allocation { .. } => FailureCategory::Allocation,
     }

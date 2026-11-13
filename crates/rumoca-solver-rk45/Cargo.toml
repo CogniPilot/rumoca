@@ -1,6 +1,6 @@
 [package]
 name = "rumoca-solver-rk45"
-description = "Pure-Rust RK45 simulation backend for Rumoca"
+description = "Pure-Rust explicit Runge-Kutta simulation backends for Rumoca (adaptive RK45 and fixed-step)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -92,6 +92,41 @@ fn velimplicit_integrator(
     ))
 }
 
+const FIXED_STEP_INSTANCE_NAME: &str = "fixed-step";
+
+const FIXED_STEP_INTEGRATOR: crate::me_backend::IntegratorFactory =
+    crate::me_backend::IntegratorFactory {
+        method: "fixed-step",
+        backend: rumoca_solver::NumericalBackend::FixedStep,
+        model_jacobian_request: rumoca_solver::ModelStateJacobianRequest::NotRequested,
+        build: fixed_step_integrator,
+    };
+
+/// The opt-in fixed-step explicit Runge-Kutta solver: the validated request,
+/// or its default configuration (1 ms step, classical fourth order).
+fn fixed_step_integrator(
+    setup: rumoca_solver::fmi_me::MeNumericalSetup,
+    options: crate::backend_options::ValidatedOptions,
+    observation: Option<rumoca_solver::fmi_me::numerical_observation::AdapterWriter>,
+) -> Result<Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend + 'static>, SimError> {
+    let config = match options {
+        crate::backend_options::ValidatedOptions::Defaults => {
+            rumoca_solver_rk45::FixedStepConfig::default()
+        }
+        crate::backend_options::ValidatedOptions::FixedStep(config) => config,
+        _ => {
+            return Err(rumoca_solver::BackendOptionsError::ConcreteType {
+                backend: rumoca_solver::NumericalBackend::FixedStep,
+            }
+            .into());
+        }
+    };
+    if let Some(observation) = observation {
+        observation.unavailable();
+    }
+    Ok(rumoca_solver_rk45::fixed_step_integrator(setup, config)?)
+}
+
 pub use simulate as simulate_dae;
 
 pub fn simulate_with_diagnostics(
@@ -301,6 +336,11 @@ impl SimulationSession {
         self.inner.values_for(names)
     }
 
+    /// The requested values in request order; `None` for an unknown name.
+    pub fn selected_values(&self, names: &[String]) -> Result<Vec<Option<f64>>, SimError> {
+        self.inner.selected_values(names)
+    }
+
     pub fn input_names(&self) -> &[String] {
         self.inner.input_names()
     }
@@ -310,8 +350,9 @@ impl SimulationSession {
     }
 }
 
-/// The fixed-step plugins this session hosts: rk45 for `rk-like` (and `auto`
-/// routed here) and, when compiled in, the opt-in `velimplicit` solver.
+/// The plugins this session hosts: rk45 for `rk-like` (and `auto` routed
+/// here), the opt-in `fixed-step` explicit solver and, when compiled in, the
+/// opt-in `velimplicit` solver.
 fn integrator_for(
     requested: rumoca_solver::SimSolverMode,
 ) -> Result<(&'static str, crate::me_backend::IntegratorFactory), SimError> {
@@ -322,6 +363,9 @@ fn integrator_for(
         #[cfg(feature = "solver-velimplicit")]
         rumoca_solver::SimSolverMode::VelImplicit => {
             Ok((VELIMPLICIT_INSTANCE_NAME, VELIMPLICIT_INTEGRATOR))
+        }
+        rumoca_solver::SimSolverMode::FixedStep => {
+            Ok((FIXED_STEP_INSTANCE_NAME, FIXED_STEP_INTEGRATOR))
         }
         requested => Err(SimError::UnsupportedSolverMode {
             backend: INSTANCE_NAME,

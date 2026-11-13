@@ -125,14 +125,15 @@ fn visible_values_mixed_plan_keeps_expression_rows() {
     assert_eq!(values, vec![20.0, 30.0]);
 }
 
-#[test]
-fn visible_value_plan_deduplicates_equal_expression_rows() {
+/// One direct state read, `y[0] + y[1]` issued twice, and `y[2] + y[1]`
+/// between the two.
+fn duplicate_expression_visible_model() -> solve::SolveModel {
     let mut different_sum = positive_sum_residual_row();
     let solve::LinearOp::LoadY { index, .. } = &mut different_sum[0] else {
         unreachable!("sum fixture begins with a state load")
     };
     *index = 2;
-    let model = crate::fixture_layout::with_visible_expressions(
+    crate::fixture_layout::with_visible_expressions(
         solve::SolveModel {
             ..Default::default()
         },
@@ -152,7 +153,122 @@ fn visible_value_plan_deduplicates_equal_expression_rows() {
             "visible_duplicate_expressions.mo",
         ),
         Vec::new(),
+    )
+}
+
+fn selected_visible_bits(
+    runtime: &SolveRuntime,
+    y: &[f64],
+    names: &[&str],
+) -> Result<(Vec<Option<u64>>, usize), RuntimeSolveError> {
+    let mut selected = vec![Some(f64::NAN)];
+    let extent = runtime.visible_values_selected(y, &[], 0.0, names, &mut selected)?;
+    let bits = selected
+        .iter()
+        .map(|value| value.map(f64::to_bits))
+        .collect();
+    Ok((bits, extent))
+}
+
+#[test]
+fn selected_visible_values_equal_the_full_read_bit_for_bit() {
+    let model = duplicate_expression_visible_model();
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
+    let y = [0.1, 0.2, 0.7];
+    let full = runtime
+        .visible_values(&y, &[], 0.0)
+        .expect("the full read evaluates");
+    let output = |index: usize| Some(full[index].to_bits());
+
+    // A copy without its group's source row, repeats, and an unknown name.
+    let names = [
+        "computed_b",
+        "y2",
+        "missing",
+        "computed_different",
+        "computed_b",
+        "computed_a",
+    ];
+    assert_eq!(
+        selected_visible_bits(&runtime, &y, &names).expect("the selected read evaluates"),
+        (
+            vec![output(3), output(0), None, output(2), output(3), output(1)],
+            full.len()
+        )
     );
+    assert_eq!(
+        selected_visible_bits(&runtime, &y, &["computed_b"]).unwrap(),
+        (vec![output(1)], full.len()),
+        "a copy takes the value of the row it copies"
+    );
+    assert_eq!(
+        selected_visible_bits(&runtime, &y, &[]).unwrap(),
+        (Vec::new(), full.len())
+    );
+}
+
+/// Which rows a read evaluates is observable without instrumentation: a row
+/// whose parameter is missing fails any read that evaluates it.
+#[test]
+fn a_selected_read_evaluates_only_the_rows_it_names() {
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                solve_layout: solve::SolveLayout {
+                    parameter_count: 2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parameters: vec![2.5, 9.0].into(),
+            ..Default::default()
+        },
+        ["y2", "computed_a", "indexed", "computed_b"]
+            .map(String::from)
+            .to_vec(),
+        spanned_block(
+            vec![
+                direct_y_visible_value_row(1),
+                positive_sum_residual_row(),
+                indexed_param_root_row(),
+                positive_sum_residual_row(),
+            ],
+            "visible_selected_rows.mo",
+        ),
+        Vec::new(),
+    );
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
+    let y = [10.0, 20.0];
+    let full = runtime
+        .visible_values(&y, &[2.5, 9.0], 0.0)
+        .expect("every row evaluates when its parameter is supplied");
+    assert_eq!((full[0], full[1], full[3]), (20.0, 30.0, 30.0));
+    // Only the expression row `indexed` reads a parameter, and this point
+    // supplies none.
+    assert!(
+        runtime.visible_values(&y, &[], 0.0).is_err(),
+        "the full read evaluates every expression row"
+    );
+
+    let (selected, extent) =
+        selected_visible_bits(&runtime, &y, &["computed_b", "y2", "computed_a"])
+            .expect("no requested output needs a parameter");
+    let thirty = Some(30.0_f64.to_bits());
+    assert_eq!(selected, [thirty, Some(20.0_f64.to_bits()), thirty]);
+    assert_eq!(extent, 4);
+    assert!(
+        selected_visible_bits(&runtime, &y, &["y2", "indexed"]).is_err(),
+        "a requested expression row is still evaluated"
+    );
+    assert!(
+        selected_visible_bits(&runtime, &[10.0], &["y2"]).is_err(),
+        "and so is a requested direct source"
+    );
+}
+
+#[test]
+fn visible_value_plan_deduplicates_equal_expression_rows() {
+    let model = duplicate_expression_visible_model();
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
         .scalar_execution()
