@@ -657,3 +657,35 @@ fn a_model_without_an_exact_causal_refresh_keeps_todays_write() {
         assert_eq!(unguarded, 0, "{solver_mode:?}");
     }
 }
+
+const GUARDED_CONDITION: &str = "function Checked input Real a; input Real g; \
+    output Real y; algorithm y := 0; for i in 1:2 loop y := y + a / 2; end for; \
+    assert(g < 3.5, \"g reached its bound\"); end Checked; \
+    model GuardedCondition input Real u = 0; input Real w = 1; \
+    Real x(start=0, fixed=true); discrete Real hits(start=0, fixed=true); \
+    equation der(x) = w; when Checked(x, u) > 0.5 then hits = pre(hits) + 1; end when; \
+    end GuardedCondition;";
+
+/// The `when` condition calls a function whose result reads only its first
+/// input and whose assertion reads the second: `u` reaches the condition, an
+/// event indicator, only through that assertion. Its write runs the input
+/// event, which evaluates the indicator with the new `u`; `w` stays
+/// continuous.
+#[test]
+fn an_input_only_an_assertion_inside_a_condition_reads_takes_the_input_event() {
+    let script = [
+        Step::Advance(0.1),
+        Step::Set(&[("u", 1.0)]),
+        Step::Advance(0.2),
+        Step::Set(&[("w", 2.0)]),
+        Step::Advance(0.3),
+    ];
+    for decoded in [false, true] {
+        for (solver_mode, reach, writes, _) in
+            assert_paths_agree(GUARDED_CONDITION, "GuardedCondition", decoded, &script)
+        {
+            assert_eq!(reach, [true, false], "{solver_mode:?} decoded={decoded}");
+            assert_eq!(writes, [1, 1], "{solver_mode:?} decoded={decoded}");
+        }
+    }
+}
