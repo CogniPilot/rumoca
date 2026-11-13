@@ -7,8 +7,12 @@
 //!       reference globals), the top-level exports, and Wizer's own static
 //!       instrumentation verdict. Prints `PREINIT_SCAN_OK` or fails.
 //!   preinit <component> <init-export> <out>
-//!       Instantiates with every import defined as a trap, so the init export can
-//!       reach no WASI and no FMI callback; calls it once, snapshots, drops the
+//!       Instantiates with every import defined as a trap except one: std's
+//!       hash-map seed, `wasi:random/insecure-seed`, answers a fixed recorded
+//!       constant (std seeds `RandomState` from it once per thread, and model
+//!       receipt builds std hash maps). So the init export can reach no clock,
+//!       entropy, environment, file, stream or FMI callback; it is called once,
+//!       the seed calls are counted and printed, the instance is snapshotted, the
 //!       init export and writes `<out>` (never overwritten). The output's
 //!       top-level exports must be the input's minus the init export, and the
 //!       output must instantiate under the canonical `co-simulation-fmu`
@@ -21,8 +25,14 @@ use std::io::Write;
 use std::task::{Poll, Waker};
 use wasmparser::{Encoding, Operator, Parser, Payload, ValType};
 use wasmtime::component::{Component, Instance, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreContextMut};
 use wasmtime_wizer::Wizer;
+
+/// The fixed hash-map seed answered during pre-initialisation, baked into the
+/// snapshot. Hash-map keys only need to be unpredictable to untrusted input,
+/// which a fixed published model does not supply; no ordering may depend on them.
+const PREINIT_SEED: (u64, u64) = (0x7275_6d6f_6361_0001, 0x7072_6569_6e69_7401);
+const SEED_INTERFACE: &str = "wasi:random/insecure-seed@";
 
 /// Violations printed individually; the per-operator totals are always complete.
 const LISTED_VIOLATIONS: usize = 200;
@@ -88,7 +98,14 @@ pub(super) fn run_preinit(component_path: &str, init_export: &str, output: &str)
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
-    let mut store = Store::new(&engine, ());
+    let seed_imports: Vec<String> = Component::new(&engine, &bytes)?
+        .component_type()
+        .imports(&engine)
+        .map(|(name, _)| name.to_owned())
+        .filter(|name| name.starts_with(SEED_INTERFACE))
+        .collect();
+    // The store counts the seed calls the init export makes.
+    let mut store = Store::new(&engine, 0u64);
     let mut wizer = Wizer::new();
     wizer.init_func(init_export).keep_init_func(false);
     let snapshot = block_on(wizer.run_component(&mut store, &bytes, instantiate_trapping))??;
@@ -111,10 +128,13 @@ pub(super) fn run_preinit(component_path: &str, init_export: &str, output: &str)
         .and_then(|mut file| file.write_all(&snapshot))
         .with_context(|| format!("write {output} (never overwritten)"))?;
     println!(
-        "PREINIT_OK in_bytes={} out_bytes={} exports={}",
+        "PREINIT_OK in_bytes={} out_bytes={} exports={} seed_imports={seed_imports:?} seed_calls={} seed={:#x},{:#x}",
         bytes.len(),
         snapshot.len(),
-        after.len()
+        after.len(),
+        store.data(),
+        PREINIT_SEED.0,
+        PREINIT_SEED.1
     );
     Ok(())
 }
@@ -141,13 +161,28 @@ fn check_public_world(engine: &Engine, snapshot: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Every import traps: pre-initialisation may not read clocks, randomness, the
-/// environment, files or streams, nor call the FMI callbacks.
+/// Every import traps except the hash-map seed: pre-initialisation may not read
+/// clocks, entropy, the environment, files or streams, nor call the FMI callbacks.
 async fn instantiate_trapping(
-    store: &mut Store<()>,
+    store: &mut Store<u64>,
     component: &Component,
 ) -> wasmtime::Result<Instance> {
     let mut linker = Linker::new(store.engine());
+    let seeds: Vec<String> = component
+        .component_type()
+        .imports(store.engine())
+        .map(|(name, _)| name.to_owned())
+        .filter(|name| name.starts_with(SEED_INTERFACE))
+        .collect();
+    for name in seeds {
+        linker.instance(&name)?.func_wrap(
+            "insecure-seed",
+            |mut store: StoreContextMut<'_, u64>, (): ()| {
+                *store.data_mut() += 1;
+                Ok((PREINIT_SEED,))
+            },
+        )?;
+    }
     linker.define_unknown_imports_as_traps(component)?;
     linker.instantiate_async(store, component).await
 }
