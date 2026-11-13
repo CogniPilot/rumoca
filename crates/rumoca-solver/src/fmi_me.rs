@@ -92,6 +92,7 @@ pub use integrator::{
     trial_discard_count,
 };
 pub use kernel::SolveMeKernel;
+#[cfg(feature = "native-wasm")]
 pub(crate) use kernel::ScalarCell;
 #[cfg(feature = "native-wasm")]
 pub use kernel::{MePendingNativeComponent, MePendingNativeState};
