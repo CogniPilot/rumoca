@@ -4,10 +4,16 @@
 //! same assembler, from the same source, as its browser module; only link
 //! names differ. It sees every fault table, so it reserves the refusal status.
 use super::plan::refuse_reserved_status;
-use super::{LinkedDemand, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, linked_key_words};
+use super::{
+    LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
+    LinkedFaultTables, linked_key_words,
+};
 use crate::emit::Linkage;
 use crate::emit::derivative_operation::HELPER_ROLES;
-use crate::{CompiledNativeCallProgramWasm, WasmCompileError};
+use crate::{
+    CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault, TypedCallFault,
+    WasmCompileError,
+};
 use rumoca_ir_solve::{
     self as solve, ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule,
     IssuedAssignmentRows, PreparedKernelSource, SolvePureCallTable, VarLayout,
@@ -32,26 +38,41 @@ impl LinkedKernelModule {
         &self.exports
     }
 
-    /// A kernel module after every status it can return is checked.
-    fn kernel(
+    /// A module of one kernel entry and that entry's binding.
+    fn single(
         program: CompiledNativeCallProgramWasm,
-        entry_statuses: impl IntoIterator<Item = u32>,
-        exports: Vec<String>,
-    ) -> Result<Self, WasmCompileError> {
-        refuse_reserved_status(
-            program
-                .faults
-                .iter()
-                .map(|fault| fault.status)
-                .chain(program.gather_faults.iter().map(|fault| fault.status))
-                .chain(program.linear_solve_faults.iter().map(|fault| fault.status))
-                .chain(entry_statuses),
-        )?;
-        Ok(Self {
+        symbol: String,
+    ) -> Result<(Self, LinkedBinding), WasmCompileError> {
+        let binding = LinkedBinding::Kernel {
+            scratch_bytes: program.scratch_bytes,
+            faults: tables(
+                &program.faults,
+                &program.gather_faults,
+                &program.linear_solve_faults,
+            )?,
+        };
+        let module = Self {
             bytes: program.bytes,
-            exports,
-        })
+            exports: vec![symbol],
+        };
+        Ok((module, binding))
     }
+}
+
+/// An entry's fault tables, refused when a status equals the dispatch's
+/// refusal: the assembler sees every table, so it owns that reservation.
+fn tables(
+    typed: &[TypedCallFault],
+    gather: &[NativeGatherFault],
+    linear: &[NativeLinearSolveFault],
+) -> Result<LinkedFaultTables, WasmCompileError> {
+    let tables = LinkedFaultTables {
+        typed: typed.to_vec(),
+        gather: gather.to_vec(),
+        linear: linear.to_vec(),
+    };
+    refuse_reserved_status(tables.statuses())?;
+    Ok(tables)
 }
 
 /// The symbols of one complete derivative and its full helper graph.
@@ -144,17 +165,30 @@ impl LinkedProductAssembler {
 
     fn commit(
         &mut self,
-        issued: Vec<(LinkedEntryId, [u64; 4])>,
+        entries: Vec<LinkedEntry>,
         modules: Vec<LinkedKernelModule>,
     ) -> Vec<LinkedEntryId> {
         self.modules.extend(modules);
-        issued
+        entries
             .into_iter()
-            .map(|(id, key)| {
-                self.plan.issue(id, key);
+            .map(|entry| {
+                let id = entry.id();
+                self.plan.issue(entry);
                 id
             })
             .collect()
+    }
+
+    /// One kernel entry in its own module.
+    fn commit_single(
+        &mut self,
+        id: LinkedEntryId,
+        key: [u64; 4],
+        program: CompiledNativeCallProgramWasm,
+    ) -> Result<LinkedEntryId, WasmCompileError> {
+        let (module, binding) = LinkedKernelModule::single(program, id.symbol())?;
+        self.commit(vec![LinkedEntry::new(id, key, binding)], vec![module]);
+        Ok(id)
     }
 
     /// The next complete derivative, its kinematic entry when the operation
@@ -179,27 +213,36 @@ impl LinkedProductAssembler {
             ));
         }
         let symbols = DerivativeSymbols::new(complete.symbol(), kinematic.map(|id| id.symbol()));
-        let (control, helpers) =
+        let (control, workspace, helpers) =
             crate::derivative_operation::compile_with(operation, Some(&symbols))?.into_modules();
         let mut modules = Vec::new();
-        for (role, program) in helpers.into_iter().enumerate() {
+        let mut helper_tables = [None, None, None, None];
+        for ((role, program), slot) in helpers.into_iter().enumerate().zip(&mut helper_tables) {
             if let Some(program) = program {
-                modules.push(LinkedKernelModule::kernel(
-                    program,
-                    [],
-                    symbols.helpers[role].clone(),
+                *slot = Some(tables(
+                    &program.faults,
+                    &program.gather_faults,
+                    &program.linear_solve_faults,
                 )?);
+                modules.push(LinkedKernelModule {
+                    bytes: program.bytes,
+                    exports: symbols.helpers[role].clone(),
+                });
             }
         }
         modules.push(LinkedKernelModule {
             bytes: control,
             exports: symbols.control.clone(),
         });
-        let issued = std::iter::once(complete)
+        let binding = LinkedBinding::Derivative {
+            workspace,
+            helpers: Box::new(helper_tables),
+        };
+        let entries = std::iter::once(complete)
             .chain(kinematic)
-            .map(|id| (id, key))
+            .map(|id| LinkedEntry::new(id, key, binding.clone()))
             .collect();
-        Ok(self.commit(issued, modules))
+        Ok(self.commit(entries, modules))
     }
 
     pub fn exact(
@@ -223,8 +266,7 @@ impl LinkedProductAssembler {
             source, owners, schedule, layout, table, linkage,
         )
         .map_err(WasmCompileError::Backend)?;
-        let module = LinkedKernelModule::kernel(program, [], symbol)?;
-        Ok(self.commit(vec![(id, key)], vec![module])[0])
+        self.commit_single(id, key, program)
     }
 
     pub fn issued(
@@ -242,8 +284,7 @@ impl LinkedProductAssembler {
         };
         let program = crate::emit::emit_issued_assignment_module(rows, layout, table, linkage)
             .map_err(WasmCompileError::Backend)?;
-        let module = LinkedKernelModule::kernel(program, [], symbol)?;
-        Ok(self.commit(vec![(id, key)], vec![module])[0])
+        self.commit_single(id, key, program)
     }
 
     /// One private batch, the programs the admission admitted in its compile
@@ -268,25 +309,35 @@ impl LinkedProductAssembler {
             })
             .collect::<Result<Vec<_>, WasmCompileError>>()?;
         let symbols = issued.iter().map(|(id, _)| id.symbol()).collect::<Vec<_>>();
-        let modules = admission
-            .linked_modules(programs, &symbols)?
+        let mut modules = Vec::new();
+        let mut bindings = Vec::with_capacity(issued.len());
+        for (program, entries) in admission.linked_modules(programs, &symbols)? {
+            for entry in &entries {
+                bindings.push(LinkedBinding::Kernel {
+                    scratch_bytes: program.scratch_bytes,
+                    faults: tables(
+                        &program.faults,
+                        &entry.gather_faults,
+                        &entry.linear_solve_faults,
+                    )?,
+                });
+            }
+            modules.push(LinkedKernelModule {
+                bytes: program.bytes,
+                exports: entries.into_iter().map(|entry| entry.export).collect(),
+            });
+        }
+        if bindings.len() != issued.len() {
+            return Err(WasmCompileError::Backend(
+                "linked private modules returned other than one entry per program".into(),
+            ));
+        }
+        let entries = issued
             .into_iter()
-            .map(|(program, entries)| {
-                let statuses = entries
-                    .iter()
-                    .flat_map(|entry| {
-                        entry
-                            .gather_faults
-                            .iter()
-                            .map(|fault| fault.status)
-                            .chain(entry.linear_solve_faults.iter().map(|fault| fault.status))
-                    })
-                    .collect::<Vec<_>>();
-                let exports = entries.into_iter().map(|entry| entry.export).collect();
-                LinkedKernelModule::kernel(program, statuses, exports)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(self.commit(issued, modules))
+            .zip(bindings)
+            .map(|((id, key), binding)| LinkedEntry::new(id, key, binding))
+            .collect();
+        Ok(self.commit(entries, modules))
     }
 
     pub fn event(
@@ -303,8 +354,7 @@ impl LinkedProductAssembler {
         };
         let (code, _) = crate::emit::emit_event_program_module(program, layout, linkage)
             .map_err(WasmCompileError::Backend)?;
-        let module = LinkedKernelModule::kernel(code, [], symbol)?;
-        Ok(self.commit(vec![(id, key)], vec![module])[0])
+        self.commit_single(id, key, code)
     }
 
     /// The product, unless it demands an entry the linked profile cannot carry.

@@ -42,10 +42,18 @@ impl CompiledFmiDerivativeOperationWasm {
         self.kinematic.as_ref()
     }
 
-    /// The control bytes and the helpers in `HELPER_ROLES` order.
-    pub(crate) fn into_modules(self) -> (Vec<u8>, [Option<CompiledNativeCallProgramWasm>; 4]) {
+    /// The control bytes, its issued workspace and its helpers in
+    /// `HELPER_ROLES` order.
+    pub(crate) fn into_modules(
+        self,
+    ) -> (
+        Vec<u8>,
+        FmiDerivativeWorkspace,
+        [Option<CompiledNativeCallProgramWasm>; 4],
+    ) {
         (
             self.bytes,
+            self.workspace,
             [
                 self.static_program,
                 self.dynamic_program,

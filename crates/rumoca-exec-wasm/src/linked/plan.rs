@@ -1,6 +1,7 @@
 //! The issued identity of every entry a linked product can invoke.
 use super::LINKED_DISPATCH_REFUSED;
-use crate::WasmCompileError;
+use crate::{NativeGatherFault, NativeLinearSolveFault, TypedCallFault, WasmCompileError};
+use rumoca_ir_solve::fmi::FmiDerivativeWorkspace;
 use std::collections::BTreeMap;
 
 /// The kind of an entry the dispatch reaches. The code is the dispatch's
@@ -34,6 +35,11 @@ impl LinkedEntryKind {
 
     pub const fn code(self) -> u32 {
         self as u32
+    }
+
+    /// Only the complete derivative entry takes the nine-argument convention.
+    pub(super) const fn complete_derivative(self) -> bool {
+        matches!(self, Self::Derivative)
     }
 
     /// The word of its link symbol: distinct per kind and free of digits.
@@ -114,22 +120,102 @@ pub fn linked_key_words(source_key: &str) -> Result<[u64; 4], WasmCompileError> 
     Ok(words)
 }
 
-/// The issued identities of one product. Only the set assembler, fed the
+/// Every fault table an entry's status is decoded with, as emitted with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedFaultTables {
+    pub typed: Vec<TypedCallFault>,
+    pub gather: Vec<NativeGatherFault>,
+    pub linear: Vec<NativeLinearSolveFault>,
+}
+
+impl LinkedFaultTables {
+    pub(super) fn statuses(&self) -> impl Iterator<Item = u32> + '_ {
+        self.typed
+            .iter()
+            .map(|fault| fault.status)
+            .chain(self.gather.iter().map(|fault| fault.status))
+            .chain(self.linear.iter().map(|fault| fault.status))
+    }
+
+    /// The source fault a nonzero entry status names. Map the dispatch's
+    /// refusal with `linked_entry_status` first: it names no fault.
+    pub fn status_error(&self, status: u32) -> WasmCompileError {
+        crate::program_payload::decode_status(status, &self.typed, &self.gather, &self.linear)
+    }
+}
+
+/// What a bound entry keeps beside its triple to check its frame and decode
+/// its status, from the same emission as its linked module.
+#[derive(Debug, Clone)]
+pub enum LinkedBinding {
+    /// The issued workspace and the tables of the control's own helpers in
+    /// `static_refresh, dynamic_refresh, values, kinematic_values` order;
+    /// an omitted helper is `None`.
+    Derivative {
+        workspace: FmiDerivativeWorkspace,
+        helpers: Box<[Option<LinkedFaultTables>; 4]>,
+    },
+    /// The scratch extent and fault tables of a kernel entry.
+    Kernel {
+        scratch_bytes: u32,
+        faults: LinkedFaultTables,
+    },
+}
+
+/// One issued entry as a receiver stores it: the canonical owner-issued
+/// triple `(kind, index, key)` and its binding. The receiver passes exactly
+/// this triple to the dispatch and never re-derives an index.
+#[derive(Debug, Clone)]
+pub struct LinkedEntry {
+    id: LinkedEntryId,
+    key: [u64; 4],
+    binding: LinkedBinding,
+}
+
+impl LinkedEntry {
+    pub(super) fn new(id: LinkedEntryId, key: [u64; 4], binding: LinkedBinding) -> Self {
+        Self { id, key, binding }
+    }
+
+    pub fn id(&self) -> LinkedEntryId {
+        self.id
+    }
+
+    /// The key words the dispatch compares, `k0..k3`.
+    pub fn key_words(&self) -> [u64; 4] {
+        self.key
+    }
+
+    pub fn binding(&self) -> &LinkedBinding {
+        &self.binding
+    }
+}
+
+/// The issued entries of one product. Only the set assembler, fed the
 /// checked products in its owner's order, builds one; there is no constructor
 /// from caller-supplied triples. Equal keys at two positions are legal.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct LinkedEntryPlan {
-    entries: BTreeMap<LinkedEntryId, [u64; 4]>,
+    entries: BTreeMap<LinkedEntryId, LinkedEntry>,
 }
 
 impl LinkedEntryPlan {
     /// Every issued entry with its key words, in `(kind, index)` order.
     pub fn entries(&self) -> impl Iterator<Item = (LinkedEntryId, [u64; 4])> + '_ {
-        self.entries.iter().map(|(id, key)| (*id, *key))
+        self.entries.values().map(|entry| (entry.id, entry.key))
+    }
+
+    /// Every issued entry with its binding, in `(kind, index)` order.
+    pub fn linked_entries(&self) -> impl Iterator<Item = &LinkedEntry> {
+        self.entries.values()
+    }
+
+    pub fn entry(&self, id: LinkedEntryId) -> Option<&LinkedEntry> {
+        self.entries.get(&id)
     }
 
     pub fn key_words(&self, id: LinkedEntryId) -> Option<[u64; 4]> {
-        self.entries.get(&id).copied()
+        self.entries.get(&id).map(|entry| entry.key)
     }
 
     /// The next dense position of `kind`; a kinematic entry has its derivative's.
@@ -138,8 +224,8 @@ impl LinkedEntryPlan {
         u32::try_from(issued).expect("issued entries are counted in u32")
     }
 
-    pub(super) fn issue(&mut self, id: LinkedEntryId, key: [u64; 4]) {
-        let previous = self.entries.insert(id, key);
+    pub(super) fn issue(&mut self, entry: LinkedEntry) {
+        let previous = self.entries.insert(entry.id, entry);
         debug_assert!(previous.is_none(), "an assembler issues each position once");
     }
 }

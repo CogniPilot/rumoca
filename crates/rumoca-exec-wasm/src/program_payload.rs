@@ -84,15 +84,25 @@ impl ProgramPayload {
         gather: &[NativeGatherFault],
         linear: &[NativeLinearSolveFault],
     ) -> WasmCompileError {
-        if let Some(fault) = self.faults.iter().find(|fault| fault.status == status) {
-            return WasmCompileError::TypedSource(fault.clone());
-        }
-        if let Some(fault) = gather.iter().find(|fault| fault.status == status) {
-            return WasmCompileError::GatherSource(fault.clone());
-        }
-        if let Some(fault) = linear.iter().find(|fault| fault.status == status) {
-            return WasmCompileError::LinearSolveSource(fault.clone());
-        }
-        WasmCompileError::Backend(format!("native entry failure status {status}"))
+        decode_status(status, &self.faults, gather, linear)
     }
+}
+
+/// The source fault an entry's nonzero status names in its own tables.
+pub(crate) fn decode_status(
+    status: u32,
+    faults: &[TypedCallFault],
+    gather: &[NativeGatherFault],
+    linear: &[NativeLinearSolveFault],
+) -> WasmCompileError {
+    if let Some(fault) = faults.iter().find(|fault| fault.status == status) {
+        return WasmCompileError::TypedSource(fault.clone());
+    }
+    if let Some(fault) = gather.iter().find(|fault| fault.status == status) {
+        return WasmCompileError::GatherSource(fault.clone());
+    }
+    if let Some(fault) = linear.iter().find(|fault| fault.status == status) {
+        return WasmCompileError::LinearSolveSource(fault.clone());
+    }
+    WasmCompileError::Backend(format!("native entry failure status {status}"))
 }

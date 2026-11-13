@@ -3,12 +3,16 @@
 //! symbol, for a guest that has no JavaScript engine to instantiate modules.
 //! The browser profile, which the SDK saves and binds by comparing re-emitted
 //! bytes, is unchanged: only an explicit linked emission prints these names.
+mod dispatch;
 mod plan;
 mod products;
 #[cfg(all(test, feature = "host-engine", not(target_arch = "wasm32")))]
 mod tests;
 
-pub use plan::{LinkedDemand, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, linked_key_words};
+pub use plan::{
+    LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
+    LinkedFaultTables, linked_key_words,
+};
 pub(crate) use products::{DerivativeSymbols, helper_symbol};
 pub use products::{LinkedKernelModule, LinkedProduct, LinkedProductAssembler};
 

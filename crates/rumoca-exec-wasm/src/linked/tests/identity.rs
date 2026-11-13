@@ -3,7 +3,7 @@ use super::product::{self, Sources, id};
 use crate::WasmCompileError;
 use crate::emit::MathImport;
 use crate::linked::{
-    LINKED_DISPATCH_REFUSED, LinkedDemand, LinkedEntryKind, LinkedProductAssembler,
+    LINKED_DISPATCH_REFUSED, LinkedBinding, LinkedDemand, LinkedEntryKind, LinkedProductAssembler,
     linked_entry_status, linked_key_words,
 };
 use rumoca_ir_solve::fmi::FmiDerivativeStatus;
@@ -146,5 +146,34 @@ fn no_entry_status_can_equal_the_refusal() {
     assert!(message.contains("no entry ran"));
     for status in [0, 1, 5, 1000, u32::MAX - 1] {
         assert_eq!(linked_entry_status(status).unwrap(), status);
+    }
+}
+
+/// Every issued entry carries its canonical triple and the binding a receiver
+/// keeps to check its frame and decode its status, from the same emission.
+#[test]
+fn every_entry_carries_its_triple_and_binding_from_the_same_emission() {
+    let sources = Sources::new();
+    let built = product::build(&sources);
+    let plan = built.linked.plan();
+    assert_eq!(plan.linked_entries().count(), built.shapes.len());
+    for (id, shape) in &built.shapes {
+        let entry = plan.entry(*id).unwrap();
+        assert_eq!(entry.id(), *id);
+        assert_eq!(Some(entry.key_words()), plan.key_words(*id));
+        match (shape, entry.binding()) {
+            (
+                product::Shape::Kernel { scratch, .. },
+                LinkedBinding::Kernel { scratch_bytes, .. },
+            ) => assert_eq!(scratch, scratch_bytes, "{}", id.symbol()),
+            (
+                product::Shape::Derivative(issued),
+                LinkedBinding::Derivative { workspace, helpers },
+            ) => {
+                assert_eq!(issued.regions(), workspace.regions(), "{}", id.symbol());
+                assert!(helpers[2].is_some(), "the values helper is always issued");
+            }
+            _ => panic!("{} has another binding kind than its entry", id.symbol()),
+        }
     }
 }
