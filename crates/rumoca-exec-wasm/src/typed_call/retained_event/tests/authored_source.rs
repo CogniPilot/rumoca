@@ -134,3 +134,11 @@ fn retained_event_owns_its_original_action_and_recovers_after_a_failed_call() {
     );
     assert!(out.iter().all(|value| *value != 19.0));
 }
+
+/// A lowered authored event program reads Y only through its loads and the
+/// call guards, so its emission is issued the Y certificate.
+#[test]
+fn an_authored_event_program_is_issued_the_read_only_y_certificate() {
+    let (code, _) = compiled_warning();
+    assert!(code.read_only_y.is_some());
+}

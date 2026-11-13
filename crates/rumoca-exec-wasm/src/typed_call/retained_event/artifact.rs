@@ -106,6 +106,9 @@ impl PrecompiledRetainedEvent {
             artifact: Rc::clone(&self.artifact),
             source_key: key,
             invocations: self.invocations.clone(),
+            // Binding runs the saved module without emitting it, so it is
+            // issued no Y certificate and runs on a copy of Y.
+            read_only_y: None,
             scratch: RefCell::new(vec![0; bytes as usize / 8]),
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),

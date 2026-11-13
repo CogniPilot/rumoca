@@ -42,3 +42,34 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
     assert!(changed.bind(program()).is_err());
 }
+
+/// A bound product carries no Y certificate and runs on a copy; its fault is
+/// the certified original's, with the same source fault entry.
+#[test]
+fn a_bound_event_has_no_y_certificate_and_faults_as_the_certified_original() {
+    let original = compile();
+    let program = original
+        .source()
+        .source()
+        .event_program(s::RetainedAssertionSource::ActionConditions, 0)
+        .unwrap();
+    let replay = super::super::PrecompiledRetainedEvent::from_compiled(&original)
+        .bind(program)
+        .unwrap();
+    assert!(original.read_only_y.is_some());
+    assert!(replay.read_only_y.is_none());
+    let faults = [&original, &replay].map(|code| {
+        let mut out = [37.25];
+        let error = code
+            .call(&[0.0, 0.0], &[], 0.0, &mut out, |_, _, _, _| Ok(()))
+            .unwrap_err();
+        let WasmCompileError::TypedSource(fault) = error else {
+            panic!("the event fault must keep its source-fault category");
+        };
+        assert_eq!(out, [37.25]);
+        fault
+    });
+    assert_eq!(faults[0], faults[1]);
+    assert_eq!(faults[0].kind, TypedCallFaultKind::IntegerArithmetic);
+    assert_eq!(faults[0].provenance, span(9));
+}

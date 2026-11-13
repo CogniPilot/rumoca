@@ -66,6 +66,8 @@ pub struct CompiledRetainedEventWasm {
     #[cfg(feature = "precompiled-programs")]
     source_key: String,
     invocations: Vec<InvocationStorage>,
+    /// Issued by this module's emission; a bound product carries none.
+    read_only_y: Option<crate::emit::ReadOnlyY>,
     scratch: RefCell<Vec<u64>>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
@@ -84,8 +86,9 @@ impl CompiledRetainedEventWasm {
             ));
         }
         let layout = &source.source().model().problem.layout;
-        let (artifact, invocations, _) = crate::emit::emit_event_program_module(&source, layout)
-            .map_err(WasmCompileError::Backend)?;
+        let (artifact, invocations, read_only_y) =
+            crate::emit::emit_event_program_module(&source, layout)
+                .map_err(WasmCompileError::Backend)?;
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_private")?;
         #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
@@ -104,6 +107,7 @@ impl CompiledRetainedEventWasm {
             #[cfg(feature = "precompiled-programs")]
             source_key,
             invocations,
+            read_only_y,
             scratch,
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
@@ -164,8 +168,16 @@ impl CompiledRetainedEventWasm {
             all(feature = "host-engine", not(target_arch = "wasm32"))
         ))]
         {
-            self.runtime
-                .call_native(&mut y.to_vec(), p, time, scratch, &mut [])
+            // A module certified to store nothing into Y runs on the caller's
+            // Y in place; any other runs on a copy.
+            match self.read_only_y {
+                Some(_) => self
+                    .runtime
+                    .call_native_read_only(y, p, time, scratch, &mut []),
+                None => self
+                    .runtime
+                    .call_native(&mut y.to_vec(), p, time, scratch, &mut []),
+            }
         }
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),

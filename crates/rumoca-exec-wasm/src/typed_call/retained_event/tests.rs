@@ -234,3 +234,32 @@ fn retained_event_host_rejects_footprints_and_report_failure_before_publication(
     assert_eq!(out, [1.0]);
     assert_eq!(calls, 0);
 }
+
+/// The event module's emission issues the Y certificate, and the call on the
+/// caller's Y returns the status and scratch bits of the full-copy call,
+/// faulting or not, and leaves the caller's Y bitwise unchanged.
+#[test]
+fn a_certified_event_runs_on_the_callers_y_with_the_full_copy_results() {
+    let code = compile();
+    assert!(code.read_only_y.is_some());
+    let cells = code.scratch.borrow().len();
+    let mut statuses = Vec::new();
+    for y in [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0], [-0.0, f64::NAN]] {
+        let bits = y.map(f64::to_bits);
+        let mut shared = vec![u64::MAX; cells];
+        let mut copied = shared.clone();
+        let status = code
+            .runtime
+            .call_native_read_only(&y, &[], 0.0, &mut shared, &mut [])
+            .unwrap();
+        let copied_status = code
+            .runtime
+            .call_native(&mut y.to_vec(), &[], 0.0, &mut copied, &mut [])
+            .unwrap();
+        assert_eq!((status, &shared), (copied_status, &copied));
+        assert_eq!(y.map(f64::to_bits), bits);
+        statuses.push(status);
+    }
+    assert_eq!(statuses[..2], [0, 0]);
+    assert_ne!(statuses[2], 0, "a zero divisor must fault");
+}

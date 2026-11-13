@@ -116,9 +116,33 @@ impl WasmKernelRuntime {
         scratch: &mut [u64],
         lanes: &mut [u64],
     ) -> Result<u32, WasmCompileError> {
+        self.call_native_at(ptr_to_wasm_i32(y.as_ptr())?, p, time, scratch, lanes)
+    }
+
+    /// Call an entry certified to store nothing into Y with the caller's Y in
+    /// place: the kernel shares this linear memory and only reads through the
+    /// pointer.
+    pub(super) fn call_native_read_only(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
+        self.call_native_at(ptr_to_wasm_i32(y.as_ptr())?, p, time, scratch, lanes)
+    }
+
+    fn call_native_at(
+        &self,
+        y_ptr: u32,
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
         let _call = rumoca_core::browser_profile::Span::new("kernel_bridge_call");
         use wasm_bindgen::JsValue;
-        let y_ptr = ptr_to_wasm_i32(y.as_ptr())?;
         let p_ptr = ptr_to_wasm_i32(p.as_ptr())?;
         let scratch_ptr = ptr_to_wasm_i32(scratch.as_ptr())?;
         let lanes_ptr = if lanes.is_empty() {
