@@ -626,6 +626,16 @@ pub struct MeInstanceConfig {
 }
 
 impl MeInstanceConfig {
+    /// Whether `other` asks for exactly this instance configuration, bit for bit.
+    pub(super) fn same_request(&self, other: &Self) -> bool {
+        self.instance_name == other.instance_name
+            && self.tolerance.to_bits() == other.tolerance.to_bits()
+            && self.start_time.to_bits() == other.start_time.to_bits()
+            && self.stop_time.to_bits() == other.stop_time.to_bits()
+            && self.executor == other.executor
+            && self.model_jacobian_request == other.model_jacobian_request
+    }
+
     /// Bind the integrator's demand before any execution product is prepared.
     /// Generic ME instances retain finite assembly by default; concrete hosts
     /// select the demand of the integrator they actually instantiate.

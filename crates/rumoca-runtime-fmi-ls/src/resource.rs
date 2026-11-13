@@ -141,11 +141,16 @@ impl FmiLsResource {
         let owner = self.owner.take().expect("resource is owned");
         match owner {
             ResourceOwner::Retained(component) => {
-                let (owner, result) = match component
-                    .complete_native_initialization_with_integrator_retaining(
-                        options,
-                        rumoca_solver_rk45::model_exchange_integrator,
-                    ) {
+                let completion = if component.is_scalar_product() {
+                    MeRetainedComponent::complete_scalar_initialization_with_integrator_retaining
+                } else {
+                    MeRetainedComponent::complete_native_initialization_with_integrator_retaining
+                };
+                let (owner, result) = match completion(
+                    component,
+                    options,
+                    rumoca_solver_rk45::model_exchange_integrator,
+                ) {
                     Ok(session) => (ResourceOwner::Session(Box::new(session)), Ok(())),
                     Err((component, error)) => {
                         (ResourceOwner::Retained(*component), Err(error.into()))

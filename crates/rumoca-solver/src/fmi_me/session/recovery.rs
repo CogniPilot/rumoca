@@ -49,6 +49,40 @@ impl MeRetainedComponent {
         })
     }
 
+    /// Complete actual scalar initialization through the same driver as the
+    /// native path: retains the component and its effects on failure (no
+    /// rollback). The native guards are unchanged; this refuses native kernels.
+    pub fn complete_scalar_initialization_with_integrator_retaining(
+        self,
+        options: MeSessionOptions,
+        integrator: fn(MeNumericalSetup) -> Box<dyn MeIntegratorBackend + 'static>,
+    ) -> Result<MeSimulationSession<'static, 'static>, (Box<Self>, MeSessionError)> {
+        if let Err(error) = self.require_scalar_initialization() {
+            return Err((Box::new(self), error.into()));
+        }
+        self.attach_session_retaining(options, |host| {
+            if host.state_count() == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(integrator(host.numerical_setup(None)?)))
+            }
+        })
+    }
+
+    fn require_scalar_initialization(&self) -> Result<(), crate::fmi_me::MeError> {
+        self.kernel.borrow().and_then(|kernel| {
+            if !kernel.has_native_resource()
+                && kernel.initialization_state() == crate::fmi_me::lifecycle::MeState::InitializationMode
+            {
+                Ok(())
+            } else {
+                Err(crate::fmi_me::MeError::Contract {
+                    reason: "scalar initialization completion requires a scalar kernel in actual Initialization Mode".into(),
+                })
+            }
+        })
+    }
+
     /// Attach the original host/plugin while retaining this component on failure.
     /// Failure preserves the actual lifecycle and effects; it promises no rollback.
     pub fn into_session_retaining<'plugin>(

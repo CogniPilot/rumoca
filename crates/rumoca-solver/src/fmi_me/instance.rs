@@ -55,6 +55,11 @@ impl MeKernelCell {
             MeKernelResource::Vacated => Err(vacated_refusal()),
         }
     }
+    /// Fixed at construction: a scalar instance keeps a pristine snapshot.
+    pub(super) fn is_scalar(&self) -> bool {
+        self.scalar_pristine.is_some()
+    }
+
     pub(super) fn new(kernel: SolveMeKernel) -> Self {
         let configuration = kernel.instance_configuration();
         let scalar_pristine = if kernel.has_native_resource() {
@@ -92,23 +97,56 @@ impl MeKernelCell {
         })?.restarted_at(start, stop)
     }
 
-    #[cfg(feature = "native-wasm")]
     pub(super) fn enter_initialization_mode(
         &self,
         config: &MeInstanceConfig,
     ) -> Result<(), MeError> {
-        if self
+        if self.scalar_pristine.is_some() {
+            return self.enter_scalar_initialization_mode(config);
+        }
+        #[cfg(feature = "native-wasm")]
+        {
+            if self
+                .configuration
+                .borrow()
+                .as_ref()
+                .is_some_and(|original| original.instance_name != config.instance_name)
+            {
+                return Err(MeError::Contract {
+                    reason: "native initialization cannot change the retained instance name"
+                        .to_owned(),
+                });
+            }
+            self.require_native_engine_admission()?;
+            self.activate_prepared_owned(config)
+        }
+        #[cfg(not(feature = "native-wasm"))]
+        Err(no_scalar_snapshot())
+    }
+
+    /// A scalar instance enters Initialization Mode through its kernel's own
+    /// lifecycle owner, only for the request it was constructed with: its
+    /// runtime resolved the source at that start time and set tolerance and
+    /// horizon from it. A different request is refused, not re-anchored.
+    fn enter_scalar_initialization_mode(&self, config: &MeInstanceConfig) -> Result<(), MeError> {
+        let constructed = self
             .configuration
             .borrow()
-            .as_ref()
-            .is_some_and(|original| original.instance_name != config.instance_name)
-        {
+            .clone()
+            .ok_or_else(no_scalar_snapshot)?;
+        if !constructed.same_request(config) {
             return Err(MeError::Contract {
-                reason: "native initialization cannot change the retained instance name".to_owned(),
+                reason: "scalar initialization differs from the configuration the instance was constructed for"
+                    .to_owned(),
             });
         }
-        self.require_native_engine_admission()?;
-        self.activate_prepared_owned(config)
+        let mut kernel = self.borrow_mut()?;
+        if kernel.has_native_resource() {
+            return Err(MeError::Contract {
+                reason: "a native kernel cannot take the scalar initialization branch".to_owned(),
+            });
+        }
+        kernel.enter_initialization_mode()
     }
 
     pub(super) fn borrow(&self) -> Result<Ref<'_, SolveMeKernel>, MeError> {

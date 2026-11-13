@@ -107,13 +107,19 @@ impl MeRetainedComponent {
         })
     }
 
-    /// Actual FMI EnterInitializationMode activates the same resource once.
-    #[cfg(feature = "native-wasm")]
+    /// Actual FMI EnterInitializationMode: activates a prepared native
+    /// resource once, or enters a scalar instance's own lifecycle.
     pub fn enter_initialization_mode(
         &mut self,
         config: &MeInstanceConfig,
     ) -> Result<(), super::MeError> {
         self.kernel.enter_initialization_mode(config)
+    }
+
+    /// Whether this component is a scalar product, fixed at construction.
+    #[must_use]
+    pub fn is_scalar_product(&self) -> bool {
+        self.kernel.is_scalar()
     }
 
     fn from_kernel(kernel: SolveMeKernel) -> Self {
