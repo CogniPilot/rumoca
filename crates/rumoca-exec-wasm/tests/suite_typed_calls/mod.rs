@@ -31,6 +31,7 @@ mod slice_updates;
 mod source_tables;
 pub(crate) mod square;
 mod static_cells;
+mod static_element_updates;
 mod static_slices;
 mod tensor_source;
 mod tensor_views;

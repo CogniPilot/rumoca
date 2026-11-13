@@ -10,6 +10,7 @@ mod native;
 mod pass_flow;
 mod print_plan;
 mod read_flow;
+mod static_element_update;
 mod storage_plan;
 mod storage_plan_aliases;
 mod storage_plan_cells;
