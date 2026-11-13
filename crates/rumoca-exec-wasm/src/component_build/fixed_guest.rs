@@ -14,6 +14,7 @@ include!(concat!(env!("OUT_DIR"), "/fixed_guest_sources.rs"));
 /// No raw-byte, artifact-path or caller-inventory constructor exists.
 /// This grants neither static execution nor final component publication.
 pub struct FixedNativeGuestCore {
+    profile: GuestProfile,
     bytes: Vec<u8>,
     contract: contract::FixedGuestContract,
     bindings: wit_component::metadata::Bindgen,
@@ -22,7 +23,37 @@ pub struct FixedNativeGuestCore {
     target_directory: PathBuf,
 }
 
+/// The product kind a fixed guest core is built for, fixed at build time: the
+/// stateless native product, or a stateful scalar product
+/// (`rumoca-runtime-fmi-ls/scalar-product`). Part of the cache recipe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestProfile {
+    Native,
+    Scalar,
+}
+
+impl GuestProfile {
+    fn cargo_features(self) -> &'static [&'static str] {
+        match self {
+            Self::Native => &[],
+            Self::Scalar => &["--features", "scalar-product"],
+        }
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Scalar => "scalar",
+        }
+    }
+}
+
 impl FixedNativeGuestCore {
+    /// Whether this core was built for the stateful scalar product.
+    pub fn is_scalar_product(&self) -> bool {
+        self.profile == GuestProfile::Scalar
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -95,7 +126,7 @@ pub fn build_fixed_native_guest_core(
     staging_parent: &Path,
     target_parent: &Path,
 ) -> Result<FixedNativeGuestCore, String> {
-    build(staging_parent, target_parent, None)
+    build(staging_parent, target_parent, None, GuestProfile::Native)
 }
 
 /// As [`build_fixed_native_guest_core`], reusing the core a previous build
@@ -105,13 +136,35 @@ pub fn build_fixed_native_guest_core_cached(
     target_parent: &Path,
     cache_root: &Path,
 ) -> Result<FixedNativeGuestCore, String> {
-    build(staging_parent, target_parent, Some(cache_root))
+    build(
+        staging_parent,
+        target_parent,
+        Some(cache_root),
+        GuestProfile::Native,
+    )
+}
+
+/// As [`build_fixed_native_guest_core_cached`] for the stateful scalar product:
+/// the same fixed source built with `rumoca-runtime-fmi-ls/scalar-product`,
+/// under its own cache key.
+pub fn build_fixed_scalar_guest_core_cached(
+    staging_parent: &Path,
+    target_parent: &Path,
+    cache_root: &Path,
+) -> Result<FixedNativeGuestCore, String> {
+    build(
+        staging_parent,
+        target_parent,
+        Some(cache_root),
+        GuestProfile::Scalar,
+    )
 }
 
 fn build(
     staging_parent: &Path,
     target_parent: &Path,
     cache_root: Option<&Path>,
+    profile: GuestProfile,
 ) -> Result<FixedNativeGuestCore, String> {
     let staging = tempfile::Builder::new()
         .prefix("fixed-native-source-")
@@ -136,7 +189,7 @@ fn build(
         FIXED_SOURCES,
         ISSUING_RUSTC,
         ISSUING_VERSION,
-        &recipe(&flags),
+        &recipe(&flags, profile),
     );
     let cache_lease = cache_root
         .map(|root| super::cache_lease::acquire(root).map(|lease| (root, lease)))
@@ -147,7 +200,7 @@ fn build(
     let (bytes, messages) = match stored {
         Some(stored) => (stored.bytes, stored.messages),
         None => {
-            let (bytes, messages) = cargo_build(rustc, &flags, &staging, &target)?;
+            let (bytes, messages) = cargo_build(rustc, &flags, &staging, &target, profile)?;
             if let Some((root, _)) = &cache_lease {
                 cache::store(root, &key, &bytes, &messages)?;
             }
@@ -161,6 +214,7 @@ fn build(
         return Err("fixed guest has no source-issued interface metadata".into());
     }
     Ok(FixedNativeGuestCore {
+        profile,
         bytes,
         contract,
         bindings,
@@ -171,8 +225,12 @@ fn build(
 }
 
 /// Every build input besides the staged bytes and the compiler identity.
-fn recipe(flags: &str) -> String {
-    format!("{flags}\n{CARGO_ARGUMENTS:?}\nartifact=rumoca_runtime_fmi_ls")
+fn recipe(flags: &str, profile: GuestProfile) -> String {
+    format!(
+        "{flags}\n{CARGO_ARGUMENTS:?}\n{:?}\nprofile={}\nartifact=rumoca_runtime_fmi_ls",
+        profile.cargo_features(),
+        profile.tag()
+    )
 }
 
 const CARGO_ARGUMENTS: [&str; 9] = [
@@ -223,6 +281,7 @@ fn cargo_build(
     flags: &str,
     staging: &Path,
     target: &Path,
+    profile: GuestProfile,
 ) -> Result<(Vec<u8>, String), String> {
     let manifest = staging.join("crates/rumoca-runtime-fmi-ls/Cargo.toml");
     let messages = output(
@@ -230,6 +289,7 @@ fn cargo_build(
             .current_dir(staging)
             .args(CARGO_ARGUMENTS)
             .arg(&manifest)
+            .args(profile.cargo_features())
             .env("RUSTC", rustc)
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
