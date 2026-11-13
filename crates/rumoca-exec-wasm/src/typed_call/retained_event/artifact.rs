@@ -93,6 +93,19 @@ impl PrecompiledRetainedEvent {
                 ));
             }
         }
+        // Emit the module again from the source being bound: saved bytes equal
+        // to that emission carry the certificate it issued. Any other module,
+        // or a source the emitter refuses, runs on a copy of Y as before.
+        let read_only_y = {
+            let _emit = rumoca_core::browser_profile::Span::new("retained_event_bind_emit");
+            crate::emit::emit_event_program_module(&source, &source.source().model().problem.layout)
+                .ok()
+                .and_then(|(module, _, read_only_y)| {
+                    (module.bytes == self.artifact.module_bytes()).then_some(read_only_y)
+                })
+                .flatten()
+        };
+        mark_y_census(read_only_y.as_ref());
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime =
             crate::WasmKernelRuntime::new_named(self.artifact.module_bytes(), "eval_private")?;
@@ -106,9 +119,7 @@ impl PrecompiledRetainedEvent {
             artifact: Rc::clone(&self.artifact),
             source_key: key,
             invocations: self.invocations.clone(),
-            // Binding runs the saved module without emitting it, so it is
-            // issued no Y certificate and runs on a copy of Y.
-            read_only_y: None,
+            read_only_y,
             scratch: RefCell::new(vec![0; bytes as usize / 8]),
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),

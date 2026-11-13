@@ -43,33 +43,95 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     assert!(changed.bind(program()).is_err());
 }
 
-/// A bound product carries no Y certificate and runs on a copy; its fault is
-/// the certified original's, with the same source fault entry.
-#[test]
-fn a_bound_event_has_no_y_certificate_and_faults_as_the_certified_original() {
-    let original = compile();
+fn bind_wire(
+    original: &CompiledRetainedEventWasm,
+    wire: serde_json::Value,
+) -> CompiledRetainedEventWasm {
     let program = original
         .source()
         .source()
         .event_program(s::RetainedAssertionSource::ActionConditions, 0)
         .unwrap();
-    let replay = super::super::PrecompiledRetainedEvent::from_compiled(&original)
+    serde_json::from_value::<super::super::PrecompiledRetainedEvent>(wire)
+        .unwrap()
         .bind(program)
-        .unwrap();
+        .unwrap()
+}
+
+/// Outputs or source fault of `code` over passing and faulting Y.
+fn results(code: &CompiledRetainedEventWasm) -> Vec<Result<Vec<u64>, crate::TypedCallFault>> {
+    [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]]
+        .iter()
+        .map(|y| {
+            let mut out = [37.25];
+            match code.call(y, &[], 0.0, &mut out, |_, _, _, _| Ok(())) {
+                Ok(()) => Ok(out.map(f64::to_bits).to_vec()),
+                Err(WasmCompileError::TypedSource(fault)) => {
+                    assert_eq!(out, [37.25]);
+                    Err(fault)
+                }
+                Err(error) => panic!("unexpected event error: {error}"),
+            }
+        })
+        .collect()
+}
+
+/// Saved bytes equal to the emission at bind carry the certificate that
+/// emission issued: the bound program runs on the caller's Y with the bits,
+/// status and source fault of the full-copy call.
+#[test]
+fn a_bound_event_with_the_emitted_bytes_is_certified_and_matches_the_copy_path() {
+    let original = compile();
+    let wire = super::super::PrecompiledRetainedEvent::from_compiled(&original);
+    let replay = bind_wire(&original, serde_json::to_value(&wire).unwrap());
     assert!(original.read_only_y.is_some());
+    assert!(replay.read_only_y.is_some());
+    let cells = replay.scratch.borrow().len();
+    for y in [[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]] {
+        let bits = y.map(f64::to_bits);
+        let mut shared = vec![u64::MAX; cells];
+        let mut copied = shared.clone();
+        let status = replay
+            .runtime
+            .call_native_read_only(&y, &[], 0.0, &mut shared, &mut [])
+            .unwrap();
+        let copied_status = replay
+            .runtime
+            .call_native(&mut y.to_vec(), &[], 0.0, &mut copied, &mut [])
+            .unwrap();
+        assert_eq!((status, &shared), (copied_status, &copied));
+        assert_eq!(y.map(f64::to_bits), bits);
+    }
+    let expected = results(&original);
+    assert!(
+        matches!(&expected[2], Err(fault) if fault.kind == TypedCallFaultKind::IntegerArithmetic && fault.provenance == span(9))
+    );
+    assert_eq!(results(&replay), expected);
+}
+
+/// A saved module one byte away from the emission (a larger minimum of its
+/// imported memory, which still validates and runs) is bound as before but
+/// issued no certificate, and runs on a copy of Y with the original results.
+#[test]
+fn a_bound_event_with_an_altered_module_byte_runs_uncertified_on_a_copy() {
+    let original = compile();
+    let wire = super::super::PrecompiledRetainedEvent::from_compiled(&original);
+    let mut changed = serde_json::to_value(&wire).unwrap();
+    let bytes = changed["artifact"]["bytes"].as_array_mut().unwrap();
+    let module = bytes
+        .iter()
+        .map(|b| b.as_u64().unwrap() as u8)
+        .collect::<Vec<_>>();
+    let import = b"\x03env\x06memory\x02";
+    let at = module
+        .windows(import.len())
+        .position(|window| window == import)
+        .unwrap()
+        + import.len()
+        + 1;
+    assert!(module[at] < 0x7f, "the memory minimum is one LEB byte");
+    bytes[at] = serde_json::json!(module[at] + 1);
+    let replay = bind_wire(&original, changed);
     assert!(replay.read_only_y.is_none());
-    let faults = [&original, &replay].map(|code| {
-        let mut out = [37.25];
-        let error = code
-            .call(&[0.0, 0.0], &[], 0.0, &mut out, |_, _, _, _| Ok(()))
-            .unwrap_err();
-        let WasmCompileError::TypedSource(fault) = error else {
-            panic!("the event fault must keep its source-fault category");
-        };
-        assert_eq!(out, [37.25]);
-        fault
-    });
-    assert_eq!(faults[0], faults[1]);
-    assert_eq!(faults[0].kind, TypedCallFaultKind::IntegerArithmetic);
-    assert_eq!(faults[0].provenance, span(9));
+    assert_eq!(results(&replay), results(&original));
 }

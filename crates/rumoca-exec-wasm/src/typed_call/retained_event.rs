@@ -60,13 +60,23 @@ impl InvocationStorage {
     }
 }
 
+/// Count each compiled or bound event program in the browser profile by
+/// whether it runs on the caller's Y in place or on a copy.
+fn mark_y_census(read_only_y: Option<&crate::emit::ReadOnlyY>) {
+    let _program = rumoca_core::browser_profile::Span::new(match read_only_y {
+        Some(_) => "retained_event_program_y_in_place",
+        None => "retained_event_program_y_copied",
+    });
+}
+
 pub struct CompiledRetainedEventWasm {
     source: solve::RetainedEventProgram,
     artifact: Rc<crate::program_payload::ProgramPayload>,
     #[cfg(feature = "precompiled-programs")]
     source_key: String,
     invocations: Vec<InvocationStorage>,
-    /// Issued by this module's emission; a bound product carries none.
+    /// Issued by an emission of this module: at compile, or at bind when the
+    /// saved bytes equal the emission there. Never read from a saved product.
     read_only_y: Option<crate::emit::ReadOnlyY>,
     scratch: RefCell<Vec<u64>>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -96,6 +106,7 @@ impl CompiledRetainedEventWasm {
             artifact.module_bytes(),
             "eval_private",
         )?;
+        mark_y_census(read_only_y.as_ref());
         let scratch = RefCell::new(vec![0; artifact.scratch_bytes() as usize / 8]);
         #[cfg(feature = "precompiled-programs")]
         let source_key = solve::PreparedKernelSource::new(layout, source.table())
