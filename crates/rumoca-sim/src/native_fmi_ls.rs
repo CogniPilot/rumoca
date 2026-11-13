@@ -20,6 +20,8 @@ pub enum NativeFmiLsPreparationError {
     Encoding(#[from] serde_json::Error),
     #[error("native FMI-LS graph: {0}")]
     Linkage(String),
+    #[error("FMI-LS product kind: {0}")]
+    WrongProduct(&'static str),
 }
 
 /// Original emitted library paired with its internally encoded source capsule.
@@ -78,6 +80,15 @@ impl PreparedScalarFmiLsModel {
         component: &rumoca_ir_solve::fmi::FmiComponent,
     ) -> Result<Self, NativeFmiLsPreparationError> {
         let root = component.runtime_view().retain_assertion_root();
+        // The same predicate the scalar guest receiver applies at
+        // instantiation: a root the stateless native profile admits belongs to
+        // the native product. A native-refused root may be scalar, stateful or
+        // not, so the rule is the complement, never a state count.
+        if root.native_preparation().is_ok() {
+            return Err(NativeFmiLsPreparationError::WrongProduct(
+                "a component the stateless native profile admits belongs to the native product, not the scalar product",
+            ));
+        }
         let capsule = serde_json::to_vec(
             &rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)?,
         )?;

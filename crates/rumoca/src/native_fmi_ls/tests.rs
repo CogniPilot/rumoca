@@ -366,3 +366,39 @@ fn a_published_integer_refuses_the_scalar_view_by_name() {
         .expect("an Integer variable has no scalar owner");
     assert!(error.to_string().contains("(n, Integer"), "{error}");
 }
+
+/// Scalar preparation admits exactly the complement of the native profile:
+/// a stateless Real-only model the native profile admits is refused as the
+/// wrong product (the scalar guest would refuse it at instantiation), and a
+/// stateful model is admitted.
+#[test]
+fn scalar_preparation_refuses_a_native_admissible_root_and_admits_a_stateful_one() {
+    let lower = |source: &str, name: &str| {
+        let compiled = crate::Compiler::new()
+            .model(name)
+            .compile_str(source, "kind.mo")
+            .unwrap();
+        rumoca_sim::lower_fmi_export_component(&compiled.dae).unwrap()
+    };
+    let stateless = lower(
+        "model Gain\n  input Real u;\n  output Real y;\nequation\n  y = 2 * u;\nend Gain;\n",
+        "Gain",
+    );
+    assert!(
+        stateless
+            .runtime_view()
+            .retain_assertion_root()
+            .native_preparation()
+            .is_ok(),
+        "the fixture is native-admissible"
+    );
+    assert!(matches!(
+        rumoca_sim::PreparedScalarFmiLsModel::from_component(&stateless),
+        Err(rumoca_sim::NativeFmiLsPreparationError::WrongProduct(_))
+    ));
+    let stateful = lower(
+        "model Decay\n  Real x(start = 1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        "Decay",
+    );
+    assert!(rumoca_sim::PreparedScalarFmiLsModel::from_component(&stateful).is_ok());
+}
