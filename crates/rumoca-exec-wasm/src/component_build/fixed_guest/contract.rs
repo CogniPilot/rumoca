@@ -18,7 +18,13 @@ pub(super) enum FixedImportRole {
 }
 
 /// This private parser can refuse arbitrary bytes, but cannot issue a source core.
-pub(super) fn check(bytes: &[u8]) -> Result<FixedGuestContract, String> {
+/// The internal slots are exact per product kind: the native core imports the
+/// four source slots and the native model entry; the scalar core imports the
+/// four source slots and must not import the native model entry.
+pub(super) fn check(
+    bytes: &[u8],
+    profile: super::GuestProfile,
+) -> Result<FixedGuestContract, String> {
     wasmparser::Validator::new()
         .validate_all(bytes)
         .map_err(|error| format!("validate fixed guest core: {error}"))?;
@@ -26,7 +32,7 @@ pub(super) fn check(bytes: &[u8]) -> Result<FixedGuestContract, String> {
     for payload in Parser::new(0).parse_all(bytes) {
         state.read(payload.map_err(|error| error.to_string())?)?;
     }
-    state.finish()
+    state.finish(profile)
 }
 
 #[derive(Default)]
@@ -244,15 +250,25 @@ impl State {
         Ok(())
     }
 
-    fn finish(self) -> Result<FixedGuestContract, String> {
+    fn finish(self, profile: super::GuestProfile) -> Result<FixedGuestContract, String> {
         self.check_math_abi()?;
-        for slot in [
-            "eval_assignments",
+        let model_entry = match profile {
+            super::GuestProfile::Native => Some("eval_assignments"),
+            super::GuestProfile::Scalar => {
+                if self.slots.contains("eval_assignments") {
+                    return Err(
+                        "scalar fixed guest imports the native model entry eval_assignments".into(),
+                    );
+                }
+                None
+            }
+        };
+        for slot in model_entry.into_iter().chain([
             "rumoca_source_capsule_len",
             "rumoca_source_capsule_copy",
             "rumoca_publication_token_len",
             "rumoca_publication_token_copy",
-        ] {
+        ]) {
             if !self.slots.contains(slot) {
                 return Err(format!(
                     "fixed guest has no actual linked receiver import {slot}"
@@ -331,7 +347,7 @@ mod tests {
         body.instruction(&Instruction::End);
         code.function(&body);
         module.section(&code);
-        let error = match check(&module.finish()) {
+        let error = match check(&module.finish(), super::super::GuestProfile::Native) {
             Ok(_) => panic!("reserved provider must be refused"),
             Err(error) => error,
         };
@@ -403,11 +419,52 @@ mod tests {
         );
     }
 
+    /// The native core must import the native model entry; the scalar core
+    /// must not. Both import exactly the four source slots.
+    #[test]
+    fn the_model_entry_slot_is_exact_per_product_kind() {
+        use super::super::GuestProfile::{Native, Scalar};
+        let state = |model_entry: bool| {
+            let mut state = math_state(&math_module(None, None));
+            state.slots.extend(
+                [
+                    "rumoca_source_capsule_len",
+                    "rumoca_source_capsule_copy",
+                    "rumoca_publication_token_len",
+                    "rumoca_publication_token_copy",
+                ]
+                .map(String::from),
+            );
+            if model_entry {
+                state.slots.insert("eval_assignments".into());
+            }
+            state.public_memory = true;
+            state.allocation = Some(MemInfo {
+                memory_size: 0,
+                memory_alignment: 0,
+                table_size: 0,
+                table_alignment: 0,
+            });
+            state
+        };
+        assert!(state(true).finish(Native).is_ok());
+        assert!(state(false).finish(Scalar).is_ok());
+        assert_eq!(
+            state(false).finish(Native).err().unwrap(),
+            "fixed guest has no actual linked receiver import eval_assignments"
+        );
+        assert_eq!(
+            state(true).finish(Scalar).err().unwrap(),
+            "scalar fixed guest imports the native model entry eval_assignments"
+        );
+    }
+
     #[test]
     fn fixed_core_parser_cannot_admit_an_empty_or_component_receiver() {
-        assert!(check(b"not wasm").is_err());
-        assert!(check(&wasm_encoder::Component::new().finish()).is_err());
-        assert!(check(&wasm_encoder::Module::new().finish()).is_err());
+        let native = super::super::GuestProfile::Native;
+        assert!(check(b"not wasm", native).is_err());
+        assert!(check(&wasm_encoder::Component::new().finish(), native).is_err());
+        assert!(check(&wasm_encoder::Module::new().finish(), native).is_err());
     }
 
     #[test]

@@ -207,7 +207,7 @@ fn build(
             (bytes, messages)
         }
     };
-    let contract = contract::check(&bytes)?;
+    let contract = contract::check(&bytes, profile)?;
     let (stripped, bindings) = wit_component::metadata::decode(&bytes)
         .map_err(|error| format!("decode fixed source interface metadata: {error:#}"))?;
     if stripped.is_none() {
@@ -340,4 +340,27 @@ fn output(command: &mut Command, name: &str) -> Result<String, String> {
         ));
     }
     String::from_utf8(result.stdout).map_err(|error| format!("{name}: {error}"))
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::{GuestProfile, recipe};
+
+    /// The two product kinds never share a cached core: the scalar profile's
+    /// feature and tag are in its recipe, and the native recipe has neither.
+    #[test]
+    fn the_scalar_profile_has_its_own_feature_and_cache_recipe() {
+        assert!(GuestProfile::Native.cargo_features().is_empty());
+        assert_eq!(
+            GuestProfile::Scalar.cargo_features(),
+            ["--features", "scalar-product"]
+        );
+        let (native, scalar) = (
+            recipe("flags", GuestProfile::Native),
+            recipe("flags", GuestProfile::Scalar),
+        );
+        assert_ne!(native, scalar);
+        assert!(scalar.contains("scalar-product") && scalar.contains("profile=scalar"));
+        assert!(!native.contains("scalar-product") && native.contains("profile=native"));
+    }
 }

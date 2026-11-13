@@ -46,6 +46,11 @@ impl PreparedNativeFmiLsModel {
         core: FixedNativeGuestCore,
         request: &PreparedBuildRequest<'_, S>,
     ) -> Result<LinkedNativeFmiLsComponent<S>, NativeFmiLsPreparationError> {
+        if core.is_scalar_product() {
+            return Err(NativeFmiLsPreparationError::Linkage(
+                "a native component links only the native fixed core".into(),
+            ));
+        }
         let token = publication::token(request).map_err(NativeFmiLsPreparationError::Linkage)?;
         let envelope = rumoca_exec_wasm::encode_native_source_envelope(
             &self.capsule,
