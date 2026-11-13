@@ -84,7 +84,7 @@ impl CompiledRetainedEventWasm {
             ));
         }
         let layout = &source.source().model().problem.layout;
-        let (artifact, invocations) = crate::emit::emit_event_program_module(&source, layout)
+        let (artifact, invocations, _) = crate::emit::emit_event_program_module(&source, layout)
             .map_err(WasmCompileError::Backend)?;
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_private")?;

@@ -391,6 +391,12 @@ struct BodyEmitter<'a> {
     private_seed_offset: Option<u32>,
     /// The Y slot holding seed coordinate 0 when the seed is issued in Y.
     seed_slots: Option<usize>,
+    /// Set by [`Self::push`] when the function reads or writes the Y pointer
+    /// parameter. Only [`Self::push_pointer_load`] and the call guards' pointer
+    /// pushes read it without setting this, and they consume it in a load or a
+    /// comparison, so while it is clear no address the function forms derives
+    /// from Y.
+    y_pointer_escaped: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -430,6 +436,7 @@ impl<'a> BodyEmitter<'a> {
             event_stops: &[],
             private_seed_offset: None,
             seed_slots: None,
+            y_pointer_escaped: false,
         }
     }
 
@@ -597,8 +604,7 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_array_load(&mut self, dst: Reg, index: usize, ptr_param: u32) -> Result<(), String> {
-        self.push(Instruction::LocalGet(ptr_param));
-        self.push(Instruction::F64Load(memarg_for_index(index)?));
+        self.push_pointer_load(ptr_param, memarg_for_index(index)?);
         self.set_reg(dst)
     }
 
@@ -857,7 +863,35 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn push(&mut self, instruction: Instruction<'_>) {
+        if matches!(
+            instruction,
+            Instruction::LocalGet(Y_PTR_PARAM)
+                | Instruction::LocalSet(Y_PTR_PARAM)
+                | Instruction::LocalTee(Y_PTR_PARAM)
+        ) {
+            self.y_pointer_escaped = true;
+        }
         self.function.instruction(&instruction);
+    }
+
+    /// Load the f64 at `memarg` from the buffer `pointer` addresses. The load
+    /// consumes the pointer, so a Y load leaves the Y pointer unescaped.
+    fn push_pointer_load(&mut self, pointer: u32, memarg: MemArg) {
+        self.function.instruction(&Instruction::LocalGet(pointer));
+        self.function.instruction(&Instruction::F64Load(memarg));
+    }
+
+    /// Push `pointer` widened to i64 for a call guard, which only compares it.
+    fn push_pointer_extent(&mut self, pointer: u32) {
+        self.function.instruction(&Instruction::LocalGet(pointer));
+        self.function.instruction(&Instruction::I64ExtendI32U);
+    }
+
+    /// Push the low three bits of `pointer` for its alignment guard.
+    fn push_pointer_misalignment(&mut self, pointer: u32) {
+        self.function.instruction(&Instruction::LocalGet(pointer));
+        self.function.instruction(&Instruction::I32Const(7));
+        self.function.instruction(&Instruction::I32And);
     }
 
     fn push_reg(&mut self, reg: Reg) -> Result<(), String> {
