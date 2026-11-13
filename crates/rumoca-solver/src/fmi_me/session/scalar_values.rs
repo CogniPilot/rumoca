@@ -252,7 +252,10 @@ impl MeRetainedComponent {
         references: &[u32],
         values: &mut [i64],
     ) -> Result<(), MeError> {
-        let staged = self.kernel.borrow()?.read_scalar_typed_host_cells(references)?;
+        let staged = self
+            .kernel
+            .borrow()?
+            .read_scalar_typed_host_cells(references)?;
         deliver(staged, values)
     }
 
@@ -271,7 +274,10 @@ impl MeRetainedComponent {
         references: &[u32],
         values: &mut [bool],
     ) -> Result<(), MeError> {
-        let staged = self.kernel.borrow()?.read_scalar_typed_host_cells(references)?;
+        let staged = self
+            .kernel
+            .borrow()?
+            .read_scalar_typed_host_cells(references)?;
         deliver(staged, values)
     }
 

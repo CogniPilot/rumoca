@@ -63,11 +63,10 @@ impl MeRetainedComponent {
         )
             -> Result<Box<dyn MeIntegratorBackend + 'static>, MeSessionError>,
     ) -> Result<MeSimulationSession<'static, 'static>, (Box<Self>, MeSessionError)> {
-        let plan = match self.require_scalar_initialization().and_then(|()| {
-            self.kernel
-                .borrow()
-                .map(|kernel| *kernel.co_simulation())
-        }) {
+        let plan = match self
+            .require_scalar_initialization()
+            .and_then(|()| self.kernel.borrow().map(|kernel| *kernel.co_simulation()))
+        {
             Ok(plan) => plan,
             Err(error) => return Err((Box::new(self), error.into())),
         };

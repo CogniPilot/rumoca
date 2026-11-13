@@ -17,10 +17,6 @@ mod compiled_messages;
 mod continuous_input_writes;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
-#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
-mod scalar_fmi_values;
-#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
-mod scalar_fmi_step_plan;
 mod function_returns;
 #[cfg(feature = "solver-diffsol")]
 mod g2_projection;
@@ -39,6 +35,10 @@ mod quotient_root_capture;
 mod reduced_selection_starts;
 #[cfg(feature = "solver-velimplicit")]
 mod refresh_validation;
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+mod scalar_fmi_step_plan;
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+mod scalar_fmi_values;
 scheduled_executor_items! {
     #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
     mod session_api;

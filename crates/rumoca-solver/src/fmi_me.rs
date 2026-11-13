@@ -91,9 +91,9 @@ pub use integrator::{
     accepted_interval_contains, accepted_step_roundoff, reset_trial_discard_count,
     trial_discard_count,
 };
-pub use kernel::SolveMeKernel;
 #[cfg(feature = "native-wasm")]
 pub(crate) use kernel::ScalarCell;
+pub use kernel::SolveMeKernel;
 #[cfg(feature = "native-wasm")]
 pub use kernel::{MePendingNativeComponent, MePendingNativeState};
 pub use session::{

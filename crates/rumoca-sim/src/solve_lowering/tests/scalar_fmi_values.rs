@@ -113,7 +113,9 @@ fn integer_and_boolean_values_read_and_write_through_the_scalar_route() {
     retained.get_scalar_integer(&[n], &mut integer).unwrap();
     assert_eq!(integer, [3]);
     let mut boolean = [false];
-    retained.get_scalar_boolean(&[enable], &mut boolean).unwrap();
+    retained
+        .get_scalar_boolean(&[enable], &mut boolean)
+        .unwrap();
     assert_eq!(boolean, [true]);
     assert!(
         retained.get_scalar_boolean(&[n], &mut boolean).is_err(),
@@ -139,7 +141,9 @@ fn integer_and_boolean_values_read_and_write_through_the_scalar_route() {
         .unwrap();
 
     let mut typed = [false; 2];
-    session.get_scalar_boolean(&[enable, active], &mut typed).unwrap();
+    session
+        .get_scalar_boolean(&[enable, active], &mut typed)
+        .unwrap();
     assert_eq!(typed, [true, true]);
     session.get_scalar_integer(&[n], &mut integer).unwrap();
     assert_eq!(integer, [3]);

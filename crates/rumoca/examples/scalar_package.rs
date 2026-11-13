@@ -43,11 +43,21 @@ fn census(component: &FmiComponent) -> BTreeMap<String, usize> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<_> = env::args().collect();
-    let [_, source_path, model, roots_path, options_path, work, rest @ ..] = arguments.as_slice()
+    let [
+        _,
+        source_path,
+        model,
+        roots_path,
+        options_path,
+        work,
+        rest @ ..,
+    ] = arguments.as_slice()
     else {
-        return Err("usage: scalar_package SOURCE MODEL SOURCE_ROOTS_JSON OPTIONS_JSON \
+        return Err(
+            "usage: scalar_package SOURCE MODEL SOURCE_ROOTS_JSON OPTIONS_JSON \
                     NEW_WORK_DIR [BUILD_SCRATCH]"
-            .into());
+                .into(),
+        );
     };
     // Staged source stays under the work dir; an optional existing scratch dir
     // takes only build data (the fixed guest's cargo target and its cache,

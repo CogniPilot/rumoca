@@ -468,7 +468,9 @@ fn decay(options: &ScalarPackageOptions) -> anyhow::Result<rumoca_ir_solve::fmi:
 fn page_options_bind_their_fixed_step_plan_and_parameters_to_the_component() {
     use rumoca_ir_solve::fmi::{CoSimulationMethod, CoSimulationSubstep};
     let options = ScalarPackageOptions::parse(PAGE_OPTIONS).unwrap();
-    let component = options.bind_runtime_choices(decay(&options).unwrap()).unwrap();
+    let component = options
+        .bind_runtime_choices(decay(&options).unwrap())
+        .unwrap();
     let plan = component.co_simulation();
     assert_eq!(
         plan.method(),
@@ -502,9 +504,8 @@ fn package_options_refuse_unknown_names_unbound_tolerances_and_unknown_overrides
         },
     };
     for alias in ["rk-madeup", "euler", "dopri5", "rk45"] {
-        let json = format!(
-            r#"{{"solver":"{alias}","atol":1e-6,"rtol":1e-6,"execution_policy":"auto"}}"#
-        );
+        let json =
+            format!(r#"{{"solver":"{alias}","atol":1e-6,"rtol":1e-6,"execution_policy":"auto"}}"#);
         let refusal = refused(&json);
         assert!(refusal.contains("unknown solver"), "{alias}: {refusal}");
     }
@@ -513,7 +514,10 @@ fn package_options_refuse_unknown_names_unbound_tolerances_and_unknown_overrides
         r#"{"solver":"rk-like","atol":1e-8,"rtol":1e-6,"execution_policy":"auto"}"#,
         r#"{"solver":"bdf","atol":1e-6,"rtol":1e-6,"execution_policy":"auto"}"#,
     ] {
-        assert!(refused(json).contains("no Co-Simulation step plan"), "{json}");
+        assert!(
+            refused(json).contains("no Co-Simulation step plan"),
+            "{json}"
+        );
     }
     for (json, reason) in [
         (
@@ -562,9 +566,20 @@ fn source_roots_must_exist_be_absolute_and_be_listed_once() {
     write(serde_json::json!([library]));
     assert_eq!(read_source_roots(&list).unwrap(), [library.clone()]);
     write(serde_json::json!([library, library]));
-    assert!(read_source_roots(&list).unwrap_err().to_string().contains("listed twice"));
+    assert!(
+        read_source_roots(&list)
+            .unwrap_err()
+            .to_string()
+            .contains("listed twice")
+    );
     write(serde_json::json!(["Library.mo"]));
-    assert!(read_source_roots(&list).is_err(), "a relative root is refused");
+    assert!(
+        read_source_roots(&list).is_err(),
+        "a relative root is refused"
+    );
     write(serde_json::json!([dir.path().join("Missing.mo")]));
-    assert!(read_source_roots(&list).is_err(), "a missing root is refused");
+    assert!(
+        read_source_roots(&list).is_err(),
+        "a missing root is refused"
+    );
 }

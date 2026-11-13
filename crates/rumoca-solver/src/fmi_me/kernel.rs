@@ -21,9 +21,9 @@ mod native_typed;
 mod solver_guess;
 
 #[cfg(feature = "native-wasm")]
-pub use native_typed::{MePendingNativeComponent, MePendingNativeState};
-#[cfg(feature = "native-wasm")]
 pub(crate) use native_typed::ScalarCell;
+#[cfg(feature = "native-wasm")]
+pub use native_typed::{MePendingNativeComponent, MePendingNativeState};
 
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{

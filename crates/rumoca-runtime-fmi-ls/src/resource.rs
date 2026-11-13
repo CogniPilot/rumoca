@@ -277,7 +277,9 @@ macro_rules! typed_accessors {
             ) -> Result<(), FmiLsResourceError> {
                 match self.owner.as_mut().expect("resource is owned") {
                     ResourceOwner::Retained(component) if component.is_scalar_product() => {
-                        component.$scalar_set(references, values).map_err(Into::into)
+                        component
+                            .$scalar_set(references, values)
+                            .map_err(Into::into)
                     }
                     ResourceOwner::Retained(component) => {
                         component.$set(references, values).map_err(Into::into)
@@ -298,7 +300,9 @@ macro_rules! typed_accessors {
             ) -> Result<(), FmiLsResourceError> {
                 match self.owner.as_ref().expect("resource is owned") {
                     ResourceOwner::Retained(component) if component.is_scalar_product() => {
-                        component.$scalar_get(references, values).map_err(Into::into)
+                        component
+                            .$scalar_get(references, values)
+                            .map_err(Into::into)
                     }
                     ResourceOwner::Retained(component) => {
                         component.$get(references, values).map_err(Into::into)
@@ -387,12 +391,18 @@ fn plan_integrator(
             });
         }
     };
-    rumoca_solver_rk45::fixed_step_integrator(setup, FixedStepConfig { step, order, scheme })
-        .map_err(|error| MeSessionError::Options {
-            reason: error.to_string(),
-        })
+    rumoca_solver_rk45::fixed_step_integrator(
+        setup,
+        FixedStepConfig {
+            step,
+            order,
+            scheme,
+        },
+    )
+    .map_err(|error| MeSessionError::Options {
+        reason: error.to_string(),
+    })
 }
 
 #[cfg(test)]
 mod tests;
-
