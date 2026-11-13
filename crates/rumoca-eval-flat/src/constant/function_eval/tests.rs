@@ -2,7 +2,10 @@
 
 mod assertions;
 mod boolean_values;
+mod declared_types;
 mod iterator_identity;
+mod record_fields;
+mod slice_blocks;
 
 use super::*;
 use crate::constant::EvalContext;
@@ -190,6 +193,8 @@ fn eval_var_ref_reads_only_registered_enumeration_literals() {
         locals: IndexMap::new(),
         source_iterators: Vec::new(),
         source_iterator_declarations: std::collections::HashSet::new(),
+        record_layouts: IndexMap::new(),
+        declared: IndexMap::new(),
     };
     let mut ctx = EvalContext::new();
     ctx.enum_literals.insert(
@@ -907,6 +912,8 @@ fn record_field_read_is_not_guessed_as_an_enumeration_literal() {
         locals,
         source_iterators: Vec::new(),
         source_iterator_declarations: std::collections::HashSet::new(),
+        record_layouts: IndexMap::new(),
+        declared: IndexMap::new(),
     };
 
     let field = eval_var_ref(&rumoca_core::Reference::new("z.im"), &[], &env, &eval)

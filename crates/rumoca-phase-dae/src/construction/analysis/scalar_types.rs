@@ -50,3 +50,26 @@ pub(in crate::construction) fn effective_variable_scalar_type(
         None
     }
 }
+
+/// `value` as a value of `variable`'s declared predefined scalar type: an
+/// Integer settled for a Real declaration is the Real it denotes (MLS 3.7
+/// §10.6.13), so every later evaluation that reads it computes in Real
+/// arithmetic; a value of another type is refused.
+pub(in crate::construction) fn declared_parameter_value(
+    flat: &flat::Model,
+    variable: &flat::Variable,
+    value: EvalValue,
+) -> Result<EvalValue, rumoca_eval_flat::constant::EvalError> {
+    let declared = flat
+        .predefined_types
+        .is_complete()
+        .then(|| flat.effective_types.get(&variable.type_id))
+        .flatten()
+        .and_then(|effective| {
+            rumoca_eval_flat::constant::DeclaredScalar::of(effective, &flat.predefined_types)
+        });
+    match declared {
+        Some(declared) => declared.convert(value, variable.source_span),
+        None => Ok(value),
+    }
+}

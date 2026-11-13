@@ -14,8 +14,8 @@
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Reference,
-    Span, Statement, StatementBlock, Subscript,
+    ComponentRefPart, ComponentReference, ComprehensionIndex, Expression, ForIndex, Function,
+    Literal, Reference, Span, Statement, StatementBlock, Subscript,
 };
 
 use rumoca_core::ExpressionVisitor;
@@ -24,7 +24,13 @@ use super::errors::EvalError;
 use super::value::Value;
 use super::{EvalEnvironment, EvalIndexMap};
 
+mod record_fields;
+mod slice_assignment;
 mod statement_calls;
+use record_fields::{RecordField, record_layout};
+
+use super::DeclaredScalar;
+use slice_assignment::assign_array_slice;
 use statement_calls::{eval_assert_stmt, eval_fn_call_stmt};
 
 /// Execution limits for function evaluation.
@@ -227,6 +233,13 @@ struct FunctionEnv {
     locals: IndexMap<String, Value>,
     source_iterators: Vec<(rumoca_core::IndexBinderProvenance, String, Value)>,
     source_iterator_declarations: std::collections::HashSet<rumoca_core::DefId>,
+    /// The declared fields of each scalar record output or local declared
+    /// without a binding, from its record constructor; `None` when no
+    /// constructor is in scope, so no field layout is known.
+    record_layouts: IndexMap<String, Option<Vec<RecordField>>>,
+    /// The predefined scalar type of every input, output and local whose
+    /// declared type is one; a value stored in it is converted to that type.
+    declared: IndexMap<String, DeclaredScalar>,
 }
 
 /// Function-call argument after expression evaluation.
@@ -255,13 +268,36 @@ impl FunctionEnv {
         args: Vec<FunctionCallArg>,
         eval: &EvalState<'_>,
     ) -> Result<Self, EvalError> {
-        let inputs = Self::bind_inputs(func, args, eval.span)?;
+        // Without the model's predefined type identities no declared type is
+        // known, and values are stored as computed.
+        let declared: IndexMap<String, DeclaredScalar> = match eval.ctx.predefined_types() {
+            Some(predefined) => func
+                .inputs
+                .iter()
+                .chain(&func.outputs)
+                .chain(&func.locals)
+                .filter_map(|param| {
+                    DeclaredScalar::of(&param.effective_type, &predefined)
+                        .map(|declared| (param.name.clone(), declared))
+                })
+                .collect(),
+            None => IndexMap::new(),
+        };
+        let mut inputs = Self::bind_inputs(func, args, eval.span)?;
+        for (name, value) in &mut inputs {
+            if let Some(declared) = declared.get(name) {
+                *value =
+                    declared.convert(std::mem::replace(value, Value::Integer(0)), eval.span)?;
+            }
+        }
         let mut env = Self {
             inputs,
             outputs: IndexMap::new(),
             locals: IndexMap::new(),
             source_iterators: Vec::new(),
             source_iterator_declarations: std::collections::HashSet::new(),
+            record_layouts: IndexMap::new(),
+            declared,
         };
         env.bind_omitted_input_defaults(func, eval)?;
         env.declare_all(func, eval)?;
@@ -312,6 +348,7 @@ impl FunctionEnv {
                 .as_ref()
                 .expect("bind_inputs proved every unbound formal has a default");
             let value = eval_expr_in_function(default, self, eval)?;
+            let value = self.declared_value(&param.name, value, eval.span)?;
             self.inputs.insert(param.name.clone(), value);
         }
         Ok(())
@@ -482,6 +519,15 @@ impl FunctionEnv {
                 Some(default) => eval_expr_in_function(default, self, eval)?,
                 None => self.shaped_default(param, eval)?,
             };
+            let value = self.declared_value(&param.name, value, eval.span)?;
+            // A scalar record keeps its declared field layout whether it is
+            // declared with a binding or not (MLS 3.6 §11.2.1).
+            if param.type_class == Some(rumoca_core::ClassType::Record)
+                && param.dimensions().is_empty()
+            {
+                self.record_layouts
+                    .insert(param.name.clone(), record_layout(param, eval));
+            }
             match kind {
                 DeclaredKind::Output => self.outputs.insert(param.name.clone(), value),
                 DeclaredKind::Local => self.locals.insert(param.name.clone(), value),
@@ -503,6 +549,11 @@ impl FunctionEnv {
         eval: &EvalState<'_>,
     ) -> Result<Value, EvalError> {
         let dimensions = self.declared_dimensions(param, eval)?;
+        // A scalar record component starts with no field values; its fields
+        // are assigned one by one (MLS 3.6 §11.2.1).
+        if dimensions.is_empty() && param.type_class == Some(rumoca_core::ClassType::Record) {
+            return Ok(Value::Record(IndexMap::new()));
+        }
         let budget = i64::try_from(eval.limits.max_iterations).unwrap_or(i64::MAX);
         let elements = dimensions
             .iter()
@@ -589,28 +640,45 @@ impl FunctionEnv {
             .or_else(|| self.locals.get(name))
     }
 
-    /// Set a variable value (must be output or local, not input).
-    fn set(&mut self, name: &str, value: Value) -> bool {
-        if self.outputs.contains_key(name) {
-            self.outputs.insert(name.to_string(), value);
-            true
-        } else if self.locals.contains_key(name) {
-            self.locals.insert(name.to_string(), value);
-            true
-        } else {
-            false
+    /// `value` converted to the declared scalar type of `name`, when that is
+    /// a predefined type (see [`DeclaredScalar::convert`]).
+    fn declared_value(&self, name: &str, value: Value, span: Span) -> Result<Value, EvalError> {
+        match self.declared.get(name) {
+            Some(declared) => declared.convert(value, span),
+            None => Ok(value),
         }
+    }
+
+    /// Set a variable value (must be output or local, not input), converted
+    /// to its declared type; `Ok(false)` when `name` is not an output or a
+    /// local.
+    fn set(&mut self, name: &str, value: Value, span: Span) -> Result<bool, EvalError> {
+        let value = self.declared_value(name, value, span)?;
+        let slot = match self.outputs.get_mut(name) {
+            Some(slot) => slot,
+            None => match self.locals.get_mut(name) {
+                Some(slot) => slot,
+                None => return Ok(false),
+            },
+        };
+        *slot = value;
+        Ok(true)
     }
 
     /// Get the return value (single output or tuple of outputs).
     fn return_value(&self, span: Span) -> Result<Value, EvalError> {
-        if self.outputs.len() == 1 {
-            self.outputs.values().next().cloned().ok_or_else(|| {
+        let mut outputs = self
+            .outputs
+            .iter()
+            .map(|(name, value)| self.complete_record(name, value, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        if outputs.len() == 1 {
+            outputs.pop().ok_or_else(|| {
                 EvalError::function_error("single-output function has no output slot", span)
             })
         } else {
             // Multiple outputs -> tuple/array
-            Ok(Value::Array(self.outputs.values().cloned().collect()))
+            Ok(Value::Array(outputs))
         }
     }
 }
@@ -917,7 +985,15 @@ fn eval_assignment(
         return Ok(FlowControl::Continue);
     }
     let name = component_ref_to_name(comp);
-    if env.set(&name, val) {
+    let assigned = match comp.parts() {
+        // MLS 3.6 §11.2.1: the target may select a field of a record
+        // component, so `head.m := e` writes the field `m` of `head`.
+        [root, fields @ ..] if !fields.is_empty() && fields.iter().all(|f| f.subs.is_empty()) => {
+            env.set_field(&root.ident, fields, val, eval.span)?
+        }
+        _ => env.set(&name, val, eval.span)?,
+    };
+    if assigned {
         return Ok(FlowControl::Continue);
     }
     Err(EvalError::function_error(
@@ -1020,7 +1096,7 @@ fn assign_multiple_outputs(
             continue;
         };
         let name = component_ref_to_name(output);
-        if !env.set(&name, val.clone()) {
+        if !env.set(&name, val.clone(), eval.span)? {
             return Err(EvalError::function_error(
                 format!("cannot assign to output variable: {}", name),
                 eval.span,
@@ -1038,7 +1114,7 @@ fn assign_single_output(
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
     let name = component_ref_to_name(output);
-    if !env.set(&name, result) {
+    if !env.set(&name, result, eval.span)? {
         return Err(EvalError::function_error(
             format!("cannot assign to output variable: {}", name),
             eval.span,
@@ -1196,7 +1272,12 @@ fn eval_expr_in_function(
                 .iter()
                 .map(|arg| eval_expr_in_function(arg, env, eval))
                 .collect::<Result<_, _>>()?;
-            super::eval_builtin(function.name(), &arg_values, eval.span)
+            super::builtins::eval_builtin_within(
+                function.name(),
+                &arg_values,
+                eval.span,
+                eval.limits.max_iterations,
+            )
         }
         Expression::Array { elements, kind, .. } => {
             let values = eval_array_values(elements, env, eval)?;
@@ -1312,6 +1393,9 @@ fn eval_var_ref(
         return Err(EvalError::unknown_variable(name, eval.span));
     }
     if let Some(val) = env.get(name) {
+        if env.record_layouts.contains_key(name) {
+            return env.complete_record(name, val, eval.span);
+        }
         return apply_subscripts_flat(val, subscripts, env, eval);
     }
     if let Some(val) = eval.ctx.get_reference_value(reference) {
@@ -1508,6 +1592,8 @@ fn eval_array_comprehension(
         locals: env.locals.clone(),
         source_iterators: env.source_iterators.clone(),
         source_iterator_declarations: env.source_iterator_declarations.clone(),
+        record_layouts: env.record_layouts.clone(),
+        declared: env.declared.clone(),
     };
 
     local_env
@@ -1578,7 +1664,12 @@ fn eval_comprehension_recursive(
 /// Call a function (builtin or user-defined).
 fn call_function(name: &str, args: Vec<Value>, eval: &EvalState<'_>) -> Result<Value, EvalError> {
     if super::is_builtin(name) {
-        return super::eval_builtin(name, &args, eval.span);
+        return super::builtins::eval_builtin_within(
+            name,
+            &args,
+            eval.span,
+            eval.limits.max_iterations,
+        );
     }
     if let Some(func) = eval.ctx.get_function(name) {
         // Impure/external refusal lives in eval_function_with_call_args, the
@@ -1713,162 +1804,6 @@ fn has_range_subscript(subscripts: &[Subscript]) -> bool {
     })
 }
 
-/// Assign through a slice target (`x[a:b] := values`, `x[:] := values`).
-///
-/// Every index the subscript enumerates is computed in signed arithmetic before
-/// anything is written, so a descending range, an empty range and an
-/// out-of-range index are all decided rather than discovered mid-write. The
-/// previous unsigned form panicked on `v[3:-1:1]` and divided by zero on a zero
-/// step; both are subscripts the parser accepts and OMC rejects cleanly.
-fn assign_array_slice(
-    env: &mut FunctionEnv,
-    base_name: &str,
-    subscripts: &[Subscript],
-    value: Value,
-    eval: &EvalState<'_>,
-) -> Result<(), EvalError> {
-    let target = env
-        .get(base_name)
-        .ok_or_else(|| EvalError::unknown_variable(base_name, eval.span))?
-        .clone();
-    if subscripts.len() != 1 {
-        return Err(EvalError::function_error(
-            "multi-dimensional slice assignment not yet supported".to_string(),
-            eval.span,
-        ));
-    }
-    let elements = target
-        .as_array()
-        .ok_or_else(|| EvalError::type_mismatch("Array", target.type_name(), eval.span))?;
-    let indices = slice_indices(&subscripts[0], elements.len(), env, eval)?;
-    let new_value = set_array_slice(target, &indices, value, eval.span)?;
-    if !env.set(base_name, new_value) {
-        return Err(EvalError::function_error(
-            format!("cannot assign to array: {}", base_name),
-            eval.span,
-        ));
-    }
-    Ok(())
-}
-
-/// The 1-based indices a slice subscript enumerates over a container of `len`.
-///
-/// MLS 3.6 §10.5 gives `:` the whole dimension, and §10.4.1 gives `a:s:b` the
-/// values `a, a+s, …` up to `b` — empty when the step points away from `b`, and
-/// undefined for a zero step, which is reported rather than divided by.
-fn slice_indices(
-    subscript: &Subscript,
-    len: usize,
-    env: &FunctionEnv,
-    eval: &EvalState<'_>,
-) -> Result<Vec<i64>, EvalError> {
-    let Subscript::Expr { expr, .. } = subscript else {
-        // `x[:] := …` names every element of the dimension. It is a slice like
-        // any other, so it is size-checked against the container the same way;
-        // treating it as a whole-value replacement is what let
-        // `v[:] := {1,2,3,4}` resize an `Integer v[2]`.
-        if matches!(subscript, Subscript::Colon { .. }) {
-            return Ok((1..=len as i64).collect());
-        }
-        return Err(EvalError::function_error(
-            "expected range subscript for slice assignment".to_string(),
-            eval.span,
-        ));
-    };
-    let Expression::Range {
-        start, step, end, ..
-    } = expr.as_ref()
-    else {
-        return Err(EvalError::function_error(
-            "expected range subscript for slice assignment".to_string(),
-            eval.span,
-        ));
-    };
-    let start = slice_bound(start, env, eval)?;
-    let end = slice_bound(end, env, eval)?;
-    let step = match step {
-        Some(step) => slice_bound(step, env, eval)?,
-        None => 1,
-    };
-    if step == 0 {
-        return Err(EvalError::range_error(
-            "range step must not be zero in a slice assignment target",
-            eval.span,
-        ));
-    }
-    let budget = i64::try_from(eval.limits.max_iterations).unwrap_or(i64::MAX);
-    let mut indices = Vec::new();
-    let mut current = start;
-    while (step > 0 && current <= end) || (step < 0 && current >= end) {
-        indices.push(current);
-        if indices.len() as i64 > budget {
-            return Err(EvalError::UnsupportedExpression {
-                kind: "slice assignment target is beyond the constant-evaluation element budget"
-                    .to_string(),
-                span: eval.span,
-            });
-        }
-        let Some(next) = current.checked_add(step) else {
-            break;
-        };
-        current = next;
-    }
-    Ok(indices)
-}
-
-fn slice_bound(
-    expr: &Expression,
-    env: &FunctionEnv,
-    eval: &EvalState<'_>,
-) -> Result<i64, EvalError> {
-    let value = eval_expr_in_function(expr, env, eval)?;
-    value
-        .as_integer()
-        .ok_or_else(|| EvalError::type_mismatch("Integer", value.type_name(), eval.span))
-}
-
-/// Write `values` into the 1-based `indices` of `target`.
-fn set_array_slice(
-    target: Value,
-    indices: &[i64],
-    values: Value,
-    span: Span,
-) -> Result<Value, EvalError> {
-    let mut elements = target
-        .as_array()
-        .ok_or_else(|| EvalError::type_mismatch("Array", target.type_name(), span))?
-        .clone();
-    // MLS 3.6 §10.6.1: an assignment requires both sides to have the same
-    // number of dimensions and the same sizes, so an empty slice takes an empty
-    // array and nothing else — `v[2:1] := {9}` is rejected, not silently
-    // written nowhere.
-    let assigned = values
-        .as_array()
-        .ok_or_else(|| EvalError::type_mismatch("Array", values.type_name(), span))?;
-    if assigned.len() != indices.len() {
-        return Err(EvalError::function_error(
-            format!(
-                "slice assignment size mismatch: target names {} element(s), value has {}",
-                indices.len(),
-                assigned.len()
-            ),
-            span,
-        ));
-    }
-    for (index, value) in indices.iter().zip(assigned) {
-        let slot = usize::try_from(*index)
-            .ok()
-            .filter(|slot| (1..=elements.len()).contains(slot))
-            .ok_or(EvalError::IndexOutOfBounds {
-                index: *index,
-                size: elements.len(),
-                span,
-            })?;
-        elements[slot - 1] = coerce_to_declared(&elements[slot - 1], value.clone());
-    }
-    Ok(Value::Array(elements))
-}
-
 /// MLS 3.6 §10.6.13: an Integer value written into a Real component is
 /// converted to Real.
 ///
@@ -1906,7 +1841,7 @@ fn assign_array_element(
         .ok_or_else(|| EvalError::unknown_variable(base_name, eval.span))?
         .clone();
     let new_arr = set_array_element(arr, indices, value, eval.span)?;
-    if !env.set(base_name, new_arr) {
+    if !env.set(base_name, new_arr, eval.span)? {
         return Err(EvalError::function_error(
             format!("cannot assign to array: {}", base_name),
             eval.span,

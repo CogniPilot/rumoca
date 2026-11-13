@@ -2,6 +2,8 @@
 
 use rumoca_core::EvalLookup;
 
+mod matrix_builtins;
+
 use super::range_eval::{collect_int_range, collect_real_range};
 use super::*;
 

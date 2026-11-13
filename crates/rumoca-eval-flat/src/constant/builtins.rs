@@ -5,19 +5,40 @@
 //!
 //! Implemented functions:
 //! - Mathematical functions (MLS §3.7.3): sin, cos, tan, asin, acos, atan, etc.
-//! - Array functions (MLS §10.3): size, ndims, sum, product, fill, zeros, ones, linspace, cat
+//! - Array functions (MLS §10.3): size, ndims, sum, product, fill, zeros, ones, linspace, cat,
+//!   and the matrix functions of [`super::array_builtins`]
+//! - Event-free value functions (MLS §3.7.4): smooth, noEvent
 //! - Conversion functions (MLS §3.7.2): integer, div, mod, rem
 
 use super::errors::EvalError;
 use super::value::Value;
 use rumoca_core::{BuiltinFunction, Span, apply_scalar_binary_math, apply_scalar_unary_math};
 
-/// Evaluate a built-in function call.
+/// Evaluate a built-in function call under the default evaluation limits.
 pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, EvalError> {
+    eval_builtin_within(
+        name,
+        args,
+        span,
+        super::EvalLimits::default().max_iterations,
+    )
+}
+
+/// Evaluate a built-in function call that builds at most `budget` array
+/// elements (the evaluator's element budget, [`super::EvalLimits`]).
+pub(super) fn eval_builtin_within(
+    name: &str,
+    args: &[Value],
+    span: Span,
+    budget: usize,
+) -> Result<Value, EvalError> {
     if let Some(result) = eval_vectorized_call(name, args, span) {
         return result;
     }
     if let Some(result) = eval_scalar_math_builtin(name, args, span) {
+        return result;
+    }
+    if let Some(result) = super::array_builtins::eval_array_builtin(name, args, span, budget) {
         return result;
     }
     match name {
@@ -51,6 +72,11 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
 
         // String functions
         "String" => eval_string_convert(args, span),
+
+        // MLS 3.7 §3.7.4.1 `noEvent(expr)` and §3.7.4.2 `smooth(p, expr)` only
+        // govern event generation; their value is the value of `expr`.
+        "noEvent" => eval_value_argument(args, 1, 0, span),
+        "smooth" => eval_value_argument(args, 2, 1, span),
 
         _ => Err(EvalError::unknown_function(name, span)),
     }
@@ -176,7 +202,21 @@ pub fn is_builtin(name: &str) -> bool {
             | "integer"
             | "div"
             | "String"
-    )
+            | "noEvent"
+            | "smooth"
+    ) || super::array_builtins::ARRAY_BUILTINS.contains(&name)
+}
+
+/// Argument `index` of a builtin taking `count` arguments whose value is that
+/// argument's value.
+fn eval_value_argument(
+    args: &[Value],
+    count: usize,
+    index: usize,
+    span: Span,
+) -> Result<Value, EvalError> {
+    check_arg_count(args, count, span)?;
+    Ok(args[index].clone())
 }
 
 // Helper: single-argument math function
