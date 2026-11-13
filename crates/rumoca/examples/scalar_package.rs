@@ -9,10 +9,9 @@
 //! initial inputs are applied when the model is lowered; its solver, step and
 //! tolerances become the component's Co-Simulation step plan, and a choice no
 //! plan or guest carries is refused, never substituted.
-use rumoca::native_fmi_ls::ScalarFmiLsPackage;
-use rumoca_ir_solve::fmi::FmiComponent;
-use rumoca_sim::interactive_options::InteractiveOptions;
-use rumoca_sim::{PreparedScalarFmiLsModel, SimExecutionPolicy, SimOptions, SimSolverMode};
+use rumoca::native_fmi_ls::{ScalarFmiLsPackage, ScalarPackageOptions, read_source_roots};
+use rumoca_ir_solve::fmi::{FmiComponent, FmiScalarDeploymentView};
+use rumoca_sim::PreparedScalarFmiLsModel;
 use std::{collections::BTreeMap, env, error::Error, fs, path::Path, time::Instant};
 
 fn stage<T>(
@@ -30,57 +29,6 @@ fn stage<T>(
         }
     }
     result.map(|value| (value, seconds))
-}
-
-/// Every source root is an existing absolute path, listed once.
-fn read_source_roots(path: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let roots: Vec<String> = serde_json::from_str(&fs::read_to_string(path)?)?;
-    let mut seen = std::collections::BTreeSet::new();
-    for root in &roots {
-        let root_path = Path::new(root);
-        if !root_path.is_absolute() || !root_path.exists() {
-            return Err(format!("source root `{root}` is not an existing absolute path").into());
-        }
-        if !seen.insert(fs::canonicalize(root_path)?) {
-            return Err(format!("source root `{root}` is listed twice").into());
-        }
-    }
-    Ok(roots)
-}
-
-/// The simulation options the options document asks for. The published
-/// component has no experiment window, so only the fields lowering and the
-/// runtime-choice admission read are set.
-fn requested_options(options: &InteractiveOptions) -> SimOptions {
-    let base = SimOptions {
-        solver_mode: SimSolverMode::parse_request(Some(&options.solver)).0,
-        dt: (options.dt > 0.0).then_some(options.dt),
-        ..SimOptions::default()
-    };
-    options.configure(base, options.initial_inputs.clone())
-}
-
-/// Bind the runtime choices of `opts` to the component, or refuse naming the
-/// first one it would otherwise substitute. The solver, its configuration and
-/// both tolerances become the component's Co-Simulation step plan, through
-/// the backend that owns them. The guest is INTERPRETED, so a policy that
-/// requires compiled code is refused.
-fn bind_runtime_choices(
-    component: FmiComponent,
-    options: &InteractiveOptions,
-    opts: &SimOptions,
-) -> Result<FmiComponent, Box<dyn Error>> {
-    if !(options.atol > 0.0 && options.rtol > 0.0) {
-        return Err("the options must state a positive atol and rtol; none is defaulted".into());
-    }
-    if opts.execution_policy == SimExecutionPolicy::NativeRequired {
-        return Err(
-            "execution policy `native_required` is refused: this guest is INTERPRETED".into(),
-        );
-    }
-    let plan = rumoca_sim::co_simulation_plan(opts)?;
-    eprintln!("SCALAR_PACKAGE co_simulation={}", serde_json::json!(plan));
-    Ok(component.with_co_simulation(plan))
 }
 
 /// Published variables counted by FMI type and causality.
@@ -115,9 +63,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         scratch.unwrap_or(work).join("rumoca-cache"),
     );
     let source = fs::read_to_string(source_path)?;
-    let roots = read_source_roots(roots_path)?;
-    let options = InteractiveOptions::parse(&fs::read_to_string(options_path)?)?;
-    let opts = requested_options(&options);
+    let roots = read_source_roots(Path::new(roots_path))?;
+    let options = ScalarPackageOptions::parse(&fs::read_to_string(options_path)?)?;
     let (compilation, frontend_s) = stage("frontend", || {
         rumoca::Compiler::new()
             .model(model)
@@ -126,15 +73,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|error| error.to_string().into())
     })?;
     let (component, lower_s) = stage("lower", || {
-        Ok(rumoca_sim::lower_fmi_scalar_export_component(&compilation.dae, &opts)?)
+        Ok(rumoca_sim::lower_fmi_scalar_export_component(
+            &compilation.dae,
+            options.sim_options(),
+        )?)
     })?;
     let variables = census(&component);
     eprintln!("SCALAR_PACKAGE census={}", serde_json::json!(variables));
     let (component, _) = stage("runtime_choices", || {
-        bind_runtime_choices(component, &options, &opts)
+        let component = options.bind_runtime_choices(component)?;
+        eprintln!(
+            "SCALAR_PACKAGE co_simulation={}",
+            serde_json::json!(component.co_simulation())
+        );
+        Ok(component)
     })?;
     let (prepared, prepare_s) = stage("prepared_model", || {
         Ok(PreparedScalarFmiLsModel::from_component(&component)?)
+    })?;
+    // Every served type and VR is admitted by the scalar view, the owner the
+    // package is constructed with, before the guest core is built.
+    stage("served_variables", || {
+        Ok(FmiScalarDeploymentView::from_root(prepared.root())?)
     })?;
     let (core, core_s) = stage("fixed_guest_core", || {
         let staging = work.join("fixed-source");

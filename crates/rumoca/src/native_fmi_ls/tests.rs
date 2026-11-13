@@ -441,3 +441,119 @@ fn scalar_preparation_refuses_a_native_admissible_root_and_admits_a_stateful_one
     );
     assert!(rumoca_sim::PreparedScalarFmiLsModel::from_component(&stateful).is_ok());
 }
+
+const PAGE_OPTIONS: &str = r#"{"dt":0.002,"solver":"fixed-step","atol":1e-8,"rtol":1e-6,
+    "initial_inputs":[],"execution_policy":"auto","fixed_step":{"step":0.001,"order":2},
+    "parameters":{"k":2.0}}"#;
+
+fn decay(options: &ScalarPackageOptions) -> anyhow::Result<rumoca_ir_solve::fmi::FmiComponent> {
+    let compiled = crate::Compiler::new()
+        .model("Decay")
+        .compile_str(
+            "model Decay\n  parameter Real k = 1;\n  Real x(start = 1, fixed = true);\n\
+             equation\n  der(x) = -k * x;\nend Decay;\n",
+            "decay.mo",
+        )
+        .unwrap();
+    Ok(rumoca_sim::lower_fmi_scalar_export_component(
+        &compiled.dae,
+        options.sim_options(),
+    )?)
+}
+
+/// The page's options document binds its exact solver, step, order and both
+/// tolerances as the component's step plan, its parameter override reaches
+/// the component, and the Scalar-profile component is the scalar product.
+#[test]
+fn page_options_bind_their_fixed_step_plan_and_parameters_to_the_component() {
+    use rumoca_ir_solve::fmi::{CoSimulationMethod, CoSimulationSubstep};
+    let options = ScalarPackageOptions::parse(PAGE_OPTIONS).unwrap();
+    let component = options.bind_runtime_choices(decay(&options).unwrap()).unwrap();
+    let plan = component.co_simulation();
+    assert_eq!(
+        plan.method(),
+        CoSimulationMethod::ExplicitRungeKutta { order: 2 }
+    );
+    assert_eq!(plan.substep(), CoSimulationSubstep::Fixed { step: 0.001 });
+    assert_eq!(plan.default_tolerance().to_bits(), 1.0e-6_f64.to_bits());
+    assert_eq!(plan.absolute_tolerance(), Some(1.0e-8));
+    let root = component.runtime_view().retain_assertion_root();
+    let k = root
+        .metadata()
+        .variables()
+        .iter()
+        .find(|variable| variable.name() == "k")
+        .and_then(|variable| variable.storage())
+        .unwrap();
+    assert_eq!(root.model().parameters.value(k.base()).unwrap(), 2.0);
+    assert!(rumoca_sim::PreparedScalarFmiLsModel::from_component(&component).is_ok());
+}
+
+/// No family alias selects a solver, no equal custom tolerance pair or other
+/// solver falls back to the standard plan, and no tolerance or policy is
+/// defaulted; an override the lowering cannot apply is refused, not dropped.
+#[test]
+fn package_options_refuse_unknown_names_unbound_tolerances_and_unknown_overrides() {
+    let refused = |json: &str| match ScalarPackageOptions::parse(json) {
+        Err(error) => error.to_string(),
+        Ok(options) => match decay(&options).and_then(|c| options.bind_runtime_choices(c)) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("{json} was admitted"),
+        },
+    };
+    let madeup = refused(r#"{"solver":"rk-madeup","atol":1e-6,"rtol":1e-6}"#);
+    assert!(madeup.contains("unknown solver"), "{madeup}");
+    for json in [
+        r#"{"solver":"rk-like","atol":1e-4,"rtol":1e-4}"#,
+        r#"{"solver":"rk-like","atol":1e-8,"rtol":1e-6}"#,
+        r#"{"solver":"bdf","atol":1e-6,"rtol":1e-6}"#,
+    ] {
+        assert!(refused(json).contains("no Co-Simulation step plan"), "{json}");
+    }
+    for (json, reason) in [
+        (r#"{"solver":"fixed-step","rtol":1e-6}"#, "none is defaulted"),
+        (
+            r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6,"execution_policy":"native_required"}"#,
+            "INTERPRETED",
+        ),
+        (
+            r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6}"#,
+            "explicit fixed_step",
+        ),
+    ] {
+        assert!(refused(json).contains(reason), "{json}");
+    }
+    let unknown = r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6,"parameters":{"nope":1},
+        "fixed_step":{"step":0.001,"order":2}}"#;
+    refused(unknown);
+
+    let standard = ScalarPackageOptions::parse(r#"{"solver":"rk-like","atol":1e-6,"rtol":1e-6}"#)
+        .unwrap();
+    let component = standard
+        .bind_runtime_choices(decay(&standard).unwrap())
+        .unwrap();
+    assert_eq!(
+        *component.co_simulation(),
+        rumoca_ir_solve::fmi::CoSimulationStepPlan::STANDARD
+    );
+}
+
+/// Source roots are existing absolute paths listed once.
+#[test]
+fn source_roots_must_exist_be_absolute_and_be_listed_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = dir.path().join("Library.mo");
+    std::fs::write(&library, "package Library end Library;\n").unwrap();
+    let list = dir.path().join("roots.json");
+    let write = |roots: serde_json::Value| std::fs::write(&list, roots.to_string()).unwrap();
+    let library = library.to_str().unwrap().to_owned();
+
+    write(serde_json::json!([library]));
+    assert_eq!(read_source_roots(&list).unwrap(), [library.clone()]);
+    write(serde_json::json!([library, library]));
+    assert!(read_source_roots(&list).unwrap_err().to_string().contains("listed twice"));
+    write(serde_json::json!(["Library.mo"]));
+    assert!(read_source_roots(&list).is_err(), "a relative root is refused");
+    write(serde_json::json!([dir.path().join("Missing.mo")]));
+    assert!(read_source_roots(&list).is_err(), "a missing root is refused");
+}

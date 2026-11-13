@@ -133,7 +133,9 @@ fn prepare_metadata_with(
 }
 
 mod scalar;
+mod scalar_options;
 pub use scalar::ScalarFmiLsPackage;
+pub use scalar_options::{ScalarPackageOptions, read_source_roots};
 
 #[cfg(test)]
 mod tests;
