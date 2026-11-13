@@ -19,6 +19,22 @@ impl PrecompiledRetainedEvent {
             invocations: program.invocations.clone(),
         }
     }
+    /// Emit the module again from the source being bound: saved bytes equal
+    /// to that emission carry the certificate it issued. Any other module, or
+    /// a source the emitter refuses, runs on a copy of Y as before.
+    fn emitted_read_only_y(
+        &self,
+        source: &solve::RetainedEventProgram,
+    ) -> Option<crate::emit::ReadOnlyY> {
+        let _emit = rumoca_core::browser_profile::Span::new("retained_event_bind_emit");
+        let layout = &source.source().model().problem.layout;
+        let (module, _, read_only_y) =
+            crate::emit::emit_event_program_module(source, layout).ok()?;
+        (module.bytes == self.artifact.module_bytes())
+            .then_some(read_only_y)
+            .flatten()
+    }
+
     pub fn bind(
         &self,
         source: solve::RetainedEventProgram,
@@ -93,18 +109,7 @@ impl PrecompiledRetainedEvent {
                 ));
             }
         }
-        // Emit the module again from the source being bound: saved bytes equal
-        // to that emission carry the certificate it issued. Any other module,
-        // or a source the emitter refuses, runs on a copy of Y as before.
-        let read_only_y = {
-            let _emit = rumoca_core::browser_profile::Span::new("retained_event_bind_emit");
-            crate::emit::emit_event_program_module(&source, &source.source().model().problem.layout)
-                .ok()
-                .and_then(|(module, _, read_only_y)| {
-                    (module.bytes == self.artifact.module_bytes()).then_some(read_only_y)
-                })
-                .flatten()
-        };
+        let read_only_y = self.emitted_read_only_y(&source);
         mark_y_census(read_only_y.as_ref());
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime =
