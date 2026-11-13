@@ -6,6 +6,9 @@
 //!   trace <component> <token> <t_start> <t_stop> <dt> <vr>...
 //!       Advances the Co-Simulation from `t_start` to `t_stop` in `dt` steps
 //!       and prints a CSV trace (`time` plus one column per value reference).
+//!   trace-bits <component> <token> <t_start> <t_stop> <dt> <vr>...
+//!       As `trace`, but every time and value is the hexadecimal IEEE-754 bit
+//!       pattern, so two traces can be compared for bit equality.
 
 mod actual_native_linkage;
 mod assertion_order;
@@ -222,7 +225,7 @@ fn run_lifecycle(component_path: &str, token: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_trace(component_path: &str, token: &str, args: &[String]) -> Result<()> {
+fn run_trace(component_path: &str, token: &str, args: &[String], bits: bool) -> Result<()> {
     ensure!(
         args.len() >= 4,
         "trace needs t_start t_stop dt and value references"
@@ -257,7 +260,7 @@ fn run_trace(component_path: &str, token: &str, args: &[String]) -> Result<()> {
 
     let steps = ((t_stop - t_start) / dt).round() as i64;
     let mut current = t_start;
-    print_row(&mut fmu, current, &references)?;
+    print_row(&mut fmu, current, &references, bits)?;
     for _ in 0..steps {
         let outcome = fmu
             .world
@@ -268,7 +271,7 @@ fn run_trace(component_path: &str, token: &str, args: &[String]) -> Result<()> {
             Ok(result) => current = result.last_successful_time,
             Err(status) => bail!("do-step failed at t={current}: {status:?}"),
         }
-        print_row(&mut fmu, current, &references)?;
+        print_row(&mut fmu, current, &references, bits)?;
     }
     ensure!(
         fmu.world
@@ -280,12 +283,20 @@ fn run_trace(component_path: &str, token: &str, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn print_row(fmu: &mut Fmu, time: f64, references: &[u32]) -> Result<()> {
-    let mut row = format!("{time:.9}");
+fn print_row(fmu: &mut Fmu, time: f64, references: &[u32], bits: bool) -> Result<()> {
+    let mut row = if bits {
+        format!("{:016x}", time.to_bits())
+    } else {
+        format!("{time:.9}")
+    };
     for reference in references {
         let value = get_first(fmu, *reference)?
             .with_context(|| format!("value reference {reference} not readable"))?;
-        row.push_str(&format!(",{value:.12e}"));
+        if bits {
+            row.push_str(&format!(",{:016x}", value.to_bits()));
+        } else {
+            row.push_str(&format!(",{value:.12e}"));
+        }
     }
     println!("{row}");
     Ok(())
@@ -303,7 +314,8 @@ fn main() -> Result<()> {
         "native-fmi" => native_fmi::run(component_path, token, &args[3..]),
         "native-fmi-capacity" => native_fmi_capacity::run(component_path, token, &args[3..]),
         "lifecycle" => run_lifecycle(component_path, token),
-        "trace" => run_trace(component_path, token, &args[3..]),
+        "trace" => run_trace(component_path, token, &args[3..], false),
+        "trace-bits" => run_trace(component_path, token, &args[3..], true),
         "typed" => typed_values::run(component_path, token, &args[3..]),
         "logging" => logging::run(component_path, token, &args[3..]),
         "assertion-order" => assertion_order::run(component_path, token, &args[3..]),
