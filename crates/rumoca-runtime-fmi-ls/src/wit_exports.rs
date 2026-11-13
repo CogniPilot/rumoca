@@ -4,3 +4,10 @@
 use crate::{adapter::RumocaFmu, bindings};
 
 bindings::export!(RumocaFmu with_types_in crate::bindings);
+
+#[cfg(feature = "preinit")]
+impl bindings::Guest for RumocaFmu {
+    fn rumoca_preinit() {
+        crate::bootstrap::preinitialize();
+    }
+}

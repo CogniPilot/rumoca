@@ -1,10 +1,11 @@
 //! One actual receiver inventory shared by instances; publication is not entry authority.
 use rumoca_exec_wasm::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
 use rumoca_solver::fmi_me::{MeModelSource, MeRetainedComponent};
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 
 thread_local! {
     static MODEL: OnceCell<Result<LinkedNativeGuestModel, String>> = const { OnceCell::new() };
+    static INSTANTIATED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn with_model<T>(
@@ -21,6 +22,7 @@ fn with_model<T>(
 }
 
 pub(super) fn prepare(token: &str) -> Result<MeRetainedComponent, String> {
+    INSTANTIATED.with(|instantiated| instantiated.set(true));
     with_model(|model| {
         model
             .validate_instantiation_token(token)
@@ -35,4 +37,18 @@ pub(super) fn prepare(token: &str) -> Result<MeRetainedComponent, String> {
 
 pub(super) fn default_tolerance() -> Result<f64, String> {
     with_model(|model| Ok(model.component().co_simulation().default_tolerance()))
+}
+
+/// Receive the shared model once, before any instance exists, so a build-time
+/// snapshot holds it. Traps after an instantiation or on a receive refusal:
+/// the snapshot then fails instead of capturing instance state or an error.
+#[cfg(feature = "preinit")]
+pub(super) fn preinitialize() {
+    assert!(
+        !INSTANTIATED.with(Cell::get),
+        "pre-initialisation after an instantiation"
+    );
+    if let Err(error) = with_model(|_| Ok(())) {
+        panic!("pre-initialisation refused: {error}");
+    }
 }

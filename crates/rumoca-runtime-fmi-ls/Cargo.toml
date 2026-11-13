@@ -10,6 +10,11 @@ homepage.workspace = true
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[features]
+# Build-only: adds the `rumoca-preinit` export for build-time snapshotting.
+# The published component never carries it.
+preinit = []
+
 [dependencies]
 rumoca-solver = { path = "../rumoca-solver", default-features = false, features = ["sparse-linalg", "native-wasm"] }
 rumoca-ir-solve = { workspace = true }

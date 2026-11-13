@@ -11,10 +11,31 @@ mod resource;
 
 pub use resource::{FmiLsResource, FmiLsResourceError, FmiLsStepResult};
 
-#[cfg(all(target_arch = "wasm32", target_os = "wasi", target_env = "p2"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2",
+    not(feature = "preinit")
+))]
 pub mod bindings {
     wit_bindgen::generate!({
         world: "co-simulation-fmu",
         path: "../rumoca-phase-codegen/src/templates/fmi-ls-wasm/wit",
+    });
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2",
+    feature = "preinit"
+))]
+pub mod bindings {
+    wit_bindgen::generate!({
+        world: "rumoca:preinit/co-simulation-fmu-preinit",
+        path: [
+            "../rumoca-phase-codegen/src/templates/fmi-ls-wasm/wit",
+            "src/preinit",
+        ],
     });
 }

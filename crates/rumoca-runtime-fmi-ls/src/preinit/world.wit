@@ -1,0 +1,10 @@
+// Build-only world: the canonical Co-Simulation world plus one init export that
+// Wizer runs once at build time and removes from the snapshot. The published
+// component's world is exactly `fmi:fmi3/co-simulation-fmu`.
+package rumoca:preinit;
+
+world co-simulation-fmu-preinit {
+  include fmi:fmi3/co-simulation-fmu@3.0.0;
+
+  export rumoca-preinit: func();
+}
