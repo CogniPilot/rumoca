@@ -63,8 +63,13 @@ pub(super) fn run(component_path: &str, token: &str, args: &[String]) -> Result<
     let started = Instant::now();
     let interface = fmu.world.fmi_fmi3_co_simulation().co_simulation_instance();
     ensure!(
-        interface.call_enter_initialization_mode(&mut fmu.store, fmu.instance, None, t_start, None)?
-            == Status::Ok
+        interface.call_enter_initialization_mode(
+            &mut fmu.store,
+            fmu.instance,
+            None,
+            t_start,
+            None
+        )? == Status::Ok
     );
     ensure!(interface.call_exit_initialization_mode(&mut fmu.store, fmu.instance)? == Status::Ok);
     let init_ms = elapsed_ms(started);
@@ -132,19 +137,42 @@ mod tests {
 
     #[test]
     fn only_an_exactly_completed_plain_step_is_counted() {
-        assert_eq!(completed_step(0.04, 0.02, reached(0.04 + 0.02)).unwrap(), 0.04 + 0.02);
+        assert_eq!(
+            completed_step(0.04, 0.02, reached(0.04 + 0.02)).unwrap(),
+            0.04 + 0.02
+        );
         let partial = reached(0.05);
         assert!(completed_step(0.04, 0.02, partial).is_err(), "partial");
-        assert!(completed_step(0.04, 0.02, reached(0.04)).is_err(), "no progress");
+        assert!(
+            completed_step(0.04, 0.02, reached(0.04)).is_err(),
+            "no progress"
+        );
         for flagged in [
-            Outcome { early_return: true, ..reached(0.06) },
-            Outcome { terminate_simulation: true, ..reached(0.06) },
-            Outcome { event_handling_needed: true, ..reached(0.06) },
+            Outcome {
+                early_return: true,
+                ..reached(0.06)
+            },
+            Outcome {
+                terminate_simulation: true,
+                ..reached(0.06)
+            },
+            Outcome {
+                event_handling_needed: true,
+                ..reached(0.06)
+            },
         ] {
             assert!(completed_step(0.04, 0.02, flagged).is_err(), "{flagged:?}");
         }
-        for (current, dt) in [(f64::NAN, 0.02), (0.0, f64::INFINITY), (0.0, 0.0), (0.0, -0.02)] {
-            assert!(completed_step(current, dt, reached(0.02)).is_err(), "{current} {dt}");
+        for (current, dt) in [
+            (f64::NAN, 0.02),
+            (0.0, f64::INFINITY),
+            (0.0, 0.0),
+            (0.0, -0.02),
+        ] {
+            assert!(
+                completed_step(current, dt, reached(0.02)).is_err(),
+                "{current} {dt}"
+            );
         }
         assert!(completed_step(f64::MAX, f64::MAX, reached(f64::INFINITY)).is_err());
     }
