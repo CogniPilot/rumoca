@@ -62,7 +62,10 @@ mod retained_native_program;
     target_env = "p2"
 ))]
 #[doc(hidden)]
-pub use retained_native_program::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
+pub use retained_native_program::{
+    LinkedNativeGuestModel, LinkedScalarGuestModel, receive_fixed_native_guest_model,
+    receive_fixed_scalar_guest_model,
+};
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 mod host_runtime;
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]

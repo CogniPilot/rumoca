@@ -53,13 +53,60 @@ impl LinkedNativeGuestModel {
 
     /// Compare the actual publication slot, never use a token to admit an entry.
     pub fn validate_instantiation_token(&self, token: &str) -> Result<(), WasmCompileError> {
-        if token != self.publication_token {
-            return Err(WasmCompileError::Input(
-                "FMI instantiation token differs from the original publication".into(),
-            ));
-        }
-        Ok(())
+        check_publication_token(&self.publication_token, token)
     }
+}
+
+/// One fresh checked replay of a scalar (stateful) product: the component and
+/// its publication token, with no native preparation. Its compiled entries are
+/// reached through linked dispatch once that profile exists; until then the
+/// existing ME owner evaluates it. No public constructor accepts source bytes.
+pub struct LinkedScalarGuestModel {
+    component: FmiComponent,
+    publication_token: String,
+}
+
+impl LinkedScalarGuestModel {
+    pub fn component(&self) -> &FmiComponent {
+        &self.component
+    }
+
+    /// Compare the actual publication slot, never use a token to admit an entry.
+    pub fn validate_instantiation_token(&self, token: &str) -> Result<(), WasmCompileError> {
+        check_publication_token(&self.publication_token, token)
+    }
+}
+
+fn check_publication_token(expected: &str, token: &str) -> Result<(), WasmCompileError> {
+    if token != expected {
+        return Err(WasmCompileError::Input(
+            "FMI instantiation token differs from the original publication".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Fixed-core bootstrap of a scalar product. Like the native receiver it
+/// replays the linked capsule and reads the linked token; it never asks for a
+/// native preparation, so a stateful component is not refused here.
+#[doc(hidden)]
+pub fn receive_fixed_scalar_guest_model() -> Result<LinkedScalarGuestModel, WasmCompileError> {
+    let (component, _capacity) = replay_linked_source()?;
+    Ok(LinkedScalarGuestModel {
+        component,
+        publication_token: publication_token()?,
+    })
+}
+
+fn publication_token() -> Result<String, WasmCompileError> {
+    let token = String::from_utf8(slot_bytes(SourceSlot::PublicationToken)?)
+        .map_err(|error| WasmCompileError::Input(error.to_string()))?;
+    if token.is_empty() {
+        return Err(WasmCompileError::Input(
+            "linked publication token is empty".into(),
+        ));
+    }
+    Ok(token)
 }
 
 /// Fixed-core bootstrap only. The adapter caches this inventory across resources.
@@ -67,13 +114,7 @@ impl LinkedNativeGuestModel {
 #[doc(hidden)]
 pub fn receive_fixed_native_guest_model() -> Result<LinkedNativeGuestModel, WasmCompileError> {
     let (component, policy) = replay_linked_source()?;
-    let publication_token = String::from_utf8(slot_bytes(SourceSlot::PublicationToken)?)
-        .map_err(|error| WasmCompileError::Input(error.to_string()))?;
-    if publication_token.is_empty() {
-        return Err(WasmCompileError::Input(
-            "linked publication token is empty".into(),
-        ));
-    }
+    let publication_token = publication_token()?;
     let inputs = component
         .runtime_view()
         .retain_assertion_root()

@@ -17,7 +17,10 @@ pub use execution::NativeInvocationOutcome;
     target_os = "wasi",
     target_env = "p2"
 ))]
-pub use linked_guest::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
+pub use linked_guest::{
+    LinkedNativeGuestModel, LinkedScalarGuestModel, receive_fixed_native_guest_model,
+    receive_fixed_scalar_guest_model,
+};
 pub use transport::{
     NativeInvocationLease, NativeTransport, NativeTransportError, NativeTransportSnapshot,
     NativeTypedInput, NativeTypedInputBatch, PreparedNativeStorage,
