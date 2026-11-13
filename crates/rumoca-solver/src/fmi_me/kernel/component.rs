@@ -1074,6 +1074,31 @@ impl SolveMeKernel {
         self.refresh_public_observation_coordinate(solver_y, parameters, time)
     }
 
+    /// The delay owner's maximum step bound at exactly the coordinate
+    /// [`Self::observation_coordinate`] refreshes (public time, solver vector
+    /// with the current state prefix, parameters before the refresh), computed
+    /// on copies: nothing is committed and the accepted bound is unchanged.
+    /// `None` means the step is actually unconstrained.
+    pub(super) fn observation_step_bound(&self) -> Result<Option<f64>, MeError> {
+        if !self.runtime.has_delay_channels() {
+            return Ok(None);
+        }
+        let time = self.public_time_eval_time(self.time);
+        let mut parameters = self.params.clone();
+        let mut solver_y = self.solver_y_guess.borrow().clone();
+        if solver_y.len() < self.states.len() {
+            return Err(contract(format!(
+                "observation solver vector has {} entries for {} state values",
+                solver_y.len(),
+                self.states.len()
+            )));
+        }
+        solver_y[..self.states.len()].copy_from_slice(&self.states);
+        self.runtime
+            .refresh_delay_values(time, &solver_y, &mut parameters)
+            .map_err(MeError::from)
+    }
+
     fn refresh_public_observation_coordinate(
         &self,
         mut solver_y: Vec<f64>,

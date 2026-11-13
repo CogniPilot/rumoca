@@ -166,19 +166,25 @@ impl SolveMeKernel {
             .iter()
             .any(|member| matches!(member, ScalarMember::Derivative { .. }))
         {
-            let mut derivatives = vec![0.0; self.state_count];
-            self.continuous_state_derivatives_into(&mut derivatives)?;
-            derivatives
+            self.observation_derivatives(observation)?
         } else {
             Vec::new()
+        };
+        let step_bound = if members
+            .iter()
+            .any(|member| matches!(member, ScalarMember::MaxStepDuration))
+        {
+            self.require_observation_coordinate(observation)?;
+            self.observation_step_bound()?
+        } else {
+            None
         };
         let mut values = Vec::with_capacity(count);
         for member in members {
             match member {
                 ScalarMember::Time => values.push(observation.time),
                 ScalarMember::MaxStepDuration => values.push(
-                    self.max_step_duration
-                        .unwrap_or(rumoca_ir_solve::fmi::MAX_STEP_DURATION_UNCONSTRAINED),
+                    step_bound.unwrap_or(rumoca_ir_solve::fmi::MAX_STEP_DURATION_UNCONSTRAINED),
                 ),
                 ScalarMember::Derivative { base, count } => {
                     values.extend_from_slice(&derivatives[base..base + count]);
@@ -198,6 +204,58 @@ impl SolveMeKernel {
             }
         }
         Ok(values)
+    }
+
+    /// The observation was taken at this kernel's current coordinate (same
+    /// time and continuous-state prefix, bit for bit); anything else refuses.
+    fn require_observation_coordinate(&self, observation: &MeObservation) -> Result<(), MeError> {
+        let same_states = observation
+            .solver_y
+            .get(..self.states.len())
+            .is_some_and(|prefix| {
+                prefix
+                    .iter()
+                    .zip(&self.states)
+                    .all(|(observed, state)| observed.to_bits() == state.to_bits())
+            });
+        if observation.time.to_bits() != self.time.to_bits() || !same_states {
+            return Err(contract(
+                "the observation is not at this instance's current coordinate",
+            ));
+        }
+        Ok(())
+    }
+
+    /// State derivatives bound to `observation`: evaluated at its public time
+    /// with its refreshed parameters (delay values, public clock activation,
+    /// dependent discrete rows) and its refreshed solver vector as the guess,
+    /// through the production derivative evaluator. Nothing is cached or
+    /// committed. Where the integrator's derivative coordinate differs from
+    /// the public one (a reached, unprocessed time-event boundary uses the
+    /// left limit), a published derivative is ambiguous and is refused.
+    fn observation_derivatives(&self, observation: &MeObservation) -> Result<Vec<f64>, MeError> {
+        self.require_observation_coordinate(observation)?;
+        let time = self.public_time_eval_time(observation.time);
+        if self.continuous_eval_time().to_bits() != time.to_bits() {
+            return Err(contract(
+                "a state derivative at an unprocessed event boundary is ambiguous",
+            ));
+        }
+        let settle = self.numerics_settle();
+        let mut guess = observation.solver_y.clone();
+        let mut derivatives = vec![0.0; self.state_count];
+        self.runtime
+            .eval_state_derivatives_with_guess_into(
+                time,
+                &self.states,
+                &observation.parameters,
+                &mut guess,
+                settle.tol,
+                settle.max_iters,
+                &mut derivatives,
+            )
+            .map_err(MeError::from)?;
+        Ok(derivatives)
     }
 
     /// Before initialization completes, read only host-written cells (inputs,

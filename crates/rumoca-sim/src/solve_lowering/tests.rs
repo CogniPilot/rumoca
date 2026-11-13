@@ -17,6 +17,8 @@ mod compiled_messages;
 mod continuous_input_writes;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+mod scalar_fmi_values;
 mod function_returns;
 #[cfg(feature = "solver-diffsol")]
 mod g2_projection;
