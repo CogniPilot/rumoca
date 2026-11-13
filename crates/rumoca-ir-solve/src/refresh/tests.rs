@@ -6,6 +6,7 @@ mod streamed_materialization;
 
 use super::*;
 
+mod execution_order;
 mod staged_execution;
 
 #[test]

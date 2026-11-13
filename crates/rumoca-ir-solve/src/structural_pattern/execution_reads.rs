@@ -96,6 +96,25 @@ impl StructuralPattern {
         output_execution_ranges(program, span, DependencySource::SolverY)
     }
 
+    /// Each result's own reads and, once, the obligations its program
+    /// executes. A result's execution reads are its own reads joined with the
+    /// program's obligations ([`Self::derive_output_execution_y_dependency_ranges`]),
+    /// which a consumer keeps shared instead of copying into every result.
+    pub fn derive_output_execution_y_dependency_parts(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<(Vec<Arc<IndexIntervals>>, Arc<IndexIntervals>), StructuralPatternError> {
+        let (outputs, obligations) =
+            output_execution_parts(program, span, DependencySource::SolverY)?;
+        Ok((
+            outputs
+                .into_iter()
+                .map(DependencyState::into_shared)
+                .collect(),
+            obligations.into_shared(),
+        ))
+    }
+
     /// Each result's parameter reads plus the program's execution obligations.
     pub fn derive_output_execution_p_dependency_ranges(
         program: &[LinearOp],
@@ -134,6 +153,20 @@ fn output_execution_ranges(
     span: Option<Span>,
     source: DependencySource,
 ) -> Result<Vec<Arc<IndexIntervals>>, StructuralPatternError> {
+    let (outputs, obligations) = output_execution_parts(program, span, source)?;
+    Ok(outputs
+        .into_iter()
+        .map(|output| output.union(obligations.clone()).into_shared())
+        .collect())
+}
+
+/// Each result's reads under the execution policy, and the obligations the
+/// program executes, from one walk.
+fn output_execution_parts(
+    program: &[LinearOp],
+    span: Option<Span>,
+    source: DependencySource,
+) -> Result<(Vec<DependencyState>, DependencyState), StructuralPatternError> {
     let obligations = RefCell::new(DependencyState::empty());
     let outputs = program_dependencies_with_policy(
         program,
@@ -144,11 +177,7 @@ fn output_execution_ranges(
         source,
         DependencyPolicy::Execution(&obligations),
     )?;
-    let obligations = obligations.into_inner();
-    Ok(outputs
-        .into_iter()
-        .map(|output| output.union(obligations.clone()).into_shared())
-        .collect())
+    Ok((outputs, obligations.into_inner()))
 }
 
 fn execution_union(

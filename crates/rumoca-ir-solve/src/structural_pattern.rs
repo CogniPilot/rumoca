@@ -21,6 +21,8 @@ mod compact_placement;
 mod tensor_update;
 
 #[cfg(test)]
+mod closure_oracle_tests;
+#[cfg(test)]
 mod kinematic_states_tests;
 #[cfg(test)]
 mod state_jacobian_tests;

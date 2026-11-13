@@ -22,8 +22,10 @@
 //!
 //! The kinematic states are the rest. A system with no seed has every state
 //! kinematic and an empty `R`, which a partitioned step treats as one explicit
-//! step. Reads are the primal read relation of each output
-//! ([`StructuralPattern::derive_output_execution_y_dependency_ranges`]), not the
+//! step. Reads are the primal execution read relation of each output: its
+//! own reads and its program's obligations, which every output of the
+//! program shares
+//! ([`StructuralPattern::derive_output_execution_y_dependency_parts`]), not the
 //! sensitivity relation the state Jacobian closes over: a state read only
 //! inside a condition has no tangent but still changes the value.
 //!
@@ -36,10 +38,11 @@
 //! state, or the algebraics of its projection block, out of it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use super::StructuralPattern;
-use super::state_jacobian::AlgebraicClosure;
+use super::state_jacobian::{AlgebraicClosure, RowColumns};
 use crate::{
     AlgebraicProjectionBlock, AlgebraicProjectionPlan, IndexIntervals, LinearOp, Reg,
     ScalarProgramBlock,
@@ -113,12 +116,71 @@ impl KinematicStates {
 /// What one output row reads.
 #[derive(Clone, Default)]
 struct OutputReads {
-    /// Solver-Y columns the output depends on.
+    /// Solver-Y columns the output itself reads.
     columns: Arc<IndexIntervals>,
+    /// Solver-Y columns its program's execution obligations read, shared by
+    /// every output of the program rather than copied into each.
+    obligations: Arc<IndexIntervals>,
     /// What makes the program unusable for a kinematic row, if anything.
     taint: Option<NonKinematicReason>,
     /// The slot the output copies unchanged, when it is exactly one load.
     copy_of: Option<usize>,
+}
+
+impl OutputReads {
+    /// Every column the output's execution reads: its own and its program's
+    /// obligations, interval by interval in ascending order of their starts.
+    fn intervals(&self) -> impl Iterator<Item = RangeInclusive<usize>> + '_ {
+        let mut own = self.columns.intervals().peekable();
+        let mut shared = self.obligations.intervals().peekable();
+        std::iter::from_fn(move || match (own.peek(), shared.peek()) {
+            (Some(own_next), Some(shared_next)) if own_next.start() <= shared_next.start() => {
+                own.next()
+            }
+            (_, Some(_)) => shared.next(),
+            _ => own.next(),
+        })
+    }
+
+    /// Whether the output reads a slot past the solver vector.
+    fn reads_outside(&self, solver_count: usize) -> bool {
+        [&self.columns, &self.obligations]
+            .into_iter()
+            .any(|columns| {
+                columns
+                    .intervals()
+                    .last()
+                    .is_some_and(|interval| *interval.end() >= solver_count)
+            })
+    }
+
+    /// The algebraic columns the output's execution reads.
+    fn algebraic_columns(
+        &self,
+        (state_count, solver_count): (usize, usize),
+    ) -> impl Iterator<Item = usize> + '_ {
+        let solver_last = solver_count.checked_sub(1);
+        self.intervals().flat_map(move |interval| {
+            let (start, last) = interval.into_inner();
+            solver_last
+                .map(|solver_last| start.max(state_count)..=last.min(solver_last))
+                .into_iter()
+                .flatten()
+        })
+    }
+}
+
+/// The implicit rows as the closure reads them.
+struct ImplicitRelation<'a>(&'a [OutputReads]);
+
+impl RowColumns for ImplicitRelation<'_> {
+    fn row_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn visit_row_intervals(&self, row: usize, visitor: &mut dyn FnMut(RangeInclusive<usize>)) {
+        self.0[row].intervals().for_each(visitor);
+    }
 }
 
 fn derive_reasons(
@@ -129,23 +191,25 @@ fn derive_reasons(
 ) -> Option<Vec<Option<NonKinematicReason>>> {
     let derivative = output_reads(derivative, state_count)?;
     let implicit = output_reads(implicit, implicit.output_count())?;
-    let relation: Vec<Arc<IndexIntervals>> = implicit
-        .iter()
-        .map(|output| Arc::clone(&output.columns))
-        .collect();
-    let closure =
-        AlgebraicClosure::derive(Some(&relation), plan, (state_count, solver_count), None).ok()?;
+    let closure = AlgebraicClosure::derive(
+        Some(&ImplicitRelation(&implicit)),
+        plan,
+        (state_count, solver_count),
+        None,
+    )
+    .ok()?;
     let blocks = plan.blocks.scalar_blocks();
     if blocks.len() != plan.blocks.len() {
         return None;
     }
-    let block_taint = block_taint(blocks, &implicit, &closure, solver_count)?;
+    let block_taint = block_taint(blocks, &implicit, &closure, (state_count, solver_count))?;
     let mut reasons = vec![None; state_count];
     let mut read_blocks = Vec::with_capacity(state_count);
     for (state, row) in derivative.iter().enumerate() {
-        let owners = algebraic_owners(&row.columns, &closure, (state_count, solver_count))?;
-        let outside =
-            reads_outside(&row.columns, solver_count).then_some(NonKinematicReason::Unanalysable);
+        let owners = algebraic_owners(row, &closure, (state_count, solver_count))?;
+        let outside = row
+            .reads_outside(solver_count)
+            .then_some(NonKinematicReason::Unanalysable);
         reasons[state] = reasons[state]
             .or(row.taint)
             .or(outside)
@@ -159,6 +223,14 @@ fn derive_reasons(
         }
         read_blocks.push(owners);
     }
+    // The non-kinematic states as intervals, kept equal to `reasons`.
+    let mut non_kinematic = IndexIntervals::of(
+        reasons
+            .iter()
+            .enumerate()
+            .filter(|(_, reason)| reason.is_some())
+            .map(|(state, _)| state),
+    );
     let mut changed = true;
     while changed {
         changed = false;
@@ -166,8 +238,9 @@ fn derive_reasons(
             if reasons[state].is_some() {
                 continue;
             }
-            if let Some(through) = reached(&read_blocks[state], &closure, &reasons) {
+            if let Some(through) = reached(&read_blocks[state], &closure, &non_kinematic) {
                 reasons[state] = Some(NonKinematicReason::Closure { through });
+                non_kinematic.insert(state);
                 changed = true;
             }
         }
@@ -175,41 +248,29 @@ fn derive_reasons(
     Some(reasons)
 }
 
-/// A non-kinematic state an algebraic of one of `blocks` depends on.
+/// The least non-kinematic state an algebraic of one of `blocks` depends on,
+/// in block order.
 fn reached(
     blocks: &BTreeSet<usize>,
     closure: &AlgebraicClosure,
-    reasons: &[Option<NonKinematicReason>],
+    non_kinematic: &IndexIntervals,
 ) -> Option<usize> {
     blocks.iter().find_map(|&block| {
-        let states = closure.block_states(block)?;
-        states
-            .iter()
-            .copied()
-            .find(|&state| reasons.get(state).is_none_or(Option::is_some))
+        let reached = closure.block_states(block)?.intersection(non_kinematic);
+        reached.intervals().next().map(|interval| *interval.start())
     })
 }
 
-/// The projection blocks solving the algebraic columns of `columns`; `None`
+/// The projection blocks solving the algebraic columns `row` reads; `None`
 /// when one has no block.
 fn algebraic_owners(
-    columns: &IndexIntervals,
+    row: &OutputReads,
     closure: &AlgebraicClosure,
-    (state_count, solver_count): (usize, usize),
+    counts: (usize, usize),
 ) -> Option<BTreeSet<usize>> {
-    columns
-        .iter()
-        .filter(|&column| column >= state_count && column < solver_count)
+    row.algebraic_columns(counts)
         .map(|column| closure.owner_block(column))
         .collect()
-}
-
-/// Whether `columns` reads a slot past the solver vector.
-fn reads_outside(columns: &IndexIntervals, solver_count: usize) -> bool {
-    columns
-        .intervals()
-        .last()
-        .is_some_and(|interval| *interval.end() >= solver_count)
 }
 
 /// Each projection block's taint: simultaneous, a tainted row or a slot
@@ -218,11 +279,11 @@ fn block_taint(
     blocks: &[AlgebraicProjectionBlock],
     implicit: &[OutputReads],
     closure: &AlgebraicClosure,
-    solver_count: usize,
+    counts: (usize, usize),
 ) -> Option<Vec<Option<NonKinematicReason>>> {
     let mut taint = blocks
         .iter()
-        .map(|block| own_block_taint(block, implicit, solver_count))
+        .map(|block| own_block_taint(block, implicit, counts.1))
         .collect::<Option<Vec<_>>>()?;
     let mut changed = true;
     while changed {
@@ -231,7 +292,9 @@ fn block_taint(
             if taint[index].is_some() {
                 continue;
             }
-            if let Some(reason) = reads_tainted_block(block, index, implicit, closure, &taint) {
+            if let Some(reason) =
+                reads_tainted_block(block, index, implicit, (closure, counts), &taint)
+            {
                 taint[index] = Some(reason);
                 changed = true;
             }
@@ -250,7 +313,8 @@ fn own_block_taint(
         .then_some(NonKinematicReason::SimultaneousBlock);
     for &row in &block.rows {
         let output = implicit.get(row)?;
-        let outside = reads_outside(&output.columns, solver_count)
+        let outside = output
+            .reads_outside(solver_count)
             .then_some(NonKinematicReason::Unanalysable);
         taint = taint.or(output.taint).or(outside);
     }
@@ -261,13 +325,13 @@ fn reads_tainted_block(
     block: &AlgebraicProjectionBlock,
     index: usize,
     implicit: &[OutputReads],
-    closure: &AlgebraicClosure,
+    (closure, counts): (&AlgebraicClosure, (usize, usize)),
     taint: &[Option<NonKinematicReason>],
 ) -> Option<NonKinematicReason> {
     block
         .rows
         .iter()
-        .flat_map(|&row| implicit[row].columns.iter())
+        .flat_map(|&row| implicit[row].algebraic_columns(counts))
         .find_map(|column| {
             closure
                 .owner_block(column)
@@ -310,8 +374,8 @@ fn output_reads(programs: &ScalarProgramBlock, rows: usize) -> Option<Vec<Output
 /// Per-output reads of one scalar program. A program whose read set cannot
 /// be derived yields no outputs, so each of its rows is unanalysable.
 fn program_reads(program: &[LinearOp], span: Option<rumoca_core::Span>) -> Vec<OutputReads> {
-    let (Ok(reads), Ok(effects)) = (
-        StructuralPattern::derive_output_execution_y_dependency_ranges(program, span),
+    let (Ok((reads, obligations)), Ok(effects)) = (
+        StructuralPattern::derive_output_execution_y_dependency_parts(program, span),
         StructuralPattern::execution_has_effect(program, span),
     ) else {
         return Vec::new();
@@ -324,6 +388,7 @@ fn program_reads(program: &[LinearOp], span: Option<rumoca_core::Span>) -> Vec<O
         .enumerate()
         .map(|(position, (columns, effect))| OutputReads {
             columns,
+            obligations: Arc::clone(&obligations),
             taint: program_taint.or(effect.then_some(NonKinematicReason::Unanalysable)),
             copy_of: copies.get(position).copied().flatten(),
         })
@@ -403,3 +468,6 @@ fn forget_written(op: &LinearOp, loaded: &mut BTreeMap<Reg, Option<usize>>) {
         loaded.insert(register, None);
     }
 }
+
+#[cfg(test)]
+mod scalar_oracle_tests;

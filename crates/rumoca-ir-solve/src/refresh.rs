@@ -418,7 +418,9 @@ pub struct RefreshPlan {
     pub dynamic_causal_seed_rows: RefreshRowSelection,
     pub value_stages: Vec<RefreshStage>,
     pub causal_solution_certified: bool,
-    /// Derived from canonical execution prefixes; never trusted from the wire.
+    /// Why the staged value schedule cannot certify its execution reads,
+    /// derived from canonical execution prefixes over the final stages; never
+    /// trusted from the wire.
     #[serde(skip)]
     pub execution_order_refusal: Option<RefreshExecutionRefusal>,
 }
