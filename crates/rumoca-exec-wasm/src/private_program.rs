@@ -230,8 +230,14 @@ fn compile_admitted(
     #[cfg(feature = "precompiled-programs")]
     let source = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
         .map_err(WasmCompileError::Input)?;
-    let modules = crate::emit::emit_private_entries_modules(entries, layout, table, sizes)
-        .map_err(WasmCompileError::Backend)?;
+    let modules = crate::emit::emit_private_entries_modules(
+        entries,
+        layout,
+        table,
+        sizes,
+        crate::emit::Linkage::Browser,
+    )
+    .map_err(WasmCompileError::Backend)?;
     let mut sources = entries.iter();
     let mut compiled = Vec::with_capacity(entries.len());
     for (module, artifacts) in modules {
@@ -326,6 +332,20 @@ pub struct AdmittedPrivateProgram {
     admission: u64,
 }
 
+/// An admitted program as its shared module is printed from it.
+type AdmittedSource<'a> = (
+    &'a ScalarProgramBlock,
+    Option<usize>,
+    &'a crate::emit::AdmittedEntry,
+);
+
+impl AdmittedPrivateProgram {
+    /// The exact block and seed that were admitted.
+    pub(crate) fn source(&self) -> (&ScalarProgramBlock, Option<usize>) {
+        (&self.block, self.seed_len)
+    }
+}
+
 static NEXT_ADMISSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl PrivateProgramAdmission {
@@ -349,16 +369,59 @@ impl PrivateProgramAdmission {
         &self,
         programs: &[&AdmittedPrivateProgram],
     ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
+        compile_admitted(
+            &self.entries(programs)?,
+            &self.layout,
+            &self.table,
+            self.sizes,
+        )
+    }
+
+    fn entries<'a>(
+        &self,
+        programs: &[&'a AdmittedPrivateProgram],
+    ) -> Result<Vec<AdmittedSource<'a>>, WasmCompileError> {
         if programs.iter().any(|program| program.admission != self.id) {
             return Err(WasmCompileError::Input(
                 "a private program admitted by another admission".into(),
             ));
         }
-        let entries = programs
+        Ok(programs
             .iter()
             .map(|program| (&program.block, program.seed_len, &program.entry))
-            .collect::<Vec<_>>();
-        compile_admitted(&entries, &self.layout, &self.table, self.sizes)
+            .collect())
+    }
+
+    /// The checked layout and call table every key of this admission binds.
+    pub(crate) fn source_context(&self) -> (&VarLayout, &SolvePureCallTable) {
+        (&self.layout, &self.table)
+    }
+
+    /// The modules `compile` prints for `programs`, with `symbols` as their
+    /// entry exports in order: same grouping, entries and bodies.
+    pub(crate) fn linked_modules(
+        &self,
+        programs: &[&AdmittedPrivateProgram],
+        symbols: &[String],
+    ) -> Result<
+        Vec<(
+            crate::CompiledNativeCallProgramWasm,
+            Vec<crate::emit::PrivateEntryArtifact>,
+        )>,
+        WasmCompileError,
+    > {
+        let linkage = crate::emit::Linkage::Linked {
+            entries: symbols,
+            operations: "",
+        };
+        crate::emit::emit_private_entries_modules(
+            &self.entries(programs)?,
+            &self.layout,
+            &self.table,
+            self.sizes,
+            linkage,
+        )
+        .map_err(WasmCompileError::Backend)
     }
 
     /// `Some(seed_len)` admits a directional entry reading that many seed coordinates.

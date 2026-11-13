@@ -29,9 +29,7 @@ fn span(at: usize) -> rumoca_core::Span {
 
 pub(super) fn component((name, source): (&str, &str)) -> FmiComponent {
     let mut session = rumoca_compile::Session::default();
-    session
-        .add_document(&format!("{name}.mo"), source)
-        .unwrap();
+    session.add_document(&format!("{name}.mo"), source).unwrap();
     let compiled = session.compile_model(name).unwrap();
     let lowered = rumoca_phase_solve::lower_solve_model_for_profile(
         &compiled.dae,

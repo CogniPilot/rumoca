@@ -187,7 +187,7 @@ pub(crate) fn ensure_memory_capacity(
 }
 
 /// Bind every math ABI symbol to the same `libm` routines the guests export.
-fn define_math(linker: &mut Linker<()>) -> Result<(), WasmCompileError> {
+pub(crate) fn define_math(linker: &mut Linker<()>) -> Result<(), WasmCompileError> {
     for import in MathImport::ALL {
         let name = import.symbol();
         if matches!(import, MathImport::Pow | MathImport::Atan2) {

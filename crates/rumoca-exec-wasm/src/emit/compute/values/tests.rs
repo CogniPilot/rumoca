@@ -197,7 +197,7 @@ fn compact_call_points_keep_strided_inputs_sparse_outputs_and_ieee_bits() {
         ],
     };
     let layout = VarLayout::from_parts(Default::default(), 2, 3);
-    let artifact = emit_values(&block, &layout, &table).unwrap();
+    let artifact = emit_values(&block, &layout, &table, Linkage::Browser).unwrap();
     let mut runner = Runner::new(&artifact, &layout);
     for (iteration, last) in [
         0.0,
@@ -242,7 +242,7 @@ fn later_typed_fault_wins_over_an_earlier_nonfinite_value_and_instance_recovers(
         ])],
     };
     let layout = VarLayout::from_parts(Default::default(), 1, 1);
-    let artifact = emit_values(&block, &layout, &table).unwrap();
+    let artifact = emit_values(&block, &layout, &table, Linkage::Browser).unwrap();
     let fault = artifact
         .faults()
         .iter()
@@ -264,7 +264,7 @@ fn empty_domain_executes_no_call_and_bad_buffer_refuses_before_input_mutation() 
         nodes: vec![mapped(site, 0)],
     };
     let layout = VarLayout::from_parts(Default::default(), 1, 1);
-    let artifact = emit_values(&block, &layout, &table).unwrap();
+    let artifact = emit_values(&block, &layout, &table, Linkage::Browser).unwrap();
     let mut runner = Runner::new(&artifact, &layout);
     assert_eq!(runner.run(&[-0.0], &[1e100], 0), (0, Vec::new()));
     assert_eq!(*runner.store.data(), 0);

@@ -6,11 +6,13 @@ mod compute;
 mod conditional;
 mod gather;
 mod linear_solve;
+mod linkage;
 mod seed;
 mod tensor;
 pub(super) use compute::{
-    AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
-    emit_exact_assignment_module, emit_issued_assignment_module, emit_private_entries_modules,
+    AdmissionCache, AdmittedEntry, PrivateEntryArtifact, admit_private_entry,
+    emit_event_program_module, emit_exact_assignment_module, emit_issued_assignment_module,
+    emit_private_entries_modules,
 };
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
 pub(super) use compute::{emit_derivative_value_module, emit_kinematic_value_module};
@@ -19,6 +21,7 @@ pub(super) use compute::{
 };
 #[cfg(test)]
 pub(super) use compute::{emit_private_directional_module, emit_private_program_module};
+pub(crate) use linkage::Linkage;
 pub(crate) use seed::{private_seed_reads, seed_read_range};
 
 use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};

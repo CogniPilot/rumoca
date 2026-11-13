@@ -62,6 +62,7 @@ fn artifact(sinusoid: bool) -> CompiledNativeCallProgramWasm {
         &layout,
         true,
         &[],
+        Linkage::Browser,
     )
     .unwrap()
 }

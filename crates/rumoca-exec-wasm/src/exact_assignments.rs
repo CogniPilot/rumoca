@@ -91,9 +91,15 @@ pub fn compile_exact_assignment_schedule_wasm(
     layout: &VarLayout,
     table: &SolvePureCallTable,
 ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-    let artifact =
-        crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
-            .map_err(WasmCompileError::Backend)?;
+    let artifact = crate::emit::emit_exact_assignment_module(
+        source,
+        owners,
+        schedule,
+        layout,
+        table,
+        crate::emit::Linkage::Browser,
+    )
+    .map_err(WasmCompileError::Backend)?;
     CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
         rumoca_ir_solve::PreparedKernelSource::new(layout, table)
             .and_then(|source_key| source_key.exact_assignment_schedule(source, owners, schedule))
@@ -109,8 +115,13 @@ pub fn compile_issued_assignment_rows_wasm(
     layout: &VarLayout,
     table: &SolvePureCallTable,
 ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-    let artifact = crate::emit::emit_issued_assignment_module(rows, layout, table)
-        .map_err(WasmCompileError::Backend)?;
+    let artifact = crate::emit::emit_issued_assignment_module(
+        rows,
+        layout,
+        table,
+        crate::emit::Linkage::Browser,
+    )
+    .map_err(WasmCompileError::Backend)?;
     CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
         rumoca_ir_solve::PreparedKernelSource::new(layout, table)
             .and_then(|source_key| source_key.issued_assignment_rows(rows))
