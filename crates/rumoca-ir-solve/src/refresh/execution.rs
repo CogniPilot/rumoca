@@ -273,6 +273,12 @@ impl ContinuousRefreshOwners {
                     .map(|(program, _)| program)
             });
         }
+        // A compact source recipe keeps its block inventory without scalar
+        // rows or canonical block identities and issues no value remainder:
+        // there is none to reissue, and its plans are not checked scalar plans.
+        if self.has_compact_source_recipe() {
+            return Ok(());
+        }
         // Reissue remainders after refusals are known: a value-only causal
         // claim must not remove rows that the checked execution did not settle.
         let rebuilt = Self::checked(
