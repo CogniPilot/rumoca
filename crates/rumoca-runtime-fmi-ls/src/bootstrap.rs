@@ -1,11 +1,13 @@
 //! One actual receiver inventory shared by instances; publication is not entry authority.
 use rumoca_exec_wasm::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
 use rumoca_solver::fmi_me::{MeModelSource, MeRetainedComponent};
-use std::cell::{Cell, OnceCell};
+use std::cell::OnceCell;
 
 thread_local! {
     static MODEL: OnceCell<Result<LinkedNativeGuestModel, String>> = const { OnceCell::new() };
-    static INSTANTIATED: Cell<bool> = const { Cell::new(false) };
+    /// Latched at the exported instantiate entry, before any refusal.
+    #[cfg(feature = "preinit")]
+    static INSTANTIATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The first instance's component, constructed at pre-initialisation and
     /// moved (never cloned) into the first instance whose token checks.
     #[cfg(feature = "preinit")]
@@ -26,8 +28,13 @@ fn with_model<T>(
     })
 }
 
-pub(super) fn prepare(token: &str) -> Result<MeRetainedComponent, String> {
+/// Record an instantiation attempt; any attempt ends pre-initialisation.
+#[cfg(feature = "preinit")]
+pub(super) fn note_instantiation() {
     INSTANTIATED.with(|instantiated| instantiated.set(true));
+}
+
+pub(super) fn prepare(token: &str) -> Result<MeRetainedComponent, String> {
     with_model(|model| {
         model
             .validate_instantiation_token(token)
@@ -60,7 +67,7 @@ pub(super) fn default_tolerance() -> Result<f64, String> {
 #[cfg(feature = "preinit")]
 pub(super) fn preinitialize() {
     assert!(
-        !INSTANTIATED.with(Cell::get),
+        !INSTANTIATED.with(std::cell::Cell::get),
         "pre-initialisation after an instantiation"
     );
     match with_model(construct) {
