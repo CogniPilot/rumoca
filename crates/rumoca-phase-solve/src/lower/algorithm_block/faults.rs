@@ -8,9 +8,18 @@
 //! completes, so an effect evaluated inside a region before a fault in that
 //! same region would be lost. Such code is refused; a region that cannot
 //! fault, or whose faults all precede its effects, is exact.
+//!
+//! Whether an expression can fault is decided structurally first (static
+//! intervals of its operands). An expression that reads only names with
+//! static ranges (loop iterators, Integer locals) and that the intervals do
+//! not settle is settled exactly instead: the GALEC oracle evaluates it on
+//! every combination of those ranges (`enumerated`), so an index computed by
+//! a function of the iterators is in range when every such value is.
 
+use rumoca_eval_galec::{Evaluator, IntegerDomain, Value};
 use rumoca_ir_galec::ast::IfStatement;
 
+use super::definedness::write_canonical;
 use super::*;
 
 /// What evaluating some code can do.
@@ -79,7 +88,14 @@ struct Ctx {
     /// An `if` here lowers to one region per statement (a method's top
     /// level, and the bodies of such an `if`).
     split: bool,
+    /// Structural answers only: nothing is settled exactly (see
+    /// `expression_summary`).
+    coarse: bool,
 }
+
+/// An exact settlement of an expression (see `settled`): `None` when it does
+/// not settle, else the range of its values when they are all Integers.
+pub(super) type Settlement = Option<Option<(i128, i128)>>;
 
 impl Ctx {
     /// `first`, then `next`; inside a region an effect before a fault is
@@ -89,6 +105,17 @@ impl Ctx {
             faults: first.faults || next.faults,
             effects: first.effects || next.effects,
             lost: first.lost || next.lost || (self.region && first.effects && next.faults),
+        }
+    }
+
+    /// This context giving structural answers only.
+    fn coarse(&self) -> Self {
+        Self {
+            loops: self.loops.clone(),
+            locals: self.locals.clone(),
+            region: self.region,
+            split: self.split,
+            coarse: true,
         }
     }
 
@@ -139,7 +166,7 @@ pub(super) fn require_fault_visible_state(
 ) -> Result<(), AlgorithmBlockLowerError> {
     let mut ctx = Ctx {
         split: true,
-        locals: local_ranges(scope, statements),
+        locals: local_ranges(scope, statements, &BTreeMap::new()),
         ..Ctx::default()
     };
     for statement in statements {
@@ -159,12 +186,16 @@ pub(super) fn require_fault_visible_state(
 /// `for` bodies are regions. A top-level `if` lowers whole, unless as one
 /// region it would hold a raised bit or a store at a later fault: that `if`
 /// splits as a method's does, publishing each statement before the next.
+///
+/// `inputs` are the static ranges of the function's Integer inputs that
+/// every call in the block settles (`Functions::literal_argument`).
 pub(super) fn function_summary(
     scope: &MethodScope<'_>,
     statements: &[Spanned<Statement>],
+    inputs: &BTreeMap<usize, (i128, i128)>,
 ) -> (Summary, BTreeSet<usize>) {
     let mut ctx = Ctx {
-        locals: local_ranges(scope, statements),
+        locals: local_ranges(scope, statements, inputs),
         ..Ctx::default()
     };
     let mut summary = NOTHING;
@@ -437,8 +468,7 @@ fn subscripts_summary(
     let mut summary = NOTHING;
     for (subscript, &extent) in subscripts.iter().zip(dims) {
         let index = expression_summary(scope, ctx, subscript);
-        let in_range = index_range(scope, ctx, subscript)
-            .is_some_and(|(low, high)| low >= 1 && high <= i64::from(extent));
+        let in_range = within(scope, ctx, subscript, 1, i128::from(extent));
         summary = ctx.then(summary, index);
         if !in_range {
             summary = ctx.then(summary, FAULT);
@@ -466,7 +496,7 @@ fn int_range(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Opt
         Expression::Paren(inner) => int_range(scope, ctx, inner),
         Expression::Neg(reference) => {
             let (low, high) = int_range(scope, ctx, &Expression::Ref(reference.clone()))?;
-            Some((-high, -low))
+            Some((high.checked_neg()?, low.checked_neg()?))
         }
         Expression::If(if_expression) => if_expression
             .branches
@@ -483,10 +513,17 @@ fn int_range(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Opt
             let (a, b) = int_range(scope, ctx, lhs)?;
             let (c, d) = int_range(scope, ctx, rhs)?;
             match op {
-                BinaryOp::Add => Some((a + c, b + d)),
-                BinaryOp::Sub => Some((a - d, b - c)),
+                // An interval this arithmetic cannot hold is no interval:
+                // the caller keeps "may fault".
+                BinaryOp::Add => Some((a.checked_add(c)?, b.checked_add(d)?)),
+                BinaryOp::Sub => Some((a.checked_sub(d)?, b.checked_sub(c)?)),
                 BinaryOp::Mul => {
-                    let products = [a * c, a * d, b * c, b * d];
+                    let products = [
+                        a.checked_mul(c)?,
+                        a.checked_mul(d)?,
+                        b.checked_mul(c)?,
+                        b.checked_mul(d)?,
+                    ];
                     Some((*products.iter().min()?, *products.iter().max()?))
                 }
                 _ => None,
@@ -496,9 +533,171 @@ fn int_range(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Opt
     }
 }
 
-fn index_range(scope: &MethodScope<'_>, ctx: &Ctx, index: &Expression) -> Option<(i64, i64)> {
-    let (low, high) = int_range(scope, ctx, index)?;
-    Some((i64::try_from(low).ok()?, i64::try_from(high).ok()?))
+/// Whether every value of the Integer `expression` lies in `[low, high]`:
+/// by its static interval, else by its exact values.
+fn within(
+    scope: &MethodScope<'_>,
+    ctx: &Ctx,
+    expression: &Expression,
+    low: i128,
+    high: i128,
+) -> bool {
+    let inside = |(least, greatest): (i128, i128)| least >= low && greatest <= high;
+    int_range(scope, ctx, expression).is_some_and(inside)
+        || enumerated_range(scope, ctx, expression).is_some_and(inside)
+}
+
+/// The most combinations of values an expression is evaluated on.
+const ENUMERATION_BUDGET: u128 = 4096;
+
+/// The oracle's values of `expression` on every combination of the static
+/// ranges `names` of the names it reads; `None` when it cannot be settled
+/// this way.
+///
+/// It can when every reference is an unsubscripted local name with a static
+/// range (a loop iterator, or an Integer local of `local_ranges`), the
+/// combinations fit the budget, and every evaluation completes: a fault on
+/// one combination, or anything the oracle cannot evaluate here, settles
+/// nothing, and the caller keeps its structural answer. The ranges are
+/// supersets of the values the names take (an iterator's guard may exclude
+/// some), so what holds on every combination holds at run time. Functions of
+/// a block this lowering accepts are stateless and see no block state
+/// (`Functions::declare`), so one evaluation does not change the next.
+fn enumerated(
+    scope: &MethodScope<'_>,
+    names: &BTreeMap<String, (i64, i64)>,
+    expression: &Expression,
+) -> Settlement {
+    let combinations = names.values().try_fold(1u128, |count, &(low, high)| {
+        let span = u128::try_from(i128::from(high) - i128::from(low) + 1).ok()?;
+        count
+            .checked_mul(span)
+            .filter(|&count| count <= ENUMERATION_BUDGET)
+    })?;
+    let domain = scope.scope.arithmetic.integer_domain();
+    let domain = IntegerDomain::new(domain.minimum(), domain.maximum())?;
+    let mut oracle = Evaluator::new(scope.scope.functions.checked_block(), domain).ok()?;
+    let mut locals = names
+        .iter()
+        .map(|(name, &(low, _))| (name.clone(), Value::Integer(low)))
+        .collect::<BTreeMap<_, _>>();
+    let mut range: Option<(i128, i128)> = None;
+    let mut integers = true;
+    for _ in 0..combinations {
+        match oracle.expression_value(expression, &locals).ok()? {
+            Value::Integer(value) => {
+                let value = i128::from(value);
+                range = Some(range.map_or((value, value), |(low, high)| {
+                    (low.min(value), high.max(value))
+                }));
+            }
+            _ => integers = false,
+        }
+        // The next combination: the first name below its upper bound moves
+        // up and every name before it returns to its lower bound.
+        for (name, &(low, high)) in names {
+            let Some(Value::Integer(current)) = locals.get_mut(name) else {
+                return None;
+            };
+            if *current < high {
+                *current += 1;
+                break;
+            }
+            *current = low;
+        }
+    }
+    Some(range.filter(|_| integers))
+}
+
+/// The exact settlement of `expression` at this point, made once per block
+/// for an expression and the ranges of its names: the same expression under
+/// the same ranges has the same values wherever it stands.
+fn settled(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Settlement {
+    if ctx.coarse {
+        return None;
+    }
+    let mut names = BTreeMap::new();
+    if !ranged_names(scope, ctx, expression, &mut names) {
+        return None;
+    }
+    let mut key = format!("{names:?} ");
+    write_canonical(expression, &mut key);
+    if let Some(known) = scope.scope.functions.settlement(&key) {
+        return known;
+    }
+    let settlement = enumerated(scope, &names, expression);
+    scope.scope.functions.settle(key, settlement);
+    settlement
+}
+
+/// Collect the static range of every name `expression` reads; false when it
+/// reads anything else (block state, an element, a name without a range).
+fn ranged_names(
+    scope: &MethodScope<'_>,
+    ctx: &Ctx,
+    expression: &Expression,
+    names: &mut BTreeMap<String, (i64, i64)>,
+) -> bool {
+    let mut local = |reference: &Reference| {
+        let Reference::Local(part) = reference else {
+            return false;
+        };
+        if !part.subscripts.is_empty() {
+            return false;
+        }
+        let Some((low, high)) = int_range(scope, ctx, &Expression::Ref(reference.clone())) else {
+            return false;
+        };
+        let (Ok(low), Ok(high)) = (i64::try_from(low), i64::try_from(high)) else {
+            return false;
+        };
+        names.insert(part.name.lexeme().to_owned(), (low, high));
+        low <= high
+    };
+    match expression {
+        Expression::Bool(_) | Expression::Integer(_) => true,
+        Expression::Ref(reference) | Expression::Neg(reference) => local(reference),
+        // A Real literal, a Real-valued operator or a call that reaches a
+        // Real: the oracle's binary64 answer is not the target's.
+        Expression::Real(_) | Expression::Size { .. } => false,
+        Expression::Paren(inner) | Expression::Not(inner) => ranged_names(scope, ctx, inner, names),
+        Expression::Binary { op, lhs, rhs } => {
+            !matches!(op, BinaryOp::Div | BinaryOp::Pow)
+                && ranged_names(scope, ctx, lhs, names)
+                && ranged_names(scope, ctx, rhs, names)
+        }
+        Expression::Call(call) => {
+            scope.scope.functions.is_real_free(call)
+                && call
+                    .arguments
+                    .iter()
+                    .all(|argument| ranged_names(scope, ctx, argument, names))
+        }
+        Expression::Array(items) => items
+            .iter()
+            .all(|item| ranged_names(scope, ctx, item, names)),
+        Expression::If(if_expression) => {
+            if_expression.branches.iter().all(|(condition, value)| {
+                ranged_names(scope, ctx, condition, names) && ranged_names(scope, ctx, value, names)
+            }) && ranged_names(scope, ctx, &if_expression.else_value, names)
+        }
+    }
+}
+
+/// The least and greatest value of an Integer `expression` over the static
+/// ranges of the names it reads, exactly (see `enumerated`).
+fn enumerated_range(
+    scope: &MethodScope<'_>,
+    ctx: &Ctx,
+    expression: &Expression,
+) -> Option<(i128, i128)> {
+    settled(scope, ctx, expression).flatten()
+}
+
+/// Whether `expression` evaluates without a fault on every combination of
+/// the static ranges of the names it reads (see `enumerated`).
+fn never_faults(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> bool {
+    settled(scope, ctx, expression).is_some()
 }
 
 fn call_summary(scope: &MethodScope<'_>, ctx: &Ctx, call: &FunctionCall) -> Summary {
@@ -512,7 +711,17 @@ fn call_summary(scope: &MethodScope<'_>, ctx: &Ctx, call: &FunctionCall) -> Summ
         // fault to the bound frame, through any region (EL007); only
         // bits a region already holds unpublished can be lost, which `then`
         // decides from what precedes the call.
-        scope.scope.functions.summary(call)
+        let summary = scope.scope.functions.summary(call);
+        // A call that never faults on the ranges of its arguments does not
+        // fault here, whatever its function may do for other arguments.
+        if summary.faults && never_faults(scope, ctx, &Expression::Call(call.clone())) {
+            Summary {
+                effects: summary.effects,
+                ..NOTHING
+            }
+        } else {
+            summary
+        }
     } else {
         match Builtin::of(call) {
             Some(Builtin::IntegerDivision(_)) => FAULT,
@@ -524,7 +733,32 @@ fn call_summary(scope: &MethodScope<'_>, ctx: &Ctx, call: &FunctionCall) -> Summ
     ctx.then(summary, call)
 }
 
+/// What evaluating `expression` can do. An expression that structurally may
+/// fault but never does on the ranges of its names cannot fault here, so
+/// nothing in it is lost either; its effects stay.
+///
+/// The whole expression is tried first, against its structural answer with
+/// nothing below it settled; only when the whole does not settle are its
+/// parts settled one by one. So an expression is evaluated once, not once
+/// for each expression it is nested in.
 fn expression_summary(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Summary {
+    if ctx.coarse {
+        return structural_summary(scope, ctx, expression);
+    }
+    let coarse = structural_summary(scope, &ctx.coarse(), expression);
+    if !coarse.faults {
+        return coarse;
+    }
+    if never_faults(scope, ctx, expression) {
+        return Summary {
+            effects: coarse.effects,
+            ..NOTHING
+        };
+    }
+    structural_summary(scope, ctx, expression)
+}
+
+fn structural_summary(scope: &MethodScope<'_>, ctx: &Ctx, expression: &Expression) -> Summary {
     match expression {
         Expression::Bool(_)
         | Expression::Integer(_)
@@ -602,9 +836,13 @@ fn in_domain(
         lhs: Box::new(lhs.clone()),
         rhs: Box::new(rhs.clone()),
     };
-    int_range(scope, ctx, &expression).is_some_and(|(low, high)| {
-        low >= domain.minimum().into() && high <= domain.maximum().into()
-    })
+    within(
+        scope,
+        ctx,
+        &expression,
+        domain.minimum().into(),
+        domain.maximum().into(),
+    )
 }
 
 fn read_summary(scope: &MethodScope<'_>, ctx: &Ctx, reference: &Reference) -> Summary {
@@ -630,6 +868,7 @@ fn if_expression_summary(
         locals: ctx.locals.clone(),
         region: true,
         split: false,
+        coarse: ctx.coarse,
     };
     // Later conditions run in order on the false path (see
     // `if_statement_summary`).
@@ -658,19 +897,21 @@ fn if_expression_summary(
 /// ranges of every whole assignment, iterated to a fixpoint. A local with an
 /// assignment of unknown range, or whose range keeps growing (it depends on
 /// itself), has none. Sound because no read precedes an assignment (the
-/// definedness proof).
+/// definedness proof). `inputs` are the ranges the locals that are function
+/// inputs hold on entry; an assignment to one widens it like any other.
 fn local_ranges(
     scope: &MethodScope<'_>,
     statements: &[Spanned<Statement>],
+    inputs: &BTreeMap<usize, (i128, i128)>,
 ) -> BTreeMap<usize, (i128, i128)> {
-    let mut ranges = BTreeMap::new();
+    let mut ranges = inputs.clone();
     let mut unknown = BTreeSet::new();
     for _ in 0..4 {
         let mut ctx = Ctx {
             locals: ranges.clone(),
             ..Ctx::default()
         };
-        let mut next = BTreeMap::new();
+        let mut next = inputs.clone();
         collect_ranges(scope, &mut ctx, statements, &mut next, &mut unknown);
         for index in &unknown {
             next.remove(index);
@@ -680,7 +921,7 @@ fn local_ranges(
         }
         ranges = next;
     }
-    BTreeMap::new()
+    inputs.clone()
 }
 
 fn collect_ranges(
@@ -703,7 +944,9 @@ fn collect_ranges(
                         .element_type(),
                     SolveScalarType::Integer(_)
                 );
-                match int_range(scope, ctx, value).filter(|_| integer) {
+                let range =
+                    int_range(scope, ctx, value).or_else(|| enumerated_range(scope, ctx, value));
+                match range.filter(|_| integer) {
                     Some((low, high)) => {
                         let entry = next.entry(index).or_insert((low, high));
                         *entry = (entry.0.min(low), entry.1.max(high));

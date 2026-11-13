@@ -95,7 +95,7 @@ fn a_user_call_inside_a_builtin_keeps_its_declared_result_type() {
 #[test]
 fn missing_callee_summaries_refuse_a_region_until_the_effects_are_known() {
     let package = package(function_caller());
-    let scope = block_scope(package.block(), binary64()).unwrap();
+    let scope = block_scope(package.checked_block(), binary64()).unwrap();
     let method = method_scope(&scope, Method::DoStep, &package.block().do_step).unwrap();
     // Signatures alone cannot prove that a call preserves fault-visible
     // state. This must fail closed before the callee-first pass populates it.

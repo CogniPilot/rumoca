@@ -125,7 +125,7 @@ end PackedFactorPSD;
 /// Refine `source`, run Startup and one DoStep with the Real input `p` on the
 /// Solve evaluator and on the GALEC oracle, require every slot to agree bit
 /// for bit, and hand the oracle to `check`.
-fn step_with(source: &str, p: &[f64], check: impl FnOnce(&Evaluator<'_>)) {
+pub(super) fn step_with(source: &str, p: &[f64], check: impl FnOnce(&Evaluator<'_>)) {
     let name = model_name(source);
     let package = project(source).unwrap_or_else(|error| panic!("{name}: {error}"));
     let solve = lower_algorithm_block(&package, profile())
@@ -165,7 +165,7 @@ fn step_with(source: &str, p: &[f64], check: impl FnOnce(&Evaluator<'_>)) {
     check(&oracle);
 }
 
-fn reals(oracle: &Evaluator<'_>, name: &str) -> Vec<f64> {
+pub(super) fn reals(oracle: &Evaluator<'_>, name: &str) -> Vec<f64> {
     let Value::Array(items) = oracle.state(name).expect("an array state") else {
         panic!("{name} is an array");
     };
@@ -193,52 +193,33 @@ fn a_guarded_store_through_a_call_subscript_refines_and_matches_the_oracle() {
 }
 
 #[test]
-fn the_packed_psd_factorization_passes_the_definedness_proof() {
-    // Solve refinement now stops at the fault proof instead: the index
-    // functions' Integer arithmetic may overflow for arbitrary arguments, and
-    // a loop that raises NAN and then calls them could lose the bit. That is
-    // a separate refusal; the definedness proof admits the function.
-    let name = model_name(PACKED_FACTOR_PSD);
-    let package = project(PACKED_FACTOR_PSD).unwrap_or_else(|error| panic!("{name}: {error}"));
-    let Err(error) = lower_algorithm_block(&package, profile()) else {
-        panic!("{name}: the fault proof refuses the callee arithmetic in the loop");
-    };
-    assert!(error.to_string().contains("fault after"), "{name}: {error}");
-
-    // The projected Algorithm Code computes the factor, guards true and false.
-    let checked = CheckedAlgorithmBlock::construct(package.block().clone())
-        .unwrap_or_else(|error| panic!("{name}: checked block: {error:?}"));
-    let factor = |p: &[f64]| {
-        let mut oracle = Evaluator::new(&checked, IntegerDomain::signed_32())
-            .unwrap_or_else(|error| panic!("{name}: oracle: {error:?}"));
-        oracle
-            .set_state(
-                "p",
-                Value::Array(p.iter().copied().map(Value::Real).collect()),
-            )
-            .unwrap();
-        oracle.startup().expect("oracle Startup");
-        oracle.do_step().expect("oracle DoStep");
-        let Value::Boolean(ok) = *oracle.state("ok").expect("ok") else {
-            panic!("ok is Boolean");
-        };
-        (reals(&oracle, "lower"), ok)
+fn the_packed_psd_factorization_refines_and_matches_the_oracle() {
+    // The definedness proof admits the function, and so does the fault
+    // proof: every subscript is a function of the loop iterators that is in
+    // range on each of their values, so the loop that raises NAN cannot fault.
+    let factor = |p: &[f64], expected: (&[f64], bool)| {
+        step_with(PACKED_FACTOR_PSD, p, |oracle| {
+            let Value::Boolean(ok) = *oracle.state("ok").expect("ok") else {
+                panic!("ok is Boolean");
+            };
+            assert_eq!((reals(oracle, "lower").as_slice(), ok), expected);
+        });
     };
     // p packs the upper triangle row by row; `lower` packs the factor's rows.
     // L = [2 0 0; 1 3 0; 0.5 1 4]: every off-diagonal guard is true.
-    assert_eq!(
-        factor(&[4.0, 2.0, 1.0, 10.0, 3.5, 17.25]),
-        (vec![2.0, 1.0, 3.0, 0.5, 1.0, 4.0], true)
+    factor(
+        &[4.0, 2.0, 1.0, 10.0, 3.5, 17.25],
+        (&[2.0, 1.0, 3.0, 0.5, 1.0, 4.0], true),
     );
     // L = [0 0 0; 0 2 0; 0 1 3]: column 1 has a zero pivot, so its guards are
     // false and its entries stay zero; column 2's guard is true.
-    assert_eq!(
-        factor(&[0.0, 0.0, 0.0, 4.0, 2.0, 10.0]),
-        (vec![0.0, 0.0, 2.0, 0.0, 1.0, 3.0], true)
+    factor(
+        &[0.0, 0.0, 0.0, 4.0, 2.0, 10.0],
+        (&[0.0, 0.0, 2.0, 0.0, 1.0, 3.0], true),
     );
     // A zero pivot under a nonzero entry is not positive semidefinite.
-    assert_eq!(
-        factor(&[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]),
-        (vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0], false)
+    factor(
+        &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        (&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0], false),
     );
 }

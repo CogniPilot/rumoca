@@ -199,6 +199,21 @@ impl<'a> Evaluator<'a> {
         &self.active_signals
     }
 
+    /// The value of `expression` with `locals` bound, outside any method.
+    ///
+    /// A translator that has bound every name the expression reads to a
+    /// concrete value (loop iterators with static ranges) settles the
+    /// expression exactly with this: its value, or the fault it raises.
+    /// Nothing else is in scope, and block state is as uninitialized as it is
+    /// before `Startup`.
+    pub fn expression_value(
+        &mut self,
+        expression: &ast::Expression,
+        locals: &BTreeMap<String, Value>,
+    ) -> Result<Value, EvaluationError> {
+        self.expression(expression, locals)
+    }
+
     pub fn startup(&mut self) -> Result<(), EvaluationError> {
         if self.lifecycle != Lifecycle::Created {
             return Err(self.lifecycle_error("invoke Startup"));

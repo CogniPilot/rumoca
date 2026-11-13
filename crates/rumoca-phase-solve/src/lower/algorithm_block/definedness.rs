@@ -896,7 +896,7 @@ fn visit_references(expression: &Expression, visit: &mut impl FnMut(&Reference))
 
 /// Span-free text of a condition, so two spellings of one guard compare
 /// equal.
-fn write_canonical(expression: &Expression, text: &mut String) {
+pub(super) fn write_canonical(expression: &Expression, text: &mut String) {
     write_canonical_with(expression, text, &|_| None);
 }
 
