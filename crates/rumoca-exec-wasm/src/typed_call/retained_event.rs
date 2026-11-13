@@ -69,6 +69,33 @@ fn mark_y_census(read_only_y: Option<&crate::emit::ReadOnlyY>) {
     });
 }
 
+/// How one call presents the caller's Y to the module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum YPresentation {
+    /// The caller's Y itself.
+    InPlace,
+    /// A copy of Y, disjoint from every other buffer of the call.
+    Copied,
+}
+
+/// A module certified to store nothing into Y runs on the caller's Y in
+/// place; any other runs on a copy. Y and P are both shared slices and may
+/// overlap, and the module's span guards refuse overlapping buffers, so a
+/// certified module still runs on a copy when the two share a cell. An empty
+/// slice holds no cell and shares none.
+fn y_presentation(
+    read_only_y: Option<&crate::emit::ReadOnlyY>,
+    y: &[f64],
+    p: &[f64],
+) -> YPresentation {
+    let (y, p) = (y.as_ptr_range(), p.as_ptr_range());
+    let shared_cell = y.start < y.end && p.start < p.end && y.start < p.end && p.start < y.end;
+    match read_only_y {
+        Some(_) if !shared_cell => YPresentation::InPlace,
+        _ => YPresentation::Copied,
+    }
+}
+
 pub struct CompiledRetainedEventWasm {
     source: solve::RetainedEventProgram,
     artifact: Rc<crate::program_payload::ProgramPayload>,
@@ -179,15 +206,15 @@ impl CompiledRetainedEventWasm {
             all(feature = "host-engine", not(target_arch = "wasm32"))
         ))]
         {
-            // A module certified to store nothing into Y runs on the caller's
-            // Y in place; any other runs on a copy.
-            match self.read_only_y {
-                Some(_) => self
-                    .runtime
-                    .call_native_read_only(y, p, time, scratch, &mut []),
-                None => self
-                    .runtime
-                    .call_native(&mut y.to_vec(), p, time, scratch, &mut []),
+            match y_presentation(self.read_only_y.as_ref(), y, p) {
+                YPresentation::InPlace => {
+                    self.runtime
+                        .call_native_read_only(y, p, time, scratch, &mut [])
+                }
+                YPresentation::Copied => {
+                    self.runtime
+                        .call_native(&mut y.to_vec(), p, time, scratch, &mut [])
+                }
             }
         }
         #[cfg(not(any(
@@ -195,7 +222,11 @@ impl CompiledRetainedEventWasm {
             all(feature = "host-engine", not(target_arch = "wasm32"))
         )))]
         {
-            let _ = (y, p, time, scratch, &self.read_only_y);
+            let _ = (
+                time,
+                scratch,
+                y_presentation(self.read_only_y.as_ref(), y, p),
+            );
             Err(WasmCompileError::Input(
                 "event programs have no admitted engine on this target".into(),
             ))

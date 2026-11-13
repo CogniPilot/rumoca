@@ -16,6 +16,11 @@ fn span(at: usize) -> Span {
     )
 }
 fn source() -> s::SolveExecutionSource {
+    source_reading(s::LinearOp::LoadY { dst: 1, index: 1 }, 0)
+}
+
+/// The fixture with its divisor loaded by `divisor` and `p_cells` parameters.
+fn source_reading(divisor: s::LinearOp, p_cells: usize) -> s::SolveExecutionSource {
     let p = s::SolveArithmeticProfile::construct(
         s::SolveRealFormat::Binary64,
         s::SolveIntegerDomain::FULL,
@@ -66,7 +71,7 @@ fn source() -> s::SolveExecutionSource {
     let site = calls.owners()[0].call_site();
     let program = vec![
         s::LinearOp::LoadY { dst: 0, index: 0 },
-        s::LinearOp::LoadY { dst: 1, index: 1 },
+        divisor,
         s::LinearOp::PureCallObservation {
             dst_start: 2,
             input_starts: vec![0, 1].into(),
@@ -78,7 +83,7 @@ fn source() -> s::SolveExecutionSource {
         pure_calls: calls,
         ..Default::default()
     };
-    model.problem.layout = s::VarLayout::from_parts(Default::default(), 2, 0);
+    model.problem.layout = s::VarLayout::from_parts(Default::default(), 2, p_cells);
     model.problem.events.action_conditions =
         s::ScalarProgramBlock::with_program_spans(vec![program], vec![span(100)]).unwrap();
     model.problem.events.actions = vec![s::SolveEventAction {
@@ -95,7 +100,15 @@ fn source() -> s::SolveExecutionSource {
 }
 
 fn compile() -> CompiledRetainedEventWasm {
-    let source = source();
+    compile_source(source())
+}
+
+/// The fixture reading its condition from Y and its divisor from P.
+fn compile_reading_p() -> CompiledRetainedEventWasm {
+    compile_source(source_reading(s::LinearOp::LoadP { dst: 1, index: 0 }, 2))
+}
+
+fn compile_source(source: s::SolveExecutionSource) -> CompiledRetainedEventWasm {
     let program = source
         .event_program(s::RetainedAssertionSource::ActionConditions, 0)
         .unwrap();
@@ -262,4 +275,100 @@ fn a_certified_event_runs_on_the_callers_y_with_the_full_copy_results() {
     }
     assert_eq!(statuses[..2], [0, 0]);
     assert_ne!(statuses[2], 0, "a zero divisor must fault");
+}
+
+/// Y and P are shared slices and may overlap. A certified module still runs
+/// on a copy of Y whenever the two share a cell; adjacent slices and empty
+/// slices share none, and an uncertified module always runs on a copy.
+#[test]
+fn a_certified_event_keeps_the_copy_when_y_and_p_share_a_cell() {
+    let code = compile_reading_p();
+    let certificate = code.read_only_y.as_ref();
+    assert!(certificate.is_some());
+    let cells = [1.0, 2.0, 5.0];
+    let apart = [2.0, 5.0];
+    for (y, p, expected) in [
+        (&cells[..2], &cells[..2], YPresentation::Copied),
+        (&cells[..2], &cells[1..], YPresentation::Copied),
+        (&cells[1..], &cells[..2], YPresentation::Copied),
+        (&cells[..2], &apart[..], YPresentation::InPlace),
+        (&cells[..1], &cells[1..], YPresentation::InPlace),
+        (&cells[1..1], &cells[..], YPresentation::InPlace),
+        (&cells[..], &cells[1..1], YPresentation::InPlace),
+    ] {
+        assert_eq!(y_presentation(certificate, y, p), expected);
+        assert_eq!(y_presentation(None, y, p), YPresentation::Copied);
+    }
+}
+
+/// A certified module reading Y and P returns the status and scratch bits of
+/// the copied call whether its Y and P are one slice, overlapping windows or
+/// apart, faulting or not, and leaves the caller's cells bitwise unchanged.
+#[test]
+fn a_certified_event_reading_y_and_p_matches_the_copied_call_for_every_overlap() {
+    let code = compile_reading_p();
+    assert!(code.read_only_y.is_some());
+    let cells = code.scratch.borrow().len();
+    let mut statuses = Vec::new();
+    for values in [
+        [1.0, 2.0, 5.0],
+        [1.0, 0.0, 5.0],
+        [0.0, 3.0, 5.0],
+        [0.0, 0.0, 5.0],
+    ] {
+        let bits = values.map(f64::to_bits);
+        let apart = [values[1], values[2]];
+        for (y, p) in [
+            (&values[..2], &values[..2]),
+            (&values[..2], &values[1..]),
+            (&values[..2], &apart[..]),
+        ] {
+            let mut selected = vec![u64::MAX; cells];
+            let mut copied = selected.clone();
+            let status = code.execute(y, p, 0.0, &mut selected).unwrap();
+            let copied_status = code
+                .runtime
+                .call_native(&mut y.to_vec(), p, 0.0, &mut copied, &mut [])
+                .unwrap();
+            assert_eq!((status, &selected), (copied_status, &copied));
+            assert_eq!(values.map(f64::to_bits), bits);
+            statuses.push(status);
+        }
+    }
+    // One slice divides by its own condition cell; the windows and the
+    // disjoint pair divide by the second cell.
+    assert_eq!(statuses[..3], [0, 0, 0]);
+    assert_eq!(statuses[3], 0);
+    assert_ne!(statuses[4], 0, "a zero divisor must fault");
+    assert_ne!(statuses[5], 0, "a zero divisor must fault");
+    assert_ne!(statuses[6], 0, "a zero divisor must fault");
+}
+
+/// A fault on overlapping Y and P leaves the output and the caller's cells
+/// untouched and calls no observer, as on the copied path.
+#[test]
+fn a_certified_event_fault_on_overlapping_y_and_p_keeps_output_and_observers_untouched() {
+    let code = compile_reading_p();
+    let owner = code.source().table().owners()[0].id();
+    let one = [0.0, 0.0];
+    let windows = [1.0, 0.0, 5.0];
+    for (y, p) in [(&one[..], &one[..]), (&windows[..2], &windows[1..])] {
+        let mut out = [-0.0];
+        let mut calls = 0;
+        let error = code
+            .call(y, p, 0.0, &mut out, |_, _, _, _| {
+                calls += 1;
+                Ok(())
+            })
+            .unwrap_err();
+        let WasmCompileError::TypedSource(fault) = error else {
+            panic!("the original integer operation must retain its source-fault category");
+        };
+        assert_eq!(fault.kind, TypedCallFaultKind::IntegerArithmetic);
+        assert_eq!(fault.owner, owner);
+        assert_eq!(out[0].to_bits(), (-0.0f64).to_bits());
+        assert_eq!(calls, 0);
+    }
+    assert_eq!(one.map(f64::to_bits), [0, 0]);
+    assert_eq!(windows.map(f64::to_bits), [1.0, 0.0, 5.0].map(f64::to_bits));
 }
