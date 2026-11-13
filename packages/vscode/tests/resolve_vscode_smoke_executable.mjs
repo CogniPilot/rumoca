@@ -1,3 +1,4 @@
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,13 @@ function argValue(name) {
     ? process.argv[idx + 1]
     : undefined;
 }
+
+// Allow non-final address attempts more time before Node tries the next one.
+// The smoke resolver hit Node's attempt timer and an IPv6 route failure
+// (main 63c44acd, job 131399986644). The log does not distinguish a slow
+// handshake from an unreachable endpoint. Keep errors visible; the package's
+// existing request timeout and cache fallback remain in effect.
+net.setDefaultAutoSelectFamilyAttemptTimeout(5_000);
 
 const cachePathArg = argValue("--cache-path");
 const cachePath = cachePathArg

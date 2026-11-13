@@ -1,7 +1,10 @@
 use super::*;
 use std::fs;
 
-fn fixture() -> (tempfile::TempDir, String) {
+/// Synthetic fixtures revise nothing; the shipped record is tested in `revisions`.
+pub(super) const NO_REVISIONS: &str = r#"{"schema":1,"revisions":[]}"#;
+
+pub(super) fn fixture() -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("test directory");
     let path = format!("{BACKEND}/src/render.rs");
     let source = "pub fn print_issued_name(name: &str) -> &str { name }\n";
@@ -19,13 +22,17 @@ fn fixture() -> (tempfile::TempDir, String) {
     let ledger = root.path().join(LEDGER_PATH);
     fs::create_dir_all(ledger.parent().expect("parent")).expect("mkdir");
     fs::write(ledger, &text).expect("write ledger");
+    fs::write(root.path().join(REVISIONS_PATH), NO_REVISIONS).expect("write revisions");
     (root, text)
 }
 
 #[test]
 fn unchanged_reference_retains_all_96_unresolved_groups() {
     let (root, reference) = fixture();
-    assert_eq!(check(root.path(), &reference).expect("unchanged"), 96);
+    assert_eq!(
+        check(root.path(), &reference, NO_REVISIONS).expect("unchanged"),
+        96
+    );
 }
 
 #[test]
@@ -36,7 +43,9 @@ fn a_new_helper_is_not_grandfathered_by_the_96_count() {
         "fn alias() { derive_alias(); }",
     )
     .unwrap();
-    let error = check(root.path(), &reference).unwrap_err().to_string();
+    let error = check(root.path(), &reference, NO_REVISIONS)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("new:") && error.contains("alias_helper.rs"));
 }
 
@@ -49,7 +58,7 @@ fn same_branch_count_with_changed_arithmetic_is_rejected() {
     )
     .unwrap();
     assert!(
-        check(root.path(), &reference)
+        check(root.path(), &reference, NO_REVISIONS)
             .unwrap_err()
             .to_string()
             .contains("changed:")
@@ -64,7 +73,9 @@ fn moving_a_helper_does_not_retire_it() {
         root.path().join(BACKEND).join("src/new_name.rs"),
     )
     .unwrap();
-    let error = check(root.path(), &reference).unwrap_err().to_string();
+    let error = check(root.path(), &reference, NO_REVISIONS)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("removed:") && error.contains("new:"));
 }
 
@@ -76,7 +87,7 @@ fn a_literal_algorithm_is_a_source_change_even_without_jinja_ast_logic() {
         "for (int i=0; i<n; ++i) A[i] /= pivot;\n",
     )
     .unwrap();
-    assert!(check(root.path(), &reference).is_err());
+    assert!(check(root.path(), &reference, NO_REVISIONS).is_err());
 }
 
 #[test]
@@ -102,7 +113,7 @@ fn new_baseline_hash_or_approved_boolean_cannot_bypass_the_gate() {
     assert!(parse_ledger(&value.to_string()).is_err());
     fs::write(root.path().join(LEDGER_PATH), value.to_string()).unwrap();
     assert!(
-        check(root.path(), &reference)
+        check(root.path(), &reference, NO_REVISIONS)
             .unwrap_err()
             .to_string()
             .contains("rebaselining")
@@ -127,7 +138,7 @@ fn symlinks_cannot_hide_or_redirect_covered_source() {
     std::os::unix::fs::symlink("render.rs", root.path().join(BACKEND).join("src/alias.rs"))
         .unwrap();
     assert!(
-        check(root.path(), &reference)
+        check(root.path(), &reference, NO_REVISIONS)
             .unwrap_err()
             .to_string()
             .contains("symlink")
@@ -170,7 +181,7 @@ fn symlinked_scope_ancestors_are_rejected() {
     fs::rename(&original, &moved).unwrap();
     std::os::unix::fs::symlink(&moved, &original).unwrap();
     assert!(
-        check(root.path(), &reference)
+        check(root.path(), &reference, NO_REVISIONS)
             .unwrap_err()
             .to_string()
             .contains("symlink")

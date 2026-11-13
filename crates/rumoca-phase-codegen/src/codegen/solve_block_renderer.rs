@@ -8,6 +8,8 @@
 //! programs and the function owners.
 
 #[cfg(test)]
+mod call_level_tests;
+#[cfg(test)]
 mod nan_payload_tests;
 mod pass_through;
 
@@ -48,6 +50,9 @@ struct SolveBlockView<'a> {
     recalibrate: &'a TypedProgram,
     do_step: &'a TypedProgram,
     functions: &'a SolvePureCallTable,
+    /// Same-root issued levels, indexed by dense function owner id.
+    call_levels: &'a [usize],
+    function_levels: usize,
 }
 
 /// One immutable context per target invocation, as for
@@ -114,6 +119,7 @@ pub(super) fn solve_block_value(
                 .flatten(),
         })
         .collect();
+    let call_levels = block.call_levels();
     let view = SolveBlockView {
         arithmetic: block.arithmetic(),
         slots,
@@ -121,6 +127,8 @@ pub(super) fn solve_block_value(
         recalibrate: block.recalibrate().program(),
         do_step: block.do_step().program(),
         functions: block.functions(),
+        call_levels: call_levels.levels(),
+        function_levels: call_levels.deepest(),
         status_slots: block
             .functions()
             .owners()
@@ -164,7 +172,6 @@ pub(super) fn solve_block_value(
             }
         }
     }
-    assign_call_levels(&mut json);
     mark_else_chains(&mut json);
     let digest = block
         .digest()
@@ -611,79 +618,6 @@ fn mark_static_offsets(program: &mut serde_json::Map<String, serde_json::Value>)
         if known {
             operation["static_offset"] = serde_json::Value::from(offset);
         }
-    }
-}
-
-/// Give every function owner its call `level`: 1 + the deepest level of any
-/// caller, methods being level 0. Calls do not recurse, so every call chain
-/// strictly climbs levels, and frames of one level are never live together:
-/// the header overlays them in one union per level.
-fn assign_call_levels(json: &mut serde_json::Value) {
-    let count = json
-        .pointer("/functions/owners")
-        .and_then(serde_json::Value::as_array)
-        .map_or(0, Vec::len);
-    let callees = |program: &serde_json::Value| {
-        let mut called = Vec::new();
-        find_calls(program, &mut called);
-        called
-    };
-    let roots: Vec<usize> = ["/startup", "/recalibrate", "/do_step"]
-        .iter()
-        .filter_map(|method| json.pointer(method))
-        .flat_map(callees)
-        .collect();
-    let edges: Vec<Vec<usize>> = (0..count)
-        .map(|owner| {
-            // An owner without a body calls nothing.
-            json.pointer(&format!("/functions/owners/{owner}/body"))
-                .map_or_else(Vec::new, callees)
-        })
-        .collect();
-    let mut level = vec![1usize; count];
-    let mut frontier: Vec<(usize, usize)> = roots.into_iter().map(|owner| (owner, 1)).collect();
-    while let Some((owner, depth)) = frontier.pop() {
-        if owner >= count || depth > count || level[owner] > depth {
-            continue;
-        }
-        level[owner] = depth;
-        frontier.extend(edges[owner].iter().map(|callee| (*callee, depth + 1)));
-    }
-    if let Some(owners) = json
-        .pointer_mut("/functions/owners")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for (owner, entry) in owners.iter_mut().enumerate() {
-            if let Some(fields) = entry.as_object_mut() {
-                fields.insert("level".to_owned(), serde_json::Value::from(level[owner]));
-            }
-        }
-    }
-    if let Some(fields) = json.as_object_mut() {
-        let deepest = level.iter().copied().max().unwrap_or(0);
-        fields.insert(
-            "function_levels".to_owned(),
-            serde_json::Value::from(deepest),
-        );
-    }
-}
-
-/// The owner of every call operation in a program, nested programs included.
-fn find_calls(value: &serde_json::Value, called: &mut Vec<usize>) {
-    match value {
-        serde_json::Value::Object(fields) => {
-            if fields.get("operation").is_some_and(|kind| kind == "call")
-                && let Some(owner) = fields
-                    .get("owner")
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|id| usize::try_from(id).ok())
-            {
-                called.push(owner);
-            }
-            fields.values().for_each(|field| find_calls(field, called));
-        }
-        serde_json::Value::Array(items) => items.iter().for_each(|item| find_calls(item, called)),
-        _ => {}
     }
 }
 

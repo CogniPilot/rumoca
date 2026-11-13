@@ -8,6 +8,7 @@ mod tests;
 
 pub mod baseline;
 pub mod captured;
+mod revisions;
 
 // Component controls are ordinary Cargo tests. This byte relation is not yet
 // consumed by the production authorization path, which remains fail-closed.
@@ -23,6 +24,10 @@ use std::path::{Component, Path};
 const REFERENCE: &str = include_str!("../policy/backend-migration-ledger.json");
 const REFERENCE_SHA256: &str = "51f97c10ba2b189ac327597782b00d8bbee3c3b21013186cc6314778322094c0";
 const LEDGER_PATH: &str = "crates/xtask/policy/backend-migration-ledger.json";
+// Owner-directed path-scoped revisions (SPEC_0041 §7), pinned like the ledger.
+const REVISIONS: &str = include_str!("../policy/backend-migration-revisions.json");
+const REVISIONS_SHA256: &str = "d5912afb0ff2d5a448fc01bb1db054b9f5bf744c029231d480d5ed2d91303587";
+const REVISIONS_PATH: &str = "crates/xtask/policy/backend-migration-revisions.json";
 const BACKEND: &str = "crates/rumoca-phase-codegen";
 
 #[derive(Debug, Deserialize)]
@@ -189,14 +194,21 @@ fn changed_sources(
         .collect()
 }
 
-fn check(root: &Path, reference: &str) -> Result<usize> {
-    let roots = BTreeSet::from([BACKEND.into(), LEDGER_PATH.into()]);
+fn check(root: &Path, reference: &str, revisions: &str) -> Result<usize> {
+    let roots = BTreeSet::from([BACKEND.into(), LEDGER_PATH.into(), REVISIONS_PATH.into()]);
     let capture = crate::print_boundary_check::source_closure::capture(root, &roots)?;
-    captured::check_with_reference(&capture, reference)
+    captured::check_with_reference(&capture, reference, revisions)
 }
 
-fn check_inventory(ledger: &Ledger, actual: &BTreeMap<String, String>) -> Result<usize> {
-    let changes = changed_sources(&ledger.files, actual);
+/// Compare the backend with the ledger as revised by the exact pinned
+/// transitions; return the findings no revision has resolved.
+fn check_inventory(
+    ledger: &Ledger,
+    revisions: &str,
+    actual: &BTreeMap<String, String>,
+) -> Result<usize> {
+    let (expected, resolved) = revisions::expected_inventory(ledger, revisions)?;
+    let changes = changed_sources(&expected, actual);
     if !changes.is_empty() {
         bail!(
             "legacy backend freeze violated ({} paths):\n{}\nRetirement needs the real source-bound plan/API/conformance gate; counts and approved flags cannot authorize a change.",
@@ -204,17 +216,27 @@ fn check_inventory(ledger: &Ledger, actual: &BTreeMap<String, String>) -> Result
             changes.join("\n")
         );
     }
-    Ok(ledger.findings.len())
+    Ok(ledger.findings.len() - resolved.len())
 }
 
-/// Enforce the frozen legacy boundary. This deliberately cannot retire a row by
-/// editing data; verified retirement must be integrated with the shared gates.
-pub fn run(root: &Path) -> Result<()> {
+fn check_pins() -> Result<()> {
     ensure!(
         digest(REFERENCE.as_bytes()) == REFERENCE_SHA256,
         "immutable audit baseline changed"
     );
-    let unresolved = check(root, REFERENCE)?;
+    ensure!(
+        digest(REVISIONS.as_bytes()) == REVISIONS_SHA256,
+        "pinned backend revision record changed"
+    );
+    Ok(())
+}
+
+/// Enforce the frozen legacy boundary. This deliberately cannot retire a row by
+/// editing data; verified retirement must be integrated with the shared gates.
+/// Only a pinned owner-directed revision may move an exact covered identity.
+pub fn run(root: &Path) -> Result<()> {
+    check_pins()?;
+    let unresolved = check(root, REFERENCE, REVISIONS)?;
     println!(
         "Backend migration freeze PASS: {unresolved} unresolved audit groups; \
          legacy backends remain noncompliant. No print-only, M0-complete or WCET claim."
