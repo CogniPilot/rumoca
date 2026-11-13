@@ -100,10 +100,11 @@ where
                 "the standard Co-Simulation step plan is written by omission",
             ));
         }
-        Some(plan) => plan.checked().map_err(serde::de::Error::custom)?,
+        Some(plan) => plan,
     };
     FmiComponent::construct(wire.solve_model, wire.variables)
-        .map(|component| component.with_co_simulation(plan))
+        .map_err(serde::de::Error::custom)?
+        .with_co_simulation(plan)
         .map_err(serde::de::Error::custom)
 }
 

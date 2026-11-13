@@ -501,8 +501,11 @@ fn package_options_refuse_unknown_names_unbound_tolerances_and_unknown_overrides
             Ok(_) => panic!("{json} was admitted"),
         },
     };
-    let madeup = refused(r#"{"solver":"rk-madeup","atol":1e-6,"rtol":1e-6}"#);
-    assert!(madeup.contains("unknown solver"), "{madeup}");
+    for alias in ["rk-madeup", "euler", "dopri5", "rk45"] {
+        let json = format!(r#"{{"solver":"{alias}","atol":1e-6,"rtol":1e-6}}"#);
+        let refusal = refused(&json);
+        assert!(refusal.contains("unknown solver"), "{alias}: {refusal}");
+    }
     for json in [
         r#"{"solver":"rk-like","atol":1e-4,"rtol":1e-4}"#,
         r#"{"solver":"rk-like","atol":1e-8,"rtol":1e-6}"#,

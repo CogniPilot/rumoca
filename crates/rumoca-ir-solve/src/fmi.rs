@@ -520,14 +520,19 @@ impl FmiComponent {
         &self.co_simulation
     }
 
-    /// This component with `plan` as its Co-Simulation step rule. A product
-    /// whose host asked for another rule than [`CoSimulationStepPlan::STANDARD`]
-    /// sets it once, before any view or retained root is taken; the plan
-    /// travels with the component's wire and retained root.
-    #[must_use]
-    pub fn with_co_simulation(mut self, plan: CoSimulationStepPlan) -> Self {
-        self.co_simulation = plan;
-        self
+    /// This component with `plan` as its Co-Simulation step rule, after the
+    /// plan's own check ([`CoSimulationStepPlan::checked`]); a plan that
+    /// cannot describe a step rule is refused and nothing is attached. A
+    /// product whose host asked for another rule than
+    /// [`CoSimulationStepPlan::STANDARD`] sets it once, before any view or
+    /// retained root is taken; the plan travels with the component's wire and
+    /// retained root.
+    pub fn with_co_simulation(
+        mut self,
+        plan: CoSimulationStepPlan,
+    ) -> Result<Self, CoSimulationPlanError> {
+        self.co_simulation = plan.checked()?;
+        Ok(self)
     }
 
     #[must_use]

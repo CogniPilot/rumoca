@@ -91,6 +91,11 @@ pub enum CoSimulationPlanError {
     Step(f64),
     #[error("a {name} tolerance must be finite and positive, got {value}")]
     Tolerance { name: &'static str, value: f64 },
+    #[error(
+        "the step-size controller differs from the standard one; only its default tolerance \
+         is a plan choice"
+    )]
+    Controller,
     #[error("{method:?} has no {substep:?} rule")]
     Pairing {
         method: CoSimulationMethod,
@@ -140,9 +145,20 @@ impl CoSimulationStepPlan {
         .checked()
     }
 
-    /// This plan when its method and substep rule pair up and every value is
-    /// finite and positive; a replayed plan is checked here too.
+    /// This plan when its method and substep rule pair up, every value is
+    /// finite and positive, and its controller is the standard one but for
+    /// the default tolerance: the plugins executing a plan read no other
+    /// controller field, so a plan naming other coefficients or another
+    /// substep budget is refused rather than carried and ignored. A replayed
+    /// or attached plan is checked here too.
     pub fn checked(self) -> Result<Self, CoSimulationPlanError> {
+        let standard = CoSimulationController {
+            default_tolerance: self.controller.default_tolerance,
+            ..Self::STANDARD.controller
+        };
+        if self.controller != standard {
+            return Err(CoSimulationPlanError::Controller);
+        }
         let fixed = matches!(
             self.method,
             CoSimulationMethod::ExplicitRungeKutta { .. } | CoSimulationMethod::SemiImplicitEuler
@@ -261,5 +277,29 @@ mod tests {
             CoSimulationStepPlan::STANDARD.checked().unwrap(),
             CoSimulationStepPlan::STANDARD
         );
+    }
+
+    /// A replayed plan whose controller coefficients or substep budget differ
+    /// from the standard ones is refused: no plugin reads them.
+    #[test]
+    fn a_plan_with_other_controller_fields_is_refused() {
+        let mut json = serde_json::to_value(CoSimulationStepPlan::STANDARD).unwrap();
+        json["controller"]["max_substeps"] = serde_json::json!(1);
+        let budget: CoSimulationStepPlan = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            budget.checked(),
+            Err(CoSimulationPlanError::Controller)
+        ));
+        let mut json = serde_json::to_value(CoSimulationStepPlan::STANDARD).unwrap();
+        json["controller"]["safety"] = serde_json::json!(0.5);
+        let safety: CoSimulationStepPlan = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            safety.checked(),
+            Err(CoSimulationPlanError::Controller)
+        ));
+        let mut json = serde_json::to_value(CoSimulationStepPlan::STANDARD).unwrap();
+        json["controller"]["default_tolerance"] = serde_json::json!(1.0e-4);
+        let tolerance: CoSimulationStepPlan = serde_json::from_value(json).unwrap();
+        assert_eq!(tolerance.checked().unwrap().default_tolerance(), 1.0e-4);
     }
 }

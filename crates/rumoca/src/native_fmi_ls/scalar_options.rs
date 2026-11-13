@@ -71,6 +71,6 @@ impl ScalarPackageOptions {
             bail!("solver `fixed-step` needs its explicit fixed_step configuration");
         }
         let plan = rumoca_sim::co_simulation_plan(&self.sim)?;
-        Ok(component.with_co_simulation(plan))
+        Ok(component.with_co_simulation(plan)?)
     }
 }

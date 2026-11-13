@@ -87,7 +87,7 @@ fn a_fixed_plan_travels_with_the_wire_and_reaches_the_session_plugin() {
         "the standard plan is written by omission"
     );
 
-    let component = standard.with_co_simulation(plan);
+    let component = standard.with_co_simulation(plan).unwrap();
     let wire = serde_json::to_value(
         crate::retained_fmi_component_wire(&component.runtime_view().retain_assertion_root())
             .unwrap(),
@@ -118,4 +118,37 @@ fn a_fixed_plan_travels_with_the_wire_and_reaches_the_session_plugin() {
         .map_err(|(_, error)| error)
         .unwrap();
     assert_eq!(received, Some(plan));
+}
+
+/// A plan that cannot describe a step rule is refused where it is attached,
+/// before any root or wire carries it, and a wire carrying one, or one with
+/// controller fields no plugin reads, is refused on replay.
+#[test]
+fn malformed_plans_are_refused_at_attachment_and_on_replay() {
+    let dae = super::compile(
+        "model Decay Real x(start = 1, fixed = true); equation der(x) = -x; end Decay;",
+        "Decay",
+    );
+    let opts = requested(PAGE);
+    let lower = || crate::lower_fmi_scalar_export_component(&dae, &opts).unwrap();
+    let mut zero_step = serde_json::json!(crate::co_simulation_plan(&opts).unwrap());
+    zero_step["substep"]["Fixed"]["step"] = serde_json::json!(0.0);
+    let zero_step: CoSimulationStepPlan = serde_json::from_value(zero_step).unwrap();
+    assert!(matches!(
+        lower().with_co_simulation(zero_step),
+        Err(rumoca_ir_solve::fmi::CoSimulationPlanError::Step(_))
+    ));
+
+    let standard_wire = serde_json::to_value(
+        crate::retained_fmi_component_wire(&lower().runtime_view().retain_assertion_root())
+            .unwrap(),
+    )
+    .unwrap();
+    let mut budget = serde_json::json!(CoSimulationStepPlan::STANDARD);
+    budget["controller"]["max_substeps"] = serde_json::json!(1);
+    for plan in [budget, serde_json::json!(zero_step)] {
+        let mut wire = standard_wire.clone();
+        wire["co_simulation"] = plan;
+        assert!(deserialize_fmi_component(wire).is_err());
+    }
 }
