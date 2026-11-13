@@ -300,3 +300,69 @@ fn an_integer_carry_is_declared_between_a_typed_output_and_its_input_lane() {
         .to_string();
     assert!(refused.contains("differs in value type"), "{refused}");
 }
+
+fn scalar_root(source: &str, name: &str) -> rumoca_ir_solve::RetainedAssertionRoot {
+    let compiled = crate::Compiler::new()
+        .model(name)
+        .compile_str(source, "scalar.mo")
+        .unwrap();
+    rumoca_sim::lower_fmi_export_component(&compiled.dae)
+        .unwrap()
+        .runtime_view()
+        .retain_assertion_root()
+}
+
+/// A stateful model renders a Co-Simulation-only description through the
+/// scalar view: its state, the state's derivative and its VRs survive, and no
+/// Model Exchange, FMU state, directional derivatives, event mode or event
+/// indicator is advertised.
+#[test]
+fn a_stateful_model_renders_a_co_simulation_only_scalar_description() {
+    let root = scalar_root(
+        "model Decay\n  Real x(start = 1);\nequation\n  der(x) = -x;\nend Decay;\n",
+        "Decay",
+    );
+    assert!(root.native_preparation().is_err());
+    let view = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&root).unwrap();
+    let prepared = prepare_metadata_with(
+        NativeFmiTemplateRenderer::new_scalar(view).unwrap(),
+        "Decay",
+    )
+    .unwrap();
+    let xml = std::str::from_utf8(
+        prepared
+            .rendered_file(Path::new("modelDescription.xml"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(xml.contains("<CoSimulation "));
+    assert!(xml.contains("<Float64 name=\"x\""));
+    assert!(xml.contains("name=\"der(x)\""));
+    assert!(xml.contains("<ContinuousStateDerivative "));
+    for absent in [
+        "<ModelExchange ",
+        "canGetAndSetFMUState",
+        "providesDirectionalDerivatives",
+        "hasEventMode=\"true\"",
+        "<EventIndicator ",
+    ] {
+        assert!(
+            !xml.contains(absent),
+            "scalar description advertises {absent}"
+        );
+    }
+}
+
+/// The scalar route serves Float64 only: a published Integer is refused by
+/// name before any description is rendered, never hidden.
+#[test]
+fn a_published_integer_refuses_the_scalar_view_by_name() {
+    let root = scalar_root(
+        "model Counted\n  parameter Integer n = 3;\n  Real x(start = 1);\nequation\n  der(x) = -n * x;\nend Counted;\n",
+        "Counted",
+    );
+    let error = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&root)
+        .err()
+        .expect("an Integer variable has no scalar owner");
+    assert!(error.to_string().contains("(n, Integer"), "{error}");
+}

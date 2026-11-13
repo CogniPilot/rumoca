@@ -94,9 +94,17 @@ fn check_correlation(
 }
 
 fn prepare_metadata(access: &FmiNativeDeploymentView, name: &str) -> Result<PreparedTargetPackage> {
+    prepare_metadata_with(NativeFmiTemplateRenderer::new(access.clone())?, name)
+}
+
+/// Render the closed target's metadata files with `renderer`, for the native
+/// or the scalar deployment view alike.
+fn prepare_metadata_with(
+    renderer: NativeFmiTemplateRenderer,
+    name: &str,
+) -> Result<PreparedTargetPackage> {
     let manifest = rumoca_compile::codegen::targets::parse_target_manifest(TARGET)?;
     let artifact = ArtifactSession::new(&manifest.files)?;
-    let renderer = NativeFmiTemplateRenderer::new(access.clone())?;
     let render = |source: &str| -> Result<String> {
         Ok(renderer.render_with_name_and_artifact(source, name, &artifact)?)
     };
@@ -123,6 +131,9 @@ fn prepare_metadata(access: &FmiNativeDeploymentView, name: &str) -> Result<Prep
         artifact.clone(),
     )
 }
+
+mod scalar;
+pub use scalar::ScalarFmiLsPackage;
 
 #[cfg(test)]
 mod tests;
