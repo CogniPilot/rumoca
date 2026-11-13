@@ -24,7 +24,8 @@ pub enum ScalarDeploymentError {
 
 /// The correlated retained root of a stateful component, admitted for the
 /// fixed Co-Simulation adapter's scalar product: Co-Simulation only, no FMU
-/// state, Real variables only. States stay internal to the component; its
+/// state, Real, Integer and Boolean variables (the kinds the scalar route
+/// owns). States stay internal to the component; its
 /// complete checked metadata (variables, initial values, model structure) is
 /// rendered unchanged. No deserialization or caller capability constructor.
 #[derive(Clone, Debug)]
@@ -35,15 +36,18 @@ pub struct FmiScalarDeploymentView {
 
 impl FmiScalarDeploymentView {
     /// Admit `root`, refusing any advertised variable the scalar route cannot
-    /// serve: a non-Real kind, or a storage-less entry other than the declared
-    /// maximum step duration (independent time is not a metadata variable).
+    /// serve: an Enumeration or String, or a storage-less entry other than the
+    /// declared maximum step duration (independent time is not a metadata
+    /// variable). The admitted kinds are Real and those present of Integer
+    /// and Boolean.
     pub fn from_root(root: &RetainedAssertionRoot) -> Result<Self, ScalarDeploymentError> {
+        const OWNED: [Kind; 3] = [Kind::Real, Kind::Integer, Kind::Boolean];
         let metadata = root.metadata();
         let max_step_duration = metadata.max_step_duration();
         for variable in metadata.variables() {
             let storage_less = variable.storage().is_none()
                 && !max_step_duration.is_some_and(|declared| std::ptr::eq(declared, variable));
-            if variable.value_kind() != Kind::Real || storage_less {
+            if !OWNED.contains(&variable.value_kind()) || storage_less {
                 return Err(ScalarDeploymentError::Unowned {
                     value_reference: variable.value_reference_fmi3(),
                     name: variable.name().to_owned(),
@@ -52,9 +56,19 @@ impl FmiScalarDeploymentView {
                 });
             }
         }
+        let variable_kinds = OWNED
+            .into_iter()
+            .filter(|&kind| {
+                kind == Kind::Real
+                    || metadata
+                        .variables()
+                        .iter()
+                        .any(|variable| variable.value_kind() == kind)
+            })
+            .collect();
         let capabilities = FmiDeploymentCapabilities {
             interfaces: FmiInterfaceProfile::CoSimulation,
-            variable_kinds: vec![Kind::Real],
+            variable_kinds,
             fmu_state: false,
         }
         .admit(metadata)?;

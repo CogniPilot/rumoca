@@ -264,7 +264,55 @@ fn ownership_refusal() -> FmiLsResourceError {
     .into()
 }
 
+/// One FMI type's setter and getter. With scalar owners, by the product kind
+/// fixed at construction: a scalar product reads and writes through its
+/// scalar owner, a native product through its native one.
 macro_rules! typed_accessors {
+    ($set:ident, $get:ident, $scalar_set:ident, $scalar_get:ident, $value:ty) => {
+        impl FmiLsResource {
+            pub fn $set(
+                &mut self,
+                references: &[u32],
+                values: &[$value],
+            ) -> Result<(), FmiLsResourceError> {
+                match self.owner.as_mut().expect("resource is owned") {
+                    ResourceOwner::Retained(component) if component.is_scalar_product() => {
+                        component.$scalar_set(references, values).map_err(Into::into)
+                    }
+                    ResourceOwner::Retained(component) => {
+                        component.$set(references, values).map_err(Into::into)
+                    }
+                    ResourceOwner::Session(session) if session.is_scalar_product() => {
+                        session.$scalar_set(references, values).map_err(Into::into)
+                    }
+                    ResourceOwner::Session(session) => {
+                        session.$set(references, values).map_err(Into::into)
+                    }
+                }
+            }
+
+            pub fn $get(
+                &self,
+                references: &[u32],
+                values: &mut [$value],
+            ) -> Result<(), FmiLsResourceError> {
+                match self.owner.as_ref().expect("resource is owned") {
+                    ResourceOwner::Retained(component) if component.is_scalar_product() => {
+                        component.$scalar_get(references, values).map_err(Into::into)
+                    }
+                    ResourceOwner::Retained(component) => {
+                        component.$get(references, values).map_err(Into::into)
+                    }
+                    ResourceOwner::Session(session) if session.is_scalar_product() => {
+                        session.$scalar_get(references, values).map_err(Into::into)
+                    }
+                    ResourceOwner::Session(session) => {
+                        session.$get(references, values).map_err(Into::into)
+                    }
+                }
+            }
+        }
+    };
     ($set:ident, $get:ident, $value:ty) => {
         impl FmiLsResource {
             pub fn $set(
@@ -301,8 +349,20 @@ macro_rules! typed_accessors {
 }
 
 typed_accessors!(set_native_float64, get_native_float64, f64);
-typed_accessors!(set_native_integer, get_native_integer, i64);
-typed_accessors!(set_boolean, get_boolean, bool);
+typed_accessors!(
+    set_native_integer,
+    get_native_integer,
+    set_scalar_integer,
+    get_scalar_integer,
+    i64
+);
+typed_accessors!(
+    set_boolean,
+    get_boolean,
+    set_scalar_boolean,
+    get_scalar_boolean,
+    bool
+);
 
 /// The plugin a component's Co-Simulation step plan names. The fixed-step
 /// backend checks its configuration before any step; a plan no plugin here

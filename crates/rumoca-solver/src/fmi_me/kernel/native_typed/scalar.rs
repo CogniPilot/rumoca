@@ -6,7 +6,9 @@
 //! duration, and each state's derivative at the derivative value-reference
 //! base plus the state's declaration ordinal (the shared FMI 3 template's
 //! numbering). Values come from one branded observation, or before
-//! initialization from the host-written cells only.
+//! initialization from the host-written cells only. Integer and Boolean
+//! variables are read and written through the same request owner, each cell
+//! holding its value as the generated C kernel holds it ([`ScalarCell`]).
 
 use rumoca_ir_solve::SolveVariableValueKind;
 use rumoca_ir_solve::fmi::{FmiMetadata, FmiStorageColumn, FmiStorageRun};
@@ -14,6 +16,77 @@ use rumoca_ir_solve::fmi::{FmiMetadata, FmiStorageColumn, FmiStorageRun};
 use super::super::{MeError, MeFloat64Backing, MeObservation, MeValueRef, SolveMeKernel, contract};
 use super::request::{self, Access, ReadMember};
 use crate::fmi_me::lifecycle::MeState;
+
+/// An Integer or Boolean FMI value held in a scalar instance's numeric cell,
+/// encoded as the generated C kernel encodes it (the fmi3 template's
+/// `RMC_GET_NUMERIC`/`RMC_SET_NUMERIC`): a Boolean cell holds exactly 0 or 1;
+/// an Int64 cell reads as a finite integral value in [-2^63, 2^63) and is
+/// written only within the exact range ±2^53. A cell or value outside its
+/// type is refused, never rounded or converted.
+pub(crate) trait ScalarCell: Copy + PartialEq {
+    const KIND: SolveVariableValueKind;
+    fn decode(cell: f64) -> Result<Self, MeError>;
+    fn encode(self) -> Result<f64, MeError>;
+}
+
+/// The largest magnitude every Int64 write keeps exact in its cell.
+const EXACT_INTEGER: i64 = 1 << 53;
+/// 2^63, exact as a double: the open upper bound of an Int64 cell.
+const INT64_END: f64 = 9_223_372_036_854_775_808.0;
+
+impl ScalarCell for i64 {
+    const KIND: SolveVariableValueKind = SolveVariableValueKind::Integer;
+
+    fn decode(cell: f64) -> Result<Self, MeError> {
+        if cell.is_finite() && cell.trunc() == cell && (-INT64_END..INT64_END).contains(&cell) {
+            Ok(cell as i64)
+        } else {
+            Err(contract(format!("an Integer cell holds {cell}")))
+        }
+    }
+
+    fn encode(self) -> Result<f64, MeError> {
+        if (-EXACT_INTEGER..=EXACT_INTEGER).contains(&self) {
+            Ok(self as f64)
+        } else {
+            Err(contract(format!(
+                "Integer {self} is outside the exact range of its cell"
+            )))
+        }
+    }
+}
+
+impl ScalarCell for bool {
+    const KIND: SolveVariableValueKind = SolveVariableValueKind::Boolean;
+
+    fn decode(cell: f64) -> Result<Self, MeError> {
+        if cell == 0.0 {
+            Ok(false)
+        } else if cell == 1.0 {
+            Ok(true)
+        } else {
+            Err(contract(format!("a Boolean cell holds {cell}")))
+        }
+    }
+
+    fn encode(self) -> Result<f64, MeError> {
+        Ok(if self { 1.0 } else { 0.0 })
+    }
+}
+
+/// Decode every cell of `runs`, in request order, from the column each names.
+fn decode_runs<'cells, T: ScalarCell>(
+    runs: &[FmiStorageRun],
+    mut cells: impl FnMut(FmiStorageRun) -> Result<&'cells [f64], MeError>,
+) -> Result<Vec<T>, MeError> {
+    let mut values = Vec::new();
+    for &run in runs {
+        for &cell in cells(run)? {
+            values.push(T::decode(cell)?);
+        }
+    }
+    Ok(values)
+}
 
 /// One checked member of a scalar-route Float64 read, in request order.
 #[derive(Clone, Copy)]
@@ -291,6 +364,15 @@ impl SolveMeKernel {
         value_count: usize,
     ) -> Result<Vec<MeValueRef>, MeError> {
         self.require_active_lifecycle("scalar_float64_targets")?;
+        self.scalar_targets(references, value_count, SolveVariableValueKind::Real)
+    }
+
+    fn scalar_targets(
+        &self,
+        references: &[u32],
+        value_count: usize,
+        kind: SolveVariableValueKind,
+    ) -> Result<Vec<MeValueRef>, MeError> {
         let access = match self.initialization_state() {
             MeState::Instantiated | MeState::InitializationMode => Access::WriteInputsAndParameters,
             _ => Access::WriteInputs,
@@ -299,7 +381,7 @@ impl SolveMeKernel {
             self.scalar_inventory()?,
             references,
             value_count,
-            SolveVariableValueKind::Real,
+            kind,
             access,
         )?;
         let mut targets = Vec::with_capacity(value_count);
@@ -315,6 +397,83 @@ impl SolveMeKernel {
             );
         }
         Ok(targets)
+    }
+
+    /// The storage runs of a checked Integer or Boolean request, in request
+    /// order. Only declared variables of `kind` answer; before initialization
+    /// only the host-written ones (`pending`).
+    fn scalar_typed_runs(
+        &self,
+        references: &[u32],
+        kind: SolveVariableValueKind,
+        pending: bool,
+    ) -> Result<Vec<FmiStorageRun>, MeError> {
+        let (members, _) =
+            request::read_request(self.scalar_inventory()?, references, kind, pending)?;
+        members
+            .iter()
+            .map(|member| {
+                member
+                    .variable()
+                    .and_then(rumoca_ir_solve::fmi::FmiVariable::storage)
+                    .ok_or_else(|| contract("a typed request member has no storage run"))
+            })
+            .collect()
+    }
+
+    /// Project a whole checked Integer or Boolean batch, in request order,
+    /// from one observation of this instance at its current coordinate. The
+    /// result is staged and returned only when every cell decoded.
+    pub(crate) fn project_scalar_typed<T: ScalarCell>(
+        &self,
+        observation: &MeObservation,
+        references: &[u32],
+    ) -> Result<Vec<T>, MeError> {
+        self.require_active_lifecycle("project_scalar_typed")?;
+        self.require_observation_brand(observation)?;
+        let runs = self.scalar_typed_runs(references, T::KIND, false)?;
+        decode_runs(&runs, |run| {
+            let column = match run.column() {
+                FmiStorageColumn::Y => &observation.solver_y,
+                FmiStorageColumn::P => &observation.parameters,
+            };
+            column
+                .get(run.base()..run.base() + run.scalar_count())
+                .ok_or_else(|| contract("checked storage run lies outside the observation"))
+        })
+    }
+
+    /// Before initialization completes, read only host-written Integer or
+    /// Boolean cells from this instance's own parameter vector.
+    pub(crate) fn read_scalar_typed_host_cells<T: ScalarCell>(
+        &self,
+        references: &[u32],
+    ) -> Result<Vec<T>, MeError> {
+        self.require_active_lifecycle("read_scalar_typed_host_cells")?;
+        let runs = self.scalar_typed_runs(references, T::KIND, true)?;
+        decode_runs(&runs, |run| {
+            self.params
+                .get(run.base()..run.base() + run.scalar_count())
+                .ok_or_else(|| contract("checked host cell lies outside the parameters"))
+        })
+    }
+
+    /// The branded input-parameter references and encoded cells of a checked
+    /// Integer or Boolean write, one per scalar in request order, by the same
+    /// causality and lifecycle window as a Float64 write. Every value is
+    /// encoded before anything is written.
+    pub(crate) fn scalar_typed_targets<T: ScalarCell>(
+        &self,
+        references: &[u32],
+        values: &[T],
+    ) -> Result<(Vec<MeValueRef>, Vec<f64>), MeError> {
+        self.require_active_lifecycle("scalar_typed_targets")?;
+        let targets = self.scalar_targets(references, values.len(), T::KIND)?;
+        let cells = values
+            .iter()
+            .map(|value| value.encode())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((targets, cells))
     }
 
     /// Scalar count of a checked batch, by the same owner as its reads.

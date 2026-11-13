@@ -353,18 +353,57 @@ fn a_stateful_model_renders_a_co_simulation_only_scalar_description() {
     }
 }
 
-/// The scalar route serves Float64 only: a published Integer is refused by
-/// name before any description is rendered, never hidden.
+/// The scalar route owns Real, Integer and Boolean variables: a stateful model
+/// with an Integer parameter, a Boolean input and a Boolean output renders
+/// each under its own FMI 3 type with its own start, and advertises those
+/// kinds. A kind it has no owner for (String) is refused by name before any
+/// description is rendered, never hidden.
 #[test]
-fn a_published_integer_refuses_the_scalar_view_by_name() {
+fn integer_and_boolean_variables_render_in_the_scalar_view_and_strings_refuse() {
     let root = scalar_root(
-        "model Counted\n  parameter Integer n = 3;\n  Real x(start = 1);\nequation\n  der(x) = -n * x;\nend Counted;\n",
-        "Counted",
+        "model Selector\n  parameter Integer n = 3;\n  input Boolean enable = true;\n  \
+         output Boolean active;\n  Real x(start = 1, fixed = true);\nequation\n  \
+         der(x) = if enable then -n * x else 0;\n  active = x > 0.5;\nend Selector;\n",
+        "Selector",
     );
-    let error = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&root)
+    let view = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&root).unwrap();
+    assert_eq!(
+        view.capabilities().variable_kinds,
+        [
+            rumoca_ir_solve::SolveVariableValueKind::Real,
+            rumoca_ir_solve::SolveVariableValueKind::Integer,
+            rumoca_ir_solve::SolveVariableValueKind::Boolean,
+        ]
+    );
+    let prepared = prepare_metadata_with(
+        NativeFmiTemplateRenderer::new_scalar(view).unwrap(),
+        "Selector",
+    )
+    .unwrap();
+    let xml = std::str::from_utf8(
+        prepared
+            .rendered_file(Path::new("modelDescription.xml"))
+            .unwrap(),
+    )
+    .unwrap();
+    for present in [
+        "<Int64 name=\"n\"",
+        "<Boolean name=\"enable\"",
+        "<Boolean name=\"active\"",
+        "start=\"true\"",
+    ] {
+        assert!(xml.contains(present), "scalar description lacks {present}");
+    }
+
+    let texted = scalar_root(
+        "model Texted\n  parameter String label = \"a\";\n  Real x(start = 1);\n\
+         equation\n  der(x) = -x;\nend Texted;\n",
+        "Texted",
+    );
+    let error = rumoca_ir_solve::fmi::FmiScalarDeploymentView::from_root(&texted)
         .err()
-        .expect("an Integer variable has no scalar owner");
-    assert!(error.to_string().contains("(n, Integer"), "{error}");
+        .expect("a String variable has no scalar owner");
+    assert!(error.to_string().contains("(label, String"), "{error}");
 }
 
 /// Scalar preparation admits exactly the complement of the native profile:

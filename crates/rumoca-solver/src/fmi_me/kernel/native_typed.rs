@@ -8,6 +8,7 @@ mod real;
 pub use preinitialization::{MePendingNativeComponent, MePendingNativeState};
 mod request;
 mod scalar;
+pub(crate) use scalar::ScalarCell;
 mod values;
 
 use rumoca_ir_solve::SolveVariableValueKind;

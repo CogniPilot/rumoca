@@ -86,3 +86,73 @@ fn scalar_derivative_reads_follow_declaration_ordinals_and_preflight_whole_batch
         "derivatives are never writable"
     );
 }
+
+/// Integer and Boolean variables answer through the same request owner as
+/// Float64 ones: each by its own type only, before initialization from the
+/// host-written cells and after it from one observation, with writes refused
+/// outside the exact Int64 cell range or the lifecycle's causality window and
+/// nothing written by a refused batch.
+#[test]
+fn integer_and_boolean_values_read_and_write_through_the_scalar_route() {
+    let dae = super::compile(
+        "model Selector parameter Integer n = 3; input Boolean enable = true; \
+         output Boolean active; Real x(start = 1, fixed = true); \
+         equation der(x) = if enable then -n * x else 0; active = x > 0.5; end Selector;",
+        "Selector",
+    );
+    let component =
+        crate::lower_fmi_scalar_export_component(&dae, &rumoca_solver::SimOptions::default())
+            .unwrap();
+    let vr = |name| value_reference(&component, name);
+    let (n, enable, active) = (vr("n"), vr("enable"), vr("active"));
+    let config = MeInstanceConfig::new("typed", 1.0e-6, 0.0, 1.0).unwrap();
+    let mut retained =
+        MeRetainedComponent::instantiate(MeModelSource::new(&component), &config, None).unwrap();
+
+    let mut integer = [0_i64];
+    retained.get_scalar_integer(&[n], &mut integer).unwrap();
+    assert_eq!(integer, [3]);
+    let mut boolean = [false];
+    retained.get_scalar_boolean(&[enable], &mut boolean).unwrap();
+    assert_eq!(boolean, [true]);
+    assert!(
+        retained.get_scalar_boolean(&[n], &mut boolean).is_err(),
+        "an Integer is not read as a Boolean"
+    );
+    let mut real = [7.0];
+    assert!(
+        retained.get_scalar_float64(&[n], &mut real).is_err(),
+        "an Integer is not read as a Float64"
+    );
+    assert_eq!(real, [7.0]);
+    assert!(retained.set_scalar_integer(&[n], &[(1 << 53) + 1]).is_err());
+    retained.get_scalar_integer(&[n], &mut integer).unwrap();
+    assert_eq!(integer, [3], "a refused write changes nothing");
+
+    retained.enter_initialization_mode(&config).unwrap();
+    let options = retained.initialization_options().unwrap();
+    let mut session = retained
+        .complete_scalar_initialization_with_integrator_retaining(options, |_, setup| {
+            Ok(rumoca_solver_rk45::model_exchange_integrator(setup))
+        })
+        .map_err(|(_, error)| error)
+        .unwrap();
+
+    let mut typed = [false; 2];
+    session.get_scalar_boolean(&[enable, active], &mut typed).unwrap();
+    assert_eq!(typed, [true, true]);
+    session.get_scalar_integer(&[n], &mut integer).unwrap();
+    assert_eq!(integer, [3]);
+    assert!(
+        session.set_scalar_integer(&[n], &[4]).is_err(),
+        "parameters are not writable after initialization"
+    );
+    assert!(
+        session.set_scalar_boolean(&[active], &[false]).is_err(),
+        "outputs are never writable"
+    );
+    session.set_scalar_boolean(&[enable], &[false]).unwrap();
+    let mut written = [true];
+    session.get_scalar_boolean(&[enable], &mut written).unwrap();
+    assert_eq!(written, [false]);
+}
