@@ -53,6 +53,7 @@ mod max_step_duration;
 mod metadata;
 mod metadata_projection;
 mod native_deployment;
+mod scalar_deployment;
 mod parameter_updates;
 mod root_location;
 mod scalar_events;
@@ -97,6 +98,7 @@ pub use native_deployment::{
     FmiCarryPair, FmiNativeDeploymentView, NativeCarryError, NativeDeploymentError,
     NativeTypedInventoryGap, check_native_typed_membership, reads_input_lanes,
 };
+pub use scalar_deployment::{FmiScalarDeploymentView, ScalarDeploymentError};
 pub use root_location::{
     RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak, SlidingModes,
 };

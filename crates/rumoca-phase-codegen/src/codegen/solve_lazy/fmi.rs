@@ -15,6 +15,7 @@ mod tests;
 enum Inventory {
     C(Arc<solve::fmi::FmiCCodegenView>),
     Native(solve::fmi::FmiNativeDeploymentView),
+    Scalar(solve::fmi::FmiScalarDeploymentView),
 }
 
 impl Inventory {
@@ -22,12 +23,14 @@ impl Inventory {
         match self {
             Self::C(view) => view.variables(),
             Self::Native(view) => view.variables(),
+            Self::Scalar(view) => view.variables(),
         }
     }
     fn serialize_entries<M: SerializeMap>(&self, entries: &mut M) -> Result<(), M::Error> {
         match self {
             Self::C(view) => view.serialize_entries(entries),
             Self::Native(view) => view.serialize_entries(entries),
+            Self::Scalar(view) => view.serialize_entries(entries),
         }
     }
     fn serialize_variable_entries<M: SerializeMap>(
@@ -38,6 +41,7 @@ impl Inventory {
         match self {
             Self::C(view) => view.serialize_variable_entries(index, entries),
             Self::Native(view) => view.serialize_variable_entries(index, entries),
+            Self::Scalar(view) => view.serialize_variable_entries(index, entries),
         }
     }
     fn instantiation_values(
@@ -47,6 +51,7 @@ impl Inventory {
         match self {
             Self::C(view) => view.instantiation_values(buffer),
             Self::Native(view) => view.instantiation_values(buffer),
+            Self::Scalar(view) => view.instantiation_values(buffer),
         }
     }
 }
@@ -59,6 +64,12 @@ pub(in crate::codegen) fn native_value(
     component: solve::fmi::FmiNativeDeploymentView,
 ) -> Result<Value, CodegenError> {
     inventory_value(Arc::new(Inventory::Native(component)))
+}
+
+pub(in crate::codegen) fn scalar_value(
+    component: solve::fmi::FmiScalarDeploymentView,
+) -> Result<Value, CodegenError> {
+    inventory_value(Arc::new(Inventory::Scalar(component)))
 }
 
 fn inventory_value(component: Arc<Inventory>) -> Result<Value, CodegenError> {

@@ -7,6 +7,7 @@ mod component_plans;
 mod finite_target_admission;
 mod native_carry;
 mod parameter_profile;
+mod scalar_deployment;
 
 #[test]
 fn component_consumes_one_complete_model_into_codegen_view() {

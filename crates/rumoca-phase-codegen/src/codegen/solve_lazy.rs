@@ -22,6 +22,7 @@ use crate::errors::CodegenError;
 
 mod fmi;
 pub(super) use fmi::native_value as native_fmi_value;
+pub(super) use fmi::scalar_value as scalar_fmi_value;
 mod residual;
 pub(super) use residual::continuous_blocks;
 

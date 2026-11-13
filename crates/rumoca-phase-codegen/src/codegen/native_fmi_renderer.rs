@@ -2,7 +2,7 @@
 
 use super::{CodegenError, create_environment, solve_lazy};
 use minijinja::Value;
-use rumoca_ir_solve::fmi::FmiNativeDeploymentView;
+use rumoca_ir_solve::fmi::{FmiNativeDeploymentView, FmiScalarDeploymentView};
 
 pub struct NativeFmiTemplateRenderer {
     fmi: Value,
@@ -12,6 +12,12 @@ impl NativeFmiTemplateRenderer {
     pub fn new(view: FmiNativeDeploymentView) -> Result<Self, CodegenError> {
         Ok(Self {
             fmi: solve_lazy::native_fmi_value(view)?,
+        })
+    }
+    /// The same fixed-adapter templates over a stateful (scalar-product) view.
+    pub fn new_scalar(view: FmiScalarDeploymentView) -> Result<Self, CodegenError> {
+        Ok(Self {
+            fmi: solve_lazy::scalar_fmi_value(view)?,
         })
     }
     pub fn render_with_name_and_artifact<T: serde::Serialize>(
