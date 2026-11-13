@@ -203,33 +203,7 @@ fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, WasmError
     }
     let parsed: serde_json::Value = serde_json::from_str(trimmed)
         .map_err(|e| WasmError::new(format!("parameter override JSON error: {e}")))?;
-    parameter_overrides_from_value(&parsed)
-}
-
-pub(crate) fn parameter_overrides_from_value(
-    parsed: &serde_json::Value,
-) -> Result<Vec<(String, f64)>, WasmError> {
-    if parsed.is_null() {
-        return Ok(Vec::new());
-    }
-    let Some(object) = parsed.as_object() else {
-        return Err(WasmError::new("parameter overrides must be a JSON object"));
-    };
-    let mut overrides = Vec::with_capacity(object.len());
-    for (name, value) in object {
-        let Some(value) = value.as_f64() else {
-            return Err(WasmError::new(format!(
-                "parameter override `{name}` must be numeric"
-            )));
-        };
-        if !value.is_finite() {
-            return Err(WasmError::new(format!(
-                "parameter override `{name}` is not finite"
-            )));
-        }
-        overrides.push((name.clone(), value));
-    }
-    Ok(overrides)
+    Ok(rumoca_sim::interactive_options::parameter_overrides_from_value(&parsed)?)
 }
 
 pub(crate) fn build_simulation_options(

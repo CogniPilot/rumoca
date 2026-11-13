@@ -93,6 +93,24 @@ pub fn lower_fmi_c_export_component(
     lower_fmi_export_component_for(model, rumoca_ir_solve::RefreshProfile::Scalar)
 }
 
+/// Package the stateful scalar FMU product with a host's checked options.
+///
+/// Its guest runs the scalar runtime's event iteration, so the model is
+/// lowered for that consumer as the C kernel's is. The options' parameter
+/// overrides and initial inputs are applied by the lowering's own owners,
+/// which refuse a name they cannot apply instead of dropping it.
+#[cfg(feature = "fmi")]
+pub fn lower_fmi_scalar_export_component(
+    model: &dae::Dae,
+    opts: &rumoca_solver::SimOptions,
+) -> Result<FmiComponent, SimulationDiagnosticError> {
+    finish_component(lower_correlated_for_fmi_export(
+        model,
+        opts,
+        rumoca_ir_solve::RefreshProfile::Scalar,
+    )?)
+}
+
 #[cfg(feature = "fmi")]
 fn lower_fmi_export_component_for(
     model: &dae::Dae,

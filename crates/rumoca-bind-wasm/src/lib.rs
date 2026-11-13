@@ -155,6 +155,13 @@ impl From<&str> for WasmError {
     }
 }
 
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+impl From<rumoca_sim::interactive_options::InteractiveOptionsError> for WasmError {
+    fn from(error: rumoca_sim::interactive_options::InteractiveOptionsError) -> Self {
+        Self(error.0)
+    }
+}
+
 /// The single place an error becomes a JavaScript value. `#[wasm_bindgen]`
 /// exports return `Result<_, WasmError>`; the generated glue calls this when —
 /// and only when — the error is handed back to JS.

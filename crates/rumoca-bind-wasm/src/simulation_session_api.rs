@@ -3,7 +3,7 @@ pub(crate) mod prebuilt;
 #[cfg(feature = "precompiled-runtime")]
 pub(crate) mod precompiled;
 
-use options::{FixedStepScheme, InteractiveOptions};
+use options::InteractiveOptions;
 use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
 use wasm_bindgen::prelude::*;
 
@@ -307,27 +307,9 @@ fn create_session_from_dae(
 }
 
 fn configured_options(
-    mut opts: rumoca_sim::SimOptions,
+    opts: rumoca_sim::SimOptions,
     options: &InteractiveOptions,
     initial_inputs: Vec<(String, f64)>,
 ) -> rumoca_sim::SimOptions {
-    if options.atol.is_finite() && options.atol > 0.0 {
-        opts.atol = options.atol;
-    }
-    if options.rtol.is_finite() && options.rtol > 0.0 {
-        opts.rtol = options.rtol;
-    }
-    opts.initial_inputs = initial_inputs;
-    opts.execution_policy = options.execution_policy;
-    opts.param_overrides = options.param_overrides.clone();
-    // Captured as given: the backend the solver name selected validates the
-    // payload's identity and values when the session is prepared.
-    if let Some(fixed_step) = options.fixed_step {
-        let capture = match fixed_step.scheme {
-            FixedStepScheme::Explicit => rumoca_sim::fixed_step_backend_options,
-            FixedStepScheme::SemiImplicit => rumoca_sim::fixed_step_semi_implicit_backend_options,
-        };
-        opts.backend_options = Some(capture(fixed_step.step, fixed_step.order));
-    }
-    opts
+    options.configure(opts, initial_inputs)
 }

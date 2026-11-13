@@ -37,7 +37,10 @@ pub use entry::{
 ))]
 pub(crate) use fmi::finish_component;
 #[cfg(feature = "fmi")]
-pub use fmi::{lower_fmi_c_export_component, lower_fmi_component, lower_fmi_export_component};
+pub use fmi::{
+    lower_fmi_c_export_component, lower_fmi_component, lower_fmi_export_component,
+    lower_fmi_scalar_export_component,
+};
 pub use linearization::{Linearization, linearization_for_dae};
 pub use probe::{
     EvalAtProbe, JacobianProbe, ObjectiveGradientProbe, ParameterJacobianProbe,

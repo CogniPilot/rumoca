@@ -127,6 +127,8 @@ mod backend_options;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use backend_options::{fixed_step_backend_options, fixed_step_semi_implicit_backend_options};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub mod interactive_options;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
 #[cfg(all(
@@ -185,6 +187,7 @@ pub use solve_lowering::{
 #[cfg(feature = "fmi")]
 pub use solve_lowering::{
     lower_fmi_c_export_component, lower_fmi_component, lower_fmi_export_component,
+    lower_fmi_scalar_export_component,
 };
 
 #[cfg(feature = "scenario-config")]
