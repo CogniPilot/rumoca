@@ -1303,6 +1303,36 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// Name a scalar instance whose component was constructed before its FMI
+    /// instance existed (build-time pre-initialisation). Only before
+    /// initialization; the name labels this instance's diagnostics and traces.
+    pub(super) fn bind_instance_name(&mut self, name: std::sync::Arc<str>) -> Result<(), MeError> {
+        if self.lifecycle.state() != MeState::Instantiated {
+            return Err(contract(
+                "an instance name binds only before initialization",
+            ));
+        }
+        self.instance_name = name;
+        Ok(())
+    }
+
+    /// Adopt the host's stop time before initialization, through the same
+    /// stop-schedule owner a restart uses; the start coordinate is unchanged.
+    pub(super) fn bind_initialization_horizon(&mut self, stop_time: f64) -> Result<(), MeError> {
+        if self.lifecycle.state() != MeState::Instantiated {
+            return Err(contract(
+                "an initialization horizon binds only before initialization",
+            ));
+        }
+        if stop_time.is_nan() || stop_time < self.time {
+            return Err(contract("the stop time must not precede the start time"));
+        }
+        self.stop_time = stop_time;
+        self.stop_schedule =
+            SolveStopSchedule::new(&self.runtime.model().problem, self.time, self.stop_time);
+        Ok(())
+    }
+
     pub(crate) fn restart_from_fmu_state(
         &mut self,
         saved: &MeFmuState,

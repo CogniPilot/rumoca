@@ -118,6 +118,12 @@ impl MeRetainedComponent {
         self.kernel.enter_initialization_mode(config)
     }
 
+    /// Bind the FMI instance name to a scalar component that was constructed
+    /// before its instance existed (build-time pre-initialisation).
+    pub fn bind_instance_name(&mut self, name: &str) -> Result<(), super::MeError> {
+        self.kernel.bind_instance_name(name)
+    }
+
     /// Whether this component is a scalar product, fixed at construction.
     #[must_use]
     pub fn is_scalar_product(&self) -> bool {

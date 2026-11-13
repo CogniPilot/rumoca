@@ -125,18 +125,22 @@ impl MeKernelCell {
     }
 
     /// A scalar instance enters Initialization Mode through its kernel's own
-    /// lifecycle owner, only for the request it was constructed with: its
-    /// runtime resolved the source at that start time and set tolerance and
-    /// horizon from it. A different request is refused, not re-anchored.
+    /// lifecycle owner, adopting the host's request through existing owners:
+    /// the stop time through the stop-schedule owner, the name already bound
+    /// at adoption. Everything construction fixed must match exactly, and is
+    /// checked before anything changes: the start coordinate (the runtime
+    /// resolved its source there), tolerance, executor and Jacobian demand.
+    /// On a refused or failed entry the kernel keeps its previous horizon,
+    /// and the stored configuration changes only after success.
     fn enter_scalar_initialization_mode(&self, config: &MeInstanceConfig) -> Result<(), MeError> {
         let constructed = self
             .configuration
             .borrow()
             .clone()
             .ok_or_else(no_scalar_snapshot)?;
-        if !constructed.same_request(config) {
+        if !constructed.same_construction(config) {
             return Err(MeError::Contract {
-                reason: "scalar initialization differs from the configuration the instance was constructed for"
+                reason: "scalar initialization asks for a start time, tolerance, executor or name other than the instance was constructed and bound with"
                     .to_owned(),
             });
         }
@@ -146,7 +150,31 @@ impl MeKernelCell {
                 reason: "a native kernel cannot take the scalar initialization branch".to_owned(),
             });
         }
-        kernel.enter_initialization_mode()
+        let previous_stop = constructed.stop_time;
+        kernel.bind_initialization_horizon(config.stop_time)?;
+        if let Err(error) = kernel.enter_initialization_mode() {
+            kernel
+                .bind_initialization_horizon(previous_stop)
+                .expect("the previous horizon was already admitted");
+            return Err(error);
+        }
+        drop(kernel);
+        *self.configuration.borrow_mut() = Some(config.clone());
+        Ok(())
+    }
+
+    /// Bind the FMI instance name to a scalar component constructed before the
+    /// instance existed; the stored configuration follows.
+    pub(super) fn bind_instance_name(&self, name: &str) -> Result<(), MeError> {
+        if !self.is_scalar() {
+            return Err(no_scalar_snapshot());
+        }
+        let name: std::sync::Arc<str> = name.into();
+        self.borrow_mut()?.bind_instance_name(name.clone())?;
+        if let Some(configuration) = self.configuration.borrow_mut().as_mut() {
+            configuration.instance_name = name;
+        }
+        Ok(())
     }
 
     pub(super) fn borrow(&self) -> Result<Ref<'_, SolveMeKernel>, MeError> {
