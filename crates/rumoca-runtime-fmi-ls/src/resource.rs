@@ -1,9 +1,11 @@
 //! Lease ownership delegates every transition to the existing ME owner.
 
+use rumoca_ir_solve::fmi::{CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep};
 use rumoca_solver::fmi_me::{
-    MeAdvanceOutcome, MeError, MeInstanceConfig, MeOutputCursor, MeRetainedComponent,
-    MeSessionError, MeSessionOptions, MeSimulationSession,
+    MeAdvanceOutcome, MeError, MeInstanceConfig, MeIntegratorBackend, MeNumericalSetup,
+    MeOutputCursor, MeRetainedComponent, MeSessionError, MeSessionOptions, MeSimulationSession,
 };
+use rumoca_solver_rk45::{FixedStepConfig, FixedStepScheme};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FmiLsResourceError {
@@ -196,15 +198,17 @@ impl FmiLsResource {
         match owner {
             ResourceOwner::Retained(component) => {
                 let completion = if component.is_scalar_product() {
-                    MeRetainedComponent::complete_scalar_initialization_with_integrator_retaining
+                    component.complete_scalar_initialization_with_integrator_retaining(
+                        options,
+                        plan_integrator,
+                    )
                 } else {
-                    MeRetainedComponent::complete_native_initialization_with_integrator_retaining
+                    component.complete_native_initialization_with_integrator_retaining(
+                        options,
+                        rumoca_solver_rk45::model_exchange_integrator,
+                    )
                 };
-                let (owner, result) = match completion(
-                    component,
-                    options,
-                    rumoca_solver_rk45::model_exchange_integrator,
-                ) {
+                let (owner, result) = match completion {
                     Ok(session) => (ResourceOwner::Session(Box::new(session)), Ok(())),
                     Err((component, error)) => {
                         (ResourceOwner::Retained(*component), Err(error.into()))
@@ -300,5 +304,35 @@ typed_accessors!(set_native_float64, get_native_float64, f64);
 typed_accessors!(set_native_integer, get_native_integer, i64);
 typed_accessors!(set_boolean, get_boolean, bool);
 
+/// The plugin a component's Co-Simulation step plan names. The fixed-step
+/// backend checks its configuration before any step; a plan no plugin here
+/// executes is refused, never run by another method.
+fn plan_integrator(
+    plan: &CoSimulationStepPlan,
+    setup: MeNumericalSetup,
+) -> Result<Box<dyn MeIntegratorBackend + 'static>, MeSessionError> {
+    let (order, scheme, step) = match (plan.method(), plan.substep()) {
+        (CoSimulationMethod::DormandPrince54, CoSimulationSubstep::ErrorControlled) => {
+            return Ok(rumoca_solver_rk45::model_exchange_integrator(setup));
+        }
+        (CoSimulationMethod::ExplicitRungeKutta { order }, CoSimulationSubstep::Fixed { step }) => {
+            (order, FixedStepScheme::Explicit, step)
+        }
+        (CoSimulationMethod::SemiImplicitEuler, CoSimulationSubstep::Fixed { step }) => {
+            (1, FixedStepScheme::SemiImplicit, step)
+        }
+        (method, substep) => {
+            return Err(MeSessionError::Options {
+                reason: format!("no plugin executes {method:?} with {substep:?} substeps"),
+            });
+        }
+    };
+    rumoca_solver_rk45::fixed_step_integrator(setup, FixedStepConfig { step, order, scheme })
+        .map_err(|error| MeSessionError::Options {
+            reason: error.to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests;
+

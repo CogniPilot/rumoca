@@ -49,10 +49,10 @@ fn scalar_derivative_reads_follow_declaration_ordinals_and_preflight_whole_batch
     retained.enter_initialization_mode(&config).unwrap();
     let options = retained.initialization_options().unwrap();
     let mut session = retained
-        .complete_scalar_initialization_with_integrator_retaining(
-            options,
-            rumoca_solver_rk45::model_exchange_integrator,
-        )
+        .complete_scalar_initialization_with_integrator_retaining(options, |plan, setup| {
+            assert_eq!(*plan, rumoca_ir_solve::fmi::CoSimulationStepPlan::STANDARD);
+            Ok(rumoca_solver_rk45::model_exchange_integrator(setup))
+        })
         .map_err(|(_, error)| error)
         .unwrap();
 

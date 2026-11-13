@@ -174,7 +174,7 @@ impl MeRetainedComponent {
     pub fn initialization_options(&self) -> Result<MeSessionOptions, MeSessionError> {
         let config = self.kernel.initialization_configuration()?;
         let kernel = self.kernel.borrow()?;
-        super::driver::fmi_session_options(kernel.root_location(), &config)
+        super::driver::fmi_session_options(kernel.root_location(), kernel.co_simulation(), &config)
     }
 
     pub fn terminate(&mut self) -> Result<(), MeSessionError> {

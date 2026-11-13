@@ -116,6 +116,7 @@ impl FmiDeploymentView {
             metadata: &self.component.metadata,
             event_indicators: &self.component.event_indicators,
             root_location: &self.component.root_location,
+            co_simulation: &self.component.co_simulation,
         }
     }
 

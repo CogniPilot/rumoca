@@ -191,6 +191,9 @@ pub struct SolveMeKernel {
     indicator_plan: FmiIndicatorPlan,
     /// The component's root-location rules (SPEC_0044 ME-EVENT-004).
     root_location: rumoca_ir_solve::fmi::RootLocationPlan,
+    /// The component's Co-Simulation step rule; its sessions read their
+    /// absolute tolerance from it.
+    co_simulation: rumoca_ir_solve::fmi::CoSimulationStepPlan,
     instance_brand: Rc<()>,
     instance_name: std::sync::Arc<str>,
     lifecycle: MeLifecycle,
@@ -366,6 +369,10 @@ impl SolveMeKernel {
     /// The component's root-location rules.
     pub(crate) const fn root_location(&self) -> &rumoca_ir_solve::fmi::RootLocationPlan {
         &self.root_location
+    }
+
+    pub(crate) const fn co_simulation(&self) -> &rumoca_ir_solve::fmi::CoSimulationStepPlan {
+        &self.co_simulation
     }
 
     pub(crate) fn continuous_state_count(&self) -> usize {

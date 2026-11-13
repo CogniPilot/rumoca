@@ -28,6 +28,7 @@ pub(in crate::fmi_me) fn fail_initialization_entry() {
 
 pub(super) struct ResolvedInstanceFacts {
     root_location: rumoca_ir_solve::fmi::RootLocationPlan,
+    co_simulation: rumoca_ir_solve::fmi::CoSimulationStepPlan,
     indicator_plan: FmiIndicatorPlan,
     max_step_duration_value_reference: Option<u32>,
     lifecycle: MeLifecycle,
@@ -57,6 +58,7 @@ impl ResolvedInstanceFacts {
     pub(super) fn recover_facts(kernel: SolveMeKernel) -> Self {
         Self {
             root_location: kernel.root_location,
+            co_simulation: kernel.co_simulation,
             indicator_plan: kernel.indicator_plan,
             max_step_duration_value_reference: kernel.max_step_duration_value_reference,
             lifecycle: kernel.lifecycle,
@@ -655,6 +657,7 @@ impl SolveMeKernel {
         source: MeModelSource<'_>,
     ) -> Result<(crate::SolveRuntimeModel, ResolvedInstanceFacts), MeError> {
         let root_location = source.root_location();
+        let co_simulation = source.co_simulation();
         let (model, indicator_plan, max_step_duration_value_reference, configuration) = source
             .into_parts()
             .map_err(|error| contract(error.to_string()))?;
@@ -672,6 +675,7 @@ impl SolveMeKernel {
             model,
             ResolvedInstanceFacts {
                 root_location,
+                co_simulation,
                 indicator_plan,
                 max_step_duration_value_reference,
                 lifecycle: MeLifecycle::instantiated(configuration),
@@ -746,6 +750,7 @@ impl SolveMeKernel {
             Self::finalize_native_transport(&runtime, &initial_y, &params, adoption)?;
         let ResolvedInstanceFacts {
             root_location,
+            co_simulation,
             indicator_plan,
             max_step_duration_value_reference,
             lifecycle,
@@ -770,6 +775,7 @@ impl SolveMeKernel {
             runtime,
             indicator_plan,
             root_location,
+            co_simulation,
             instance_brand: Rc::new(()),
             instance_name: config.instance_name.clone(),
             lifecycle,

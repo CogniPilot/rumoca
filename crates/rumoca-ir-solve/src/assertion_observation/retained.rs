@@ -46,6 +46,7 @@ pub enum RetainedAssertionResolutionError {
 pub struct RetainedAssertionRoot {
     model: Arc<SolveModel>,
     metadata: Arc<crate::fmi::FmiMetadata>,
+    co_simulation: crate::fmi::CoSimulationStepPlan,
     resolved_start_time: Option<f64>,
 }
 
@@ -53,12 +54,20 @@ impl RetainedAssertionRoot {
     pub(crate) fn from_fmi_root(
         model: Arc<SolveModel>,
         metadata: Arc<crate::fmi::FmiMetadata>,
+        co_simulation: crate::fmi::CoSimulationStepPlan,
     ) -> Self {
         Self {
             model,
             metadata,
+            co_simulation,
             resolved_start_time: None,
         }
+    }
+
+    /// The Co-Simulation step rule of the component this root was retained from.
+    #[must_use]
+    pub const fn co_simulation(&self) -> &crate::fmi::CoSimulationStepPlan {
+        &self.co_simulation
     }
 
     #[must_use]
@@ -123,6 +132,7 @@ impl RetainedAssertionRoot {
         Ok(Self {
             model,
             metadata: self.metadata.clone(),
+            co_simulation: self.co_simulation,
             resolved_start_time: Some(start_time),
         })
     }

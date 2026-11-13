@@ -78,6 +78,7 @@ fn initialization_options_and_dynamic_name_are_actual_entered_configuration() {
     assert_eq!(actual.stop_time(), Some(3.0));
     let options = crate::fmi_me::driver::fmi_session_options(
         &rumoca_ir_solve::fmi::RootLocationPlan::STANDARD,
+        &rumoca_ir_solve::fmi::CoSimulationStepPlan::STANDARD,
         &actual,
     )
     .unwrap();

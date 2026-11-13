@@ -66,7 +66,8 @@ mod time_events;
 pub use binding_execution::FmiBindingProgram;
 pub use c_codegen::{FmiCCodegenError, FmiCCodegenView, FmiInstantiationBuffer};
 pub use co_simulation::{
-    CoSimulationController, CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep,
+    CoSimulationController, CoSimulationMethod, CoSimulationPlanError, CoSimulationStepPlan,
+    CoSimulationSubstep,
 };
 pub use deployment::{
     FmiDeploymentCapabilities, FmiDeploymentError, FmiDeploymentView, FmiInterfaceProfile,
@@ -519,6 +520,16 @@ impl FmiComponent {
         &self.co_simulation
     }
 
+    /// This component with `plan` as its Co-Simulation step rule. A product
+    /// whose host asked for another rule than [`CoSimulationStepPlan::STANDARD`]
+    /// sets it once, before any view or retained root is taken; the plan
+    /// travels with the component's wire and retained root.
+    #[must_use]
+    pub fn with_co_simulation(mut self, plan: CoSimulationStepPlan) -> Self {
+        self.co_simulation = plan;
+        self
+    }
+
     #[must_use]
     pub fn variables(&self) -> &[FmiVariable] {
         self.metadata.variables()
@@ -585,6 +596,7 @@ impl FmiComponent {
             metadata: &self.metadata,
             event_indicators: &self.event_indicators,
             root_location: &self.root_location,
+            co_simulation: &self.co_simulation,
         }
     }
 
@@ -616,6 +628,7 @@ pub struct FmiRuntimeView<'component> {
     metadata: &'component Arc<FmiMetadata>,
     event_indicators: &'component FmiEventIndicatorInventory,
     root_location: &'component RootLocationPlan,
+    co_simulation: &'component CoSimulationStepPlan,
 }
 
 impl<'component> FmiRuntimeView<'component> {
@@ -623,7 +636,11 @@ impl<'component> FmiRuntimeView<'component> {
     /// The opaque handle cannot recover an Arc or an owned bare model.
     #[must_use]
     pub fn retain_assertion_root(&self) -> crate::RetainedAssertionRoot {
-        crate::RetainedAssertionRoot::from_fmi_root(self.model.clone(), self.metadata.clone())
+        crate::RetainedAssertionRoot::from_fmi_root(
+            self.model.clone(),
+            self.metadata.clone(),
+            *self.co_simulation,
+        )
     }
 
     #[must_use]
@@ -650,6 +667,12 @@ impl<'component> FmiRuntimeView<'component> {
     #[must_use]
     pub fn root_location(&self) -> &'component RootLocationPlan {
         self.root_location
+    }
+
+    /// The component's Co-Simulation step rule.
+    #[must_use]
+    pub fn co_simulation(&self) -> &'component CoSimulationStepPlan {
+        self.co_simulation
     }
 
     /// The checked maximum-step-duration entry, when the component is

@@ -126,6 +126,8 @@ pub mod native_expansion {
 mod backend_options;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use backend_options::{fixed_step_backend_options, fixed_step_semi_implicit_backend_options};
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+pub use backend_options::{StepPlanRefusal, co_simulation_plan};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub mod interactive_options;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]

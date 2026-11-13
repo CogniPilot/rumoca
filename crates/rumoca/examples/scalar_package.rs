@@ -6,11 +6,11 @@
 //! (each a file or a whole package directory) and nothing else: no library is
 //! discovered from the environment. The host's options document is read by
 //! the same owner the browser session uses. Its parameter overrides and
-//! initial inputs are applied when the model is lowered; its runtime choices
-//! (solver, step, tolerances, execution policy) are admitted only where the
-//! published component carries them, and refused otherwise.
+//! initial inputs are applied when the model is lowered; its solver, step and
+//! tolerances become the component's Co-Simulation step plan, and a choice no
+//! plan or guest carries is refused, never substituted.
 use rumoca::native_fmi_ls::ScalarFmiLsPackage;
-use rumoca_ir_solve::fmi::{CoSimulationStepPlan, FmiComponent};
+use rumoca_ir_solve::fmi::FmiComponent;
 use rumoca_sim::interactive_options::InteractiveOptions;
 use rumoca_sim::{PreparedScalarFmiLsModel, SimExecutionPolicy, SimOptions, SimSolverMode};
 use std::{collections::BTreeMap, env, error::Error, fs, path::Path, time::Instant};
@@ -60,17 +60,16 @@ fn requested_options(options: &InteractiveOptions) -> SimOptions {
     options.configure(base, options.initial_inputs.clone())
 }
 
-/// Admit the runtime choices of `opts` the published component executes, or
-/// refuse naming the first one it would otherwise substitute. The guest is
-/// INTERPRETED, so a policy that requires compiled code is refused; its step
-/// plan is the standard one (Dormand-Prince 5(4), error-controlled, one FMI
-/// tolerance for relative and absolute error), so any other solver, a
-/// fixed-step configuration or distinct tolerances are refused.
-fn admit_runtime_choices(
-    component: &FmiComponent,
+/// Bind the runtime choices of `opts` to the component, or refuse naming the
+/// first one it would otherwise substitute. The solver, its configuration and
+/// both tolerances become the component's Co-Simulation step plan, through
+/// the backend that owns them. The guest is INTERPRETED, so a policy that
+/// requires compiled code is refused.
+fn bind_runtime_choices(
+    component: FmiComponent,
     options: &InteractiveOptions,
     opts: &SimOptions,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<FmiComponent, Box<dyn Error>> {
     if !(options.atol > 0.0 && options.rtol > 0.0) {
         return Err("the options must state a positive atol and rtol; none is defaulted".into());
     }
@@ -79,28 +78,9 @@ fn admit_runtime_choices(
             "execution policy `native_required` is refused: this guest is INTERPRETED".into(),
         );
     }
-    if *component.co_simulation() != CoSimulationStepPlan::STANDARD {
-        return Err("the component's step plan is not one this driver admits".into());
-    }
-    if opts.solver_mode != SimSolverMode::RkLike || opts.backend_options.is_some() {
-        let fixed_step = options.fixed_step.map_or(String::new(), |fixed| {
-            format!(" with fixed_step {{step: {}, order: {}}}", fixed.step, fixed.order)
-        });
-        return Err(format!(
-            "solver `{}`{fixed_step} is not carried by the component's step plan \
-             (Dormand-Prince 5(4), error-controlled); refused, not substituted",
-            options.solver
-        )
-        .into());
-    }
-    if opts.atol.to_bits() != opts.rtol.to_bits() {
-        return Err(format!(
-            "atol {} differs from rtol {}; the FMI session uses one tolerance for both",
-            opts.atol, opts.rtol
-        )
-        .into());
-    }
-    Ok(())
+    let plan = rumoca_sim::co_simulation_plan(opts)?;
+    eprintln!("SCALAR_PACKAGE co_simulation={}", serde_json::json!(plan));
+    Ok(component.with_co_simulation(plan))
 }
 
 /// Published variables counted by FMI type and causality.
@@ -150,7 +130,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     let variables = census(&component);
     eprintln!("SCALAR_PACKAGE census={}", serde_json::json!(variables));
-    stage("runtime_choices", || admit_runtime_choices(&component, &options, &opts))?;
+    let (component, _) = stage("runtime_choices", || {
+        bind_runtime_choices(component, &options, &opts)
+    })?;
     let (prepared, prepare_s) = stage("prepared_model", || {
         Ok(PreparedScalarFmiLsModel::from_component(&component)?)
     })?;

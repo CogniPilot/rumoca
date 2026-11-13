@@ -187,6 +187,18 @@ impl<'a> MeModelSource<'a> {
         }
     }
 
+    /// The Co-Simulation step rule the component was constructed with; a test
+    /// fixture has no component and takes the standard plan.
+    pub(crate) fn co_simulation(&self) -> rumoca_ir_solve::fmi::CoSimulationStepPlan {
+        match &self.0 {
+            MeModelSourceInner::Correlated(view) => *view.co_simulation(),
+            #[cfg(test)]
+            MeModelSourceInner::Fixture { .. } => {
+                rumoca_ir_solve::fmi::CoSimulationStepPlan::STANDARD
+            }
+        }
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> Result<MeModelParts, rumoca_ir_solve::fmi::FmiComponentError> {

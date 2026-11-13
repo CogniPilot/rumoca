@@ -147,6 +147,65 @@ fn validate_fixed_step(payload: &BackendOptions) -> Result<ValidatedOptions, Bac
     value.validate_request().map(ValidatedOptions::FixedStep)
 }
 
+/// Why an options request has no Co-Simulation step plan.
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+#[derive(Debug, thiserror::Error)]
+pub enum StepPlanRefusal {
+    #[error(transparent)]
+    Backend(#[from] BackendOptionsError),
+    #[error(transparent)]
+    Plan(#[from] rumoca_ir_solve::fmi::CoSimulationPlanError),
+    #[error("{0}")]
+    Unsupported(String),
+}
+
+/// The Co-Simulation step plan that integrates as a native session given
+/// `options` would, with the configuration validated by the backend that owns
+/// it. The fixed-step backend (its explicit configuration, or its defaults
+/// when none is given) maps onto a fixed-step plan with the options'
+/// tolerances; the Dormand-Prince backend at its defaults and one tolerance of
+/// the standard value is the standard plan. Any other request is refused by
+/// name, never mapped onto a different method.
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+pub fn co_simulation_plan(
+    options: &SimOptions,
+) -> Result<rumoca_ir_solve::fmi::CoSimulationStepPlan, StepPlanRefusal> {
+    use rumoca_ir_solve::fmi::{CoSimulationMethod, CoSimulationStepPlan};
+    let validated = validate(options)?;
+    let fixed = match (options.solver_mode, validated) {
+        (SimSolverMode::FixedStep, ValidatedOptions::FixedStep(config)) => config,
+        (SimSolverMode::FixedStep, ValidatedOptions::Defaults) => {
+            rumoca_solver_rk45::FixedStepConfig::default().validate_request()?
+        }
+        (SimSolverMode::RkLike, ValidatedOptions::Defaults)
+            if options.rtol.to_bits() == options.atol.to_bits()
+                && options.rtol.to_bits()
+                    == CoSimulationStepPlan::STANDARD.default_tolerance().to_bits() =>
+        {
+            return Ok(CoSimulationStepPlan::STANDARD);
+        }
+        (mode, _) => {
+            return Err(StepPlanRefusal::Unsupported(format!(
+                "no Co-Simulation step plan integrates solver {mode:?} with these options \
+                 (atol {}, rtol {})",
+                options.atol, options.rtol
+            )));
+        }
+    };
+    let method = match fixed.scheme {
+        rumoca_solver_rk45::FixedStepScheme::Explicit => {
+            CoSimulationMethod::ExplicitRungeKutta { order: fixed.order }
+        }
+        rumoca_solver_rk45::FixedStepScheme::SemiImplicit => CoSimulationMethod::SemiImplicitEuler,
+    };
+    Ok(CoSimulationStepPlan::fixed_step(
+        method,
+        fixed.step,
+        options.rtol,
+        options.atol,
+    )?)
+}
+
 /// Bind explicit configuration to the factory actually used, including direct
 /// backend entry points that bypass the public solver-mode dispatcher.
 pub(crate) fn validate_for_backend(

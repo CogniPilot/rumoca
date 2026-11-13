@@ -52,19 +52,30 @@ impl MeRetainedComponent {
     /// Complete actual scalar initialization through the same driver as the
     /// native path: retains the component and its effects on failure (no
     /// rollback). The native guards are unchanged; this refuses native kernels.
+    /// `integrator` builds the plugin for the component's own Co-Simulation
+    /// step plan, and refuses a plan it has no plugin for.
     pub fn complete_scalar_initialization_with_integrator_retaining(
         self,
         options: MeSessionOptions,
-        integrator: fn(MeNumericalSetup) -> Box<dyn MeIntegratorBackend + 'static>,
+        integrator: impl FnOnce(
+            &rumoca_ir_solve::fmi::CoSimulationStepPlan,
+            MeNumericalSetup,
+        )
+            -> Result<Box<dyn MeIntegratorBackend + 'static>, MeSessionError>,
     ) -> Result<MeSimulationSession<'static, 'static>, (Box<Self>, MeSessionError)> {
-        if let Err(error) = self.require_scalar_initialization() {
-            return Err((Box::new(self), error.into()));
-        }
+        let plan = match self.require_scalar_initialization().and_then(|()| {
+            self.kernel
+                .borrow()
+                .map(|kernel| *kernel.co_simulation())
+        }) {
+            Ok(plan) => plan,
+            Err(error) => return Err((Box::new(self), error.into())),
+        };
         self.attach_session_retaining(options, |host| {
             if host.state_count() == 0 {
                 Ok(None)
             } else {
-                Ok(Some(integrator(host.numerical_setup(None)?)))
+                Ok(Some(integrator(&plan, host.numerical_setup(None)?)?))
             }
         })
     }

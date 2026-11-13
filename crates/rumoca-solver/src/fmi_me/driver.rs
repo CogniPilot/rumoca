@@ -23,9 +23,12 @@ fn root_location_tolerance(
     )
 }
 
-/// No-trace FMI session options from the actual entered instance request.
+/// No-trace FMI session options from the actual entered instance request. The
+/// FMI tolerance is the relative one; the absolute one is the component step
+/// plan's when it states one, and the relative one otherwise.
 pub fn fmi_session_options(
     plan: &rumoca_ir_solve::fmi::RootLocationPlan,
+    co_simulation: &rumoca_ir_solve::fmi::CoSimulationStepPlan,
     config: &super::MeInstanceConfig,
 ) -> Result<MeSessionOptions, MeSessionError> {
     let start_time = config.start_time();
@@ -36,7 +39,9 @@ pub fn fmi_session_options(
         start_time,
         stop_time,
         relative_tolerance: config.relative_tolerance(),
-        absolute_tolerance: config.relative_tolerance(),
+        absolute_tolerance: co_simulation
+            .absolute_tolerance()
+            .unwrap_or(config.relative_tolerance()),
         output_interval: scan_resolution,
         root_scan_resolution: scan_resolution,
         root_location_tolerance: root_location_tolerance(plan, start_time, scan_resolution),

@@ -1,6 +1,6 @@
 //! Complete current-version FMI wire over the checked Solve replay owner.
 
-use rumoca_ir_solve::fmi::{FmiComponent, FmiVariableInput};
+use rumoca_ir_solve::fmi::{CoSimulationStepPlan, FmiComponent, FmiVariableInput};
 use serde::{Deserialize, Serialize};
 
 /// The canonical model writer refused a component's retained checked root.
@@ -38,6 +38,9 @@ impl std::error::Error for FmiWireError {
 /// replay checks their logical extents against the same Solve storage catalog.
 /// 6 replaces Float64 starts with one exact typed declaration-start authority.
 /// 7 retains distinct effective input defaults and exact supplied/fallback evidence.
+/// A component whose Co-Simulation step rule is not the standard one also
+/// carries it (`co_simulation`); the field is absent otherwise, so a standard
+/// component's wire is unchanged and replays into the standard rule.
 pub const FMI_COMPONENT_SCHEMA_VERSION: u16 = 7;
 
 /// Borrowed, canonical construction inputs for one correlated FMI component.
@@ -46,6 +49,8 @@ pub struct FmiComponentWireRef<'model> {
     schema_version: u16,
     solve_model: crate::model_wire::SolveModelWireRef<'model>,
     variables: Vec<FmiVariableInput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    co_simulation: Option<CoSimulationStepPlan>,
 }
 
 /// Encode an already checked retained component without pairing independent
@@ -55,10 +60,12 @@ pub fn retained_fmi_component_wire(
 ) -> Result<FmiComponentWireRef<'_>, FmiWireError> {
     let solve_model =
         crate::model_wire::solve_model_wire(root.model()).map_err(FmiWireError::Wire)?;
+    let plan = *root.co_simulation();
     Ok(FmiComponentWireRef {
         schema_version: FMI_COMPONENT_SCHEMA_VERSION,
         solve_model,
         variables: root.fmi_declaration_inputs().collect(),
+        co_simulation: (plan != CoSimulationStepPlan::STANDARD).then_some(plan),
     })
 }
 
@@ -69,6 +76,8 @@ struct FmiComponentWire {
     #[serde(deserialize_with = "crate::model_wire::deserialize_solve_model")]
     solve_model: rumoca_ir_solve::SolveModel,
     variables: Vec<FmiVariableInput>,
+    #[serde(default)]
+    co_simulation: Option<CoSimulationStepPlan>,
 }
 
 /// Replay the canonical FMI wire through the same checked component
@@ -84,7 +93,18 @@ where
             wire.schema_version, FMI_COMPONENT_SCHEMA_VERSION
         )));
     }
-    FmiComponent::construct(wire.solve_model, wire.variables).map_err(serde::de::Error::custom)
+    let plan = match wire.co_simulation {
+        None => CoSimulationStepPlan::STANDARD,
+        Some(plan) if plan == CoSimulationStepPlan::STANDARD => {
+            return Err(serde::de::Error::custom(
+                "the standard Co-Simulation step plan is written by omission",
+            ));
+        }
+        Some(plan) => plan.checked().map_err(serde::de::Error::custom)?,
+    };
+    FmiComponent::construct(wire.solve_model, wire.variables)
+        .map(|component| component.with_co_simulation(plan))
+        .map_err(serde::de::Error::custom)
 }
 
 #[cfg(test)]
