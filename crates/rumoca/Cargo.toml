@@ -138,6 +138,10 @@ name = "native_package"
 required-features = ["native-fmi-ls-build"]
 
 [[example]]
+name = "scalar_package"
+required-features = ["native-fmi-ls-build"]
+
+[[example]]
 name = "compact_inventory"
 required-features = ["fmi"]
 
