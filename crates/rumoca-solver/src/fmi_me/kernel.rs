@@ -1333,6 +1333,15 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// The stop time and its schedule, for horizon controls.
+    #[cfg(test)]
+    pub(super) fn horizon_for_test(&self) -> (u64, String) {
+        (
+            self.stop_time.to_bits(),
+            format!("{:?}", self.stop_schedule),
+        )
+    }
+
     pub(crate) fn restart_from_fmu_state(
         &mut self,
         saved: &MeFmuState,

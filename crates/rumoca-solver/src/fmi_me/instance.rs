@@ -150,7 +150,10 @@ impl MeKernelCell {
                 reason: "a native kernel cannot take the scalar initialization branch".to_owned(),
             });
         }
-        let previous_stop = constructed.stop_time;
+        // The kernel's actual horizon, not the stored request: an FMI Reset
+        // restores the pristine kernel horizon while the cell keeps the last
+        // entered request.
+        let previous_stop = kernel.instance_configuration().stop_time;
         kernel.bind_initialization_horizon(config.stop_time)?;
         if let Err(error) = kernel.enter_initialization_mode() {
             kernel
@@ -168,6 +171,11 @@ impl MeKernelCell {
     pub(super) fn bind_instance_name(&self, name: &str) -> Result<(), MeError> {
         if !self.is_scalar() {
             return Err(no_scalar_snapshot());
+        }
+        if name.is_empty() {
+            return Err(MeError::Contract {
+                reason: "an FMI instance name must not be empty".to_owned(),
+            });
         }
         let name: std::sync::Arc<str> = name.into();
         self.borrow_mut()?.bind_instance_name(name.clone())?;
@@ -432,3 +440,45 @@ native_accessors!(set_native_integer, get_native_integer, i64);
 native_accessors!(set_boolean, get_boolean, bool);
 #[cfg(feature = "native-wasm")]
 native_accessors!(set_native_float64, get_native_float64, f64);
+
+#[cfg(all(test, feature = "native-wasm"))]
+mod scalar_initialization_tests {
+    use super::MeKernelCell;
+    use crate::fmi_me::{MeInstanceConfig, MeModelSource, SolveMeKernel};
+
+    fn request(stop: f64) -> MeInstanceConfig {
+        MeInstanceConfig::new("fmi-me-session", 1.0e-10, 0.0, stop).expect("the request constructs")
+    }
+
+    /// A failed scalar entry after a Reset keeps the kernel's actual horizon:
+    /// the pristine one Reset restored, not the stop of the last entered request.
+    #[test]
+    fn a_failed_entry_after_reset_keeps_the_actual_horizon() {
+        let model = crate::fmi_me::tests::nonlinear_right_limit_seed_model();
+        let kernel = SolveMeKernel::instantiate_with_execution_backend(
+            MeModelSource::fixture(&model),
+            &request(1.0),
+            None,
+        )
+        .expect("the scalar fixture instantiates");
+        let cell = MeKernelCell::new(kernel);
+        cell.enter_initialization_mode(&request(2.0))
+            .expect("the first entry adopts stop 2");
+        cell.reset().expect("Reset restores the pristine instance");
+        let pristine = cell.borrow().expect("active").horizon_for_test();
+        assert_eq!(
+            pristine.0,
+            1.0_f64.to_bits(),
+            "Reset restored the constructed stop"
+        );
+
+        crate::fmi_me::kernel::fail_initialization_entry();
+        cell.enter_initialization_mode(&request(3.0))
+            .expect_err("the injected entry failure refuses");
+        assert_eq!(
+            cell.borrow().expect("active").horizon_for_test(),
+            pristine,
+            "the failed entry restores the actual pre-call stop and schedule"
+        );
+    }
+}
