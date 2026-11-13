@@ -13,6 +13,8 @@ mod internal_linkage;
 mod logging;
 mod native_fmi;
 mod native_fmi_capacity;
+#[cfg(feature = "preinit")]
+mod preinit;
 mod typed_values;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -305,6 +307,16 @@ fn main() -> Result<()> {
         "typed" => typed_values::run(component_path, token, &args[3..]),
         "logging" => logging::run(component_path, token, &args[3..]),
         "assertion-order" => assertion_order::run(component_path, token, &args[3..]),
+        #[cfg(feature = "preinit")]
+        "preinit-scan" => preinit::run_scan(component_path, token),
+        #[cfg(feature = "preinit")]
+        "preinit" => {
+            ensure!(
+                args.len() == 4,
+                "usage: preinit <component> <init-export> <out>"
+            );
+            preinit::run_preinit(component_path, token, &args[3])
+        }
         other => bail!("unknown mode {other}"),
     }
 }

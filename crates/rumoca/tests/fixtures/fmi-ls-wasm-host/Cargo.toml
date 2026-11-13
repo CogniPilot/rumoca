@@ -6,7 +6,17 @@ publish = false
 
 [workspace]
 
+[features]
+# Build-time pre-initialisation of a generated component (Wizer). Off by default:
+# the lifecycle and trace modes and every shipped runtime stay free of it.
+preinit = ["dep:wasmtime-wizer", "dep:wasmparser"]
+
 [dependencies]
 anyhow = "=1.0.103"
 wasmtime = { version = "=45.0.1", features = ["component-model"] }
 wasmtime-wasi = "=45.0.1"
+wasmtime-wizer = { version = "=45.0.1", default-features = false, features = ["wasmtime", "component-model"], optional = true }
+wasmparser = { version = "0.248", default-features = false, features = ["validate", "features", "component-model"], optional = true }
+
+[dev-dependencies]
+wasm-encoder = "0.248"

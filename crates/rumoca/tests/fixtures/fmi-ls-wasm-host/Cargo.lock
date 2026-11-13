@@ -1202,8 +1202,11 @@ name = "rumoca-fmi-ls-wasm-host"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "wasm-encoder 0.248.0",
+ "wasmparser 0.248.0",
  "wasmtime",
  "wasmtime-wasi",
+ "wasmtime-wizer",
 ]
 
 [[package]]
@@ -2030,6 +2033,18 @@ dependencies = [
  "bytes",
  "futures",
  "tracing",
+ "wasmtime",
+]
+
+[[package]]
+name = "wasmtime-wizer"
+version = "45.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c16348a83f1ab61ad7f85a4a792b9db5346f7e8c4e291d76b7afef597c5e536"
+dependencies = [
+ "log",
+ "wasm-encoder 0.248.0",
+ "wasmparser 0.248.0",
  "wasmtime",
 ]
 
