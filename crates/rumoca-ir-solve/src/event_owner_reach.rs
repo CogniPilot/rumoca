@@ -57,6 +57,8 @@ pub struct EventOwnerReads {
     y: IndexIntervals,
     p: IndexIntervals,
     time: bool,
+    /// Whether execution evaluates an operation (table access, random state)
+    /// whose result is not a function of the reads above.
     effect: bool,
 }
 
@@ -76,13 +78,6 @@ impl EventOwnerReads {
     #[must_use]
     pub fn reads_time(&self) -> bool {
         self.time
-    }
-
-    /// Whether execution evaluates an operation (table access, random state)
-    /// whose result is not a function of the reads above.
-    #[must_use]
-    pub fn has_effect(&self) -> bool {
-        self.effect
     }
 
     fn of_program(program: &[LinearOp], span: Option<rumoca_core::Span>) -> Option<Self> {
