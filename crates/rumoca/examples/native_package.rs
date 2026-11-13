@@ -24,10 +24,17 @@ fn stage<T>(
 fn main() -> Result<(), Box<dyn Error>> {
     use rumoca_ir_solve::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
     let arguments: Vec<_> = env::args().collect();
-    let [_, source_path, model, work, private, public] = arguments.as_slice() else {
+    let [_, source_path, model, work, private, public, rest @ ..] = arguments.as_slice() else {
         return Err(
-            "usage: native_package SOURCE MODEL NEW_WORK_DIR PRIVATE_BYTES PUBLIC_BYTES".into(),
+            "usage: native_package SOURCE MODEL NEW_WORK_DIR PRIVATE_BYTES PUBLIC_BYTES [BUILD_SCRATCH]".into(),
         );
+    };
+    // Staged source stays under the work dir; an optional existing scratch dir
+    // takes only build data (the fixed guest's cargo target and its cache).
+    let scratch = match rest {
+        [] => None,
+        [scratch] => Some(Path::new(scratch)),
+        _ => return Err("native_package takes at most one BUILD_SCRATCH".into()),
     };
     let work = Path::new(work);
     fs::create_dir(work)?;
@@ -60,10 +67,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         Ok(PreparedNativeFmiLsModel::from_library(library)?)
     })?;
     let (core, core_s) = stage("fixed_guest_core", || {
-        let (staging, target) = (work.join("fixed-source"), work.join("fixed-target"));
+        let staging = work.join("fixed-source");
+        let target = scratch.unwrap_or(work).join("fixed-target");
         fs::create_dir(&staging)?;
         fs::create_dir(&target)?;
-        let cache = work.parent().unwrap_or(work).join("fixed-guest-cache");
+        let cache = match scratch {
+            Some(scratch) => scratch.join("fixed-guest-cache"),
+            None => work.parent().unwrap_or(work).join("fixed-guest-cache"),
+        };
         Ok(rumoca_exec_wasm::build_fixed_native_guest_core_cached(
             &staging, &target, &cache,
         )?)
