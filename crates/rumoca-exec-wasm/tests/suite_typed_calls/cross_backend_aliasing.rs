@@ -22,7 +22,7 @@ type Body = for<'p> fn(
 ) -> Result<(), solve::SolveProgramConstructionError>;
 
 /// A one-owner table over `(aggregate[3], value)` with `outputs` results.
-fn table(
+pub(super) fn table(
     outputs: Vec<solve::SolveValueType>,
     body: Body,
 ) -> (solve::SolvePureCallTable, solve::SolvePureCallSite) {
@@ -43,7 +43,7 @@ fn table(
     (builder.finish(), site)
 }
 
-const UPDATE: f64 = f64::from_bits(0x7ff8_1234_5678_abcd);
+pub(super) const UPDATE: f64 = f64::from_bits(0x7ff8_1234_5678_abcd);
 
 fn flat_inputs() -> Vec<f64> {
     BITS.iter().copied().chain([UPDATE]).collect()
