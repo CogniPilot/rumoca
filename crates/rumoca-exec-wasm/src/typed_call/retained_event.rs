@@ -184,7 +184,7 @@ impl CompiledRetainedEventWasm {
             all(feature = "host-engine", not(target_arch = "wasm32"))
         )))]
         {
-            let _ = (y, p, time, scratch);
+            let _ = (y, p, time, scratch, &self.read_only_y);
             Err(WasmCompileError::Input(
                 "event programs have no admitted engine on this target".into(),
             ))
