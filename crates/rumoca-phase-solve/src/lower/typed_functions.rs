@@ -38,7 +38,6 @@ use value_types::FunctionResultsLayout;
 use assertions::{assertion_conditions, nested_calls};
 pub(crate) use expression_owner::ExactExpressionForm;
 pub(crate) use family_owner::AlgebraicFamilyForm;
-use indexed_values::leading_index_axes;
 use model_coordinates::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
@@ -1568,33 +1567,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let axes = self.tensor_view_axes(subscripts, &dimensions, at)?;
             self.builder.update_view(base, value_register, &axes, at)?
         } else {
-            let indices = subscripts
-                .iter()
-                .map(|subscript| match subscript {
-                    dae::SubscriptView::Index { expression, .. } => {
-                        self.expression(expression)?.only_register(at)
-                    }
-                    dae::SubscriptView::Whole { .. } | dae::SubscriptView::Slice { .. } => {
-                        Err(solve::SolveProgramConstructionError::InvalidTensorAlgebra {
-                            provenance: at,
-                        })
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let base_dimensions = self
-                .view
-                .value_type(base_value.value_type)
-                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                .dimensions();
-            if indices.len() < base_dimensions.len() {
-                // MLS 10.5.3: the unsubscripted trailing axes are whole, so the
-                // update replaces the sub-array the leading indices select.
-                let axes = leading_index_axes(&indices, &base_dimensions[indices.len()..]);
-                self.builder.update_view(base, value_register, &axes, at)?
-            } else {
-                self.builder
-                    .update_element(base, value_register, &indices, at)?
-            }
+            self.update_indexed(base, base_value.value_type, value_register, subscripts, at)?
         };
         Ok(LoweredValue::scalar(value_type, result))
     }

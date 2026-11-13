@@ -133,6 +133,54 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         self.builder.project_view(register, &axes, at)
     }
 
+    /// Write `value` at the index subscripts of `base`. Full-rank Integer
+    /// literals proved inside every extent issue the static element update,
+    /// which cannot fault; every other index keeps the checked run-time
+    /// update, whose fault happens only when the assignment runs.
+    pub(super) fn update_indexed(
+        &mut self,
+        base: solve::ProgramRegister<'program>,
+        base_type: dae::ValueTypeId<'dae>,
+        value: solve::ProgramRegister<'program>,
+        subscripts: dae::SubscriptsView<'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        let index_expressions = subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                dae::SubscriptView::Index { expression, .. } => Ok(expression),
+                dae::SubscriptView::Whole { .. } | dae::SubscriptView::Slice { .. } => {
+                    Err(solve::SolveProgramConstructionError::InvalidTensorAlgebra {
+                        provenance: at,
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(indices) = self
+            .literal_indices(&index_expressions)
+            .filter(|indices| self.builder.element_in_bounds(base, indices))
+        {
+            return self.builder.update_element_static(base, value, indices, at);
+        }
+        let indices = index_expressions
+            .iter()
+            .map(|expression| self.expression(*expression)?.only_register(at))
+            .collect::<Result<Vec<_>, _>>()?;
+        let base_dimensions = self
+            .view
+            .value_type(base_type)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .dimensions();
+        if indices.len() < base_dimensions.len() {
+            // MLS 10.5.3: the unsubscripted trailing axes are whole, so the
+            // update replaces the sub-array the leading indices select.
+            let axes = leading_index_axes(&indices, &base_dimensions[indices.len()..]);
+            self.builder.update_view(base, value, &axes, at)
+        } else {
+            self.builder.update_element(base, value, &indices, at)
+        }
+    }
+
     pub(super) fn contiguous_slice_origin(
         &self,
         subscripts: dae::SubscriptsView<'dae>,
