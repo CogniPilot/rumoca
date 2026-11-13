@@ -16,7 +16,8 @@ crate-type = ["rlib", "cdylib"]
 preinit = []
 # Build-time product kind: a stateful (scalar) component instead of the
 # stateless native product. Interpreted until linked dispatch lands (M1a).
-scalar-product = []
+# Its fixed guest imports no native model entry.
+scalar-product = ["rumoca-exec-wasm/fixed-scalar-guest-receiver"]
 
 [dependencies]
 rumoca-solver = { path = "../rumoca-solver", default-features = false, features = ["sparse-linalg", "native-wasm"] }

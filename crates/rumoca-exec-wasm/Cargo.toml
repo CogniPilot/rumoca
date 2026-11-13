@@ -15,6 +15,9 @@ diagnostic-root-scalar-locals = []
 component-build = ["dep:blake3", "dep:tempfile", "dep:serde_json", "dep:wit-component", "dep:wit-parser", "dep:wasmparser"]
 fixed-native-guest-build = ["component-build"]
 fixed-native-guest-receiver = ["dep:rumoca-eval-solve", "dep:serde_json"]
+# The same receiver in a scalar (stateful) product's fixed guest, which links
+# no native model entry: that product never executes a native preparation.
+fixed-scalar-guest-receiver = ["fixed-native-guest-receiver"]
 # Runs retained native entries on the host through an embedded wasmi engine.
 host-engine = ["dep:wasmi"]
 

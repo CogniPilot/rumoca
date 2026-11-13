@@ -22,6 +22,13 @@ unsafe extern "C" {
     fn token_len() -> i32;
     #[link_name = "rumoca_publication_token_copy"]
     fn token_copy(destination: u32, capacity: u32) -> i32;
+}
+
+/// The stateless native product's linked model entry. A scalar product's
+/// fixed guest imports none (its composition contract refuses one).
+#[cfg(not(feature = "fixed-scalar-guest-receiver"))]
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
     #[link_name = "eval_assignments"]
     fn native_entry(y: u32, p: u32, time: f64, scratch: u32, typed: u32) -> u32;
 }
@@ -205,6 +212,7 @@ fn slot_bytes(slot: SourceSlot) -> Result<Vec<u8>, WasmCompileError> {
 pub(super) struct StaticLinkedEntry;
 
 impl StaticLinkedEntry {
+    #[cfg(not(feature = "fixed-scalar-guest-receiver"))]
     pub(super) fn call(
         &self,
         y: &mut [f64],
@@ -225,6 +233,22 @@ impl StaticLinkedEntry {
         // actual resource owns the checked, disjoint memory32 spans and holds
         // the original shared-code non-reentry gate across this callback-free call.
         Ok(unsafe { native_entry(y, p, time, scratch, typed) })
+    }
+
+    /// A scalar product's fixed guest links no native entry. Its receiver
+    /// never seals one, so no lease reaches this; a call refuses, never runs.
+    #[cfg(feature = "fixed-scalar-guest-receiver")]
+    pub(super) fn call(
+        &self,
+        _y: &mut [f64],
+        _p: &[f64],
+        _time: f64,
+        _scratch: &mut [u64],
+        _typed: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
+        Err(WasmCompileError::Input(
+            "a scalar product's fixed guest links no native model entry".into(),
+        ))
     }
 }
 
