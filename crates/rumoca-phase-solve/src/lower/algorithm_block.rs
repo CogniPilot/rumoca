@@ -29,12 +29,12 @@ use std::rc::Rc;
 #[cfg(test)]
 use check::check_statement;
 use check::{
-    Builtin, check_expression, check_statements, check_subscripts, integer_conversion_limits,
-    loop_range, may_fault, static_int,
+    Builtin, Domain, check_expression, check_statements, check_subscripts,
+    integer_conversion_limits, loop_range, may_fault, static_int,
 };
 use definedness::{require_defined_function, require_defined_reads};
 use expressions::{expression_type, lower_expression, lower_lazy_select, may_overflow, raise};
-use faults::{Summary, function_summary, require_fault_visible_state};
+use faults::{Settlement, Summary, function_summary, require_fault_visible_state};
 use functions::{
     Functions, check_call_statement, check_user_call, lower_functions, lower_user_call,
 };
@@ -46,7 +46,7 @@ use rumoca_ir_galec::ast::{
     ProtectedKind, RefPart, Reference, ScalarType, Spanned, Statement, TypeRef,
     VariableDeclaration,
 };
-use rumoca_ir_galec::package::AlgorithmCodePackage;
+use rumoca_ir_galec::package::{AlgorithmCodePackage, CheckedAlgorithmBlock};
 use rumoca_ir_solve::{
     ProgramRegister, ProgramSlot, SolveAlgorithmBlock, SolveAlgorithmBlockConstructionError,
     SolveAlgorithmCodeEntityKind, SolveAlgorithmCodeRef, SolveArithmeticProfile,
@@ -448,7 +448,7 @@ pub fn lower_algorithm_block(
 ) -> Result<SolveAlgorithmBlock, AlgorithmBlockLowerError> {
     let block = package.block();
     require_supported_block(block)?;
-    let scope = block_scope(block, arithmetic)?;
+    let scope = block_scope(package.checked_block(), arithmetic)?;
     // Refuse every unsupported construct before any program is built, so the
     // builder closures below meet only construction errors.
     let checked = |method, body: &BlockMethod| {
@@ -597,9 +597,10 @@ fn block_provenance(block: &Block) -> Option<Span> {
 }
 
 fn block_scope(
-    block: &Block,
+    checked: &CheckedAlgorithmBlock,
     arithmetic: SolveArithmeticProfile,
 ) -> Result<BlockScope, AlgorithmBlockLowerError> {
+    let block = checked.block();
     let mut variables = Vec::new();
     for interface in &block.interface {
         let (storage, lifecycle) = match interface.kind {
@@ -655,7 +656,7 @@ fn block_scope(
         block: variables,
         by_name,
         status,
-        functions: Rc::new(Functions::declare(block, arithmetic)?),
+        functions: Rc::new(Functions::declare(checked, arithmetic)?),
         provenance,
     })
 }
