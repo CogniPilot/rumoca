@@ -502,36 +502,44 @@ fn package_options_refuse_unknown_names_unbound_tolerances_and_unknown_overrides
         },
     };
     for alias in ["rk-madeup", "euler", "dopri5", "rk45"] {
-        let json = format!(r#"{{"solver":"{alias}","atol":1e-6,"rtol":1e-6}}"#);
+        let json = format!(
+            r#"{{"solver":"{alias}","atol":1e-6,"rtol":1e-6,"execution_policy":"auto"}}"#
+        );
         let refusal = refused(&json);
         assert!(refusal.contains("unknown solver"), "{alias}: {refusal}");
     }
     for json in [
-        r#"{"solver":"rk-like","atol":1e-4,"rtol":1e-4}"#,
-        r#"{"solver":"rk-like","atol":1e-8,"rtol":1e-6}"#,
-        r#"{"solver":"bdf","atol":1e-6,"rtol":1e-6}"#,
+        r#"{"solver":"rk-like","atol":1e-4,"rtol":1e-4,"execution_policy":"auto"}"#,
+        r#"{"solver":"rk-like","atol":1e-8,"rtol":1e-6,"execution_policy":"auto"}"#,
+        r#"{"solver":"bdf","atol":1e-6,"rtol":1e-6,"execution_policy":"auto"}"#,
     ] {
         assert!(refused(json).contains("no Co-Simulation step plan"), "{json}");
     }
     for (json, reason) in [
-        (r#"{"solver":"fixed-step","rtol":1e-6}"#, "none is defaulted"),
+        (
+            r#"{"solver":"fixed-step","rtol":1e-6,"execution_policy":"auto"}"#,
+            "none is defaulted",
+        ),
         (
             r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6,"execution_policy":"native_required"}"#,
             "INTERPRETED",
         ),
         (
-            r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6}"#,
+            r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6,"execution_policy":"auto"}"#,
             "explicit fixed_step",
         ),
     ] {
         assert!(refused(json).contains(reason), "{json}");
     }
     let unknown = r#"{"solver":"fixed-step","atol":1e-8,"rtol":1e-6,"parameters":{"nope":1},
+        "execution_policy":"auto",
         "fixed_step":{"step":0.001,"order":2}}"#;
     refused(unknown);
 
-    let standard = ScalarPackageOptions::parse(r#"{"solver":"rk-like","atol":1e-6,"rtol":1e-6}"#)
-        .unwrap();
+    let standard = ScalarPackageOptions::parse(
+        r#"{"solver":"rk-like","atol":1e-6,"rtol":1e-6,"execution_policy":"auto"}"#,
+    )
+    .unwrap();
     let component = standard
         .bind_runtime_choices(decay(&standard).unwrap())
         .unwrap();
