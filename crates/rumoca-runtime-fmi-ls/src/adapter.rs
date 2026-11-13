@@ -220,7 +220,7 @@ impl GuestCoSimulationInstance for Instance {
         )
     }
     fn set_float64(&self, refs: Vec<u32>, values: Vec<f64>) -> Status {
-        self.status(|resource| resource.set_native_float64(&refs, &values))
+        self.status(|resource| resource.set_float64(&refs, &values))
     }
     fn get_int64(&self, refs: Vec<u32>) -> Result<Vec<i64>, Status> {
         self.get(

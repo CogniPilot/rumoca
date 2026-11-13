@@ -56,6 +56,36 @@ impl MeSimulationSession<'_, '_> {
         Ok(deliver(staged, values)?)
     }
 
+    /// `fmi3SetFloat64` of an executing scalar instance: inputs only, through
+    /// the common accepted-input transaction, exactly as native VR writes.
+    pub fn set_scalar_float64(
+        &mut self,
+        references: &[u32],
+        values: &[f64],
+    ) -> Result<(), MeSessionError> {
+        self.require_live()?;
+        let (targets, unchanged) = {
+            let kernel = self.host.kernel.borrow()?;
+            // Causality is checked even when the proposed bits already match.
+            let targets = kernel.scalar_float64_targets(references, values.len(), true)?;
+            let current = kernel.read_scalar_host_cells(references)?;
+            let unchanged = current
+                .iter()
+                .zip(values)
+                .all(|(before, after)| before.to_bits() == after.to_bits());
+            (targets, unchanged)
+        };
+        if unchanged {
+            return Ok(());
+        }
+        self.write_input_transaction(|write| write.set_float64(&targets, values))?;
+        // The named-input map is reporting data, never VR input authority.
+        self.host.inputs.clear();
+        let correlated = self.correlate_input_write();
+        self.host
+            .guard_mutation(super::MeSessionLoss::InputApplication, correlated)
+    }
+
     /// Scalar count of a checked batch of an executing scalar instance.
     pub fn scalar_value_count(
         &self,
@@ -80,6 +110,18 @@ impl MeRetainedComponent {
     ) -> Result<(), MeError> {
         let staged = self.kernel.borrow()?.read_scalar_host_cells(references)?;
         deliver(staged, values)
+    }
+
+    /// `fmi3SetFloat64` of a scalar instance before initialization completes:
+    /// inputs and settable parameters, through the kernel's own checked write.
+    pub fn set_scalar_float64(
+        &mut self,
+        references: &[u32],
+        values: &[f64],
+    ) -> Result<(), MeError> {
+        let mut kernel = self.kernel.borrow_mut()?;
+        let targets = kernel.scalar_float64_targets(references, values.len(), false)?;
+        kernel.set_float64(&targets, values)
     }
 
     /// Scalar count of a checked batch before initialization completes.

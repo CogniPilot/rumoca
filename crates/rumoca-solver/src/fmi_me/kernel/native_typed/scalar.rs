@@ -7,8 +7,8 @@
 use rumoca_ir_solve::SolveVariableValueKind;
 use rumoca_ir_solve::fmi::{FmiMetadata, FmiStorageColumn};
 
-use super::super::{MeError, MeObservation, SolveMeKernel, contract};
-use super::request::{self, ReadMember};
+use super::super::{MeError, MeFloat64Backing, MeObservation, MeValueRef, SolveMeKernel, contract};
+use super::request::{self, Access, ReadMember};
 
 impl SolveMeKernel {
     fn scalar_inventory(&self) -> Result<&FmiMetadata, MeError> {
@@ -89,6 +89,44 @@ impl SolveMeKernel {
             values.extend_from_slice(run);
         }
         Ok(values)
+    }
+
+    /// The branded input-parameter references of a checked Float64 write, one
+    /// per scalar in request order. Causality and the lifecycle window are
+    /// checked first, by the request owner: before initialization completes
+    /// inputs and settable parameters are writable, afterwards inputs only.
+    pub(crate) fn scalar_float64_targets(
+        &self,
+        references: &[u32],
+        value_count: usize,
+        executing: bool,
+    ) -> Result<Vec<MeValueRef>, MeError> {
+        self.require_active_lifecycle("scalar_float64_targets")?;
+        let access = if executing {
+            Access::WriteInputs
+        } else {
+            Access::WriteInputsAndParameters
+        };
+        let variables = request::checked_request(
+            self.scalar_inventory()?,
+            references,
+            value_count,
+            SolveVariableValueKind::Real,
+            access,
+        )?;
+        let mut targets = Vec::with_capacity(value_count);
+        for variable in variables {
+            let storage = variable
+                .storage()
+                .expect("request checked original storage");
+            targets.extend(
+                (storage.base()..storage.base() + storage.scalar_count()).map(|index| MeValueRef {
+                    backing: MeFloat64Backing::InputParameter(index),
+                    instance_brand: std::rc::Rc::clone(&self.instance_brand),
+                }),
+            );
+        }
+        Ok(targets)
     }
 
     /// Scalar count of a checked batch, by the same owner as its reads.

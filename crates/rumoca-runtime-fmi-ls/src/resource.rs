@@ -104,6 +104,30 @@ impl FmiLsResource {
         }
     }
 
+    /// `fmi3SetFloat64` by the product kind fixed at construction: a scalar
+    /// product writes inputs and parameters before initialization and inputs
+    /// through the session's accepted-input transaction after it.
+    pub fn set_float64(
+        &mut self,
+        references: &[u32],
+        values: &[f64],
+    ) -> Result<(), FmiLsResourceError> {
+        match self.owner.as_mut().expect("resource is owned") {
+            ResourceOwner::Retained(component) if component.is_scalar_product() => component
+                .set_scalar_float64(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Retained(component) => component
+                .set_native_float64(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Session(session) if session.is_scalar_product() => session
+                .set_scalar_float64(references, values)
+                .map_err(Into::into),
+            ResourceOwner::Session(session) => session
+                .set_native_float64(references, values)
+                .map_err(Into::into),
+        }
+    }
+
     /// `fmi3GetFloat64` by the product kind fixed at construction: a scalar
     /// product reads its host cells before initialization and one checked
     /// observation after it; a native product keeps its native getter.
