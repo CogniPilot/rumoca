@@ -22,7 +22,7 @@ mod tests;
     target_os = "wasi",
     target_env = "p2"
 ))]
-pub use guest::LinkedPosition;
+pub use guest::{LinkedPosition, linked_dispatch_calls};
 pub use plan::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
     LinkedFaultTables, LinkedWorkspace, linked_key_words,

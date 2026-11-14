@@ -54,6 +54,20 @@ impl<'a> LinkedPosition<'a> {
     }
 }
 
+thread_local! {
+    /// Dispatch calls made by this guest, per entry kind in code order: the
+    /// per-path witness that model operations ran as compiled entries.
+    static CALLS: std::cell::Cell<[u64; LinkedEntryKind::ALL.len()]> =
+        const { std::cell::Cell::new([0; LinkedEntryKind::ALL.len()]) };
+}
+
+/// The dispatch calls this guest has made, per kind, in `LinkedEntryKind::ALL`
+/// order. A refused identity is counted too: the call was attempted.
+pub fn linked_dispatch_calls() -> [(LinkedEntryKind, u64); LinkedEntryKind::ALL.len()] {
+    let calls = CALLS.with(std::cell::Cell::get);
+    std::array::from_fn(|position| (LinkedEntryKind::ALL[position], calls[position]))
+}
+
 /// The triple of one issued entry, exactly as its plan holds it.
 pub(crate) struct LinkedCall {
     id: LinkedEntryId,
@@ -73,6 +87,11 @@ impl LinkedCall {
     pub(crate) fn call(&self, registers: [u32; 8], time: f64) -> Result<u32, WasmCompileError> {
         let [a0, a1, a3, a4, a5, a6, a7, a8] = registers;
         let [k0, k1, k2, k3] = self.key;
+        CALLS.with(|calls| {
+            let mut counts = calls.get();
+            counts[self.id.kind.code() as usize - 1] += 1;
+            calls.set(counts);
+        });
         // SAFETY: the fixed core links this import to the issued product's
         // dispatch over the shared memory; every pointer register was taken
         // from a live borrowed frame whose extents the caller checked.

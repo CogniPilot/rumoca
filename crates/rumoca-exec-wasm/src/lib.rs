@@ -43,7 +43,7 @@ pub use exact_assignments::PrecompiledExactAssignments;
     target_os = "wasi",
     target_env = "p2"
 ))]
-pub use linked::LinkedPosition;
+pub use linked::{LinkedPosition, linked_dispatch_calls};
 pub use linked::{
     LINKED_DISPATCH_EXPORT, LINKED_DISPATCH_REFUSED, LinkedBinding, LinkedDemand, LinkedEntry,
     LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, LinkedFaultTables, LinkedKernelModule,
