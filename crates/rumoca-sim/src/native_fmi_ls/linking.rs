@@ -204,6 +204,7 @@ impl PreparedScalarFmiLsModel {
                 "the linked artifact is bound to another saved product".into(),
             ));
         }
+        check_saved_component(saved, &self.capsule).map_err(linkage)?;
         let data = data::linked_library(&envelope, &token, saved, artifact).map_err(linkage)?;
         let bodies: Vec<&[u8]> = linked
             .modules()
@@ -220,6 +221,56 @@ impl PreparedScalarFmiLsModel {
             core,
         })
     }
+}
+
+/// The saved product wire version this packager reads.
+const SAVED_PRODUCT_VERSION: u32 = 3;
+
+/// Refuse unless the component the saved product carries, which the linked
+/// guest replays and runs, is the component this FMU packages, from which its
+/// capsule and model description come. Both pass through the same checked
+/// replay and are compared in the capsule's canonical wire.
+fn check_saved_component(saved: &[u8], capsule: &[u8]) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct SavedProduct {
+        version: u32,
+        #[serde(deserialize_with = "rumoca_eval_solve::fmi_wire::deserialize_fmi_component")]
+        component: rumoca_ir_solve::fmi::FmiComponent,
+    }
+    let mut reader = rmp_serde::Deserializer::new(std::io::Cursor::new(saved));
+    let product = SavedProduct::deserialize(&mut reader)
+        .map_err(|error| format!("decode saved product: {error}"))?;
+    if reader.get_ref().position() != saved.len() as u64 {
+        return Err("trailing saved product bytes".into());
+    }
+    if product.version != SAVED_PRODUCT_VERSION {
+        return Err(format!(
+            "saved product wire version {} is not {SAVED_PRODUCT_VERSION}",
+            product.version
+        ));
+    }
+    // Read as the guest receiver replays the capsule: no recursion limit,
+    // nothing after the component.
+    let mut capsule_reader = serde_json::Deserializer::from_slice(capsule);
+    capsule_reader.disable_recursion_limit();
+    let packaged = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut capsule_reader)
+        .map_err(|error| format!("decode packaged capsule: {error}"))?;
+    capsule_reader
+        .end()
+        .map_err(|error| format!("decode packaged capsule: {error}"))?;
+    if canonical_wire(&product.component)? != canonical_wire(&packaged)? {
+        return Err(
+            "the saved product's component differs from the component this FMU packages".into(),
+        );
+    }
+    Ok(())
+}
+
+fn canonical_wire(component: &rumoca_ir_solve::fmi::FmiComponent) -> Result<Vec<u8>, String> {
+    let root = component.runtime_view().retain_assertion_root();
+    let wire = rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
+        .map_err(|error| error.to_string())?;
+    serde_json::to_vec(&wire).map_err(|error| error.to_string())
 }
 
 /// The artifact on the export's named-map wire, with no trailing bytes.
