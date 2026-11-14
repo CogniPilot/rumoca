@@ -156,11 +156,12 @@ pub fn linked_digest(bytes: &[u8]) -> String {
 }
 
 /// The issued product as it travels from the build to the guest beside the
-/// saved product it was captured with: bound to those saved bytes, to every
-/// module in link order and to the dispatch module by their digests. It
+/// saved product it was captured with: bound to those saved bytes by their
+/// digest, carrying every module in link order and the dispatch module. It
 /// grants nothing by itself: nothing reads its entries but `certify`, which
 /// compares it whole with a product the receiver issued from its own checked
-/// sources in the owner's order. The modules are readable for linking.
+/// sources in the owner's order. The modules and the dispatch module are
+/// readable for linking; whatever is linked is certified by the receiver.
 #[cfg(feature = "precompiled-programs")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -169,7 +170,8 @@ pub struct LinkedArtifact {
     saved: String,
     entries: Vec<LinkedEntry>,
     modules: Vec<LinkedKernelModule>,
-    dispatch: String,
+    #[serde(with = "serde_bytes")]
+    dispatch: Vec<u8>,
 }
 
 #[cfg(feature = "precompiled-programs")]
@@ -182,7 +184,7 @@ impl LinkedProduct {
             saved: linked_digest(saved),
             entries: self.plan.linked_entries().cloned().collect(),
             modules: self.modules.clone(),
-            dispatch: linked_digest(&self.plan.dispatch()),
+            dispatch: self.plan.dispatch(),
         }
     }
 }
@@ -192,6 +194,11 @@ impl LinkedArtifact {
     /// The modules in link order, for the component link.
     pub fn modules(&self) -> &[LinkedKernelModule] {
         &self.modules
+    }
+
+    /// The dispatch module, for the component link.
+    pub fn dispatch_module(&self) -> &[u8] {
+        &self.dispatch
     }
 
     /// Admit this artifact only if it is exactly what `reissued`, issued by
@@ -219,7 +226,7 @@ impl LinkedArtifact {
             || self.saved != linked_digest(saved)
             || !same_entries
             || !same_modules
-            || self.dispatch != linked_digest(&reissued.plan.dispatch())
+            || self.dispatch != reissued.plan.dispatch()
         {
             return Err(WasmCompileError::Input(
                 "linked artifact differs from the product its checked sources issue".into(),
