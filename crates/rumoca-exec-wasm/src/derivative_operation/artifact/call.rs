@@ -68,7 +68,15 @@ impl BoundFmiDerivativeOperation {
                 "kinematic derivative input differs from issued layout".into(),
             )));
         }
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        #[cfg(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        ))]
         {
             let mut frame = frame;
             frame.workspace[..2].fill(0);
@@ -80,7 +88,15 @@ impl BoundFmiDerivativeOperation {
             })?;
             self.returned_status(frame.output.len(), frame.workspace, status, true)
         }
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        )))]
         {
             let _ = frame;
             Err(FmiDerivativeFailure::Entry(WasmCompileError::Input(
@@ -96,7 +112,15 @@ impl BoundFmiDerivativeOperation {
     pub fn call(&self, mut frame: FmiDerivativeCall<'_>) -> Result<(), FmiDerivativeFailure> {
         self.validate_frame(&frame)
             .map_err(FmiDerivativeFailure::Entry)?;
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        #[cfg(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        ))]
         {
             frame.workspace[..2].fill(0);
             let result = self.runtime.call(&mut frame);
@@ -106,7 +130,15 @@ impl BoundFmiDerivativeOperation {
             let status = result.map_err(|error| self.engine_failure(&mut frame, error))?;
             self.returned_status(frame.output.len(), frame.workspace, status, false)
         }
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        )))]
         {
             let _ = &mut frame;
             Err(FmiDerivativeFailure::Entry(WasmCompileError::Input(
@@ -145,7 +177,15 @@ impl BoundFmiDerivativeOperation {
         Ok(())
     }
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     fn engine_failure(
         &self,
         frame: &mut FmiDerivativeCall<'_>,
@@ -170,7 +210,15 @@ impl BoundFmiDerivativeOperation {
         }
     }
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     fn returned_status(
         &self,
         outputs: usize,

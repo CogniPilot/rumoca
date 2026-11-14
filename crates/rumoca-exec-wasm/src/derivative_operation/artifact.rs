@@ -6,6 +6,14 @@ mod call;
 pub use call::{FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod runtime;
+#[cfg(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+#[path = "artifact/linked_runtime.rs"]
+mod runtime;
 #[cfg(test)]
 mod tampering_tests;
 
@@ -25,15 +33,39 @@ pub struct PrecompiledFmiDerivativeOperation {
 /// Bound bytes still carry no engine admission. The workspace is freshly issued
 /// from the same original operation; no persisted frame offsets are trusted.
 pub struct BoundFmiDerivativeOperation {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     runtime: runtime::DerivativeRuntime,
     bytes: Vec<u8>,
     workspace: FmiDerivativeWorkspace,
     // The refresh helpers are kept to explain a status their call returned,
     // which only the target with an engine can receive.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     static_program: Option<ProgramPayload>,
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     dynamic_program: Option<ProgramPayload>,
     values: ProgramPayload,
     kinematic: Option<ProgramPayload>,
@@ -60,6 +92,100 @@ impl PrecompiledFmiDerivativeOperation {
         &self,
         operation: &FmiDerivativeCausalOperation<'_>,
     ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
+        let issued = self.issued(operation)?;
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        {
+            let _ = issued;
+            Err(WasmCompileError::Input(
+                "a linked guest binds its derivative through the issued entry plan".into(),
+            ))
+        }
+        #[cfg(not(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )))]
+        self.bound(issued.workspace)
+    }
+
+    /// Bind persisted bytes to `operation` for the linked guest: the checks of
+    /// [`Self::bind`], then the issued entry at `index` of `plan` must carry
+    /// exactly this source's key, the freshly issued workspace and each
+    /// helper's emitted fault tables; a kinematic entry exists iff the
+    /// persisted kinematic helper does. The triple is the plan's, never one
+    /// re-derived here.
+    #[cfg(all(
+        feature = "fixed-scalar-guest-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    ))]
+    pub fn bind_linked(
+        &self,
+        operation: &FmiDerivativeCausalOperation<'_>,
+        plan: &crate::linked::LinkedEntryPlan,
+        index: u32,
+    ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
+        use crate::linked::{LinkedBinding, LinkedEntryId, LinkedEntryKind, linked_key_words};
+        let issued = self.issued(operation)?;
+        let key = linked_key_words(&self.source_key)?;
+        let id = |kind| LinkedEntryId { kind, index };
+        let entry = plan
+            .entry(id(LinkedEntryKind::Derivative))
+            .ok_or_else(|| WasmCompileError::Input("no issued linked derivative entry".into()))?;
+        let LinkedBinding::Derivative { workspace, helpers } = entry.binding() else {
+            return Err(WasmCompileError::Input(
+                "the issued derivative entry carries a kernel binding".into(),
+            ));
+        };
+        let same_tables = self
+            .helpers()
+            .zip(helpers.iter())
+            .all(|((_, payload), linked)| match (payload, linked) {
+                (None, None) => true,
+                (Some(payload), Some(linked)) => {
+                    let (typed, gather, linear) = payload.fault_tables();
+                    linked.typed == typed && linked.gather == gather && linked.linear == linear
+                }
+                _ => false,
+            });
+        // Every field of the issued layout, as its accessors expose it.
+        let layout = |w: FmiDerivativeWorkspace| (w.regions(), w.snapshot(), w.helper());
+        if entry.key_words() != key
+            || layout(*workspace) != layout(issued.workspace)
+            || !same_tables
+        {
+            return Err(WasmCompileError::Input(
+                "the issued linked derivative entry differs from its source".into(),
+            ));
+        }
+        let kinematic = plan.entry(id(LinkedEntryKind::Kinematic));
+        if kinematic.is_some() != self.kinematic.is_some()
+            || kinematic.is_some_and(|kinematic| kinematic.key_words() != key)
+        {
+            return Err(WasmCompileError::Input(
+                "the issued linked kinematic entry differs from its source".into(),
+            ));
+        }
+        self.bound(
+            issued.workspace,
+            runtime::DerivativeRuntime::linked(entry, kinematic),
+        )
+    }
+
+    /// Every persisted byte, the control module and each helper's module,
+    /// scratch and fault tables, emitted again from the issued source and
+    /// equal; the issued emission with its fresh workspace.
+    fn issued(
+        &self,
+        operation: &FmiDerivativeCausalOperation<'_>,
+    ) -> Result<CompiledFmiDerivativeOperationWasm, WasmCompileError> {
         let source = operation.source();
         let expected =
             rumoca_ir_solve::PreparedKernelSource::new(&source.problem().layout, source.calls())
@@ -87,7 +213,7 @@ impl PrecompiledFmiDerivativeOperation {
                 "precompiled FMI derivative differs from its issued emission: {mismatch}"
             )));
         }
-        self.bound(issued.workspace)
+        Ok(issued)
     }
 
     fn helpers(&self) -> impl Iterator<Item = (FmiDerivativeHelperRole, Option<&ProgramPayload>)> {
@@ -126,17 +252,48 @@ impl PrecompiledFmiDerivativeOperation {
     fn bound(
         &self,
         workspace: FmiDerivativeWorkspace,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        runtime: runtime::DerivativeRuntime,
     ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime = runtime::DerivativeRuntime::new(self)?;
         Ok(BoundFmiDerivativeOperation {
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            #[cfg(any(
+                all(target_arch = "wasm32", target_os = "unknown"),
+                all(
+                    feature = "fixed-scalar-guest-receiver",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                )
+            ))]
             runtime,
             bytes: self.bytes.clone(),
             workspace,
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            #[cfg(any(
+                all(target_arch = "wasm32", target_os = "unknown"),
+                all(
+                    feature = "fixed-scalar-guest-receiver",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                )
+            ))]
             static_program: self.static_program.clone(),
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            #[cfg(any(
+                all(target_arch = "wasm32", target_os = "unknown"),
+                all(
+                    feature = "fixed-scalar-guest-receiver",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                )
+            ))]
             dynamic_program: self.dynamic_program.clone(),
             values: self.values.clone(),
             kinematic: self.kinematic.clone(),
@@ -149,6 +306,23 @@ impl CompiledFmiDerivativeOperationWasm {
     /// persisted bytes need the re-emission [`PrecompiledFmiDerivativeOperation::bind`]
     /// performs.
     pub fn bind(&self) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        {
+            Err(WasmCompileError::Input(
+                "a linked guest binds its derivative through the issued entry plan".into(),
+            ))
+        }
+        #[cfg(not(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )))]
         PrecompiledFmiDerivativeOperation::from_compiled(self).bound(self.workspace)
     }
 }

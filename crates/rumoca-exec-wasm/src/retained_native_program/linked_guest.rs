@@ -252,7 +252,7 @@ impl StaticLinkedEntry {
     }
 }
 
-fn pointer<T>(pointer: *const T) -> Result<u32, WasmCompileError> {
+pub(crate) fn pointer<T>(pointer: *const T) -> Result<u32, WasmCompileError> {
     u32::try_from(pointer as usize)
         .map_err(|_| WasmCompileError::Input("native buffer is outside memory32".into()))
 }

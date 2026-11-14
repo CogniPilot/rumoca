@@ -8,7 +8,7 @@ mod execution;
     target_os = "wasi",
     target_env = "p2"
 ))]
-mod linked_guest;
+pub(crate) mod linked_guest;
 mod transport;
 pub use execution::NativeInvocationOutcome;
 #[cfg(all(

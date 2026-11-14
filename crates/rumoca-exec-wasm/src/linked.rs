@@ -4,6 +4,13 @@
 //! The browser profile, which the SDK saves and binds by comparing re-emitted
 //! bytes, is unchanged: only an explicit linked emission prints these names.
 mod dispatch;
+#[cfg(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+pub(crate) mod guest;
 mod plan;
 mod products;
 #[cfg(all(test, feature = "host-engine", not(target_arch = "wasm32")))]
