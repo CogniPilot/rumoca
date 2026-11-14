@@ -27,7 +27,9 @@ pub struct FixedNativeGuestCore {
 /// stateless native product, a stateful scalar product
 /// (`rumoca-runtime-fmi-ls/scalar-product`), or a stateful scalar product that
 /// executes linked compiled entries through `rumoca_dispatch`
-/// (`rumoca-runtime-fmi-ls/scalar-linked-product`). Part of the cache recipe.
+/// (`rumoca-runtime-fmi-ls/scalar-linked-product`, a placeholder name for the
+/// guest owner's feature). The linked product never enables `scalar-product`,
+/// whose bootstrap admits only the interpreter. Part of the cache recipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GuestProfile {
     Native,
@@ -40,7 +42,7 @@ impl GuestProfile {
         match self {
             Self::Native => &[],
             Self::Scalar => &["--features", "scalar-product"],
-            Self::ScalarLinked => &["--features", "scalar-product,scalar-linked-product"],
+            Self::ScalarLinked => &["--features", "scalar-linked-product"],
         }
     }
 
@@ -397,13 +399,17 @@ mod profile_tests {
         assert!(!native.contains("scalar-product") && native.contains("profile=native"));
     }
 
-    /// The linked scalar product adds its own feature and never shares the
-    /// interpreted scalar product's cached core.
+    /// The linked scalar product has its own feature, never the interpreted
+    /// scalar product's, and never shares that product's cached core.
     #[test]
     fn the_scalar_linked_profile_has_its_own_feature_and_cache_recipe() {
-        assert_eq!(
-            GuestProfile::ScalarLinked.cargo_features(),
-            ["--features", "scalar-product,scalar-linked-product"]
+        let features = GuestProfile::ScalarLinked.cargo_features();
+        assert_eq!(features, ["--features", "scalar-linked-product"]);
+        assert!(
+            features
+                .iter()
+                .flat_map(|list| list.split(','))
+                .all(|feature| feature != "scalar-product")
         );
         let (scalar, linked) = (
             recipe("flags", GuestProfile::Scalar),
