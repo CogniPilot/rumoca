@@ -106,7 +106,7 @@ mod browser {
         context: T,
     ) -> Result<Vec<u8>, SimulationDiagnosticError> {
         let scope = ProgramScope::capture().map_err(refusal)?;
-        export_in(dae, opts, context, scope, |scope| {
+        export_in(dae, opts, context, scope, simulation_component, |scope| {
             scope.finish_capture().map(|programs| (programs, ()))
         })
         .map(|(bytes, ())| bytes)
@@ -125,16 +125,41 @@ mod browser {
             opts,
             context,
             scope,
+            fmi_scalar_component,
             ProgramScope::finish_capture_linked,
         )?;
         let artifact = encode(&linked.artifact(&bytes))?;
         Ok((bytes, artifact))
+    }
+    /// The browser product's component: the simulation lowering.
+    fn simulation_component(
+        dae: &rumoca_ir_dae::Dae,
+        opts: &SimOptions,
+    ) -> Result<FmiComponent, SimulationDiagnosticError> {
+        let lowered =
+            crate::solve_lowering::lower_correlated_for_simulation_with_overrides(dae, opts)?;
+        crate::solve_lowering::finish_component(lowered)
+    }
+    /// The compiled FMU's component: the FMI scalar export lowering with the
+    /// options' step plan, exactly as the packager publishes it, so the
+    /// captured programs belong to the component the FMU guest constructs.
+    fn fmi_scalar_component(
+        dae: &rumoca_ir_dae::Dae,
+        opts: &SimOptions,
+    ) -> Result<FmiComponent, SimulationDiagnosticError> {
+        let component = crate::solve_lowering::lower_fmi_scalar_export_component(dae, opts)?;
+        let plan = crate::backend_options::co_simulation_plan(opts).map_err(refusal)?;
+        component.with_co_simulation(plan).map_err(refusal)
     }
     fn export_in<T: Serialize, L>(
         dae: &rumoca_ir_dae::Dae,
         opts: SimOptions,
         context: T,
         scope: ProgramScope,
+        lower: fn(
+            &rumoca_ir_dae::Dae,
+            &SimOptions,
+        ) -> Result<FmiComponent, SimulationDiagnosticError>,
         finish: impl FnOnce(ProgramScope) -> Result<(CorePrograms, L), String>,
     ) -> Result<(Vec<u8>, L), SimulationDiagnosticError> {
         if !admits_solver_profile(opts.solver_mode) {
@@ -144,9 +169,7 @@ mod browser {
         }
         crate::backend_options::validate(&opts)?;
         let component_bytes = {
-            let lowered =
-                crate::solve_lowering::lower_correlated_for_simulation_with_overrides(dae, &opts)?;
-            let component = crate::solve_lowering::finish_component(lowered)?;
+            let component = lower(dae, &opts)?;
             let root = component.runtime_view().retain_assertion_root();
             encode(
                 &rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
