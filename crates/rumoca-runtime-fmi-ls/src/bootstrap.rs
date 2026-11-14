@@ -125,8 +125,8 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
     use rumoca_solver::SimExecutionPolicy;
     use rumoca_solver::fmi_me::{MeInstanceConfig, admit_execution_backend};
     let saved = model.saved_product();
-    let (load, component) =
-        rumoca_sim::load_linked_guest(saved).map_err(|error| error.to_string())?;
+    let (load, component) = rumoca_sim::load_linked_guest(saved, model.linked_artifact())
+        .map_err(|error| error.to_string())?;
     let root = component.runtime_view().retain_assertion_root();
     let backend = load
         .execution_backend(root.model())
@@ -143,8 +143,7 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
     let retained =
         MeRetainedComponent::instantiate(MeModelSource::new(&component), &config, backend)
             .map_err(|error| error.to_string())?;
-    load.finish(saved, model.linked_artifact())
-        .map_err(|error| error.to_string())?;
+    load.finish(saved).map_err(|error| error.to_string())?;
     Ok(retained)
 }
 
