@@ -5,3 +5,5 @@ mod host;
 mod identity;
 mod product;
 mod renaming;
+#[cfg(feature = "precompiled-programs")]
+mod wire;

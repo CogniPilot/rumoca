@@ -6,7 +6,7 @@
 use super::plan::refuse_reserved_status;
 use super::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
-    LinkedFaultTables, linked_key_words,
+    LinkedFaultTables, LinkedWorkspace, linked_key_words,
 };
 use crate::emit::Linkage;
 use crate::emit::derivative_operation::HELPER_ROLES;
@@ -23,7 +23,13 @@ use rumoca_ir_solve::{
 /// One linked library: an original emission with its issued link names. It
 /// imports only `env.memory`, the math ABI and other modules' issued symbols.
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "precompiled-programs",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(deny_unknown_fields)
+)]
 pub struct LinkedKernelModule {
+    #[cfg_attr(feature = "precompiled-programs", serde(with = "serde_bytes"))]
     bytes: Vec<u8>,
     exports: Vec<String>,
 }
@@ -143,6 +149,86 @@ impl LinkedProduct {
     }
 }
 
+/// The digest the linked artifact binds bytes with (BLAKE3, lowercase hex).
+#[cfg(feature = "precompiled-programs")]
+pub fn linked_digest(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+/// The issued product as it travels from the build to the guest beside the
+/// saved product it was captured with: bound to those saved bytes, to every
+/// module in link order and to the dispatch module by their digests. It
+/// grants nothing by itself: nothing reads its entries but `certify`, which
+/// compares it whole with a product the receiver issued from its own checked
+/// sources in the owner's order. The modules are readable for linking.
+#[cfg(feature = "precompiled-programs")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkedArtifact {
+    version: u32,
+    saved: String,
+    entries: Vec<LinkedEntry>,
+    modules: Vec<LinkedKernelModule>,
+    dispatch: String,
+}
+
+#[cfg(feature = "precompiled-programs")]
+impl LinkedProduct {
+    /// The artifact of this product, bound to the saved product bytes it
+    /// was captured with.
+    pub fn artifact(&self, saved: &[u8]) -> LinkedArtifact {
+        LinkedArtifact {
+            version: 1,
+            saved: linked_digest(saved),
+            entries: self.plan.linked_entries().cloned().collect(),
+            modules: self.modules.clone(),
+            dispatch: linked_digest(&self.plan.dispatch()),
+        }
+    }
+}
+
+#[cfg(feature = "precompiled-programs")]
+impl LinkedArtifact {
+    /// The modules in link order, for the component link.
+    pub fn modules(&self) -> &[LinkedKernelModule] {
+        &self.modules
+    }
+
+    /// Admit this artifact only if it is exactly what `reissued`, issued by
+    /// the receiver from its own checked sources in the owner's order, and
+    /// the saved product `saved` produce: every position's kind, index, key
+    /// and binding, every module's bytes and exports in link order, and the
+    /// dispatch module. Equal keys at two positions are compared by position.
+    pub fn certify(&self, saved: &[u8], reissued: &LinkedProduct) -> Result<(), WasmCompileError> {
+        let entries = reissued.plan.linked_entries();
+        let same_entries = self.entries.len() == reissued.plan.linked_entries().count()
+            && self
+                .entries
+                .iter()
+                .zip(entries)
+                .all(|(carried, issued)| carried == issued);
+        let same_modules = self.modules.len() == reissued.modules.len()
+            && self
+                .modules
+                .iter()
+                .zip(&reissued.modules)
+                .all(|(carried, issued)| {
+                    carried.bytes == issued.bytes && carried.exports == issued.exports
+                });
+        if self.version != 1
+            || self.saved != linked_digest(saved)
+            || !same_entries
+            || !same_modules
+            || self.dispatch != linked_digest(&reissued.plan.dispatch())
+        {
+            return Err(WasmCompileError::Input(
+                "linked artifact differs from the product its checked sources issue".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Issues a product's identities from its checked products, in its owner's
 /// list order per kind. A refused product leaves the assembler unchanged.
 #[derive(Default)]
@@ -235,7 +321,7 @@ impl LinkedProductAssembler {
             exports: symbols.control.clone(),
         });
         let binding = LinkedBinding::Derivative {
-            workspace,
+            workspace: LinkedWorkspace::of(workspace),
             helpers: Box::new(helper_tables),
         };
         let entries = std::iter::once(complete)

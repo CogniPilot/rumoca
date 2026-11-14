@@ -11,9 +11,11 @@ mod tests;
 
 pub use plan::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
-    LinkedFaultTables, linked_key_words,
+    LinkedFaultTables, LinkedWorkspace, linked_key_words,
 };
 pub(crate) use products::{DerivativeSymbols, helper_symbol};
+#[cfg(feature = "precompiled-programs")]
+pub use products::{LinkedArtifact, linked_digest};
 pub use products::{LinkedKernelModule, LinkedProduct, LinkedProductAssembler};
 
 use crate::WasmCompileError;
