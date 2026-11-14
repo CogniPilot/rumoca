@@ -6,11 +6,10 @@ use super::{
 };
 use rumoca_core::artifact_build::{ArtifactBuildBinding, PreparedBuildRequest};
 use rumoca_exec_wasm::{
-    FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedArtifact, LinkedKernelModule,
-    NativeLinkableModelLibrary,
+    FixedNativeGuestCore, LinkedArtifact, LinkedKernelModule, NativeLinkableModelLibrary,
+    check_embedded_core_modules, link_single_provider_graph,
 };
 use serde::Deserialize;
-use std::collections::BTreeMap;
 
 /// Complete checked component and exact publication inventory/slot binding.
 /// Only the consuming original pair + fixed-source core issuer constructs it.
@@ -201,9 +200,14 @@ impl PreparedScalarFmiLsModel {
         .map_err(linkage)?;
         let linked = decode_artifact(artifact).map_err(linkage)?;
         let data = data::linked_library(&envelope, &token, saved, artifact).map_err(linkage)?;
-        check_single_providers(&core, linked.modules()).map_err(linkage)?;
-        let bytes = link_linked(&data, linked.modules(), linked.dispatch_module(), &core)
-            .map_err(linkage)?;
+        let bodies: Vec<&[u8]> = linked
+            .modules()
+            .iter()
+            .map(LinkedKernelModule::module_bytes)
+            .chain([linked.dispatch_module()])
+            .collect();
+        let bytes = link_linked(&data, &bodies, core.bytes()).map_err(linkage)?;
+        check_embedded_core_modules(&bytes, &bodies).map_err(linkage)?;
         core.check_component_interface(&bytes).map_err(linkage)?;
         Ok(LinkedScalarFmiLsComponent {
             binding: request.binding(),
@@ -225,76 +229,25 @@ fn decode_artifact(bytes: &[u8]) -> Result<LinkedArtifact, String> {
 }
 
 /// The source data, the linked modules in their link order (helpers first),
-/// the dispatch, then the runtime core, with no stubs and no libdl.
-fn link_linked(
-    data: &[u8],
-    modules: &[LinkedKernelModule],
-    dispatch: &[u8],
-    core: &FixedNativeGuestCore,
-) -> Result<Vec<u8>, String> {
-    fn error(error: impl std::fmt::Display) -> String {
-        format!("link scalar-linked fixed FMI-LS graph: {error:#}")
-    }
-    let mut linker = wit_component::Linker::default()
-        .validate(true)
-        .stub_missing_functions(false)
-        .use_built_in_libdl(false)
-        .library("rumoca-source", data, false)
-        .map_err(error)?;
-    for (index, module) in modules.iter().enumerate() {
-        linker = linker
-            .library(
-                &format!("rumoca-core-{index}"),
-                module.module_bytes(),
-                false,
-            )
-            .map_err(error)?;
-    }
-    linker
-        .library("rumoca-dispatch", dispatch, false)
-        .and_then(|linker| linker.library("rumoca-runtime", core.bytes(), false))
-        .and_then(wit_component::Linker::encode)
-        .map_err(error)
-}
-
-/// Refuse a graph in which two libraries export the same name, so linker
-/// priority can never choose between providers of one symbol.
-fn check_single_providers(
-    core: &FixedNativeGuestCore,
-    modules: &[LinkedKernelModule],
-) -> Result<(), String> {
-    let source = [
-        "rumoca_source_capsule_len",
-        "rumoca_source_capsule_copy",
-        "rumoca_publication_token_len",
-        "rumoca_publication_token_copy",
-        "rumoca_saved_product_len",
-        "rumoca_saved_product_copy",
-        "rumoca_linked_artifact_len",
-        "rumoca_linked_artifact_copy",
-    ]
-    .map(String::from);
-    let mut providers: Vec<(String, Vec<String>)> = vec![("rumoca-source".into(), source.to_vec())];
-    for (index, module) in modules.iter().enumerate() {
-        providers.push((format!("rumoca-core-{index}"), module.exports().to_vec()));
-    }
-    providers.push((
-        "rumoca-dispatch".into(),
-        vec![LINKED_DISPATCH_EXPORT.to_owned()],
-    ));
-    providers.push((
-        "rumoca-runtime".into(),
-        core.exports().map(String::from).collect(),
-    ));
-    let mut seen: BTreeMap<String, String> = BTreeMap::new();
-    for (library, exports) in providers {
-        for name in exports {
-            if let Some(previous) = seen.insert(name.clone(), library.clone()) {
-                return Err(format!(
-                    "linked symbol {name} is exported by both {previous} and {library}"
-                ));
-            }
-        }
-    }
-    Ok(())
+/// the dispatch last among `bodies`, then the runtime core: validated, with
+/// no stubs, no libdl and one actual provider per exported name.
+fn link_linked(data: &[u8], bodies: &[&[u8]], runtime: &[u8]) -> Result<Vec<u8>, String> {
+    let (dispatch, modules) = bodies
+        .split_last()
+        .ok_or("a scalar-linked graph has a dispatch")?;
+    let names: Vec<String> = (0..modules.len())
+        .map(|index| format!("rumoca-core-{index}"))
+        .collect();
+    let libraries: Vec<(&str, &[u8])> = [("rumoca-source", data)]
+        .into_iter()
+        .chain(
+            names
+                .iter()
+                .map(String::as_str)
+                .zip(modules.iter().copied()),
+        )
+        .chain([("rumoca-dispatch", *dispatch), ("rumoca-runtime", runtime)])
+        .collect();
+    link_single_provider_graph(&libraries)
+        .map_err(|error| format!("link scalar-linked fixed FMI-LS graph: {error}"))
 }
