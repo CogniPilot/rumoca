@@ -115,6 +115,14 @@ pub enum MeSessionError {
     /// apparently live one.
     #[error("the session is not reusable: {loss}")]
     SessionNotReusable { loss: MeSessionLoss },
+
+    /// A bound write or read named a binding this session cannot use, or
+    /// values that do not fit it; nothing was changed.
+    #[error("binding {binding} {refusal}")]
+    Binding {
+        binding: u32,
+        refusal: super::MeBindingRefusal,
+    },
 }
 
 impl MeSessionError {

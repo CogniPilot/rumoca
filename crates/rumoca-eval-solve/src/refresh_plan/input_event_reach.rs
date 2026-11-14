@@ -7,22 +7,24 @@ use rumoca_ir_solve as solve;
 
 use crate::EvalSolveError;
 
-use super::event_dependencies::{EventConsumerReads, extend_event_consumer_reads};
+use super::dependency_domain::CompactYDependencySet;
 use super::{
     CanonicalScalarProgramCatalog, OutputRowPosition, RefreshPlan, RefreshProgramAccess,
-    collect_dependency_closure, dependency_blocks_by_target, dependency_target_rows,
+    collect_dependency_closure, compact_dependency_error, dependency_blocks_by_target,
+    dependency_target_rows,
 };
 
 /// One bit per declared input scalar: whether a write to it can change an
 /// operand of any event owner in the same instant.
 ///
-/// The event owners are the consumers the event refresh plans close over
-/// (root conditions, discrete rows, runtime, post-commit and guarded
-/// assignments, action conditions and messages) together with the dynamic
-/// time-event rows, the delay rows, the clock-partition intermediates and the
-/// `pre` copies. A bit is set when one of them reads the input's parameter
-/// slot or a non-state solver coordinate whose algebraic definition reads it;
-/// a continuous state is never input-dependent within one instant.
+/// The event owners and what each reads are the problem's issued
+/// [`solve::EventOwnerReach`]: root conditions, discrete rows, runtime,
+/// post-commit and guarded assignments, action conditions and messages, the
+/// dynamic time-event rows, the delay rows, the clock-partition intermediates
+/// and the `pre` copies. A bit is set when the execution of one of them reads
+/// the input's parameter slot or a non-state solver coordinate whose
+/// algebraic definition reads it, a guard without a result included; a
+/// continuous state is never input-dependent within one instant.
 ///
 /// The only way to obtain one is [`derive_input_event_reach`] over a checked
 /// problem: no constructor takes caller-supplied reads or bits, and nothing
@@ -109,13 +111,13 @@ pub fn derive_input_event_reach(problem: &solve::SolveProblem) -> InputEventReac
     }
 }
 
-/// Issue the input reach of `problem` from the event-consumer list and the
-/// closure its event refresh plans are built from.
+/// Issue the input reach of `problem` from its issued event owner reach and
+/// the closure its event refresh plans are built from.
 ///
-/// It fails closed: every input reaches when the dependency owner refuses a
-/// program, when a structured update or an event transaction is present, when
-/// a `pre` copy reads a solver coordinate, or when the algebraic refresh is
-/// not an exact causal schedule.
+/// It fails closed: every input reaches when the owner reach is refused (an
+/// unanalysable program, a structured update or an event transaction, a
+/// `pre` copy of a solver coordinate, or a reach not issued for this
+/// problem), or when the algebraic refresh is not an exact causal schedule.
 fn issue_input_event_reach<A: RefreshProgramAccess + ?Sized>(
     problem: &solve::SolveProblem,
     implicit_block: &A,
@@ -144,31 +146,21 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
     // An event iteration settles a simultaneous block from its own warm start
     // and commits the result as the continuous-time seed, so with such a
     // block the settled coordinate itself is an operand every input reaches.
-    if !algebraic.causal_solution_certified
-        || algebraic
-            .value_stages
-            .iter()
-            .any(|stage| matches!(stage, solve::RefreshStage::ProjectionBlock { .. }))
-    {
+    if !algebraic.is_exact_causal_schedule() {
         return Ok(None);
     }
-    let state_count = problem.solve_layout.state_scalar_count();
-    let mut reads = EventConsumerReads::with_parameters();
-    extend_event_consumer_reads(&mut reads, problem, state_count, None)?;
-    for clock_index in 0..problem.clocks.periodic_event_schedules.len() {
-        let Some(clock) = problem.clocks.periodic_clock_id(clock_index) else {
-            return Ok(None);
-        };
-        extend_event_consumer_reads(&mut reads, problem, state_count, Some(clock))?;
-    }
-    if !extend_instant_owner_reads(&mut reads, problem, state_count)? {
-        return Ok(None);
-    }
-    let (solver_reads, parameters, opaque) = reads.into_parts();
-    // Reads without their parameter slots cannot bound the reach.
-    let Some(mut parameters) = parameters.filter(|_| !opaque) else {
+    let Ok(owner_reach) = problem.events.owner_reach.checked_for(problem) else {
         return Ok(None);
     };
+    let Ok(instant) = owner_reach.instant_reads() else {
+        return Ok(None);
+    };
+    let state_count = problem.solve_layout.state_scalar_count();
+    let mut solver_reads = CompactYDependencySet::default();
+    solver_reads
+        .extend_explicit(instant.y.iter().filter(|index| *index >= state_count))
+        .map_err(|error| compact_dependency_error(error, None))?;
+    let mut parameters = instant.p.to_set();
     let span = implicit_block.first_span();
     let target_to_row = dependency_target_rows(algebraic, span)?;
     let block_by_target = dependency_blocks_by_target(problem, algebraic, state_count, span)?;
@@ -220,34 +212,6 @@ fn event_owner_parameter_reads<A: RefreshProgramAccess + ?Sized>(
     Ok(Some(parameters))
 }
 
-/// The owners an event instant evaluates beside the event-consumer list:
-/// dynamic time-event rows, delay rows, clock-partition intermediates and
-/// `pre` copies. Returns `false` for a `pre` copy of a solver coordinate,
-/// which every event exit latches again whatever the inputs are.
-fn extend_instant_owner_reads(
-    reads: &mut EventConsumerReads,
-    problem: &solve::SolveProblem,
-    state_count: usize,
-) -> Result<bool, EvalSolveError> {
-    let delays = &problem.events.delays;
-    for block in [
-        &problem.events.dynamic_time_event_rhs,
-        &delays.source_rhs,
-        &delays.delay_time_rhs,
-        &delays.delay_max_rhs,
-        &problem.discrete.clock_partition_intermediates,
-    ] {
-        reads.extend_block(block, state_count)?;
-    }
-    for binding in &problem.solve_layout.pre_param_bindings {
-        match binding.source {
-            solve::PreParamSource::P { index } => reads.insert_parameter(index),
-            solve::PreParamSource::Y { .. } => return Ok(false),
-        }
-    }
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +234,7 @@ mod tests {
             vec![0],
         )
         .expect("one root condition is a scalar-program owner");
+        solve::issue_event_owner_reach(&mut problem);
         let catalog = CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs)
             .expect("an empty implicit block has a catalog");
         issue_input_event_reach(&problem, &catalog, algebraic, catalog.positions())
@@ -477,6 +442,63 @@ mod tests {
         }
     }
 
+    /// Every kind of program owner the event owner reach walks, each holding
+    /// one program in which `w` is read only by the guard of a call whose
+    /// result the program stores.
+    #[test]
+    fn a_guard_only_input_reaches_every_kind_of_program_owner() {
+        type Place = fn(&mut solve::SolveProblem, solve::ScalarProgramBlock);
+        let owners: [(&str, Place); 6] = [
+            ("root condition", |problem, block| {
+                problem.events.root_conditions = block;
+            }),
+            ("discrete row", |problem, block| {
+                problem.discrete.rhs = block;
+                problem.discrete.clock_owners = vec![None];
+            }),
+            ("runtime assignment", |problem, block| {
+                problem.discrete.runtime_assignment_rhs = block;
+            }),
+            ("post-commit assignment", |problem, block| {
+                problem.discrete.post_commit_assignment_rhs = block;
+            }),
+            ("dynamic time event", |problem, block| {
+                problem.events.dynamic_time_event_rhs = block;
+            }),
+            ("clock-partition intermediate", |problem, block| {
+                problem.discrete.clock_partition_intermediates = block;
+            }),
+        ];
+        for (kind, place) in owners {
+            let program = baseline_guard_program(true, false, true);
+            let mut problem = solve::SolveProblem::default();
+            problem.solve_layout.input_scalar_names.push_scalar("u");
+            problem.solve_layout.input_scalar_names.push_scalar("w");
+            place(
+                &mut problem,
+                solve::ScalarProgramBlock::with_output_indices(
+                    vec![program],
+                    vec![solve::source_span_from_offsets(820, 0, 1)],
+                    vec![0],
+                )
+                .unwrap(),
+            );
+            solve::issue_event_owner_reach(&mut problem);
+            let catalog =
+                CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs).unwrap();
+            assert_eq!(
+                bits(&issue_input_event_reach(
+                    &problem,
+                    &catalog,
+                    &certified(),
+                    catalog.positions()
+                )),
+                [false, true],
+                "{kind}"
+            );
+        }
+    }
+
     /// `y0 = w` and `y1 = f(2, y0)`, where `f` returns its first input and
     /// checks the second one is finite; one root reads `y1`.
     fn guarded_closure_problem() -> (solve::SolveProblem, crate::PreparedScalarProgramBlock) {
@@ -552,6 +574,7 @@ mod tests {
             vec![0],
         )
         .unwrap();
+        solve::issue_event_owner_reach(&mut problem);
         (problem, block)
     }
 
@@ -611,12 +634,9 @@ mod tests {
             )
             .unwrap();
             problem.discrete.clock_owners = vec![None];
-            let mut reads = EventConsumerReads::default();
-            super::super::event_dependencies::extend_event_consumer_reads(
-                &mut reads, &problem, 0, None,
-            )
-            .unwrap();
-            let (y, _, _) = reads.into_parts();
+            let y =
+                super::super::event_dependencies::event_consumer_dependencies(&problem, 0, None)
+                    .unwrap();
             assert_eq!(y.may_contain(0), guard, "guard={guard}");
         }
     }

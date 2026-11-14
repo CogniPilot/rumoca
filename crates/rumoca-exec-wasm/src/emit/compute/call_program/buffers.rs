@@ -394,9 +394,7 @@ impl BodyEmitter<'_> {
         if bytes == 0 {
             return;
         }
-        self.push(Instruction::LocalGet(pointer));
-        self.push(Instruction::I32Const(7));
-        self.push(Instruction::I32And);
+        self.push_pointer_misalignment(pointer);
         self.return_status_if(1);
         self.buffer_end(pointer, bytes);
         self.push(Instruction::MemorySize(0));
@@ -411,12 +409,10 @@ impl BodyEmitter<'_> {
         if bytes == 0 || other == 0 {
             return;
         }
-        self.push(Instruction::LocalGet(left));
-        self.push(Instruction::I64ExtendI32U);
+        self.push_pointer_extent(left);
         self.buffer_end(right, other);
         self.push(Instruction::I64LtU);
-        self.push(Instruction::LocalGet(right));
-        self.push(Instruction::I64ExtendI32U);
+        self.push_pointer_extent(right);
         self.buffer_end(left, bytes);
         self.push(Instruction::I64LtU);
         self.push(Instruction::I32And);
@@ -424,8 +420,7 @@ impl BodyEmitter<'_> {
     }
 
     fn buffer_end(&mut self, pointer: u32, bytes: u32) {
-        self.push(Instruction::LocalGet(pointer));
-        self.push(Instruction::I64ExtendI32U);
+        self.push_pointer_extent(pointer);
         self.push(Instruction::I64Const(i64::from(bytes)));
         self.push(Instruction::I64Add);
     }

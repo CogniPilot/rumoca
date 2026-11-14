@@ -426,6 +426,15 @@ pub struct RefreshPlan {
 }
 
 impl RefreshPlan {
+    /// Whether this refresh is an exact causal schedule: certified causal and
+    /// without a simultaneous projection stage, so a settled coordinate is a
+    /// function of time, states and parameters alone, whatever warm start it
+    /// is solved from.
+    #[must_use]
+    pub fn is_exact_causal_schedule(&self) -> bool {
+        self.causal_solution_certified && !self.requires_projection()
+    }
+
     /// Whether value refresh still needs a simultaneous residual projection.
     ///
     /// Exact-assignment and causal-seed stages are executable schedules, not

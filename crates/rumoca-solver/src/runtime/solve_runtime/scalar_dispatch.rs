@@ -466,6 +466,22 @@ impl SolveRuntime {
             .visible_values_selected(y, params, t, names, selected)
     }
 
+    pub fn visible_output_position(&self, name: &str) -> Result<Option<usize>, RuntimeSolveError> {
+        Ok(self.scalar_execution()?.visible_output_position(name))
+    }
+
+    pub fn visible_values_at<'name>(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        outputs: impl ExactSizeIterator<Item = (Option<usize>, &'name str)>,
+        selected: &mut Vec<Option<f64>>,
+    ) -> Result<usize, RuntimeSolveError> {
+        self.scalar_execution()?
+            .visible_values_at(y, params, t, outputs, selected)
+    }
+
     pub fn eval_state_jacobian_v_ad_into(
         &self,
         lin: AlgebraicLinearization<'_>,

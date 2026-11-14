@@ -352,7 +352,7 @@ impl LinkedProductAssembler {
             entries: &symbol,
             operations: "",
         };
-        let (code, _) = crate::emit::emit_event_program_module(program, layout, linkage)
+        let (code, _, _) = crate::emit::emit_event_program_module(program, layout, linkage)
             .map_err(WasmCompileError::Backend)?;
         self.commit_single(id, key, code)
     }

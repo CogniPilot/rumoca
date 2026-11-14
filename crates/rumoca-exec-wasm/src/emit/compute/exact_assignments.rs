@@ -66,6 +66,22 @@ pub(crate) fn emit_private_program_module(
     )
 }
 
+/// A retained event module's certificate that it stores nothing into Y.
+///
+/// Only [`emit_event_program_module`] issues it, from the emission of that
+/// module's entry: the entry read its Y pointer only through the loads and
+/// call guards that consume it (see `BodyEmitter::push`), so no address the
+/// module forms derives from Y. An event entry commits no Y targets (it is
+/// emitted as a private entry) and no `LinearOp` stores into Y.
+#[derive(Debug)]
+pub(crate) struct ReadOnlyY(());
+
+impl ReadOnlyY {
+    fn issue(y_pointer_escaped: bool) -> Option<Self> {
+        (!y_pointer_escaped).then_some(Self(()))
+    }
+}
+
 pub(crate) fn emit_event_program_module(
     source: &solve::RetainedEventProgram,
     layout: &VarLayout,
@@ -74,12 +90,14 @@ pub(crate) fn emit_event_program_module(
     (
         CompiledNativeCallProgramWasm,
         Vec<crate::typed_call::retained_event::InvocationStorage>,
+        Option<ReadOnlyY>,
     ),
     String,
 > {
     let ready = Ready::event(source, layout)?;
     let records = ready.observations.clone();
-    emit_module(ready, layout, true, &[], linkage).map(|artifact| (artifact, records))
+    emit_single_module(ready, layout, true, linkage)
+        .map(|(artifact, escaped)| (artifact, records, ReadOnlyY::issue(escaped)))
 }
 
 #[cfg(test)]
@@ -326,6 +344,17 @@ fn emit_module(
     if chunks.len() > 1 {
         return emit_chunked_module(ready, layout, chunks, linkage);
     }
+    emit_single_module(ready, layout, private, linkage).map(|(artifact, _)| artifact)
+}
+
+/// One entry function, and whether it read or wrote its Y pointer other than
+/// to load from Y and guard its extent.
+fn emit_single_module(
+    ready: Ready,
+    layout: &VarLayout,
+    private: bool,
+    linkage: Linkage<'_>,
+) -> Result<(CompiledNativeCallProgramWasm, bool), String> {
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
     let mut catalog = add_import_section(&mut module, &ready.imports, &types);
@@ -358,7 +387,7 @@ fn emit_module(
     }
     code.function(&emitted.function);
     module.section(&code);
-    Ok(CompiledNativeCallProgramWasm {
+    let artifact = CompiledNativeCallProgramWasm {
         bytes: module.finish(),
         capacity_policy: crate::CheckedNativeWasmCapacityPolicy::default(),
         scratch_bytes: ready.calls.view().bytes,
@@ -368,13 +397,15 @@ fn emit_module(
         linear_solve_faults: emitted.linear_solve_faults,
         math_imports: ready.imports.iter().map(|import| import.symbol()).collect(),
         carried: Default::default(),
-    })
+    };
+    Ok((artifact, emitted.y_pointer_escaped))
 }
 
 struct EmittedFunction {
     function: Function,
     gather_faults: Vec<crate::NativeGatherFault>,
     linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
+    y_pointer_escaped: bool,
 }
 
 fn emit_function(
@@ -590,11 +621,13 @@ fn emit_programs(
     emitter.push(Instruction::I32Const(0));
     let gather_faults = std::mem::take(&mut emitter.gather_faults);
     let linear_solve_faults = std::mem::take(&mut emitter.linear_solve_faults);
+    let y_pointer_escaped = emitter.y_pointer_escaped;
     function.instruction(&Instruction::End);
     Ok(EmittedFunction {
         function,
         gather_faults,
         linear_solve_faults,
+        y_pointer_escaped,
     })
 }
 

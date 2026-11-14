@@ -150,7 +150,7 @@ impl SolveStopSchedule {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     pub(crate) fn bit_eq(&self, other: &Self) -> bool {
         self.next_idx == other.next_idx
             && option_float_bit_eq(
@@ -176,7 +176,7 @@ impl SolveStopSchedule {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "input-write-audit"))]
 fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.to_bits() == right.to_bits(),
@@ -186,7 +186,7 @@ fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
 }
 
 impl StopEvent {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "input-write-audit"))]
     fn bit_eq(&self, other: &Self) -> bool {
         self.time.to_bits() == other.time.to_bits()
             && self.pre_mode == other.pre_mode
@@ -578,6 +578,33 @@ mod tests {
 
         assert!(sample_time_match_with_tol(found.time, 0.01));
         assert_eq!(found.event.pre_mode, EventPreMode::EventEntry);
+    }
+
+    /// The schedule consumes an instant: two clocks ticking at it merge into
+    /// one coincident event, and one consumption covers both, so one cannot
+    /// stay due after the other was processed.
+    #[test]
+    fn coincident_ticks_of_two_clocks_are_consumed_together() {
+        let mut problem = solve::SolveProblem::default();
+        for period in [0.1, 0.05] {
+            problem
+                .clocks
+                .periodic_event_schedules
+                .push(periodic(period, 0.0));
+        }
+        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
+        let tick = schedule
+            .unconsumed_coincident_event_at(0.1)
+            .expect("the shared tick is due before it is processed");
+        assert!(schedule.unconsumed_coincident_event_at(0.05).is_some());
+        schedule.advance_past(tick.time);
+        assert!(schedule.unconsumed_coincident_event_at(0.1).is_none());
+        assert_eq!(
+            schedule
+                .scheduled_event_coincidence_at(0.1)
+                .map(|coincidence| coincidence.consumption),
+            Some(ScheduledEventConsumption::Consumed)
+        );
     }
 
     #[test]

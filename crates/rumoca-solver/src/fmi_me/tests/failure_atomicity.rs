@@ -11,7 +11,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+mod bound_writes;
 mod deferred_yields;
+mod frozen_indicator_domains;
 mod input_batches;
 mod numerical_observation;
 

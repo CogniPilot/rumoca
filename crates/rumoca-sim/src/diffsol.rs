@@ -1,3 +1,4 @@
+mod diagnostics;
 mod numerical_observation;
 mod prepared;
 
@@ -351,6 +352,22 @@ impl SimulationSession {
         self.inner.set_inputs(inputs)
     }
 
+    pub(crate) fn bind_inputs(&mut self, names: &[String]) -> Result<u32, SimError> {
+        self.inner.bind_inputs(names)
+    }
+
+    pub(crate) fn bind_outputs(&mut self, names: &[String]) -> Result<u32, SimError> {
+        self.inner.bind_outputs(names)
+    }
+
+    pub(crate) fn write_bound(&mut self, binding: u32, values: &[f64]) -> Result<(), SimError> {
+        self.inner.write_bound(binding, values)
+    }
+
+    pub(crate) fn read_bound(&self, binding: u32, values: &mut Vec<f64>) -> Result<(), SimError> {
+        self.inner.read_bound(binding, values)
+    }
+
     pub(crate) fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
         self.inner.advance_to(target_time)
     }
@@ -409,44 +426,6 @@ impl SimulationSession {
         pub(crate) fn max_schedule_advance_dt(&self) -> Option<f64> {
             None
         }
-    }
-}
-
-/// Preserve the originating diagnostic code when adapting to the backend's
-/// string-carrying error.
-/// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
-/// for a rejected parameter/start override — otherwise unreachable downstream,
-/// because a re-derivation from the stringified `SimError` can only ever
-/// produce the `EX001`/`EX002` fallbacks).
-fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
-    // Carry the stage as typed data too. The `[CODE] ` tag is what the CLI
-    // renders and what code-recovery reads back; the stage is what failure
-    // classification consumes, so it must not have to re-parse that tag.
-    match err {
-        SimulationDiagnosticError::Simulation(error) => error,
-        SimulationDiagnosticError::BackendOptions(error) => error.into(),
-        error => {
-            let stage = diagnostic_failure_stage(&error);
-            SimError::SolveIr(format!("[{}] {error}", error.diagnostic_code())).at_stage(stage)
-        }
-    }
-}
-
-/// The simulation stage a lowering/preparation diagnostic belongs to, read off
-/// the error variant rather than its rendered text.
-fn diagnostic_failure_stage(err: &SimulationDiagnosticError) -> SimFailureStage {
-    match err {
-        SimulationDiagnosticError::SolveLowering(_) if err.is_structural() => {
-            SimFailureStage::StructuralAnalysis
-        }
-        SimulationDiagnosticError::SolveLowering(_)
-        | SimulationDiagnosticError::InvalidOverride { .. } => SimFailureStage::SolveLowering,
-        SimulationDiagnosticError::RuntimePreparation { .. } => SimFailureStage::BackendBuild,
-        SimulationDiagnosticError::Solver(_) => SimFailureStage::Integration,
-        SimulationDiagnosticError::Simulation(error) => {
-            error.stage().unwrap_or(SimFailureStage::Integration)
-        }
-        SimulationDiagnosticError::BackendOptions(_) => SimFailureStage::BackendBuild,
     }
 }
 

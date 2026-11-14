@@ -13,6 +13,8 @@ use super::{MeSessionError, MeSimulationSession};
 thread_local! {
     static FORCE_INPUT_EVENT: Cell<bool> = const { Cell::new(false) };
     static INPUT_WRITES: Cell<[usize; 2]> = const { Cell::new([0; 2]) };
+    static UNGUARDED_INPUT_WRITES: Cell<usize> = const { Cell::new(0) };
+    static POISONED_INDICATOR_CHECK: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Route every changed input batch on this thread through the input event.
@@ -39,6 +41,27 @@ pub fn input_write_counts() -> [usize; 2] {
     INPUT_WRITES.with(Cell::get)
 }
 
+pub(crate) fn count_unguarded_input_write() {
+    UNGUARDED_INPUT_WRITES.with(|count| count.set(count.get() + 1));
+}
+
+/// Make the next indicator check of a rollback-free continuous write on this
+/// thread fail, as an evaluation fault of the check itself would.
+pub fn poison_next_indicator_check() {
+    POISONED_INDICATOR_CHECK.with(|poisoned| poisoned.set(true));
+}
+
+pub(crate) fn take_poisoned_indicator_check() -> bool {
+    POISONED_INDICATOR_CHECK.with(|poisoned| poisoned.replace(false))
+}
+
+/// The continuous batches on this thread so far that the component wrote
+/// without a restoration point.
+#[must_use]
+pub fn unguarded_input_write_count() -> usize {
+    UNGUARDED_INPUT_WRITES.with(Cell::get)
+}
+
 /// The bits a session holds at its accepted point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputWriteAudit {
@@ -62,6 +85,14 @@ impl MeSimulationSession<'_, '_> {
     /// can reach an event owner in the same instant.
     pub fn input_event_reach(&self) -> Result<Vec<bool>, MeSessionError> {
         Ok(self.host.kernel.borrow()?.audit_input_event_reach())
+    }
+
+    /// Why this session's event updates evaluate every owner at every step,
+    /// if they do.
+    pub fn event_owner_refusal(
+        &self,
+    ) -> Result<Option<rumoca_ir_solve::EventReachRefusal>, MeSessionError> {
+        Ok(self.host.kernel.borrow()?.audit_event_owner_refusal())
     }
 
     /// Read the audit at the session's accepted point.

@@ -53,6 +53,10 @@ the receipt is read.
 | `get` | `name` | `value` |
 | `state` | none | `state` |
 | `values` | `names`: `["name", ...]` | `values` |
+| `bind_inputs` | `names`: `["name", ...]` | `bound` |
+| `bind_outputs` | `names`: `["name", ...]` | `bound` |
+| `write_bound` | `binding`, `values`: `[value, ...]` | `ok` |
+| `read_bound` | `binding` | `bound_values` |
 | `reset` | `time` (optional, default `0`) | `ok` |
 | `input_names` | none | `input_names` |
 | `variable_names` | none | `variable_names` |
@@ -64,6 +68,14 @@ coupled signals with one `set_inputs` rather than several `set_input` commands.
 Writing a value that is bit-identical to the current input does not restart the
 integrator at all.
 
+A controller that writes and reads the same names every step can resolve them
+once: `bind_inputs` checks its names as `set_inputs` does and `bind_outputs`
+resolves its names as `values` does, and each answers with a binding id.
+`write_bound` is then `set_inputs` of the bound names with `values` in binding
+order, and `read_bound` answers what `values` of the bound names would. A
+`reset` makes every binding stale, and a binding from another session is
+refused; both are `EX001` errors that change nothing.
+
 ### Events
 
 | Event | Fields |
@@ -73,6 +85,8 @@ integrator at all.
 | `value` | `name`, `time`, `value` (`null` when `name` is not a variable) |
 | `state` | `time`, `values`: every variable by name |
 | `values` | `time`, `values`: the requested variables in request order (`null` for a name that is not a variable) |
+| `bound` | `binding`: the id of the resolved names |
+| `bound_values` | `time`, `values`: the bound names in binding order |
 | `input_names`, `variable_names` | `names` |
 | `closed` | `time` |
 | `error` | `code`, `message` |

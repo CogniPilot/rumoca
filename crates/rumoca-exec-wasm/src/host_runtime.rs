@@ -71,6 +71,37 @@ impl HostKernelRuntime {
         scratch: &mut [u64],
         lanes: &mut [u64],
     ) -> Result<u32, WasmCompileError> {
+        let (status, raw) = self.run_native(y, p, time, scratch, lanes)?;
+        for (index, cell) in y.iter_mut().enumerate() {
+            *cell = f64::from_bits(word(&raw, index * 8));
+        }
+        Ok(status)
+    }
+
+    /// Call an entry certified to store nothing into Y: the caller's Y is laid
+    /// out for the entry like every input and is not copied back out.
+    pub(crate) fn call_native_read_only(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
+        self.run_native(y, p, time, scratch, lanes)
+            .map(|(status, _)| status)
+    }
+
+    /// Run the entry with Y laid out at offset 0, copy the written scratch and
+    /// lanes back, and return the status with the memory it ran in.
+    fn run_native(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<(u32, Vec<u8>), WasmCompileError> {
         let mut guard = self.instance.borrow_mut();
         let Instance { store, memory } = &mut *guard;
         let entry = &self.entry;
@@ -123,18 +154,18 @@ impl HostKernelRuntime {
         memory
             .read(&*store, 0, &mut raw)
             .map_err(|e| backend("memory read failed", e))?;
-        let word = |at: usize| u64::from_le_bytes(raw[at..at + 8].try_into().unwrap());
-        for (index, cell) in y.iter_mut().enumerate() {
-            *cell = f64::from_bits(word(y_at + index * 8));
-        }
         for (index, cell) in scratch.iter_mut().enumerate() {
-            *cell = word(scratch_at + index * 8);
+            *cell = word(&raw, scratch_at + index * 8);
         }
         for (index, cell) in lanes.iter_mut().enumerate() {
-            *cell = word(lanes_at + index * 8);
+            *cell = word(&raw, lanes_at + index * 8);
         }
-        Ok(status as u32)
+        Ok((status as u32, raw))
     }
+}
+
+fn word(raw: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(raw[at..at + 8].try_into().unwrap())
 }
 
 /// One engine/import policy shared by the native and typed-call ABIs.

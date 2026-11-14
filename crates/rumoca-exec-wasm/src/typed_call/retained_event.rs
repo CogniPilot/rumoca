@@ -60,12 +60,51 @@ impl InvocationStorage {
     }
 }
 
+/// Count each compiled or bound event program in the browser profile by
+/// whether it runs on the caller's Y in place or on a copy.
+fn mark_y_census(read_only_y: Option<&crate::emit::ReadOnlyY>) {
+    let _program = rumoca_core::browser_profile::Span::new(match read_only_y {
+        Some(_) => "retained_event_program_y_in_place",
+        None => "retained_event_program_y_copied",
+    });
+}
+
+/// How one call presents the caller's Y to the module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum YPresentation {
+    /// The caller's Y itself.
+    InPlace,
+    /// A copy of Y, disjoint from every other buffer of the call.
+    Copied,
+}
+
+/// A module certified to store nothing into Y runs on the caller's Y in
+/// place; any other runs on a copy. Y and P are both shared slices and may
+/// overlap, and the module's span guards refuse overlapping buffers, so a
+/// certified module still runs on a copy when the two share a cell. An empty
+/// slice holds no cell and shares none.
+fn y_presentation(
+    read_only_y: Option<&crate::emit::ReadOnlyY>,
+    y: &[f64],
+    p: &[f64],
+) -> YPresentation {
+    let (y, p) = (y.as_ptr_range(), p.as_ptr_range());
+    let shared_cell = y.start < y.end && p.start < p.end && y.start < p.end && p.start < y.end;
+    match read_only_y {
+        Some(_) if !shared_cell => YPresentation::InPlace,
+        _ => YPresentation::Copied,
+    }
+}
+
 pub struct CompiledRetainedEventWasm {
     source: solve::RetainedEventProgram,
     artifact: Rc<crate::program_payload::ProgramPayload>,
     #[cfg(feature = "precompiled-programs")]
     source_key: String,
     invocations: Vec<InvocationStorage>,
+    /// Issued by an emission of this module: at compile, or at bind when the
+    /// saved bytes equal the emission there. Never read from a saved product.
+    read_only_y: Option<crate::emit::ReadOnlyY>,
     scratch: RefCell<Vec<u64>>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
@@ -84,7 +123,7 @@ impl CompiledRetainedEventWasm {
             ));
         }
         let layout = &source.source().model().problem.layout;
-        let (artifact, invocations) =
+        let (artifact, invocations, read_only_y) =
             crate::emit::emit_event_program_module(&source, layout, crate::emit::Linkage::Browser)
                 .map_err(WasmCompileError::Backend)?;
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -94,6 +133,7 @@ impl CompiledRetainedEventWasm {
             artifact.module_bytes(),
             "eval_private",
         )?;
+        mark_y_census(read_only_y.as_ref());
         let scratch = RefCell::new(vec![0; artifact.scratch_bytes() as usize / 8]);
         #[cfg(feature = "precompiled-programs")]
         let source_key = solve::PreparedKernelSource::new(layout, source.table())
@@ -105,6 +145,7 @@ impl CompiledRetainedEventWasm {
             #[cfg(feature = "precompiled-programs")]
             source_key,
             invocations,
+            read_only_y,
             scratch,
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
@@ -165,15 +206,27 @@ impl CompiledRetainedEventWasm {
             all(feature = "host-engine", not(target_arch = "wasm32"))
         ))]
         {
-            self.runtime
-                .call_native(&mut y.to_vec(), p, time, scratch, &mut [])
+            match y_presentation(self.read_only_y.as_ref(), y, p) {
+                YPresentation::InPlace => {
+                    self.runtime
+                        .call_native_read_only(y, p, time, scratch, &mut [])
+                }
+                YPresentation::Copied => {
+                    self.runtime
+                        .call_native(&mut y.to_vec(), p, time, scratch, &mut [])
+                }
+            }
         }
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(feature = "host-engine", not(target_arch = "wasm32"))
         )))]
         {
-            let _ = (y, p, time, scratch);
+            let _ = (
+                time,
+                scratch,
+                y_presentation(self.read_only_y.as_ref(), y, p),
+            );
             Err(WasmCompileError::Input(
                 "event programs have no admitted engine on this target".into(),
             ))

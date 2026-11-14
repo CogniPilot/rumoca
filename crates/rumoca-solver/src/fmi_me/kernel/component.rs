@@ -4,6 +4,8 @@ mod indicators;
 mod kinematic;
 #[cfg(test)]
 mod tests;
+#[cfg(any(test, feature = "input-write-audit"))]
+mod verification;
 
 use rumoca_ir_solve::ScalarSlot;
 
@@ -111,14 +113,72 @@ impl SolveMeKernel {
             if self.copy_cached_root_conditions_into(time, &self.states, params, indicators) {
                 return Ok(());
             }
-            let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, params);
-            self.evaluate_inventory_indicators(time, params, &mut settled_guess, indicators)?;
-            self.apply_indicator_zero_sides(params, indicators);
+            self.indicators_at_parameters(time, params, indicators, |time, params| {
+                self.solver_y_at_parameters(time, params)
+            })?;
             self.cache_root_conditions_at_parameters(time, &self.states, params, indicators);
             Ok(())
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error: MeError| error.at_stage(MeStage::Integration))?;
+        Ok(())
+    }
+
+    /// [`Self::event_indicators_into`] at the current coordinate that writes
+    /// nothing in the kernel: no root cache, no seed resolution and no warm
+    /// start. A settled coordinate the indicators need is solved from a copy
+    /// of the warm start, so this is only exact for a refresh whose settled
+    /// bits no warm start can change
+    /// ([`rumoca_ir_solve::RefreshPlan::is_exact_causal_schedule`]), and for a
+    /// model without delay channels.
+    pub(in crate::fmi_me::kernel) fn event_indicators_without_caching(
+        &self,
+        indicators: &mut [f64],
+    ) -> Result<(), MeError> {
+        if indicators.len() != self.indicator_plan.len() {
+            return Err(contract(format!(
+                "event-indicator buffer has {} entries for {} indicators",
+                indicators.len(),
+                self.indicator_plan.len(),
+            )));
+        }
+        self.require_active_lifecycle("get_event_indicators")?;
+        if indicators.is_empty() {
+            return Ok(());
+        }
+        let time = self.continuous_eval_time();
+        if self.copy_cached_root_conditions_into(time, &self.states, &self.params, indicators) {
+            return Ok(());
+        }
+        let settle = self.numerics_settle();
+        self.indicators_at_parameters(time, &self.params, indicators, |time, params| {
+            let mut guess = self.solver_y_guess.borrow().clone();
+            self.runtime.full_solver_y_with_guess_certified(
+                time,
+                &self.states,
+                params,
+                &mut guess,
+                settle.tol,
+                settle.max_iters,
+            )?;
+            Ok(guess)
+        })
+        .map_err(|error| error.at_stage(MeStage::Integration))
+    }
+
+    /// The indicators at `params`, from the cached settled coordinate when
+    /// one matches and otherwise from the coordinate `settle` solves when the
+    /// inventory needs one.
+    fn indicators_at_parameters(
+        &self,
+        time: f64,
+        params: &[f64],
+        indicators: &mut [f64],
+        settle: impl FnOnce(f64, &[f64]) -> Result<Vec<f64>, MeError>,
+    ) -> Result<(), MeError> {
+        let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, params);
+        self.evaluate_inventory_indicators(time, params, &mut settled_guess, settle, indicators)?;
+        self.apply_indicator_zero_sides(params, indicators);
         Ok(())
     }
 
@@ -134,6 +194,7 @@ impl SolveMeKernel {
         time: f64,
         params: &[f64],
         settled_guess: &mut Option<SettledIndicatorCoordinate>,
+        settle: impl FnOnce(f64, &[f64]) -> Result<Vec<f64>, MeError>,
         indicators: &mut [f64],
     ) -> Result<(), MeError> {
         // A dynamic-time deadline needs a settled coordinate of its own, and
@@ -145,7 +206,7 @@ impl SolveMeKernel {
         if needs_settled && settled_guess.is_none() {
             *settled_guess = Some(SettledIndicatorCoordinate {
                 kind: SettledCoordinateKind::Algebraic,
-                values: self.solver_y_at_parameters(time, params)?,
+                values: settle(time, params)?,
             });
         }
         if self.indicator_plan.reads_deadlines()
@@ -406,162 +467,6 @@ impl SolveMeKernel {
         self.pending_event_pre_y = Some(pre_y);
         self.pending_event_pre_p = Some(self.params.clone());
         Ok(())
-    }
-
-    /// The identity of the resolved indicator table and of the storage every
-    /// indicator read uses.
-    ///
-    /// The plan shape comes from the constructor and the buffer addresses are
-    /// the ones reserved with it, so a step that rebuilt or regrew either would
-    /// change this value.
-    #[cfg(test)]
-    pub(crate) fn verification_indicator_storage(&self) -> IndicatorStorageIdentity {
-        let mut domain_buffers = [
-            self.frozen_indicator_positive.as_ptr() as usize,
-            self.indicator_domain_scratch.as_ptr() as usize,
-        ];
-        domain_buffers.sort_unstable();
-        IndicatorStorageIdentity {
-            entries: self
-                .indicator_plan
-                .entries()
-                .iter()
-                .map(|entry| {
-                    (
-                        entry.reading(),
-                        entry.zero_side(),
-                        entry.crossing_root_index(),
-                    )
-                })
-                .collect(),
-            root_value_len: self.indicator_plan.root_value_len(),
-            deadline_len: self.indicator_plan.deadline_len(),
-            root_buffer: self.indicator_root_scratch.borrow().as_ptr() as usize,
-            deadline_buffer: self.indicator_deadline_scratch.borrow().as_ptr() as usize,
-            value_buffer: self.indicator_value_scratch.as_ptr() as usize,
-            domain_buffers,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn verification_observable_state(&self) -> (MeState, u64, Vec<u64>, Vec<u64>) {
-        (
-            self.lifecycle.state(),
-            self.time.to_bits(),
-            self.states.iter().map(|value| value.to_bits()).collect(),
-            self.params.iter().map(|value| value.to_bits()).collect(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn verification_canonicalize_committed_event_view(
-        &mut self,
-        event_time: f64,
-        solver_y: &mut [f64],
-    ) -> Result<(), MeError> {
-        self.canonicalize_committed_event_view(event_time, solver_y, &mut Vec::new())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn verification_continuous_linearization_cache_matches(
-        &self,
-        time: f64,
-        state: &[f64],
-        parameters: &[f64],
-    ) -> bool {
-        self.continuous_linearization_cache_matches(time, state, parameters)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn verification_cache_continuous_linearization(
-        &self,
-        time: f64,
-        state: &[f64],
-        parameters: &[f64],
-        solver_y: &[f64],
-    ) {
-        self.solver_y_guess.borrow_mut().clone_from_slice(solver_y);
-        self.cache_continuous_linearization(time, state, parameters);
-    }
-
-    /// A write to the solver guess that leaves its values as they are.
-    #[cfg(test)]
-    pub(crate) fn verification_touch_solver_guess(&self) {
-        drop(self.solver_y_guess.borrow_mut());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn verification_matches_snapshot(&self, saved: &MeFmuState) -> bool {
-        if !Rc::ptr_eq(&saved.instance_brand, &self.instance_brand) {
-            return false;
-        }
-        let state = &saved.component;
-        self.lifecycle.state() == state.lifecycle
-            && self.stop_time.to_bits() == state.stop_time.to_bits()
-            && self.time.to_bits() == state.time.to_bits()
-            && option_float_bit_eq(self.event_boundary, state.event_boundary)
-            && option_float_bit_eq(self.post_event_eval_time, state.post_event_eval_time)
-            && self.event_anchor_time.to_bits() == state.event_anchor_time.to_bits()
-            && float_slice_bit_eq(&self.states, &state.states)
-            && float_slice_bit_eq(&self.params, &state.params)
-            && self.stop_schedule.bit_eq(&state.stop_schedule)
-            && option_event_entry_bit_eq(self.pending_event_entry, state.pending_event_entry)
-            && option_event_entry_bit_eq(self.last_event_entry, state.last_event_entry)
-            && option_event_stop_bit_eq(self.pending_event_stop, state.pending_event_stop)
-            && self.advance_state_to_event_right_limit == state.advance_state_to_event_right_limit
-            && self.state_time_coincidence == state.state_time_coincidence
-            && self.initial_event_pending == state.initial_event_pending
-            && root_crossings_bit_eq(&self.pending_root_crossings, &state.pending_root_crossings)
-            && option_float_vec_bit_eq(&self.pending_event_pre_y, &state.pending_event_pre_y)
-            && option_float_vec_bit_eq(&self.pending_event_pre_p, &state.pending_event_pre_p)
-            && option_float_vec_bit_eq(&self.boundary_event_pre_y, &state.boundary_event_pre_y)
-            && option_float_vec_bit_eq(&self.boundary_event_pre_p, &state.boundary_event_pre_p)
-            && float_slice_bit_eq(&self.solver_y_guess.borrow(), &state.solver_y_guess)
-            && float_slice_bit_eq(
-                &self.delay_params_scratch.borrow(),
-                &state.delay_params_scratch,
-            )
-            && float_slice_bit_eq(
-                &self.delay_solver_y_scratch.borrow(),
-                &state.delay_solver_y_scratch,
-            )
-            && derivative_cache_bit_eq(
-                self.derivative_cache.borrow().as_ref(),
-                state.derivative_cache.as_ref(),
-            )
-            && root_cache_bit_eq(self.root_cache.borrow().as_ref(), state.root_cache.as_ref())
-            && continuous_linearization_cache_bit_eq(
-                self.snapshot_settled_coordinate().as_ref(),
-                state.continuous_linearization_cache.as_ref(),
-            )
-            && observations_bit_eq(&self.initial_observations, &state.initial_observations)
-            && option_float_bit_eq(self.max_step_duration, state.max_step_duration)
-            && self.last_projection_changed == state.last_projection_changed
-            && termination_bit_eq(self.termination.as_ref(), state.termination.as_ref())
-            && option_float_vec_bit_eq(
-                &self.settled_initialization_y,
-                &state.settled_initialization_y,
-            )
-            && self.active_chart == state.active_chart
-            && self.active_reference.map(f64::to_bits) == state.active_reference.map(f64::to_bits)
-            && self.chart_runtimes_match_snapshots(&state.runtimes)
-    }
-
-    /// Whether every reduced-chart runtime matches a saved snapshot, in chart
-    /// index order. A model with no folding first-integral group compares its
-    /// single primary runtime against the single saved snapshot.
-    #[cfg(test)]
-    fn chart_runtimes_match_snapshots(
-        &self,
-        snapshots: &[Option<crate::runtime::solve_runtime::SolveRuntimeSnapshot>],
-    ) -> bool {
-        match &self.reduced_charts {
-            None => snapshots
-                .first()
-                .and_then(Option::as_ref)
-                .is_some_and(|snapshot| self.runtime.as_ref().matches_snapshot(snapshot)),
-            Some(charts) => charts.match_snapshots(snapshots),
-        }
     }
 
     pub(super) fn require_lifecycle_transition(

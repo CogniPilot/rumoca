@@ -62,6 +62,18 @@ pub enum SessionCommand {
     /// Read several variables at one point, in the order given; cheaper than
     /// `State` when a controller needs a few of many variables.
     Values { names: Vec<String> },
+    /// Resolve declared inputs once, checked as `set_inputs` checks them; the
+    /// returned binding addresses them in `write_bound`.
+    BindInputs { names: Vec<String> },
+    /// Resolve readable names once, repeats preserved; the returned binding
+    /// addresses them in `read_bound`.
+    BindOutputs { names: Vec<String> },
+    /// Apply one atomic input frame to a binding's inputs, values in binding
+    /// order; the same transaction as `set_inputs` of those names.
+    WriteBound { binding: u32, values: Vec<f64> },
+    /// Read a binding's names at one point; the same values as `values` of
+    /// those names.
+    ReadBound { binding: u32 },
     /// Restart initialization at an absolute time (default `0`).
     Reset {
         #[serde(default)]
@@ -103,6 +115,10 @@ pub enum SessionEvent {
     /// The requested variables at `time`, in request order; `null` for a name
     /// that is not a variable.
     Values { time: f64, values: Vec<Option<f64>> },
+    /// A binding id; a restart of the session makes it stale.
+    Bound { binding: u32 },
+    /// A binding's values at `time`, in binding order.
+    BoundValues { time: f64, values: Vec<f64> },
     /// Declared input names.
     InputNames { names: Vec<String> },
     /// Solver variable names.
@@ -217,6 +233,24 @@ impl SimulationSession {
                 let time = self.time();
                 let values = self.selected_values(&names).map_err(fault)?;
                 Ok(SessionEvent::Values { time, values })
+            }
+            SessionCommand::BindInputs { names } => {
+                let binding = self.bind_inputs(&names).map_err(fault)?;
+                Ok(SessionEvent::Bound { binding })
+            }
+            SessionCommand::BindOutputs { names } => {
+                let binding = self.bind_outputs(&names).map_err(fault)?;
+                Ok(SessionEvent::Bound { binding })
+            }
+            SessionCommand::WriteBound { binding, values } => {
+                self.write_bound(binding, &values).map_err(fault)?;
+                Ok(self.ok())
+            }
+            SessionCommand::ReadBound { binding } => {
+                let time = self.time();
+                let mut values = Vec::new();
+                self.read_bound(binding, &mut values).map_err(fault)?;
+                Ok(SessionEvent::BoundValues { time, values })
             }
             SessionCommand::Reset { time } => {
                 let time = nonnegative_time("reset time", time.unwrap_or(0.0))?;

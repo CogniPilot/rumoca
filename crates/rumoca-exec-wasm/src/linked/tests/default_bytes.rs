@@ -72,7 +72,7 @@ pub(super) fn default_modules() -> Vec<(String, Vec<u8>)> {
     modules.push(("private.batch".into(), private[0].module_bytes().to_vec()));
     let event = fixtures::event_program();
     let layout = event.source().model().problem.layout.clone();
-    let (event, _) =
+    let (event, _, _) =
         crate::emit::emit_event_program_module(&event, &layout, crate::emit::Linkage::Browser)
             .unwrap();
     modules.push(("event.observation".into(), event.module_bytes().to_vec()));

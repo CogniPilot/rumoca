@@ -199,6 +199,51 @@ impl WasmSimulationSession {
         }
     }
 
+    /// Resolve declared inputs once, checked as `set_inputs` checks them.
+    ///
+    /// `names_json` is a JSON array of input names. The returned id addresses
+    /// them in `write_bound`; a reset makes it stale.
+    pub fn bind_inputs(&mut self, names_json: &str) -> Result<u32, WasmError> {
+        let names = binding_names(names_json)?;
+        match self.apply(SessionCommand::BindInputs { names })? {
+            SessionEvent::Bound { binding } => Ok(binding),
+            other => Err(unexpected_event("bind_inputs", &other)),
+        }
+    }
+
+    /// Resolve readable names once, as `read_values` resolves them.
+    ///
+    /// `names_json` is a JSON array of variable/input names; duplicates are
+    /// preserved and an unknown name refuses the binding. The returned id
+    /// addresses them in `read_bound`; a reset makes it stale.
+    pub fn bind_outputs(&mut self, names_json: &str) -> Result<u32, WasmError> {
+        let names = binding_names(names_json)?;
+        match self.apply(SessionCommand::BindOutputs { names })? {
+            SessionEvent::Bound { binding } => Ok(binding),
+            other => Err(unexpected_event("bind_outputs", &other)),
+        }
+    }
+
+    /// Apply one atomic input frame to bound inputs, from a JavaScript
+    /// `Float64Array` in binding order: the same transaction as `set_inputs`
+    /// of those names.
+    pub fn write_bound(&mut self, binding: u32, values: &[f64]) -> Result<(), WasmError> {
+        self.apply(SessionCommand::WriteBound {
+            binding,
+            values: values.to_vec(),
+        })
+        .map(drop)
+    }
+
+    /// Read bound names as a JavaScript `Float64Array` in binding order: the
+    /// same values as `read_values` of those names.
+    pub fn read_bound(&mut self, binding: u32) -> Result<Vec<f64>, WasmError> {
+        match self.apply(SessionCommand::ReadBound { binding })? {
+            SessionEvent::BoundValues { values, .. } => Ok(values),
+            other => Err(unexpected_event("read_bound", &other)),
+        }
+    }
+
     /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
     pub fn state_json(&mut self) -> Result<String, WasmError> {
         match self.apply(SessionCommand::State)? {
@@ -270,6 +315,11 @@ pub(crate) fn unexpected_event(command: &str, event: &SessionEvent) -> WasmError
     WasmError::new(format!(
         "Session `{command}` returned unexpected event {event:?}"
     ))
+}
+
+fn binding_names(names_json: &str) -> Result<Vec<String>, WasmError> {
+    serde_json::from_str(names_json)
+        .map_err(|e| WasmError::new(format!("[EX012] Invalid binding names: {e}")))
 }
 
 fn names_json(names: &[String]) -> Result<String, WasmError> {

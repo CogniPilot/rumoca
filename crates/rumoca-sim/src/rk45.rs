@@ -292,6 +292,22 @@ impl SimulationSession {
         self.inner.set_inputs(inputs)
     }
 
+    pub fn bind_inputs(&mut self, names: &[String]) -> Result<u32, SimError> {
+        self.inner.bind_inputs(names)
+    }
+
+    pub fn bind_outputs(&mut self, names: &[String]) -> Result<u32, SimError> {
+        self.inner.bind_outputs(names)
+    }
+
+    pub fn write_bound(&mut self, binding: u32, values: &[f64]) -> Result<(), SimError> {
+        self.inner.write_bound(binding, values)
+    }
+
+    pub fn read_bound(&self, binding: u32, values: &mut Vec<f64>) -> Result<(), SimError> {
+        self.inner.read_bound(binding, values)
+    }
+
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
         self.inner.advance_to(target_time)
     }

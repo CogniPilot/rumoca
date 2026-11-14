@@ -1,8 +1,10 @@
 //! Input transactions belong to the common master (SPEC_0044 ME-HOST-001/ME-BUF-001).
 
+use indexmap::IndexMap;
+
 use super::host_state::{close_excursion, update_discrete_states_to_completion};
 use super::{MeSessionError, MeSessionLoss, MeSimulationSession};
-use crate::fmi_me::kernel::AcceptedInputWrite;
+use crate::fmi_me::kernel::{AcceptedInputWrite, UnguardedContinuousWrite};
 use crate::fmi_me::{MeError, MeEventCause, MeTime, MeValueRef};
 
 impl MeSimulationSession<'_, '_> {
@@ -25,19 +27,32 @@ impl MeSimulationSession<'_, '_> {
     /// the plugin history restarts once, as after that event.
     pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), MeSessionError> {
         self.require_live()?;
-        let references = self.input_references(inputs)?;
+        let references = self.input_references(inputs.iter().map(|(name, _)| *name))?;
         let values: Vec<f64> = inputs.iter().map(|(_, value)| *value).collect();
+        self.write_input_frame(&references, &values, |recorded| {
+            record_inputs(recorded, inputs)
+        })
+    }
+
+    /// The input frame transaction of [`Self::set_inputs`] over resolved
+    /// references; `record` enters the frame into the applied inputs.
+    pub(super) fn write_input_frame(
+        &mut self,
+        references: &[MeValueRef],
+        values: &[f64],
+        record: impl FnOnce(&mut IndexMap<String, f64>),
+    ) -> Result<(), MeSessionError> {
         let mut current = vec![0.0; references.len()];
         self.host
             .kernel
             .borrow()?
-            .get_float64(&references, &mut current)?;
+            .get_float64(references, &mut current)?;
         if current
             .iter()
-            .zip(&values)
+            .zip(values)
             .all(|(before, after)| before.to_bits() == after.to_bits())
         {
-            self.record_inputs(inputs);
+            record(&mut self.host.inputs);
             return Ok(());
         }
         // A changed input is a discontinuity at the caller's coordinate: a
@@ -46,12 +61,12 @@ impl MeSimulationSession<'_, '_> {
         self.host
             .kernel
             .borrow()?
-            .check_float64_inputs(&references, &values)?;
+            .check_float64_inputs(references, values)?;
         self.truncate_deferred_at_observation()?;
         self.clear_snapped_yield();
         let changed = references
             .iter()
-            .zip(current.iter().zip(&values))
+            .zip(current.iter().zip(values))
             .filter(|(_, (before, after))| before.to_bits() != after.to_bits())
             .map(|(reference, _)| reference);
         let continuous = self
@@ -59,10 +74,10 @@ impl MeSimulationSession<'_, '_> {
             .kernel
             .borrow()?
             .admits_continuous_input_write(changed, self.host.time);
-        if continuous && self.write_continuous_inputs(&references, &values)? {
+        if continuous && self.write_continuous_inputs(references, values)? {
             #[cfg(any(test, feature = "input-write-audit"))]
             super::input_write_audit::count_input_write(true);
-            self.record_inputs(inputs);
+            record(&mut self.host.inputs);
             let restarted = self.restart_plugin_history();
             return self
                 .host
@@ -70,17 +85,20 @@ impl MeSimulationSession<'_, '_> {
         }
         #[cfg(any(test, feature = "input-write-audit"))]
         super::input_write_audit::count_input_write(false);
-        self.write_inputs(&references, &values)?;
-        let correlated = self.correlate_inputs(inputs);
+        self.write_inputs(references, values)?;
+        record(&mut self.host.inputs);
+        let correlated = self.correlate_input_write();
         self.host
             .guard_mutation(MeSessionLoss::InputApplication, correlated)
     }
 
-    fn input_references(&self, inputs: &[(&str, f64)]) -> Result<Vec<MeValueRef>, MeSessionError> {
+    pub(super) fn input_references<'name>(
+        &self,
+        names: impl Iterator<Item = &'name str>,
+    ) -> Result<Vec<MeValueRef>, MeSessionError> {
         let kernel = self.host.kernel.borrow()?;
-        inputs
-            .iter()
-            .map(|(name, _)| {
+        names
+            .map(|name| {
                 kernel
                     .input_value_reference(name)
                     .ok_or_else(|| MeSessionError::Contract {
@@ -103,11 +121,34 @@ impl MeSimulationSession<'_, '_> {
 
     /// Write inputs in Continuous-Time Mode; `false`, with nothing written,
     /// when the component needs the input event after all.
+    ///
+    /// The write takes no restoration point when nothing after its first
+    /// mutation can fail (`SolveMeKernel::write_continuous_without_rollback`),
+    /// and runs under the rollback owner otherwise.
     fn write_continuous_inputs(
         &self,
         references: &[MeValueRef],
         values: &[f64],
     ) -> Result<bool, MeSessionError> {
+        let unguarded = self
+            .host
+            .kernel
+            .borrow_mut()?
+            .write_continuous_without_rollback(
+                MeTime::at(self.host.time),
+                &self.host.states,
+                references,
+                values,
+            )?;
+        match unguarded {
+            UnguardedContinuousWrite::Written => {
+                #[cfg(any(test, feature = "input-write-audit"))]
+                super::input_write_audit::count_unguarded_input_write();
+                return Ok(true);
+            }
+            UnguardedContinuousWrite::NeedsInputEvent => return Ok(false),
+            UnguardedContinuousWrite::NotProven => {}
+        }
         self.input_rollback(|scope| {
             scope.write_continuous(
                 MeTime::at(self.host.time),
@@ -153,19 +194,6 @@ impl MeSimulationSession<'_, '_> {
         }
     }
 
-    fn record_inputs(&mut self, inputs: &[(&str, f64)]) {
-        self.host.inputs.extend(
-            inputs
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), *value)),
-        );
-    }
-
-    fn correlate_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), MeSessionError> {
-        self.record_inputs(inputs);
-        self.correlate_input_write()
-    }
-
     pub(super) fn correlate_input_write(&mut self) -> Result<(), MeSessionError> {
         let discrete = update_discrete_states_to_completion(
             &mut *self.host.kernel.borrow_mut()?,
@@ -175,4 +203,12 @@ impl MeSimulationSession<'_, '_> {
         // or advance owns publication, including repeated batches at one time.
         self.complete_event_mode(discrete, self.host.time, false)
     }
+}
+
+fn record_inputs(recorded: &mut IndexMap<String, f64>, inputs: &[(&str, f64)]) {
+    recorded.extend(
+        inputs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), *value)),
+    );
 }

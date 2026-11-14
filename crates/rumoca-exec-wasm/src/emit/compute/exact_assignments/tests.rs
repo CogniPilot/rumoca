@@ -67,6 +67,51 @@ fn artifact(sinusoid: bool) -> CompiledNativeCallProgramWasm {
     .unwrap()
 }
 
+/// An entry that commits its rows stores into Y, so its emission is refused
+/// the Y certificate; the private entry of the same program, which only loads
+/// Y, is issued it, and its bytes are the ones `emit_module` prints.
+#[test]
+fn a_y_committing_entry_is_refused_the_read_only_y_certificate() {
+    let layout = VarLayout::from_parts(Default::default(), 1, 1);
+    let span = solve::source_span_from_offsets(11, 20, 30);
+    let arithmetic = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let calls = solve::SolvePureCallTable::builder(arithmetic).finish();
+    let row = vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let rows = solve::IssuedAssignmentRows::new(vec![row.clone()], vec![span], vec![0], 1).unwrap();
+    let ready = Ready::issued_rows(&rows, &layout, &calls).unwrap();
+    let (_, committing) = emit_single_module(ready, &layout, false, Linkage::Browser).unwrap();
+    assert!(committing);
+    assert!(ReadOnlyY::issue(committing).is_none());
+    let reads = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadP { dst: 1, index: 0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let block = solve::ScalarProgramBlock::with_program_spans(vec![reads], vec![span]).unwrap();
+    let ready = || Ready::private(&block, &layout, &calls).unwrap();
+    let (private, reading) = emit_single_module(ready(), &layout, true, Linkage::Browser).unwrap();
+    assert!(!reading);
+    assert!(ReadOnlyY::issue(reading).is_some());
+    assert_eq!(
+        private.bytes,
+        emit_module(ready(), &layout, true, &[], Linkage::Browser)
+            .unwrap()
+            .bytes
+    );
+}
+
 #[test]
 fn defined_register_memory_keeps_ieee_values_without_input_changes() {
     let artifact = artifact(false);

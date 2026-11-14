@@ -197,7 +197,7 @@ fn a_fault_inside_an_entry_reports_the_same_first_fault_and_fault_map_entry() {
     assert_eq!(dispatched, direct);
     assert!(browser.host.image() == linked.host.image());
     let layout = &sources.event.source().model().problem.layout;
-    let (code, _) = crate::emit::emit_event_program_module(
+    let (code, _, _) = crate::emit::emit_event_program_module(
         &sources.event,
         layout,
         crate::emit::Linkage::Browser,

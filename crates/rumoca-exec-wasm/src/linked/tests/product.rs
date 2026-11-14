@@ -294,7 +294,7 @@ impl Builder {
         let issued = self.assembler.event(event).unwrap();
         assert_eq!(issued, id(LinkedEntryKind::Event, 0));
         let layout = &event.source().model().problem.layout;
-        let (code, _) =
+        let (code, _, _) =
             crate::emit::emit_event_program_module(event, layout, crate::emit::Linkage::Browser)
                 .unwrap();
         let entry = (issued, "eval_private".into(), code.scratch_bytes());
