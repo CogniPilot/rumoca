@@ -41,6 +41,27 @@ impl CompiledFmiDerivativeOperationWasm {
     pub fn kinematic(&self) -> Option<&CompiledNativeCallProgramWasm> {
         self.kinematic.as_ref()
     }
+
+    /// The control bytes, its issued workspace and its helpers in
+    /// `HELPER_ROLES` order.
+    pub(crate) fn into_modules(
+        self,
+    ) -> (
+        Vec<u8>,
+        FmiDerivativeWorkspace,
+        [Option<CompiledNativeCallProgramWasm>; 4],
+    ) {
+        (
+            self.bytes,
+            self.workspace,
+            [
+                self.static_program,
+                self.dynamic_program,
+                Some(self.values),
+                self.kinematic,
+            ],
+        )
+    }
 }
 
 /// Emit code only. Runtime linking must retain the same original FMI owner;
@@ -48,6 +69,17 @@ impl CompiledFmiDerivativeOperationWasm {
 pub fn compile_fmi_derivative_operation_wasm(
     operation: &FmiDerivativeCausalOperation<'_>,
 ) -> Result<CompiledFmiDerivativeOperationWasm, WasmCompileError> {
+    compile_with(operation, None)
+}
+
+/// The browser product, or, with `linked`, the same emission of the same
+/// operation printing the issued symbols of the control and its own helpers.
+pub(crate) fn compile_with(
+    operation: &FmiDerivativeCausalOperation<'_>,
+    linked: Option<&crate::linked::DerivativeSymbols>,
+) -> Result<CompiledFmiDerivativeOperationWasm, WasmCompileError> {
+    use crate::emit::Linkage;
+    let helper = |role: usize| linked.map_or(Linkage::Browser, |symbols| symbols.helper(role));
     let source = operation.source();
     #[cfg(feature = "precompiled-programs")]
     let source_key =
@@ -55,23 +87,30 @@ pub fn compile_fmi_derivative_operation_wasm(
             .and_then(|key| key.fmi_derivative(operation))
             .map_err(WasmCompileError::Input)?;
     let problem = source.problem();
-    let emit = |schedule| {
+    let emit = |schedule, linkage| {
         crate::emit::emit_exact_assignment_module(
             &problem.continuous.implicit_rhs,
             &problem.continuous.refresh_owners,
             schedule,
             &problem.layout,
             source.calls(),
+            linkage,
         )
         .map_err(WasmCompileError::Backend)
     };
-    let static_program = operation.static_schedule().map(emit).transpose()?;
-    let dynamic_program = operation.dynamic_schedule().map(emit).transpose()?;
-    let values =
-        crate::emit::emit_derivative_value_module(source).map_err(WasmCompileError::Backend)?;
+    let static_program = operation
+        .static_schedule()
+        .map(|schedule| emit(schedule, helper(0)))
+        .transpose()?;
+    let dynamic_program = operation
+        .dynamic_schedule()
+        .map(|schedule| emit(schedule, helper(1)))
+        .transpose()?;
+    let values = crate::emit::emit_derivative_value_module(source, helper(2))
+        .map_err(WasmCompileError::Backend)?;
     let kinematic = operation
         .kinematic()
-        .map(|kinematic| crate::emit::emit_kinematic_value_module(source, kinematic))
+        .map(|kinematic| crate::emit::emit_kinematic_value_module(source, kinematic, helper(3)))
         .transpose()
         .map_err(WasmCompileError::Backend)?;
     let control = operation
@@ -86,7 +125,9 @@ pub fn compile_fmi_derivative_operation_wasm(
         )
         .map_err(|e| WasmCompileError::Input(e.to_string()))?;
     let workspace = control.workspace();
-    let bytes = crate::emit::derivative_operation::emit(operation, &control);
+    let control_linkage = linked.map_or(Linkage::Browser, |symbols| symbols.control());
+    let bytes = crate::emit::derivative_operation::emit(operation, &control, control_linkage)
+        .map_err(WasmCompileError::Backend)?;
     Ok(CompiledFmiDerivativeOperationWasm {
         #[cfg(feature = "precompiled-programs")]
         source_key,

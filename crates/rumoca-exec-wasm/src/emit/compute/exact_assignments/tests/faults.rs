@@ -50,6 +50,7 @@ fn fault_artifact() -> CompiledNativeCallProgramWasm {
         &layout,
         true,
         &[],
+        Linkage::Browser,
     )
     .unwrap()
 }

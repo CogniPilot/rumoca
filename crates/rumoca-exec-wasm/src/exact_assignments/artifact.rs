@@ -45,9 +45,15 @@ impl PrecompiledExactAssignments {
             .and_then(|key| key.exact_assignment_schedule(source, owners, schedule))
             .map_err(WasmCompileError::Input)?;
         self.check_header(&expected, layout)?;
-        let emitted =
-            crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
-                .map_err(WasmCompileError::Backend)?;
+        let emitted = crate::emit::emit_exact_assignment_module(
+            source,
+            owners,
+            schedule,
+            layout,
+            table,
+            crate::emit::Linkage::Browser,
+        )
+        .map_err(WasmCompileError::Backend)?;
         self.bind_emitted(emitted)
     }
 
@@ -62,8 +68,13 @@ impl PrecompiledExactAssignments {
             .and_then(|key| key.issued_assignment_rows(rows))
             .map_err(WasmCompileError::Input)?;
         self.check_header(&expected, layout)?;
-        let emitted = crate::emit::emit_issued_assignment_module(rows, layout, table)
-            .map_err(WasmCompileError::Backend)?;
+        let emitted = crate::emit::emit_issued_assignment_module(
+            rows,
+            layout,
+            table,
+            crate::emit::Linkage::Browser,
+        )
+        .map_err(WasmCompileError::Backend)?;
         self.bind_emitted(emitted)
     }
 

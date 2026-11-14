@@ -129,6 +129,7 @@ fn artifact_with(program: Vec<LinearOp>, y: usize, p: usize) -> CompiledNativeCa
         &layout,
         true,
         &[],
+        Linkage::Browser,
     )
     .unwrap()
 }

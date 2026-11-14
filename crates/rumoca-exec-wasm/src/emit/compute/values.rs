@@ -15,16 +15,28 @@ use rumoca_ir_solve::{
 
 pub(crate) fn emit_derivative_value_module(
     source: &FmiDerivativeOperationSource<'_>,
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
-    emit_values(source.values(), &source.problem().layout, source.calls())
+    emit_values(
+        source.values(),
+        &source.problem().layout,
+        source.calls(),
+        linkage,
+    )
 }
 
 /// The same printer over the issued kinematic selection of `source`'s values.
 pub(crate) fn emit_kinematic_value_module(
     source: &FmiDerivativeOperationSource<'_>,
     kinematic: &FmiKinematicDerivativeOperation,
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
-    emit_values(kinematic.values(), &source.problem().layout, source.calls())
+    emit_values(
+        kinematic.values(),
+        &source.problem().layout,
+        source.calls(),
+        linkage,
+    )
 }
 
 struct Ready<'a> {
@@ -92,6 +104,7 @@ fn emit_values(
     source: &ComputeBlock,
     layout: &VarLayout,
     table: &SolvePureCallTable,
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     let ready = Ready::new(source, layout, table)?;
     let mut module = Module::new();
@@ -108,9 +121,10 @@ fn emit_values(
     functions.function(types.eval_type);
     module.section(&functions);
     ready.arena.add_memory(&mut module);
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    exports.export("eval_values", ExportKind::Func, catalog.eval_function_index);
+    let mut exports = linkage.exports();
+    for name in linkage.names(&["eval_values"])? {
+        exports.export(&name, ExportKind::Func, catalog.eval_function_index);
+    }
     module.section(&exports);
     let (function, gather_faults, linear_solve_faults) =
         emit_entry(&catalog, &ready, source, layout)?;

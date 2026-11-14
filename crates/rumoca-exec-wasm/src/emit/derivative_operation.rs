@@ -4,13 +4,23 @@ mod body;
 mod kinematic_tests;
 #[cfg(test)]
 mod tests;
+use super::Linkage;
 use rumoca_ir_solve::fmi::{FmiDerivativeCausalOperation, FmiDerivativeControlPlan};
 use wasm_encoder::*;
+
+/// The roles the control module imports its helpers by, in import order.
+pub(crate) const HELPER_ROLES: [&str; 4] = [
+    "static_refresh",
+    "dynamic_refresh",
+    "values",
+    "kinematic_values",
+];
 
 pub(crate) fn emit(
     operation: &FmiDerivativeCausalOperation<'_>,
     plan: &FmiDerivativeControlPlan,
-) -> Vec<u8> {
+    linkage: Linkage<'_>,
+) -> Result<Vec<u8>, String> {
     let mut module = Module::new();
     let mut types = TypeSection::new();
     types.ty().function(
@@ -53,7 +63,8 @@ pub(crate) fn emit(
     let mut next = 0;
     let mut helper = |name: &str, present: bool| {
         if present {
-            imports.import("operation", name, EntityType::Function(0));
+            let (module, field) = linkage.operation(name);
+            imports.import(module, &field, EntityType::Function(0));
             let index = next;
             next += 1;
             Some(index)
@@ -61,10 +72,11 @@ pub(crate) fn emit(
             None
         }
     };
-    let static_function = helper("static_refresh", operation.static_schedule().is_some());
-    let dynamic_function = helper("dynamic_refresh", operation.dynamic_schedule().is_some());
-    let values = helper("values", true).expect("the complete operation always has values");
-    let kinematic = helper("kinematic_values", plan.kinematic_instructions().is_some());
+    let [static_refresh, dynamic_refresh, values, kinematic_values] = HELPER_ROLES;
+    let static_function = helper(static_refresh, operation.static_schedule().is_some());
+    let dynamic_function = helper(dynamic_refresh, operation.dynamic_schedule().is_some());
+    let values = helper(values, true).expect("the complete operation always has values");
+    let kinematic = helper(kinematic_values, plan.kinematic_instructions().is_some());
     module.section(&imports);
     let helpers = body::Helpers {
         stat: static_function,
@@ -78,11 +90,14 @@ pub(crate) fn emit(
         functions.function(0);
     }
     module.section(&functions);
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    exports.export("eval_derivatives", ExportKind::Func, next);
-    if plan.kinematic_instructions().is_some() {
-        exports.export("eval_kinematic", ExportKind::Func, next + 1);
+    let mut exports = linkage.exports();
+    let browser = if plan.kinematic_instructions().is_some() {
+        &["eval_derivatives", "eval_kinematic"][..]
+    } else {
+        &["eval_derivatives"][..]
+    };
+    for (index, name) in (next..).zip(linkage.names(browser)?) {
+        exports.export(&name, ExportKind::Func, index);
     }
     module.section(&exports);
     let mut code = CodeSection::new();
@@ -91,5 +106,5 @@ pub(crate) fn emit(
         code.function(&body::emit(kinematic, plan.kinematic_i32_locals(), helpers));
     }
     module.section(&code);
-    module.finish()
+    Ok(module.finish())
 }

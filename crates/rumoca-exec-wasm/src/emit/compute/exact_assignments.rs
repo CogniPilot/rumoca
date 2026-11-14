@@ -18,6 +18,7 @@ pub(crate) fn emit_exact_assignment_module(
     schedule: &solve::ExactRefreshAssignmentSchedule,
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     let chunks = schedule.chunks().collect::<Vec<_>>();
     emit_module(
@@ -25,6 +26,7 @@ pub(crate) fn emit_exact_assignment_module(
         layout,
         false,
         &chunks,
+        linkage,
     )
 }
 
@@ -35,6 +37,7 @@ pub(crate) fn emit_issued_assignment_module(
     rows: &solve::IssuedAssignmentRows,
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     let chunks = rows.chunks().collect::<Vec<_>>();
     emit_module(
@@ -42,6 +45,7 @@ pub(crate) fn emit_issued_assignment_module(
         layout,
         false,
         &chunks,
+        linkage,
     )
 }
 
@@ -53,12 +57,19 @@ pub(crate) fn emit_private_program_module(
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
-    emit_module(Ready::private(block, layout, table)?, layout, true, &[])
+    emit_module(
+        Ready::private(block, layout, table)?,
+        layout,
+        true,
+        &[],
+        Linkage::Browser,
+    )
 }
 
 pub(crate) fn emit_event_program_module(
     source: &solve::RetainedEventProgram,
     layout: &VarLayout,
+    linkage: Linkage<'_>,
 ) -> Result<
     (
         CompiledNativeCallProgramWasm,
@@ -68,7 +79,7 @@ pub(crate) fn emit_event_program_module(
 > {
     let ready = Ready::event(source, layout)?;
     let records = ready.observations.clone();
-    emit_module(ready, layout, true, &[]).map(|artifact| (artifact, records))
+    emit_module(ready, layout, true, &[], linkage).map(|artifact| (artifact, records))
 }
 
 #[cfg(test)]
@@ -82,7 +93,7 @@ pub(crate) fn emit_private_directional_module(
     let seed_offset = ready
         .seed_offset
         .ok_or("directional entry has no issued seed storage")?;
-    emit_module(ready, layout, true, &[]).map(|artifact| (artifact, seed_offset))
+    emit_module(ready, layout, true, &[], Linkage::Browser).map(|artifact| (artifact, seed_offset))
 }
 
 pub(crate) use ready::AdmissionCache;
@@ -109,7 +120,7 @@ pub(crate) fn admit_private_entry(
     let (ready, emitted, linked) = Ready::admit((block, seed), layout, table, cache)?;
     let body_bytes = entry_bytes(&emitted);
     let seed_offset = ready.plan.programs[0].seed.and(ready.seed_offset);
-    let (module, _) = private_entries_module(&ready, &[(emitted, seed_offset)])?;
+    let (module, _) = private_entries_module(&ready, &[(emitted, seed_offset)], Linkage::Browser)?;
     let module_bytes = module.bytes.len();
     if module_bytes > limit {
         return Err(format!(
@@ -147,6 +158,7 @@ pub(crate) fn emit_private_entries_modules(
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
     (budget, limit): (usize, usize),
+    linkage: Linkage<'_>,
 ) -> Result<Vec<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>)>, String> {
     let mut modules = Vec::new();
     let mut start = 0;
@@ -169,7 +181,14 @@ pub(crate) fn emit_private_entries_modules(
             }
             end += 1;
         }
-        emit_private_group(&entries[start..end], layout, table, limit, &mut modules)?;
+        emit_private_group(
+            &entries[start..end],
+            layout,
+            table,
+            limit,
+            linkage.entries_in(start..end),
+            &mut modules,
+        )?;
         start = end;
     }
     Ok(modules)
@@ -180,6 +199,7 @@ fn emit_private_group(
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
     limit: usize,
+    linkage: Linkage<'_>,
     modules: &mut Vec<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>)>,
 ) -> Result<(), String> {
     let sources = entries
@@ -205,13 +225,23 @@ fn emit_private_group(
             .map(|function| (function, seed_offset))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let module = private_entries_module(&ready, &emitted)?;
+    // The grouping is decided on the browser module, so a linked module holds
+    // exactly the entries, in the order, its browser module does.
+    let module = private_entries_module(&ready, &emitted, Linkage::Browser)?;
     if module.0.bytes.len() > limit && entries.len() > 1 {
-        let (left, right) = entries.split_at(entries.len() / 2);
-        emit_private_group(left, layout, table, limit, modules)?;
-        return emit_private_group(right, layout, table, limit, modules);
+        let middle = entries.len() / 2;
+        let (left, right) = entries.split_at(middle);
+        let (first, second) = (
+            linkage.entries_in(0..middle),
+            linkage.entries_in(middle..entries.len()),
+        );
+        emit_private_group(left, layout, table, limit, first, modules)?;
+        return emit_private_group(right, layout, table, limit, second, modules);
     }
-    modules.push(module);
+    modules.push(match linkage {
+        Linkage::Browser => module,
+        Linkage::Linked { .. } => private_entries_module(&ready, &emitted, linkage)?,
+    });
     Ok(())
 }
 
@@ -224,6 +254,7 @@ fn entry_bytes(emitted: &EmittedFunction) -> usize {
 fn private_entries_module(
     ready: &Ready,
     entries: &[(EmittedFunction, Option<u32>)],
+    linkage: Linkage<'_>,
 ) -> Result<(CompiledNativeCallProgramWasm, Vec<PrivateEntryArtifact>), String> {
     let count = u32::try_from(entries.len()).map_err(|_| "WASM entry count overflow")?;
     let mut module = Module::new();
@@ -245,11 +276,12 @@ fn private_entries_module(
     }
     module.section(&functions);
     ready.arena.add_memory(&mut module);
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    let names = (0..count)
-        .map(|entry| format!("e{entry}"))
-        .collect::<Vec<_>>();
+    let mut exports = linkage.exports();
+    let names = linkage.names(
+        &(0..count)
+            .map(|entry| format!("e{entry}"))
+            .collect::<Vec<_>>(),
+    )?;
     for (offset, name) in (0..count).zip(&names) {
         exports.export(name, ExportKind::Func, first + offset);
     }
@@ -288,10 +320,11 @@ fn emit_module(
     layout: &VarLayout,
     private: bool,
     chunks: &[std::ops::Range<usize>],
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     // Only exact schedules pass issued chunks; every other module passes none.
     if chunks.len() > 1 {
-        return emit_chunked_module(ready, layout, chunks);
+        return emit_chunked_module(ready, layout, chunks, linkage);
     }
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
@@ -309,17 +342,14 @@ fn emit_module(
     functions.function(types.eval_type);
     module.section(&functions);
     ready.arena.add_memory(&mut module);
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    exports.export(
-        if private {
-            "eval_private"
-        } else {
-            "eval_assignments"
-        },
-        ExportKind::Func,
-        catalog.eval_function_index,
-    );
+    let mut exports = linkage.exports();
+    for name in linkage.names(&[if private {
+        "eval_private"
+    } else {
+        "eval_assignments"
+    }])? {
+        exports.export(&name, ExportKind::Func, catalog.eval_function_index);
+    }
     module.section(&exports);
     let emitted = emit_function(&catalog, &ready, layout, private)?;
     let mut code = CodeSection::new();
@@ -388,6 +418,7 @@ fn emit_chunked_module(
     ready: Ready,
     layout: &VarLayout,
     chunks: &[std::ops::Range<usize>],
+    linkage: Linkage<'_>,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
@@ -411,13 +442,10 @@ fn emit_chunked_module(
     functions.function(types.eval_type);
     module.section(&functions);
     ready.arena.add_memory(&mut module);
-    let mut exports = ExportSection::new();
-    exports.export("memory", ExportKind::Memory, 0);
-    exports.export(
-        "eval_assignments",
-        ExportKind::Func,
-        catalog.eval_function_index,
-    );
+    let mut exports = linkage.exports();
+    for name in linkage.names(&["eval_assignments"])? {
+        exports.export(&name, ExportKind::Func, catalog.eval_function_index);
+    }
     module.section(&exports);
     let mut gather_faults = Vec::new();
     let mut linear_solve_faults = Vec::new();
