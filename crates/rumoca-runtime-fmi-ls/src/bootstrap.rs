@@ -113,8 +113,9 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
 }
 
 /// The one construction every instance runs, at instantiation or
-/// pre-initialisation. COMPILED: the component is the saved product's own
-/// checked replay, and its execution backend is compiled-only. Every program
+/// pre-initialisation. COMPILED: the component is the published replay, the
+/// saved product's component must equal it, and its execution backend is
+/// compiled-only. Every program
 /// the construction requests binds to the entry this guest issues from the
 /// same checked source and runs through the issued dispatch; a missing or
 /// refused program fails construction. The load closes only when every
@@ -124,8 +125,9 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
 fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedComponent, String> {
     use rumoca_solver::SimExecutionPolicy;
     use rumoca_solver::fmi_me::{MeInstanceConfig, admit_execution_backend};
-    let (load, component) =
-        rumoca_sim::load_linked_guest(model.saved_product(), model.linked_artifact())
+    let component = model.component();
+    let load =
+        rumoca_sim::load_linked_guest(model.saved_product(), model.linked_artifact(), component)
             .map_err(|error| error.to_string())?;
     let root = component.runtime_view().retain_assertion_root();
     let backend = load
@@ -141,7 +143,7 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
     )
     .map_err(|error| error.to_string())?;
     let retained =
-        MeRetainedComponent::instantiate(MeModelSource::new(&component), &config, backend)
+        MeRetainedComponent::instantiate(MeModelSource::new(component), &config, backend)
             .map_err(|error| error.to_string())?;
     load.finish().map_err(|error| error.to_string())?;
     Ok(retained)

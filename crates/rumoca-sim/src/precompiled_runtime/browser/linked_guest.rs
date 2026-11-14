@@ -14,14 +14,20 @@ pub struct LinkedGuestLoad {
 
 /// Admit the linked artifact for the saved product before any backend exists
 /// (its digest, entry shape, dispatch regenerated from its own entries, and
-/// module exports), then read the saved product: the component's checked
-/// replay, and an open scope over the saved programs.
+/// module exports), then read the saved product and open a scope over its
+/// saved programs.
 /// The context the browser load configures from is not read; the guest's
 /// instance configuration comes from the FMI host.
+///
+/// The guest constructs the component it publishes (`published`, the replay
+/// its modelDescription and capsule describe), never the saved one: the saved
+/// component must have the same canonical wire bytes, so the saved programs
+/// and the linked artifact belong to exactly the published model.
 pub fn load_linked_guest(
     saved: &[u8],
     artifact: &[u8],
-) -> Result<(LinkedGuestLoad, FmiComponent), SimulationDiagnosticError> {
+    published: &FmiComponent,
+) -> Result<LinkedGuestLoad, SimulationDiagnosticError> {
     let mut reader = rmp_serde::Deserializer::new(Cursor::new(artifact));
     let carried = rumoca_exec_wasm::LinkedArtifact::deserialize(&mut reader).map_err(refusal)?;
     if reader.get_ref().position() != artifact.len() as u64 {
@@ -36,8 +42,17 @@ pub fn load_linked_guest(
     if wire.version != 3 {
         return Err(refusal("unsupported precompiled runtime schema"));
     }
+    let canonical = |component: &FmiComponent| {
+        let root = component.runtime_view().retain_assertion_root();
+        encode(&rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).map_err(refusal)?)
+    };
+    if canonical(&wire.component)? != canonical(published)? {
+        return Err(refusal(
+            "the saved product's component differs from the published component",
+        ));
+    }
     let scope = ProgramScope::load_linked(wire.programs, admission).map_err(refusal)?;
-    Ok((LinkedGuestLoad { scope }, wire.component))
+    Ok(LinkedGuestLoad { scope })
 }
 
 impl LinkedGuestLoad {
