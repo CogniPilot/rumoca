@@ -35,6 +35,67 @@ pub(crate) struct LoadedPrograms {
     observations: RefCell<VecDeque<PrecompiledRetainedEvent>>,
     derivatives: RefCell<VecDeque<rumoca_exec_wasm::PrecompiledFmiDerivativeOperation>>,
     errors: RefCell<Vec<String>>,
+    /// A linked guest's own product, issued at every load site from the same
+    /// checked source before that site's saved entry is bound to it.
+    #[cfg(all(
+        feature = "linked-guest",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    ))]
+    linked: RefCell<LinkedProductAssembler>,
+}
+
+/// The guest-issued plan and the index of the entry a load site just issued.
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+struct Issued<'a> {
+    assembler: std::cell::Ref<'a, LinkedProductAssembler>,
+    index: u32,
+}
+
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+impl Issued<'_> {
+    fn at(&self) -> rumoca_exec_wasm::LinkedPosition<'_> {
+        rumoca_exec_wasm::LinkedPosition {
+            plan: self.assembler.plan(),
+            index: self.index,
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+impl LoadedPrograms {
+    /// Issue this site's entries from its checked source; the first issued
+    /// position is where its saved entry binds.
+    fn issue(
+        &self,
+        issue: impl FnOnce(
+            &mut LinkedProductAssembler,
+        ) -> Result<Vec<rumoca_exec_wasm::LinkedEntryId>, WasmCompileError>,
+    ) -> Result<Issued<'_>, String> {
+        let ids = issue(&mut self.linked.borrow_mut())
+            .map_err(|error| format!("linked entry refused: {error}"))?;
+        let first = ids.first().ok_or("a load site issued no linked entry")?;
+        Ok(Issued {
+            assembler: self.linked.borrow(),
+            index: first.index,
+        })
+    }
 }
 
 /// A linked capture: the assembler fed the same checked source at every
@@ -104,6 +165,13 @@ impl ProgramScope {
             observations: RefCell::new(programs.observations.into()),
             derivatives: RefCell::new(programs.derivatives.into()),
             errors: RefCell::new(Vec::new()),
+            #[cfg(all(
+                feature = "linked-guest",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            linked: RefCell::default(),
         })))
     }
     pub(crate) fn finish_capture(mut self) -> Result<CorePrograms, String> {
@@ -138,6 +206,30 @@ impl ProgramScope {
         }
         self.close();
         Ok((result, product))
+    }
+    /// A linked guest admits its saved programs only with the artifact they
+    /// were linked from: every entry it issued while loading must equal the
+    /// artifact's, which is bound to the `saved` product bytes.
+    #[cfg(all(
+        feature = "linked-guest",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    ))]
+    pub(crate) fn finish_load_linked(
+        self,
+        saved: &[u8],
+        artifact: &rumoca_exec_wasm::LinkedArtifact,
+    ) -> Result<(), String> {
+        let ProgramMode::Load(programs) = &self.mode else {
+            return Err("not a load scope".into());
+        };
+        let assembler = std::mem::take(&mut *programs.linked.borrow_mut());
+        self.finish_load()?;
+        let product = assembler.finish(&[]).map_err(|error| error.to_string())?;
+        artifact
+            .certify(saved, &product)
+            .map_err(|error| error.to_string())
     }
     pub(crate) fn finish_load(mut self) -> Result<(), String> {
         let ProgramMode::Load(programs) = &self.mode else {
@@ -249,7 +341,27 @@ impl ProgramMode {
                         "precompiled observation inventory exhausted; compilation disabled"
                             .to_owned()
                     })
-                    .and_then(|wire| wire.bind(source).map_err(|error| error.to_string()));
+                    .and_then(|wire| {
+                        #[cfg(all(
+                            feature = "linked-guest",
+                            target_arch = "wasm32",
+                            target_os = "wasi",
+                            target_env = "p2"
+                        ))]
+                        let issued =
+                            input.issue(|assembler| assembler.event(&source).map(|id| vec![id]))?;
+                        wire.bind(
+                            source,
+                            #[cfg(all(
+                                feature = "linked-guest",
+                                target_arch = "wasm32",
+                                target_os = "wasi",
+                                target_env = "p2"
+                            ))]
+                            issued.at(),
+                        )
+                        .map_err(|error| error.to_string())
+                    });
                 if let Err(error) = &result {
                     input.errors.borrow_mut().push(error.clone());
                 }
@@ -258,11 +370,21 @@ impl ProgramMode {
         }
     }
 
+    /// Bind the next saved private batch. A linked guest first issues the
+    /// batch's entries from `admission` and `admitted`, the same admitted
+    /// programs in the same order as `requests`.
     pub(crate) fn private(
         &self,
         key: &PreparedKernelSource,
         requests: &[(&ScalarProgramBlock, Option<usize>)],
         layout: &VarLayout,
+        #[cfg(all(
+            feature = "linked-guest",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        (admission, admitted): (&PrivateProgramAdmission, &[&AdmittedPrivateProgram]),
     ) -> Option<Result<Vec<CompiledPrivateProgramWasm>, String>> {
         let Self::Load(programs) = self else {
             return None;
@@ -274,8 +396,26 @@ impl ProgramMode {
                     .to_owned()
             })
             .and_then(|wire| {
-                wire.bind(key, requests, layout)
-                    .map_err(|error| error.to_string())
+                #[cfg(all(
+                    feature = "linked-guest",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                ))]
+                let issued = programs.issue(|assembler| assembler.private(admission, admitted))?;
+                wire.bind(
+                    key,
+                    requests,
+                    layout,
+                    #[cfg(all(
+                        feature = "linked-guest",
+                        target_arch = "wasm32",
+                        target_os = "wasi",
+                        target_env = "p2"
+                    ))]
+                    issued.at(),
+                )
+                .map_err(|error| error.to_string())
             });
         if let Err(error) = &result {
             programs.errors.borrow_mut().push(error.clone());
@@ -317,8 +457,32 @@ impl ProgramMode {
                 "precompiled assignment inventory is exhausted; compilation is disabled".to_owned()
             })
             .and_then(|program| {
+                #[cfg(all(
+                    feature = "linked-guest",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                ))]
+                let issued = programs.issue(|assembler| {
+                    assembler
+                        .exact(source, owners, schedule, layout, calls)
+                        .map(|id| vec![id])
+                })?;
                 program
-                    .bind(source, owners, schedule, layout, calls)
+                    .bind(
+                        source,
+                        owners,
+                        schedule,
+                        layout,
+                        calls,
+                        #[cfg(all(
+                            feature = "linked-guest",
+                            target_arch = "wasm32",
+                            target_os = "wasi",
+                            target_env = "p2"
+                        ))]
+                        issued.at(),
+                    )
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = &result {
@@ -363,8 +527,27 @@ impl ProgramMode {
                     .to_owned()
             })
             .and_then(|program| {
+                #[cfg(all(
+                    feature = "linked-guest",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                ))]
+                let issued = programs
+                    .issue(|assembler| assembler.issued(rows, layout, calls).map(|id| vec![id]))?;
                 program
-                    .bind_issued(rows, layout, calls)
+                    .bind_issued(
+                        rows,
+                        layout,
+                        calls,
+                        #[cfg(all(
+                            feature = "linked-guest",
+                            target_arch = "wasm32",
+                            target_os = "wasi",
+                            target_env = "p2"
+                        ))]
+                        issued.at(),
+                    )
                     .map_err(|error| error.to_string())
             });
         if let Err(error) = &result {
@@ -393,7 +576,18 @@ impl ProgramMode {
     }
 }
 
-#[cfg(all(feature = "fmi-derivative-operation", target_os = "unknown"))]
+#[cfg(all(
+    feature = "fmi-derivative-operation",
+    any(
+        target_os = "unknown",
+        all(
+            feature = "linked-guest",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    )
+))]
 impl ProgramMode {
     pub(crate) fn derivative_operation(
         &self,
@@ -417,7 +611,26 @@ impl ProgramMode {
             Self::Load(input) => {
                 let result = input.derivatives.borrow_mut().pop_front()
                     .ok_or_else(|| "precompiled complete derivative inventory is exhausted; compilation is disabled".to_owned())
-                    .and_then(|wire| wire.bind(operation).map_err(|error| error.to_string()));
+                    .and_then(|wire| {
+                        #[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+                        let issued = input.issue(|assembler| assembler.derivative(operation))?;
+                        wire.bind(
+                            operation,
+                            #[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+                            issued.at(),
+                        )
+                        .map_err(|error| error.to_string())
+                    });
                 if let Err(error) = &result {
                     input.errors.borrow_mut().push(error.clone());
                 }

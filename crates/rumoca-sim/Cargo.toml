@@ -14,6 +14,9 @@ native-solvers = ["solver-diffsol", "solver-rk45", "solver-velimplicit"]
 fmi = []
 precompiled-runtime = ["dep:rmp-serde", "fmi", "dep:rumoca-exec-wasm", "rumoca-exec-wasm/precompiled-programs"]
 native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
+# The fixed scalar FMI guest: the saved programs run as linked entries
+# through the issued dispatch, certified against the linked artifact.
+linked-guest = ["fmi-derivative-operation", "solver-rk45", "rumoca-exec-wasm/fixed-scalar-guest-receiver"]
 native-fmi-ls-build = ["native-fmi-ls", "rumoca-exec-wasm/fixed-native-guest-build", "rumoca-exec-wasm/precompiled-programs", "dep:rmp-serde", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
 tracing = ["rumoca-phase-solve/tracing"]
 wasm-solvers = ["solver-diffsol", "solver-rk45"]

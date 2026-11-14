@@ -21,9 +21,23 @@ pub(crate) fn admits_solver_profile(mode: crate::SimSolverMode) -> bool {
         crate::SimSolverMode::RkLike | crate::SimSolverMode::FixedStep
     )
 }
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+pub use browser::linked_guest::{LinkedGuestLoad, load_linked_guest};
 #[cfg(all(target_arch = "wasm32", feature = "solver-rk45"))]
 mod browser {
     use super::*;
+    #[cfg(all(
+        feature = "linked-guest",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    ))]
+    pub(super) mod linked_guest;
     use crate::wasm_execution::precompiled::{CorePrograms, ProgramScope};
     use rumoca_ir_solve::fmi::FmiComponent;
     use serde::Deserialize;

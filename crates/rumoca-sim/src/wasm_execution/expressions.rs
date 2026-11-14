@@ -246,7 +246,10 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
     #[cfg(all(
         feature = "fmi-derivative-operation",
         target_arch = "wasm32",
-        target_os = "unknown"
+        any(
+            target_os = "unknown",
+            all(feature = "linked-guest", target_os = "wasi", target_env = "p2")
+        )
     ))]
     fn compile_fmi_derivative_operation(
         &self,
@@ -259,7 +262,10 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
     #[cfg(all(
         feature = "fmi-derivative-operation",
         target_arch = "wasm32",
-        target_os = "unknown"
+        any(
+            target_os = "unknown",
+            all(feature = "linked-guest", target_os = "wasi", target_env = "p2")
+        )
     ))]
     fn binds_issued_operations(&self) -> bool {
         true

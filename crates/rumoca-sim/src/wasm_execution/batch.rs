@@ -82,8 +82,16 @@ impl ModuleBatch {
         seed: Option<usize>,
     ) -> Result<Rc<Entry>, String> {
         let outputs = block.stored_output_count();
+        // A linked guest admits while loading: it issues its own entries
+        // from the admitted programs before binding the saved ones.
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-        let loading = matches!(self.mode, Some(super::precompiled::ProgramMode::Load(_)));
+        let loading = matches!(self.mode, Some(super::precompiled::ProgramMode::Load(_)))
+            && !cfg!(all(
+                feature = "linked-guest",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ));
         #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
         let loading = false;
         let admitted = if loading {
@@ -123,7 +131,29 @@ impl ModuleBatch {
                 .iter()
                 .map(|entry| (&entry.source, entry.seed))
                 .collect::<Vec<_>>();
-            if let Some(result) = mode.private(source, &requests, &self.layout) {
+            #[cfg(all(
+                feature = "linked-guest",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            let admitted = pending
+                .iter()
+                .map(|entry| entry.admitted.as_ref())
+                .collect::<Option<Vec<_>>>()
+                .ok_or("a linked private entry lost its admission")?;
+            if let Some(result) = mode.private(
+                source,
+                &requests,
+                &self.layout,
+                #[cfg(all(
+                    feature = "linked-guest",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                ))]
+                (&self.admission, &admitted),
+            ) {
                 return result;
             }
         }

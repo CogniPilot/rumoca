@@ -81,6 +81,13 @@ mod precompiled_runtime;
 pub mod row_eval_trace;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_cache;
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+pub use precompiled_runtime::{LinkedGuestLoad, load_linked_guest};
 #[cfg(feature = "precompiled-runtime")]
 pub use precompiled_runtime::{
     export_precompiled_linked_runtime, export_precompiled_runtime, load_precompiled_runtime,

@@ -24,6 +24,9 @@ pub(crate) use expressions::{admitted_native_execution_backend, execution_receip
 #[cfg(all(
     feature = "fmi-derivative-operation",
     target_arch = "wasm32",
-    target_os = "unknown"
+    any(
+        target_os = "unknown",
+        all(feature = "linked-guest", target_os = "wasi", target_env = "p2")
+    )
 ))]
 mod derivatives;
