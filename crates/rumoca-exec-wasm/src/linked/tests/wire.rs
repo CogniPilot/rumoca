@@ -26,7 +26,9 @@ fn an_artifact_certifies_against_the_product_its_sources_issue_again() {
     let issued = product::build(&sources).linked;
     let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
     let reissued: LinkedProduct = product::build(&Sources::new()).linked;
-    decode(wire.clone()).certify(SAVED, &reissued).unwrap();
+    let artifact = decode(wire.clone());
+    artifact.certify(SAVED, &reissued).unwrap();
+    assert_eq!(artifact.dispatch_module(), reissued.plan().dispatch());
     assert!(
         decode(wire)
             .certify(b"another saved product", &reissued)
@@ -69,13 +71,14 @@ fn a_reordered_or_altered_artifact_is_refused() {
     let word = entries[again]["key"][0].as_u64().unwrap();
     rekeyed["entries"][again]["key"][0] = json!(word ^ 1);
     let mut dispatch = wire.clone();
-    dispatch["dispatch"] = json!("0".repeat(64));
+    let byte = wire["dispatch"][8].as_u64().unwrap();
+    dispatch["dispatch"][8] = json!(byte ^ 1);
     let reissued = product::build(&Sources::new()).linked;
     for (name, value) in [
         ("two positions of different sources swapped", swapped),
         ("two equal-key positions swapped in their module", duplicate),
         ("one key word changed", rekeyed),
-        ("another dispatch module", dispatch),
+        ("one dispatch module byte changed", dispatch),
     ] {
         assert!(decode(value).certify(SAVED, &reissued).is_err(), "{name}");
     }
