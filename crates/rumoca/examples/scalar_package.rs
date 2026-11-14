@@ -15,6 +15,7 @@
 use rumoca::native_fmi_ls::{ScalarFmiLsPackage, ScalarPackageOptions, read_source_roots};
 use rumoca_ir_solve::fmi::{FmiComponent, FmiScalarDeploymentView};
 use rumoca_sim::PreparedScalarFmiLsModel;
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, env, error::Error, fs, path::Path, time::Instant};
 
 fn stage<T>(
@@ -115,9 +116,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     // Every served type and VR is admitted by the scalar view, the owner the
     // package is constructed with, before the guest core is built.
-    stage("served_variables", || {
+    let (served, _) = stage("served_variables", || {
         Ok(FmiScalarDeploymentView::from_root(prepared.root())?)
     })?;
+    // The public variable table of the same view the model description is
+    // rendered from, joined to that description by its sha256 below.
+    let public_variables: Vec<_> = served
+        .variables()
+        .iter()
+        .map(|variable| {
+            serde_json::json!({
+                "name": variable.name(), "value_reference": variable.value_reference_fmi3(),
+                "type": variable.fmi3_type(), "causality": variable.causality(),
+                "variability": variable.variability(), "dimensions": variable.dimensions(),
+                "scalars": variable.scalar_count(),
+            })
+        })
+        .collect();
     let (core, core_s) = stage("fixed_guest_core", || {
         let staging = work.join("fixed-source");
         let target = scratch.unwrap_or(work).join("fixed-target");
@@ -149,6 +164,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         "scalar-product FMU construction and publication; INTERPRETED guest; not loaded"
     };
     let description_bytes = package.model_description().len();
+    let description_sha256 = format!("{:x}", Sha256::digest(package.model_description()));
+    let table = serde_json::to_vec_pretty(&serde_json::json!({
+        "model_description_sha256": description_sha256,
+        "model_description_bytes": description_bytes,
+        "variables": public_variables,
+    }))?;
+    let table_sha256 = format!("{:x}", Sha256::digest(&table));
+    fs::write(work.join("public-variables.json"), &table)?;
     let component_bytes = package.component_bytes().len();
     let output = work.join("published");
     fs::create_dir(&output)?;
@@ -158,6 +181,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         serde_json::json!({
             "scope": scope,
             "model": model, "model_description_bytes": description_bytes,
+            "model_description_sha256": description_sha256,
+            "public_variables_sha256": table_sha256,
             "component_bytes": component_bytes,
             "source_roots": roots.len(), "variables": variables,
             "seconds": {"frontend": frontend_s, "lower": lower_s, "prepared_model": prepare_s,
