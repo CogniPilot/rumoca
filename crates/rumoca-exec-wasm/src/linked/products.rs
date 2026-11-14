@@ -48,6 +48,7 @@ impl LinkedKernelModule {
     fn single(
         program: CompiledNativeCallProgramWasm,
         symbol: String,
+        invocations: Vec<crate::typed_call::retained_event::InvocationStorage>,
     ) -> Result<(Self, LinkedBinding), WasmCompileError> {
         let binding = LinkedBinding::Kernel {
             scratch_bytes: program.scratch_bytes,
@@ -56,7 +57,11 @@ impl LinkedKernelModule {
                 &program.gather_faults,
                 &program.linear_solve_faults,
             )?,
+            #[cfg(feature = "precompiled-programs")]
+            invocations: super::LinkedInvocations::issued(invocations),
         };
+        #[cfg(not(feature = "precompiled-programs"))]
+        let _ = invocations;
         let module = Self {
             bytes: program.bytes,
             exports: vec![symbol],
@@ -426,8 +431,9 @@ impl LinkedProductAssembler {
         id: LinkedEntryId,
         key: [u64; 4],
         program: CompiledNativeCallProgramWasm,
+        invocations: Vec<crate::typed_call::retained_event::InvocationStorage>,
     ) -> Result<LinkedEntryId, WasmCompileError> {
-        let (module, binding) = LinkedKernelModule::single(program, id.symbol())?;
+        let (module, binding) = LinkedKernelModule::single(program, id.symbol(), invocations)?;
         self.commit(vec![LinkedEntry::new(id, key, binding)], vec![module]);
         Ok(id)
     }
@@ -507,7 +513,7 @@ impl LinkedProductAssembler {
             source, owners, schedule, layout, table, linkage,
         )
         .map_err(WasmCompileError::Backend)?;
-        self.commit_single(id, key, program)
+        self.commit_single(id, key, program, Vec::new())
     }
 
     pub fn issued(
@@ -525,7 +531,7 @@ impl LinkedProductAssembler {
         };
         let program = crate::emit::emit_issued_assignment_module(rows, layout, table, linkage)
             .map_err(WasmCompileError::Backend)?;
-        self.commit_single(id, key, program)
+        self.commit_single(id, key, program, Vec::new())
     }
 
     /// One private batch, the programs the admission admitted in its compile
@@ -561,6 +567,8 @@ impl LinkedProductAssembler {
                         &entry.gather_faults,
                         &entry.linear_solve_faults,
                     )?,
+                    #[cfg(feature = "precompiled-programs")]
+                    invocations: super::LinkedInvocations::default(),
                 });
             }
             modules.push(LinkedKernelModule {
@@ -593,9 +601,9 @@ impl LinkedProductAssembler {
             entries: &symbol,
             operations: "",
         };
-        let (code, _) = crate::emit::emit_event_program_module(program, layout, linkage)
+        let (code, invocations) = crate::emit::emit_event_program_module(program, layout, linkage)
             .map_err(WasmCompileError::Backend)?;
-        self.commit_single(id, key, code)
+        self.commit_single(id, key, code, invocations)
     }
 
     /// The product, unless it demands an entry the linked profile cannot carry.

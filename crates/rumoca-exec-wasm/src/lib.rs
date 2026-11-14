@@ -42,7 +42,7 @@ pub use linked::{
     LinkedProduct, LinkedProductAssembler, LinkedWorkspace, linked_entry_status, linked_key_words,
 };
 #[cfg(feature = "precompiled-programs")]
-pub use linked::{LinkedAdmission, LinkedArtifact, linked_digest};
+pub use linked::{LinkedAdmission, LinkedArtifact, LinkedInvocations, linked_digest};
 #[cfg(any(
     test,
     all(target_arch = "wasm32", target_os = "unknown"),
