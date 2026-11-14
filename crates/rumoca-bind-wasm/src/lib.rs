@@ -93,8 +93,8 @@ pub use crate::simulation_session_api::prebuilt::{
 };
 #[cfg(feature = "precompiled-runtime")]
 pub use crate::simulation_session_api::precompiled::{
-    browser_profile_enable, browser_profile_snapshot, export_precompiled_runtime_artifact,
-    precompiled_runtime_key,
+    browser_profile_enable, browser_profile_snapshot, export_precompiled_linked_runtime_artifacts,
+    export_precompiled_runtime_artifact, precompiled_runtime_key,
 };
 pub use crate::source_root_api::{
     clear_source_root_cache, compile_check_with_source_roots, compile_with_source_roots,

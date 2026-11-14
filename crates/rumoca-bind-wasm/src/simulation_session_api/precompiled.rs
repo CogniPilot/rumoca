@@ -70,6 +70,33 @@ pub fn export_precompiled_runtime_artifact(
     container::encode(serialize(&key)?.as_bytes(), &runtime).map_err(WasmError::new)
 }
 
+/// Build-time export for the compiled FMU: one capture records the saved
+/// product and issues the linked product beside it from the same checked
+/// sources. Returns `[saved, artifact]`: the saved product bytes exactly as
+/// the FMU guest reads them (no browser container) and the linked artifact
+/// bound to them. A model with any kind that has no linked form is refused.
+#[wasm_bindgen]
+pub fn export_precompiled_linked_runtime_artifacts(
+    source: &str,
+    model: &str,
+    sources: &str,
+    options_json: &str,
+) -> Result<js_sys::Array, WasmError> {
+    let options = InteractiveOptions::parse(options_json)?;
+    let compiled = prebuilt::compile_payload(source, model, sources)?;
+    let (base, _) = compiled
+        .experiment
+        .simulation_options(0.0, options.dt, &options.solver);
+    let opts = configured_options(base, &options, options.initial_inputs.clone());
+    let (saved, artifact) =
+        rumoca_sim::export_precompiled_linked_runtime(&compiled.dae, opts, compiled.experiment)
+            .map_err(|error| WasmError::new(format!("Precompiled linked export: {error}")))?;
+    let pair = js_sys::Array::new();
+    pair.push(&js_sys::Uint8Array::from(saved.as_slice()));
+    pair.push(&js_sys::Uint8Array::from(artifact.as_slice()));
+    Ok(pair)
+}
+
 pub(super) fn load(
     artifact: &[u8],
     source: &str,
