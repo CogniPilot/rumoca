@@ -41,7 +41,7 @@ impl PrecompiledExactAssignments {
         layout: &VarLayout,
         table: &SolvePureCallTable,
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -64,7 +64,7 @@ impl PrecompiledExactAssignments {
         self.bind_emitted(
             emitted,
             #[cfg(all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -80,7 +80,7 @@ impl PrecompiledExactAssignments {
         layout: &VarLayout,
         table: &SolvePureCallTable,
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -101,7 +101,7 @@ impl PrecompiledExactAssignments {
         self.bind_emitted(
             emitted,
             #[cfg(all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -135,7 +135,7 @@ impl PrecompiledExactAssignments {
         &self,
         emitted: crate::native_program::CompiledNativeCallProgramWasm,
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -155,7 +155,7 @@ impl PrecompiledExactAssignments {
         let runtime =
             crate::WasmKernelRuntime::new_named(self.payload.module_bytes(), "eval_assignments")?;
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -177,7 +177,7 @@ impl PrecompiledExactAssignments {
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(
-                    feature = "fixed-scalar-guest-receiver",
+                    feature = "fixed-scalar-linked-receiver",
                     target_arch = "wasm32",
                     target_os = "wasi",
                     target_env = "p2"

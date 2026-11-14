@@ -71,7 +71,7 @@ impl PrecompiledPrivatePrograms {
         requests: &[(&ScalarProgramBlock, Option<usize>)],
         layout: &VarLayout,
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -132,7 +132,7 @@ impl PrecompiledPrivatePrograms {
                 &exports,
             )?;
             #[cfg(all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -162,7 +162,7 @@ impl PrecompiledPrivatePrograms {
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(feature = "host-engine", not(target_arch = "wasm32")),
                 all(
-                    feature = "fixed-scalar-guest-receiver",
+                    feature = "fixed-scalar-linked-receiver",
                     target_arch = "wasm32",
                     target_os = "wasi",
                     target_env = "p2"
@@ -175,7 +175,7 @@ impl PrecompiledPrivatePrograms {
                     all(target_arch = "wasm32", target_os = "unknown"),
                     all(feature = "host-engine", not(target_arch = "wasm32")),
                     all(
-                        feature = "fixed-scalar-guest-receiver",
+                        feature = "fixed-scalar-linked-receiver",
                         target_arch = "wasm32",
                         target_os = "wasi",
                         target_env = "p2"
@@ -198,7 +198,7 @@ impl PrecompiledPrivatePrograms {
                             all(target_arch = "wasm32", target_os = "unknown"),
                             all(feature = "host-engine", not(target_arch = "wasm32")),
                             all(
-                                feature = "fixed-scalar-guest-receiver",
+                                feature = "fixed-scalar-linked-receiver",
                                 target_arch = "wasm32",
                                 target_os = "wasi",
                                 target_env = "p2"

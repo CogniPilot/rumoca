@@ -20,7 +20,7 @@ pub struct CompiledPrivateProgramWasm {
             all(target_arch = "wasm32", target_os = "unknown"),
             all(feature = "host-engine", not(target_arch = "wasm32")),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -38,7 +38,7 @@ pub struct CompiledPrivateProgramWasm {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -96,7 +96,7 @@ impl CompiledPrivateProgramWasm {
             all(target_arch = "wasm32", target_os = "unknown"),
             all(feature = "host-engine", not(target_arch = "wasm32")),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -145,7 +145,7 @@ impl CompiledPrivateProgramWasm {
         #[cfg(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -179,7 +179,7 @@ impl CompiledPrivateProgramWasm {
             all(target_arch = "wasm32", target_os = "unknown"),
             all(feature = "host-engine", not(target_arch = "wasm32")),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -258,7 +258,7 @@ fn compile_admitted(
 ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
     // Only issued entries run in a linked guest; it activates no fresh emission.
     #[cfg(all(
-        feature = "fixed-scalar-guest-receiver",
+        feature = "fixed-scalar-linked-receiver",
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p2"
@@ -270,7 +270,7 @@ fn compile_admitted(
         ))
     }
     #[cfg(not(all(
-        feature = "fixed-scalar-guest-receiver",
+        feature = "fixed-scalar-linked-receiver",
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p2"
@@ -279,7 +279,7 @@ fn compile_admitted(
 }
 
 #[cfg(not(all(
-    feature = "fixed-scalar-guest-receiver",
+    feature = "fixed-scalar-linked-receiver",
     target_arch = "wasm32",
     target_os = "wasi",
     target_env = "p2"

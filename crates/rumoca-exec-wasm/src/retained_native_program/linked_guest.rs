@@ -24,6 +24,22 @@ unsafe extern "C" {
     fn token_copy(destination: u32, capacity: u32) -> i32;
 }
 
+/// The compiled scalar product's saved product and the linked artifact issued
+/// beside it. Both are data only: the saved programs bind to entries this
+/// guest issues itself, and the artifact is admitted only by certification.
+#[cfg(feature = "fixed-scalar-linked-receiver")]
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
+    #[link_name = "rumoca_saved_product_len"]
+    fn saved_len() -> i32;
+    #[link_name = "rumoca_saved_product_copy"]
+    fn saved_copy(destination: u32, capacity: u32) -> i32;
+    #[link_name = "rumoca_linked_artifact_len"]
+    fn artifact_len() -> i32;
+    #[link_name = "rumoca_linked_artifact_copy"]
+    fn artifact_copy(destination: u32, capacity: u32) -> i32;
+}
+
 /// The stateless native product's linked model entry. A scalar product's
 /// fixed guest imports none (its composition contract refuses one).
 #[cfg(not(feature = "fixed-scalar-guest-receiver"))]
@@ -71,11 +87,27 @@ impl LinkedNativeGuestModel {
 pub struct LinkedScalarGuestModel {
     component: FmiComponent,
     publication_token: String,
+    #[cfg(feature = "fixed-scalar-linked-receiver")]
+    saved: Vec<u8>,
+    #[cfg(feature = "fixed-scalar-linked-receiver")]
+    artifact: Vec<u8>,
 }
 
 impl LinkedScalarGuestModel {
     pub fn component(&self) -> &FmiComponent {
         &self.component
+    }
+
+    /// The saved product bytes the compiled programs are loaded from.
+    #[cfg(feature = "fixed-scalar-linked-receiver")]
+    pub fn saved_product(&self) -> &[u8] {
+        &self.saved
+    }
+
+    /// The linked artifact, certified against what this guest issues.
+    #[cfg(feature = "fixed-scalar-linked-receiver")]
+    pub fn linked_artifact(&self) -> &[u8] {
+        &self.artifact
     }
 
     /// Compare the actual publication slot, never use a token to admit an entry.
@@ -114,6 +146,10 @@ pub fn receive_fixed_scalar_guest_model() -> Result<LinkedScalarGuestModel, Wasm
     Ok(LinkedScalarGuestModel {
         component,
         publication_token: publication_token()?,
+        #[cfg(feature = "fixed-scalar-linked-receiver")]
+        saved: slot_bytes(SourceSlot::SavedProduct)?,
+        #[cfg(feature = "fixed-scalar-linked-receiver")]
+        artifact: slot_bytes(SourceSlot::LinkedArtifact)?,
     })
 }
 
@@ -171,6 +207,10 @@ fn replay_linked_source()
 enum SourceSlot {
     Capsule,
     PublicationToken,
+    #[cfg(feature = "fixed-scalar-linked-receiver")]
+    SavedProduct,
+    #[cfg(feature = "fixed-scalar-linked-receiver")]
+    LinkedArtifact,
 }
 
 fn slot_bytes(slot: SourceSlot) -> Result<Vec<u8>, WasmCompileError> {
@@ -180,6 +220,10 @@ fn slot_bytes(slot: SourceSlot) -> Result<Vec<u8>, WasmCompileError> {
         match slot {
             SourceSlot::Capsule => capsule_len(),
             SourceSlot::PublicationToken => token_len(),
+            #[cfg(feature = "fixed-scalar-linked-receiver")]
+            SourceSlot::SavedProduct => saved_len(),
+            #[cfg(feature = "fixed-scalar-linked-receiver")]
+            SourceSlot::LinkedArtifact => artifact_len(),
         }
     };
     let length = usize::try_from(length)
@@ -198,6 +242,10 @@ fn slot_bytes(slot: SourceSlot) -> Result<Vec<u8>, WasmCompileError> {
         match slot {
             SourceSlot::Capsule => capsule_copy(destination, capacity),
             SourceSlot::PublicationToken => token_copy(destination, capacity),
+            #[cfg(feature = "fixed-scalar-linked-receiver")]
+            SourceSlot::SavedProduct => saved_copy(destination, capacity),
+            #[cfg(feature = "fixed-scalar-linked-receiver")]
+            SourceSlot::LinkedArtifact => artifact_copy(destination, capacity),
         }
     };
     if copied != i32::try_from(length).expect("length came from a nonnegative i32") {

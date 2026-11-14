@@ -3,11 +3,15 @@
 //! The product kind is fixed when the guest is built: the default is the
 //! stateless native product; `scalar-product` receives a stateful component
 //! instead, and each receiver refuses a component of the other kind.
-#[cfg(not(feature = "scalar-product"))]
+//! `scalar-linked-product` is the compiled stateful product: every program
+//! runs as a linked entry and nothing is interpreted.
+#[cfg(all(feature = "scalar-product", feature = "scalar-linked-product"))]
+compile_error!("the interpreted and the compiled scalar product are exclusive");
+#[cfg(not(any(feature = "scalar-product", feature = "scalar-linked-product")))]
 use rumoca_exec_wasm::{
     LinkedNativeGuestModel as GuestModel, receive_fixed_native_guest_model as receive,
 };
-#[cfg(feature = "scalar-product")]
+#[cfg(any(feature = "scalar-product", feature = "scalar-linked-product"))]
 use rumoca_exec_wasm::{
     LinkedScalarGuestModel as GuestModel, receive_fixed_scalar_guest_model as receive,
 };
@@ -61,7 +65,10 @@ fn adopt(
     mut component: MeRetainedComponent,
     instance_name: &str,
 ) -> Result<MeRetainedComponent, String> {
-    if cfg!(feature = "scalar-product") {
+    if cfg!(any(
+        feature = "scalar-product",
+        feature = "scalar-linked-product"
+    )) {
         component
             .bind_instance_name(instance_name)
             .map_err(|error| error.to_string())?;
@@ -70,7 +77,7 @@ fn adopt(
 }
 
 /// The one construction every instance runs, at instantiation or pre-initialisation.
-#[cfg(not(feature = "scalar-product"))]
+#[cfg(not(any(feature = "scalar-product", feature = "scalar-linked-product")))]
 fn construct(model: &GuestModel, _instance_name: &str) -> Result<MeRetainedComponent, String> {
     MeRetainedComponent::prepare_retained_native_wasm(
         MeModelSource::new(model.component()),
@@ -81,7 +88,7 @@ fn construct(model: &GuestModel, _instance_name: &str) -> Result<MeRetainedCompo
 
 /// The start coordinate a scalar instance is constructed at. A host request
 /// for another start time is refused at initialization until supported.
-#[cfg(feature = "scalar-product")]
+#[cfg(any(feature = "scalar-product", feature = "scalar-linked-product"))]
 const SCALAR_START_TIME: f64 = 0.0;
 
 /// The one construction every instance runs, at instantiation or
@@ -103,6 +110,42 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
     .map_err(|error| error.to_string())?;
     MeRetainedComponent::instantiate(MeModelSource::new(model.component()), &config, backend)
         .map_err(|error| error.to_string())
+}
+
+/// The one construction every instance runs, at instantiation or
+/// pre-initialisation. COMPILED: the component is the saved product's own
+/// checked replay, and its execution backend is compiled-only. Every program
+/// the construction requests binds to the entry this guest issues from the
+/// same checked source and runs through the issued dispatch; a missing or
+/// refused program fails construction. The load closes only when every
+/// saved program was bound and the linked artifact certifies against what
+/// this guest issued, so a later demand finds no inventory and refuses.
+#[cfg(feature = "scalar-linked-product")]
+fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedComponent, String> {
+    use rumoca_solver::SimExecutionPolicy;
+    use rumoca_solver::fmi_me::{MeInstanceConfig, admit_execution_backend};
+    let saved = model.saved_product();
+    let (load, component) =
+        rumoca_sim::load_linked_guest(saved).map_err(|error| error.to_string())?;
+    let root = component.runtime_view().retain_assertion_root();
+    let backend = load
+        .execution_backend(root.model())
+        .map_err(|error| error.to_string())?;
+    drop(root);
+    let backend = admit_execution_backend(SimExecutionPolicy::NativeRequired, Some(backend))
+        .map_err(|error| error.to_string())?;
+    let config = MeInstanceConfig::open_ended(
+        instance_name,
+        component.co_simulation().default_tolerance(),
+        SCALAR_START_TIME,
+    )
+    .map_err(|error| error.to_string())?;
+    let retained =
+        MeRetainedComponent::instantiate(MeModelSource::new(&component), &config, backend)
+            .map_err(|error| error.to_string())?;
+    load.finish(saved, model.linked_artifact())
+        .map_err(|error| error.to_string())?;
+    Ok(retained)
 }
 
 pub(super) fn default_tolerance() -> Result<f64, String> {

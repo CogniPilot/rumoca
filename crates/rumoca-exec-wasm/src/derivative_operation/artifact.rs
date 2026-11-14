@@ -7,7 +7,7 @@ pub use call::{FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod runtime;
 #[cfg(all(
-    feature = "fixed-scalar-guest-receiver",
+    feature = "fixed-scalar-linked-receiver",
     target_arch = "wasm32",
     target_os = "wasi",
     target_env = "p2"
@@ -36,7 +36,7 @@ pub struct BoundFmiDerivativeOperation {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -50,7 +50,7 @@ pub struct BoundFmiDerivativeOperation {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -60,7 +60,7 @@ pub struct BoundFmiDerivativeOperation {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -95,7 +95,7 @@ impl PrecompiledFmiDerivativeOperation {
         &self,
         operation: &FmiDerivativeCausalOperation<'_>,
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -104,7 +104,7 @@ impl PrecompiledFmiDerivativeOperation {
     ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
         let issued = self.issued(operation)?;
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -113,7 +113,7 @@ impl PrecompiledFmiDerivativeOperation {
         self.bound(
             issued.workspace,
             #[cfg(all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -123,7 +123,7 @@ impl PrecompiledFmiDerivativeOperation {
     }
 
     #[cfg(all(
-        feature = "fixed-scalar-guest-receiver",
+        feature = "fixed-scalar-linked-receiver",
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p2"
@@ -242,7 +242,7 @@ impl PrecompiledFmiDerivativeOperation {
         &self,
         workspace: FmiDerivativeWorkspace,
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -255,7 +255,7 @@ impl PrecompiledFmiDerivativeOperation {
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(
-                    feature = "fixed-scalar-guest-receiver",
+                    feature = "fixed-scalar-linked-receiver",
                     target_arch = "wasm32",
                     target_os = "wasi",
                     target_env = "p2"
@@ -267,7 +267,7 @@ impl PrecompiledFmiDerivativeOperation {
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(
-                    feature = "fixed-scalar-guest-receiver",
+                    feature = "fixed-scalar-linked-receiver",
                     target_arch = "wasm32",
                     target_os = "wasi",
                     target_env = "p2"
@@ -277,7 +277,7 @@ impl PrecompiledFmiDerivativeOperation {
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(
-                    feature = "fixed-scalar-guest-receiver",
+                    feature = "fixed-scalar-linked-receiver",
                     target_arch = "wasm32",
                     target_os = "wasi",
                     target_env = "p2"
@@ -296,7 +296,7 @@ impl CompiledFmiDerivativeOperationWasm {
     /// performs.
     pub fn bind(&self) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -307,7 +307,7 @@ impl CompiledFmiDerivativeOperationWasm {
             ))
         }
         #[cfg(not(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"

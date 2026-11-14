@@ -71,7 +71,7 @@ impl BoundFmiDerivativeOperation {
         #[cfg(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -91,7 +91,7 @@ impl BoundFmiDerivativeOperation {
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -115,7 +115,7 @@ impl BoundFmiDerivativeOperation {
         #[cfg(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -133,7 +133,7 @@ impl BoundFmiDerivativeOperation {
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -180,7 +180,7 @@ impl BoundFmiDerivativeOperation {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -213,7 +213,7 @@ impl BoundFmiDerivativeOperation {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"

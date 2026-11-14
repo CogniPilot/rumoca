@@ -26,7 +26,7 @@ pub struct CompiledExactAssignmentWasm {
     #[cfg(any(
         all(target_arch = "wasm32", target_os = "unknown"),
         all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -73,7 +73,7 @@ impl CompiledExactAssignmentWasm {
         #[cfg(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -93,7 +93,7 @@ impl CompiledExactAssignmentWasm {
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
             all(
-                feature = "fixed-scalar-guest-receiver",
+                feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
@@ -160,7 +160,7 @@ impl CompiledExactAssignmentWasm {
     ) -> Result<Self, WasmCompileError> {
         // Only issued entries run in a linked guest; it activates no fresh emission.
         #[cfg(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
@@ -172,7 +172,7 @@ impl CompiledExactAssignmentWasm {
             ));
         }
         #[cfg(not(all(
-            feature = "fixed-scalar-guest-receiver",
+            feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"

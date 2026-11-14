@@ -18,6 +18,10 @@ preinit = []
 # stateless native product. Interpreted until linked dispatch lands (M1a).
 # Its fixed guest imports no native model entry.
 scalar-product = ["rumoca-exec-wasm/fixed-scalar-guest-receiver"]
+# Build-time product kind: the compiled stateful component. Its saved
+# programs run as linked entries through the issued dispatch, certified
+# against the linked artifact; it never enables `scalar-product`.
+scalar-linked-product = ["dep:rumoca-sim", "rumoca-exec-wasm/fixed-scalar-linked-receiver"]
 
 [dependencies]
 rumoca-solver = { path = "../rumoca-solver", default-features = false, features = ["sparse-linalg", "native-wasm"] }
@@ -28,6 +32,7 @@ thiserror = { workspace = true }
 [target.'cfg(all(target_arch = "wasm32", target_os = "wasi", target_env = "p2"))'.dependencies]
 wit-bindgen = { version = "=0.43.0", default-features = false, features = ["macros", "realloc"] }
 rumoca-exec-wasm = { path = "../rumoca-exec-wasm", default-features = false, features = ["fixed-native-guest-receiver"] }
+rumoca-sim = { path = "../rumoca-sim", default-features = false, features = ["linked-guest"], optional = true }
 
 [dev-dependencies]
 rumoca-compile = { workspace = true }

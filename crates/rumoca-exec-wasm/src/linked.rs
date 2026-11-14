@@ -5,7 +5,7 @@
 //! bytes, is unchanged: only an explicit linked emission prints these names.
 mod dispatch;
 #[cfg(all(
-    feature = "fixed-scalar-guest-receiver",
+    feature = "fixed-scalar-linked-receiver",
     target_arch = "wasm32",
     target_os = "wasi",
     target_env = "p2"
@@ -17,7 +17,7 @@ mod products;
 mod tests;
 
 #[cfg(all(
-    feature = "fixed-scalar-guest-receiver",
+    feature = "fixed-scalar-linked-receiver",
     target_arch = "wasm32",
     target_os = "wasi",
     target_env = "p2"

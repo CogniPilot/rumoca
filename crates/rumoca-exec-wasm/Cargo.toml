@@ -17,7 +17,10 @@ fixed-native-guest-build = ["component-build"]
 fixed-native-guest-receiver = ["dep:rumoca-eval-solve", "dep:serde_json"]
 # The same receiver in a scalar (stateful) product's fixed guest, which links
 # no native model entry: that product never executes a native preparation.
-fixed-scalar-guest-receiver = ["fixed-native-guest-receiver", "precompiled-programs"]
+fixed-scalar-guest-receiver = ["fixed-native-guest-receiver"]
+# The compiled scalar product: every saved program runs as a linked entry
+# through the issued dispatch; nothing is interpreted or freshly emitted.
+fixed-scalar-linked-receiver = ["fixed-scalar-guest-receiver", "precompiled-programs"]
 # Runs retained native entries on the host through an embedded wasmi engine.
 host-engine = ["dep:wasmi"]
 
