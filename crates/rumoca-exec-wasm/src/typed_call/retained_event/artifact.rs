@@ -22,6 +22,12 @@ impl PrecompiledRetainedEvent {
     /// Emit the module again from the source being bound: saved bytes equal
     /// to that emission carry the certificate it issued. Any other module, or
     /// a source the emitter refuses, runs on a copy of Y as before.
+    #[cfg(not(all(
+        feature = "fixed-scalar-linked-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )))]
     fn emitted_read_only_y(
         &self,
         source: &solve::RetainedEventProgram,
@@ -119,7 +125,38 @@ impl PrecompiledRetainedEvent {
                 ));
             }
         }
-        let read_only_y = self.emitted_read_only_y(&source);
+        // A linked guest decodes with invocation storage emitted again from
+        // the checked source, never with the carried offsets and carriers,
+        // and refuses saved bytes that differ from that emission.
+        #[cfg(all(
+            feature = "fixed-scalar-linked-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        let (invocations, read_only_y) = {
+            let layout = &source.source().model().problem.layout;
+            let (module, invocations, read_only_y) = crate::emit::emit_event_program_module(
+                &source,
+                layout,
+                crate::emit::Linkage::Browser,
+            )
+            .map_err(WasmCompileError::Backend)?;
+            if module.bytes != self.artifact.module_bytes() {
+                return Err(WasmCompileError::Input(
+                    "precompiled event differs from its issued emission".into(),
+                ));
+            }
+            (invocations, read_only_y)
+        };
+        #[cfg(not(all(
+            feature = "fixed-scalar-linked-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )))]
+        let (invocations, read_only_y) =
+            (self.invocations.clone(), self.emitted_read_only_y(&source));
         mark_y_census(read_only_y.as_ref());
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime =
@@ -146,7 +183,7 @@ impl PrecompiledRetainedEvent {
             source,
             artifact: Rc::clone(&self.artifact),
             source_key: key,
-            invocations: self.invocations.clone(),
+            invocations,
             read_only_y,
             scratch: RefCell::new(vec![0; bytes as usize / 8]),
             #[cfg(any(

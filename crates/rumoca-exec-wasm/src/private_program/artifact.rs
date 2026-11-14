@@ -98,6 +98,22 @@ impl PrecompiledPrivatePrograms {
                     "precompiled private entry belongs to another checked source".into(),
                 ));
             }
+            // A linked guest decodes seeds only through reads derived again
+            // from the checked source, never through the carried ones.
+            #[cfg(all(
+                feature = "fixed-scalar-linked-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            if let (Some(storage), Some(count)) = (&entry.seed, seed)
+                && crate::emit::private_seed_reads(block, count).ok().as_ref()
+                    != Some(&storage.reads)
+            {
+                return Err(WasmCompileError::Input(
+                    "precompiled private entry belongs to another checked source".into(),
+                ));
+            }
         }
         let mut output = Vec::with_capacity(self.entries.len());
         for (index, module) in self.modules.iter().enumerate() {
