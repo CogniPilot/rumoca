@@ -236,8 +236,9 @@ fn exports_cover(plan: &LinkedEntryPlan, modules: &[LinkedKernelModule]) -> bool
 }
 
 /// Staged admission, so that no entry is called before it is certified:
-/// `LinkedArtifact::admit` once at load pins the saved product's digest in a
-/// `LinkedAdmission`; then `certify_prefix` after each issue and before the
+/// `LinkedArtifact::admit` once at load consumes the artifact into a
+/// `LinkedAdmission` that owns it and pins the saved product's digest; then
+/// `certify_prefix` after each issue and before the
 /// receiver binds what it issued; then `finish` with the whole product. No
 /// later step takes saved bytes from its caller.
 ///
@@ -245,8 +246,8 @@ fn exports_cover(plan: &LinkedEntryPlan, modules: &[LinkedKernelModule]) -> bool
 /// component are the artifact's module bytes. A guest cannot read its own
 /// code; that is an inventory property of packaging.
 #[cfg(feature = "precompiled-programs")]
-pub struct LinkedAdmission<'a> {
-    artifact: &'a LinkedArtifact,
+pub struct LinkedAdmission {
+    artifact: LinkedArtifact,
     saved: String,
 }
 
@@ -267,7 +268,7 @@ impl LinkedArtifact {
     /// entries' symbols and their derivatives' helpers. After this the
     /// dispatch routes `(kind, index, key)` only to the symbol this artifact
     /// issued for that position.
-    pub fn admit(&self, saved: &[u8]) -> Result<LinkedAdmission<'_>, WasmCompileError> {
+    pub fn admit(self, saved: &[u8]) -> Result<LinkedAdmission, WasmCompileError> {
         if !self.is_bound_to(saved) {
             return Err(refusal("linked artifact belongs to another saved product"));
         }
@@ -283,15 +284,26 @@ impl LinkedArtifact {
                 "linked artifact module exports differ from its entries' symbols",
             ));
         }
+        let saved = linked_digest(saved);
         Ok(LinkedAdmission {
             artifact: self,
-            saved: linked_digest(saved),
+            saved,
         })
     }
 }
 
 #[cfg(feature = "precompiled-programs")]
-impl LinkedAdmission<'_> {
+impl LinkedAdmission {
+    /// The admitted artifact's modules in link order.
+    pub fn modules(&self) -> &[LinkedKernelModule] {
+        self.artifact.modules()
+    }
+
+    /// The admitted artifact's dispatch module.
+    pub fn dispatch_module(&self) -> &[u8] {
+        self.artifact.dispatch_module()
+    }
+
     /// Everything `issued` has issued so far equals this artifact's records,
     /// so the receiver may bind and call what it just issued.
     ///
@@ -351,7 +363,7 @@ impl LinkedAdmission<'_> {
     /// dispatch module, with equal counts (nothing unclaimed, nothing extra).
     /// Equal keys at two positions are compared by position.
     pub fn finish(self, reissued: &LinkedProduct) -> Result<(), WasmCompileError> {
-        let artifact = self.artifact;
+        let artifact = &self.artifact;
         let same_entries = artifact.entries.len() == reissued.plan.linked_entries().count()
             && artifact
                 .entries
