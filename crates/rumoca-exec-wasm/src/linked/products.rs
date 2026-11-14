@@ -205,7 +205,8 @@ impl LinkedArtifact {
     /// the receiver from its own checked sources in the owner's order, and
     /// the saved product `saved` produce: every position's kind, index, key
     /// and binding, every module's bytes and exports in link order, and the
-    /// dispatch module. Equal keys at two positions are compared by position.
+    /// dispatch module, with equal counts (nothing unclaimed, nothing extra).
+    /// Equal keys at two positions are compared by position.
     pub fn certify(&self, saved: &[u8], reissued: &LinkedProduct) -> Result<(), WasmCompileError> {
         let entries = reissued.plan.linked_entries();
         let same_entries = self.entries.len() == reissued.plan.linked_entries().count()
@@ -236,6 +237,129 @@ impl LinkedArtifact {
     }
 }
 
+#[cfg(feature = "precompiled-programs")]
+fn refusal(message: &str) -> WasmCompileError {
+    WasmCompileError::Input(message.into())
+}
+
+/// Every module export is an entry's symbol or a helper symbol of a complete
+/// derivative that issued that helper, each exactly once.
+#[cfg(feature = "precompiled-programs")]
+fn exports_cover(plan: &LinkedEntryPlan, modules: &[LinkedKernelModule]) -> bool {
+    let mut expected = Vec::new();
+    for entry in plan.linked_entries() {
+        let symbol = entry.id().symbol();
+        if let (LinkedEntryKind::Derivative, LinkedBinding::Derivative { helpers, .. }) =
+            (entry.id().kind, entry.binding())
+        {
+            for (role, tables) in HELPER_ROLES.iter().zip(helpers.iter()) {
+                if tables.is_some() {
+                    expected.push(helper_symbol(&symbol, role));
+                }
+            }
+        }
+        expected.push(symbol);
+    }
+    let mut exported = modules
+        .iter()
+        .flat_map(|module| module.exports.iter().cloned())
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    exported.sort_unstable();
+    expected == exported
+}
+
+/// Staged admission, so that no entry is called before it is certified:
+/// `admit_dispatch` once at load, then `certify_prefix` after each issue and
+/// before the receiver binds what it issued, then `certify` at the end.
+///
+/// What this does not prove: that the modules actually linked into the
+/// component are the artifact's module bytes. A guest cannot read its own
+/// code; that is an inventory property of packaging.
+#[cfg(feature = "precompiled-programs")]
+impl LinkedArtifact {
+    /// Whether this artifact was captured with the saved product `saved`.
+    pub fn is_bound_to(&self, saved: &[u8]) -> bool {
+        self.version == 1 && self.saved == linked_digest(saved)
+    }
+
+    /// Once, at load, before any entry is bound, with no model source: the
+    /// version and saved digest; the entries in the shape their assembler
+    /// issues (strict `(kind, index)` order, dense per kind, a kinematic
+    /// entry at its derivative's index with its key, bindings of their
+    /// entry's kind, no refusal status); the dispatch module regenerated from
+    /// those entries by the crate-private plan builder and equal byte for
+    /// byte to the carried one; and the module exports covering exactly the
+    /// entries' symbols and their derivatives' helpers. After this the
+    /// dispatch routes `(kind, index, key)` only to the symbol this artifact
+    /// issued for that position.
+    pub fn admit_dispatch(&self, saved: &[u8]) -> Result<(), WasmCompileError> {
+        if !self.is_bound_to(saved) {
+            return Err(refusal("linked artifact belongs to another saved product"));
+        }
+        let carried =
+            LinkedEntryPlan::checked(&self.entries).map_err(|message| refusal(&message))?;
+        if carried.dispatch() != self.dispatch {
+            return Err(refusal(
+                "linked artifact dispatch differs from the one its entries issue",
+            ));
+        }
+        if !exports_cover(&carried, &self.modules) {
+            return Err(refusal(
+                "linked artifact module exports differ from its entries' symbols",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Everything `issued` has issued so far equals this artifact's records,
+    /// so the receiver may bind and call what it just issued.
+    ///
+    /// The prefix, exactly: the assembler issues in the receiver's request
+    /// order, which interleaves kinds; the artifact keeps entries in
+    /// canonical `(kind, index)` order and modules in link order. So
+    /// - every issued entry must be the artifact's entry with the same
+    ///   `(kind, index)`, equal in key and binding; an issued index the
+    ///   artifact lacks is refused, so per kind no more are issued than the
+    ///   artifact holds;
+    /// - the issued modules must be the first modules of the artifact,
+    ///   position by position, bytes and exports equal. Modules are appended
+    ///   in issue order by the same assembler that captured the artifact (a
+    ///   derivative's own helpers before its control module), so an issued
+    ///   entry's modules are the ones its issue appended, at the same
+    ///   positions in both lists; no other mapping is used.
+    ///
+    /// Run `admit_dispatch` first: this relies on the entries being sorted.
+    pub fn certify_prefix(&self, issued: &LinkedProductAssembler) -> Result<(), WasmCompileError> {
+        for entry in issued.plan.linked_entries() {
+            let id = entry.id();
+            let carried = self
+                .entries
+                .binary_search_by_key(&id, LinkedEntry::id)
+                .ok()
+                .map(|position| &self.entries[position]);
+            if carried != Some(entry) {
+                return Err(WasmCompileError::Input(format!(
+                    "linked entry {} differs from its artifact record",
+                    id.symbol()
+                )));
+            }
+        }
+        let carried = self
+            .modules
+            .get(..issued.modules.len())
+            .ok_or_else(|| refusal("linked issue exceeds the artifact's modules"))?;
+        for (position, (issued, carried)) in issued.modules.iter().zip(carried).enumerate() {
+            if issued.bytes != carried.bytes || issued.exports != carried.exports {
+                return Err(WasmCompileError::Input(format!(
+                    "linked module {position} differs from its artifact record"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Issues a product's identities from its checked products, in its owner's
 /// list order per kind. A refused product leaves the assembler unchanged.
 #[derive(Default)]
@@ -247,6 +371,11 @@ pub struct LinkedProductAssembler {
 impl LinkedProductAssembler {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// What has been issued so far, read only.
+    pub fn plan(&self) -> &LinkedEntryPlan {
+        &self.plan
     }
 
     fn next(&self, kind: LinkedEntryKind) -> LinkedEntryId {

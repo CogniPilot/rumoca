@@ -1,8 +1,9 @@
 //! The linked artifact travels from the build to the guest beside the saved
 //! product. The receiver issues its own product from its checked sources and
 //! admits the artifact only if the two are the same, position by position.
+use super::fixtures;
 use super::product::{self, Sources};
-use crate::linked::{LinkedArtifact, LinkedProduct};
+use crate::linked::{LinkedArtifact, LinkedProduct, LinkedProductAssembler};
 use serde_json::{Value, json};
 
 const SAVED: &[u8] = b"saved product bytes";
@@ -82,4 +83,191 @@ fn a_reordered_or_altered_artifact_is_refused() {
     ] {
         assert!(decode(value).certify(SAVED, &reissued).is_err(), "{name}");
     }
+}
+
+/// The product's issues one request at a time, in the order the owner made
+/// them, each through the receiver's own assembler.
+type Step<'a> = Box<dyn FnOnce(&mut LinkedProductAssembler) + 'a>;
+
+fn steps(sources: &Sources) -> Vec<Step<'_>> {
+    let mut steps: Vec<Step<'_>> = Vec::new();
+    for component in &sources.derivatives {
+        steps.push(Box::new(move |assembler: &mut LinkedProductAssembler| {
+            product::with_operation(component, |operation| {
+                assembler.derivative(operation).unwrap();
+            });
+        }));
+    }
+    steps.push(Box::new(move |assembler: &mut LinkedProductAssembler| {
+        let model = &sources.exact;
+        assembler
+            .exact(
+                &model.problem.continuous.implicit_rhs,
+                &model.problem.continuous.refresh_owners,
+                fixtures::exact_schedule(model),
+                &model.problem.layout,
+                &model.pure_calls,
+            )
+            .unwrap();
+    }));
+    steps.push(Box::new(move |assembler: &mut LinkedProductAssembler| {
+        let (layout, calls) = (fixtures::issued_layout(), fixtures::empty_calls());
+        assembler.issued(&sources.rows, &layout, &calls).unwrap();
+    }));
+    steps.push(Box::new(move |assembler: &mut LinkedProductAssembler| {
+        let (admission, admitted) = product::private_admission(sources);
+        let programs = admitted.iter().collect::<Vec<_>>();
+        assembler.private(&admission, &programs).unwrap();
+    }));
+    steps.push(Box::new(move |assembler: &mut LinkedProductAssembler| {
+        assembler.event(&sources.event).unwrap();
+    }));
+    steps
+}
+
+/// The index of the first step after which `certify_prefix` refuses, if any;
+/// every earlier step passes.
+fn first_refusal(artifact: &LinkedArtifact, sources: &Sources) -> Option<usize> {
+    artifact.admit_dispatch(SAVED).unwrap();
+    let mut assembler = LinkedProductAssembler::new();
+    for (index, step) in steps(sources).into_iter().enumerate() {
+        step(&mut assembler);
+        if artifact.certify_prefix(&assembler).is_err() {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// The step whose issue appends module `k`: the first step after which the
+/// issued plan holds the entry that module exports, or the derivative
+/// whose helper it is.
+fn issuing_step(wire: &Value, k: usize, sources: &Sources) -> usize {
+    let export = wire["modules"][k]["exports"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut assembler = LinkedProductAssembler::new();
+    for (index, step) in steps(sources).into_iter().enumerate() {
+        step(&mut assembler);
+        let holds = assembler.plan().entries().any(|(id, _)| {
+            let symbol = id.symbol();
+            export == symbol || export.starts_with(&format!("{symbol}_"))
+        });
+        if holds {
+            return index;
+        }
+    }
+    panic!("module {k} is issued by no step")
+}
+
+#[test]
+fn every_prefix_of_the_owner_order_certifies_and_the_whole_product_does_too() {
+    let sources = Sources::new();
+    let issued = product::build(&sources).linked;
+    let artifact = issued.artifact(SAVED);
+    assert!(artifact.is_bound_to(SAVED));
+    assert!(!artifact.is_bound_to(b"another saved product"));
+    assert_eq!(first_refusal(&artifact, &sources), None);
+    let mut assembler = LinkedProductAssembler::new();
+    for step in steps(&sources) {
+        step(&mut assembler);
+    }
+    let whole = assembler.finish(&[]).unwrap();
+    artifact.certify(SAVED, &whole).unwrap();
+}
+
+/// A one-byte change in module k passes every call before the one that
+/// issues k, and is refused at that call, before anything it issued is bound.
+#[test]
+fn a_changed_module_is_refused_at_the_call_that_issues_it() {
+    let sources = Sources::new();
+    let issued = product::build(&sources).linked;
+    let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
+    let count = wire["modules"].as_array().unwrap().len();
+    for k in 0..count {
+        let mut changed = wire.clone();
+        let bytes = &mut changed["modules"][k]["bytes"];
+        let middle = bytes.as_array().unwrap().len() / 2;
+        let byte = bytes[middle].as_u64().unwrap();
+        bytes[middle] = json!(byte ^ 1);
+        assert_eq!(
+            first_refusal(&decode(changed), &sources),
+            Some(issuing_step(&wire, k, &sources)),
+            "module {k}"
+        );
+    }
+}
+
+#[test]
+fn equal_key_positions_swapped_in_their_module_are_refused_at_their_issue() {
+    let sources = Sources::new();
+    let issued = product::build(&sources).linked;
+    let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
+    let private = wire["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|module| module["exports"].as_array().unwrap().len() == 3)
+        .unwrap();
+    let mut swapped = wire.clone();
+    let exports = &mut swapped["modules"][private]["exports"];
+    let (zero, two) = (exports[0].clone(), exports[2].clone());
+    exports[0] = two;
+    exports[2] = zero;
+    assert_eq!(
+        first_refusal(&decode(swapped), &sources),
+        Some(issuing_step(&wire, private, &sources))
+    );
+}
+
+#[test]
+fn a_changed_dispatch_byte_or_another_saved_product_is_refused_before_any_issue() {
+    let sources = Sources::new();
+    let issued = product::build(&sources).linked;
+    let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
+    let mut changed = wire.clone();
+    let byte = wire["dispatch"][8].as_u64().unwrap();
+    changed["dispatch"][8] = json!(byte ^ 1);
+    assert!(decode(changed).admit_dispatch(SAVED).is_err());
+    assert!(decode(wire.clone()).admit_dispatch(b"another").is_err());
+    let mut unordered = wire.clone();
+    let entries = unordered["entries"].as_array_mut().unwrap();
+    entries.swap(0, 1);
+    assert!(decode(unordered).admit_dispatch(SAVED).is_err());
+    decode(wire).admit_dispatch(SAVED).unwrap();
+}
+
+/// Issuing past the artifact's records is refused, and so is a whole
+/// product with a record no request claimed.
+#[test]
+fn an_extra_issue_or_an_unclaimed_record_is_refused() {
+    let sources = Sources::new();
+    let artifact = product::build(&sources).linked.artifact(SAVED);
+    artifact.admit_dispatch(SAVED).unwrap();
+    let mut assembler = LinkedProductAssembler::new();
+    let all = steps(&sources);
+    let count = all.len();
+    for (index, step) in all.into_iter().enumerate() {
+        if index + 1 < count {
+            step(&mut assembler);
+        }
+    }
+    artifact.certify_prefix(&assembler).unwrap();
+    let partial = assembler.finish(&[]).unwrap();
+    assert!(
+        artifact.certify(SAVED, &partial).is_err(),
+        "event unclaimed"
+    );
+    let mut extra = LinkedProductAssembler::new();
+    for step in steps(&sources) {
+        step(&mut extra);
+    }
+    let (admission, admitted) = product::private_admission(&sources);
+    let programs = admitted.iter().collect::<Vec<_>>();
+    extra.private(&admission, &programs).unwrap();
+    assert!(
+        artifact.certify_prefix(&extra).is_err(),
+        "private 3.. issued"
+    );
 }
