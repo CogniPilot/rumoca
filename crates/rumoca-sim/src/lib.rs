@@ -82,7 +82,9 @@ pub mod row_eval_trace;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_cache;
 #[cfg(feature = "precompiled-runtime")]
-pub use precompiled_runtime::{export_precompiled_runtime, load_precompiled_runtime};
+pub use precompiled_runtime::{
+    export_precompiled_linked_runtime, export_precompiled_runtime, load_precompiled_runtime,
+};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_protocol;
 pub mod sim_trace_compare;

@@ -51,7 +51,7 @@ impl WasmAssignments {
             error.to_string()
         })?;
         if let Some(mode) = mode {
-            mode.record_exact(&compiled);
+            mode.record_exact(source, owners, schedule, layout, calls, &compiled);
         }
         Self::from_compiled(compiled, InputExtent::of(layout))
     }
@@ -88,7 +88,7 @@ impl WasmAssignments {
             error.to_string()
         })?;
         if let Some(mode) = mode {
-            mode.record_issued(&compiled);
+            mode.record_issued(rows, &slots, calls, &compiled);
         }
         Self::from_compiled(compiled, InputExtent::of(&slots))
     }

@@ -91,6 +91,38 @@ mod browser {
         opts: SimOptions,
         context: T,
     ) -> Result<Vec<u8>, SimulationDiagnosticError> {
+        let scope = ProgramScope::capture().map_err(refusal)?;
+        export_in(dae, opts, context, scope, |scope| {
+            scope.finish_capture().map(|programs| (programs, ()))
+        })
+        .map(|(bytes, ())| bytes)
+    }
+    /// The saved product and, from the same capture, the artifact of the
+    /// linked product issued beside it, bound to those saved bytes; both use
+    /// the same named-map wire.
+    pub(super) fn export_linked<T: Serialize>(
+        dae: &rumoca_ir_dae::Dae,
+        opts: SimOptions,
+        context: T,
+    ) -> Result<(Vec<u8>, Vec<u8>), SimulationDiagnosticError> {
+        let scope = ProgramScope::capture_linked().map_err(refusal)?;
+        let (bytes, linked) = export_in(
+            dae,
+            opts,
+            context,
+            scope,
+            ProgramScope::finish_capture_linked,
+        )?;
+        let artifact = encode(&linked.artifact(&bytes))?;
+        Ok((bytes, artifact))
+    }
+    fn export_in<T: Serialize, L>(
+        dae: &rumoca_ir_dae::Dae,
+        opts: SimOptions,
+        context: T,
+        scope: ProgramScope,
+        finish: impl FnOnce(ProgramScope) -> Result<(CorePrograms, L), String>,
+    ) -> Result<(Vec<u8>, L), SimulationDiagnosticError> {
         if !admits_solver_profile(opts.solver_mode) {
             return Err(refusal(
                 "precompiled browser product requires the declared rk-like or fixed-step profile",
@@ -111,18 +143,18 @@ mod browser {
         let replayed = replay(&component_bytes)?;
         drop(component_bytes);
         let root = replayed.runtime_view().retain_assertion_root();
-        let scope = ProgramScope::capture().map_err(refusal)?;
         let prepared = session(replayed, opts)?;
         let _ = prepared.state()?;
         drop(prepared);
-        let programs = scope.finish_capture().map_err(refusal)?;
-        encode(&RuntimeWireRef {
+        let (programs, linked) = finish(scope).map_err(refusal)?;
+        let bytes = encode(&RuntimeWireRef {
             version: 3,
             context,
             component: rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
                 .map_err(refusal)?,
             programs,
-        })
+        })?;
+        Ok((bytes, linked))
     }
     pub(super) fn load<T: DeserializeOwned>(
         payload: &[u8],
@@ -170,6 +202,28 @@ pub fn export_precompiled_runtime<T: Serialize>(
         let _ = (dae, opts, context);
         Err(refusal(
             "precompiled browser export requires the wasm32 rk-like build",
+        ))
+    }
+}
+/// The saved product and the linked product issued beside it by the same
+/// capture: every module in link order, and per entry its kind, index, key
+/// words and binding. A product with any kind that has no linked form (an
+/// uncompiled kind, or a record site the linked assembler refused) is refused
+/// by name; nothing partial is issued.
+pub fn export_precompiled_linked_runtime<T: Serialize>(
+    dae: &rumoca_ir_dae::Dae,
+    opts: SimOptions,
+    context: T,
+) -> Result<(Vec<u8>, Vec<u8>), SimulationDiagnosticError> {
+    #[cfg(all(target_arch = "wasm32", feature = "solver-rk45"))]
+    {
+        browser::export_linked(dae, opts, context)
+    }
+    #[cfg(not(all(target_arch = "wasm32", feature = "solver-rk45")))]
+    {
+        let _ = (dae, opts, context);
+        Err(refusal(
+            "precompiled linked export requires the wasm32 rk-like build",
         ))
     }
 }

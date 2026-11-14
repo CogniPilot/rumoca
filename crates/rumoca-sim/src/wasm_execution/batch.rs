@@ -138,7 +138,7 @@ impl ModuleBatch {
             .map_err(|error| error.to_string())?;
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
         if let Some(mode) = &self.mode {
-            mode.record_private(&compiled);
+            mode.record_private(&self.admission, &sources, &compiled);
         }
         Ok(compiled)
     }
