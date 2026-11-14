@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "native-fmi-ls")]
 mod native_fmi_ls;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
-pub use native_fmi_ls::{LinkedGuestParts, LinkedNativeFmiLsComponent, LinkedScalarFmiLsComponent};
+pub use native_fmi_ls::{LinkedNativeFmiLsComponent, LinkedScalarFmiLsComponent};
 #[cfg(feature = "native-fmi-ls")]
 pub use native_fmi_ls::{
     NativeFmiLsPreparationError, PreparedNativeFmiLsModel, PreparedScalarFmiLsModel,

@@ -6,8 +6,10 @@ use super::{
 };
 use rumoca_core::artifact_build::{ArtifactBuildBinding, PreparedBuildRequest};
 use rumoca_exec_wasm::{
-    FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedKernelModule, NativeLinkableModelLibrary,
+    FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedArtifact, LinkedKernelModule,
+    NativeLinkableModelLibrary,
 };
+use serde::Deserialize;
 use std::collections::BTreeMap;
 
 /// Complete checked component and exact publication inventory/slot binding.
@@ -107,19 +109,6 @@ pub struct LinkedScalarFmiLsComponent<S> {
     core: FixedNativeGuestCore,
 }
 
-/// What a scalar-linked component links beside its source data, as one SDK
-/// export issued it: the linked modules in link order (helpers first), the
-/// dispatch module over their entries, and the artifact and saved product the
-/// guest reads at receive and certifies by re-issuing from its own checked
-/// sources. Linking grants nothing: a module set or dispatch other than the
-/// artifact's fails that certification in the guest.
-pub struct LinkedGuestParts<'a> {
-    pub modules: &'a [LinkedKernelModule],
-    pub dispatch: &'a [u8],
-    pub artifact: &'a [u8],
-    pub saved: &'a [u8],
-}
-
 impl<S> LinkedScalarFmiLsComponent<S> {
     pub fn binding(&self) -> &ArtifactBuildBinding<S> {
         &self.binding
@@ -183,15 +172,19 @@ impl PreparedScalarFmiLsModel {
     }
 
     /// Pair the scalar-linked core with this component's source data and the
-    /// linked `parts`. The data library also serves the artifact and saved
-    /// product slots. Every symbol must have exactly one provider among the
-    /// source data, the linked modules, the dispatch and the core; the linker
-    /// stubs nothing, and the result must expose exactly the checked component
+    /// linked product one SDK export issued: `artifact` and the `saved`
+    /// product it is bound to. The linked modules and the dispatch are read
+    /// only from the decoded artifact, so the linked bodies are exactly the
+    /// ones the guest certifies; the data library serves both byte strings
+    /// to it. Every symbol must have exactly one provider among the source
+    /// data, the linked modules, the dispatch and the core; the linker stubs
+    /// nothing, and the result must expose exactly the checked component
     /// interface, so the dispatch and data slots stay internal.
     pub fn link_linked_guest<S>(
         self,
         core: FixedNativeGuestCore,
-        parts: LinkedGuestParts<'_>,
+        artifact: &[u8],
+        saved: &[u8],
         request: &PreparedBuildRequest<'_, S>,
     ) -> Result<LinkedScalarFmiLsComponent<S>, NativeFmiLsPreparationError> {
         let linkage = NativeFmiLsPreparationError::Linkage;
@@ -206,10 +199,11 @@ impl PreparedScalarFmiLsModel {
             rumoca_ir_solve::CheckedNativeWasmCapacityPolicy::default(),
         )
         .map_err(linkage)?;
-        let data = data::linked_library(&envelope, &token, parts.saved, parts.artifact)
+        let linked = decode_artifact(artifact).map_err(linkage)?;
+        let data = data::linked_library(&envelope, &token, saved, artifact).map_err(linkage)?;
+        check_single_providers(&core, linked.modules()).map_err(linkage)?;
+        let bytes = link_linked(&data, linked.modules(), linked.dispatch_module(), &core)
             .map_err(linkage)?;
-        check_single_providers(&core, parts.modules).map_err(linkage)?;
-        let bytes = link_linked(&data, parts.modules, parts.dispatch, &core).map_err(linkage)?;
         core.check_component_interface(&bytes).map_err(linkage)?;
         Ok(LinkedScalarFmiLsComponent {
             binding: request.binding(),
@@ -217,6 +211,17 @@ impl PreparedScalarFmiLsModel {
             core,
         })
     }
+}
+
+/// The artifact on the export's named-map wire, with no trailing bytes.
+fn decode_artifact(bytes: &[u8]) -> Result<LinkedArtifact, String> {
+    let mut reader = rmp_serde::Deserializer::new(std::io::Cursor::new(bytes));
+    let artifact = LinkedArtifact::deserialize(&mut reader)
+        .map_err(|error| format!("decode linked artifact: {error}"))?;
+    if reader.get_ref().position() != bytes.len() as u64 {
+        return Err("trailing linked artifact bytes".into());
+    }
+    Ok(artifact)
 }
 
 /// The source data, the linked modules in their link order (helpers first),
