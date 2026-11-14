@@ -40,7 +40,13 @@ impl ScalarPackageOptions {
     /// canonical solver name; no family alias selects one.
     pub fn parse(json: &str) -> Result<Self> {
         let options = InteractiveOptions::parse(json)?;
-        let sim = rumoca_sim::scalar_package_sim_options(&options)?;
+        let canonical = rumoca_core::canonical_solver_name(&options.solver)?;
+        let base = SimOptions {
+            solver_mode: SimSolverMode::from_external_name(canonical),
+            dt: (options.dt > 0.0).then_some(options.dt),
+            ..SimOptions::default()
+        };
+        let sim = options.configure(base, options.initial_inputs.clone());
         Ok(Self { options, sim })
     }
 
@@ -60,23 +66,6 @@ impl ScalarPackageOptions {
         }
         if self.sim.execution_policy == SimExecutionPolicy::NativeRequired {
             bail!("execution policy `native_required` is refused: this guest is INTERPRETED");
-        }
-        if self.sim.solver_mode == SimSolverMode::FixedStep && self.options.fixed_step.is_none() {
-            bail!("solver `fixed-step` needs its explicit fixed_step configuration");
-        }
-        let plan = rumoca_sim::co_simulation_plan(&self.sim)?;
-        Ok(component.with_co_simulation(plan)?)
-    }
-
-    /// [`Self::bind_runtime_choices`] for the compiled (scalar-linked)
-    /// product, whose guest admits only compiled execution: the interpreter
-    /// policy is refused instead of `native_required`.
-    pub fn bind_linked_runtime_choices(&self, component: FmiComponent) -> Result<FmiComponent> {
-        if !(self.options.atol > 0.0 && self.options.rtol > 0.0) {
-            bail!("the options must state a positive atol and rtol; none is defaulted");
-        }
-        if self.sim.execution_policy == SimExecutionPolicy::Interpreter {
-            bail!("execution policy `interpreter` is refused: this guest is COMPILED");
         }
         if self.sim.solver_mode == SimSolverMode::FixedStep && self.options.fixed_step.is_none() {
             bail!("solver `fixed-step` needs its explicit fixed_step configuration");
