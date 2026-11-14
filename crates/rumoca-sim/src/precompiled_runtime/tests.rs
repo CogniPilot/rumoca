@@ -34,3 +34,14 @@ fn native_build_refuses_browser_export_and_load_before_runtime_fallback() {
             .contains("requires the wasm32 rk-like build")
     );
 }
+
+#[test]
+fn native_build_refuses_the_linked_export_without_issuing_anything() {
+    let dae = rumoca_ir_dae::Dae::construct(Default::default(), |_| Ok(())).unwrap();
+    let export = export_precompiled_linked_runtime(&dae, SimOptions::default(), ()).unwrap_err();
+    assert!(
+        export
+            .to_string()
+            .contains("linked export requires the wasm32 rk-like build")
+    );
+}

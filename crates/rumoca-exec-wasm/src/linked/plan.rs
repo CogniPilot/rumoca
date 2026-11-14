@@ -2,11 +2,14 @@
 use super::LINKED_DISPATCH_REFUSED;
 use crate::{NativeGatherFault, NativeLinearSolveFault, TypedCallFault, WasmCompileError};
 use rumoca_ir_solve::fmi::FmiDerivativeWorkspace;
+#[cfg(feature = "precompiled-programs")]
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The kind of an entry the dispatch reaches. The code is the dispatch's
 /// `kind` argument; it is fixed and never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
 #[repr(u32)]
 pub enum LinkedEntryKind {
     /// `eval_derivatives` of a complete derivative control module (9 arguments).
@@ -57,6 +60,8 @@ impl LinkedEntryKind {
 
 /// An entry's position in its module-set owner's list for its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "precompiled-programs", serde(deny_unknown_fields))]
 pub struct LinkedEntryId {
     pub kind: LinkedEntryKind,
     pub index: u32,
@@ -122,6 +127,8 @@ pub fn linked_key_words(source_key: &str) -> Result<[u64; 4], WasmCompileError> 
 
 /// Every fault table an entry's status is decoded with, as emitted with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "precompiled-programs", serde(deny_unknown_fields))]
 pub struct LinkedFaultTables {
     pub typed: Vec<TypedCallFault>,
     pub gather: Vec<NativeGatherFault>,
@@ -144,15 +151,53 @@ impl LinkedFaultTables {
     }
 }
 
+/// The issued derivative workspace as plain extents, so it travels with the
+/// plan; a receiver compares it with the workspace its bound operation issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "precompiled-programs", serde(deny_unknown_fields))]
+pub struct LinkedWorkspace {
+    regions: [(u32, u32); 7],
+    bytes: u32,
+    snapshot: u32,
+    helper: u32,
+}
+
+impl LinkedWorkspace {
+    pub(super) fn of(workspace: FmiDerivativeWorkspace) -> Self {
+        Self {
+            regions: workspace.regions(),
+            bytes: workspace.bytes(),
+            snapshot: workspace.snapshot(),
+            helper: workspace.helper(),
+        }
+    }
+
+    /// Argument ordinals and byte extents, as `FmiDerivativeWorkspace::regions`.
+    pub fn regions(&self) -> [(u32, u32); 7] {
+        self.regions
+    }
+
+    pub fn bytes(&self) -> u32 {
+        self.bytes
+    }
+
+    /// Whether `workspace` is exactly the workspace this entry was issued with.
+    pub fn matches(&self, workspace: FmiDerivativeWorkspace) -> bool {
+        *self == Self::of(workspace)
+    }
+}
+
 /// What a bound entry keeps beside its triple to check its frame and decode
 /// its status, from the same emission as its linked module.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
 pub enum LinkedBinding {
     /// The issued workspace and the tables of the control's own helpers in
     /// `static_refresh, dynamic_refresh, values, kinematic_values` order;
     /// an omitted helper is `None`.
     Derivative {
-        workspace: FmiDerivativeWorkspace,
+        workspace: LinkedWorkspace,
         helpers: Box<[Option<LinkedFaultTables>; 4]>,
     },
     /// The scratch extent and fault tables of a kernel entry.
@@ -165,7 +210,9 @@ pub enum LinkedBinding {
 /// One issued entry as a receiver stores it: the canonical owner-issued
 /// triple `(kind, index, key)` and its binding. The receiver passes exactly
 /// this triple to the dispatch and never re-derives an index.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "precompiled-programs", serde(deny_unknown_fields))]
 pub struct LinkedEntry {
     id: LinkedEntryId,
     key: [u64; 4],
@@ -194,7 +241,10 @@ impl LinkedEntry {
 /// The issued entries of one product. Only the set assembler, fed the
 /// checked products in its owner's order, builds one; there is no constructor
 /// from caller-supplied triples. Equal keys at two positions are legal.
-#[derive(Debug, Clone, Default)]
+/// It has no deserialiser: a plan read from a wire would be caller triples.
+/// A receiver issues its own plan from its checked sources and certifies the
+/// carried artifact against it (`LinkedArtifact::certify`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkedEntryPlan {
     entries: BTreeMap<LinkedEntryId, LinkedEntry>,
 }

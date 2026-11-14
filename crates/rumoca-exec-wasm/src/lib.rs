@@ -39,8 +39,10 @@ pub use exact_assignments::PrecompiledExactAssignments;
 pub use linked::{
     LINKED_DISPATCH_EXPORT, LINKED_DISPATCH_REFUSED, LinkedBinding, LinkedDemand, LinkedEntry,
     LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, LinkedFaultTables, LinkedKernelModule,
-    LinkedProduct, LinkedProductAssembler, linked_entry_status, linked_key_words,
+    LinkedProduct, LinkedProductAssembler, LinkedWorkspace, linked_entry_status, linked_key_words,
 };
+#[cfg(feature = "precompiled-programs")]
+pub use linked::{LinkedArtifact, linked_digest};
 #[cfg(any(
     test,
     all(target_arch = "wasm32", target_os = "unknown"),

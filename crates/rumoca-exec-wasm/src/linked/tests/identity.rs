@@ -170,7 +170,7 @@ fn every_entry_carries_its_triple_and_binding_from_the_same_emission() {
                 product::Shape::Derivative(issued),
                 LinkedBinding::Derivative { workspace, helpers },
             ) => {
-                assert_eq!(issued.regions(), workspace.regions(), "{}", id.symbol());
+                assert!(workspace.matches(*issued), "{}", id.symbol());
                 assert!(helpers[2].is_some(), "the values helper is always issued");
             }
             _ => panic!("{} has another binding kind than its entry", id.symbol()),
