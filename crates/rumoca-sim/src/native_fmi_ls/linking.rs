@@ -5,7 +5,12 @@ use super::{
     publication,
 };
 use rumoca_core::artifact_build::{ArtifactBuildBinding, PreparedBuildRequest};
-use rumoca_exec_wasm::{FixedNativeGuestCore, NativeLinkableModelLibrary};
+use rumoca_exec_wasm::{
+    FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedArtifact, LinkedKernelModule,
+    NativeLinkableModelLibrary,
+};
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// Complete checked component and exact publication inventory/slot binding.
 /// Only the consuming original pair + fixed-source core issuer constructs it.
@@ -95,7 +100,9 @@ fn link(
 }
 
 /// A stateful (scalar-product) component: the source data and the scalar fixed
-/// core only. No model-entry library is linked; the core never imports one.
+/// core, and for the scalar-linked product also the issued linked modules and
+/// their one dispatch. No model-entry library is linked; the core never
+/// imports one.
 pub struct LinkedScalarFmiLsComponent<S> {
     binding: ArtifactBuildBinding<S>,
     bytes: Vec<u8>,
@@ -163,4 +170,131 @@ impl PreparedScalarFmiLsModel {
             core,
         })
     }
+
+    /// Pair the scalar-linked core with this component's source data and the
+    /// linked product one SDK export issued: `artifact` and the `saved`
+    /// product it is bound to. The linked modules and the dispatch are read
+    /// only from the decoded artifact, so the linked bodies are exactly the
+    /// ones the guest certifies; the data library serves both byte strings
+    /// to it. Every symbol must have exactly one provider among the source
+    /// data, the linked modules, the dispatch and the core; the linker stubs
+    /// nothing, and the result must expose exactly the checked component
+    /// interface, so the dispatch and data slots stay internal.
+    pub fn link_linked_guest<S>(
+        self,
+        core: FixedNativeGuestCore,
+        artifact: &[u8],
+        saved: &[u8],
+        request: &PreparedBuildRequest<'_, S>,
+    ) -> Result<LinkedScalarFmiLsComponent<S>, NativeFmiLsPreparationError> {
+        let linkage = NativeFmiLsPreparationError::Linkage;
+        if !core.is_scalar_linked_product() {
+            return Err(linkage(
+                "a scalar-linked component links only the scalar-linked fixed core".into(),
+            ));
+        }
+        let token = publication::token(request).map_err(linkage)?;
+        let envelope = rumoca_exec_wasm::encode_native_source_envelope(
+            &self.capsule,
+            rumoca_ir_solve::CheckedNativeWasmCapacityPolicy::default(),
+        )
+        .map_err(linkage)?;
+        let linked = decode_artifact(artifact).map_err(linkage)?;
+        let data = data::linked_library(&envelope, &token, saved, artifact).map_err(linkage)?;
+        check_single_providers(&core, linked.modules()).map_err(linkage)?;
+        let bytes = link_linked(&data, linked.modules(), linked.dispatch_module(), &core)
+            .map_err(linkage)?;
+        core.check_component_interface(&bytes).map_err(linkage)?;
+        Ok(LinkedScalarFmiLsComponent {
+            binding: request.binding(),
+            bytes,
+            core,
+        })
+    }
+}
+
+/// The artifact on the export's named-map wire, with no trailing bytes.
+fn decode_artifact(bytes: &[u8]) -> Result<LinkedArtifact, String> {
+    let mut reader = rmp_serde::Deserializer::new(std::io::Cursor::new(bytes));
+    let artifact = LinkedArtifact::deserialize(&mut reader)
+        .map_err(|error| format!("decode linked artifact: {error}"))?;
+    if reader.get_ref().position() != bytes.len() as u64 {
+        return Err("trailing linked artifact bytes".into());
+    }
+    Ok(artifact)
+}
+
+/// The source data, the linked modules in their link order (helpers first),
+/// the dispatch, then the runtime core, with no stubs and no libdl.
+fn link_linked(
+    data: &[u8],
+    modules: &[LinkedKernelModule],
+    dispatch: &[u8],
+    core: &FixedNativeGuestCore,
+) -> Result<Vec<u8>, String> {
+    fn error(error: impl std::fmt::Display) -> String {
+        format!("link scalar-linked fixed FMI-LS graph: {error:#}")
+    }
+    let mut linker = wit_component::Linker::default()
+        .validate(true)
+        .stub_missing_functions(false)
+        .use_built_in_libdl(false)
+        .library("rumoca-source", data, false)
+        .map_err(error)?;
+    for (index, module) in modules.iter().enumerate() {
+        linker = linker
+            .library(
+                &format!("rumoca-core-{index}"),
+                module.module_bytes(),
+                false,
+            )
+            .map_err(error)?;
+    }
+    linker
+        .library("rumoca-dispatch", dispatch, false)
+        .and_then(|linker| linker.library("rumoca-runtime", core.bytes(), false))
+        .and_then(wit_component::Linker::encode)
+        .map_err(error)
+}
+
+/// Refuse a graph in which two libraries export the same name, so linker
+/// priority can never choose between providers of one symbol.
+fn check_single_providers(
+    core: &FixedNativeGuestCore,
+    modules: &[LinkedKernelModule],
+) -> Result<(), String> {
+    let source = [
+        "rumoca_source_capsule_len",
+        "rumoca_source_capsule_copy",
+        "rumoca_publication_token_len",
+        "rumoca_publication_token_copy",
+        "rumoca_saved_product_len",
+        "rumoca_saved_product_copy",
+        "rumoca_linked_artifact_len",
+        "rumoca_linked_artifact_copy",
+    ]
+    .map(String::from);
+    let mut providers: Vec<(String, Vec<String>)> = vec![("rumoca-source".into(), source.to_vec())];
+    for (index, module) in modules.iter().enumerate() {
+        providers.push((format!("rumoca-core-{index}"), module.exports().to_vec()));
+    }
+    providers.push((
+        "rumoca-dispatch".into(),
+        vec![LINKED_DISPATCH_EXPORT.to_owned()],
+    ));
+    providers.push((
+        "rumoca-runtime".into(),
+        core.exports().map(String::from).collect(),
+    ));
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for (library, exports) in providers {
+        for name in exports {
+            if let Some(previous) = seen.insert(name.clone(), library.clone()) {
+                return Err(format!(
+                    "linked symbol {name} is exported by both {previous} and {library}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }

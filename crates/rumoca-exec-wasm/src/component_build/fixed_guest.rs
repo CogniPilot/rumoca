@@ -24,12 +24,17 @@ pub struct FixedNativeGuestCore {
 }
 
 /// The product kind a fixed guest core is built for, fixed at build time: the
-/// stateless native product, or a stateful scalar product
-/// (`rumoca-runtime-fmi-ls/scalar-product`). Part of the cache recipe.
+/// stateless native product, a stateful scalar product
+/// (`rumoca-runtime-fmi-ls/scalar-product`), or a stateful scalar product that
+/// executes linked compiled entries through `rumoca_dispatch`
+/// (`rumoca-runtime-fmi-ls/scalar-linked-product`). The linked product never
+/// enables `scalar-product`, whose bootstrap admits only the interpreter. Part
+/// of the cache recipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GuestProfile {
     Native,
     Scalar,
+    ScalarLinked,
 }
 
 impl GuestProfile {
@@ -37,6 +42,7 @@ impl GuestProfile {
         match self {
             Self::Native => &[],
             Self::Scalar => &["--features", "scalar-product"],
+            Self::ScalarLinked => &["--features", "scalar-linked-product"],
         }
     }
 
@@ -44,14 +50,27 @@ impl GuestProfile {
         match self {
             Self::Native => "native",
             Self::Scalar => "scalar",
+            Self::ScalarLinked => "scalar-linked",
         }
     }
 }
 
 impl FixedNativeGuestCore {
-    /// Whether this core was built for the stateful scalar product.
+    /// Whether this core was built for the stateful scalar product without
+    /// linked compiled entries.
     pub fn is_scalar_product(&self) -> bool {
         self.profile == GuestProfile::Scalar
+    }
+
+    /// Whether this core was built for the stateful scalar product that imports
+    /// `rumoca_dispatch` and the linked plan slots.
+    pub fn is_scalar_linked_product(&self) -> bool {
+        self.profile == GuestProfile::ScalarLinked
+    }
+
+    /// Every export name of this core, as its contract read them.
+    pub fn exports(&self) -> impl Iterator<Item = &str> {
+        self.contract.exports.iter().map(String::as_str)
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -157,6 +176,22 @@ pub fn build_fixed_scalar_guest_core_cached(
         target_parent,
         Some(cache_root),
         GuestProfile::Scalar,
+    )
+}
+
+/// As [`build_fixed_scalar_guest_core_cached`] for the scalar product that
+/// executes linked compiled entries: the same fixed source built with
+/// `rumoca-runtime-fmi-ls/scalar-linked-product`, under its own cache key.
+pub fn build_fixed_scalar_linked_guest_core_cached(
+    staging_parent: &Path,
+    target_parent: &Path,
+    cache_root: &Path,
+) -> Result<FixedNativeGuestCore, String> {
+    build(
+        staging_parent,
+        target_parent,
+        Some(cache_root),
+        GuestProfile::ScalarLinked,
     )
 }
 
@@ -362,5 +397,28 @@ mod profile_tests {
         assert_ne!(native, scalar);
         assert!(scalar.contains("scalar-product") && scalar.contains("profile=scalar"));
         assert!(!native.contains("scalar-product") && native.contains("profile=native"));
+    }
+
+    /// The linked scalar product has its own feature, never the interpreted
+    /// scalar product's, and never shares that product's cached core.
+    #[test]
+    fn the_scalar_linked_profile_has_its_own_feature_and_cache_recipe() {
+        let features = GuestProfile::ScalarLinked.cargo_features();
+        assert_eq!(features, ["--features", "scalar-linked-product"]);
+        assert!(
+            features
+                .iter()
+                .flat_map(|list| list.split(','))
+                .all(|feature| feature != "scalar-product")
+        );
+        let (scalar, linked) = (
+            recipe("flags", GuestProfile::Scalar),
+            recipe("flags", GuestProfile::ScalarLinked),
+        );
+        assert_ne!(scalar, linked);
+        assert!(
+            linked.contains("scalar-linked-product") && linked.contains("profile=scalar-linked")
+        );
+        assert!(!scalar.contains("scalar-linked-product"));
     }
 }

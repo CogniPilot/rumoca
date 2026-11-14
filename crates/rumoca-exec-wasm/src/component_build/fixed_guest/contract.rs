@@ -9,6 +9,9 @@ use wasmparser::{
 pub(super) struct FixedGuestContract {
     pub(super) imports: BTreeMap<(String, String), FixedImportRole>,
     pub(super) allocation: MemInfo,
+    /// Every export name of the core, so a link can refuse a library that
+    /// would provide the same symbol.
+    pub(super) exports: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -17,10 +20,22 @@ pub(super) enum FixedImportRole {
     Platform,
 }
 
+/// The data slots a scalar-linked core imports beside the source slots: the
+/// linked artifact it certifies and the saved product that artifact is bound to.
+const LINKED_DATA_SLOTS: [&str; 4] = [
+    "rumoca_linked_artifact_len",
+    "rumoca_linked_artifact_copy",
+    "rumoca_saved_product_len",
+    "rumoca_saved_product_copy",
+];
+
 /// This private parser can refuse arbitrary bytes, but cannot issue a source core.
 /// The internal slots are exact per product kind: the native core imports the
 /// four source slots and the native model entry; the scalar core imports the
-/// four source slots and must not import the native model entry.
+/// four source slots and must not import the native model entry or the linked
+/// dispatch; the scalar-linked core imports the four source slots, the linked
+/// dispatch and the two linked plan slots, and must not import the native
+/// model entry.
 pub(super) fn check(
     bytes: &[u8],
     profile: super::GuestProfile,
@@ -42,6 +57,7 @@ struct State {
     slots: BTreeSet<String>,
     function_types: Vec<u32>,
     math_exports: BTreeMap<String, u32>,
+    exports: BTreeSet<String>,
     public_memory: bool,
     allocation: Option<MemInfo>,
 }
@@ -216,6 +232,7 @@ impl State {
         for export in exports {
             let export = export.map_err(|error| error.to_string())?;
             check_reserved_export(export.name)?;
+            self.exports.insert(export.name.to_owned());
             if export.kind == wasmparser::ExternalKind::Func
                 && MathImport::from_symbol(export.name).is_some()
             {
@@ -252,18 +269,28 @@ impl State {
 
     fn finish(self, profile: super::GuestProfile) -> Result<FixedGuestContract, String> {
         self.check_math_abi()?;
-        let model_entry = match profile {
-            super::GuestProfile::Native => Some("eval_assignments"),
+        let linked: Vec<&str> = [crate::LINKED_DISPATCH_EXPORT]
+            .into_iter()
+            .chain(LINKED_DATA_SLOTS)
+            .collect();
+        let (required, forbidden) = match profile {
+            super::GuestProfile::Native => (vec!["eval_assignments"], linked),
             super::GuestProfile::Scalar => {
-                if self.slots.contains("eval_assignments") {
-                    return Err(
-                        "scalar fixed guest imports the native model entry eval_assignments".into(),
-                    );
-                }
-                None
+                (Vec::new(), [vec!["eval_assignments"], linked].concat())
             }
+            super::GuestProfile::ScalarLinked => (linked, vec!["eval_assignments"]),
         };
-        for slot in model_entry.into_iter().chain([
+        if let Some(slot) = forbidden
+            .into_iter()
+            .find(|slot| self.slots.contains(*slot))
+        {
+            return Err(if slot == "eval_assignments" {
+                "scalar fixed guest imports the native model entry eval_assignments".into()
+            } else {
+                format!("{} fixed guest imports {slot}", profile.tag())
+            });
+        }
+        for slot in required.into_iter().chain([
             "rumoca_source_capsule_len",
             "rumoca_source_capsule_copy",
             "rumoca_publication_token_len",
@@ -284,6 +311,7 @@ impl State {
         Ok(FixedGuestContract {
             imports: self.imports,
             allocation,
+            exports: self.exports,
         })
     }
 }
@@ -296,11 +324,22 @@ fn check_reserved_export(name: &str) -> Result<(), String> {
             | "rumoca_source_capsule_copy"
             | "rumoca_publication_token_len"
             | "rumoca_publication_token_copy"
-    ) {
+    ) || name == crate::LINKED_DISPATCH_EXPORT
+        || LINKED_DATA_SLOTS.contains(&name)
+    {
         return Err(format!("fixed guest exports reserved provider slot {name}"));
     }
     Ok(())
 }
+
+/// `rumoca_dispatch`: kind, index, four key words, then the entry arguments
+/// `a0 a1 t a3 a4 a5 a6 a7 a8` (the linked dispatch module's one export).
+const LINKED_DISPATCH_PARAMETERS: [ValType; 15] = {
+    use ValType::{F64, I32, I64};
+    [
+        I32, I32, I64, I64, I64, I64, I32, I32, F64, I32, I32, I32, I32, I32, I32,
+    ]
+};
 
 fn check_slot(name: &str, ty: &FuncType) -> Result<(), String> {
     use ValType::{F64, I32};
@@ -308,6 +347,9 @@ fn check_slot(name: &str, ty: &FuncType) -> Result<(), String> {
         "eval_assignments" => &[I32, I32, F64, I32, I32],
         "rumoca_source_capsule_len" | "rumoca_publication_token_len" => &[],
         "rumoca_source_capsule_copy" | "rumoca_publication_token_copy" => &[I32, I32],
+        _ if LINKED_DATA_SLOTS.contains(&name) && name.ends_with("_len") => &[],
+        _ if LINKED_DATA_SLOTS.contains(&name) => &[I32, I32],
+        _ if name == crate::LINKED_DISPATCH_EXPORT => &LINKED_DISPATCH_PARAMETERS,
         _ => {
             return Err(format!(
                 "fixed guest has unsupported internal function {name}"
@@ -457,6 +499,139 @@ mod tests {
             state(true).finish(Scalar).err().unwrap(),
             "scalar fixed guest imports the native model entry eval_assignments"
         );
+    }
+
+    /// Only the scalar-linked core imports the linked dispatch and plan slots,
+    /// and it must import all three; no other product kind may import one.
+    #[test]
+    fn the_linked_slots_are_exact_per_product_kind() {
+        use super::super::GuestProfile::{Native, Scalar, ScalarLinked};
+        let state = |model_entry: bool, linked: &[&str]| {
+            let mut state = math_state(&math_module(None, None));
+            state.slots.extend(
+                [
+                    "rumoca_source_capsule_len",
+                    "rumoca_source_capsule_copy",
+                    "rumoca_publication_token_len",
+                    "rumoca_publication_token_copy",
+                ]
+                .map(String::from),
+            );
+            if model_entry {
+                state.slots.insert("eval_assignments".into());
+            }
+            state
+                .slots
+                .extend(linked.iter().map(|slot| slot.to_string()));
+            state.public_memory = true;
+            state.allocation = Some(MemInfo {
+                memory_size: 0,
+                memory_alignment: 0,
+                table_size: 0,
+                table_alignment: 0,
+            });
+            state
+        };
+        let all: Vec<&str> = [crate::LINKED_DISPATCH_EXPORT]
+            .into_iter()
+            .chain(LINKED_DATA_SLOTS)
+            .collect();
+        assert!(state(false, &all).finish(ScalarLinked).is_ok());
+        for &missing in &all {
+            let partial: Vec<&str> = all
+                .iter()
+                .copied()
+                .filter(|slot| *slot != missing)
+                .collect();
+            assert_eq!(
+                state(false, &partial).finish(ScalarLinked).err().unwrap(),
+                format!("fixed guest has no actual linked receiver import {missing}")
+            );
+            assert_eq!(
+                state(false, &[missing]).finish(Scalar).err().unwrap(),
+                format!("scalar fixed guest imports {missing}")
+            );
+            assert_eq!(
+                state(true, &[missing]).finish(Native).err().unwrap(),
+                format!("native fixed guest imports {missing}")
+            );
+        }
+        assert_eq!(
+            state(true, &all).finish(ScalarLinked).err().unwrap(),
+            "scalar fixed guest imports the native model entry eval_assignments"
+        );
+    }
+
+    #[test]
+    fn the_linked_slots_have_their_exact_internal_abi() {
+        use ValType::{F64, I32, I64};
+        let ty = |params: &[ValType]| FuncType::new(params.to_vec(), [I32]);
+        assert!(
+            check_slot(
+                crate::LINKED_DISPATCH_EXPORT,
+                &ty(&LINKED_DISPATCH_PARAMETERS)
+            )
+            .is_ok()
+        );
+        let short = &LINKED_DISPATCH_PARAMETERS[..14];
+        assert!(check_slot(crate::LINKED_DISPATCH_EXPORT, &ty(short)).is_err());
+        for [length, copy] in [
+            ["rumoca_linked_artifact_len", "rumoca_linked_artifact_copy"],
+            ["rumoca_saved_product_len", "rumoca_saved_product_copy"],
+        ] {
+            assert!(check_slot(length, &ty(&[])).is_ok());
+            assert!(check_slot(copy, &ty(&[I32, I32])).is_ok());
+            assert!(check_slot(copy, &ty(&[I32, I64])).is_err());
+            assert!(check_slot(length, &ty(&[F64])).is_err());
+        }
+        assert!(check_reserved_export(crate::LINKED_DISPATCH_EXPORT).is_err());
+        for name in LINKED_DATA_SLOTS {
+            assert!(check_reserved_export(name).is_err());
+        }
+    }
+
+    /// The admitted dispatch type is the one the issued dispatch module
+    /// actually exports, read from its bytes rather than restated.
+    #[test]
+    fn the_admitted_dispatch_type_is_the_issued_dispatch_export() {
+        let bytes = crate::LinkedEntryPlan::default().dispatch();
+        let mut types = Vec::new();
+        let mut functions = Vec::new();
+        let mut exported = None;
+        for payload in Parser::new(0).parse_all(&bytes) {
+            match payload.unwrap() {
+                Payload::TypeSection(section) => {
+                    types = section
+                        .into_iter_err_on_gc_types()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap();
+                }
+                Payload::ImportSection(imports) => {
+                    for import in imports {
+                        if let TypeRef::Func(index) = import.unwrap().ty {
+                            functions.push(index);
+                        }
+                    }
+                }
+                Payload::FunctionSection(section) => {
+                    functions.extend(section.into_iter().map(Result::unwrap));
+                }
+                Payload::ExportSection(exports) => {
+                    for export in exports {
+                        let export = export.unwrap();
+                        if export.name == crate::LINKED_DISPATCH_EXPORT {
+                            exported = Some(export.index);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let function = exported.expect("the dispatch module exports rumoca_dispatch");
+        let ty = &types[functions[function as usize] as usize];
+        assert_eq!(ty.params(), LINKED_DISPATCH_PARAMETERS);
+        assert_eq!(ty.results(), [ValType::I32]);
+        check_slot(crate::LINKED_DISPATCH_EXPORT, ty).unwrap();
     }
 
     #[test]

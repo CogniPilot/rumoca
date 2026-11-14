@@ -7,10 +7,38 @@ use wasm_encoder::{
 };
 
 pub(super) fn library(capsule: &[u8], token: &str) -> Result<Vec<u8>, String> {
-    let capsule_len = length(capsule.len())?;
-    let token_len = length(token.len())?;
-    let total = capsule_len
-        .checked_add(token_len)
+    slots_library(&[
+        ("rumoca_source_capsule", capsule),
+        ("rumoca_publication_token", token.as_bytes()),
+    ])
+}
+
+/// [`library`] for a scalar-linked component: the source slots, then the
+/// saved product and the linked artifact the guest certifies at receive.
+pub(super) fn linked_library(
+    capsule: &[u8],
+    token: &str,
+    saved: &[u8],
+    artifact: &[u8],
+) -> Result<Vec<u8>, String> {
+    slots_library(&[
+        ("rumoca_source_capsule", capsule),
+        ("rumoca_publication_token", token.as_bytes()),
+        ("rumoca_saved_product", saved),
+        ("rumoca_linked_artifact", artifact),
+    ])
+}
+
+/// One relocated data segment holding every slot's bytes in order, with a
+/// `<slot>_len` and a checked `<slot>_copy` export per slot.
+fn slots_library(slots: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
+    let lengths = slots
+        .iter()
+        .map(|(_, bytes)| length(bytes.len()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total = lengths
+        .iter()
+        .try_fold(0_u32, |total, length| total.checked_add(*length))
         .ok_or("receiver data allocation overflow")?;
     length(total as usize)?;
     let mut module = Module::new();
@@ -55,40 +83,31 @@ pub(super) fn library(capsule: &[u8], token: &str) -> Result<Vec<u8>, String> {
     );
     module.section(&imports);
     let mut functions = FunctionSection::new();
-    for ty in [0, 1, 0, 1] {
-        functions.function(ty);
+    for _ in slots {
+        functions.function(0);
+        functions.function(1);
     }
     module.section(&functions);
     let mut exports = ExportSection::new();
-    for (ordinal, name) in [
-        "rumoca_source_capsule_len",
-        "rumoca_source_capsule_copy",
-        "rumoca_publication_token_len",
-        "rumoca_publication_token_copy",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        exports.export(name, ExportKind::Func, ordinal as u32);
+    for (index, (name, _)) in slots.iter().enumerate() {
+        let ordinal = 2 * index as u32;
+        exports.export(&format!("{name}_len"), ExportKind::Func, ordinal);
+        exports.export(&format!("{name}_copy"), ExportKind::Func, ordinal + 1);
     }
     module.section(&exports);
     let mut code = CodeSection::new();
-    code.function(&length_function(capsule_len));
-    code.function(&copy_function(0, capsule_len));
-    code.function(&length_function(token_len));
-    code.function(&copy_function(capsule_len, token_len));
+    let mut offset = 0_u32;
+    for length in &lengths {
+        code.function(&length_function(*length));
+        code.function(&copy_function(offset, *length));
+        offset += length;
+    }
     module.section(&code);
     let mut data = DataSection::new();
     data.active(
         0,
         &ConstExpr::global_get(0),
-        (0..total as usize).map(|index| {
-            if index < capsule.len() {
-                capsule[index]
-            } else {
-                token.as_bytes()[index - capsule.len()]
-            }
-        }),
+        slots.iter().flat_map(|(_, bytes)| bytes.iter().copied()),
     );
     module.section(&data);
     Ok(module.finish())
@@ -156,8 +175,42 @@ mod tests {
     #[test]
     fn paired_data_uses_actual_relocated_storage_and_atomic_checked_copies() {
         let bytes = library(b"canonical-source", "original-token").unwrap();
+        assert_slots(
+            &bytes,
+            &[
+                ("rumoca_source_capsule", b"canonical-source".as_slice()),
+                ("rumoca_publication_token", b"original-token".as_slice()),
+            ],
+        );
+    }
+
+    /// The saved product and the linked artifact follow the unchanged source
+    /// slots, read through the same relocated storage and checked copies.
+    #[test]
+    fn linked_data_serves_the_saved_product_and_artifact_after_the_source_slots() {
+        let bytes = linked_library(
+            b"canonical-source",
+            "original-token",
+            b"saved-product",
+            b"linked-artifact",
+        )
+        .unwrap();
+        assert_slots(
+            &bytes,
+            &[
+                ("rumoca_source_capsule", b"canonical-source".as_slice()),
+                ("rumoca_publication_token", b"original-token".as_slice()),
+                ("rumoca_saved_product", b"saved-product".as_slice()),
+                ("rumoca_linked_artifact", b"linked-artifact".as_slice()),
+            ],
+        );
+        assert!(linked_library(b"source", "issued", &[], b"artifact").is_err());
+        assert!(linked_library(b"source", "issued", b"saved", &[]).is_err());
+    }
+
+    fn assert_slots(bytes: &[u8], slots: &[(&str, &[u8])]) {
         let engine = Engine::default();
-        let module = wasmi::Module::new(&engine, &bytes[..]).unwrap();
+        let module = wasmi::Module::new(&engine, bytes).unwrap();
         let mut store = Store::new(&engine, ());
         let memory = Memory::new(&mut store, MemoryType::new(1, None)).unwrap();
         let base = Global::new(&mut store, Val::I32(256), Mutability::Const);
@@ -169,10 +222,7 @@ mod tests {
             .unwrap()
             .start(&mut store)
             .unwrap();
-        for (name, expected) in [
-            ("rumoca_source_capsule", b"canonical-source".as_slice()),
-            ("rumoca_publication_token", b"original-token".as_slice()),
-        ] {
+        for &(name, expected) in slots {
             let length = instance
                 .get_typed_func::<(), i32>(&store, &format!("{name}_len"))
                 .unwrap();
