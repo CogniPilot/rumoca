@@ -61,11 +61,36 @@ impl ScalarPackageOptions {
     /// configuration (none is defaulted), a policy that requires compiled
     /// code (the guest is INTERPRETED), and any request no step plan carries.
     pub fn bind_runtime_choices(&self, component: FmiComponent) -> Result<FmiComponent> {
+        self.bind(component, |policy| {
+            (policy == SimExecutionPolicy::NativeRequired).then_some(
+                "execution policy `native_required` is refused: this guest is INTERPRETED",
+            )
+        })
+    }
+
+    /// [`Self::bind_runtime_choices`] for the scalar-linked product, whose
+    /// guest constructs with compiled linked entries only and admits no
+    /// interpreter. An options document that asks for interpretation is
+    /// refused by name; the guest's own construction, not this document,
+    /// requires every operation to be compiled.
+    pub fn bind_linked_runtime_choices(&self, component: FmiComponent) -> Result<FmiComponent> {
+        self.bind(component, |policy| {
+            (policy == SimExecutionPolicy::Interpreter).then_some(
+                "execution policy `interpreter` is refused: the scalar-linked guest executes only compiled entries",
+            )
+        })
+    }
+
+    fn bind(
+        &self,
+        component: FmiComponent,
+        refused_policy: impl FnOnce(SimExecutionPolicy) -> Option<&'static str>,
+    ) -> Result<FmiComponent> {
         if !(self.options.atol > 0.0 && self.options.rtol > 0.0) {
             bail!("the options must state a positive atol and rtol; none is defaulted");
         }
-        if self.sim.execution_policy == SimExecutionPolicy::NativeRequired {
-            bail!("execution policy `native_required` is refused: this guest is INTERPRETED");
+        if let Some(refusal) = refused_policy(self.sim.execution_policy) {
+            bail!("{refusal}");
         }
         if self.sim.solver_mode == SimSolverMode::FixedStep && self.options.fixed_step.is_none() {
             bail!("solver `fixed-step` needs its explicit fixed_step configuration");

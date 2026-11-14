@@ -507,6 +507,46 @@ fn decay(options: &ScalarPackageOptions) -> anyhow::Result<rumoca_ir_solve::fmi:
     )?)
 }
 
+/// The interpreted scalar product refuses a policy that requires compiled
+/// code. The scalar-linked product admits it with the same step plan, and
+/// refuses only a document that asks for interpretation.
+#[test]
+fn the_linked_product_admits_compiled_policies_and_refuses_interpretation() {
+    let with_policy = |policy: &str| {
+        ScalarPackageOptions::parse(&PAGE_OPTIONS.replace(
+            r#""execution_policy":"auto""#,
+            &format!(r#""execution_policy":"{policy}""#),
+        ))
+        .unwrap()
+    };
+    let native = with_policy("native_required");
+    assert_eq!(
+        native
+            .bind_runtime_choices(decay(&native).unwrap())
+            .unwrap_err()
+            .to_string(),
+        "execution policy `native_required` is refused: this guest is INTERPRETED"
+    );
+    let linked = native
+        .bind_linked_runtime_choices(decay(&native).unwrap())
+        .unwrap();
+    let auto = with_policy("auto");
+    let interpreted = auto.bind_runtime_choices(decay(&auto).unwrap()).unwrap();
+    assert_eq!(linked.co_simulation(), interpreted.co_simulation());
+    assert!(
+        auto.bind_linked_runtime_choices(decay(&auto).unwrap())
+            .is_ok()
+    );
+    let interpreter = with_policy("interpreter");
+    assert_eq!(
+        interpreter
+            .bind_linked_runtime_choices(decay(&interpreter).unwrap())
+            .unwrap_err()
+            .to_string(),
+        "execution policy `interpreter` is refused: the scalar-linked guest executes only compiled entries"
+    );
+}
+
 /// The page's options document binds its exact solver, step, order and both
 /// tolerances as the component's step plan, its parameter override reaches
 /// the component, and the Scalar-profile component is the scalar product.

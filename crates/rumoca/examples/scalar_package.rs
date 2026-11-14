@@ -104,7 +104,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let variables = census(&component);
     eprintln!("SCALAR_PACKAGE census={}", serde_json::json!(variables));
     let (component, _) = stage("runtime_choices", || {
-        let component = options.bind_runtime_choices(component)?;
+        let component = if linked.is_some() {
+            options.bind_linked_runtime_choices(component)?
+        } else {
+            options.bind_runtime_choices(component)?
+        };
         eprintln!(
             "SCALAR_PACKAGE co_simulation={}",
             serde_json::json!(component.co_simulation())
