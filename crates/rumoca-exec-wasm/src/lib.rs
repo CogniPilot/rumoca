@@ -19,7 +19,7 @@ pub use component_build::{
 #[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
 pub use component_build::{
     FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
-    build_fixed_scalar_guest_core_cached,
+    build_fixed_scalar_guest_core_cached, build_fixed_scalar_linked_guest_core_cached,
 };
 pub use derivative_operation::{
     CompiledFmiDerivativeOperationWasm, compile_fmi_derivative_operation_wasm,
