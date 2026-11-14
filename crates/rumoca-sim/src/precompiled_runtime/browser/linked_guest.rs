@@ -6,28 +6,28 @@
 use super::*;
 
 /// An open load of one saved product. Every program its component requests
-/// while this is open binds to its linked entry; nothing compiles.
-/// It keeps the saved bytes it was opened with, so it certifies against
-/// exactly the product its programs came from.
-pub struct LinkedGuestLoad<'a> {
+/// while this is open binds to its linked entry, certified first; nothing
+/// compiles. The admission it holds pinned the saved digest at open.
+pub struct LinkedGuestLoad {
     scope: ProgramScope,
-    saved: &'a [u8],
-    artifact: rumoca_exec_wasm::LinkedArtifact,
 }
 
-/// Read the saved product and the linked artifact before any backend exists:
-/// the component's checked replay, and an open scope over the saved programs.
+/// Admit the linked artifact for the saved product before any backend exists
+/// (its digest, entry shape, dispatch regenerated from its own entries, and
+/// module exports), then read the saved product: the component's checked
+/// replay, and an open scope over the saved programs.
 /// The context the browser load configures from is not read; the guest's
 /// instance configuration comes from the FMI host.
-pub fn load_linked_guest<'a>(
-    saved: &'a [u8],
+pub fn load_linked_guest(
+    saved: &[u8],
     artifact: &[u8],
-) -> Result<(LinkedGuestLoad<'a>, FmiComponent), SimulationDiagnosticError> {
+) -> Result<(LinkedGuestLoad, FmiComponent), SimulationDiagnosticError> {
     let mut reader = rmp_serde::Deserializer::new(Cursor::new(artifact));
     let carried = rumoca_exec_wasm::LinkedArtifact::deserialize(&mut reader).map_err(refusal)?;
     if reader.get_ref().position() != artifact.len() as u64 {
         return Err(refusal("trailing linked artifact bytes"));
     }
+    let admission = carried.admit(saved).map_err(refusal)?;
     let mut reader = rmp_serde::Deserializer::new(Cursor::new(saved));
     let wire = RuntimeWire::<serde::de::IgnoredAny>::deserialize(&mut reader).map_err(refusal)?;
     if reader.get_ref().position() != saved.len() as u64 {
@@ -36,18 +36,11 @@ pub fn load_linked_guest<'a>(
     if wire.version != 3 {
         return Err(refusal("unsupported precompiled runtime schema"));
     }
-    let scope = ProgramScope::load(wire.programs).map_err(refusal)?;
-    Ok((
-        LinkedGuestLoad {
-            scope,
-            saved,
-            artifact: carried,
-        },
-        wire.component,
-    ))
+    let scope = ProgramScope::load_linked(wire.programs, admission).map_err(refusal)?;
+    Ok((LinkedGuestLoad { scope }, wire.component))
 }
 
-impl LinkedGuestLoad<'_> {
+impl LinkedGuestLoad {
     /// The compiled backend for `model`. Its programs come only from the
     /// saved product through this load; a model with no compiled admission
     /// is refused, never interpreted.
@@ -64,11 +57,8 @@ impl LinkedGuestLoad<'_> {
     }
 
     /// Close the load: every saved program was requested and bound, and the
-    /// linked artifact is exactly what this guest issued for the saved
-    /// product bytes this load was opened with.
+    /// whole product this guest issued equals the admitted artifact.
     pub fn finish(self) -> Result<(), SimulationDiagnosticError> {
-        self.scope
-            .finish_load_linked(self.saved, &self.artifact)
-            .map_err(refusal)
+        self.scope.finish_load_linked().map_err(refusal)
     }
 }

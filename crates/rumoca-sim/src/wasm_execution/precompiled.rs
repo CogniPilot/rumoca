@@ -35,15 +35,29 @@ pub(crate) struct LoadedPrograms {
     observations: RefCell<VecDeque<PrecompiledRetainedEvent>>,
     derivatives: RefCell<VecDeque<rumoca_exec_wasm::PrecompiledFmiDerivativeOperation>>,
     errors: RefCell<Vec<String>>,
-    /// A linked guest's own product, issued at every load site from the same
-    /// checked source before that site's saved entry is bound to it.
+    /// A linked guest's own product and the admission of the artifact it was
+    /// linked from; a plain load has none and binds nothing linked.
     #[cfg(all(
         feature = "linked-guest",
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p2"
     ))]
-    linked: RefCell<LinkedProductAssembler>,
+    linked: Option<LinkedLoad>,
+}
+
+/// The entries a linked guest issues at its load sites from the same checked
+/// sources as the capture, and the artifact admission each issue is certified
+/// against before its entry is bound.
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+struct LinkedLoad {
+    assembler: RefCell<LinkedProductAssembler>,
+    admission: RefCell<Option<rumoca_exec_wasm::LinkedAdmission>>,
 }
 
 /// The guest-issued plan and the index of the entry a load site just issued.
@@ -80,19 +94,34 @@ impl Issued<'_> {
     target_env = "p2"
 ))]
 impl LoadedPrograms {
-    /// Issue this site's entries from its checked source; the first issued
-    /// position is where its saved entry binds.
+    /// Issue this site's entries from its checked source and certify
+    /// everything issued so far, including each new entry's whole module
+    /// closure, against the admitted artifact. Only then is the first issued
+    /// position returned for its saved entry to bind; nothing issued here is
+    /// callable before its certification passed.
     fn issue(
         &self,
         issue: impl FnOnce(
             &mut LinkedProductAssembler,
         ) -> Result<Vec<rumoca_exec_wasm::LinkedEntryId>, WasmCompileError>,
     ) -> Result<Issued<'_>, String> {
-        let ids = issue(&mut self.linked.borrow_mut())
+        let linked = self
+            .linked
+            .as_ref()
+            .ok_or("a linked guest binds only through its admitted artifact")?;
+        let ids = issue(&mut linked.assembler.borrow_mut())
             .map_err(|error| format!("linked entry refused: {error}"))?;
         let first = ids.first().ok_or("a load site issued no linked entry")?;
+        let assembler = linked.assembler.borrow();
+        linked
+            .admission
+            .borrow()
+            .as_ref()
+            .ok_or("the linked load is already finished")?
+            .certify_prefix(&assembler)
+            .map_err(|error| format!("linked entry refused: {error}"))?;
         Ok(Issued {
-            assembler: self.linked.borrow(),
+            assembler,
             index: first.index,
         })
     }
@@ -155,6 +184,47 @@ impl ProgramScope {
         ))
     }
     pub(crate) fn load(programs: CorePrograms) -> Result<Self, String> {
+        Self::load_with(
+            programs,
+            #[cfg(all(
+                feature = "linked-guest",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            None,
+        )
+    }
+    /// A linked guest's load: the saved programs, bound only to entries the
+    /// guest issues and certifies against the already admitted artifact.
+    #[cfg(all(
+        feature = "linked-guest",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    ))]
+    pub(crate) fn load_linked(
+        programs: CorePrograms,
+        admission: rumoca_exec_wasm::LinkedAdmission,
+    ) -> Result<Self, String> {
+        Self::load_with(
+            programs,
+            Some(LinkedLoad {
+                assembler: RefCell::default(),
+                admission: RefCell::new(Some(admission)),
+            }),
+        )
+    }
+    fn load_with(
+        programs: CorePrograms,
+        #[cfg(all(
+            feature = "linked-guest",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        linked: Option<LinkedLoad>,
+    ) -> Result<Self, String> {
         if !programs.uncompiled.is_empty() {
             return Err("precompiled product has uncompiled kernel kinds".into());
         }
@@ -171,7 +241,7 @@ impl ProgramScope {
                 target_os = "wasi",
                 target_env = "p2"
             ))]
-            linked: RefCell::default(),
+            linked,
         })))
     }
     pub(crate) fn finish_capture(mut self) -> Result<CorePrograms, String> {
@@ -207,28 +277,30 @@ impl ProgramScope {
         self.close();
         Ok((result, product))
     }
-    /// A linked guest admits its saved programs only with the artifact they
-    /// were linked from: every entry it issued while loading must equal the
-    /// artifact's, which is bound to the `saved` product bytes.
+    /// Close a linked load: every saved program was bound, and the whole
+    /// product the guest issued equals the admitted artifact under the saved
+    /// digest pinned at admission, with nothing unclaimed.
     #[cfg(all(
         feature = "linked-guest",
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p2"
     ))]
-    pub(crate) fn finish_load_linked(
-        self,
-        saved: &[u8],
-        artifact: &rumoca_exec_wasm::LinkedArtifact,
-    ) -> Result<(), String> {
+    pub(crate) fn finish_load_linked(self) -> Result<(), String> {
         let ProgramMode::Load(programs) = &self.mode else {
             return Err("not a load scope".into());
         };
-        let assembler = std::mem::take(&mut *programs.linked.borrow_mut());
+        let linked = programs.linked.as_ref().ok_or("not a linked load scope")?;
+        let assembler = std::mem::take(&mut *linked.assembler.borrow_mut());
+        let admission = linked
+            .admission
+            .borrow_mut()
+            .take()
+            .ok_or("the linked load is already finished")?;
         self.finish_load()?;
         let product = assembler.finish(&[]).map_err(|error| error.to_string())?;
-        artifact
-            .certify(saved, &product)
+        admission
+            .finish(&product)
             .map_err(|error| error.to_string())
     }
     pub(crate) fn finish_load(mut self) -> Result<(), String> {
