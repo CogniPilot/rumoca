@@ -103,12 +103,14 @@ fn slots_library(slots: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
         offset += length;
     }
     module.section(&code);
+    // One segment of every slot's bytes in slot order, of the checked total
+    // length (the encoder needs the exact size up front).
+    let mut segment = Vec::with_capacity(total as usize);
+    for (_, bytes) in slots {
+        segment.extend_from_slice(bytes);
+    }
     let mut data = DataSection::new();
-    data.active(
-        0,
-        &ConstExpr::global_get(0),
-        slots.iter().flat_map(|(_, bytes)| bytes.iter().copied()),
-    );
+    data.active(0, &ConstExpr::global_get(0), segment);
     module.section(&data);
     Ok(module.finish())
 }
