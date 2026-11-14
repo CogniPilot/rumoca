@@ -37,6 +37,13 @@ mod exact_assignments;
 mod linked;
 #[cfg(feature = "precompiled-programs")]
 pub use exact_assignments::PrecompiledExactAssignments;
+#[cfg(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+pub use linked::LinkedPosition;
 pub use linked::{
     LINKED_DISPATCH_EXPORT, LINKED_DISPATCH_REFUSED, LinkedBinding, LinkedDemand, LinkedEntry,
     LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, LinkedFaultTables, LinkedKernelModule,
@@ -108,6 +115,20 @@ pub use retained_native_program::{
 pub use scratch_report::{ScratchCall, ScratchFrame, ScratchOwner, ScratchRegion, ScratchReport};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_runtime::WasmKernelRuntime;
+#[cfg(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+mod linked_kernel;
+#[cfg(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+use linked_kernel::WasmKernelRuntime;
 
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 pub use typed_call::PreparedCheckedAssertionHost;

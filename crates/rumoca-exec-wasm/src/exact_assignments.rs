@@ -23,7 +23,15 @@ pub struct CompiledExactAssignmentWasm {
     source_key: String,
     y_count: usize,
     p_count: usize,
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     runtime: crate::WasmKernelRuntime,
 }
 
@@ -62,7 +70,15 @@ impl CompiledExactAssignmentWasm {
                 "exact schedule input lengths differ from issued layout".into(),
             ));
         }
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        #[cfg(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        ))]
         {
             let status = self.runtime.call_assignments(y, p, time, scratch)?;
             if status != 0 {
@@ -74,7 +90,15 @@ impl CompiledExactAssignmentWasm {
             }
             Ok(())
         }
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        #[cfg(not(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        )))]
         {
             let _ = (y, p, time, scratch);
             Err(WasmCompileError::Input(
@@ -134,28 +158,49 @@ impl CompiledExactAssignmentWasm {
         layout: &VarLayout,
         source_key: impl FnOnce() -> Result<String, String>,
     ) -> Result<Self, WasmCompileError> {
-        #[cfg(not(feature = "precompiled-programs"))]
-        let _ = source_key;
-        // The key is settled before the emitted module is activated.
-        #[cfg(feature = "precompiled-programs")]
-        let source_key = source_key().map_err(WasmCompileError::Input)?;
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let runtime =
-            crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
-        Ok(Self {
-            gather_faults: artifact.gather_faults.clone(),
-            #[cfg(any(
-                feature = "precompiled-programs",
-                all(target_arch = "wasm32", target_os = "unknown")
-            ))]
-            linear_solve_faults: artifact.linear_solve_faults.clone(),
-            artifact: artifact.into(),
+        // Only issued entries run in a linked guest; it activates no fresh emission.
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        {
+            let _ = (artifact, layout, source_key);
+            return Err(WasmCompileError::Input(
+                "a linked guest binds only issued assignment entries".into(),
+            ));
+        }
+        #[cfg(not(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )))]
+        {
+            #[cfg(not(feature = "precompiled-programs"))]
+            let _ = source_key;
+            // The key is settled before the emitted module is activated.
             #[cfg(feature = "precompiled-programs")]
-            source_key,
-            y_count: layout.y_scalars(),
-            p_count: layout.p_scalars(),
+            let source_key = source_key().map_err(WasmCompileError::Input)?;
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            runtime,
-        })
+            let runtime =
+                crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
+            Ok(Self {
+                gather_faults: artifact.gather_faults.clone(),
+                #[cfg(any(
+                    feature = "precompiled-programs",
+                    all(target_arch = "wasm32", target_os = "unknown")
+                ))]
+                linear_solve_faults: artifact.linear_solve_faults.clone(),
+                artifact: artifact.into(),
+                #[cfg(feature = "precompiled-programs")]
+                source_key,
+                y_count: layout.y_scalars(),
+                p_count: layout.p_scalars(),
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                runtime,
+            })
+        }
     }
 }

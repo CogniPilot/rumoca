@@ -3,7 +3,7 @@
 
 #![allow(unsafe_code)]
 
-use super::{LinkedEntry, LinkedEntryId, linked_entry_status};
+use super::{LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, linked_entry_status};
 use crate::WasmCompileError;
 
 #[link(wasm_import_module = "env")]
@@ -26,6 +26,32 @@ unsafe extern "C" {
         a7: u32,
         a8: u32,
     ) -> u32;
+}
+
+/// The position a loaded owner binds at: its issued plan and the index its
+/// record holds in its kind's capture order. An owner never searches the
+/// plan by key; two positions may share one.
+#[derive(Clone, Copy)]
+pub struct LinkedPosition<'a> {
+    pub plan: &'a LinkedEntryPlan,
+    pub index: u32,
+}
+
+impl<'a> LinkedPosition<'a> {
+    /// The issued entry of `kind` at this position.
+    pub(crate) fn entry(&self, kind: LinkedEntryKind) -> Result<&'a LinkedEntry, WasmCompileError> {
+        self.plan
+            .entry(LinkedEntryId {
+                kind,
+                index: self.index,
+            })
+            .ok_or_else(|| {
+                WasmCompileError::Input(format!(
+                    "no issued linked {kind:?} entry at index {}",
+                    self.index
+                ))
+            })
+    }
 }
 
 /// The triple of one issued entry, exactly as its plan holds it.

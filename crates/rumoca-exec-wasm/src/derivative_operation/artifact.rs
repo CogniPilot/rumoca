@@ -87,10 +87,20 @@ impl PrecompiledFmiDerivativeOperation {
     /// Bind persisted bytes to `operation`. Every persisted byte, the control
     /// module and each helper's module, scratch and fault tables, is emitted
     /// again from the issued source and must be equal; nothing persisted is
-    /// trusted and no part is reused when one differs.
+    /// trusted and no part is reused when one differs. A linked guest then
+    /// binds the issued entry at `at`: it must carry exactly this source's key,
+    /// the freshly issued workspace and each helper's emitted fault tables,
+    /// and a kinematic entry exists iff the persisted kinematic helper does.
     pub fn bind(
         &self,
         operation: &FmiDerivativeCausalOperation<'_>,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        at: crate::LinkedPosition<'_>,
     ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
         let issued = self.issued(operation)?;
         #[cfg(all(
@@ -99,46 +109,33 @@ impl PrecompiledFmiDerivativeOperation {
             target_os = "wasi",
             target_env = "p2"
         ))]
-        {
-            let _ = issued;
-            Err(WasmCompileError::Input(
-                "a linked guest binds its derivative through the issued entry plan".into(),
-            ))
-        }
-        #[cfg(not(all(
-            feature = "fixed-scalar-guest-receiver",
-            target_arch = "wasm32",
-            target_os = "wasi",
-            target_env = "p2"
-        )))]
-        self.bound(issued.workspace)
+        let runtime = self.linked_runtime(&issued, at)?;
+        self.bound(
+            issued.workspace,
+            #[cfg(all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            runtime,
+        )
     }
 
-    /// Bind persisted bytes to `operation` for the linked guest: the checks of
-    /// [`Self::bind`], then the issued entry at `index` of `plan` must carry
-    /// exactly this source's key, the freshly issued workspace and each
-    /// helper's emitted fault tables; a kinematic entry exists iff the
-    /// persisted kinematic helper does. The triple is the plan's, never one
-    /// re-derived here.
     #[cfg(all(
         feature = "fixed-scalar-guest-receiver",
         target_arch = "wasm32",
         target_os = "wasi",
         target_env = "p2"
     ))]
-    pub fn bind_linked(
+    fn linked_runtime(
         &self,
-        operation: &FmiDerivativeCausalOperation<'_>,
-        plan: &crate::linked::LinkedEntryPlan,
-        index: u32,
-    ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
-        use crate::linked::{LinkedBinding, LinkedEntryId, LinkedEntryKind, linked_key_words};
-        let issued = self.issued(operation)?;
+        issued: &CompiledFmiDerivativeOperationWasm,
+        at: crate::LinkedPosition<'_>,
+    ) -> Result<runtime::DerivativeRuntime, WasmCompileError> {
+        use crate::linked::{LinkedBinding, LinkedEntryKind, linked_key_words};
         let key = linked_key_words(&self.source_key)?;
-        let id = |kind| LinkedEntryId { kind, index };
-        let entry = plan
-            .entry(id(LinkedEntryKind::Derivative))
-            .ok_or_else(|| WasmCompileError::Input("no issued linked derivative entry".into()))?;
+        let entry = at.entry(LinkedEntryKind::Derivative)?;
         let LinkedBinding::Derivative { workspace, helpers } = entry.binding() else {
             return Err(WasmCompileError::Input(
                 "the issued derivative entry carries a kernel binding".into(),
@@ -165,7 +162,7 @@ impl PrecompiledFmiDerivativeOperation {
                 "the issued linked derivative entry differs from its source".into(),
             ));
         }
-        let kinematic = plan.entry(id(LinkedEntryKind::Kinematic));
+        let kinematic = at.entry(LinkedEntryKind::Kinematic).ok();
         if kinematic.is_some() != self.kinematic.is_some()
             || kinematic.is_some_and(|kinematic| kinematic.key_words() != key)
         {
@@ -173,10 +170,7 @@ impl PrecompiledFmiDerivativeOperation {
                 "the issued linked kinematic entry differs from its source".into(),
             ));
         }
-        self.bound(
-            issued.workspace,
-            runtime::DerivativeRuntime::linked(entry, kinematic),
-        )
+        Ok(runtime::DerivativeRuntime::linked(entry, kinematic))
     }
 
     /// Every persisted byte, the control module and each helper's module,

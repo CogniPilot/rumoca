@@ -16,6 +16,13 @@ mod products;
 #[cfg(all(test, feature = "host-engine", not(target_arch = "wasm32")))]
 mod tests;
 
+#[cfg(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+pub use guest::LinkedPosition;
 pub use plan::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
     LinkedFaultTables, LinkedWorkspace, linked_key_words,

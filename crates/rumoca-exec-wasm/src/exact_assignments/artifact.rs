@@ -40,6 +40,13 @@ impl PrecompiledExactAssignments {
         schedule: &ExactRefreshAssignmentSchedule,
         layout: &VarLayout,
         table: &SolvePureCallTable,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        at: crate::LinkedPosition<'_>,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
         let expected = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
             .and_then(|key| key.exact_assignment_schedule(source, owners, schedule))
@@ -54,7 +61,16 @@ impl PrecompiledExactAssignments {
             crate::emit::Linkage::Browser,
         )
         .map_err(WasmCompileError::Backend)?;
-        self.bind_emitted(emitted)
+        self.bind_emitted(
+            emitted,
+            #[cfg(all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            (at, crate::LinkedEntryKind::Exact),
+        )
     }
 
     /// Bind captured issued rows to the same issued rows of the current build.
@@ -63,6 +79,13 @@ impl PrecompiledExactAssignments {
         rows: &IssuedAssignmentRows,
         layout: &VarLayout,
         table: &SolvePureCallTable,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        at: crate::LinkedPosition<'_>,
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
         let expected = rumoca_ir_solve::PreparedKernelSource::new(layout, table)
             .and_then(|key| key.issued_assignment_rows(rows))
@@ -75,7 +98,16 @@ impl PrecompiledExactAssignments {
             crate::emit::Linkage::Browser,
         )
         .map_err(WasmCompileError::Backend)?;
-        self.bind_emitted(emitted)
+        self.bind_emitted(
+            emitted,
+            #[cfg(all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            (at, crate::LinkedEntryKind::Issued),
+        )
     }
 
     fn check_header(&self, expected: &str, layout: &VarLayout) -> Result<(), WasmCompileError> {
@@ -96,10 +128,19 @@ impl PrecompiledExactAssignments {
 
     /// Compare the saved program with the current source's emission, which
     /// activates nothing, before any saved code is linked; a difference is
-    /// refused, never replaced by the fresh emission.
+    /// refused, never replaced by the fresh emission. A linked guest then binds
+    /// the issued entry at its position, which must carry this source's key,
+    /// scratch extent and fault tables.
     fn bind_emitted(
         &self,
         emitted: crate::native_program::CompiledNativeCallProgramWasm,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        (at, kind): (crate::LinkedPosition<'_>, crate::LinkedEntryKind),
     ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
         if self.payload.scratch_bytes() > emitted.capacity_policy.public_scratch_bytes()
             || self.gather != emitted.gather_faults
@@ -113,6 +154,19 @@ impl PrecompiledExactAssignments {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime =
             crate::WasmKernelRuntime::new_named(self.payload.module_bytes(), "eval_assignments")?;
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        let runtime = crate::WasmKernelRuntime::issued(
+            at,
+            kind,
+            &self.source_key,
+            self.payload.scratch_bytes(),
+            self.payload.fault_tables(),
+        )?;
         Ok(CompiledExactAssignmentWasm {
             artifact: self.payload.clone(),
             gather_faults: self.gather.clone(),
@@ -120,7 +174,15 @@ impl PrecompiledExactAssignments {
             source_key: self.source_key.clone(),
             y_count: self.y,
             p_count: self.p,
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            #[cfg(any(
+                all(target_arch = "wasm32", target_os = "unknown"),
+                all(
+                    feature = "fixed-scalar-guest-receiver",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                )
+            ))]
             runtime,
         })
     }
