@@ -28,12 +28,10 @@ fn an_artifact_certifies_against_the_product_its_sources_issue_again() {
     let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
     let reissued: LinkedProduct = product::build(&Sources::new()).linked;
     let artifact = decode(wire.clone());
-    artifact.certify(SAVED, &reissued).unwrap();
+    artifact.admit(SAVED).unwrap().finish(&reissued).unwrap();
     assert_eq!(artifact.dispatch_module(), reissued.plan().dispatch());
     assert!(
-        decode(wire)
-            .certify(b"another saved product", &reissued)
-            .is_err(),
+        decode(wire).admit(b"another saved product").is_err(),
         "the artifact is bound to the saved product it was captured with"
     );
 }
@@ -81,7 +79,11 @@ fn a_reordered_or_altered_artifact_is_refused() {
         ("one key word changed", rekeyed),
         ("one dispatch module byte changed", dispatch),
     ] {
-        assert!(decode(value).certify(SAVED, &reissued).is_err(), "{name}");
+        let artifact = decode(value);
+        let refused = artifact
+            .admit(SAVED)
+            .and_then(|admission| admission.finish(&reissued));
+        assert!(refused.is_err(), "{name}");
     }
 }
 
@@ -128,11 +130,11 @@ fn steps(sources: &Sources) -> Vec<Step<'_>> {
 /// The index of the first step after which `certify_prefix` refuses, if any;
 /// every earlier step passes.
 fn first_refusal(artifact: &LinkedArtifact, sources: &Sources) -> Option<usize> {
-    artifact.admit_dispatch(SAVED).unwrap();
+    let admission = artifact.admit(SAVED).unwrap();
     let mut assembler = LinkedProductAssembler::new();
     for (index, step) in steps(sources).into_iter().enumerate() {
         step(&mut assembler);
-        if artifact.certify_prefix(&assembler).is_err() {
+        if admission.certify_prefix(&assembler).is_err() {
             return Some(index);
         }
     }
@@ -174,17 +176,47 @@ fn every_prefix_of_the_owner_order_certifies_and_the_whole_product_does_too() {
         step(&mut assembler);
     }
     let whole = assembler.finish(&[]).unwrap();
-    artifact.certify(SAVED, &whole).unwrap();
+    artifact.admit(SAVED).unwrap().finish(&whole).unwrap();
 }
 
 /// A one-byte change in module k passes every call before the one that
 /// issues k, and is refused at that call, before anything it issued is bound.
+/// Every module is changed in turn, so this covers each entry's whole
+/// closure: a derivative's helper modules (refresh, values, kinematic values)
+/// as well as its control module, and the private batch's shared module.
 #[test]
 fn a_changed_module_is_refused_at_the_call_that_issues_it() {
     let sources = Sources::new();
     let issued = product::build(&sources).linked;
     let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
-    let count = wire["modules"].as_array().unwrap().len();
+    let modules = wire["modules"].as_array().unwrap();
+    let exported = |suffix: &str| {
+        modules.iter().any(|module| {
+            module["exports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|export| export.as_str().unwrap().ends_with(suffix))
+        })
+    };
+    for helper in [
+        "_static_refresh",
+        "_dynamic_refresh",
+        "_values",
+        "_kinematic_values",
+    ] {
+        assert!(
+            exported(helper),
+            "the product holds a {helper} helper module"
+        );
+    }
+    assert!(
+        modules
+            .iter()
+            .any(|module| module["exports"].as_array().unwrap().len() == 3),
+        "the product holds the shared private module"
+    );
+    let count = modules.len();
     for k in 0..count {
         let mut changed = wire.clone();
         let bytes = &mut changed["modules"][k]["bytes"];
@@ -229,13 +261,13 @@ fn a_changed_dispatch_byte_or_another_saved_product_is_refused_before_any_issue(
     let mut changed = wire.clone();
     let byte = wire["dispatch"][8].as_u64().unwrap();
     changed["dispatch"][8] = json!(byte ^ 1);
-    assert!(decode(changed).admit_dispatch(SAVED).is_err());
-    assert!(decode(wire.clone()).admit_dispatch(b"another").is_err());
+    assert!(decode(changed).admit(SAVED).is_err());
+    assert!(decode(wire.clone()).admit(b"another").is_err());
     let mut unordered = wire.clone();
     let entries = unordered["entries"].as_array_mut().unwrap();
     entries.swap(0, 1);
-    assert!(decode(unordered).admit_dispatch(SAVED).is_err());
-    decode(wire).admit_dispatch(SAVED).unwrap();
+    assert!(decode(unordered).admit(SAVED).is_err());
+    assert!(decode(wire).admit(SAVED).is_ok());
 }
 
 /// Issuing past the artifact's records is refused, and so is a whole
@@ -244,7 +276,7 @@ fn a_changed_dispatch_byte_or_another_saved_product_is_refused_before_any_issue(
 fn an_extra_issue_or_an_unclaimed_record_is_refused() {
     let sources = Sources::new();
     let artifact = product::build(&sources).linked.artifact(SAVED);
-    artifact.admit_dispatch(SAVED).unwrap();
+    let admission = artifact.admit(SAVED).unwrap();
     let mut assembler = LinkedProductAssembler::new();
     let all = steps(&sources);
     let count = all.len();
@@ -253,10 +285,10 @@ fn an_extra_issue_or_an_unclaimed_record_is_refused() {
             step(&mut assembler);
         }
     }
-    artifact.certify_prefix(&assembler).unwrap();
+    admission.certify_prefix(&assembler).unwrap();
     let partial = assembler.finish(&[]).unwrap();
     assert!(
-        artifact.certify(SAVED, &partial).is_err(),
+        artifact.admit(SAVED).unwrap().finish(&partial).is_err(),
         "event unclaimed"
     );
     let mut extra = LinkedProductAssembler::new();
@@ -267,7 +299,7 @@ fn an_extra_issue_or_an_unclaimed_record_is_refused() {
     let programs = admitted.iter().collect::<Vec<_>>();
     extra.private(&admission, &programs).unwrap();
     assert!(
-        artifact.certify_prefix(&extra).is_err(),
+        admission.certify_prefix(&extra).is_err(),
         "private 3.. issued"
     );
 }
