@@ -139,6 +139,10 @@ pub use backend_options::{StepPlanRefusal, co_simulation_plan};
 pub use backend_options::{fixed_step_backend_options, fixed_step_semi_implicit_backend_options};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub mod interactive_options;
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+mod scalar_package;
+#[cfg(all(feature = "fmi", feature = "solver-rk45"))]
+pub use scalar_package::{scalar_package_component, scalar_package_sim_options};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;

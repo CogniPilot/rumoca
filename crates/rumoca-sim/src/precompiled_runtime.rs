@@ -140,16 +140,14 @@ mod browser {
             crate::solve_lowering::lower_correlated_for_simulation_with_overrides(dae, opts)?;
         crate::solve_lowering::finish_component(lowered)
     }
-    /// The compiled FMU's component: the FMI scalar export lowering with the
-    /// options' step plan, exactly as the packager publishes it, so the
-    /// captured programs belong to the component the FMU guest constructs.
+    /// The compiled FMU's component, from the one construction the FMU
+    /// packager also uses, so the captured programs belong to the component
+    /// the FMU guest constructs.
     fn fmi_scalar_component(
         dae: &rumoca_ir_dae::Dae,
         opts: &SimOptions,
     ) -> Result<FmiComponent, SimulationDiagnosticError> {
-        let component = crate::solve_lowering::lower_fmi_scalar_export_component(dae, opts)?;
-        let plan = crate::backend_options::co_simulation_plan(opts).map_err(refusal)?;
-        component.with_co_simulation(plan).map_err(refusal)
+        crate::scalar_package_component(dae, opts)
     }
     fn export_in<T: Serialize, L>(
         dae: &rumoca_ir_dae::Dae,

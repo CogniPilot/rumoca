@@ -84,10 +84,10 @@ pub fn export_precompiled_linked_runtime_artifacts(
 ) -> Result<js_sys::Array, WasmError> {
     let options = InteractiveOptions::parse(options_json)?;
     let compiled = prebuilt::compile_payload(source, model, sources)?;
-    let (base, _) = compiled
-        .experiment
-        .simulation_options(0.0, options.dt, &options.solver);
-    let opts = configured_options(base, &options, options.initial_inputs.clone());
+    // The packager's options, built the way it builds them, never from the
+    // model's experiment: the saved component must equal the published one.
+    let opts = rumoca_sim::scalar_package_sim_options(&options)
+        .map_err(|error| WasmError::new(format!("Precompiled linked export: {error}")))?;
     let (saved, artifact) =
         rumoca_sim::export_precompiled_linked_runtime(&compiled.dae, opts, compiled.experiment)
             .map_err(|error| WasmError::new(format!("Precompiled linked export: {error}")))?;
