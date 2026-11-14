@@ -28,8 +28,11 @@ fn an_artifact_certifies_against_the_product_its_sources_issue_again() {
     let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
     let reissued: LinkedProduct = product::build(&Sources::new()).linked;
     let artifact = decode(wire.clone());
-    artifact.admit(SAVED).unwrap().finish(&reissued).unwrap();
     assert_eq!(artifact.dispatch_module(), reissued.plan().dispatch());
+    let admission = artifact.admit(SAVED).unwrap();
+    assert_eq!(admission.dispatch_module(), reissued.plan().dispatch());
+    assert_eq!(admission.modules().len(), reissued.modules().len());
+    admission.finish(&reissued).unwrap();
     assert!(
         decode(wire).admit(b"another saved product").is_err(),
         "the artifact is bound to the saved product it was captured with"
@@ -130,7 +133,7 @@ fn steps(sources: &Sources) -> Vec<Step<'_>> {
 /// The index of the first step after which `certify_prefix` refuses, if any;
 /// every earlier step passes.
 fn first_refusal(artifact: &LinkedArtifact, sources: &Sources) -> Option<usize> {
-    let admission = artifact.admit(SAVED).unwrap();
+    let admission = artifact.clone().admit(SAVED).unwrap();
     let mut assembler = LinkedProductAssembler::new();
     for (index, step) in steps(sources).into_iter().enumerate() {
         step(&mut assembler);
@@ -276,7 +279,7 @@ fn a_changed_dispatch_byte_or_another_saved_product_is_refused_before_any_issue(
 fn an_extra_issue_or_an_unclaimed_record_is_refused() {
     let sources = Sources::new();
     let artifact = product::build(&sources).linked.artifact(SAVED);
-    let admission = artifact.admit(SAVED).unwrap();
+    let admission = artifact.clone().admit(SAVED).unwrap();
     let mut assembler = LinkedProductAssembler::new();
     let all = steps(&sources);
     let count = all.len();
@@ -288,16 +291,21 @@ fn an_extra_issue_or_an_unclaimed_record_is_refused() {
     admission.certify_prefix(&assembler).unwrap();
     let partial = assembler.finish(&[]).unwrap();
     assert!(
-        artifact.admit(SAVED).unwrap().finish(&partial).is_err(),
+        artifact
+            .clone()
+            .admit(SAVED)
+            .unwrap()
+            .finish(&partial)
+            .is_err(),
         "event unclaimed"
     );
     let mut extra = LinkedProductAssembler::new();
     for step in steps(&sources) {
         step(&mut extra);
     }
-    let (admission, admitted) = product::private_admission(&sources);
+    let (private, admitted) = product::private_admission(&sources);
     let programs = admitted.iter().collect::<Vec<_>>();
-    extra.private(&admission, &programs).unwrap();
+    extra.private(&private, &programs).unwrap();
     assert!(
         admission.certify_prefix(&extra).is_err(),
         "private 3.. issued"
