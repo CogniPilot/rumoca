@@ -6,8 +6,7 @@ use super::{
 };
 use rumoca_core::artifact_build::{ArtifactBuildBinding, PreparedBuildRequest};
 use rumoca_exec_wasm::{
-    FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedEntryId, LinkedProduct,
-    NativeLinkableModelLibrary,
+    FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedKernelModule, NativeLinkableModelLibrary,
 };
 use std::collections::BTreeMap;
 
@@ -99,16 +98,26 @@ fn link(
 }
 
 /// A stateful (scalar-product) component: the source data and the scalar fixed
-/// core, and for the scalar-linked product also the issued linked entry modules
-/// and their one dispatch. No model-entry library is linked; the core never
+/// core, and for the scalar-linked product also the issued linked modules and
+/// their one dispatch. No model-entry library is linked; the core never
 /// imports one.
 pub struct LinkedScalarFmiLsComponent<S> {
     binding: ArtifactBuildBinding<S>,
     bytes: Vec<u8>,
     core: FixedNativeGuestCore,
-    /// The issued linked entries this component links, in plan order; empty
-    /// for the interpreted scalar product.
-    linked_entries: Vec<(LinkedEntryId, [u64; 4])>,
+}
+
+/// What a scalar-linked component links beside its source data, as one SDK
+/// export issued it: the linked modules in link order (helpers first), the
+/// dispatch module over their entries, and the artifact and saved product the
+/// guest reads at receive and certifies by re-issuing from its own checked
+/// sources. Linking grants nothing: a module set or dispatch other than the
+/// artifact's fails that certification in the guest.
+pub struct LinkedGuestParts<'a> {
+    pub modules: &'a [LinkedKernelModule],
+    pub dispatch: &'a [u8],
+    pub artifact: &'a [u8],
+    pub saved: &'a [u8],
 }
 
 impl<S> LinkedScalarFmiLsComponent<S> {
@@ -120,10 +129,6 @@ impl<S> LinkedScalarFmiLsComponent<S> {
     }
     pub fn fixed_core(&self) -> &FixedNativeGuestCore {
         &self.core
-    }
-    /// The issued linked entries linked into this component, in plan order.
-    pub fn linked_entries(&self) -> &[(LinkedEntryId, [u64; 4])] {
-        &self.linked_entries
     }
 
     /// Consume after packaging has checked the exact original binding.
@@ -174,23 +179,19 @@ impl PreparedScalarFmiLsModel {
             binding: request.binding(),
             bytes,
             core,
-            linked_entries: Vec::new(),
         })
     }
 
-    /// Pair the scalar-linked core with this component's source data, the
-    /// issued linked entry modules of `product` and their one dispatch.
-    ///
-    /// `plan` is the encoded linked entry plan the guest reads through its
-    /// plan slots. Every symbol must have exactly one provider among the
-    /// source data, the entry modules, the dispatch and the core; the linker
+    /// Pair the scalar-linked core with this component's source data and the
+    /// linked `parts`. The data library also serves the artifact and saved
+    /// product slots. Every symbol must have exactly one provider among the
+    /// source data, the linked modules, the dispatch and the core; the linker
     /// stubs nothing, and the result must expose exactly the checked component
-    /// interface, so the dispatch and plan slots stay internal.
+    /// interface, so the dispatch and data slots stay internal.
     pub fn link_linked_guest<S>(
         self,
         core: FixedNativeGuestCore,
-        product: &LinkedProduct,
-        plan: &[u8],
+        parts: LinkedGuestParts<'_>,
         request: &PreparedBuildRequest<'_, S>,
     ) -> Result<LinkedScalarFmiLsComponent<S>, NativeFmiLsPreparationError> {
         let linkage = NativeFmiLsPreparationError::Linkage;
@@ -205,25 +206,24 @@ impl PreparedScalarFmiLsModel {
             rumoca_ir_solve::CheckedNativeWasmCapacityPolicy::default(),
         )
         .map_err(linkage)?;
-        let data = data::linked_library(&envelope, &token, plan).map_err(linkage)?;
-        let dispatch = product.plan().dispatch();
-        check_single_providers(&core, product).map_err(linkage)?;
-        let bytes = link_linked(&data, product, &dispatch, &core).map_err(linkage)?;
+        let data = data::linked_library(&envelope, &token, parts.saved, parts.artifact)
+            .map_err(linkage)?;
+        check_single_providers(&core, parts.modules).map_err(linkage)?;
+        let bytes = link_linked(&data, parts.modules, parts.dispatch, &core).map_err(linkage)?;
         core.check_component_interface(&bytes).map_err(linkage)?;
         Ok(LinkedScalarFmiLsComponent {
             binding: request.binding(),
             bytes,
             core,
-            linked_entries: product.plan().entries().collect(),
         })
     }
 }
 
-/// The source data, the issued entry modules in their link order (helpers
-/// first), the dispatch, then the runtime core, with no stubs and no libdl.
+/// The source data, the linked modules in their link order (helpers first),
+/// the dispatch, then the runtime core, with no stubs and no libdl.
 fn link_linked(
     data: &[u8],
-    product: &LinkedProduct,
+    modules: &[LinkedKernelModule],
     dispatch: &[u8],
     core: &FixedNativeGuestCore,
 ) -> Result<Vec<u8>, String> {
@@ -236,7 +236,7 @@ fn link_linked(
         .use_built_in_libdl(false)
         .library("rumoca-source", data, false)
         .map_err(error)?;
-    for (index, module) in product.modules().iter().enumerate() {
+    for (index, module) in modules.iter().enumerate() {
         linker = linker
             .library(
                 &format!("rumoca-core-{index}"),
@@ -256,19 +256,21 @@ fn link_linked(
 /// priority can never choose between providers of one symbol.
 fn check_single_providers(
     core: &FixedNativeGuestCore,
-    product: &LinkedProduct,
+    modules: &[LinkedKernelModule],
 ) -> Result<(), String> {
     let source = [
         "rumoca_source_capsule_len",
         "rumoca_source_capsule_copy",
         "rumoca_publication_token_len",
         "rumoca_publication_token_copy",
-        "rumoca_linked_plan_len",
-        "rumoca_linked_plan_copy",
+        "rumoca_saved_product_len",
+        "rumoca_saved_product_copy",
+        "rumoca_linked_artifact_len",
+        "rumoca_linked_artifact_copy",
     ]
     .map(String::from);
     let mut providers: Vec<(String, Vec<String>)> = vec![("rumoca-source".into(), source.to_vec())];
-    for (index, module) in product.modules().iter().enumerate() {
+    for (index, module) in modules.iter().enumerate() {
         providers.push((format!("rumoca-core-{index}"), module.exports().to_vec()));
     }
     providers.push((

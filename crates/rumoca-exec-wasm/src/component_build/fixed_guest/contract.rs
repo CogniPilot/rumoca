@@ -20,8 +20,14 @@ pub(super) enum FixedImportRole {
     Platform,
 }
 
-/// The linked plan slots a scalar-linked core imports beside the source slots.
-const LINKED_PLAN_SLOTS: [&str; 2] = ["rumoca_linked_plan_len", "rumoca_linked_plan_copy"];
+/// The data slots a scalar-linked core imports beside the source slots: the
+/// linked artifact it certifies and the saved product that artifact is bound to.
+const LINKED_DATA_SLOTS: [&str; 4] = [
+    "rumoca_linked_artifact_len",
+    "rumoca_linked_artifact_copy",
+    "rumoca_saved_product_len",
+    "rumoca_saved_product_copy",
+];
 
 /// This private parser can refuse arbitrary bytes, but cannot issue a source core.
 /// The internal slots are exact per product kind: the native core imports the
@@ -265,7 +271,7 @@ impl State {
         self.check_math_abi()?;
         let linked: Vec<&str> = [crate::LINKED_DISPATCH_EXPORT]
             .into_iter()
-            .chain(LINKED_PLAN_SLOTS)
+            .chain(LINKED_DATA_SLOTS)
             .collect();
         let (required, forbidden) = match profile {
             super::GuestProfile::Native => (vec!["eval_assignments"], linked),
@@ -319,7 +325,7 @@ fn check_reserved_export(name: &str) -> Result<(), String> {
             | "rumoca_publication_token_len"
             | "rumoca_publication_token_copy"
     ) || name == crate::LINKED_DISPATCH_EXPORT
-        || LINKED_PLAN_SLOTS.contains(&name)
+        || LINKED_DATA_SLOTS.contains(&name)
     {
         return Err(format!("fixed guest exports reserved provider slot {name}"));
     }
@@ -339,12 +345,10 @@ fn check_slot(name: &str, ty: &FuncType) -> Result<(), String> {
     use ValType::{F64, I32};
     let parameters: &[ValType] = match name {
         "eval_assignments" => &[I32, I32, F64, I32, I32],
-        "rumoca_source_capsule_len" | "rumoca_publication_token_len" | "rumoca_linked_plan_len" => {
-            &[]
-        }
-        "rumoca_source_capsule_copy"
-        | "rumoca_publication_token_copy"
-        | "rumoca_linked_plan_copy" => &[I32, I32],
+        "rumoca_source_capsule_len" | "rumoca_publication_token_len" => &[],
+        "rumoca_source_capsule_copy" | "rumoca_publication_token_copy" => &[I32, I32],
+        _ if LINKED_DATA_SLOTS.contains(&name) && name.ends_with("_len") => &[],
+        _ if LINKED_DATA_SLOTS.contains(&name) => &[I32, I32],
         _ if name == crate::LINKED_DISPATCH_EXPORT => &LINKED_DISPATCH_PARAMETERS,
         _ => {
             return Err(format!(
@@ -528,14 +532,17 @@ mod tests {
             });
             state
         };
-        let all = [
-            crate::LINKED_DISPATCH_EXPORT,
-            "rumoca_linked_plan_len",
-            "rumoca_linked_plan_copy",
-        ];
+        let all: Vec<&str> = [crate::LINKED_DISPATCH_EXPORT]
+            .into_iter()
+            .chain(LINKED_DATA_SLOTS)
+            .collect();
         assert!(state(false, &all).finish(ScalarLinked).is_ok());
-        for missing in all {
-            let partial: Vec<&str> = all.into_iter().filter(|slot| *slot != missing).collect();
+        for &missing in &all {
+            let partial: Vec<&str> = all
+                .iter()
+                .copied()
+                .filter(|slot| *slot != missing)
+                .collect();
             assert_eq!(
                 state(false, &partial).finish(ScalarLinked).err().unwrap(),
                 format!("fixed guest has no actual linked receiver import {missing}")
@@ -566,17 +573,19 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(check_slot("rumoca_linked_plan_len", &ty(&[])).is_ok());
-        assert!(check_slot("rumoca_linked_plan_copy", &ty(&[I32, I32])).is_ok());
         let short = &LINKED_DISPATCH_PARAMETERS[..14];
         assert!(check_slot(crate::LINKED_DISPATCH_EXPORT, &ty(short)).is_err());
-        assert!(check_slot("rumoca_linked_plan_copy", &ty(&[I32, I64])).is_err());
-        assert!(check_slot("rumoca_linked_plan_len", &ty(&[F64])).is_err());
-        for name in [
-            crate::LINKED_DISPATCH_EXPORT,
-            "rumoca_linked_plan_len",
-            "rumoca_linked_plan_copy",
+        for [length, copy] in [
+            ["rumoca_linked_artifact_len", "rumoca_linked_artifact_copy"],
+            ["rumoca_saved_product_len", "rumoca_saved_product_copy"],
         ] {
+            assert!(check_slot(length, &ty(&[])).is_ok());
+            assert!(check_slot(copy, &ty(&[I32, I32])).is_ok());
+            assert!(check_slot(copy, &ty(&[I32, I64])).is_err());
+            assert!(check_slot(length, &ty(&[F64])).is_err());
+        }
+        assert!(check_reserved_export(crate::LINKED_DISPATCH_EXPORT).is_err());
+        for name in LINKED_DATA_SLOTS {
             assert!(check_reserved_export(name).is_err());
         }
     }

@@ -13,13 +13,19 @@ pub(super) fn library(capsule: &[u8], token: &str) -> Result<Vec<u8>, String> {
     ])
 }
 
-/// [`library`] for a scalar-linked component: the source slots and the
-/// linked entry plan the guest's linked runtime reads (`rumoca_linked_plan`).
-pub(super) fn linked_library(capsule: &[u8], token: &str, plan: &[u8]) -> Result<Vec<u8>, String> {
+/// [`library`] for a scalar-linked component: the source slots, then the
+/// saved product and the linked artifact the guest certifies at receive.
+pub(super) fn linked_library(
+    capsule: &[u8],
+    token: &str,
+    saved: &[u8],
+    artifact: &[u8],
+) -> Result<Vec<u8>, String> {
     slots_library(&[
         ("rumoca_source_capsule", capsule),
         ("rumoca_publication_token", token.as_bytes()),
-        ("rumoca_linked_plan", plan),
+        ("rumoca_saved_product", saved),
+        ("rumoca_linked_artifact", artifact),
     ])
 }
 
@@ -178,20 +184,28 @@ mod tests {
         );
     }
 
-    /// The linked plan is a third slot after the unchanged source slots, read
-    /// through the same relocated storage and checked copies.
+    /// The saved product and the linked artifact follow the unchanged source
+    /// slots, read through the same relocated storage and checked copies.
     #[test]
-    fn linked_data_serves_the_plan_after_the_source_slots() {
-        let bytes = linked_library(b"canonical-source", "original-token", b"issued-plan").unwrap();
+    fn linked_data_serves_the_saved_product_and_artifact_after_the_source_slots() {
+        let bytes = linked_library(
+            b"canonical-source",
+            "original-token",
+            b"saved-product",
+            b"linked-artifact",
+        )
+        .unwrap();
         assert_slots(
             &bytes,
             &[
                 ("rumoca_source_capsule", b"canonical-source".as_slice()),
                 ("rumoca_publication_token", b"original-token".as_slice()),
-                ("rumoca_linked_plan", b"issued-plan".as_slice()),
+                ("rumoca_saved_product", b"saved-product".as_slice()),
+                ("rumoca_linked_artifact", b"linked-artifact".as_slice()),
             ],
         );
-        assert!(linked_library(b"source", "issued", &[]).is_err());
+        assert!(linked_library(b"source", "issued", &[], b"artifact").is_err());
+        assert!(linked_library(b"source", "issued", b"saved", &[]).is_err());
     }
 
     fn assert_slots(bytes: &[u8], slots: &[(&str, &[u8])]) {

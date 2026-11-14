@@ -9,7 +9,7 @@ mod linking;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
 mod publication;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
-pub use linking::{LinkedNativeFmiLsComponent, LinkedScalarFmiLsComponent};
+pub use linking::{LinkedGuestParts, LinkedNativeFmiLsComponent, LinkedScalarFmiLsComponent};
 
 /// The existing canonical source projection and encoding failure owners.
 #[derive(Debug, thiserror::Error)]

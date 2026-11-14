@@ -27,9 +27,9 @@ pub struct FixedNativeGuestCore {
 /// stateless native product, a stateful scalar product
 /// (`rumoca-runtime-fmi-ls/scalar-product`), or a stateful scalar product that
 /// executes linked compiled entries through `rumoca_dispatch`
-/// (`rumoca-runtime-fmi-ls/scalar-linked-product`, a placeholder name for the
-/// guest owner's feature). The linked product never enables `scalar-product`,
-/// whose bootstrap admits only the interpreter. Part of the cache recipe.
+/// (`rumoca-runtime-fmi-ls/scalar-linked-product`). The linked product never
+/// enables `scalar-product`, whose bootstrap admits only the interpreter. Part
+/// of the cache recipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GuestProfile {
     Native,
