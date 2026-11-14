@@ -37,16 +37,12 @@ pub struct ScalarPackageOptions {
 
 impl ScalarPackageOptions {
     /// Parse `json` with the interactive options owner. The solver must be a
-    /// canonical solver name; no family alias selects one.
+    /// canonical solver name; no family alias selects one. The lowering
+    /// options come from the one scalar package construction the linked
+    /// export also uses, so both lower the same model the same way.
     pub fn parse(json: &str) -> Result<Self> {
         let options = InteractiveOptions::parse(json)?;
-        let canonical = rumoca_core::canonical_solver_name(&options.solver)?;
-        let base = SimOptions {
-            solver_mode: SimSolverMode::from_external_name(canonical),
-            dt: (options.dt > 0.0).then_some(options.dt),
-            ..SimOptions::default()
-        };
-        let sim = options.configure(base, options.initial_inputs.clone());
+        let sim = rumoca_sim::scalar_package_sim_options(&options)?;
         Ok(Self { options, sim })
     }
 
