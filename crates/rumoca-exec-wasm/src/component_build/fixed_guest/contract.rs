@@ -581,6 +581,50 @@ mod tests {
         }
     }
 
+    /// The admitted dispatch type is the one the issued dispatch module
+    /// actually exports, read from its bytes rather than restated.
+    #[test]
+    fn the_admitted_dispatch_type_is_the_issued_dispatch_export() {
+        let bytes = crate::LinkedEntryPlan::default().dispatch();
+        let mut types = Vec::new();
+        let mut functions = Vec::new();
+        let mut exported = None;
+        for payload in Parser::new(0).parse_all(&bytes) {
+            match payload.unwrap() {
+                Payload::TypeSection(section) => {
+                    types = section
+                        .into_iter_err_on_gc_types()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap();
+                }
+                Payload::ImportSection(imports) => {
+                    for import in imports {
+                        if let TypeRef::Func(index) = import.unwrap().ty {
+                            functions.push(index);
+                        }
+                    }
+                }
+                Payload::FunctionSection(section) => {
+                    functions.extend(section.into_iter().map(Result::unwrap));
+                }
+                Payload::ExportSection(exports) => {
+                    for export in exports {
+                        let export = export.unwrap();
+                        if export.name == crate::LINKED_DISPATCH_EXPORT {
+                            exported = Some(export.index);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let function = exported.expect("the dispatch module exports rumoca_dispatch");
+        let ty = &types[functions[function as usize] as usize];
+        assert_eq!(ty.params(), LINKED_DISPATCH_PARAMETERS);
+        assert_eq!(ty.results(), [ValType::I32]);
+        check_slot(crate::LINKED_DISPATCH_EXPORT, ty).unwrap();
+    }
+
     #[test]
     fn fixed_core_parser_cannot_admit_an_empty_or_component_receiver() {
         let native = super::super::GuestProfile::Native;
