@@ -215,3 +215,14 @@ fn a_kernel_modules_typed_table_is_issued_once_for_all_of_its_entries() {
         "the private entries of a shared module name one typed table"
     );
 }
+
+/// A typed table's position is checked at the `u32` bound, never wrapped, so
+/// an assembler refuses the issue instead of naming another module's table.
+#[test]
+fn a_typed_table_position_past_u32_is_refused() {
+    use crate::linked::plan::typed_position;
+    assert_eq!(typed_position(7, 0).unwrap(), 7);
+    assert_eq!(typed_position(u32::MAX - 1, 1).unwrap(), u32::MAX);
+    assert!(typed_position(u32::MAX, 1).is_err());
+    assert!(typed_position(1, usize::MAX).is_err());
+}

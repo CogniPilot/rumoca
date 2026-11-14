@@ -3,7 +3,9 @@
 //! admits the artifact only if the two are the same, position by position.
 use super::fixtures;
 use super::product::{self, Sources};
-use crate::linked::{LinkedArtifact, LinkedProduct, LinkedProductAssembler};
+use crate::linked::{
+    LINKED_DISPATCH_REFUSED, LinkedArtifact, LinkedProduct, LinkedProductAssembler,
+};
 use serde_json::{Value, json};
 
 const SAVED: &[u8] = b"saved product bytes";
@@ -309,5 +311,55 @@ fn an_extra_issue_or_an_unclaimed_record_is_refused() {
     assert!(
         admission.certify_prefix(&extra).is_err(),
         "private 3.. issued"
+    );
+}
+
+/// The shared typed tables are certified as the entries are. An artifact of
+/// the previous wire version, a kernel binding naming a table the artifact
+/// lacks and a table holding the dispatch's refusal status are refused at
+/// admission; a changed table at the call that issues it; a table no module
+/// issued when the whole product is compared.
+#[test]
+fn an_altered_typed_table_or_wire_version_is_refused() {
+    let sources = Sources::new();
+    let issued = product::build(&sources).linked;
+    let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
+    assert_eq!(wire["version"], json!(2));
+    let tables = wire["typed"].as_array().unwrap();
+    let faulting = tables
+        .iter()
+        .position(|table| !table.as_array().unwrap().is_empty())
+        .unwrap();
+    let private = position(&wire["entries"], "Private", 0);
+    let mut previous = wire.clone();
+    previous["version"] = json!(1);
+    let mut unnamed = wire.clone();
+    unnamed["entries"][private]["binding"]["Kernel"]["typed"] = json!(tables.len());
+    let mut reserved = wire.clone();
+    reserved["typed"][faulting][0]["status"] = json!(LINKED_DISPATCH_REFUSED);
+    for (name, value) in [
+        ("the previous wire version", previous),
+        (
+            "a kernel binding naming a table the artifact lacks",
+            unnamed,
+        ),
+        ("a typed table holding the refusal status", reserved),
+    ] {
+        assert!(decode(value).admit(SAVED).is_err(), "{name}");
+    }
+    let mut changed = wire.clone();
+    changed["typed"][faulting] = json!([]);
+    assert!(
+        first_refusal(&decode(changed), &sources).is_some(),
+        "a changed typed table is refused at an issue"
+    );
+    let mut unclaimed = wire.clone();
+    unclaimed["typed"].as_array_mut().unwrap().push(json!([]));
+    let unclaimed = decode(unclaimed);
+    assert_eq!(first_refusal(&unclaimed, &sources), None);
+    let reissued = product::build(&Sources::new()).linked;
+    assert!(
+        unclaimed.admit(SAVED).unwrap().finish(&reissued).is_err(),
+        "a typed table no module issued"
     );
 }

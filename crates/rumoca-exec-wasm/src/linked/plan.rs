@@ -322,9 +322,7 @@ impl LinkedEntryPlan {
 
     /// The position the next kernel module's typed table takes.
     pub(super) fn next_typed(&self) -> Result<u32, WasmCompileError> {
-        u32::try_from(self.typed.len()).map_err(|_| {
-            WasmCompileError::Backend("linked typed fault tables are counted in u32".into())
-        })
+        typed_position(0, self.typed.len())
     }
 
     /// Stores one kernel module's typed table at `next_typed`.
@@ -401,6 +399,17 @@ impl LinkedEntryPlan {
         }
         Ok(plan)
     }
+}
+
+/// The position of the table `offset` tables after position `first`, refused
+/// when it is not a `u32`: a position is checked, never wrapped.
+pub(super) fn typed_position(first: u32, offset: usize) -> Result<u32, WasmCompileError> {
+    u32::try_from(offset)
+        .ok()
+        .and_then(|offset| first.checked_add(offset))
+        .ok_or_else(|| {
+            WasmCompileError::Backend("linked typed fault tables are counted in u32".into())
+        })
 }
 
 /// The statuses of one kernel entry's own gather and linear tables.

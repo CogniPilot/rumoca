@@ -3,7 +3,7 @@
 //! checked source before printing anything, and prints every module with the
 //! same assembler, from the same source, as its browser module; only link
 //! names differ. It sees every fault table, so it reserves the refusal status.
-use super::plan::{entry_statuses, refuse_reserved_status};
+use super::plan::{entry_statuses, refuse_reserved_status, typed_position};
 use super::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
     LinkedFaultTables, LinkedWorkspace, linked_key_words,
@@ -586,9 +586,8 @@ impl LinkedProductAssembler {
         let mut modules = Vec::new();
         let mut typed = Vec::new();
         let mut bindings = Vec::with_capacity(issued.len());
-        for (table, (program, entries)) in
-            (first_table..).zip(admission.linked_modules(programs, &symbols)?)
-        {
+        for (program, entries) in admission.linked_modules(programs, &symbols)? {
+            let table = typed_position(first_table, typed.len())?;
             refuse_reserved_status(program.faults.iter().map(|fault| fault.status))?;
             let mut exports = Vec::with_capacity(entries.len());
             for entry in entries {
