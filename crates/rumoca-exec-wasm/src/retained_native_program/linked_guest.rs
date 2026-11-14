@@ -24,9 +24,9 @@ unsafe extern "C" {
     fn token_copy(destination: u32, capacity: u32) -> i32;
 }
 
-/// The compiled scalar product's saved product and the linked artifact issued
-/// beside it. Both are data only: the saved programs bind to entries this
-/// guest issues itself, and the artifact is admitted only by certification.
+// The compiled scalar product's saved product and the linked artifact issued
+// beside it. Both are data only: the saved programs bind to entries this
+// guest issues itself, and the artifact is admitted only by certification.
 #[cfg(feature = "fixed-scalar-linked-receiver")]
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {

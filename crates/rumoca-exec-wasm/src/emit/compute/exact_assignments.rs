@@ -157,6 +157,14 @@ pub(crate) struct PrivateEntryArtifact {
     pub(crate) export: String,
     pub(crate) gather_faults: Vec<crate::NativeGatherFault>,
     pub(crate) linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
+    /// Read only where private entries are instantiated; a linked guest binds
+    /// issued entries and never reads it.
+    #[cfg(not(all(
+        feature = "fixed-scalar-linked-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )))]
     pub(crate) seed_offset: Option<u32>,
 }
 
@@ -310,11 +318,24 @@ fn private_entries_module(
     }
     let mut artifacts = Vec::with_capacity(names.len());
     for (export, (emitted, seed_offset)) in names.into_iter().zip(entries) {
+        #[cfg(all(
+            feature = "fixed-scalar-linked-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        let _ = seed_offset;
         code.function(&emitted.function);
         artifacts.push(PrivateEntryArtifact {
             export,
             gather_faults: emitted.gather_faults.clone(),
             linear_solve_faults: emitted.linear_solve_faults.clone(),
+            #[cfg(not(all(
+                feature = "fixed-scalar-linked-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )))]
             seed_offset: *seed_offset,
         });
     }
