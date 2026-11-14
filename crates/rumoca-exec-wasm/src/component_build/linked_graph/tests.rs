@@ -264,12 +264,12 @@ fn a_linked_graph_without_its_dispatch_is_refused() {
 /// the libraries actually export.
 #[test]
 fn a_linked_graph_with_two_providers_of_one_symbol_is_refused() {
-    let (data, kernel, dispatch, runtime) = graph(crate::LINKED_DISPATCH_EXPORT);
+    let (data, first, dispatch, runtime) = graph(crate::LINKED_DISPATCH_EXPORT);
     let second = kernel(KERNEL);
     assert_eq!(
         link_single_provider_graph(&[
             ("rumoca-source", data.as_slice()),
-            ("rumoca-core-0", kernel.as_slice()),
+            ("rumoca-core-0", first.as_slice()),
             ("rumoca-core-1", second.as_slice()),
             ("rumoca-dispatch", dispatch.as_slice()),
             ("rumoca-runtime", runtime.as_slice()),
@@ -281,7 +281,7 @@ fn a_linked_graph_with_two_providers_of_one_symbol_is_refused() {
     assert_eq!(
         link_single_provider_graph(&[
             ("rumoca-source", data.as_slice()),
-            ("rumoca-core-0", kernel.as_slice()),
+            ("rumoca-core-0", first.as_slice()),
             ("rumoca-dispatch", renamed.as_slice()),
             ("rumoca-runtime", runtime.as_slice()),
         ])
