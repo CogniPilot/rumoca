@@ -66,6 +66,11 @@ impl FixedNativeGuestCore {
         self.profile == GuestProfile::ScalarLinked
     }
 
+    /// Every export name of this core, as its contract read them.
+    pub fn exports(&self) -> impl Iterator<Item = &str> {
+        self.contract.exports.iter().map(String::as_str)
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }

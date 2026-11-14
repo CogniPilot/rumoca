@@ -9,6 +9,9 @@ use wasmparser::{
 pub(super) struct FixedGuestContract {
     pub(super) imports: BTreeMap<(String, String), FixedImportRole>,
     pub(super) allocation: MemInfo,
+    /// Every export name of the core, so a link can refuse a library that
+    /// would provide the same symbol.
+    pub(super) exports: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,7 @@ struct State {
     slots: BTreeSet<String>,
     function_types: Vec<u32>,
     math_exports: BTreeMap<String, u32>,
+    exports: BTreeSet<String>,
     public_memory: bool,
     allocation: Option<MemInfo>,
 }
@@ -222,6 +226,7 @@ impl State {
         for export in exports {
             let export = export.map_err(|error| error.to_string())?;
             check_reserved_export(export.name)?;
+            self.exports.insert(export.name.to_owned());
             if export.kind == wasmparser::ExternalKind::Func
                 && MathImport::from_symbol(export.name).is_some()
             {
@@ -300,6 +305,7 @@ impl State {
         Ok(FixedGuestContract {
             imports: self.imports,
             allocation,
+            exports: self.exports,
         })
     }
 }
