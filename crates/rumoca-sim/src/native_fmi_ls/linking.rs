@@ -50,7 +50,7 @@ impl PreparedNativeFmiLsModel {
         core: FixedNativeGuestCore,
         request: &PreparedBuildRequest<'_, S>,
     ) -> Result<LinkedNativeFmiLsComponent<S>, NativeFmiLsPreparationError> {
-        if core.is_scalar_product() {
+        if !core.is_native_product() {
             return Err(NativeFmiLsPreparationError::Linkage(
                 "a native component links only the native fixed core".into(),
             ));

@@ -56,6 +56,11 @@ impl GuestProfile {
 }
 
 impl FixedNativeGuestCore {
+    /// Whether this core was built for the stateless native product.
+    pub fn is_native_product(&self) -> bool {
+        self.profile == GuestProfile::Native
+    }
+
     /// Whether this core was built for the stateful scalar product without
     /// linked compiled entries.
     pub fn is_scalar_product(&self) -> bool {
@@ -63,7 +68,7 @@ impl FixedNativeGuestCore {
     }
 
     /// Whether this core was built for the stateful scalar product that imports
-    /// `rumoca_dispatch` and the linked plan slots.
+    /// `rumoca_dispatch` and the saved product and linked artifact slots.
     pub fn is_scalar_linked_product(&self) -> bool {
         self.profile == GuestProfile::ScalarLinked
     }
