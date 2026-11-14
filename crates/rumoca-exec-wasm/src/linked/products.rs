@@ -158,9 +158,10 @@ pub fn linked_digest(bytes: &[u8]) -> String {
 /// The issued product as it travels from the build to the guest beside the
 /// saved product it was captured with: bound to those saved bytes by their
 /// digest, carrying every module in link order and the dispatch module. It
-/// grants nothing by itself: nothing reads its entries but `certify`, which
-/// compares it whole with a product the receiver issued from its own checked
-/// sources in the owner's order. The modules and the dispatch module are
+/// grants nothing by itself: nothing reads its entries but its admission
+/// (`admit`), which compares them, request by request and then whole, with
+/// what the receiver issues from its own checked sources in the owner's
+/// order. The modules and the dispatch module are
 /// readable for linking; whatever is linked is certified by the receiver.
 #[cfg(feature = "precompiled-programs")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -200,41 +201,6 @@ impl LinkedArtifact {
     pub fn dispatch_module(&self) -> &[u8] {
         &self.dispatch
     }
-
-    /// Admit this artifact only if it is exactly what `reissued`, issued by
-    /// the receiver from its own checked sources in the owner's order, and
-    /// the saved product `saved` produce: every position's kind, index, key
-    /// and binding, every module's bytes and exports in link order, and the
-    /// dispatch module, with equal counts (nothing unclaimed, nothing extra).
-    /// Equal keys at two positions are compared by position.
-    pub fn certify(&self, saved: &[u8], reissued: &LinkedProduct) -> Result<(), WasmCompileError> {
-        let entries = reissued.plan.linked_entries();
-        let same_entries = self.entries.len() == reissued.plan.linked_entries().count()
-            && self
-                .entries
-                .iter()
-                .zip(entries)
-                .all(|(carried, issued)| carried == issued);
-        let same_modules = self.modules.len() == reissued.modules.len()
-            && self
-                .modules
-                .iter()
-                .zip(&reissued.modules)
-                .all(|(carried, issued)| {
-                    carried.bytes == issued.bytes && carried.exports == issued.exports
-                });
-        if self.version != 1
-            || self.saved != linked_digest(saved)
-            || !same_entries
-            || !same_modules
-            || self.dispatch != reissued.plan.dispatch()
-        {
-            return Err(WasmCompileError::Input(
-                "linked artifact differs from the product its checked sources issue".into(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(feature = "precompiled-programs")]
@@ -270,12 +236,20 @@ fn exports_cover(plan: &LinkedEntryPlan, modules: &[LinkedKernelModule]) -> bool
 }
 
 /// Staged admission, so that no entry is called before it is certified:
-/// `admit_dispatch` once at load, then `certify_prefix` after each issue and
-/// before the receiver binds what it issued, then `certify` at the end.
+/// `LinkedArtifact::admit` once at load pins the saved product's digest in a
+/// `LinkedAdmission`; then `certify_prefix` after each issue and before the
+/// receiver binds what it issued; then `finish` with the whole product. No
+/// later step takes saved bytes from its caller.
 ///
 /// What this does not prove: that the modules actually linked into the
 /// component are the artifact's module bytes. A guest cannot read its own
 /// code; that is an inventory property of packaging.
+#[cfg(feature = "precompiled-programs")]
+pub struct LinkedAdmission<'a> {
+    artifact: &'a LinkedArtifact,
+    saved: String,
+}
+
 #[cfg(feature = "precompiled-programs")]
 impl LinkedArtifact {
     /// Whether this artifact was captured with the saved product `saved`.
@@ -293,7 +267,7 @@ impl LinkedArtifact {
     /// entries' symbols and their derivatives' helpers. After this the
     /// dispatch routes `(kind, index, key)` only to the symbol this artifact
     /// issued for that position.
-    pub fn admit_dispatch(&self, saved: &[u8]) -> Result<(), WasmCompileError> {
+    pub fn admit(&self, saved: &[u8]) -> Result<LinkedAdmission<'_>, WasmCompileError> {
         if !self.is_bound_to(saved) {
             return Err(refusal("linked artifact belongs to another saved product"));
         }
@@ -309,9 +283,15 @@ impl LinkedArtifact {
                 "linked artifact module exports differ from its entries' symbols",
             ));
         }
-        Ok(())
+        Ok(LinkedAdmission {
+            artifact: self,
+            saved: linked_digest(saved),
+        })
     }
+}
 
+#[cfg(feature = "precompiled-programs")]
+impl LinkedAdmission<'_> {
     /// Everything `issued` has issued so far equals this artifact's records,
     /// so the receiver may bind and call what it just issued.
     ///
@@ -329,15 +309,20 @@ impl LinkedArtifact {
     ///   entry's modules are the ones its issue appended, at the same
     ///   positions in both lists; no other mapping is used.
     ///
-    /// Run `admit_dispatch` first: this relies on the entries being sorted.
+    /// So the whole closure an entry runs is compared at the call that
+    /// issues it, before it is usable: a derivative's control module and
+    /// every helper module it imports (static and dynamic refresh, values,
+    /// kinematic values, as issued), and a private entry's whole shared
+    /// module with all of its exports in order.
     pub fn certify_prefix(&self, issued: &LinkedProductAssembler) -> Result<(), WasmCompileError> {
         for entry in issued.plan.linked_entries() {
             let id = entry.id();
             let carried = self
+                .artifact
                 .entries
                 .binary_search_by_key(&id, LinkedEntry::id)
                 .ok()
-                .map(|position| &self.entries[position]);
+                .map(|position| &self.artifact.entries[position]);
             if carried != Some(entry) {
                 return Err(WasmCompileError::Input(format!(
                     "linked entry {} differs from its artifact record",
@@ -346,6 +331,7 @@ impl LinkedArtifact {
             }
         }
         let carried = self
+            .artifact
             .modules
             .get(..issued.modules.len())
             .ok_or_else(|| refusal("linked issue exceeds the artifact's modules"))?;
@@ -355,6 +341,39 @@ impl LinkedArtifact {
                     "linked module {position} differs from its artifact record"
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// The whole product the receiver issued, compared with the artifact
+    /// under the pinned saved digest: every position's kind, index, key and
+    /// binding, every module's bytes and exports in link order, and the
+    /// dispatch module, with equal counts (nothing unclaimed, nothing extra).
+    /// Equal keys at two positions are compared by position.
+    pub fn finish(self, reissued: &LinkedProduct) -> Result<(), WasmCompileError> {
+        let artifact = self.artifact;
+        let same_entries = artifact.entries.len() == reissued.plan.linked_entries().count()
+            && artifact
+                .entries
+                .iter()
+                .zip(reissued.plan.linked_entries())
+                .all(|(carried, issued)| carried == issued);
+        let same_modules = artifact.modules.len() == reissued.modules.len()
+            && artifact
+                .modules
+                .iter()
+                .zip(&reissued.modules)
+                .all(|(carried, issued)| {
+                    carried.bytes == issued.bytes && carried.exports == issued.exports
+                });
+        if artifact.saved != self.saved
+            || !same_entries
+            || !same_modules
+            || artifact.dispatch != reissued.plan.dispatch()
+        {
+            return Err(refusal(
+                "linked artifact differs from the product its checked sources issue",
+            ));
         }
         Ok(())
     }

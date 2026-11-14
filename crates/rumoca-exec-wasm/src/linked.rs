@@ -15,7 +15,7 @@ pub use plan::{
 };
 pub(crate) use products::{DerivativeSymbols, helper_symbol};
 #[cfg(feature = "precompiled-programs")]
-pub use products::{LinkedArtifact, linked_digest};
+pub use products::{LinkedAdmission, LinkedArtifact, linked_digest};
 pub use products::{LinkedKernelModule, LinkedProduct, LinkedProductAssembler};
 
 use crate::WasmCompileError;
