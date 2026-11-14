@@ -177,3 +177,41 @@ fn every_entry_carries_its_triple_and_binding_from_the_same_emission() {
         }
     }
 }
+
+/// A kernel module's typed fault table is issued once, however many entries
+/// the module holds: every kernel binding names a table the plan holds, no
+/// table is unclaimed, and the private entries of one shared module name the
+/// same one.
+#[test]
+fn a_kernel_modules_typed_table_is_issued_once_for_all_of_its_entries() {
+    let sources = Sources::new();
+    let built = product::build(&sources);
+    let plan = built.linked.plan();
+    let mut named = std::collections::BTreeSet::new();
+    let mut shared = std::collections::BTreeSet::new();
+    let mut privates = 0usize;
+    for entry in plan.linked_entries() {
+        let LinkedBinding::Kernel { typed, .. } = entry.binding() else {
+            continue;
+        };
+        assert!(
+            plan.typed_table(*typed).is_some(),
+            "{}",
+            entry.id().symbol()
+        );
+        named.insert(*typed);
+        if entry.id().kind == LinkedEntryKind::Private {
+            shared.insert(*typed);
+            privates += 1;
+        }
+    }
+    assert_eq!(
+        named.len(),
+        plan.typed_tables().len(),
+        "no table is unclaimed"
+    );
+    assert!(
+        shared.len() < privates,
+        "the private entries of a shared module name one typed table"
+    );
+}

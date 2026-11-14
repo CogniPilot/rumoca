@@ -3,7 +3,7 @@
 //! checked source before printing anything, and prints every module with the
 //! same assembler, from the same source, as its browser module; only link
 //! names differ. It sees every fault table, so it reserves the refusal status.
-use super::plan::refuse_reserved_status;
+use super::plan::{entry_statuses, refuse_reserved_status};
 use super::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
     LinkedFaultTables, LinkedWorkspace, linked_key_words,
@@ -43,30 +43,11 @@ impl LinkedKernelModule {
     pub fn exports(&self) -> &[String] {
         &self.exports
     }
-
-    /// A module of one kernel entry and that entry's binding.
-    fn single(
-        program: CompiledNativeCallProgramWasm,
-        symbol: String,
-    ) -> Result<(Self, LinkedBinding), WasmCompileError> {
-        let binding = LinkedBinding::Kernel {
-            scratch_bytes: program.scratch_bytes,
-            faults: tables(
-                &program.faults,
-                &program.gather_faults,
-                &program.linear_solve_faults,
-            )?,
-        };
-        let module = Self {
-            bytes: program.bytes,
-            exports: vec![symbol],
-        };
-        Ok((module, binding))
-    }
 }
 
-/// An entry's fault tables, refused when a status equals the dispatch's
-/// refusal: the assembler sees every table, so it owns that reservation.
+/// A derivative helper's fault tables, refused when a status equals the
+/// dispatch's refusal: the assembler sees every table, so it owns that
+/// reservation.
 fn tables(
     typed: &[TypedCallFault],
     gather: &[NativeGatherFault],
@@ -157,7 +138,8 @@ pub fn linked_digest(bytes: &[u8]) -> String {
 
 /// The issued product as it travels from the build to the guest beside the
 /// saved product it was captured with: bound to those saved bytes by their
-/// digest, carrying every module in link order and the dispatch module. It
+/// digest, carrying every module in link order, each kernel module's typed
+/// fault table once, in issue order, and the dispatch module. It
 /// grants nothing by itself: nothing reads its entries but its admission
 /// (`admit`), which compares them, request by request and then whole, with
 /// what the receiver issues from its own checked sources in the owner's
@@ -170,10 +152,16 @@ pub struct LinkedArtifact {
     version: u32,
     saved: String,
     entries: Vec<LinkedEntry>,
+    typed: Vec<Vec<TypedCallFault>>,
     modules: Vec<LinkedKernelModule>,
     #[serde(with = "serde_bytes")]
     dispatch: Vec<u8>,
 }
+
+/// The artifact wire version: 2 since kernel bindings name a typed table the
+/// artifact carries once instead of each holding a copy.
+#[cfg(feature = "precompiled-programs")]
+const LINKED_ARTIFACT_VERSION: u32 = 2;
 
 #[cfg(feature = "precompiled-programs")]
 impl LinkedProduct {
@@ -181,9 +169,10 @@ impl LinkedProduct {
     /// was captured with.
     pub fn artifact(&self, saved: &[u8]) -> LinkedArtifact {
         LinkedArtifact {
-            version: 1,
+            version: LINKED_ARTIFACT_VERSION,
             saved: linked_digest(saved),
             entries: self.plan.linked_entries().cloned().collect(),
+            typed: self.plan.typed_tables().to_vec(),
             modules: self.modules.clone(),
             dispatch: self.plan.dispatch(),
         }
@@ -255,14 +244,15 @@ pub struct LinkedAdmission {
 impl LinkedArtifact {
     /// Whether this artifact was captured with the saved product `saved`.
     pub fn is_bound_to(&self, saved: &[u8]) -> bool {
-        self.version == 1 && self.saved == linked_digest(saved)
+        self.version == LINKED_ARTIFACT_VERSION && self.saved == linked_digest(saved)
     }
 
     /// Once, at load, before any entry is bound, with no model source: the
     /// version and saved digest; the entries in the shape their assembler
     /// issues (strict `(kind, index)` order, dense per kind, a kinematic
     /// entry at its derivative's index with its key, bindings of their
-    /// entry's kind, no refusal status); the dispatch module regenerated from
+    /// entry's kind, kernel bindings naming a carried typed table, no refusal
+    /// status); the dispatch module regenerated from
     /// those entries by the crate-private plan builder and equal byte for
     /// byte to the carried one; and the module exports covering exactly the
     /// entries' symbols and their derivatives' helpers. After this the
@@ -272,8 +262,8 @@ impl LinkedArtifact {
         if !self.is_bound_to(saved) {
             return Err(refusal("linked artifact belongs to another saved product"));
         }
-        let carried =
-            LinkedEntryPlan::checked(&self.entries).map_err(|message| refusal(&message))?;
+        let carried = LinkedEntryPlan::checked(&self.entries, &self.typed)
+            .map_err(|message| refusal(&message))?;
         if carried.dispatch() != self.dispatch {
             return Err(refusal(
                 "linked artifact dispatch differs from the one its entries issue",
@@ -314,6 +304,10 @@ impl LinkedAdmission {
     ///   `(kind, index)`, equal in key and binding; an issued index the
     ///   artifact lacks is refused, so per kind no more are issued than the
     ///   artifact holds;
+    /// - the issued typed tables must be the first typed tables of the
+    ///   artifact, position by position: a kernel module's table is issued
+    ///   with its module, so a kernel binding's position names the same
+    ///   table in both;
     /// - the issued modules must be the first modules of the artifact,
     ///   position by position, bytes and exports equal. Modules are appended
     ///   in issue order by the same assembler that captured the artifact (a
@@ -342,6 +336,12 @@ impl LinkedAdmission {
                 )));
             }
         }
+        let tables = issued.plan.typed_tables();
+        if self.artifact.typed.get(..tables.len()) != Some(tables) {
+            return Err(refusal(
+                "linked typed fault tables differ from their artifact records",
+            ));
+        }
         let carried = self
             .artifact
             .modules
@@ -359,7 +359,8 @@ impl LinkedAdmission {
 
     /// The whole product the receiver issued, compared with the artifact
     /// under the pinned saved digest: every position's kind, index, key and
-    /// binding, every module's bytes and exports in link order, and the
+    /// binding, every typed table, every module's bytes and exports in link
+    /// order, and the
     /// dispatch module, with equal counts (nothing unclaimed, nothing extra).
     /// Equal keys at two positions are compared by position.
     pub fn finish(self, reissued: &LinkedProduct) -> Result<(), WasmCompileError> {
@@ -380,6 +381,7 @@ impl LinkedAdmission {
                 });
         if artifact.saved != self.saved
             || !same_entries
+            || artifact.typed.as_slice() != reissued.plan.typed_tables()
             || !same_modules
             || artifact.dispatch != reissued.plan.dispatch()
         {
@@ -432,14 +434,30 @@ impl LinkedProductAssembler {
             .collect()
     }
 
-    /// One kernel entry in its own module.
+    /// One kernel entry in its own module, with that module's typed table.
     fn commit_single(
         &mut self,
         id: LinkedEntryId,
         key: [u64; 4],
         program: CompiledNativeCallProgramWasm,
     ) -> Result<LinkedEntryId, WasmCompileError> {
-        let (module, binding) = LinkedKernelModule::single(program, id.symbol())?;
+        let typed = self.plan.next_typed()?;
+        refuse_reserved_status(program.faults.iter().map(|fault| fault.status))?;
+        refuse_reserved_status(entry_statuses(
+            &program.gather_faults,
+            &program.linear_solve_faults,
+        ))?;
+        let binding = LinkedBinding::Kernel {
+            scratch_bytes: program.scratch_bytes,
+            typed,
+            gather: program.gather_faults,
+            linear: program.linear_solve_faults,
+        };
+        let module = LinkedKernelModule {
+            bytes: program.bytes,
+            exports: vec![id.symbol()],
+        };
+        self.plan.issue_typed(program.faults);
         self.commit(vec![LinkedEntry::new(id, key, binding)], vec![module]);
         Ok(id)
     }
@@ -542,6 +560,8 @@ impl LinkedProductAssembler {
 
     /// One private batch, the programs the admission admitted in its compile
     /// order, in the same modules and entry order its browser compile prints.
+    /// A module's typed fault table is issued once; each of its entries names
+    /// it and keeps only its own gather and linear tables.
     pub fn private(
         &mut self,
         admission: &crate::PrivateProgramAdmission,
@@ -562,28 +582,41 @@ impl LinkedProductAssembler {
             })
             .collect::<Result<Vec<_>, WasmCompileError>>()?;
         let symbols = issued.iter().map(|(id, _)| id.symbol()).collect::<Vec<_>>();
+        let first_table = self.plan.next_typed()?;
         let mut modules = Vec::new();
+        let mut typed = Vec::new();
         let mut bindings = Vec::with_capacity(issued.len());
-        for (program, entries) in admission.linked_modules(programs, &symbols)? {
-            for entry in &entries {
+        for (table, (program, entries)) in
+            (first_table..).zip(admission.linked_modules(programs, &symbols)?)
+        {
+            refuse_reserved_status(program.faults.iter().map(|fault| fault.status))?;
+            let mut exports = Vec::with_capacity(entries.len());
+            for entry in entries {
+                refuse_reserved_status(entry_statuses(
+                    &entry.gather_faults,
+                    &entry.linear_solve_faults,
+                ))?;
                 bindings.push(LinkedBinding::Kernel {
                     scratch_bytes: program.scratch_bytes,
-                    faults: tables(
-                        &program.faults,
-                        &entry.gather_faults,
-                        &entry.linear_solve_faults,
-                    )?,
+                    typed: table,
+                    gather: entry.gather_faults,
+                    linear: entry.linear_solve_faults,
                 });
+                exports.push(entry.export);
             }
+            typed.push(program.faults);
             modules.push(LinkedKernelModule {
                 bytes: program.bytes,
-                exports: entries.into_iter().map(|entry| entry.export).collect(),
+                exports,
             });
         }
         if bindings.len() != issued.len() {
             return Err(WasmCompileError::Backend(
                 "linked private modules returned other than one entry per program".into(),
             ));
+        }
+        for table in typed {
+            self.plan.issue_typed(table);
         }
         let entries = issued
             .into_iter()

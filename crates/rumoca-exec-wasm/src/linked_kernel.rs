@@ -2,7 +2,7 @@
 //! the one shared memory; the call conventions are the browser runtime's.
 
 use crate::linked::guest::LinkedCall;
-use crate::linked::{LinkedBinding, LinkedEntryKind, LinkedFaultTables, linked_key_words};
+use crate::linked::{LinkedBinding, LinkedEntryKind, linked_key_words};
 use crate::retained_native_program::linked_guest::pointer;
 use crate::{NativeGatherFault, NativeLinearSolveFault, TypedCallFault, WasmCompileError};
 
@@ -13,8 +13,9 @@ pub(super) struct WasmKernelRuntime {
 impl WasmKernelRuntime {
     /// The issued kernel entry of `kind` at `at` for the source with
     /// `source_key`, whose binding carries exactly the scratch extent and
-    /// fault tables emitted with this source's payload. Nothing in the entry
-    /// is re-derived here.
+    /// names exactly the fault tables emitted with this source's payload: its
+    /// module's typed table, which the plan holds once, and the entry's own
+    /// gather and linear tables. Nothing in the entry is re-derived here.
     pub(super) fn issued(
         at: crate::LinkedPosition<'_>,
         kind: LinkedEntryKind,
@@ -30,12 +31,9 @@ impl WasmKernelRuntime {
         let key = linked_key_words(source_key)?;
         let LinkedBinding::Kernel {
             scratch_bytes: issued_scratch,
-            faults:
-                LinkedFaultTables {
-                    typed: issued_typed,
-                    gather: issued_gather,
-                    linear: issued_linear,
-                },
+            typed: issued_typed,
+            gather: issued_gather,
+            linear: issued_linear,
         } = entry.binding()
         else {
             return Err(WasmCompileError::Input(
@@ -44,7 +42,7 @@ impl WasmKernelRuntime {
         };
         if entry.key_words() != key
             || *issued_scratch != scratch_bytes
-            || issued_typed != typed
+            || at.plan.typed_table(*issued_typed) != Some(typed)
             || issued_gather != gather
             || issued_linear != linear
         {

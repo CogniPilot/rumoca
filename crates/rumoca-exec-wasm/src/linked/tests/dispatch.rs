@@ -2,8 +2,7 @@
 use super::host::{Browser, Frame, Linked};
 use super::product::{self, Shape, Sources, id};
 use crate::linked::{
-    LINKED_DISPATCH_EXPORT, LINKED_DISPATCH_REFUSED, LinkedBinding, LinkedEntryKind,
-    linked_entry_status,
+    LINKED_DISPATCH_EXPORT, LINKED_DISPATCH_REFUSED, LinkedEntryKind, linked_entry_status,
 };
 use crate::{TypedCallFaultKind, WasmCompileError};
 use wasmparser::{Parser, Payload, TypeRef};
@@ -209,13 +208,11 @@ fn a_fault_inside_an_entry_reports_the_same_first_fault_and_fault_map_entry() {
         panic!("the dispatched status decodes to the original typed fault");
     };
     assert_eq!(fault.kind, TypedCallFaultKind::IntegerArithmetic);
-    // The entry's own binding decodes the same fault-map entry.
-    let LinkedBinding::Kernel { faults, .. } =
-        product.linked.plan().entry(event).unwrap().binding()
+    // The entry's own binding decodes the same fault-map entry, through its
+    // module's typed table in the plan.
+    let Some(WasmCompileError::TypedSource(bound)) =
+        product.linked.plan().kernel_status_error(event, status)
     else {
-        panic!("the event entry has a kernel binding")
-    };
-    let WasmCompileError::TypedSource(bound) = faults.status_error(status) else {
         panic!("the binding decodes the original typed fault");
     };
     assert_eq!(bound, fault);

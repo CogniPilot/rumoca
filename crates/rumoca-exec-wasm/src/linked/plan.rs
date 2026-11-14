@@ -200,10 +200,15 @@ pub enum LinkedBinding {
         workspace: LinkedWorkspace,
         helpers: Box<[Option<LinkedFaultTables>; 4]>,
     },
-    /// The scratch extent and fault tables of a kernel entry.
+    /// The scratch extent of a kernel entry, the plan position of its
+    /// module's typed fault table and the entry's own gather and linear
+    /// tables. Every entry of one module names the same typed table: the
+    /// plan stores it once.
     Kernel {
         scratch_bytes: u32,
-        faults: LinkedFaultTables,
+        typed: u32,
+        gather: Vec<NativeGatherFault>,
+        linear: Vec<NativeLinearSolveFault>,
     },
 }
 
@@ -247,12 +252,48 @@ impl LinkedEntry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkedEntryPlan {
     entries: BTreeMap<LinkedEntryId, LinkedEntry>,
+    /// The typed fault table of every kernel module, once each, in issue
+    /// order; a kernel binding names its module's table by position.
+    typed: Vec<Vec<TypedCallFault>>,
 }
 
 impl LinkedEntryPlan {
     /// Every issued entry with its key words, in `(kind, index)` order.
     pub fn entries(&self) -> impl Iterator<Item = (LinkedEntryId, [u64; 4])> + '_ {
         self.entries.values().map(|entry| (entry.id, entry.key))
+    }
+
+    /// Every kernel module's typed fault table, in issue order.
+    pub fn typed_tables(&self) -> &[Vec<TypedCallFault>] {
+        &self.typed
+    }
+
+    /// The typed fault table a kernel binding names by `position`.
+    pub fn typed_table(&self, position: u32) -> Option<&[TypedCallFault]> {
+        let position = usize::try_from(position).ok()?;
+        self.typed.get(position).map(Vec::as_slice)
+    }
+
+    /// The source fault a nonzero status of the kernel entry `id` names,
+    /// decoded with its module's typed table and the entry's own gather and
+    /// linear tables; `None` when `id` is not an issued kernel entry. Map the
+    /// dispatch's refusal with `linked_entry_status` first: it names no fault.
+    pub fn kernel_status_error(&self, id: LinkedEntryId, status: u32) -> Option<WasmCompileError> {
+        let LinkedBinding::Kernel {
+            typed,
+            gather,
+            linear,
+            ..
+        } = self.entry(id)?.binding()
+        else {
+            return None;
+        };
+        Some(crate::program_payload::decode_status(
+            status,
+            self.typed_table(*typed)?,
+            gather,
+            linear,
+        ))
     }
 
     /// Every issued entry with its binding, in `(kind, index)` order.
@@ -278,18 +319,43 @@ impl LinkedEntryPlan {
         let previous = self.entries.insert(entry.id, entry);
         debug_assert!(previous.is_none(), "an assembler issues each position once");
     }
+
+    /// The position the next kernel module's typed table takes.
+    pub(super) fn next_typed(&self) -> Result<u32, WasmCompileError> {
+        u32::try_from(self.typed.len()).map_err(|_| {
+            WasmCompileError::Backend("linked typed fault tables are counted in u32".into())
+        })
+    }
+
+    /// Stores one kernel module's typed table at `next_typed`.
+    pub(super) fn issue_typed(&mut self, table: Vec<TypedCallFault>) {
+        self.typed.push(table);
+    }
 }
 
 impl LinkedEntryPlan {
     /// Carried entries as the plan their assembler would have issued: in
     /// strict `(kind, index)` order, dense per kind (a kinematic entry at its
     /// derivative's index, with that derivative's key), each binding of its
-    /// entry's kind and no status equal to the dispatch's refusal. Crate
+    /// entry's kind, each kernel binding naming one of the carried typed
+    /// tables, and no status equal to the dispatch's refusal. Crate
     /// private: a checked shape is not authority, only the entries a
     /// certifier compares against the receiver's own issuance.
     #[cfg(feature = "precompiled-programs")]
-    pub(super) fn checked(entries: &[LinkedEntry]) -> Result<Self, String> {
-        let mut plan = Self::default();
+    pub(super) fn checked(
+        entries: &[LinkedEntry],
+        typed: &[Vec<TypedCallFault>],
+    ) -> Result<Self, String> {
+        if typed
+            .iter()
+            .any(|table| refuse_reserved_status(table.iter().map(|fault| fault.status)).is_err())
+        {
+            return Err("a linked artifact typed fault table holds the refusal status".into());
+        }
+        let mut plan = Self {
+            entries: BTreeMap::new(),
+            typed: typed.to_vec(),
+        };
         for entry in entries {
             let ordered = plan
                 .entries
@@ -308,8 +374,14 @@ impl LinkedEntryPlan {
                     .iter()
                     .flatten()
                     .all(|tables| refuse_reserved_status(tables.statuses()).is_ok()),
-                LinkedBinding::Kernel { faults, .. } if !derivative => {
-                    refuse_reserved_status(faults.statuses()).is_ok()
+                LinkedBinding::Kernel {
+                    typed,
+                    gather,
+                    linear,
+                    ..
+                } if !derivative => {
+                    plan.typed_table(*typed).is_some()
+                        && refuse_reserved_status(entry_statuses(gather, linear)).is_ok()
                 }
                 _ => false,
             };
@@ -329,6 +401,17 @@ impl LinkedEntryPlan {
         }
         Ok(plan)
     }
+}
+
+/// The statuses of one kernel entry's own gather and linear tables.
+pub(super) fn entry_statuses<'a>(
+    gather: &'a [NativeGatherFault],
+    linear: &'a [NativeLinearSolveFault],
+) -> impl Iterator<Item = u32> + 'a {
+    gather
+        .iter()
+        .map(|fault| fault.status)
+        .chain(linear.iter().map(|fault| fault.status))
 }
 
 /// No status an entry returns may equal the dispatch's refusal.
