@@ -134,6 +134,34 @@ impl FixedNativeGuestCore {
     }
 }
 
+/// Refuse a component that does not embed each of `modules` byte for byte as
+/// a core module of its own, one embedded module per entry. Whatever the
+/// linker generates around them, the linked libraries' bodies are then exactly
+/// the ones the caller supplied.
+pub fn check_embedded_core_modules(component: &[u8], modules: &[&[u8]]) -> Result<(), String> {
+    let mut embedded = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(component) {
+        if let wasmparser::Payload::ModuleSection {
+            unchecked_range, ..
+        } = payload.map_err(|error| error.to_string())?
+        {
+            embedded.push(
+                component
+                    .get(unchecked_range)
+                    .ok_or("component core module is out of range")?,
+            );
+        }
+    }
+    for (index, module) in modules.iter().enumerate() {
+        let position = embedded
+            .iter()
+            .position(|body| body == module)
+            .ok_or_else(|| format!("linked library {index} is not embedded unchanged"))?;
+        embedded.swap_remove(position);
+    }
+    Ok(())
+}
+
 /// Build the fixed source once, without accepting any external source or artifact.
 /// The two directories are owned scratch storage, not source authority.
 ///
@@ -375,6 +403,47 @@ fn output(command: &mut Command, name: &str) -> Result<String, String> {
         ));
     }
     String::from_utf8(result.stdout).map_err(|error| format!("{name}: {error}"))
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::check_embedded_core_modules;
+    use wasm_encoder::{Component, CustomSection, Module, ModuleSection};
+
+    fn module(name: &str) -> Module {
+        let mut module = Module::new();
+        module.section(&CustomSection {
+            name: name.into(),
+            data: std::borrow::Cow::Borrowed(&[]),
+        });
+        module
+    }
+
+    /// Each module must be embedded unchanged, once per entry: an absent, a
+    /// changed or a second copy of a once-embedded module is refused.
+    #[test]
+    fn a_component_embeds_each_linked_module_unchanged() {
+        let (first, second) = (module("first"), module("second"));
+        let mut component = Component::new();
+        component.section(&ModuleSection(&first));
+        component.section(&ModuleSection(&second));
+        let component = component.finish();
+        let (first, second) = (first.finish(), second.finish());
+        let check = |modules: &[&Vec<u8>]| {
+            let modules: Vec<&[u8]> = modules.iter().map(|module| module.as_slice()).collect();
+            check_embedded_core_modules(&component, &modules)
+        };
+        assert!(check(&[&second, &first]).is_ok());
+        assert_eq!(
+            check(&[&first, &first]).unwrap_err(),
+            "linked library 1 is not embedded unchanged"
+        );
+        let mut changed = first.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(check(&[&changed]).is_err());
+        let third = module("third").finish();
+        assert!(check(&[&first, &third]).is_err());
+    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use super::{
 use rumoca_core::artifact_build::{ArtifactBuildBinding, PreparedBuildRequest};
 use rumoca_exec_wasm::{
     FixedNativeGuestCore, LINKED_DISPATCH_EXPORT, LinkedArtifact, LinkedKernelModule,
-    NativeLinkableModelLibrary,
+    NativeLinkableModelLibrary, check_embedded_core_modules,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -204,6 +204,13 @@ impl PreparedScalarFmiLsModel {
         check_single_providers(&core, linked.modules()).map_err(linkage)?;
         let bytes = link_linked(&data, linked.modules(), linked.dispatch_module(), &core)
             .map_err(linkage)?;
+        let bodies: Vec<&[u8]> = linked
+            .modules()
+            .iter()
+            .map(LinkedKernelModule::module_bytes)
+            .chain([linked.dispatch_module()])
+            .collect();
+        check_embedded_core_modules(&bytes, &bodies).map_err(linkage)?;
         core.check_component_interface(&bytes).map_err(linkage)?;
         Ok(LinkedScalarFmiLsComponent {
             binding: request.binding(),
