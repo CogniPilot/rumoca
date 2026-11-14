@@ -188,69 +188,8 @@ impl LinkedWorkspace {
     }
 }
 
-/// The invocation records of a retained event entry, from the same emission
-/// as its module: where each pure call's input, output, scratch and status
-/// sit and how its observation carrier is decoded. A receiver decodes with
-/// the records of its own issued entry, never with carried ones; carried
-/// records are only compared, through their canonical serialised form.
-#[cfg(feature = "precompiled-programs")]
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LinkedInvocations(Vec<crate::typed_call::retained_event::InvocationStorage>);
-
-#[cfg(feature = "precompiled-programs")]
-impl LinkedInvocations {
-    pub(super) fn issued(
-        records: Vec<crate::typed_call::retained_event::InvocationStorage>,
-    ) -> Self {
-        Self(records)
-    }
-
-    /// The records a receiver decodes its own issued event entry with.
-    pub(crate) fn records(&self) -> &[crate::typed_call::retained_event::InvocationStorage] {
-        &self.0
-    }
-}
-
-/// Equal exactly when the canonical serialised records are equal; the
-/// records have no field-wise equality of their own.
-#[cfg(feature = "precompiled-programs")]
-impl PartialEq for LinkedInvocations {
-    fn eq(&self, other: &Self) -> bool {
-        match (
-            serde_json::to_vec(self.records()),
-            serde_json::to_vec(other.records()),
-        ) {
-            (Ok(mine), Ok(theirs)) => mine == theirs,
-            _ => false,
-        }
-    }
-}
-
-#[cfg(feature = "precompiled-programs")]
-impl Eq for LinkedInvocations {}
-
-#[cfg(feature = "precompiled-programs")]
-impl std::fmt::Debug for LinkedInvocations {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("LinkedInvocations")
-            .field("records", &self.0.len())
-            .finish()
-    }
-}
-
 /// What a bound entry keeps beside its triple to check its frame and decode
 /// its status, from the same emission as its linked module.
-///
-/// Decoder metadata beyond this binding, per kind: a retained event decodes
-/// its pure-call carriers with its invocation records, carried here. A
-/// private entry's directional seed storage (the seed offset its emission
-/// placed, and the seed reads of its source) and its output count are not
-/// carried: the receiver takes them from its own issued compile of the same
-/// checked source. A derivative's frame is its workspace, carried here; its
-/// kinematic row selection comes from the receiver's own checked operation.
-/// Exact and issued schedules have no metadata beyond scratch and faults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "precompiled-programs", derive(Serialize, Deserialize))]
 pub enum LinkedBinding {
@@ -261,13 +200,10 @@ pub enum LinkedBinding {
         workspace: LinkedWorkspace,
         helpers: Box<[Option<LinkedFaultTables>; 4]>,
     },
-    /// The scratch extent and fault tables of a kernel entry, and for the
-    /// event kind its invocation records (empty for every other kind).
+    /// The scratch extent and fault tables of a kernel entry.
     Kernel {
         scratch_bytes: u32,
         faults: LinkedFaultTables,
-        #[cfg(feature = "precompiled-programs")]
-        invocations: LinkedInvocations,
     },
 }
 
@@ -372,14 +308,8 @@ impl LinkedEntryPlan {
                     .iter()
                     .flatten()
                     .all(|tables| refuse_reserved_status(tables.statuses()).is_ok()),
-                LinkedBinding::Kernel {
-                    faults,
-                    invocations,
-                    ..
-                } if !derivative => {
+                LinkedBinding::Kernel { faults, .. } if !derivative => {
                     refuse_reserved_status(faults.statuses()).is_ok()
-                        && (entry.id.kind == LinkedEntryKind::Event
-                            || invocations.records().is_empty())
                 }
                 _ => false,
             };

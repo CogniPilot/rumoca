@@ -303,31 +303,3 @@ fn an_extra_issue_or_an_unclaimed_record_is_refused() {
         "private 3.. issued"
     );
 }
-
-/// The event decodes its pure-call carriers with its invocation records, so
-/// they are part of its binding: one changed field in the carried record is
-/// refused at the call that issues the event, and every earlier call passes.
-#[test]
-fn a_changed_event_invocation_record_is_refused_at_the_event_issue() {
-    let sources = Sources::new();
-    let issued = product::build(&sources).linked;
-    let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
-    let event = position(&wire["entries"], "Event", 0);
-    let records = &wire["entries"][event]["binding"]["Kernel"]["invocations"];
-    assert!(
-        !records.as_array().unwrap().is_empty(),
-        "the event has an invocation record"
-    );
-    let input = records[0]["input"].as_u64().unwrap();
-    let mut changed = wire.clone();
-    changed["entries"][event]["binding"]["Kernel"]["invocations"][0]["input"] = json!(input + 8);
-    let last = steps(&sources).len() - 1;
-    assert_eq!(first_refusal(&decode(changed), &sources), Some(last));
-    let exact = position(&wire["entries"], "Exact", 0);
-    let mut foreign = wire.clone();
-    foreign["entries"][exact]["binding"]["Kernel"]["invocations"] = records.clone();
-    assert!(
-        decode(foreign).admit(SAVED).is_err(),
-        "only the event kind carries invocation records"
-    );
-}

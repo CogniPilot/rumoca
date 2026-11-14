@@ -9,8 +9,6 @@ mod products;
 #[cfg(all(test, feature = "host-engine", not(target_arch = "wasm32")))]
 mod tests;
 
-#[cfg(feature = "precompiled-programs")]
-pub use plan::LinkedInvocations;
 pub use plan::{
     LinkedBinding, LinkedDemand, LinkedEntry, LinkedEntryId, LinkedEntryKind, LinkedEntryPlan,
     LinkedFaultTables, LinkedWorkspace, linked_key_words,
