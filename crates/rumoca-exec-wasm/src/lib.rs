@@ -20,7 +20,7 @@ pub use component_build::{
 pub use component_build::{
     FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
     build_fixed_scalar_guest_core_cached, build_fixed_scalar_linked_guest_core_cached,
-    check_embedded_core_modules,
+    check_embedded_core_modules, link_single_provider_graph,
 };
 pub use derivative_operation::{
     CompiledFmiDerivativeOperationWasm, compile_fmi_derivative_operation_wasm,

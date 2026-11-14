@@ -19,6 +19,10 @@ pub use fixed_guest::{
     build_fixed_scalar_guest_core_cached, build_fixed_scalar_linked_guest_core_cached,
     check_embedded_core_modules,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
+mod linked_graph;
+#[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
+pub use linked_graph::link_single_provider_graph;
 #[cfg(feature = "component-build")]
 mod composition;
 #[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
