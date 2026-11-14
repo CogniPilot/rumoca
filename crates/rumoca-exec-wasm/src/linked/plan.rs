@@ -280,6 +280,57 @@ impl LinkedEntryPlan {
     }
 }
 
+impl LinkedEntryPlan {
+    /// Carried entries as the plan their assembler would have issued: in
+    /// strict `(kind, index)` order, dense per kind (a kinematic entry at its
+    /// derivative's index, with that derivative's key), each binding of its
+    /// entry's kind and no status equal to the dispatch's refusal. Crate
+    /// private: a checked shape is not authority, only the entries a
+    /// certifier compares against the receiver's own issuance.
+    #[cfg(feature = "precompiled-programs")]
+    pub(super) fn checked(entries: &[LinkedEntry]) -> Result<Self, String> {
+        let mut plan = Self::default();
+        for entry in entries {
+            let ordered = plan
+                .entries
+                .last_key_value()
+                .is_none_or(|(last, _)| *last < entry.id);
+            let expected = match entry.id.kind {
+                LinkedEntryKind::Kinematic => entry.id.index,
+                kind => plan.next_index(kind),
+            };
+            let derivative = matches!(
+                entry.id.kind,
+                LinkedEntryKind::Derivative | LinkedEntryKind::Kinematic
+            );
+            let bound = match &entry.binding {
+                LinkedBinding::Derivative { helpers, .. } if derivative => helpers
+                    .iter()
+                    .flatten()
+                    .all(|tables| refuse_reserved_status(tables.statuses()).is_ok()),
+                LinkedBinding::Kernel { faults, .. } if !derivative => {
+                    refuse_reserved_status(faults.statuses()).is_ok()
+                }
+                _ => false,
+            };
+            let complete = LinkedEntryId {
+                kind: LinkedEntryKind::Derivative,
+                index: entry.id.index,
+            };
+            let paired = entry.id.kind != LinkedEntryKind::Kinematic
+                || plan.key_words(complete) == Some(entry.key);
+            if !ordered || entry.id.index != expected || !bound || !paired {
+                return Err(format!(
+                    "linked artifact entry {} is not as its assembler issues it",
+                    entry.id.symbol()
+                ));
+            }
+            plan.issue(entry.clone());
+        }
+        Ok(plan)
+    }
+}
+
 /// No status an entry returns may equal the dispatch's refusal.
 pub(super) fn refuse_reserved_status(
     statuses: impl IntoIterator<Item = u32>,
