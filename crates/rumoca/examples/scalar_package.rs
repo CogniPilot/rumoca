@@ -123,8 +123,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (served, _) = stage("served_variables", || {
         Ok(FmiScalarDeploymentView::from_root(prepared.root())?)
     })?;
-    // The public variable table of the same view the model description is
-    // rendered from, joined to that description by its sha256 below.
+    // The served variables of the same view the model description is rendered
+    // from, joined to that description by its sha256 below. A subset of the
+    // description: it also advertises independent time and state derivatives.
     let public_variables: Vec<_> = served
         .variables()
         .iter()
@@ -170,6 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let description_bytes = package.model_description().len();
     let description_sha256 = format!("{:x}", Sha256::digest(package.model_description()));
     let table = serde_json::to_vec_pretty(&serde_json::json!({
+        "scope": "served variables of the scalar view; modelDescription.xml also advertises independent time and state-derivative entries",
         "model_description_sha256": description_sha256,
         "model_description_bytes": description_bytes,
         "variables": public_variables,
