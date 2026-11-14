@@ -106,7 +106,15 @@ pub struct CompiledRetainedEventWasm {
     /// saved bytes equal the emission there. Never read from a saved product.
     read_only_y: Option<crate::emit::ReadOnlyY>,
     scratch: RefCell<Vec<u64>>,
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     runtime: crate::WasmKernelRuntime,
     #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
     runtime: crate::host_runtime::HostKernelRuntime,
@@ -114,45 +122,70 @@ pub struct CompiledRetainedEventWasm {
 
 impl CompiledRetainedEventWasm {
     pub fn compile(source: solve::RetainedEventProgram) -> Result<Self, WasmCompileError> {
-        if !cfg!(any(
-            all(target_arch = "wasm32", target_os = "unknown"),
-            all(feature = "host-engine", not(target_arch = "wasm32"))
-        )) {
-            return Err(WasmCompileError::Input(
-                "event programs have no admitted engine on this target".into(),
-            ));
+        // Only issued entries run in a linked guest; it activates no fresh emission.
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        {
+            let _ = source;
+            Err(WasmCompileError::Input(
+                "a linked guest binds only issued event entries".into(),
+            ))
         }
-        let layout = &source.source().model().problem.layout;
-        let (artifact, invocations, read_only_y) =
-            crate::emit::emit_event_program_module(&source, layout, crate::emit::Linkage::Browser)
-                .map_err(WasmCompileError::Backend)?;
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_private")?;
-        #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
-        let runtime = crate::host_runtime::HostKernelRuntime::new_named(
-            artifact.module_bytes(),
-            "eval_private",
-        )?;
-        mark_y_census(read_only_y.as_ref());
-        let scratch = RefCell::new(vec![0; artifact.scratch_bytes() as usize / 8]);
-        #[cfg(feature = "precompiled-programs")]
-        let source_key = solve::PreparedKernelSource::new(layout, source.table())
-            .and_then(|key| key.retained_event(&source))
-            .map_err(WasmCompileError::Input)?;
-        Ok(Self {
-            source,
-            artifact: Rc::new(artifact.into()),
-            #[cfg(feature = "precompiled-programs")]
-            source_key,
-            invocations,
-            read_only_y,
-            scratch,
-            #[cfg(any(
+        #[cfg(not(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )))]
+        {
+            if !cfg!(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
                 all(feature = "host-engine", not(target_arch = "wasm32"))
-            ))]
-            runtime,
-        })
+            )) {
+                return Err(WasmCompileError::Input(
+                    "event programs have no admitted engine on this target".into(),
+                ));
+            }
+            let layout = &source.source().model().problem.layout;
+            let (artifact, invocations, read_only_y) = crate::emit::emit_event_program_module(
+                &source,
+                layout,
+                crate::emit::Linkage::Browser,
+            )
+            .map_err(WasmCompileError::Backend)?;
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            let runtime =
+                crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_private")?;
+            #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+            let runtime = crate::host_runtime::HostKernelRuntime::new_named(
+                artifact.module_bytes(),
+                "eval_private",
+            )?;
+            mark_y_census(read_only_y.as_ref());
+            let scratch = RefCell::new(vec![0; artifact.scratch_bytes() as usize / 8]);
+            #[cfg(feature = "precompiled-programs")]
+            let source_key = solve::PreparedKernelSource::new(layout, source.table())
+                .and_then(|key| key.retained_event(&source))
+                .map_err(WasmCompileError::Input)?;
+            Ok(Self {
+                source,
+                artifact: Rc::new(artifact.into()),
+                #[cfg(feature = "precompiled-programs")]
+                source_key,
+                invocations,
+                read_only_y,
+                scratch,
+                #[cfg(any(
+                    all(target_arch = "wasm32", target_os = "unknown"),
+                    all(feature = "host-engine", not(target_arch = "wasm32"))
+                ))]
+                runtime,
+            })
+        }
     }
 
     pub fn source(&self) -> &solve::RetainedEventProgram {
@@ -203,7 +236,13 @@ impl CompiledRetainedEventWasm {
     ) -> Result<u32, WasmCompileError> {
         #[cfg(any(
             all(target_arch = "wasm32", target_os = "unknown"),
-            all(feature = "host-engine", not(target_arch = "wasm32"))
+            all(feature = "host-engine", not(target_arch = "wasm32")),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
         ))]
         {
             match y_presentation(self.read_only_y.as_ref(), y, p) {
@@ -219,7 +258,13 @@ impl CompiledRetainedEventWasm {
         }
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
-            all(feature = "host-engine", not(target_arch = "wasm32"))
+            all(feature = "host-engine", not(target_arch = "wasm32")),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
         )))]
         {
             let _ = (

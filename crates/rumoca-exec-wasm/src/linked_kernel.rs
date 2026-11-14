@@ -85,6 +85,29 @@ impl WasmKernelRuntime {
         scratch: &mut [u64],
         lanes: &mut [u64],
     ) -> Result<u32, WasmCompileError> {
+        self.call_native_at(pointer(y.as_ptr())?, p, time, scratch, lanes)
+    }
+
+    /// The caller's Y in place, for a module certified to store nothing into it.
+    pub(super) fn call_native_read_only(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
+        self.call_native_at(pointer(y.as_ptr())?, p, time, scratch, lanes)
+    }
+
+    fn call_native_at(
+        &self,
+        y: u32,
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
         let lanes = if lanes.is_empty() {
             0
         } else {
@@ -92,7 +115,7 @@ impl WasmKernelRuntime {
         };
         self.entry.call(
             [
-                pointer(y.as_ptr())?,
+                y,
                 pointer(p.as_ptr())?,
                 pointer(scratch.as_ptr())?,
                 lanes,

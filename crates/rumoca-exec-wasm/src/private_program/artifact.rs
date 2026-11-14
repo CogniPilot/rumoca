@@ -62,11 +62,21 @@ impl PrecompiledPrivatePrograms {
         }
     }
 
+    /// A linked guest binds entry `k` of this batch at the issued Private
+    /// entry `at.index + k`, which must carry the entry's key, its module's
+    /// scratch extent and typed faults, and its own gather and linear faults.
     pub fn bind(
         &self,
         source: &rumoca_ir_solve::PreparedKernelSource,
         requests: &[(&ScalarProgramBlock, Option<usize>)],
         layout: &VarLayout,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        at: crate::LinkedPosition<'_>,
     ) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
         if self.version != 1 || self.entries.len() != requests.len() {
             return Err(WasmCompileError::Input(
@@ -121,16 +131,55 @@ impl PrecompiledPrivatePrograms {
                 module.module_bytes(),
                 &exports,
             )?;
+            #[cfg(all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            ))]
+            let runtimes = entries
+                .iter()
+                .map(|(ordinal, entry)| {
+                    let index = u32::try_from(*ordinal)
+                        .ok()
+                        .and_then(|ordinal| at.index.checked_add(ordinal))
+                        .ok_or_else(|| {
+                            WasmCompileError::Input("private entry index overflow".into())
+                        })?;
+                    crate::WasmKernelRuntime::issued(
+                        crate::LinkedPosition {
+                            plan: at.plan,
+                            index,
+                        },
+                        crate::LinkedEntryKind::Private,
+                        &entry.source_key,
+                        module.scratch_bytes(),
+                        (module.faults(), &entry.gather, &entry.linear),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             #[cfg(not(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
-                all(feature = "host-engine", not(target_arch = "wasm32"))
+                all(feature = "host-engine", not(target_arch = "wasm32")),
+                all(
+                    feature = "fixed-scalar-guest-receiver",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                )
             )))]
             let runtimes = vec![(); entries.len()];
             let module = Rc::clone(module);
             for ((ordinal, entry), runtime) in entries.into_iter().zip(runtimes) {
                 #[cfg(not(any(
                     all(target_arch = "wasm32", target_os = "unknown"),
-                    all(feature = "host-engine", not(target_arch = "wasm32"))
+                    all(feature = "host-engine", not(target_arch = "wasm32")),
+                    all(
+                        feature = "fixed-scalar-guest-receiver",
+                        target_arch = "wasm32",
+                        target_os = "wasi",
+                        target_env = "p2"
+                    )
                 )))]
                 let () = runtime;
                 output.push((
@@ -147,7 +196,13 @@ impl PrecompiledPrivatePrograms {
                         source_key: entry.source_key.clone(),
                         #[cfg(any(
                             all(target_arch = "wasm32", target_os = "unknown"),
-                            all(feature = "host-engine", not(target_arch = "wasm32"))
+                            all(feature = "host-engine", not(target_arch = "wasm32")),
+                            all(
+                                feature = "fixed-scalar-guest-receiver",
+                                target_arch = "wasm32",
+                                target_os = "wasi",
+                                target_env = "p2"
+                            )
                         ))]
                         runtime,
                     },

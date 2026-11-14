@@ -18,7 +18,13 @@ pub struct CompiledPrivateProgramWasm {
     #[cfg_attr(
         not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
-            all(feature = "host-engine", not(target_arch = "wasm32"))
+            all(feature = "host-engine", not(target_arch = "wasm32")),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
         )),
         allow(dead_code)
     )]
@@ -29,7 +35,15 @@ pub struct CompiledPrivateProgramWasm {
     seed: Option<directional::SeedStorage>,
     #[cfg(feature = "precompiled-programs")]
     source_key: String,
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(any(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        )
+    ))]
     runtime: crate::WasmKernelRuntime,
     #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
     runtime: crate::host_runtime::HostKernelRuntime,
@@ -80,7 +94,13 @@ impl CompiledPrivateProgramWasm {
     #[cfg_attr(
         not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
-            all(feature = "host-engine", not(target_arch = "wasm32"))
+            all(feature = "host-engine", not(target_arch = "wasm32")),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
         )),
         allow(dead_code)
     )]
@@ -122,7 +142,15 @@ impl CompiledPrivateProgramWasm {
                 ));
             }
         }
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        #[cfg(any(
+            all(target_arch = "wasm32", target_os = "unknown"),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
+        ))]
         {
             let status = self.runtime.call_private(y, p, time, scratch)?;
             if status != 0 {
@@ -149,7 +177,13 @@ impl CompiledPrivateProgramWasm {
         }
         #[cfg(not(any(
             all(target_arch = "wasm32", target_os = "unknown"),
-            all(feature = "host-engine", not(target_arch = "wasm32"))
+            all(feature = "host-engine", not(target_arch = "wasm32")),
+            all(
+                feature = "fixed-scalar-guest-receiver",
+                target_arch = "wasm32",
+                target_os = "wasi",
+                target_env = "p2"
+            )
         )))]
         {
             let _ = (y, p, time, scratch);
@@ -213,6 +247,44 @@ fn compile_private_programs_in_modules(
 }
 
 fn compile_admitted(
+    entries: &[(
+        &ScalarProgramBlock,
+        Option<usize>,
+        &crate::emit::AdmittedEntry,
+    )],
+    layout: &VarLayout,
+    table: &SolvePureCallTable,
+    sizes: (usize, usize),
+) -> Result<Vec<CompiledPrivateProgramWasm>, WasmCompileError> {
+    // Only issued entries run in a linked guest; it activates no fresh emission.
+    #[cfg(all(
+        feature = "fixed-scalar-guest-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    ))]
+    {
+        let _ = (entries, layout, table, sizes);
+        Err(WasmCompileError::Input(
+            "a linked guest binds only issued private entries".into(),
+        ))
+    }
+    #[cfg(not(all(
+        feature = "fixed-scalar-guest-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )))]
+    compile_emitted(entries, layout, table, sizes)
+}
+
+#[cfg(not(all(
+    feature = "fixed-scalar-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+)))]
+fn compile_emitted(
     entries: &[(
         &ScalarProgramBlock,
         Option<usize>,

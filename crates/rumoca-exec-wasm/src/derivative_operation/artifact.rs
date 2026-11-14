@@ -152,12 +152,7 @@ impl PrecompiledFmiDerivativeOperation {
                 }
                 _ => false,
             });
-        // Every field of the issued layout, as its accessors expose it.
-        let layout = |w: FmiDerivativeWorkspace| (w.regions(), w.snapshot(), w.helper());
-        if entry.key_words() != key
-            || layout(*workspace) != layout(issued.workspace)
-            || !same_tables
-        {
+        if entry.key_words() != key || !workspace.matches(issued.workspace) || !same_tables {
             return Err(WasmCompileError::Input(
                 "the issued linked derivative entry differs from its source".into(),
             ));

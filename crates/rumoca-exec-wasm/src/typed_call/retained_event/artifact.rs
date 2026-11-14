@@ -36,9 +36,18 @@ impl PrecompiledRetainedEvent {
             .flatten()
     }
 
+    /// A linked guest binds the issued Event entry at `at`, which must carry
+    /// this source's key, scratch extent and fault tables.
     pub fn bind(
         &self,
         source: solve::RetainedEventProgram,
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        at: crate::LinkedPosition<'_>,
     ) -> Result<CompiledRetainedEventWasm, WasmCompileError> {
         let key = solve::PreparedKernelSource::new(
             &source.source().model().problem.layout,
@@ -120,6 +129,19 @@ impl PrecompiledRetainedEvent {
             self.artifact.module_bytes(),
             "eval_private",
         )?;
+        #[cfg(all(
+            feature = "fixed-scalar-guest-receiver",
+            target_arch = "wasm32",
+            target_os = "wasi",
+            target_env = "p2"
+        ))]
+        let runtime = crate::WasmKernelRuntime::issued(
+            at,
+            crate::LinkedEntryKind::Event,
+            &key,
+            bytes,
+            self.artifact.fault_tables(),
+        )?;
         Ok(CompiledRetainedEventWasm {
             source,
             artifact: Rc::clone(&self.artifact),
@@ -129,7 +151,13 @@ impl PrecompiledRetainedEvent {
             scratch: RefCell::new(vec![0; bytes as usize / 8]),
             #[cfg(any(
                 all(target_arch = "wasm32", target_os = "unknown"),
-                all(feature = "host-engine", not(target_arch = "wasm32"))
+                all(feature = "host-engine", not(target_arch = "wasm32")),
+                all(
+                    feature = "fixed-scalar-guest-receiver",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                )
             ))]
             runtime,
         })
