@@ -1,6 +1,9 @@
 //! Stateful (scalar-product) FMU construction and publication evidence; no
-//! engine loads the published package. The guest is INTERPRETED until linked
-//! dispatch lands: no compiled entry runs inside it.
+//! engine loads the published package. By default the guest is INTERPRETED:
+//! no compiled entry runs inside it. Given a linked artifact and the saved
+//! product it is bound to, both from one SDK export of the same model and
+//! options, the scalar-linked guest is linked with the artifact's compiled
+//! modules and dispatch instead.
 //!
 //! The model is compiled from its main document plus the listed source roots
 //! (each a file or a whole package directory) and nothing else: no library is
@@ -55,17 +58,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     else {
         return Err(
             "usage: scalar_package SOURCE MODEL SOURCE_ROOTS_JSON OPTIONS_JSON \
-                    NEW_WORK_DIR [BUILD_SCRATCH]"
+                    NEW_WORK_DIR [BUILD_SCRATCH [LINKED_ARTIFACT SAVED_PRODUCT]]"
                 .into(),
         );
     };
     // Staged source stays under the work dir; an optional existing scratch dir
     // takes only build data (the fixed guest's cargo target and its cache,
     // and the compiler's parse cache).
-    let scratch = match rest {
-        [] => None,
-        [scratch] => Some(Path::new(scratch)),
-        _ => return Err("scalar_package takes at most one BUILD_SCRATCH".into()),
+    let (scratch, linked) = match rest {
+        [] => (None, None),
+        [scratch] => (Some(Path::new(scratch)), None),
+        [scratch, artifact, saved] => (
+            Some(Path::new(scratch)),
+            Some((fs::read(artifact)?, fs::read(saved)?)),
+        ),
+        _ => {
+            return Err(
+                "scalar_package takes BUILD_SCRATCH, then optionally LINKED_ARTIFACT SAVED_PRODUCT"
+                    .into(),
+            );
+        }
     };
     let work = Path::new(work);
     fs::create_dir(work)?;
@@ -115,13 +127,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some(scratch) => scratch.join("fixed-guest-cache"),
             None => work.parent().unwrap_or(work).join("fixed-guest-cache"),
         };
-        Ok(rumoca_exec_wasm::build_fixed_scalar_guest_core_cached(
-            &staging, &target, &cache,
-        )?)
+        Ok(if linked.is_some() {
+            rumoca_exec_wasm::build_fixed_scalar_linked_guest_core_cached(
+                &staging, &target, &cache,
+            )?
+        } else {
+            rumoca_exec_wasm::build_fixed_scalar_guest_core_cached(&staging, &target, &cache)?
+        })
     })?;
     let (package, construct_s) = stage("construct", || {
-        Ok(ScalarFmiLsPackage::construct(prepared, core, model)?)
+        Ok(match &linked {
+            Some((artifact, saved)) => {
+                ScalarFmiLsPackage::construct_linked(prepared, core, model, artifact, saved)?
+            }
+            None => ScalarFmiLsPackage::construct(prepared, core, model)?,
+        })
     })?;
+    let scope = if linked.is_some() {
+        "scalar-product FMU construction and publication; LINKED compiled guest; not loaded"
+    } else {
+        "scalar-product FMU construction and publication; INTERPRETED guest; not loaded"
+    };
     let description_bytes = package.model_description().len();
     let component_bytes = package.component_bytes().len();
     let output = work.join("published");
@@ -130,7 +156,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "{}",
         serde_json::json!({
-            "scope": "scalar-product FMU construction and publication; INTERPRETED guest; not loaded",
+            "scope": scope,
             "model": model, "model_description_bytes": description_bytes,
             "component_bytes": component_bytes,
             "source_roots": roots.len(), "variables": variables,

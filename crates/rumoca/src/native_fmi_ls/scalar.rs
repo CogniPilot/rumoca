@@ -2,6 +2,7 @@
 //! (scalar-product) FMU through the same fixed Co-Simulation target.
 
 use anyhow::{Result, bail};
+use rumoca_core::artifact_build::PreparedBuildRequest;
 use rumoca_exec_wasm::FixedNativeGuestCore;
 use rumoca_ir_solve::{RetainedAssertionRoot, fmi::FmiScalarDeploymentView};
 use rumoca_phase_codegen::NativeFmiTemplateRenderer;
@@ -30,6 +31,35 @@ impl ScalarFmiLsPackage {
         core: FixedNativeGuestCore,
         model_name: &str,
     ) -> Result<Self> {
+        Self::construct_with(model, model_name, |model, request| {
+            Ok(model.link_fixed_guest(core, request)?)
+        })
+    }
+
+    /// [`Self::construct`] for the scalar-linked product: the scalar-linked
+    /// core is linked with the modules and dispatch of `artifact`, the linked
+    /// artifact one SDK export issued beside the `saved` product, and the
+    /// guest receives both to certify before any linked entry runs.
+    pub fn construct_linked(
+        model: PreparedScalarFmiLsModel,
+        core: FixedNativeGuestCore,
+        model_name: &str,
+        artifact: &[u8],
+        saved: &[u8],
+    ) -> Result<Self> {
+        Self::construct_with(model, model_name, |model, request| {
+            Ok(model.link_linked_guest(core, artifact, saved, request)?)
+        })
+    }
+
+    fn construct_with(
+        model: PreparedScalarFmiLsModel,
+        model_name: &str,
+        link: impl FnOnce(
+            PreparedScalarFmiLsModel,
+            &PreparedBuildRequest<'_, ArtifactSession>,
+        ) -> Result<LinkedScalarFmiLsComponent<ArtifactSession>>,
+    ) -> Result<Self> {
         let root = model.root().clone();
         let access = FmiScalarDeploymentView::from_root(&root)?;
         let package = prepare_metadata_with(
@@ -37,7 +67,7 @@ impl ScalarFmiLsPackage {
             model_name,
         )?;
         let request = package.build_request("component")?;
-        let component = model.link_fixed_guest(core, &request)?;
+        let component = link(model, &request)?;
         check_correlation(&package, &component, &access, &root)?;
         Ok(Self {
             package,

@@ -199,6 +199,11 @@ impl PreparedScalarFmiLsModel {
         )
         .map_err(linkage)?;
         let linked = decode_artifact(artifact).map_err(linkage)?;
+        if !linked.is_bound_to(saved) {
+            return Err(linkage(
+                "the linked artifact is bound to another saved product".into(),
+            ));
+        }
         let data = data::linked_library(&envelope, &token, saved, artifact).map_err(linkage)?;
         let bodies: Vec<&[u8]> = linked
             .modules()
