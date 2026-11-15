@@ -57,7 +57,9 @@ pub(crate) enum ValidatedOptions {
     FixedStep(rumoca_solver_rk45::FixedStepConfig),
 }
 
-/// Exact value identity of the validated configuration, including presence.
+/// Exact value identity of the validated configuration, including presence:
+/// the session cache's options key, which only lowering builds.
+#[cfg(any(test, feature = "lowering"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OptionsIdentity {
     Absent,
@@ -72,6 +74,7 @@ pub(crate) enum OptionsIdentity {
 }
 
 impl ValidatedOptions {
+    #[cfg(any(test, feature = "lowering"))]
     pub(crate) fn identity(self) -> OptionsIdentity {
         match self {
             Self::Defaults => OptionsIdentity::Absent,
