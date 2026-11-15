@@ -20,6 +20,9 @@ pub struct ScalarFmiLsPackage {
     component: LinkedScalarFmiLsComponent<ArtifactSession>,
     access: FmiScalarDeploymentView,
     root: RetainedAssertionRoot,
+    /// Whether the linked core is the interpreted scalar product's, which
+    /// compiles reference execution and is never published.
+    interpreted: bool,
 }
 
 impl ScalarFmiLsPackage {
@@ -31,7 +34,8 @@ impl ScalarFmiLsPackage {
         core: FixedNativeGuestCore,
         model_name: &str,
     ) -> Result<Self> {
-        Self::construct_with(model, model_name, |model, request| {
+        let interpreted = core.is_scalar_product();
+        Self::construct_with(model, model_name, interpreted, |model, request| {
             Ok(model.link_fixed_guest(core, request)?)
         })
     }
@@ -49,7 +53,8 @@ impl ScalarFmiLsPackage {
         artifact: &[u8],
         saved: &[u8],
     ) -> Result<Self> {
-        Self::construct_with(model, model_name, |model, request| {
+        let interpreted = core.is_scalar_product();
+        Self::construct_with(model, model_name, interpreted, |model, request| {
             Ok(model.link_linked_guest(core, certify_core, artifact, saved, request)?)
         })
     }
@@ -57,6 +62,7 @@ impl ScalarFmiLsPackage {
     fn construct_with(
         model: PreparedScalarFmiLsModel,
         model_name: &str,
+        interpreted: bool,
         link: impl FnOnce(
             PreparedScalarFmiLsModel,
             &PreparedBuildRequest<'_, ArtifactSession>,
@@ -76,6 +82,7 @@ impl ScalarFmiLsPackage {
             component,
             access,
             root,
+            interpreted,
         })
     }
 
@@ -92,7 +99,10 @@ impl ScalarFmiLsPackage {
     }
 
     /// Publish only this facade's original metadata and linked input, atomically.
+    /// The interpreted scalar product is refused here, before any archive is
+    /// written: only the compiled linked product, certified at build, publishes.
     pub fn publish(self, output: &Path) -> Result<()> {
+        refuse_interpreted_publication(self.interpreted)?;
         check_correlation(&self.package, &self.component, &self.access, &self.root)?;
         let Self {
             package, component, ..
@@ -102,6 +112,18 @@ impl ScalarFmiLsPackage {
             output,
         )
     }
+}
+
+/// The publication boundary of the scalar route: a core that compiles
+/// reference execution (the interpreted `scalar-product`) never publishes.
+fn refuse_interpreted_publication(interpreted: bool) -> Result<()> {
+    if interpreted {
+        bail!(
+            "the interpreted scalar product is not published: \
+             publish the scalar-linked product, certified at build"
+        );
+    }
+    Ok(())
 }
 
 fn check_correlation(
@@ -119,4 +141,19 @@ fn check_correlation(
         bail!("scalar metadata belongs to a different source");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::refuse_interpreted_publication;
+
+    #[test]
+    fn only_the_compiled_product_reaches_publication() {
+        assert!(refuse_interpreted_publication(false).is_ok());
+        let refused = refuse_interpreted_publication(true).expect_err("refused");
+        assert!(
+            refused.to_string().contains("interpreted scalar product is not published"),
+            "{refused}"
+        );
+    }
 }
