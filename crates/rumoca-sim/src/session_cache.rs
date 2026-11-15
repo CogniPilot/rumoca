@@ -1,36 +1,47 @@
 //! One idle prepared session, reused only through the original reset owner.
+//!
+//! The cache prepares sessions from a checked DAE, so it exists only with
+//! `lowering`; a build without it still hands out leases over sessions
+//! prepared from a published product.
 
+#[cfg(feature = "lowering")]
 mod options_key;
-#[cfg(test)]
+#[cfg(all(test, feature = "lowering"))]
 mod tests;
 
+#[cfg(feature = "lowering")]
 use options_key::OptionsKey;
+#[cfg(feature = "lowering")]
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
     sync::Arc,
 };
 
-use crate::{
-    SessionCommand, SessionEvent, SimOptions, SimulationDiagnosticError, SimulationSession,
-};
+use crate::{SessionCommand, SessionEvent, SimulationSession};
+#[cfg(feature = "lowering")]
+use crate::{SimOptions, SimulationDiagnosticError};
 
+#[cfg(feature = "lowering")]
 struct SessionKey {
     dae: Arc<rumoca_ir_dae::Dae>,
     options: OptionsKey,
 }
 
+#[cfg(feature = "lowering")]
 impl SessionKey {
     fn matches(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.dae, &other.dae) && self.options == other.options
     }
 }
 
+#[cfg(feature = "lowering")]
 struct IdleSession {
     key: SessionKey,
     session: SimulationSession,
 }
 
+#[cfg(feature = "lowering")]
 #[derive(Default)]
 struct CacheState {
     idle: Option<IdleSession>,
@@ -40,9 +51,11 @@ struct CacheState {
 /// Retains at most one idle instance in this process/WASM instance, never IR
 /// bytes on disk. The caller supplies the compiler's current checked DAE owner;
 /// only the compiler decides whether edits preserve that owner.
+#[cfg(feature = "lowering")]
 #[derive(Clone, Default)]
 pub struct SimulationSessionCache(Rc<RefCell<CacheState>>);
 
+#[cfg(feature = "lowering")]
 impl SimulationSessionCache {
     /// Create an independent live session or exclusively check out the idle
     /// one. A hit executes the existing original-default Reset, including
@@ -107,9 +120,13 @@ impl SimulationSessionCache {
 /// ```
 pub struct SimulationSessionLease {
     session: Option<SimulationSession>,
+    #[cfg(feature = "lowering")]
     key: Option<SessionKey>,
+    #[cfg(feature = "lowering")]
     cache: Weak<RefCell<CacheState>>,
+    #[cfg(feature = "lowering")]
     generation: Rc<()>,
+    #[cfg(feature = "lowering")]
     reusable: bool,
     reused: bool,
 }
@@ -123,9 +140,13 @@ impl SimulationSessionLease {
     pub(crate) fn from_prepared(session: SimulationSession) -> Self {
         Self {
             session: Some(session),
+            #[cfg(feature = "lowering")]
             key: None,
+            #[cfg(feature = "lowering")]
             cache: Weak::new(),
+            #[cfg(feature = "lowering")]
             generation: Rc::new(()),
+            #[cfg(feature = "lowering")]
             reusable: false,
             reused: false,
         }
@@ -150,6 +171,7 @@ impl SimulationSessionLease {
             .as_mut()
             .expect("live session lease")
             .apply(command);
+        #[cfg(feature = "lowering")]
         if matches!(event, SessionEvent::Error { .. }) {
             self.reusable = false;
         }
@@ -157,6 +179,7 @@ impl SimulationSessionLease {
     }
 }
 
+#[cfg(feature = "lowering")]
 impl Drop for SimulationSessionLease {
     fn drop(&mut self) {
         if !self.reusable || std::thread::panicking() {

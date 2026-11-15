@@ -43,6 +43,7 @@ mod browser {
     use serde::Deserialize;
     use std::io::Cursor;
 
+    #[cfg(feature = "lowering")]
     #[derive(Serialize)]
     struct RuntimeWireRef<'a, T> {
         version: u32,
@@ -87,6 +88,7 @@ mod browser {
             .map_err(refusal)?;
         Ok(bytes)
     }
+    #[cfg(feature = "lowering")]
     fn replay(bytes: &[u8]) -> Result<FmiComponent, SimulationDiagnosticError> {
         let mut reader = rmp_serde::Deserializer::new(Cursor::new(bytes));
         let component =
@@ -108,6 +110,7 @@ mod browser {
             rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);
         crate::SimulationSession::from_prepared_rk(artifact, opts, backend)
     }
+    #[cfg(feature = "lowering")]
     pub(super) fn export<T: Serialize>(
         dae: &rumoca_ir_dae::Dae,
         opts: SimOptions,
@@ -122,6 +125,7 @@ mod browser {
     /// The saved product and, from the same capture, the artifact of the
     /// linked product issued beside it, bound to those saved bytes; both use
     /// the same named-map wire.
+    #[cfg(feature = "lowering")]
     pub(super) fn export_linked<T: Serialize>(
         dae: &rumoca_ir_dae::Dae,
         opts: SimOptions,
@@ -140,6 +144,7 @@ mod browser {
         Ok((bytes, artifact))
     }
     /// The browser product's component: the simulation lowering.
+    #[cfg(feature = "lowering")]
     fn simulation_component(
         dae: &rumoca_ir_dae::Dae,
         opts: &SimOptions,
@@ -151,12 +156,14 @@ mod browser {
     /// The compiled FMU's component, from the one construction the FMU
     /// packager also uses, so the captured programs belong to the component
     /// the FMU guest constructs.
+    #[cfg(feature = "lowering")]
     fn fmi_scalar_component(
         dae: &rumoca_ir_dae::Dae,
         opts: &SimOptions,
     ) -> Result<FmiComponent, SimulationDiagnosticError> {
         crate::scalar_package_component(dae, opts)
     }
+    #[cfg(feature = "lowering")]
     fn export_in<T: Serialize, L>(
         dae: &rumoca_ir_dae::Dae,
         opts: SimOptions,
@@ -231,6 +238,8 @@ mod browser {
     }
 }
 /// Build one binary payload with typed context and component (no escaped JSON).
+/// Exporting lowers the model, so it exists only with `lowering`.
+#[cfg(feature = "lowering")]
 pub fn export_precompiled_runtime<T: Serialize>(
     dae: &rumoca_ir_dae::Dae,
     opts: SimOptions,
@@ -253,6 +262,7 @@ pub fn export_precompiled_runtime<T: Serialize>(
 /// words and binding. A product with any kind that has no linked form (an
 /// uncompiled kind, or a record site the linked assembler refused) is refused
 /// by name; nothing partial is issued.
+#[cfg(feature = "lowering")]
 pub fn export_precompiled_linked_runtime<T: Serialize>(
     dae: &rumoca_ir_dae::Dae,
     opts: SimOptions,

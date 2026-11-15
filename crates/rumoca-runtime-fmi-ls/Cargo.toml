@@ -44,7 +44,7 @@ rumoca-sim = { path = "../rumoca-sim", default-features = false, features = ["li
 [dev-dependencies]
 rumoca-compile = { workspace = true }
 rumoca-exec-wasm = { workspace = true, features = ["host-engine"] }
-rumoca-sim = { workspace = true, features = ["fmi"] }
+rumoca-sim = { workspace = true, features = ["fmi", "lowering"] }
 
 [lints]
 workspace = true

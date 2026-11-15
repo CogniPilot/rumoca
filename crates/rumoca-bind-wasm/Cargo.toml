@@ -55,7 +55,7 @@ wasm-encoder = "0.241"
 wasmparser = "0.241"
 wit-component = "0.241"
 wit-parser = "0.241"
-rumoca-sim = { workspace = true, default-features = false, features = ["fmi"] }
+rumoca-sim = { workspace = true, default-features = false, features = ["fmi", "lowering"] }
 rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 flate2 = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
@@ -78,7 +78,7 @@ native-fmi-ls-build = ["native-assignments", "rumoca-sim/native-fmi-ls-build"]
 sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol", "dep:sha2"]
 precompiled-runtime = ["sim-rk45", "rumoca-sim/precompiled-runtime"]
-sim-rk45 = ["reference-execution", "dep:rumoca-sim", "rumoca-sim/solver-rk45", "dep:sha2"]
+sim-rk45 = ["reference-execution", "dep:rumoca-sim", "rumoca-sim/lowering", "rumoca-sim/solver-rk45", "dep:sha2"]
 # The browser and host simulation keep reference (interpreted) execution.
 # Enabled on this host edge only, never through the solver-rk45 the published
 # compiled guest shares.

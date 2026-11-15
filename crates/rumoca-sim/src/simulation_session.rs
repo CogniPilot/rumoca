@@ -1,10 +1,13 @@
 use indexmap::IndexMap;
+#[cfg(feature = "lowering")]
 use rumoca_ir_dae as dae;
 
 scheduled_executor_items! {
     use crate::SimulationSessionApi;
 }
-use crate::{SimSolverMode, SimulationDiagnosticError};
+#[cfg(feature = "lowering")]
+use crate::SimSolverMode;
+use crate::SimulationDiagnosticError;
 
 #[derive(Debug, Clone)]
 pub struct SessionState {
@@ -46,6 +49,7 @@ impl SimulationSession {
         })
     }
 
+    #[cfg(feature = "lowering")]
     pub fn new(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
@@ -53,6 +57,7 @@ impl SimulationSession {
         Self::new_with_diagnostics(dae_model, opts)
     }
 
+    #[cfg(feature = "lowering")]
     pub fn new_with_diagnostics(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
@@ -348,6 +353,7 @@ scheduled_executor_items! {
 
 /// Lower the DAE and apply simulation overrides exactly once before handing the
 /// solve model to the selected simulation solver backend.
+#[cfg(feature = "lowering")]
 fn lower_for_simulation_session(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
@@ -361,6 +367,7 @@ fn lower_for_simulation_session(
     crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
 }
 
+#[cfg(feature = "lowering")]
 fn new_auto_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
@@ -410,6 +417,7 @@ fn new_auto_session(
     }
 }
 
+#[cfg(feature = "lowering")]
 fn new_bdf_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
@@ -432,6 +440,7 @@ fn new_bdf_session(
     }
 }
 
+#[cfg(feature = "lowering")]
 fn new_rk_like_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,

@@ -1,18 +1,26 @@
+#[cfg(feature = "lowering")]
 use std::time::Instant;
 
 use indexmap::IndexMap;
+#[cfg(feature = "lowering")]
 use rumoca_ir_dae as dae;
 
 scheduled_executor_items! {
     use crate::SimulationSessionApi;
 }
+use crate::SimError;
 use crate::me_backend::BackendSimulationSession;
 use crate::simulation_session::SessionState;
-use crate::solve_lowering::{
-    SimulationDiagnosticError, apply_correlated_simulation_overrides, finish_runtime_fmi_artifact,
-    lower_correlated_for_simulation_with_stage_timing_and_param_overrides, tunable_param_overrides,
+use crate::solve_lowering::SimulationDiagnosticError;
+#[cfg(feature = "lowering")]
+use crate::{
+    BuildSimulationTimings,
+    solve_lowering::{
+        apply_correlated_simulation_overrides, finish_runtime_fmi_artifact,
+        lower_correlated_for_simulation_with_stage_timing_and_param_overrides,
+        tunable_param_overrides,
+    },
 };
-use crate::{BuildSimulationTimings, SimError};
 
 const INSTANCE_NAME: &str = "rk-like";
 
@@ -24,6 +32,7 @@ const RK45_INTEGRATOR: crate::me_backend::IntegratorFactory =
         build: rk45_integrator,
     };
 
+#[cfg(feature = "lowering")]
 pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
@@ -127,8 +136,10 @@ fn fixed_step_integrator(
     Ok(rumoca_solver_rk45::fixed_step_integrator(setup, config)?)
 }
 
+#[cfg(feature = "lowering")]
 pub use simulate as simulate_dae;
 
+#[cfg(feature = "lowering")]
 pub fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
@@ -136,6 +147,7 @@ pub fn simulate_with_diagnostics(
     simulate_with_observation(dae_model, opts, None)
 }
 
+#[cfg(feature = "lowering")]
 pub(crate) fn simulate_with_observation(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
@@ -147,6 +159,7 @@ pub(crate) fn simulate_with_observation(
         .map_err(SimulationDiagnosticError::from)
 }
 
+#[cfg(feature = "lowering")]
 pub(crate) fn simulate_artifact(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &rumoca_solver::SimOptions,
@@ -172,6 +185,7 @@ pub(crate) fn simulate_artifact_with_observation(
     )
 }
 
+#[cfg(feature = "lowering")]
 fn lower_runtime_artifact(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
@@ -187,12 +201,14 @@ fn lower_runtime_artifact(
     crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
 }
 
+#[cfg(feature = "lowering")]
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
 /// Preserve the originating diagnostic code when adapting to the backend's
 /// string-carrying error.
 /// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
 /// for a rejected parameter/start override).
+#[cfg(feature = "lowering")]
 fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
     match err {
         SimulationDiagnosticError::Simulation(error) => error,
@@ -206,10 +222,12 @@ pub struct SimulationSession {
 }
 
 impl SimulationSession {
+    #[cfg(feature = "lowering")]
     pub fn new(dae_model: &dae::Dae, opts: rumoca_solver::SimOptions) -> Result<Self, SimError> {
         Self::new_with_stage_timing(dae_model, opts, |_| {}).map(|(stepper, _)| stepper)
     }
 
+    #[cfg(feature = "lowering")]
     pub fn new_with_stage_timing(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
@@ -256,6 +274,7 @@ impl SimulationSession {
         ))
     }
 
+    #[cfg(feature = "lowering")]
     pub fn new_with_diagnostics(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
@@ -420,7 +439,7 @@ scheduled_executor_items! {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lowering"))]
 mod tests {
     use super::*;
 

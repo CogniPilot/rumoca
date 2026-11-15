@@ -25,6 +25,9 @@ pub const EX012_SESSION_INVALID_ARGUMENT: &str = "EX012";
 
 #[derive(Debug)]
 pub enum SimulationDiagnosticError {
+    /// Only a build that lowers models (`lowering`) can raise this; the
+    /// compiled guest loads a published product and never lowers.
+    #[cfg(feature = "lowering")]
     SolveLowering(rumoca_phase_solve::LowerError),
     Solver(String),
     /// Retain the actual ME/numerical cause and its stage across the facade.
@@ -52,6 +55,7 @@ impl SimulationDiagnosticError {
     #[must_use]
     pub fn diagnostic_code(&self) -> &'static str {
         match self {
+            #[cfg(feature = "lowering")]
             Self::SolveLowering(error) => error.code(),
             Self::Solver(_) => EX001_SOLVER_FAILURE,
             Self::BackendOptions(_) => EX002_RUNTIME_PREPARATION,
@@ -64,6 +68,7 @@ impl SimulationDiagnosticError {
 
     pub fn diagnostic_label(&self) -> String {
         match self {
+            #[cfg(feature = "lowering")]
             Self::SolveLowering(_) => "Solve lowering failed here".to_string(),
             #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
             Self::Simulation(_) => "simulation failure originates here".to_string(),
@@ -81,6 +86,7 @@ impl SimulationDiagnosticError {
     /// Read off the `LowerError` *variant*, so a consumer never has to
     /// recognise a structural rejection by the wording of its message.
     #[must_use]
+    #[cfg(feature = "lowering")]
     pub fn is_structural(&self) -> bool {
         matches!(
             self,
@@ -88,8 +94,16 @@ impl SimulationDiagnosticError {
         )
     }
 
+    /// Without lowering no diagnostic comes from structural analysis.
+    #[must_use]
+    #[cfg(not(feature = "lowering"))]
+    pub fn is_structural(&self) -> bool {
+        false
+    }
+
     pub fn source_span(&self) -> Option<rumoca_core::Span> {
         match self {
+            #[cfg(feature = "lowering")]
             Self::SolveLowering(error) => error.source_span(),
             Self::Solver(_) | Self::BackendOptions(_) | Self::InvalidOverride { .. } => None,
             #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
@@ -102,6 +116,7 @@ impl SimulationDiagnosticError {
 impl std::fmt::Display for SimulationDiagnosticError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "lowering")]
             Self::SolveLowering(error) => write!(f, "{error}"),
             Self::Solver(error) => write!(f, "{error}"),
             Self::BackendOptions(error) => std::fmt::Display::fmt(error, f),
@@ -116,6 +131,7 @@ impl std::fmt::Display for SimulationDiagnosticError {
 impl std::error::Error for SimulationDiagnosticError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "lowering")]
             Self::SolveLowering(error) => Some(error),
             Self::BackendOptions(error) => Some(error),
             #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]

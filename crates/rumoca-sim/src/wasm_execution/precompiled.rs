@@ -216,6 +216,12 @@ impl LoadedPrograms {
 
 /// A linked capture: the assembler fed the same checked source at every
 /// record site, and how many entries of each kind the saved product holds.
+///
+/// Capture is the export half of a precompiled product: only an export, which
+/// lowers a model (`lowering`), opens a capture scope. A build without
+/// lowering (the compiled guest) only loads, so the capture constructors and
+/// their state are unused there; every record site still matches both modes.
+#[cfg_attr(not(feature = "lowering"), allow(dead_code))]
 #[derive(Default)]
 pub(crate) struct LinkedCapture {
     assembler: LinkedProductAssembler,
@@ -225,6 +231,7 @@ pub(crate) struct LinkedCapture {
 #[derive(Clone)]
 pub(crate) enum ProgramMode {
     /// The saved product, and, for a linked export, its linked product.
+    #[cfg_attr(not(feature = "lowering"), allow(dead_code))]
     Capture(
         Rc<RefCell<CorePrograms>>,
         Option<Rc<RefCell<LinkedCapture>>>,
@@ -256,6 +263,7 @@ impl ProgramScope {
             Ok(Self { mode, active: true })
         })
     }
+    #[cfg_attr(not(feature = "lowering"), allow(dead_code))]
     pub(crate) fn capture() -> Result<Self, String> {
         Self::begin(ProgramMode::Capture(
             Rc::new(RefCell::new(CorePrograms::default())),
@@ -264,6 +272,7 @@ impl ProgramScope {
     }
     /// A capture that also issues the linked product from the same checked
     /// sources, at the same record sites, in the same order.
+    #[cfg_attr(not(feature = "lowering"), allow(dead_code))]
     pub(crate) fn capture_linked() -> Result<Self, String> {
         Self::begin(ProgramMode::Capture(
             Rc::new(RefCell::new(CorePrograms::default())),
@@ -357,6 +366,7 @@ impl ProgramScope {
             linked,
         })))
     }
+    #[cfg_attr(not(feature = "lowering"), allow(dead_code))]
     pub(crate) fn finish_capture(mut self) -> Result<CorePrograms, String> {
         let ProgramMode::Capture(programs, _) = &self.mode else {
             return Err("not an export scope".into());
@@ -368,6 +378,7 @@ impl ProgramScope {
     /// The saved product and the linked product issued beside it. Every
     /// uncompiled kind, including a record site the assembler refused, is
     /// named in the refusal; nothing is issued for a partial set.
+    #[cfg_attr(not(feature = "lowering"), allow(dead_code))]
     pub(crate) fn finish_capture_linked(mut self) -> Result<(CorePrograms, LinkedProduct), String> {
         let ProgramMode::Capture(programs, Some(linked)) = &self.mode else {
             return Err("not a linked export scope".into());
@@ -455,6 +466,7 @@ impl ProgramScope {
     }
 }
 /// The captured saved product, refused with every uncompiled kind named.
+#[cfg_attr(not(feature = "lowering"), allow(dead_code))]
 fn captured(programs: &RefCell<CorePrograms>) -> Result<CorePrograms, String> {
     if !programs.borrow().uncompiled.is_empty() {
         return Err(format!(
@@ -553,10 +565,9 @@ impl ProgramMode {
                             target_os = "wasi",
                             target_env = "p2"
                         ))]
-                        let issued =
-                            input.issue(&[(LinkedEntryKind::Event, 1)], |assembler| {
-                                assembler.event(&source).map(|id| vec![id])
-                            })?;
+                        let issued = input.issue(&[(LinkedEntryKind::Event, 1)], |assembler| {
+                            assembler.event(&source).map(|id| vec![id])
+                        })?;
                         wire.bind(
                             input.binding,
                             source,
@@ -768,10 +779,9 @@ impl ProgramMode {
                     target_os = "wasi",
                     target_env = "p2"
                 ))]
-                let issued = programs
-                    .issue(&[(LinkedEntryKind::Issued, 1)], |assembler| {
-                        assembler.issued(rows, layout, calls).map(|id| vec![id])
-                    })?;
+                let issued = programs.issue(&[(LinkedEntryKind::Issued, 1)], |assembler| {
+                    assembler.issued(rows, layout, calls).map(|id| vec![id])
+                })?;
                 program
                     .bind_issued(
                         programs.binding,

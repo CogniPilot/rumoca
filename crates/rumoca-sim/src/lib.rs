@@ -4,7 +4,9 @@
 //! corresponding features are enabled, the diffsol/rk45 solver entry points
 //! and the scheduled simulation module that drives scheduled scenario simulations.
 
+#[cfg(feature = "lowering")]
 use rumoca_core::Span;
+#[cfg(feature = "lowering")]
 use rumoca_ir_solve as solve;
 use serde::{Deserialize, Serialize};
 
@@ -25,10 +27,12 @@ pub use rumoca_eval_solve::{
     nan_trace,
 };
 use rumoca_ir_dae as dae;
+#[cfg(feature = "lowering")]
 pub use rumoca_phase_solve::{fmi::finish_fmi_component, lower_solve_package, lower_solve_problem};
 
 /// Refinement of a checked GALEC package into the Solve algorithm block an
 /// `algorithm-block` target prints its C from (#483).
+#[cfg(feature = "lowering")]
 pub mod algorithm_block {
     pub use rumoca_phase_solve::{AlgorithmBlockLowerError, lower_algorithm_block};
 }
@@ -72,6 +76,8 @@ pub mod bulk;
 mod error;
 #[cfg(all(test, feature = "solver-rk45"))]
 mod fixed_step_session_tests;
+#[cfg(test)]
+mod lowering_profile_tests;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod me_backend;
 #[cfg(all(test, feature = "solver-rk45"))]
@@ -81,6 +87,8 @@ mod precompiled_runtime;
 pub mod row_eval_trace;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_cache;
+#[cfg(feature = "precompiled-runtime")]
+pub use precompiled_runtime::load_precompiled_runtime;
 #[cfg(all(
     feature = "linked-guest",
     target_arch = "wasm32",
@@ -88,10 +96,8 @@ mod session_cache;
     target_env = "p2"
 ))]
 pub use precompiled_runtime::{LinkedGuestLoad, load_linked_guest};
-#[cfg(feature = "precompiled-runtime")]
-pub use precompiled_runtime::{
-    export_precompiled_linked_runtime, export_precompiled_runtime, load_precompiled_runtime,
-};
+#[cfg(all(feature = "lowering", feature = "precompiled-runtime"))]
+pub use precompiled_runtime::{export_precompiled_linked_runtime, export_precompiled_runtime};
 #[cfg(feature = "precompiled-runtime")]
 pub use rumoca_exec_wasm::EMITTER_PROFILE;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
@@ -143,8 +149,10 @@ pub use backend_options::{fixed_step_backend_options, fixed_step_semi_implicit_b
 pub mod interactive_options;
 #[cfg(all(feature = "fmi", feature = "solver-rk45"))]
 mod scalar_package;
+#[cfg(all(feature = "lowering", feature = "fmi", feature = "solver-rk45"))]
+pub use scalar_package::scalar_package_component;
 #[cfg(all(feature = "fmi", feature = "solver-rk45"))]
-pub use scalar_package::{scalar_package_component, scalar_package_sim_options};
+pub use scalar_package::scalar_package_sim_options;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
@@ -164,10 +172,19 @@ pub use diffsol::{
 pub use error::{SimError, SimFailureStage};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
-#[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    not(feature = "solver-diffsol"),
+    feature = "solver-rk45"
+))]
 pub use rk45::{simulate, simulate_dae};
+#[cfg(all(
+    feature = "lowering",
+    any(feature = "solver-diffsol", feature = "solver-rk45")
+))]
+pub use session_cache::SimulationSessionCache;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
-pub use session_cache::{SimulationSessionCache, SimulationSessionLease};
+pub use session_cache::SimulationSessionLease;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use session_protocol::{
     SESSION_MAX_LINE_BYTES, SESSION_PARENT_DISCONNECTED_EXIT_CODE,
@@ -184,24 +201,26 @@ scheduled_executor_items! {
 // report types are re-exported from there rather than as root cross-crate uses.
 pub use solve_lowering::{
     BlockReport, EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
-    EX012_SESSION_INVALID_ARGUMENT, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe,
-    JacobianReport, ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
+    EX012_SESSION_INVALID_ARGUMENT, EvalAtReport, EvalAtSlot, ExcludedParameter, ExclusionReason,
+    JacobianReport, ParameterClassification, SimulationDiagnosticError, StructuralReport,
+    TearingReport,
+};
+#[cfg(feature = "lowering")]
+pub use solve_lowering::{
+    EvalAtProbe, JacobianProbe, Linearization, ObjectiveGradientProbe, ParameterJacobianProbe,
     SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
-    StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
-    diagnose_structural_singularity, eval_dae_at, jacobian_for_dae,
+    UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis, diagnose_structural_singularity,
+    eval_dae_at, independent_tunable_parameters, jacobian_for_dae, linearization_for_dae,
     lower_correlated_for_native_execution_with_overrides,
     lower_correlated_for_simulation_with_overrides, lower_dae_for_gpu_preparation,
     lower_dae_for_native_preparation, lower_dae_for_simulation,
     lower_for_differentiation_with_overrides, lower_for_simulation_with_overrides,
-    parameter_jacobian_for_dae, state_and_parameter_jacobian_for_dae,
-    steady_state_adjoint_objective_gradient_for_dae, steady_state_objective_gradient_for_dae,
-    steady_state_parameter_sensitivity_for_dae, structural_report_for_dae,
+    parameter_jacobian_for_dae, select_sensitivity_parameters,
+    state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
+    steady_state_objective_gradient_for_dae, steady_state_parameter_sensitivity_for_dae,
+    structural_report_for_dae,
 };
-pub use solve_lowering::{
-    ExcludedParameter, ExclusionReason, Linearization, ParameterClassification,
-    independent_tunable_parameters, linearization_for_dae, select_sensitivity_parameters,
-};
-#[cfg(feature = "fmi")]
+#[cfg(all(feature = "lowering", feature = "fmi"))]
 pub use solve_lowering::{
     lower_fmi_c_export_component, lower_fmi_component, lower_fmi_export_component,
     lower_fmi_scalar_export_component,
@@ -212,9 +231,9 @@ pub mod scenario_config;
 
 #[cfg(feature = "solver-rk45")]
 pub mod rk45;
-#[cfg(feature = "solver-rk45")]
+#[cfg(all(feature = "lowering", feature = "solver-rk45"))]
 mod trajectory_sensitivity;
-#[cfg(feature = "solver-rk45")]
+#[cfg(all(feature = "lowering", feature = "solver-rk45"))]
 pub use trajectory_sensitivity::{
     TrajectoryPlugin, TrajectorySession, trajectory_objective_gradient_for_dae,
     trajectory_sensitivity_for_dae,
@@ -227,7 +246,10 @@ scheduled_executor_items! {
 #[cfg(feature = "report")]
 pub mod report;
 
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    any(feature = "solver-diffsol", feature = "solver-rk45")
+))]
 pub fn simulate_with_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -237,7 +259,10 @@ pub fn simulate_with_diagnostics(
 
 /// Observe the same selected ME numerical path as `simulate_with_diagnostics`.
 /// Unsupported readback affects only snapshot completeness, not integration.
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    any(feature = "solver-diffsol", feature = "solver-rk45")
+))]
 pub fn simulate_with_numerical_observation(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -246,7 +271,10 @@ pub fn simulate_with_numerical_observation(
     simulate_with_observation(dae_model, opts, Some(observation))
 }
 
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    any(feature = "solver-diffsol", feature = "solver-rk45")
+))]
 fn simulate_with_observation(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -262,7 +290,10 @@ fn simulate_with_observation(
     }
 }
 
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    any(feature = "solver-diffsol", feature = "solver-rk45")
+))]
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
 /// Simulate one already-constructed correlated FMI component, dispatching by
@@ -400,7 +431,10 @@ fn simulate_artifact_diffsol(
 /// "step size too small" into an actionable diagnostic. Intended for
 /// scheduled single-model use (the CLI); bulk callers should use
 /// [`simulate_with_diagnostics`] to avoid the retry cost.
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    any(feature = "solver-diffsol", feature = "solver-rk45")
+))]
 pub fn simulate_with_diagnostics_auto_nan_trace(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -441,7 +475,11 @@ fn simulate_with_auto_diagnostics(
     simulate_with_diffsol_diagnostics(dae_model, opts, observation)
 }
 
-#[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
+#[cfg(all(
+    feature = "lowering",
+    not(feature = "solver-diffsol"),
+    feature = "solver-rk45"
+))]
 fn simulate_with_auto_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -450,7 +488,12 @@ fn simulate_with_auto_diagnostics(
     simulate_with_rk45_diagnostics(dae_model, opts, observation)
 }
 
-#[cfg(all(test, not(feature = "solver-diffsol"), feature = "solver-rk45"))]
+#[cfg(all(
+    test,
+    feature = "lowering",
+    not(feature = "solver-diffsol"),
+    feature = "solver-rk45"
+))]
 mod solver_mode_tests {
     use super::*;
 
@@ -519,7 +562,7 @@ mod solver_mode_tests {
     }
 }
 
-#[cfg(feature = "solver-rk45")]
+#[cfg(all(feature = "lowering", feature = "solver-rk45"))]
 fn simulate_with_rk45_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,
@@ -552,6 +595,7 @@ fn simulate_with_diffsol_diagnostics(
 }
 
 #[cfg(all(
+    feature = "lowering",
     any(feature = "solver-diffsol", feature = "solver-rk45"),
     not(feature = "solver-diffsol")
 ))]
@@ -698,6 +742,7 @@ pub struct TunableParameterMeta {
     pub description: Option<String>,
 }
 
+#[cfg(feature = "lowering")]
 pub fn build_tunable_parameter_meta(
     dae_model: &dae::Dae,
     solve_model: &solve::SolveModel,
@@ -718,6 +763,7 @@ pub fn build_tunable_parameter_meta(
     })
 }
 
+#[cfg(feature = "lowering")]
 fn tunable_variable_meta<'dae>(
     dae_model: &dae::Dae,
     view: dae::DaeView<'dae>,
@@ -771,6 +817,7 @@ fn tunable_variable_meta<'dae>(
     Ok(result)
 }
 
+#[cfg(feature = "lowering")]
 fn evaluated_attribute<'dae>(
     view: dae::DaeView<'dae>,
     variable: dae::VariableView<'dae>,
@@ -784,6 +831,7 @@ fn evaluated_attribute<'dae>(
     })
 }
 
+#[cfg(feature = "lowering")]
 fn parameter_slot(
     solve_model: &solve::SolveModel,
     variable: dae::VariableView<'_>,
@@ -798,6 +846,7 @@ fn parameter_slot(
     Ok(index)
 }
 
+#[cfg(feature = "lowering")]
 fn runtime_preparation(message: String, span: Span) -> SimulationDiagnosticError {
     SimulationDiagnosticError::RuntimePreparation {
         message,
@@ -805,6 +854,7 @@ fn runtime_preparation(message: String, span: Span) -> SimulationDiagnosticError
     }
 }
 
+#[cfg(feature = "lowering")]
 pub fn compiled_layout_binding_debug(
     dae_model: &dae::Dae,
     name: &str,
@@ -813,6 +863,7 @@ pub fn compiled_layout_binding_debug(
     Ok(layout.binding(name).map(|slot| format!("{slot:?}")))
 }
 
+#[cfg(feature = "lowering")]
 pub fn compiled_layout_related_bindings_debug(
     dae_model: &dae::Dae,
     prefix: &str,

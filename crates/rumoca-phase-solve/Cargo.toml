@@ -18,7 +18,11 @@ rumoca-ir-solve = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+# State selection settles trial points by evaluating pure calls at
+# translation time, which is reference evaluation. Every consumer of this
+# crate translates models, so the edge enables it; the compiled guest does
+# not depend on this crate (rumoca-sim `lowering`).
+rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 rumoca-eval-galec = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }

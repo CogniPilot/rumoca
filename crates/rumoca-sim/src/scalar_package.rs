@@ -4,6 +4,7 @@
 //! come from the same lowering, options and step plan.
 use crate::interactive_options::InteractiveOptions;
 use crate::{SimOptions, SimSolverMode, SimulationDiagnosticError};
+#[cfg(feature = "lowering")]
 use rumoca_ir_solve::fmi::FmiComponent;
 
 fn refusal(message: impl ToString) -> SimulationDiagnosticError {
@@ -30,6 +31,7 @@ pub fn scalar_package_sim_options(
 
 /// The scalar FMU's component: the FMI scalar export lowering of `dae` with
 /// `sim`, carrying the step plan `sim` selects.
+#[cfg(feature = "lowering")]
 pub fn scalar_package_component(
     dae: &rumoca_ir_dae::Dae,
     sim: &SimOptions,

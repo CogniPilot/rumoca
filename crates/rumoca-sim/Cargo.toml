@@ -10,13 +10,18 @@ homepage.workspace = true
 [features]
 fmi-derivative-operation = ["precompiled-runtime"]
 default = ["native-solvers"]
-native-solvers = ["reference-execution", "solver-diffsol", "solver-rk45", "solver-velimplicit"]
+native-solvers = ["lowering", "reference-execution", "solver-diffsol", "solver-rk45", "solver-velimplicit"]
+# Lowering a checked DAE into a simulation or FMI component (rumoca-phase-solve
+# and its translation-time evaluation). Every host and browser build that
+# simulates, exports or packages from a model enables it; the fixed linked
+# guest (`linked-guest`) never does, because it loads a published product.
+lowering = ["dep:rumoca-phase-solve"]
 # Reference (interpreted) execution for host and browser simulation. The
 # fixed linked guest (`linked-guest`) never enables it.
 reference-execution = ["rumoca-solver/reference-execution", "rumoca-eval-solve/reference-eval"]
 fmi = []
 precompiled-runtime = ["dep:rmp-serde", "fmi", "dep:rumoca-exec-wasm", "rumoca-exec-wasm/precompiled-programs"]
-native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
+native-fmi-ls = ["fmi", "lowering", "dep:rumoca-exec-wasm"]
 # The fixed scalar FMI guest: the saved programs run as linked entries
 # through the issued dispatch, certified against the linked artifact.
 linked-guest = ["fmi-derivative-operation", "solver-rk45", "rumoca-exec-wasm/fixed-scalar-linked-receiver"]
@@ -24,9 +29,9 @@ native-fmi-ls-build = ["native-fmi-ls", "reference-execution", "rumoca-exec-wasm
 # Build-time certification runner of a linked scalar product (native packager
 # only). Without it a linked product is refused, never published uncertified.
 linked-build-certify = ["native-fmi-ls-build", "dep:wasmtime"]
-tracing = ["rumoca-phase-solve/tracing"]
-wasm-solvers = ["reference-execution", "solver-diffsol", "solver-rk45"]
-solver-diffsol = ["dep:rumoca-solver-diffsol"]
+tracing = ["rumoca-phase-solve?/tracing"]
+wasm-solvers = ["lowering", "reference-execution", "solver-diffsol", "solver-rk45"]
+solver-diffsol = ["dep:rumoca-solver-diffsol", "lowering"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
 solver-velimplicit = ["solver-rk45", "dep:rumoca-solver-velimplicit"]
 # HTML simulation report renderer. Pure-Rust deps (web + compile);
@@ -59,7 +64,7 @@ indexmap = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-phase-solve = { workspace = true }
+rumoca-phase-solve = { workspace = true, optional = true }
 rumoca-exec-wasm = { workspace = true, optional = true }
 wasm-encoder = { version = "0.241", optional = true }
 wit-component = { version = "0.241", optional = true }
