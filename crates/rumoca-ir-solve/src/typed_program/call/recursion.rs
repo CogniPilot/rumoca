@@ -319,8 +319,8 @@ fn require_one_recursive_component(
 }
 
 /// Least fixed point of the member summaries. Each iteration widens every
-/// dependency to its whole input, so the lattice is the finite set of input
-/// subsets per output and the iteration terminates.
+/// dependency and every obligation read to its whole input, so the lattice is
+/// the finite set of input subsets per output and the iteration terminates.
 fn least_dependencies(
     owners: &[SolvePureCallOwner],
     pending: &mut [PendingOwner],
@@ -340,7 +340,7 @@ fn least_dependencies(
                 view,
             )?;
             execution.retain_recursive_obligation();
-            next.push((dependency::widen(derived), execution));
+            next.push((dependency::widen(derived), execution.widen()));
         }
         let mut changed = false;
         for (member, (dependencies, execution)) in pending.iter_mut().zip(next) {

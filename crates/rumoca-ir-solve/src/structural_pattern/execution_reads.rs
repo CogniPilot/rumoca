@@ -208,10 +208,18 @@ impl DependencyWalk<'_> {
         match op {
             LinearOp::PureCall {
                 input_starts, site, ..
-            } => self.include_call_reads(input_starts, site.inputs(), site.execution_reads()),
+            } => self.include_call_reads(
+                input_starts,
+                site.inputs(),
+                site.execution_read_elements(),
+            ),
             LinearOp::PureCallDirectional {
                 input_starts, site, ..
-            } => self.include_call_reads(input_starts, site.inputs(), site.execution_reads()),
+            } => self.include_call_reads(
+                input_starts,
+                site.inputs(),
+                site.execution_read_elements(),
+            ),
             LinearOp::PureCallObservation {
                 input_starts, site, ..
             } => {
@@ -219,7 +227,7 @@ impl DependencyWalk<'_> {
                 self.include_call_reads(
                     input_starts,
                     inputs,
-                    &(0..inputs.len()).collect::<Vec<_>>(),
+                    (0..inputs.len()).map(|input| (input, None)).collect(),
                 )
             }
             LinearOp::FunctionConditional {
@@ -282,24 +290,35 @@ impl DependencyWalk<'_> {
         }
     }
 
+    /// The argument registers a call's obligations read: each named element of
+    /// an input leaf, or the whole leaf (`None`).
     fn include_call_reads(
         &self,
         starts: &[Reg],
         inputs: &[crate::SolveValueType],
-        reads: &[usize],
+        reads: Vec<(usize, Option<Vec<usize>>)>,
     ) -> Result<(), StructuralPatternError> {
         if starts.len() != inputs.len() {
             return Err(dependency_error("execution call input mismatch", self.span));
         }
-        for &input in reads {
+        let outside = || dependency_error("execution call read outside interface", self.span);
+        for (input, elements) in reads {
             let (Some(&start), Some(value_type)) = (starts.get(input), inputs.get(input)) else {
-                return Err(dependency_error(
-                    "execution call read outside interface",
-                    self.span,
-                ));
+                return Err(outside());
             };
-            self.policy
-                .include(self.range(start, value_type.scalar_count() as usize)?);
+            let count = value_type.scalar_count() as usize;
+            let Some(elements) = elements else {
+                self.policy.include(self.range(start, count)?);
+                continue;
+            };
+            for element in elements {
+                let register = (element < count)
+                    .then(|| Reg::try_from(element).ok())
+                    .flatten()
+                    .and_then(|offset| start.checked_add(offset))
+                    .ok_or_else(outside)?;
+                self.policy.include(self.get(register)?);
+            }
         }
         Ok(())
     }

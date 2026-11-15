@@ -82,6 +82,11 @@ pub(super) struct Followed {
     pub carried: Vec<Vec<SolveCallDependency>>,
     /// Per carried value: its Integer value, when the passes fix it.
     pub integers: Vec<Option<i64>>,
+    /// Whether a pass can meet an obligation.
+    pub present: bool,
+    /// What the obligations of every pass read, each over the carried tuple
+    /// and captures it ran with.
+    pub obligations: Vec<SolveCallDependency>,
 }
 
 /// Follow every pass of a fold without an early exit, or `None` when the
@@ -122,6 +127,8 @@ pub(super) fn follow(
     arguments.resize(inputs.len(), Vec::new());
     let mut known: Vec<_> = values.map(|value| integers.value(*value)).collect();
     known.resize(inputs.len(), None);
+    let mut present = false;
+    let mut obligations = Vec::new();
     for tuple in domain.index_tuple_iter().map_err(|_| error())? {
         for (binder, value) in known[binders..].iter_mut().zip(&tuple) {
             *binder = Some(*value);
@@ -169,6 +176,15 @@ pub(super) fn follow(
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // This pass's obligations read the tuple it was called with.
+        present |= execution.execution_reads.has_obligations();
+        obligations.extend(super::super::substitute_obligations(
+            execution.execution_reads.reads(),
+            inputs,
+            Some,
+            &arguments,
+            context.provenance,
+        )?);
         for (index, (carried, value)) in next.into_iter().zip(execution.integers).enumerate() {
             arguments[index] = carried;
             known[index] = value;
@@ -179,5 +195,7 @@ pub(super) fn follow(
     Ok(Some(Followed {
         carried: arguments,
         integers: known,
+        present,
+        obligations,
     }))
 }

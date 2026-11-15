@@ -358,3 +358,69 @@ fn a_directional_obligation_in_a_lazy_branch_keeps_its_control_and_captures() {
         );
     }
 }
+
+/// An owner of `(r[3], x)` that returns `x` after a finite check of `r[lane]`.
+fn lane_site(lane: u32) -> crate::SolvePureCallSite {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let real = crate::SolveValueType::scalar(crate::SolveScalarType::real(profile));
+    let vector =
+        crate::SolveValueType::tensor(crate::SolveScalarType::real(profile), vec![3]).unwrap();
+    let span = crate::source_span_from_offsets(813, 1, 2);
+    let table = crate::SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            crate::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(813).unwrap()),
+            vec![vector, real.clone()],
+            vec![crate::SolvePureCallOutput::result(real)],
+            span,
+            |b, inputs, outputs| {
+                let r = b.load(inputs[0], span)?;
+                let x = b.load(inputs[1], span)?;
+                let z = b.project_element(r, vec![lane], span)?;
+                b.check_finite(z, crate::SolveFiniteCheck::Derivative, span)?;
+                b.store(outputs[0], x, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    table.owners()[0].call_site()
+}
+
+/// The vector argument is loaded whole from Y[10..13] and x from Y[20], as a
+/// caller passes `frame.r_0` to a function that guards on one of its lanes.
+fn lane_program(lane: u32) -> Vec<LinearOp> {
+    vec![
+        LinearOp::LoadY { dst: 0, index: 10 },
+        LinearOp::LoadY { dst: 1, index: 11 },
+        LinearOp::LoadY { dst: 2, index: 12 },
+        LinearOp::LoadY { dst: 3, index: 20 },
+        LinearOp::PureCall {
+            dst_start: 4,
+            input_starts: vec![0, 3].into(),
+            site: lane_site(lane),
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ]
+}
+
+#[test]
+fn a_call_guarding_one_lane_reads_only_that_lane_of_its_vector_argument() {
+    for (lane, read) in [(0, 10), (2, 12)] {
+        let program = lane_program(lane);
+        assert_eq!(
+            StructuralPattern::derive_y_dependency_union(&program, None).unwrap(),
+            BTreeSet::from([20])
+        );
+        assert_eq!(
+            StructuralPattern::derive_execution_y_dependency_union(&program, None).unwrap(),
+            BTreeSet::from([read, 20]),
+            "lane {lane}: the other lanes are loaded but never read by an obligation"
+        );
+        let proof = ScalarProgramExecutionYDependency::new(&program);
+        let prefix = proof.prefix(5).unwrap();
+        assert!(prefix.contains(read));
+        for unread in [10, 11, 12].into_iter().filter(|index| *index != read) {
+            assert!(!prefix.contains(unread), "lane {lane} does not read Y[{unread}]");
+        }
+    }
+}

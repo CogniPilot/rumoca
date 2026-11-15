@@ -103,23 +103,33 @@ fn region_outputs(
 }
 
 /// Whether what `op`'s execution obligations read is settled in `registers`
-/// (before `op` writes its results). A call's guard reads the arguments its
-/// owner's execution reads name; another operation that can fault reads its
-/// register operands; a fold holding an obligation is not analysed here.
+/// (before `op` writes its results). A call's guard reads the argument
+/// elements its owner's execution reads name; another operation that can
+/// fault reads its register operands; a fold holding an obligation is not
+/// analysed here.
 fn obligation_settled(op: &Op, index: usize, registers: &[bool]) -> bool {
     match op {
         Op::PureCall {
             input_starts, site, ..
-        } => site.execution_reads().iter().all(|&input| {
-            let (Some(&start), Some(value_type)) =
-                (input_starts.get(input), site.inputs().get(input))
-            else {
-                return false;
-            };
-            registers
-                .get(start as usize..start as usize + value_type.scalar_count() as usize)
-                .is_some_and(|values| values.iter().all(|value| *value))
-        }),
+        } => site
+            .execution_read_elements()
+            .into_iter()
+            .all(|(input, elements)| {
+                let (Some(&start), Some(value_type)) =
+                    (input_starts.get(input), site.inputs().get(input))
+                else {
+                    return false;
+                };
+                let (start, count) = (start as usize, value_type.scalar_count() as usize);
+                match elements {
+                    None => registers
+                        .get(start..start + count)
+                        .is_some_and(|values| values.iter().all(|value| *value)),
+                    Some(elements) => elements.iter().all(|&element| {
+                        element < count && registers.get(start + element) == Some(&true)
+                    }),
+                }
+            }),
         Op::FunctionFold { program, .. }
         | Op::GuardedFunctionFold { program, .. }
         | Op::StoreOutputFunctionFold { program, .. } => {

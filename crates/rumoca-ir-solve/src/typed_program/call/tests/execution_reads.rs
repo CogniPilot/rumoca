@@ -556,3 +556,225 @@ fn a_followed_fold_keeps_the_guard_read_of_its_carried_start() {
         assert_eq!(replay, table);
     }
 }
+
+fn vector() -> SolveValueType {
+    SolveValueType::tensor(SolveScalarType::real(profile()), vec![3]).unwrap()
+}
+
+/// A finite check of `r[lane]` in a branch taken while `r[lane] < x`.
+fn lane_branch<'p>(
+    b: &mut TypedProgramBuilder<'p>,
+    r: super::super::super::program::ProgramRegister<'p>,
+    x: super::super::super::program::ProgramRegister<'p>,
+    lane: u32,
+) -> Result<(), SolveProgramConstructionError> {
+    let z = b.project_element(r, vec![lane], span(1315))?;
+    let near = b.compare(crate::SolveCompareOperator::Less, z, x, span(1316))?;
+    b.conditional(
+        near,
+        &[z],
+        vec![],
+        span(1317),
+        |b, captures, _| {
+            let z = b.load(captures[0], span(1318))?;
+            check(b, z)
+        },
+        |_, _, _| Ok(()),
+    )?;
+    Ok(())
+}
+
+/// Checks only `r[lane]`: `kind` 0 directly, 1 in a branch on it, 2 in that
+/// branch inside a fold followed pass by pass over captures `(r, x)`, and 3 in
+/// that branch in the early-exit predicate of a fold summarised over all
+/// passes.
+fn lane_guard<'p>(
+    kind: u64,
+    b: &mut TypedProgramBuilder<'p>,
+    r: super::super::super::program::ProgramRegister<'p>,
+    x: super::super::super::program::ProgramRegister<'p>,
+    lane: u32,
+) -> Result<(), SolveProgramConstructionError> {
+    let zero = b.constant(SolveValue::real(profile(), 0.0), span(1313))?;
+    match kind {
+        0 => {
+            let z = b.project_element(r, vec![lane], span(1314))?;
+            check(b, z)
+        }
+        1 => lane_branch(b, r, x, lane),
+        2 => {
+            b.fold(
+                domain(),
+                &[zero],
+                &[r, x],
+                span(1320),
+                |b, carried, captures, _, outputs| {
+                    let r = b.load(captures[0], span(1321))?;
+                    let x = b.load(captures[1], span(1322))?;
+                    lane_branch(b, r, x, lane)?;
+                    let kept = b.load(carried[0], span(1323))?;
+                    b.store(outputs[0], kept, span(1324))
+                },
+            )?;
+            Ok(())
+        }
+        _ => {
+            b.fold_while(
+                domain(),
+                &[zero],
+                &[r, x],
+                span(1320),
+                |b, _, captures, _, outputs| {
+                    let r = b.load(captures[0], span(1321))?;
+                    let x = b.load(captures[1], span(1322))?;
+                    lane_branch(b, r, x, lane)?;
+                    let yes = b.constant(SolveValue::boolean(true), span(1325))?;
+                    b.store(outputs[0], yes, span(1326))
+                },
+                |b, carried, _, _, outputs| {
+                    let kept = b.load(carried[0], span(1323))?;
+                    b.store(outputs[0], kept, span(1324))
+                },
+            )?;
+            Ok(())
+        }
+    }
+}
+
+/// An owner of `(r[3], x)` that returns `x` after [`lane_guard`].
+fn lane_guard_table(kind: u64, lane: u32) -> SolvePureCallTable {
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1310 + kind),
+            vec![vector(), real()],
+            vec![SolvePureCallOutput::result(real())],
+            span(1310),
+            |b, inputs, outputs| {
+                let r = b.load(inputs[0], span(1311))?;
+                let x = b.load(inputs[1], span(1312))?;
+                lane_guard(kind, b, r, x, lane)?;
+                b.store(outputs[0], x, span(1319))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_guard_on_one_lane_of_a_vector_input_reads_that_lane_alone() {
+    use crate::typed_program::call::dependency::followed_work;
+    for kind in 0..4 {
+        for lane in [0, 2] {
+            followed_work::reset();
+            let table = lane_guard_table(kind, lane);
+            if kind == 2 {
+                assert!(followed_work::most().passes > 0, "the fold is followed");
+            }
+            let site = table.owners()[0].call_site();
+            assert!(site.has_execution_obligations(), "kind {kind}");
+            let elements = site.execution_read_elements();
+            assert_eq!(
+                elements[0],
+                (0, Some(vec![lane as usize])),
+                "kind {kind} lane {lane}: the other lanes are never read"
+            );
+            // A branch is decided by `r[lane] < x`, so it also reads `x`.
+            let expected: &[usize] = if kind == 0 { &[0] } else { &[0, 1] };
+            assert_eq!(site.execution_reads(), expected, "kind {kind}");
+            assert_eq!(
+                site.output_dependencies()[0]
+                    .iter()
+                    .flat_map(SolveCallDependency::inputs)
+                    .collect::<Vec<_>>(),
+                [1],
+                "the result keeps its value dependency on x alone"
+            );
+            let replay: SolvePureCallTable =
+                serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap();
+            assert_eq!(replay, table);
+        }
+    }
+}
+
+#[test]
+fn a_lane_guard_substitutes_through_a_call_that_passes_the_whole_vector() {
+    let mut table = SolvePureCallTable::builder(profile());
+    let child = table
+        .add_owner(
+            identity(1330),
+            vec![vector()],
+            vec![SolvePureCallOutput::result(real())],
+            span(1330),
+            |b, inputs, outputs| {
+                let r = b.load(inputs[0], span(1331))?;
+                let z = b.project_element(r, vec![2], span(1332))?;
+                check(b, z)?;
+                let one = b.constant(SolveValue::real(profile(), 1.0), span(1333))?;
+                b.store(outputs[0], one, span(1334))
+            },
+        )
+        .unwrap();
+    table
+        .add_owner(
+            identity(1331),
+            vec![vector()],
+            vec![SolvePureCallOutput::result(real())],
+            span(1335),
+            |b, inputs, outputs| {
+                let r = b.load(inputs[0], span(1336))?;
+                let result = b.call(child, &[r], span(1337))?;
+                b.store(outputs[0], result[0], span(1338))
+            },
+        )
+        .unwrap();
+    let table = table.finish();
+    for owner in table.owners() {
+        assert_eq!(
+            owner.call_site().execution_read_elements(),
+            [(0, Some(vec![2]))]
+        );
+    }
+}
+
+#[test]
+fn a_guard_that_reads_a_carried_value_of_a_summarised_fold_reads_every_start_and_capture() {
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1340),
+            vec![vector(), real()],
+            vec![SolvePureCallOutput::result(real())],
+            span(1340),
+            |b, inputs, outputs| {
+                let r = b.load(inputs[0], span(1341))?;
+                let x = b.load(inputs[1], span(1342))?;
+                b.fold_while(
+                    domain(),
+                    &[x],
+                    &[r],
+                    span(1343),
+                    |b, carried, _, _, outputs| {
+                        let value = b.load(carried[0], span(1344))?;
+                        check(b, value)?;
+                        let yes = b.constant(SolveValue::boolean(true), span(1345))?;
+                        b.store(outputs[0], yes, span(1346))
+                    },
+                    |b, carried, captures, _, outputs| {
+                        let r = b.load(captures[0], span(1347))?;
+                        let z = b.project_element(r, vec![0], span(1348))?;
+                        let kept = b.load(carried[0], span(1349))?;
+                        let next = b.binary(crate::SolveBinaryOperator::Add, kept, z, span(1350))?;
+                        b.store(outputs[0], next, span(1351))
+                    },
+                )?;
+                b.store(outputs[0], x, span(1352))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    // The carried value starts at x and each pass adds r[1], so the guard
+    // covers x and every lane of r, not only the lane the update reads.
+    let elements = table.owners()[0].call_site().execution_read_elements();
+    assert_eq!(elements, [(0, Some(vec![0, 1, 2])), (1, Some(vec![0]))]);
+}

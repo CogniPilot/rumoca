@@ -241,6 +241,55 @@ fn may_depend_coordinates(
         .ok_or(SolveProgramConstructionError::InvalidCallInterface { provenance })
 }
 
+/// The canonical union of `dependencies`: maximal disjoint runs by ascending
+/// first input, as every summary is issued.
+pub(in crate::typed_program) fn union(
+    dependencies: Vec<SolveCallDependency>,
+) -> Box<[SolveCallDependency]> {
+    let mut union = Dependencies::default();
+    for dependency in dependencies {
+        union.insert(dependency);
+    }
+    union.finish().into_boxed_slice()
+}
+
+/// The obligation reads of a value with `dimensions` whose dependencies are
+/// `sources`, when an obligation may read any of its elements.
+pub(super) fn whole_value_obligation(
+    sources: &[SolveCallDependency],
+    dimensions: &[u32],
+    provenance: Span,
+) -> Result<Vec<SolveCallDependency>, SolveProgramConstructionError> {
+    let access = operations::whole_access(0, dimensions);
+    sources
+        .iter()
+        .map(|source| source.remap_may_depend(&access, provenance))
+        .collect()
+}
+
+/// An obligation summary over `inputs`, read through the dependencies of the
+/// entry of `registers` that `argument` names for each input leaf.
+pub(super) fn substitute_obligations(
+    summary: &[SolveCallDependency],
+    inputs: &[SolveValueType],
+    argument: impl Fn(usize) -> Option<usize>,
+    registers: &[Vec<SolveCallDependency>],
+    provenance: Span,
+) -> Result<Vec<SolveCallDependency>, SolveProgramConstructionError> {
+    if summary.is_empty() {
+        return Ok(Vec::new());
+    }
+    substitute_output(
+        &mut substitution::Substitution::default(),
+        summary,
+        &super::execution_reads::obligation_type(),
+        inputs,
+        argument,
+        registers,
+        provenance,
+    )
+}
+
 /// The two independent facts issued from one checked dependency-flow walk.
 pub(in crate::typed_program) struct Execution {
     pub(in crate::typed_program) dependencies: Box<[Box<[SolveCallDependency]>]>,
@@ -282,9 +331,8 @@ struct Followed {
     summaries: Box<[Box<[SolveCallDependency]>]>,
     /// Per output: its value, when the known inputs fix it.
     integers: Vec<Option<i64>>,
-    /// Issued for a whole body only. Inside a followed pass of a region they
-    /// are not consulted: the operation that owns the region already reads
-    /// every capture and its control (see `execution_reads`).
+    /// The obligations of these executions over the body's inputs. A region
+    /// operation charges them through the arguments of its region.
     execution_reads: super::execution_reads::ExecutionReads,
 }
 
@@ -320,7 +368,13 @@ fn derive_execution(
             provenance: spanned.provenance(),
             work,
         };
-        if regions::derive(context, operation, &mut integers, &mut registers)?
+        if regions::derive(
+            context,
+            operation,
+            &mut integers,
+            &mut registers,
+            &mut execution,
+        )?
             || assembly::derive(
                 body,
                 operation,

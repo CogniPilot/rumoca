@@ -403,6 +403,14 @@ impl SolvePureCallSite {
         self.execution_reads.inputs()
     }
 
+    /// The input leaves of [`Self::execution_reads`], each with the ascending
+    /// flat elements of that leaf an obligation can read, `None` for every
+    /// element: a guard on one lane of a vector input reads that lane alone.
+    #[must_use]
+    pub fn execution_read_elements(&self) -> Vec<(usize, Option<Vec<usize>>)> {
+        self.execution_reads.elements(&self.inputs)
+    }
+
     /// Whether execution has an obligation, including a constant guard.
     #[must_use]
     pub fn has_execution_obligations(&self) -> bool {
@@ -464,6 +472,14 @@ impl SolvePureCallDirectionalSite {
     #[must_use]
     pub fn execution_reads(&self) -> &[usize] {
         self.execution_reads.inputs()
+    }
+
+    /// The input leaves of [`Self::execution_reads`], each with the ascending
+    /// flat elements of that leaf an obligation can read, `None` for every
+    /// element: a guard on one lane of a vector input reads that lane alone.
+    #[must_use]
+    pub fn execution_read_elements(&self) -> Vec<(usize, Option<Vec<usize>>)> {
+        self.execution_reads.elements(&self.inputs)
     }
 
     /// Whether execution has an obligation, including a constant guard.
