@@ -35,6 +35,33 @@ fn value_call(width: u32) -> SolvePureCallTable {
     .unwrap()
 }
 
+/// One call of two `width`-vectors returning both in order: the owner
+/// ordinal and width of [`value_call`]'s owner with another interface.
+fn ordered_call(width: u32) -> SolvePureCallTable {
+    let vector = SolveValueType::tensor(SolveScalarType::real(profile()), vec![width]).unwrap();
+    let inputs = vec![vector.clone(), vector.clone()];
+    let outputs = vec![
+        SolvePureCallOutput::result(vector.clone()),
+        SolvePureCallOutput::result(vector),
+    ];
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1),
+            inputs,
+            outputs,
+            span(0),
+            |builder, inputs, outputs| {
+                let first = builder.load(inputs[0], span(1))?;
+                let second = builder.load(inputs[1], span(2))?;
+                builder.store(outputs[0], first, span(3))?;
+                builder.store(outputs[1], second, span(4))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
 /// `y[target] = y[source]` or call output `read`, after a call on the
 /// `2 * width` slots starting at `first`.
 fn call_then_copy(site: SolvePureCallSite, first: usize, read: Option<Reg>) -> Vec<LinearOp> {
@@ -110,6 +137,36 @@ fn a_native_identity_barrier_retains_the_complete_checked_call_interface() {
             }])
             .is_err()
     );
+}
+
+/// Two tables' owners with one ordinal and one width but different checked
+/// interfaces are two values; the same owner twice is one.
+#[test]
+fn same_ordinal_owners_of_two_tables_are_never_one_value() {
+    let swapped = value_call(3);
+    let ordered = ordered_call(3);
+    let (swap, keep) = (
+        swapped.owners()[0].call_site(),
+        ordered.owners()[0].call_site(),
+    );
+    assert_ne!(swap, keep, "the two interfaces differ");
+    let total = |shared: &SharedValueSegments| {
+        shared
+            .segments()
+            .iter()
+            .map(|segment| calls(segment.ops()))
+            .sum::<usize>()
+    };
+    let distinct = derive(&[
+        (call_then_copy(swap.clone(), 0, Some(0)), vec![20]),
+        (call_then_copy(keep, 0, Some(0)), vec![21]),
+    ]);
+    assert_eq!(total(&distinct), 2, "each table's owner is called");
+    let same = derive(&[
+        (call_then_copy(swap.clone(), 0, Some(0)), vec![20]),
+        (call_then_copy(swap, 0, Some(0)), vec![21]),
+    ]);
+    assert_eq!(total(&same), 1, "one owner on one operand is one value");
 }
 
 #[test]

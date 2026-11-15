@@ -135,12 +135,53 @@ pub(super) struct ValueShape {
     pub(super) ranged: bool,
 }
 
-/// The exact positional encoding of a normalized operation: the interned
-/// identity of its shape, without formatting it.
+/// The interned identity of a normalized operation's shape: its exact
+/// positional encoding, without formatting it. A pure-call or observation
+/// site encodes only its owner ordinal, which names a whole checked
+/// interface only within one owner table, and no derivation boundary
+/// carries that table; so an operation that carries a site anywhere in it
+/// keeps its full text form, every interface field included, under a tag
+/// no encoding starts with.
 fn shape_bytes(op: &LinearOp) -> Option<Vec<u8>> {
+    if carries_call_site(op) {
+        let mut bytes = SITE_SHAPE_TAG.to_vec();
+        bytes.extend_from_slice(format!("{op:?}").as_bytes());
+        return Some(bytes);
+    }
     let mut bytes = Vec::new();
     bincode::serialize_into(&mut bytes, op).ok()?;
     Some(bytes)
+}
+
+/// Starts every site-carrying shape; a bincode `LinearOp` starts with its
+/// `u32` variant index, which never has all bits set.
+const SITE_SHAPE_TAG: [u8; 4] = [0xff; 4];
+
+/// Whether `op` or a program nested in it invokes a pure-call owner.
+fn carries_call_site(op: &LinearOp) -> bool {
+    let any = |ops: &[LinearOp]| ops.iter().any(carries_call_site);
+    match op {
+        LinearOp::PureCall { .. }
+        | LinearOp::PureCallObservation { .. }
+        | LinearOp::PureCallDirectional { .. } => true,
+        LinearOp::FunctionFold { program, .. }
+        | LinearOp::GuardedFunctionFold { program, .. }
+        | LinearOp::StoreOutputFunctionFold { program, .. } => {
+            any(&program.update)
+                || program
+                    .continuation
+                    .as_ref()
+                    .is_some_and(|continuation| any(&continuation.ops))
+        }
+        LinearOp::FunctionConditional { program, .. } => {
+            program
+                .arms
+                .iter()
+                .any(|arm| any(&arm.condition) || any(&arm.result))
+                || any(&program.fallback)
+        }
+        _ => false,
+    }
 }
 
 /// The shape of `op`; `None` when `op` cannot be validated at the top level.
