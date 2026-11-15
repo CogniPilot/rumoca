@@ -54,7 +54,7 @@ serde_json = { workspace = true, optional = true, features = ["unbounded_depth"]
 rumoca-exec-wasm = { path = ".", features = ["host-engine", "component-build"] }
 rumoca-compile = { workspace = true }
 rumoca-phase-solve = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 rumoca-exec-cranelift = { workspace = true }
 indexmap = { workspace = true }
 serde_json = { workspace = true }

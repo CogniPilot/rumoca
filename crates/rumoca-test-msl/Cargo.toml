@@ -49,7 +49,7 @@ serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-compile = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-sim = { workspace = true, features = ["solver-diffsol", "report"] }
-rumoca-solver = { workspace = true }
+rumoca-solver = { workspace = true, features = ["reference-execution"] }
 rumoca-worker = { workspace = true }
 # Used by the MSL tooling moved from xtask (zmq: OMC worker pool; nix: process
 # signals; blake3/regex/walkdir/tempfile: caching, parsing, fs scans).

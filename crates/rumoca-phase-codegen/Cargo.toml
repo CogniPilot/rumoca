@@ -12,7 +12,7 @@ indexmap = { workspace = true }
 minijinja = { workspace = true, features = ["json"] }
 miette = { workspace = true }
 rumoca-core = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }

@@ -10,19 +10,22 @@ homepage.workspace = true
 [features]
 fmi-derivative-operation = ["precompiled-runtime"]
 default = ["native-solvers"]
-native-solvers = ["solver-diffsol", "solver-rk45", "solver-velimplicit"]
+native-solvers = ["reference-execution", "solver-diffsol", "solver-rk45", "solver-velimplicit"]
+# Reference (interpreted) execution for host and browser simulation. The
+# fixed linked guest (`linked-guest`) never enables it.
+reference-execution = ["rumoca-solver/reference-execution", "rumoca-eval-solve/reference-eval"]
 fmi = []
 precompiled-runtime = ["dep:rmp-serde", "fmi", "dep:rumoca-exec-wasm", "rumoca-exec-wasm/precompiled-programs"]
 native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
 # The fixed scalar FMI guest: the saved programs run as linked entries
 # through the issued dispatch, certified against the linked artifact.
 linked-guest = ["fmi-derivative-operation", "solver-rk45", "rumoca-exec-wasm/fixed-scalar-linked-receiver"]
-native-fmi-ls-build = ["native-fmi-ls", "rumoca-exec-wasm/fixed-native-guest-build", "rumoca-exec-wasm/precompiled-programs", "dep:rmp-serde", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
+native-fmi-ls-build = ["native-fmi-ls", "reference-execution", "rumoca-exec-wasm/fixed-native-guest-build", "rumoca-exec-wasm/precompiled-programs", "dep:rmp-serde", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
 # Build-time certification runner of a linked scalar product (native packager
 # only). Without it a linked product is refused, never published uncertified.
 linked-build-certify = ["native-fmi-ls-build", "dep:wasmtime"]
 tracing = ["rumoca-phase-solve/tracing"]
-wasm-solvers = ["solver-diffsol", "solver-rk45"]
+wasm-solvers = ["reference-execution", "solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
 solver-velimplicit = ["solver-rk45", "dep:rumoca-solver-velimplicit"]

@@ -20,7 +20,7 @@ required-mlir-cpu = []
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 rumoca-phase-codegen = { workspace = true }
 libloading = { workspace = true }
 tempfile = { workspace = true }

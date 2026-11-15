@@ -10,6 +10,11 @@ homepage.workspace = true
 [features]
 default = []
 wire-replay = ["dep:serde"]
+# The reference (interpreted) execution of Solve IR programs. Opt-in, never a
+# default: the published compiled guest builds without it, so no interpreter
+# body is compiled into that core. Every host or test consumer that evaluates
+# programs by interpretation enables it on its own edge.
+reference-eval = []
 
 [dependencies]
 serde = { workspace = true, optional = true }
@@ -24,6 +29,8 @@ faer = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# This crate's own tests exercise the reference evaluator.
+rumoca-eval-solve = { path = ".", features = ["reference-eval"] }
 # SPEC_0039 / SOLVE-C17: pattern fixtures are a test-only surface. Declaring
 # the feature here and nowhere else keeps it out of every production build of
 # this crate.

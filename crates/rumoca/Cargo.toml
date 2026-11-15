@@ -234,7 +234,7 @@ rumoca-phase-dae = { workspace = true }
 # rules from the crate that owns them rather than restating them where they
 # could drift.
 rumoca-phase-autodiff = { workspace = true }
-rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
+rumoca-eval-solve = { workspace = true, features = ["reference-eval", "wire-replay"] }
 # Native side of the interpreter-versus-JIT differential oracle
 # (`tests/suite_core/backend_executor_differential.rs`). `rumoca-sim` already
 # links this crate unconditionally off wasm, so the edge adds no link cost; the
@@ -251,7 +251,7 @@ rumoca-exec-cranelift = { workspace = true }
 rumoca-eval-galec = { workspace = true }
 # Runtime state machine + backend-neutral simulation driver (SPEC_0029 §3b);
 # the AD/sensitivity integration tests drive `SolveRuntime` directly.
-rumoca-solver = { workspace = true }
+rumoca-solver = { workspace = true, features = ["reference-execution"] }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 # GALEC target CI (tests only): recompute the SHA-1 checksum web and check

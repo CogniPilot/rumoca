@@ -56,7 +56,7 @@ wasmparser = "0.241"
 wit-component = "0.241"
 wit-parser = "0.241"
 rumoca-sim = { workspace = true, default-features = false, features = ["fmi"] }
-rumoca-eval-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 flate2 = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 

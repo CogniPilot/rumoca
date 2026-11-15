@@ -9,11 +9,11 @@ homepage.workspace = true
 
 [dependencies]
 indexmap = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["reference-eval"] }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["solver-rk45"] }
-rumoca-solver = { workspace = true }
+rumoca-solver = { workspace = true, features = ["reference-execution"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]

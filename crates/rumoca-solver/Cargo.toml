@@ -14,6 +14,10 @@ native-wasm = ["dep:rumoca-exec-wasm"]
 # Test-only audit of the input write paths; enabled only as a dev-dependency
 # feature, never by a production build.
 input-write-audit = []
+# Reference (interpreted) execution when no compiled backend is admitted.
+# Opt-in, never a default (see rumoca-eval-solve `reference-eval`): the
+# published compiled guest builds without it and refuses a missing backend.
+reference-execution = ["rumoca-eval-solve/reference-eval"]
 
 [dependencies]
 faer = { workspace = true, optional = true }
@@ -34,6 +38,8 @@ instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# This crate's own tests exercise reference execution.
+rumoca-solver = { path = ".", features = ["reference-execution"] }
 rumoca-exec-wasm = { workspace = true, features = ["host-engine"] }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 # SPEC_0039 / SOLVE-C17: pattern fixtures are a test-only surface. Declaring

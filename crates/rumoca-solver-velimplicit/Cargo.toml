@@ -16,7 +16,7 @@ sparse-linalg = ["rumoca-solver/sparse-linalg"]
 [dependencies]
 # Like rumoca-solver-rk45, this crate implements only the FMI 3 ME
 # numerical-plugin interface (SPEC_0038 §Internal Solver Boundary).
-rumoca-solver = { workspace = true }
+rumoca-solver = { workspace = true, features = ["reference-execution"] }
 
 [lints]
 workspace = true

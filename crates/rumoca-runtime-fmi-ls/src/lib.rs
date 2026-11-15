@@ -7,6 +7,8 @@ mod bootstrap;
 #[cfg(all(target_arch = "wasm32", target_os = "wasi", target_env = "p2"))]
 mod wit_exports;
 
+#[cfg(test)]
+mod compiled_profile_tests;
 mod resource;
 
 pub use resource::{FmiLsResource, FmiLsResourceError, FmiLsStepResult};

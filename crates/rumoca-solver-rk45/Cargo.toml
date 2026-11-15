@@ -14,5 +14,10 @@ homepage.workspace = true
 # object here does not compile in production or tests.
 rumoca-solver = { workspace = true }
 
+[dev-dependencies]
+# Tests only: the production edge above stays without reference execution,
+# as the published compiled guest links this crate.
+rumoca-solver = { workspace = true, features = ["reference-execution"] }
+
 [lints]
 workspace = true
