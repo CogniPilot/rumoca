@@ -107,10 +107,17 @@ fn issued_key(
     table: &SolvePureCallTable,
     key: impl FnOnce(&PreparedKernelSource) -> Result<String, String>,
 ) -> Result<[u64; 4], WasmCompileError> {
-    let key = PreparedKernelSource::new(layout, table)
-        .and_then(|source| key(&source))
-        .map_err(WasmCompileError::Input)?;
-    linked_key_words(&key)
+    let source = PreparedKernelSource::new(layout, table).map_err(WasmCompileError::Input)?;
+    source_key(&source, key)
+}
+
+/// The key an already-built source context issues. The context digests the whole
+/// layout and call table, so a batch over one context builds it once.
+fn source_key(
+    source: &PreparedKernelSource,
+    key: impl FnOnce(&PreparedKernelSource) -> Result<String, String>,
+) -> Result<[u64; 4], WasmCompileError> {
+    linked_key_words(&key(source).map_err(WasmCompileError::Input)?)
 }
 
 /// A complete linked product: its issued identities and every module.
@@ -568,12 +575,13 @@ impl LinkedProductAssembler {
         programs: &[&crate::AdmittedPrivateProgram],
     ) -> Result<Vec<LinkedEntryId>, WasmCompileError> {
         let (layout, table) = admission.source_context();
+        let source = PreparedKernelSource::new(layout, table).map_err(WasmCompileError::Input)?;
         let first = self.next(LinkedEntryKind::Private).index;
         let issued = (first..)
             .zip(programs)
             .map(|(index, program)| {
                 let (block, seed) = program.source();
-                let key = issued_key(layout, table, |key| key.private_program(block, seed))?;
+                let key = source_key(&source, |key| key.private_program(block, seed))?;
                 let id = LinkedEntryId {
                     kind: LinkedEntryKind::Private,
                     index,
