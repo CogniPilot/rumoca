@@ -273,7 +273,7 @@ mod tests {
             .unwrap();
         let compiled = compile_fmi_derivative_operation_wasm(&operation).unwrap();
         let bound = PrecompiledFmiDerivativeOperation::from_compiled(&compiled)
-            .bind(&operation)
+            .bind(crate::SavedBinding::Certify, &operation)
             .unwrap();
         let regions = bound.workspace().regions();
         let mut y = root.model().initial_y.to_vec();

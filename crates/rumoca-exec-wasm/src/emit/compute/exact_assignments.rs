@@ -80,6 +80,15 @@ impl ReadOnlyY {
     fn issue(y_pointer_escaped: bool) -> Option<Self> {
         (!y_pointer_escaped).then_some(Self(()))
     }
+
+    /// The certificate of a build-certified product's event program whose
+    /// emission issued it when the product was certified: the builder's
+    /// certifying load compared the saved bytes with that emission and the
+    /// carried flag with its certificate.
+    #[cfg(feature = "precompiled-programs")]
+    pub(crate) fn carried() -> Self {
+        Self(())
+    }
 }
 
 pub(crate) fn emit_event_program_module(

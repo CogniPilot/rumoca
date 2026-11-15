@@ -33,7 +33,7 @@ fn actual_private_module_roundtrip_preserves_outputs_and_refuses_foreign_inputs(
     let bytes = serde_json::to_string(&wire).unwrap();
     let decoded: PrecompiledPrivatePrograms = serde_json::from_str(&bytes).unwrap();
     let owner = rumoca_ir_solve::PreparedKernelSource::new(&layout, &calls).unwrap();
-    let replayed = decoded.bind(&owner, &requests, &layout).unwrap();
+    let replayed = decoded.bind(Some(&owner), &requests, &layout).unwrap();
     for (a, b) in original.iter().zip(&replayed) {
         let mut x = vec![0.; (a.scratch_bytes() as usize).div_ceil(8)];
         let mut y = vec![0.; (b.scratch_bytes() as usize).div_ceil(8)];
@@ -44,16 +44,30 @@ fn actual_private_module_roundtrip_preserves_outputs_and_refuses_foreign_inputs(
             y.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
     }
-    assert!(decoded.bind(&owner, &requests[..1], &layout).is_err());
+    // A build-certified batch binds without its key context, and its
+    // structural checks still refuse another inventory or seed shape.
+    let trusted = decoded.bind(None, &requests, &layout).unwrap();
+    assert_eq!(trusted.len(), replayed.len());
+    for (a, b) in replayed.iter().zip(&trusted) {
+        assert_eq!(a.source_key, b.source_key);
+    }
+    assert!(decoded.bind(None, &requests[..1], &layout).is_err());
     assert!(
         decoded
-            .bind(&owner, &[(&blocks[1], None), (&blocks[0], None)], &layout)
+            .bind(None, &[(&blocks[0], Some(1)), (&blocks[1], None)], &layout)
+            .is_err()
+    );
+    assert!(huge_scratch(&decoded).bind(None, &requests, &layout).is_err());
+    assert!(decoded.bind(Some(&owner), &requests[..1], &layout).is_err());
+    assert!(
+        decoded
+            .bind(Some(&owner), &[(&blocks[1], None), (&blocks[0], None)], &layout)
             .is_err()
     );
     assert!(
         decoded
             .bind(
-                &owner,
+                Some(&owner),
                 &[(&blocks[0], Some(1)), (&blocks[1], None)],
                 &layout
             )
@@ -62,15 +76,18 @@ fn actual_private_module_roundtrip_preserves_outputs_and_refuses_foreign_inputs(
     let foreign = constant(3.0);
     assert!(
         decoded
-            .bind(&owner, &[(&foreign, None), (&blocks[1], None)], &layout)
+            .bind(Some(&owner), &[(&foreign, None), (&blocks[1], None)], &layout)
             .is_err()
     );
     let mut corrupt = serde_json::to_value(&decoded).unwrap();
     corrupt["modules"][0]["bytes"][0] = serde_json::json!(255);
     let corrupt: PrecompiledPrivatePrograms = serde_json::from_value(corrupt).unwrap();
-    assert!(corrupt.bind(&owner, &requests, &layout).is_err());
-    let mut huge = serde_json::to_value(&decoded).unwrap();
+    assert!(corrupt.bind(Some(&owner), &requests, &layout).is_err());
+    assert!(huge_scratch(&decoded).bind(Some(&owner), &requests, &layout).is_err());
+}
+
+fn huge_scratch(wire: &PrecompiledPrivatePrograms) -> PrecompiledPrivatePrograms {
+    let mut huge = serde_json::to_value(wire).unwrap();
     huge["modules"][0]["scratch_bytes"] = serde_json::json!(u32::MAX);
-    let huge: PrecompiledPrivatePrograms = serde_json::from_value(huge).unwrap();
-    assert!(huge.bind(&owner, &requests, &layout).is_err());
+    serde_json::from_value(huge).unwrap()
 }

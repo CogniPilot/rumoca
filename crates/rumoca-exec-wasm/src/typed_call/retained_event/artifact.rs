@@ -9,14 +9,17 @@ pub struct PrecompiledRetainedEvent {
     source_key: String,
     artifact: Rc<crate::program_payload::ProgramPayload>,
     invocations: Vec<InvocationStorage>,
+    /// Whether the emission of `artifact` issued the read-only-Y certificate.
+    read_only_y: bool,
 }
 impl PrecompiledRetainedEvent {
     pub fn from_compiled(program: &CompiledRetainedEventWasm) -> Self {
         Self {
-            version: 1,
+            version: 2,
             source_key: program.source_key.clone(),
             artifact: Rc::clone(&program.artifact),
             invocations: program.invocations.clone(),
+            read_only_y: program.read_only_y.is_some(),
         }
     }
     /// Emit the module again from the source being bound: saved bytes equal
@@ -42,10 +45,20 @@ impl PrecompiledRetainedEvent {
             .flatten()
     }
 
+    /// The read-only-Y certificate of a build-certified program, from the flag
+    /// its certifying load checked against the emission.
+    fn carried_read_only_y(&self) -> Option<crate::emit::ReadOnlyY> {
+        self.read_only_y.then(crate::emit::ReadOnlyY::carried)
+    }
+
     /// A linked guest binds the issued Event entry at `at`, which must carry
-    /// this source's key, scratch extent and fault tables.
+    /// this program's key, scratch extent and fault tables. `Certify` derives
+    /// the key and, in a linked guest, the emission again and refuses any
+    /// difference; `Trusted` binds the carried program, invocation storage and
+    /// read-only-Y flag after their structural checks.
     pub fn bind(
         &self,
+        binding: crate::SavedBinding,
         source: solve::RetainedEventProgram,
         #[cfg(all(
             feature = "fixed-scalar-linked-receiver",
@@ -55,14 +68,19 @@ impl PrecompiledRetainedEvent {
         ))]
         at: crate::LinkedPosition<'_>,
     ) -> Result<CompiledRetainedEventWasm, WasmCompileError> {
-        let key = solve::PreparedKernelSource::new(
-            &source.source().model().problem.layout,
-            source.table(),
-        )
-        .and_then(|key| key.retained_event(&source))
-        .map_err(WasmCompileError::Input)?;
+        let certify = binding == crate::SavedBinding::Certify;
+        let key = if certify {
+            solve::PreparedKernelSource::new(
+                &source.source().model().problem.layout,
+                source.table(),
+            )
+            .and_then(|key| key.retained_event(&source))
+            .map_err(WasmCompileError::Input)?
+        } else {
+            self.source_key.clone()
+        };
         let bytes = self.artifact.scratch_bytes();
-        if self.version != 1
+        if self.version != 2
             || self.source_key != key
             || !bytes.is_multiple_of(8)
             || bytes > crate::CheckedNativeWasmCapacityPolicy::default().public_scratch_bytes()
@@ -125,16 +143,18 @@ impl PrecompiledRetainedEvent {
                 ));
             }
         }
-        // A linked guest decodes with invocation storage emitted again from
-        // the checked source, never with the carried offsets and carriers,
-        // and refuses saved bytes that differ from that emission.
+        // A certifying linked guest decodes with invocation storage emitted
+        // again from the checked source, never with the carried offsets and
+        // carriers, and refuses saved bytes that differ from that emission.
         #[cfg(all(
             feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
         ))]
-        let (invocations, read_only_y) = {
+        let (invocations, read_only_y) = if !certify {
+            (self.invocations.clone(), self.carried_read_only_y())
+        } else {
             let layout = &source.source().model().problem.layout;
             let (module, invocations, read_only_y) = crate::emit::emit_event_program_module(
                 &source,
@@ -142,7 +162,9 @@ impl PrecompiledRetainedEvent {
                 crate::emit::Linkage::Browser,
             )
             .map_err(WasmCompileError::Backend)?;
-            if module.bytes != self.artifact.module_bytes() {
+            if module.bytes != self.artifact.module_bytes()
+                || read_only_y.is_some() != self.read_only_y
+            {
                 return Err(WasmCompileError::Input(
                     "precompiled event differs from its issued emission".into(),
                 ));
@@ -155,8 +177,14 @@ impl PrecompiledRetainedEvent {
             target_os = "wasi",
             target_env = "p2"
         )))]
-        let (invocations, read_only_y) =
-            (self.invocations.clone(), self.emitted_read_only_y(&source));
+        let (invocations, read_only_y) = (
+            self.invocations.clone(),
+            if certify {
+                self.emitted_read_only_y(&source)
+            } else {
+                self.carried_read_only_y()
+            },
+        );
         mark_y_census(read_only_y.as_ref());
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime =

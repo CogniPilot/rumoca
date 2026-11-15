@@ -57,7 +57,7 @@ fn every_persisted_helper_byte_and_fault_table_is_re_derived_at_bind() {
     let compiled = compile_fmi_derivative_operation_wasm(&operation).unwrap();
     let issued = PrecompiledFmiDerivativeOperation::from_compiled(&compiled);
     let json = serde_json::to_value(&issued).unwrap();
-    assert!(issued.bind(&operation).is_ok());
+    assert!(issued.bind(crate::SavedBinding::Certify, &operation).is_ok());
     for (field, helper) in [
         ("values", FmiDerivativeHelperRole::Values),
         ("kinematic", FmiDerivativeHelperRole::Kinematic),
@@ -76,7 +76,7 @@ fn every_persisted_helper_byte_and_fault_table_is_re_derived_at_bind() {
                 serde_json::from_value(tampered).unwrap();
             let expected = FmiDerivativeArtifactMismatch::Helper { helper, part };
             assert_eq!(tampered.mismatch(&issued), Some(expected), "{field}");
-            let Err(error) = tampered.bind(&operation) else {
+            let Err(error) = tampered.bind(crate::SavedBinding::Certify, &operation) else {
                 panic!("a tampered {field} helper must not bind");
             };
             assert!(error.to_string().contains(&expected.to_string()), "{error}");

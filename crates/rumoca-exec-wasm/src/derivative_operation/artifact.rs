@@ -91,8 +91,14 @@ impl PrecompiledFmiDerivativeOperation {
     /// binds the issued entry at `at`: it must carry exactly this source's key,
     /// the freshly issued workspace and each helper's emitted fault tables,
     /// and a kinematic entry exists iff the persisted kinematic helper does.
+    ///
+    /// That is `Certify`, the builder's certification. `Trusted` binds a
+    /// build-certified operation: its workspace is issued again from
+    /// `operation` and the carried helpers' scratch extents, and nothing is
+    /// keyed, emitted or compared again.
     pub fn bind(
         &self,
+        binding: crate::SavedBinding,
         operation: &FmiDerivativeCausalOperation<'_>,
         #[cfg(all(
             feature = "fixed-scalar-linked-receiver",
@@ -102,16 +108,19 @@ impl PrecompiledFmiDerivativeOperation {
         ))]
         at: crate::LinkedPosition<'_>,
     ) -> Result<BoundFmiDerivativeOperation, WasmCompileError> {
-        let issued = self.issued(operation)?;
+        let workspace = match binding {
+            crate::SavedBinding::Certify => self.issued(operation)?.workspace,
+            crate::SavedBinding::Trusted => self.carried_workspace(operation)?,
+        };
         #[cfg(all(
             feature = "fixed-scalar-linked-receiver",
             target_arch = "wasm32",
             target_os = "wasi",
             target_env = "p2"
         ))]
-        let runtime = self.linked_runtime(&issued, at)?;
+        let runtime = self.linked_runtime(workspace, at)?;
         self.bound(
-            issued.workspace,
+            workspace,
             #[cfg(all(
                 feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
@@ -130,7 +139,7 @@ impl PrecompiledFmiDerivativeOperation {
     ))]
     fn linked_runtime(
         &self,
-        issued: &CompiledFmiDerivativeOperationWasm,
+        issued: FmiDerivativeWorkspace,
         at: crate::LinkedPosition<'_>,
     ) -> Result<runtime::DerivativeRuntime, WasmCompileError> {
         use crate::linked::{LinkedBinding, LinkedEntryKind, linked_key_words};
@@ -152,7 +161,7 @@ impl PrecompiledFmiDerivativeOperation {
                 }
                 _ => false,
             });
-        if entry.key_words() != key || !workspace.matches(issued.workspace) || !same_tables {
+        if entry.key_words() != key || !workspace.matches(issued) || !same_tables {
             return Err(WasmCompileError::Input(
                 "the issued linked derivative entry differs from its source".into(),
             ));
@@ -180,6 +189,36 @@ impl PrecompiledFmiDerivativeOperation {
             rumoca_ir_solve::PreparedKernelSource::new(&source.problem().layout, source.calls())
                 .and_then(|key| key.fmi_derivative(operation))
                 .map_err(WasmCompileError::Input)?;
+        self.check_extent(Some(&expected))?;
+        let issued = compile_fmi_derivative_operation_wasm(operation)?;
+        if let Some(mismatch) = self.mismatch(&Self::from_compiled(&issued)) {
+            return Err(WasmCompileError::Input(format!(
+                "precompiled FMI derivative differs from its issued emission: {mismatch}"
+            )));
+        }
+        Ok(issued)
+    }
+
+    /// The workspace of a build-certified operation, issued from `operation`
+    /// and the carried helpers' scratch extents in the order its compilation
+    /// passes them, after the carried version and extent checks.
+    fn carried_workspace(
+        &self,
+        operation: &FmiDerivativeCausalOperation<'_>,
+    ) -> Result<FmiDerivativeWorkspace, WasmCompileError> {
+        self.check_extent(None)?;
+        operation
+            .workspace(
+                self.helpers()
+                    .filter_map(|(_, payload)| payload.map(ProgramPayload::scratch_bytes)),
+                CheckedNativeWasmCapacityPolicy::default(),
+            )
+            .map_err(|error| WasmCompileError::Input(error.to_string()))
+    }
+
+    /// The carried version and module and scratch extents, and, when
+    /// certifying, the key derived again from the source.
+    fn check_extent(&self, expected: Option<&str>) -> Result<(), WasmCompileError> {
         let policy = CheckedNativeWasmCapacityPolicy::default();
         let oversized = std::iter::once(self.bytes.len())
             .chain(
@@ -191,18 +230,15 @@ impl PrecompiledFmiDerivativeOperation {
                 .helpers()
                 .filter_map(|(_, p)| p)
                 .any(|p| p.scratch_bytes() > policy.public_scratch_bytes());
-        if self.version != 2 || self.source_key != expected || oversized {
+        if self.version != 2
+            || expected.is_some_and(|expected| self.source_key != expected)
+            || oversized
+        {
             return Err(WasmCompileError::Input(
                 "precompiled FMI derivative belongs to another source, capability or extent".into(),
             ));
         }
-        let issued = compile_fmi_derivative_operation_wasm(operation)?;
-        if let Some(mismatch) = self.mismatch(&Self::from_compiled(&issued)) {
-            return Err(WasmCompileError::Input(format!(
-                "precompiled FMI derivative differs from its issued emission: {mismatch}"
-            )));
-        }
-        Ok(issued)
+        Ok(())
     }
 
     fn helpers(&self) -> impl Iterator<Item = (FmiDerivativeHelperRole, Option<&ProgramPayload>)> {
@@ -409,7 +445,7 @@ mod tests {
         assert!(json.get("plan").is_none());
         let replay: PrecompiledFmiDerivativeOperation =
             serde_json::from_value(json.clone()).unwrap();
-        let bound = replay.bind(&operation).unwrap();
+        let bound = replay.bind(crate::SavedBinding::Certify, &operation).unwrap();
         let fresh_component = build_component(3);
         let fresh_root = fresh_component.runtime_view().retain_assertion_root();
         let fresh_operation = fresh_root
@@ -417,10 +453,19 @@ mod tests {
             .unwrap()
             .try_causal_operation()
             .unwrap();
-        assert!(replay.bind(&fresh_operation).is_ok());
+        assert!(replay.bind(crate::SavedBinding::Certify, &fresh_operation).is_ok());
         assert_eq!(bound.module_bytes(), compiled.module_bytes());
         assert_eq!(bound.workspace().regions(), compiled.workspace().regions());
         assert_eq!(bound.value_module_bytes(), compiled.values().module_bytes());
+        // A build-certified operation binds with its workspace issued again
+        // from the operation and the carried helper extents: the same
+        // workspace as the certified bind, with nothing emitted again.
+        let trusted = replay
+            .bind(crate::SavedBinding::Trusted, &operation)
+            .unwrap();
+        assert_eq!(trusted.workspace().regions(), compiled.workspace().regions());
+        assert_eq!(trusted.workspace().bytes(), compiled.workspace().bytes());
+        assert_eq!(trusted.module_bytes(), compiled.module_bytes());
         let mut forged = json;
         forged["workspace"] = serde_json::json!({"bytes":0});
         assert!(serde_json::from_value::<PrecompiledFmiDerivativeOperation>(forged).is_err());
@@ -445,15 +490,16 @@ mod tests {
             .unwrap()
             .try_causal_operation()
             .unwrap();
-        assert!(wire.bind(&changed).is_err());
+        assert!(wire.bind(crate::SavedBinding::Certify, &changed).is_err());
         let mut missing = wire.clone();
         missing.static_program = None;
-        assert!(missing.bind(&operation).is_err());
+        assert!(missing.bind(crate::SavedBinding::Certify, &operation).is_err());
         let mut modified = wire.clone();
         modified.bytes[0] ^= 1;
-        assert!(modified.bind(&operation).is_err());
+        assert!(modified.bind(crate::SavedBinding::Certify, &operation).is_err());
         let mut oversized = wire;
         oversized.bytes.resize((8 << 20) + 1, 0);
-        assert!(oversized.bind(&operation).is_err());
+        assert!(oversized.bind(crate::SavedBinding::Certify, &operation).is_err());
+        assert!(oversized.bind(crate::SavedBinding::Trusted, &operation).is_err());
     }
 }

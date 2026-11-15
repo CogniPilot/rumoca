@@ -52,6 +52,20 @@ pub use linked::{
 };
 #[cfg(feature = "precompiled-programs")]
 pub use linked::{LinkedAdmission, LinkedArtifact, linked_digest};
+
+/// How a load binds a saved compiled entry to the checked source it was
+/// compiled from.
+#[cfg(feature = "precompiled-programs")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavedBinding {
+    /// Derive the entry's key and emission again from the checked source and
+    /// refuse any difference: the builder's one certification of a product
+    /// before it is published.
+    Certify,
+    /// The product was certified when it was built or cached: bind the
+    /// carried entry after its structural checks, deriving nothing again.
+    Trusted,
+}
 #[cfg(any(
     test,
     all(target_arch = "wasm32", target_os = "unknown"),

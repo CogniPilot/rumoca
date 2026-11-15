@@ -13,8 +13,13 @@ pub(super) struct ModuleBatch {
     this: Weak<ModuleBatch>,
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
     mode: Option<super::precompiled::ProgramMode>,
+    // The whole-model key context, built only when something keys a private
+    // entry (a capture, or the builder's certifying load); a build-certified
+    // load never builds it.
     #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-    source: Result<rumoca_ir_solve::PreparedKernelSource, String>,
+    source: OnceCell<Result<rumoca_ir_solve::PreparedKernelSource, String>>,
+    #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+    calls: Rc<SolvePureCallTable>,
     // The one layout every product of this preparation checks its inputs
     // against; products share it and never keep a copy of their own.
     layout: Rc<VarLayout>,
@@ -40,15 +45,21 @@ pub(super) struct Entry {
 impl ModuleBatch {
     pub(super) fn new(layout: VarLayout, calls: Rc<SolvePureCallTable>) -> Rc<Self> {
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-        let source = rumoca_ir_solve::PreparedKernelSource::new(&layout, &calls);
-        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
         let mode = super::precompiled::active();
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-        if source.is_err()
-            && let Some(mode) = &mode
+        let source = OnceCell::new();
+        // A capture or certifying load refuses an unkeyable source up front.
+        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+        if let Some(mode) = &mode
+            && mode.binding() != Some(rumoca_exec_wasm::SavedBinding::Trusted)
+            && source
+                .get_or_init(|| rumoca_ir_solve::PreparedKernelSource::new(&layout, &calls))
+                .is_err()
         {
             mode.unsupported("checked kernel source identity refused");
         }
+        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+        let batch_calls = Rc::clone(&calls);
         let admission = rumoca_exec_wasm::PrivateProgramAdmission::new(layout.clone(), calls);
         Rc::new_cyclic(|this| Self {
             admission,
@@ -58,9 +69,20 @@ impl ModuleBatch {
             mode,
             #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
             source,
+            #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+            calls: batch_calls,
             layout: Rc::new(layout),
             scratch: Rc::default(),
         })
+    }
+
+    /// The whole-model key context, built on first use.
+    #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+    fn key_source(&self) -> Result<&rumoca_ir_solve::PreparedKernelSource, String> {
+        self.source
+            .get_or_init(|| rumoca_ir_solve::PreparedKernelSource::new(&self.layout, &self.calls))
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     pub(super) fn layout(&self) -> &Rc<VarLayout> {
@@ -82,16 +104,12 @@ impl ModuleBatch {
         seed: Option<usize>,
     ) -> Result<Rc<Entry>, String> {
         let outputs = block.stored_output_count();
-        // A linked guest admits while loading: it issues its own entries
-        // from the admitted programs before binding the saved ones.
+        // A build-certified load admits nothing: it binds the saved
+        // programs. Only the builder's certifying load admits while loading,
+        // to issue its own entries from the admitted programs.
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
-        let loading = matches!(self.mode, Some(super::precompiled::ProgramMode::Load(_)))
-            && !cfg!(all(
-                feature = "linked-guest",
-                target_arch = "wasm32",
-                target_os = "wasi",
-                target_env = "p2"
-            ));
+        let loading = self.mode.as_ref().and_then(super::precompiled::ProgramMode::binding)
+            == Some(rumoca_exec_wasm::SavedBinding::Trusted);
         #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
         let loading = false;
         let admitted = if loading {
@@ -126,7 +144,10 @@ impl ModuleBatch {
     ) -> Result<Vec<CompiledPrivateProgramWasm>, String> {
         #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
         if let Some(mode) = &self.mode {
-            let source = self.source.as_ref().map_err(Clone::clone)?;
+            let source = match mode.binding() {
+                Some(rumoca_exec_wasm::SavedBinding::Certify) => Some(self.key_source()?),
+                _ => None,
+            };
             let requests = pending
                 .iter()
                 .map(|entry| (&entry.source, entry.seed))
@@ -140,8 +161,7 @@ impl ModuleBatch {
             let admitted = pending
                 .iter()
                 .map(|entry| entry.admitted.as_ref())
-                .collect::<Option<Vec<_>>>()
-                .ok_or("a linked private entry lost its admission")?;
+                .collect::<Option<Vec<_>>>();
             if let Some(result) = mode.private(
                 source,
                 &requests,
@@ -152,7 +172,7 @@ impl ModuleBatch {
                     target_os = "wasi",
                     target_env = "p2"
                 ))]
-                (&self.admission, &admitted),
+                (&self.admission, admitted.as_deref()),
             ) {
                 return result;
             }

@@ -11,7 +11,7 @@ fn bind_ordinary(
     layout: &VarLayout,
     calls: &SolvePureCallTable,
 ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-    wire.bind(source, owners, schedule, layout, calls)
+    wire.bind(crate::SavedBinding::Certify, source, owners, schedule, layout, calls)
 }
 
 fn bind_rows(
@@ -20,7 +20,7 @@ fn bind_rows(
     layout: &VarLayout,
     calls: &SolvePureCallTable,
 ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-    wire.bind_issued(rows, layout, calls)
+    wire.bind_issued(crate::SavedBinding::Certify, rows, layout, calls)
 }
 
 fn schedule_key(

@@ -289,6 +289,26 @@ impl LinkedArtifact {
             carried,
         })
     }
+
+    /// The admission of a build-certified artifact: the version and the
+    /// entries in the shape their assembler issues, checked as
+    /// [`Self::admit`] checks them, so the carried plan routes only what it
+    /// carries. The saved digest, the regenerated dispatch and the module
+    /// export coverage were certified with the product before it was
+    /// published and are not derived again; the admission can bind by
+    /// position but not certify.
+    pub fn admit_trusted(self) -> Result<LinkedAdmission, WasmCompileError> {
+        if self.version != LINKED_ARTIFACT_VERSION {
+            return Err(refusal("linked artifact belongs to another saved product"));
+        }
+        let carried = LinkedEntryPlan::checked(&self.entries, &self.typed)
+            .map_err(|message| refusal(&message))?;
+        Ok(LinkedAdmission {
+            saved: self.saved.clone(),
+            artifact: self,
+            carried,
+        })
+    }
 }
 
 #[cfg(feature = "precompiled-programs")]

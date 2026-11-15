@@ -29,10 +29,39 @@ fn issued_exact_artifact_roundtrip_keeps_native_bits_and_refuses_foreign_binding
     let decoded: PrecompiledExactAssignments =
         serde_json::from_slice(&serde_json::to_vec(&wire).unwrap()).unwrap();
     let bind = |wire: &PrecompiledExactAssignments, source: &ComputeBlock| {
-        wire.bind(source, owners, schedule, layout, &model.pure_calls)
+        wire.bind(
+            crate::SavedBinding::Certify,
+            source,
+            owners,
+            schedule,
+            layout,
+            &model.pure_calls,
+        )
     };
     let replay = bind(&decoded, source).unwrap();
     assert_eq!(original.module_bytes(), replay.module_bytes());
+    // A trusted bind takes the carried program as it is, and still refuses a
+    // carried header that does not fit the layout it binds.
+    let trusted = |wire: &PrecompiledExactAssignments| {
+        wire.bind(
+            crate::SavedBinding::Trusted,
+            source,
+            owners,
+            schedule,
+            layout,
+            &model.pure_calls,
+        )
+    };
+    assert_eq!(
+        trusted(&decoded).unwrap().module_bytes(),
+        original.module_bytes()
+    );
+    for (field, value) in [("version", 0), ("y", layout.y_scalars() + 1)] {
+        let mut changed = serde_json::to_value(&wire).unwrap();
+        changed[field] = serde_json::json!(value);
+        let changed: PrecompiledExactAssignments = serde_json::from_value(changed).unwrap();
+        assert!(trusted(&changed).is_err(), "{field}");
+    }
     let mut results = Vec::new();
     for code in [&original, &replay] {
         let runtime = crate::host_runtime::HostKernelRuntime::new_named(

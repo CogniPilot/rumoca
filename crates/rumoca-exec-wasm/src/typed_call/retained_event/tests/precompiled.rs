@@ -13,7 +13,7 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     let wire = super::super::PrecompiledRetainedEvent::from_compiled(&original);
     let bytes = serde_json::to_vec(&wire).unwrap();
     let decoded: super::super::PrecompiledRetainedEvent = serde_json::from_slice(&bytes).unwrap();
-    let replay = decoded.bind(program()).unwrap();
+    let replay = decoded.bind(crate::SavedBinding::Certify, program()).unwrap();
     let model = original.source().source().model();
     let y = [0.0, 2.0];
     let p = vec![0.0; model.problem.layout.p_scalars()];
@@ -36,11 +36,11 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["invocations"] = serde_json::json!([]);
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(program()).is_err());
+    assert!(changed.bind(crate::SavedBinding::Certify, program()).is_err());
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["invocations"][0]["status"] = serde_json::json!(u32::MAX);
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(program()).is_err());
+    assert!(changed.bind(crate::SavedBinding::Certify, program()).is_err());
 }
 
 fn bind_wire(
@@ -54,7 +54,7 @@ fn bind_wire(
         .unwrap();
     serde_json::from_value::<super::super::PrecompiledRetainedEvent>(wire)
         .unwrap()
-        .bind(program)
+        .bind(crate::SavedBinding::Certify, program)
         .unwrap()
 }
 
@@ -134,4 +134,36 @@ fn a_bound_event_with_an_altered_module_byte_runs_uncertified_on_a_copy() {
     let replay = bind_wire(&original, changed);
     assert!(replay.read_only_y.is_none());
     assert_eq!(results(&replay), results(&original));
+}
+
+/// A trusted bind takes the carried program, invocations and read-only-Y flag
+/// as they are: the same results as the certified bind, the certificate only
+/// when the flag carries it, and a refusal of another wire version.
+#[test]
+fn a_trusted_event_bind_uses_the_carried_flag_and_refuses_another_version() {
+    let original = compile();
+    let program = || {
+        original
+            .source()
+            .source()
+            .event_program(s::RetainedAssertionSource::ActionConditions, 0)
+            .unwrap()
+    };
+    let wire = super::super::PrecompiledRetainedEvent::from_compiled(&original);
+    let trusted = |wire: serde_json::Value| {
+        serde_json::from_value::<super::super::PrecompiledRetainedEvent>(wire)
+            .unwrap()
+            .bind(crate::SavedBinding::Trusted, program())
+    };
+    let replay = trusted(serde_json::to_value(&wire).unwrap()).unwrap();
+    assert!(replay.read_only_y.is_some());
+    assert_eq!(results(&replay), results(&original));
+    let mut changed = serde_json::to_value(&wire).unwrap();
+    changed["read_only_y"] = serde_json::json!(false);
+    let replay = trusted(changed).unwrap();
+    assert!(replay.read_only_y.is_none());
+    assert_eq!(results(&replay), results(&original));
+    let mut changed = serde_json::to_value(&wire).unwrap();
+    changed["version"] = serde_json::json!(1);
+    assert!(trusted(changed).is_err());
 }

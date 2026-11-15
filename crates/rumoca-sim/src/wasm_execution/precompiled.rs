@@ -4,7 +4,7 @@ use rumoca_exec_wasm::{
     AdmittedPrivateProgram, CompiledExactAssignmentWasm, CompiledPrivateProgramWasm,
     CompiledRetainedEventWasm, LinkedEntryKind, LinkedProduct, LinkedProductAssembler,
     PrecompiledExactAssignments, PrecompiledPrivatePrograms, PrecompiledRetainedEvent,
-    PrivateProgramAdmission, WasmCompileError,
+    PrivateProgramAdmission, SavedBinding, WasmCompileError,
 };
 use rumoca_ir_solve::{
     ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, PreparedKernelSource,
@@ -35,6 +35,10 @@ pub(crate) struct LoadedPrograms {
     observations: RefCell<VecDeque<PrecompiledRetainedEvent>>,
     derivatives: RefCell<VecDeque<rumoca_exec_wasm::PrecompiledFmiDerivativeOperation>>,
     errors: RefCell<Vec<String>>,
+    /// How every saved program binds: `Certify` only in the builder's
+    /// certifying load, `Trusted` for a product certified when it was built
+    /// or cached.
+    binding: SavedBinding,
     /// A linked guest's own product and the admission of the artifact it was
     /// linked from; a plain load has none and binds nothing linked.
     #[cfg(all(
@@ -266,9 +270,13 @@ impl ProgramScope {
             Some(Rc::default()),
         ))
     }
+    /// The load of a product certified when it was produced (a cached or
+    /// packaged browser build): every saved program binds after its
+    /// structural checks, with nothing keyed or emitted again.
     pub(crate) fn load(programs: CorePrograms) -> Result<Self, String> {
         Self::load_with(
             programs,
+            SavedBinding::Trusted,
             #[cfg(all(
                 feature = "linked-guest",
                 target_arch = "wasm32",
@@ -311,10 +319,16 @@ impl ProgramScope {
                 next: RefCell::default(),
             }
         };
-        Self::load_with(programs, Some(linked))
+        let binding = if certify {
+            SavedBinding::Certify
+        } else {
+            SavedBinding::Trusted
+        };
+        Self::load_with(programs, binding, Some(linked))
     }
     fn load_with(
         programs: CorePrograms,
+        binding: SavedBinding,
         #[cfg(all(
             feature = "linked-guest",
             target_arch = "wasm32",
@@ -333,6 +347,7 @@ impl ProgramScope {
             observations: RefCell::new(programs.observations.into()),
             derivatives: RefCell::new(programs.derivatives.into()),
             errors: RefCell::new(Vec::new()),
+            binding,
             #[cfg(all(
                 feature = "linked-guest",
                 target_arch = "wasm32",
@@ -459,6 +474,14 @@ impl Drop for ProgramScope {
 }
 
 impl ProgramMode {
+    /// How a load scope binds its saved programs; a capture binds none.
+    pub(crate) fn binding(&self) -> Option<SavedBinding> {
+        match self {
+            Self::Capture(..) => None,
+            Self::Load(programs) => Some(programs.binding),
+        }
+    }
+
     pub(crate) fn unsupported(&self, kind: &str) -> bool {
         match self {
             Self::Capture(output, _) => {
@@ -535,6 +558,7 @@ impl ProgramMode {
                                 assembler.event(&source).map(|id| vec![id])
                             })?;
                         wire.bind(
+                            input.binding,
                             source,
                             #[cfg(all(
                                 feature = "linked-guest",
@@ -554,12 +578,14 @@ impl ProgramMode {
         }
     }
 
-    /// Bind the next saved private batch. A linked guest first issues the
-    /// batch's entries from `admission` and `admitted`, the same admitted
-    /// programs in the same order as `requests`.
+    /// Bind the next saved private batch. `key` is the batch's key context,
+    /// which only a certifying load needs. A certifying linked guest first
+    /// issues the batch's entries from `admission` and `admitted`, the same
+    /// admitted programs in the same order as `requests`; a build-certified
+    /// load admits nothing and reserves the batch's positions.
     pub(crate) fn private(
         &self,
-        key: &PreparedKernelSource,
+        key: Option<&PreparedKernelSource>,
         requests: &[(&ScalarProgramBlock, Option<usize>)],
         layout: &VarLayout,
         #[cfg(all(
@@ -568,7 +594,10 @@ impl ProgramMode {
             target_os = "wasi",
             target_env = "p2"
         ))]
-        (admission, admitted): (&PrivateProgramAdmission, &[&AdmittedPrivateProgram]),
+        (admission, admitted): (
+            &PrivateProgramAdmission,
+            Option<&[&AdmittedPrivateProgram]>,
+        ),
     ) -> Option<Result<Vec<CompiledPrivateProgramWasm>, String>> {
         let Self::Load(programs) = self else {
             return None;
@@ -586,13 +615,30 @@ impl ProgramMode {
                     target_os = "wasi",
                     target_env = "p2"
                 ))]
-                let count = u32::try_from(admitted.len())
+                let count = u32::try_from(requests.len())
                     .map_err(|_| "private batch exceeds the entry index range")?;
+                #[cfg(all(
+                    feature = "linked-guest",
+                    target_arch = "wasm32",
+                    target_os = "wasi",
+                    target_env = "p2"
+                ))]
                 let issued = programs.issue(&[(LinkedEntryKind::Private, count)], |assembler| {
+                    let admitted = admitted.ok_or_else(|| {
+                        WasmCompileError::Input(
+                            "a certifying linked load lost a private admission".into(),
+                        )
+                    })?;
                     assembler.private(admission, admitted)
                 })?;
+                let certify = match programs.binding {
+                    SavedBinding::Certify => {
+                        Some(key.ok_or("a certifying load lost its private key context")?)
+                    }
+                    SavedBinding::Trusted => None,
+                };
                 wire.bind(
-                    key,
+                    certify,
                     requests,
                     layout,
                     #[cfg(all(
@@ -658,6 +704,7 @@ impl ProgramMode {
                 })?;
                 program
                     .bind(
+                        programs.binding,
                         source,
                         owners,
                         schedule,
@@ -727,6 +774,7 @@ impl ProgramMode {
                     })?;
                 program
                     .bind_issued(
+                        programs.binding,
                         rows,
                         layout,
                         calls,
@@ -813,6 +861,7 @@ impl ProgramMode {
                             |assembler| assembler.derivative(operation),
                         )?;
                         wire.bind(
+                            input.binding,
                             operation,
                             #[cfg(all(
     feature = "linked-guest",

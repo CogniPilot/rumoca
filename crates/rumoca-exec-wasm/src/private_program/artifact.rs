@@ -65,9 +65,14 @@ impl PrecompiledPrivatePrograms {
     /// A linked guest binds entry `k` of this batch at the issued Private
     /// entry `at.index + k`, which must carry the entry's key, its module's
     /// scratch extent and typed faults, and its own gather and linear faults.
+    ///
+    /// `certify` is the checked source's key context when the load certifies
+    /// (the builder): each entry's key, and in a linked guest its seed reads,
+    /// are derived again and must equal the carried ones. `None` binds a
+    /// build-certified batch after its structural checks.
     pub fn bind(
         &self,
-        source: &rumoca_ir_solve::PreparedKernelSource,
+        certify: Option<&rumoca_ir_solve::PreparedKernelSource>,
         requests: &[(&ScalarProgramBlock, Option<usize>)],
         layout: &VarLayout,
         #[cfg(all(
@@ -84,10 +89,11 @@ impl PrecompiledPrivatePrograms {
             ));
         }
         for (entry, &(block, seed)) in self.entries.iter().zip(requests) {
-            let expected = source
-                .private_program(block, seed)
+            let expected = certify
+                .map(|source| source.private_program(block, seed))
+                .transpose()
                 .map_err(WasmCompileError::Input)?;
-            if entry.source_key != expected
+            if expected.is_some_and(|expected| entry.source_key != expected)
                 || entry.y != layout.y_scalars()
                 || entry.p != layout.p_scalars()
                 || entry.outputs != block.stored_output_count()
@@ -98,15 +104,15 @@ impl PrecompiledPrivatePrograms {
                     "precompiled private entry belongs to another checked source".into(),
                 ));
             }
-            // A linked guest decodes seeds only through reads derived again
-            // from the checked source, never through the carried ones.
+            // A certifying linked guest refuses carried seed reads that differ
+            // from the reads derived again from the checked source.
             #[cfg(all(
                 feature = "fixed-scalar-linked-receiver",
                 target_arch = "wasm32",
                 target_os = "wasi",
                 target_env = "p2"
             ))]
-            if let (Some(storage), Some(count)) = (&entry.seed, seed)
+            if let (Some(_), Some(storage), Some(count)) = (certify, &entry.seed, seed)
                 && crate::emit::private_seed_reads(block, count).ok().as_ref()
                     != Some(&storage.reads)
             {
