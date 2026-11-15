@@ -1,7 +1,9 @@
 //! Evaluation of checked multi-lane tangent programs.
 
 use std::cell::RefCell;
+#[cfg(feature = "reference-eval")]
 use std::rc::Rc;
+#[cfg(feature = "reference-eval")]
 use std::sync::Arc;
 
 use rumoca_ir_solve::{ColoredTangentPlan, TangentLaneProgram, TornTangentPlan};
@@ -492,6 +494,9 @@ fn schedule_defect<E: From<EvalSolveError>>(what: &str) -> E {
 /// A [`ColoredTangentPlan`] prepared for repeated evaluation.
 pub struct ColoredTangentEvaluator {
     plan: ColoredTangentPlan,
+    /// Read only by the reference evaluation; a compiled product evaluates
+    /// the colored tangents natively and prepares no lane programs.
+    #[cfg(feature = "reference-eval")]
     programs: Vec<Rc<PreparedTangentLaneProgram>>,
 }
 
@@ -499,9 +504,11 @@ pub struct ColoredTangentEvaluator {
 /// widened program (by identity) is prepared once, with one scratch.
 #[derive(Default)]
 pub struct PreparedLaneCatalog {
+    #[cfg(feature = "reference-eval")]
     entries: Vec<(Arc<TangentLaneProgram>, Rc<PreparedTangentLaneProgram>)>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl PreparedLaneCatalog {
     fn prepare(&mut self, program: &Arc<TangentLaneProgram>) -> Rc<PreparedTangentLaneProgram> {
         if let Some((_, prepared)) = self
@@ -528,6 +535,7 @@ impl ColoredTangentEvaluator {
 
     /// [`Self::new`] for one of several evaluators whose plans share widened
     /// programs: each is prepared once into `catalog`.
+    #[cfg(feature = "reference-eval")]
     #[must_use]
     pub fn sharing(plan: ColoredTangentPlan, catalog: &mut PreparedLaneCatalog) -> Self {
         let programs = plan
@@ -536,6 +544,14 @@ impl ColoredTangentEvaluator {
             .map(|program| catalog.prepare(program))
             .collect();
         Self { plan, programs }
+    }
+
+    /// The compiled product keeps the plan only: it prepares no lane program
+    /// into the catalog.
+    #[cfg(not(feature = "reference-eval"))]
+    #[must_use]
+    pub fn sharing(plan: ColoredTangentPlan, _catalog: &mut PreparedLaneCatalog) -> Self {
+        Self { plan }
     }
 
     #[must_use]

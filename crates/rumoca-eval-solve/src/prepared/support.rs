@@ -393,6 +393,7 @@ pub(super) fn prepared_vec_with_capacity<T>(
     Ok(values)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn reserve_prepared_vec_capacity<T>(
     values: &mut Vec<T>,
     capacity: usize,

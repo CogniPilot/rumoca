@@ -5,6 +5,8 @@ use rumoca_ir_solve::{LinearOp, Reg, TensorIndex, TensorUpdateSubscript};
 /// Issued before writes from the operation's checked compact storage geometry.
 pub(super) struct Snapshot {
     width: usize,
+    /// Read only by the reference evaluator's native tensor copies.
+    #[cfg(feature = "reference-eval")]
     result_width: usize,
 }
 
@@ -43,6 +45,7 @@ impl Snapshot {
         self.width
     }
 
+    #[cfg(feature = "reference-eval")]
     pub(super) fn result_width(&self) -> usize {
         self.result_width
     }
@@ -51,6 +54,7 @@ impl Snapshot {
         let Some(dst) = op.dst_register() else {
             return Some(Self {
                 width: 0,
+                #[cfg(feature = "reference-eval")]
                 result_width: 0,
             });
         };
@@ -58,6 +62,7 @@ impl Snapshot {
         if count == 0 {
             return Some(Self {
                 width: 0,
+                #[cfg(feature = "reference-eval")]
                 result_width: 0,
             });
         }
@@ -112,6 +117,7 @@ impl Snapshot {
         };
         Some(Self {
             width: if overlap { count } else { 0 },
+            #[cfg(feature = "reference-eval")]
             result_width: count,
         })
     }

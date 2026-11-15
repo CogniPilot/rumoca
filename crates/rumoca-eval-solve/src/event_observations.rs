@@ -12,9 +12,10 @@ use rumoca_ir_solve::{
 
 #[cfg(feature = "reference-eval")]
 use crate::{
-    AssertionInvocationEvaluation, TypedValue, eval_assertion_invocation, typed_kind_from_scalar,
+    AssertionInvocationEvaluation, Reg, TypedValue, eval_assertion_invocation,
+    typed_kind_from_scalar,
 };
-use crate::{AssertionReport, EvalSolveError, Reg, invalid_row};
+use crate::{AssertionReport, EvalSolveError, invalid_row};
 
 /// The exact programs one runtime has checked against its pure-call table and
 /// event actions, derived once when the runtime is built. A program is a
@@ -120,21 +121,8 @@ impl<'model> CheckedEventObservationContext<'model> {
             .map(|report| report.message.clone())
     }
 
-    /// The compiled product uses admitted compiled observations; this reference
-    /// evaluator refuses before program binding, register reads or report writes.
-    #[cfg(not(feature = "reference-eval"))]
-    pub(crate) fn evaluate(
-        &self,
-        _table: &SolvePureCallTable,
-        _program: &[LinearOp],
-        _operation: usize,
-        _read: impl FnMut(Reg) -> Result<f64, EvalSolveError>,
-    ) -> Result<Vec<f64>, EvalSolveError> {
-        Err(crate::interpreter_excluded(
-            "CheckedEventObservationContext::evaluate",
-        ))
-    }
-
+    /// Only the reference evaluator calls this; the compiled product uses
+    /// admitted compiled observations and has no caller to refuse.
     #[cfg(feature = "reference-eval")]
     pub(crate) fn evaluate(
         &self,
@@ -255,24 +243,5 @@ impl SolveVisitor for ObservationPrograms<'_> {
         let proof = self.prove(program)?;
         self.programs.insert(program_identity(program), proof);
         Ok(())
-    }
-}
-
-#[cfg(all(test, not(feature = "reference-eval")))]
-mod compiled_only_tests {
-    use super::*;
-
-    #[test]
-    fn excluded_observation_refuses_before_program_binding_or_register_reads() {
-        let authority = EventObservationAuthority::default();
-        let table = SolvePureCallTable::default();
-        let context = CheckedEventObservationContext::new(&authority, &table, &[]);
-        let error = context
-            .evaluate(&table, &[], usize::MAX, |_| {
-                panic!("excluded observation read an argument register")
-            })
-            .expect_err("an excluded evaluator must refuse before invocation binding");
-        assert!(matches!(error, EvalSolveError::CompiledExecution { .. }));
-        assert!(context.take_reports().is_empty());
     }
 }

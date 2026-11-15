@@ -73,6 +73,9 @@ pub(crate) fn interpreter_excluded(operation: &'static str) -> EvalSolveError {
 }
 pub use event_observations::{CheckedEventObservationContext, EventObservationAuthority};
 pub mod dense_basis;
+/// The register-file linear solve of the reference evaluator's `LinearSolve`
+/// operations; compiled products lower those operations themselves.
+#[cfg(feature = "reference-eval")]
 pub mod linear_solve;
 pub mod nan_trace;
 #[cfg(feature = "reference-eval")]
@@ -3281,6 +3284,7 @@ fn visit_tensor_concatenate<E>(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_tensor_binary_primal(op: BinaryOp, lhs_re: f64, rhs_re: f64, lanes: usize) -> f64 {
     let raw = eval_binary(op, lhs_re, rhs_re);
     if lanes >= 2 && op == BinaryOp::Div && rhs_re == 0.0 && lhs_re == 0.0 {
@@ -4368,6 +4372,7 @@ fn set(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn get(
     regs: &[f64],
     initialized: &[bool],

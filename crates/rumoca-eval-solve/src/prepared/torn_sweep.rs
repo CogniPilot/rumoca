@@ -35,8 +35,11 @@ pub struct PreparedTornSweep {
     steps: Vec<PreparedTornStep>,
     /// Runs of several consecutive steps recovered from one residual program
     /// ([`PreparedScalarProgramBlock::torn_sweep_runs`]), each evaluated as
-    /// one chain program of `chains`, in step order.
+    /// one chain program of `chains`, in step order. Only the reference
+    /// sweep evaluates chains; a compiled product never prepares them.
+    #[cfg(feature = "reference-eval")]
     runs: Vec<PreparedTornRun>,
+    #[cfg(feature = "reference-eval")]
     chains: Option<Box<PreparedScalarProgramBlock>>,
     /// Residual rows resolved to (program, output offset); `None` marks a row
     /// with no scalar view, which the sweep reports as unevaluable exactly as
@@ -46,6 +49,7 @@ pub struct PreparedTornSweep {
 
 /// One chain run: `count` steps from `first_step`, answered by chain program
 /// `chain`.
+#[cfg(feature = "reference-eval")]
 struct PreparedTornRun {
     first_step: usize,
     count: usize,
@@ -136,17 +140,15 @@ impl PreparedScalarProgramBlock {
             .collect();
         // Without chain runs the sweep declines grouping and evaluates every
         // step on its own.
-        let Some((runs, chains)) = self.prepare_torn_chains(causal_steps) else {
-            return Some(PreparedTornSweep {
-                steps,
-                runs: Vec::new(),
-                chains: None,
-                residuals,
-            });
-        };
+        #[cfg(feature = "reference-eval")]
+        let (runs, chains) = self
+            .prepare_torn_chains(causal_steps)
+            .unwrap_or_else(|| (Vec::new(), None));
         Some(PreparedTornSweep {
             steps,
+            #[cfg(feature = "reference-eval")]
             runs,
+            #[cfg(feature = "reference-eval")]
             chains,
             residuals,
         })
@@ -155,6 +157,7 @@ impl PreparedScalarProgramBlock {
     /// The chain runs of a sweep and their prepared chain programs, or `None`
     /// when the runs or a chain program do not construct; the sweep then
     /// evaluates every step on its own.
+    #[cfg(feature = "reference-eval")]
     fn prepare_torn_chains(
         &self,
         causal_steps: &[(usize, usize)],
