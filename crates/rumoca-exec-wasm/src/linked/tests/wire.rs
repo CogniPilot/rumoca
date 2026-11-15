@@ -275,6 +275,27 @@ fn a_changed_dispatch_byte_or_another_saved_product_is_refused_before_any_issue(
     assert!(decode(wire).admit(SAVED).is_ok());
 }
 
+/// A build-certified admission checks the plan's structure only: the same
+/// carried plan as a certifying admission, a misordered entry still refused,
+/// and the dispatch bytes and saved digest (certified at build) not derived
+/// again.
+#[test]
+fn a_trusted_admission_carries_the_same_plan_and_refuses_a_misordered_entry() {
+    let sources = Sources::new();
+    let issued = product::build(&sources).linked;
+    let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
+    let certified = decode(wire.clone()).admit(SAVED).unwrap().into_carried_plan();
+    let trusted = decode(wire.clone()).admit_trusted().unwrap().into_carried_plan();
+    assert!(certified.entries().eq(trusted.entries()));
+    let mut unordered = wire.clone();
+    unordered["entries"].as_array_mut().unwrap().swap(0, 1);
+    assert!(decode(unordered).admit_trusted().is_err());
+    let mut changed = wire;
+    let byte = changed["dispatch"][8].as_u64().unwrap();
+    changed["dispatch"][8] = json!(byte ^ 1);
+    assert!(decode(changed).admit_trusted().is_ok());
+}
+
 /// Issuing past the artifact's records is refused, and so is a whole
 /// product with a record no request claimed.
 #[test]
