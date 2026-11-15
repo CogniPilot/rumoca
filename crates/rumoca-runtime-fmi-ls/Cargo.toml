@@ -14,6 +14,9 @@ crate-type = ["rlib", "cdylib"]
 # Build-only: adds the `rumoca-preinit` export for build-time snapshotting.
 # The published component never carries it.
 preinit = []
+# Build-only: the build-time linked certification entry (`certify_linked`), wired
+# into the build-only certification world by the packager runner.
+certify-linked = []
 # Build-time product kind: a stateful (scalar) component instead of the
 # stateless native product. Interpreted until linked dispatch lands (M1a).
 # Its fixed guest imports no native model entry.

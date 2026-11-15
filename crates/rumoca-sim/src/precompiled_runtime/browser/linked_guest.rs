@@ -23,10 +23,18 @@ pub struct LinkedGuestLoad {
 /// its modelDescription and capsule describe), never the saved one: the saved
 /// component must have the same canonical wire bytes, so the saved programs
 /// and the linked artifact belong to exactly the published model.
+///
+/// `certify` selects the build-time certification load: every requested
+/// program is issued again from its checked source and certified, and the
+/// saved component is compared with the published one. A published product
+/// was certified by its build, so its ordinary load binds by position into
+/// the admitted artifact and compares neither (SPEC_0044 owner decision,
+/// Nov 15: no per-entry regeneration on load).
 pub fn load_linked_guest(
     saved: &[u8],
     artifact: &[u8],
     published: &FmiComponent,
+    certify: bool,
 ) -> Result<LinkedGuestLoad, SimulationDiagnosticError> {
     let mut reader = rmp_serde::Deserializer::new(Cursor::new(artifact));
     let carried = rumoca_exec_wasm::LinkedArtifact::deserialize(&mut reader).map_err(refusal)?;
@@ -46,12 +54,12 @@ pub fn load_linked_guest(
         let root = component.runtime_view().retain_assertion_root();
         encode(&rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).map_err(refusal)?)
     };
-    if canonical(&wire.component)? != canonical(published)? {
+    if certify && canonical(&wire.component)? != canonical(published)? {
         return Err(refusal(
             "the saved product's component differs from the published component",
         ));
     }
-    let scope = ProgramScope::load_linked(wire.programs, admission).map_err(refusal)?;
+    let scope = ProgramScope::load_linked(wire.programs, admission, certify).map_err(refusal)?;
     Ok(LinkedGuestLoad { scope })
 }
 

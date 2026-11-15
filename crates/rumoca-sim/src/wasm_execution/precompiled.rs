@@ -46,21 +46,34 @@ pub(crate) struct LoadedPrograms {
     linked: Option<LinkedLoad>,
 }
 
-/// The entries a linked guest issues at its load sites from the same checked
-/// sources as the capture, and the artifact admission each issue is certified
-/// against before its entry is bound.
+/// How a linked guest binds its load sites to the admitted artifact.
 #[cfg(all(
     feature = "linked-guest",
     target_arch = "wasm32",
     target_os = "wasi",
     target_env = "p2"
 ))]
-struct LinkedLoad {
-    assembler: RefCell<LinkedProductAssembler>,
-    admission: RefCell<Option<rumoca_exec_wasm::LinkedAdmission>>,
+enum LinkedLoad {
+    /// Build-time certification: every site issues its entries again from the
+    /// same checked sources as the capture, and each issue is certified
+    /// against the artifact before its entry is bound. Only the build runs
+    /// this; a published product is certified before it is published.
+    Certify {
+        assembler: RefCell<LinkedProductAssembler>,
+        admission: RefCell<Option<rumoca_exec_wasm::LinkedAdmission>>,
+    },
+    /// The load of a build-certified product: every site reserves its
+    /// entries, in the order the build issued them, from the carried plan.
+    /// Nothing is issued, emitted or hashed again; each binder still checks
+    /// the reserved entry against the saved program it binds.
+    Trusted {
+        plan: rumoca_exec_wasm::LinkedEntryPlan,
+        counts: BTreeMap<LinkedEntryKind, u32>,
+        next: RefCell<BTreeMap<LinkedEntryKind, u32>>,
+    },
 }
 
-/// The guest-issued plan and the index of the entry a load site just issued.
+/// The plan a load site binds in and the index of its first entry.
 #[cfg(all(
     feature = "linked-guest",
     target_arch = "wasm32",
@@ -68,8 +81,19 @@ struct LinkedLoad {
     target_env = "p2"
 ))]
 struct Issued<'a> {
-    assembler: std::cell::Ref<'a, LinkedProductAssembler>,
+    plan: IssuedPlan<'a>,
     index: u32,
+}
+
+#[cfg(all(
+    feature = "linked-guest",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+enum IssuedPlan<'a> {
+    Issued(std::cell::Ref<'a, LinkedProductAssembler>),
+    Carried(&'a rumoca_exec_wasm::LinkedEntryPlan),
 }
 
 #[cfg(all(
@@ -81,7 +105,10 @@ struct Issued<'a> {
 impl Issued<'_> {
     fn at(&self) -> rumoca_exec_wasm::LinkedPosition<'_> {
         rumoca_exec_wasm::LinkedPosition {
-            plan: self.assembler.plan(),
+            plan: match &self.plan {
+                IssuedPlan::Issued(assembler) => assembler.plan(),
+                IssuedPlan::Carried(plan) => plan,
+            },
             index: self.index,
         }
     }
@@ -94,13 +121,21 @@ impl Issued<'_> {
     target_env = "p2"
 ))]
 impl LoadedPrograms {
-    /// Issue this site's entries from its checked source and certify
-    /// everything issued so far, including each new entry's whole module
-    /// closure, against the admitted artifact. Only then is the first issued
-    /// position returned for its saved entry to bind; nothing issued here is
-    /// callable before its certification passed.
+    /// The position this site's saved entry binds at. `reserve` names, in
+    /// issue order, how many entries of each kind the site issues (a
+    /// derivative's kinematic entry shares its index and is not reserved);
+    /// the first kind's first index is returned.
+    ///
+    /// Certify: issue the entries from the checked source, check they are
+    /// exactly the reservation, and certify everything issued so far,
+    /// including each new entry's whole module closure, against the admitted
+    /// artifact before the first position is returned.
+    ///
+    /// Trusted: reserve the next indices of each kind in the carried plan,
+    /// refusing a reservation past the plan's count.
     fn issue(
         &self,
+        reserve: &[(LinkedEntryKind, u32)],
         issue: impl FnOnce(
             &mut LinkedProductAssembler,
         ) -> Result<Vec<rumoca_exec_wasm::LinkedEntryId>, WasmCompileError>,
@@ -109,21 +144,69 @@ impl LoadedPrograms {
             .linked
             .as_ref()
             .ok_or("a linked guest binds only through its admitted artifact")?;
-        let ids = issue(&mut linked.assembler.borrow_mut())
-            .map_err(|error| format!("linked entry refused: {error}"))?;
-        let first = ids.first().ok_or("a load site issued no linked entry")?;
-        let assembler = linked.assembler.borrow();
-        linked
-            .admission
-            .borrow()
-            .as_ref()
-            .ok_or("the linked load is already finished")?
-            .certify_prefix(&assembler)
-            .map_err(|error| format!("linked entry refused: {error}"))?;
-        Ok(Issued {
-            assembler,
-            index: first.index,
-        })
+        let (&(first_kind, _), _) = reserve
+            .split_first()
+            .ok_or("a load site reserves no linked entry")?;
+        match linked {
+            LinkedLoad::Certify {
+                assembler,
+                admission,
+            } => {
+                let ids = issue(&mut assembler.borrow_mut())
+                    .map_err(|error| format!("linked entry refused: {error}"))?;
+                let first = ids.first().ok_or("a load site issued no linked entry")?;
+                // A kinematic entry sits at its derivative's index and binds
+                // through it; it is never reserved on its own.
+                let ids = ids
+                    .iter()
+                    .filter(|id| id.kind != LinkedEntryKind::Kinematic)
+                    .collect::<Vec<_>>();
+                for &(kind, count) in reserve {
+                    let issued = ids.iter().filter(|id| id.kind == kind).count();
+                    if u32::try_from(issued).ok() != Some(count) {
+                        return Err(format!(
+                            "a load site issued {issued} {kind:?} entries, reserved {count}"
+                        ));
+                    }
+                }
+                let reserved: usize = reserve.iter().map(|&(_, count)| count as usize).sum();
+                if first.kind != first_kind || ids.len() != reserved {
+                    return Err("a load site issued outside its reservation".into());
+                }
+                let assembler = assembler.borrow();
+                admission
+                    .borrow()
+                    .as_ref()
+                    .ok_or("the linked load is already finished")?
+                    .certify_prefix(&assembler)
+                    .map_err(|error| format!("linked entry refused: {error}"))?;
+                Ok(Issued {
+                    plan: IssuedPlan::Issued(assembler),
+                    index: first.index,
+                })
+            }
+            LinkedLoad::Trusted { plan, counts, next } => {
+                let mut next = next.borrow_mut();
+                let mut first = None;
+                for &(kind, count) in reserve {
+                    let at = next.entry(kind).or_insert(0);
+                    let end = at
+                        .checked_add(count)
+                        .filter(|end| *end <= counts.get(&kind).copied().unwrap_or(0))
+                        .ok_or_else(|| {
+                            format!("a load site reserves past the carried {kind:?} entries")
+                        })?;
+                    if kind == first_kind && first.is_none() {
+                        first = Some(*at);
+                    }
+                    *at = end;
+                }
+                Ok(Issued {
+                    plan: IssuedPlan::Carried(plan),
+                    index: first.ok_or("a load site reserves no linked entry")?,
+                })
+            }
+        }
     }
 }
 
@@ -206,14 +289,29 @@ impl ProgramScope {
     pub(crate) fn load_linked(
         programs: CorePrograms,
         admission: rumoca_exec_wasm::LinkedAdmission,
+        certify: bool,
     ) -> Result<Self, String> {
-        Self::load_with(
-            programs,
-            Some(LinkedLoad {
+        let linked = if certify {
+            LinkedLoad::Certify {
                 assembler: RefCell::default(),
                 admission: RefCell::new(Some(admission)),
-            }),
-        )
+            }
+        } else {
+            let plan = admission.into_carried_plan();
+            let mut counts = BTreeMap::new();
+            for (id, _) in plan.entries() {
+                // Kinematic entries bind through their derivative's position.
+                if id.kind != LinkedEntryKind::Kinematic {
+                    *counts.entry(id.kind).or_insert(0u32) += 1;
+                }
+            }
+            LinkedLoad::Trusted {
+                plan,
+                counts,
+                next: RefCell::default(),
+            }
+        };
+        Self::load_with(programs, Some(linked))
     }
     fn load_with(
         programs: CorePrograms,
@@ -291,17 +389,29 @@ impl ProgramScope {
             return Err("not a load scope".into());
         };
         let linked = programs.linked.as_ref().ok_or("not a linked load scope")?;
-        let assembler = std::mem::take(&mut *linked.assembler.borrow_mut());
-        let admission = linked
-            .admission
-            .borrow_mut()
-            .take()
-            .ok_or("the linked load is already finished")?;
-        self.finish_load()?;
-        let product = assembler.finish(&[]).map_err(|error| error.to_string())?;
-        admission
-            .finish(&product)
-            .map_err(|error| error.to_string())
+        match linked {
+            LinkedLoad::Certify {
+                assembler,
+                admission,
+            } => {
+                let assembler = std::mem::take(&mut *assembler.borrow_mut());
+                let admission = admission
+                    .borrow_mut()
+                    .take()
+                    .ok_or("the linked load is already finished")?;
+                self.finish_load()?;
+                let product = assembler.finish(&[]).map_err(|error| error.to_string())?;
+                admission
+                    .finish(&product)
+                    .map_err(|error| error.to_string())
+            }
+            LinkedLoad::Trusted { counts, next, .. } => {
+                if *next.borrow() != *counts {
+                    return Err("the linked load bound other than every carried entry".into());
+                }
+                self.finish_load()
+            }
+        }
     }
     pub(crate) fn finish_load(mut self) -> Result<(), String> {
         let ProgramMode::Load(programs) = &self.mode else {
@@ -421,7 +531,9 @@ impl ProgramMode {
                             target_env = "p2"
                         ))]
                         let issued =
-                            input.issue(|assembler| assembler.event(&source).map(|id| vec![id]))?;
+                            input.issue(&[(LinkedEntryKind::Event, 1)], |assembler| {
+                                assembler.event(&source).map(|id| vec![id])
+                            })?;
                         wire.bind(
                             source,
                             #[cfg(all(
@@ -474,7 +586,11 @@ impl ProgramMode {
                     target_os = "wasi",
                     target_env = "p2"
                 ))]
-                let issued = programs.issue(|assembler| assembler.private(admission, admitted))?;
+                let count = u32::try_from(admitted.len())
+                    .map_err(|_| "private batch exceeds the entry index range")?;
+                let issued = programs.issue(&[(LinkedEntryKind::Private, count)], |assembler| {
+                    assembler.private(admission, admitted)
+                })?;
                 wire.bind(
                     key,
                     requests,
@@ -535,7 +651,7 @@ impl ProgramMode {
                     target_os = "wasi",
                     target_env = "p2"
                 ))]
-                let issued = programs.issue(|assembler| {
+                let issued = programs.issue(&[(LinkedEntryKind::Exact, 1)], |assembler| {
                     assembler
                         .exact(source, owners, schedule, layout, calls)
                         .map(|id| vec![id])
@@ -606,7 +722,9 @@ impl ProgramMode {
                     target_env = "p2"
                 ))]
                 let issued = programs
-                    .issue(|assembler| assembler.issued(rows, layout, calls).map(|id| vec![id]))?;
+                    .issue(&[(LinkedEntryKind::Issued, 1)], |assembler| {
+                        assembler.issued(rows, layout, calls).map(|id| vec![id])
+                    })?;
                 program
                     .bind_issued(
                         rows,
@@ -690,7 +808,10 @@ impl ProgramMode {
     target_os = "wasi",
     target_env = "p2"
 ))]
-                        let issued = input.issue(|assembler| assembler.derivative(operation))?;
+                        let issued = input.issue(
+                            &[(LinkedEntryKind::Derivative, 1)],
+                            |assembler| assembler.derivative(operation),
+                        )?;
                         wire.bind(
                             operation,
                             #[cfg(all(

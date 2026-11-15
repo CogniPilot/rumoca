@@ -123,12 +123,28 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
 /// this guest issued, so a later demand finds no inventory and refuses.
 #[cfg(feature = "scalar-linked-product")]
 fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedComponent, String> {
+    construct_linked(model, instance_name, false)
+}
+
+/// The linked construction. `certify` is the build-time certification
+/// load (the build-only `certify_linked` export); every published load binds
+/// the build-certified artifact by position.
+#[cfg(feature = "scalar-linked-product")]
+fn construct_linked(
+    model: &GuestModel,
+    instance_name: &str,
+    certify: bool,
+) -> Result<MeRetainedComponent, String> {
     use rumoca_solver::SimExecutionPolicy;
     use rumoca_solver::fmi_me::{MeInstanceConfig, admit_execution_backend};
     let component = model.component();
-    let load =
-        rumoca_sim::load_linked_guest(model.saved_product(), model.linked_artifact(), component)
-            .map_err(|error| error.to_string())?;
+    let load = rumoca_sim::load_linked_guest(
+        model.saved_product(),
+        model.linked_artifact(),
+        component,
+        certify,
+    )
+    .map_err(|error| error.to_string())?;
     let root = component.runtime_view().retain_assertion_root();
     let backend = load
         .execution_backend(root.model())
@@ -147,6 +163,22 @@ fn construct(model: &GuestModel, instance_name: &str) -> Result<MeRetainedCompon
             .map_err(|error| error.to_string())?;
     load.finish().map_err(|error| error.to_string())?;
     Ok(retained)
+}
+
+/// Build-time certification of a linked product: run the certifying
+/// construction once inside the final linked component, before publication.
+/// Traps on any refusal, so the build publishes nothing uncertified. Builds
+/// only into the build-only certification world; a published component's
+/// world is exactly `fmi:fmi3/co-simulation-fmu`.
+#[cfg(all(feature = "certify-linked", feature = "scalar-linked-product"))]
+pub(super) fn certify_linked() {
+    assert!(
+        !INSTANTIATED.with(std::cell::Cell::get),
+        "linked certification after an instantiation"
+    );
+    if let Err(error) = with_model(|model| construct_linked(model, "rumoca-certify", true)) {
+        panic!("linked certification refused: {error}");
+    }
 }
 
 pub(super) fn default_tolerance() -> Result<f64, String> {

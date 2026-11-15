@@ -245,6 +245,7 @@ fn exports_cover(plan: &LinkedEntryPlan, modules: &[LinkedKernelModule]) -> bool
 pub struct LinkedAdmission {
     artifact: LinkedArtifact,
     saved: String,
+    carried: LinkedEntryPlan,
 }
 
 #[cfg(feature = "precompiled-programs")]
@@ -266,7 +267,8 @@ impl LinkedArtifact {
     /// dispatch routes `(kind, index, key)` only to the symbol this artifact
     /// issued for that position.
     pub fn admit(self, saved: &[u8]) -> Result<LinkedAdmission, WasmCompileError> {
-        if !self.is_bound_to(saved) {
+        let saved = linked_digest(saved);
+        if self.version != LINKED_ARTIFACT_VERSION || self.saved != saved {
             return Err(refusal("linked artifact belongs to another saved product"));
         }
         let carried = LinkedEntryPlan::checked(&self.entries, &self.typed)
@@ -281,16 +283,23 @@ impl LinkedArtifact {
                 "linked artifact module exports differ from its entries' symbols",
             ));
         }
-        let saved = linked_digest(saved);
         Ok(LinkedAdmission {
             artifact: self,
             saved,
+            carried,
         })
     }
 }
 
 #[cfg(feature = "precompiled-programs")]
 impl LinkedAdmission {
+    /// The admitted entries and typed tables as the plan a build-certified
+    /// load binds by position: the same structure the assembler issues,
+    /// checked at admission, with no entry issued again.
+    pub fn into_carried_plan(self) -> LinkedEntryPlan {
+        self.carried
+    }
+
     /// The admitted artifact's modules in link order.
     pub fn modules(&self) -> &[LinkedKernelModule] {
         self.artifact.modules()
