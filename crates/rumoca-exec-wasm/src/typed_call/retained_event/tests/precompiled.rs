@@ -169,8 +169,10 @@ fn a_trusted_event_bind_uses_the_carried_flag_and_refuses_another_version() {
 }
 
 /// The certifying linked bind compares the carried invocation table with the
-/// emitted one in every field: an equal table matches, and a change to any
-/// one offset, extent or the operation, even one that stays in bounds, does not.
+/// emitted one field by field: an equal table matches, and +8 on any one of
+/// the eight top-level scalar fields of the first invocation does not. This
+/// does not show the changed table stays in bounds, and it does not mutate
+/// the nested carrier plan.
 #[test]
 fn the_certified_invocation_table_differs_on_any_one_changed_field() {
     let original = compile();
