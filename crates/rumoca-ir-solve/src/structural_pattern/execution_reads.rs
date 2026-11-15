@@ -208,18 +208,14 @@ impl DependencyWalk<'_> {
         match op {
             LinearOp::PureCall {
                 input_starts, site, ..
-            } => self.include_call_reads(
-                input_starts,
-                site.inputs(),
-                site.execution_read_elements(),
-            ),
+            } => {
+                self.include_call_reads(input_starts, site.inputs(), site.execution_read_elements())
+            }
             LinearOp::PureCallDirectional {
                 input_starts, site, ..
-            } => self.include_call_reads(
-                input_starts,
-                site.inputs(),
-                site.execution_read_elements(),
-            ),
+            } => {
+                self.include_call_reads(input_starts, site.inputs(), site.execution_read_elements())
+            }
             LinearOp::PureCallObservation {
                 input_starts, site, ..
             } => {

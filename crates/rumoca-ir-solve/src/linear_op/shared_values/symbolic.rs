@@ -2,7 +2,7 @@
 //! shared-value construction keys its values by and its checker evaluates
 //! both sides over.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use super::super::*;
 use super::registers::{
@@ -39,7 +39,11 @@ pub(super) struct ValueKey {
 pub(super) struct Terms {
     slots: HashMap<usize, Term>,
     operations: HashMap<OperationKey, ValueKey>,
-    shapes: BTreeMap<String, usize>,
+    /// Interned shapes in two namespaces sharing one id sequence: the fixed
+    /// named shapes of the derivation itself, and operations by their exact
+    /// encoding, so neither can stand for the other.
+    named_shapes: HashMap<&'static str, usize>,
+    operation_shapes: HashMap<Vec<u8>, usize>,
     /// The first term no value or slot owns yet.
     next: Term,
 }
@@ -53,19 +57,43 @@ impl Terms {
         term
     }
 
-    /// The key of the value of shape `shape` over `operands`, with `width`
-    /// outputs.
+    fn next_shape(&self) -> usize {
+        self.named_shapes.len() + self.operation_shapes.len()
+    }
+
+    /// The key of the value of the named shape `shape` over `operands`,
+    /// with `width` outputs.
     pub(super) fn key(
         &mut self,
-        shape: &str,
+        shape: &'static str,
         operands: Vec<(usize, Term)>,
         width: usize,
     ) -> ValueKey {
-        let next = self.shapes.len();
-        let shape = match self.shapes.get(shape) {
+        let next = self.next_shape();
+        let shape = *self.named_shapes.entry(shape).or_insert(next);
+        self.intern(shape, operands, width)
+    }
+
+    /// The key of the value of the operation encoded as `shape` (a
+    /// [`ValueShape::shape`]) over `operands`, with `width` outputs.
+    pub(super) fn operation_key(
+        &mut self,
+        shape: &[u8],
+        operands: Vec<(usize, Term)>,
+        width: usize,
+    ) -> ValueKey {
+        let shape = match self.operation_shapes.get(shape) {
             Some(&id) => id,
-            None => *self.shapes.entry(shape.to_string()).or_insert(next),
+            None => {
+                let next = self.next_shape();
+                self.operation_shapes.insert(shape.to_vec(), next);
+                next
+            }
         };
+        self.intern(shape, operands, width)
+    }
+
+    fn intern(&mut self, shape: usize, operands: Vec<(usize, Term)>, width: usize) -> ValueKey {
         let next = ValueKey {
             id: self.operations.len(),
             base: self.next,
@@ -90,20 +118,29 @@ impl Terms {
 }
 
 /// The register-independent form of one value operation, derived once: its
-/// shape with register fields normalized, and each operand as (field or
+/// shape with register fields normalized (as the operation's exact bincode
+/// bytes, so constants compare by bits), and each operand as (field or
 /// register offset, register). An operation whose sources are single
 /// registers keys each operand in field order; any other keys every register
 /// it reads by its offset from the lowest one, so a uniform shift of its
 /// registers keeps the key.
 #[derive(Clone, Debug)]
 pub(super) struct ValueShape {
-    pub(super) shape: String,
+    pub(super) shape: Vec<u8>,
     pub(super) operands: Vec<(usize, Reg)>,
     /// Every register the operation reads, ascending.
     pub(super) reads: Vec<Reg>,
     /// Whether a source is a register range, which a segment gathers into
     /// the operation's own layout.
     pub(super) ranged: bool,
+}
+
+/// The exact positional encoding of a normalized operation: the interned
+/// identity of its shape, without formatting it.
+fn shape_bytes(op: &LinearOp) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bincode::serialize_into(&mut bytes, op).ok()?;
+    Some(bytes)
 }
 
 /// The shape of `op`; `None` when `op` cannot be validated at the top level.
@@ -113,7 +150,7 @@ pub(super) fn value_shape(op: &LinearOp) -> Option<ValueShape> {
         let lowest = reads.first().copied().unwrap_or(0);
         let operands = reads.iter().map(|&r| ((r - lowest) as usize, r)).collect();
         return Some(ValueShape {
-            shape: format!("{op:?}"),
+            shape: shape_bytes(op)?,
             operands,
             reads,
             ranged: true,
@@ -142,7 +179,7 @@ pub(super) fn value_shape(op: &LinearOp) -> Option<ValueShape> {
         scalar.into_iter().enumerate().collect()
     };
     Some(ValueShape {
-        shape: format!("{normalized:?}"),
+        shape: shape_bytes(&normalized)?,
         operands,
         reads,
         ranged,
@@ -352,7 +389,7 @@ fn value_step(
         _ => 0,
     };
     let written = op.dst_register().map_or(0, |_| op.dst_register_count());
-    let key = terms.key(&shape.shape, operands, stored.max(written));
+    let key = terms.operation_key(&shape.shape, operands, stored.max(written));
     for ordinal in 0..stored {
         outputs.push(Terms::value(&key, ordinal)?);
     }

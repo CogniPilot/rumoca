@@ -1011,8 +1011,11 @@ impl<'de> Deserialize<'de> for SolveProblem {
     where
         D: serde::Deserializer<'de>,
     {
-        SolveProblem::replay(SolveProblemWire::deserialize(deserializer)?, CapsuleReplay::Checked)
-            .map_err(serde::de::Error::custom)
+        SolveProblem::replay(
+            SolveProblemWire::deserialize(deserializer)?,
+            CapsuleReplay::Checked,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 

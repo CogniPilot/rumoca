@@ -165,9 +165,9 @@ impl ExecutionReadBuilder {
             SolveOperation::Call {
                 owner, arguments, ..
             } => {
-                let callee = available.get(owner.index() as usize).ok_or(
-                    SolveProgramConstructionError::InvalidCallInterface { provenance },
-                )?;
+                let callee = available
+                    .get(owner.index() as usize)
+                    .ok_or(SolveProgramConstructionError::InvalidCallInterface { provenance })?;
                 self.present |= callee.execution_reads.present;
                 self.reads.extend(dependency::substitute_obligations(
                     callee.execution_reads.reads(),
@@ -193,7 +193,12 @@ impl ExecutionReadBuilder {
         let mut error = None;
         let mut visit = |register: crate::SolveRegisterId| {
             let dimensions = body.register_types()[register.index()].dimensions();
-            self.extend(&registers[register.index()], dimensions, provenance, &mut error);
+            self.extend(
+                &registers[register.index()],
+                dimensions,
+                provenance,
+                &mut error,
+            );
         };
         match operation {
             // A bounds check reads its subscripts alone: the aggregate's
@@ -221,7 +226,12 @@ impl ExecutionReadBuilder {
                 operation: SolveAssignedStateOperation::ProjectChecked { source, .. },
             } => {
                 let dimensions = body.assigned_state_types()[source.index()].dimensions();
-                self.extend(&assigned[source.index()], dimensions, provenance, &mut error);
+                self.extend(
+                    &assigned[source.index()],
+                    dimensions,
+                    provenance,
+                    &mut error,
+                );
             }
             _ => {}
         }

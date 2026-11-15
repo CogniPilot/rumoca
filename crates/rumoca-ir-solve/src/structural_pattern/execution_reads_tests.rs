@@ -420,7 +420,10 @@ fn a_call_guarding_one_lane_reads_only_that_lane_of_its_vector_argument() {
         let prefix = proof.prefix(5).unwrap();
         assert!(prefix.contains(read));
         for unread in [10, 11, 12].into_iter().filter(|index| *index != read) {
-            assert!(!prefix.contains(unread), "lane {lane} does not read Y[{unread}]");
+            assert!(
+                !prefix.contains(unread),
+                "lane {lane} does not read Y[{unread}]"
+            );
         }
     }
 }

@@ -320,13 +320,29 @@ fn fold(
         // The continuation decides how many passes meet the transition's
         // obligations, so what its predicate reads is read by them too.
         if position == 1 {
-            whole |= region.outputs().iter().any(|output| !output.dimensions().is_empty());
-            reads.extend(followed.summaries.iter().flat_map(|summary| summary.iter().cloned()));
+            whole |= region
+                .outputs()
+                .iter()
+                .any(|output| !output.dimensions().is_empty());
+            reads.extend(
+                followed
+                    .summaries
+                    .iter()
+                    .flat_map(|summary| summary.iter().cloned()),
+            );
         }
         regions.push((region, followed.summaries));
         obligations.push((region, present, reads));
     }
-    fold_obligations(context, initial, captures, &obligations, whole, registers, execution)?;
+    fold_obligations(
+        context,
+        initial,
+        captures,
+        &obligations,
+        whole,
+        registers,
+        execution,
+    )?;
     let mut results = Vec::new();
     let mut reads = Reads {
         registers,

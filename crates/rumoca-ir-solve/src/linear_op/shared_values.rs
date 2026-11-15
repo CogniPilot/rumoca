@@ -536,7 +536,7 @@ impl Builder {
                 else {
                     return false;
                 };
-                let key = self.terms.key(&shape.shape, operands, count);
+                let key = self.terms.operation_key(&shape.shape, operands, count);
                 if matches!(op, LinearOp::PureCall { .. }) && self.segment.values.contains_key(&key)
                 {
                     return true;
@@ -843,7 +843,10 @@ impl ProgramBuilder<'_, '_> {
         else {
             return self.violate();
         };
-        let key = self.builder.terms.key(&shape.shape, operands, count);
+        let key = self
+            .builder
+            .terms
+            .operation_key(&shape.shape, operands, count);
         // A renamed call is value-only and its owner reads only its inputs
         // (SPEC_0043 closed-input coordinate), so identical operand terms
         // prove identical results, as for every other value.

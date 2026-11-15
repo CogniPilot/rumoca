@@ -368,15 +368,19 @@ fn derive_execution(
             provenance: spanned.provenance(),
             work,
         };
-        if regions::derive(context, operation, &mut integers, &mut registers, &mut execution)?
-            || assembly::derive(
-                body,
-                operation,
-                &integers,
-                &mut registers,
-                spanned.provenance(),
-            )?
-        {
+        if regions::derive(
+            context,
+            operation,
+            &mut integers,
+            &mut registers,
+            &mut execution,
+        )? || assembly::derive(
+            body,
+            operation,
+            &integers,
+            &mut registers,
+            spanned.provenance(),
+        )? {
             retire_registers(body, operation, index, &mut registers);
             continue;
         }

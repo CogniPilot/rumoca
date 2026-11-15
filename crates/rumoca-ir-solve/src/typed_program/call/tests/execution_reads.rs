@@ -773,7 +773,8 @@ fn a_guard_that_reads_a_carried_value_of_a_summarised_fold_reads_every_start_and
                         let r = b.load(captures[0], span(1347))?;
                         let z = b.project_element(r, vec![0], span(1348))?;
                         let kept = b.load(carried[0], span(1349))?;
-                        let next = b.binary(crate::SolveBinaryOperator::Add, kept, z, span(1350))?;
+                        let next =
+                            b.binary(crate::SolveBinaryOperator::Add, kept, z, span(1350))?;
                         b.store(outputs[0], next, span(1351))
                     },
                 )?;
@@ -897,7 +898,11 @@ fn a_bounds_checked_map_subscript_reads_no_element_of_its_aggregate() {
     let site = table.owners()[0].call_site();
     // Element i of the result reads element i of a and b; the bounds checks
     // read only the binder, which reads no input.
-    assert!(site.execution_reads().is_empty(), "{:?}", site.execution_read_elements());
+    assert!(
+        site.execution_reads().is_empty(),
+        "{:?}",
+        site.execution_read_elements()
+    );
 }
 
 #[test]
@@ -921,5 +926,9 @@ fn a_data_derived_subscript_still_reads_its_index() {
     .unwrap();
     let site = table.owners()[0].call_site();
     assert!(site.has_execution_obligations());
-    assert_eq!(site.execution_reads(), &[1], "the index k, never the values of r");
+    assert_eq!(
+        site.execution_reads(),
+        &[1],
+        "the index k, never the values of r"
+    );
 }
