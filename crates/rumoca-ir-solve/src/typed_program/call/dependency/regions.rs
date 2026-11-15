@@ -77,6 +77,15 @@ pub(super) fn derive(
                 integers.set(*destination, value);
             }
         }
+        // A map's values are derived by its caller; its obligations here.
+        SolveOperation::Map {
+            captures,
+            body: region,
+            ..
+        } => {
+            map_obligations(context, captures, region, registers, execution)?;
+            return Ok(false);
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -442,6 +451,35 @@ fn fold_obligations(
             context.provenance,
         )?);
     }
+    execution.region(true, obligations);
+    Ok(())
+}
+
+/// Charge the obligations of a map. Every pass runs its body over the same
+/// captures and one binder tuple, so the body's obligations, substituted
+/// through the captures, cover every pass; binder leaves read no input.
+fn map_obligations(
+    context: Context<'_>,
+    captures: &[SolveRegisterId],
+    region: &SolveProgramRegion,
+    registers: &[Vec<SolveCallDependency>],
+    execution: &mut ExecutionReadBuilder,
+) -> Result<(), SolveProgramConstructionError> {
+    let followed = region_execution(region, context, &[])?;
+    if !followed.execution_reads.has_obligations() {
+        return Ok(());
+    }
+    let mut arguments = vec![Vec::new(); region.inputs().len()];
+    for (argument, capture) in arguments.iter_mut().zip(captures) {
+        argument.clone_from(&registers[capture.index()]);
+    }
+    let obligations = super::substitute_obligations(
+        followed.execution_reads.reads(),
+        region.inputs(),
+        Some,
+        &arguments,
+        context.provenance,
+    )?;
     execution.region(true, obligations);
     Ok(())
 }

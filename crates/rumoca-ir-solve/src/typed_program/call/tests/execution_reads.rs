@@ -840,3 +840,86 @@ fn an_early_exit_predicate_is_read_by_the_obligations_it_lets_run() {
     assert!(site.has_execution_obligations());
     assert_eq!(site.execution_reads(), &[0, 1]);
 }
+
+/// `out[i] = a[i] + t*(b[i] - a[i])` over `i` in 1..3, reading `a` and `b`
+/// through bounds-checked binder subscripts, as an interpolation does.
+fn interpolation_table() -> SolvePureCallTable {
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1380),
+            vec![real(), vector(), vector()],
+            vec![SolvePureCallOutput::result(vector())],
+            span(1380),
+            |b, inputs, outputs| {
+                let t = b.load(inputs[0], span(1381))?;
+                let a = b.load(inputs[1], span(1382))?;
+                let c = b.load(inputs[2], span(1383))?;
+                let domain = rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
+                        id: 0,
+                        display_name: "i".into(),
+                        lower: 1,
+                        upper: 3,
+                        step: 1,
+                    }],
+                };
+                let out = b.map(domain, &[t, a, c], real(), span(1384), interpolate)?;
+                b.store(outputs[0], out, span(1390))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+fn interpolate<'p>(
+    b: &mut TypedProgramBuilder<'p>,
+    captures: Slots<'_, 'p>,
+    binders: Slots<'_, 'p>,
+    output: super::super::super::program::ProgramSlot<'p>,
+) -> Result<(), SolveProgramConstructionError> {
+    let t = b.load(captures[0], span(1385))?;
+    let a = b.load(captures[1], span(1385))?;
+    let c = b.load(captures[2], span(1385))?;
+    let i = b.load(binders[0], span(1386))?;
+    let ai = b.project_element_dynamic(a, &[i], span(1387))?;
+    let ci = b.project_element_dynamic(c, &[i], span(1387))?;
+    let d = b.binary(crate::SolveBinaryOperator::Subtract, ci, ai, span(1388))?;
+    let s = b.binary(crate::SolveBinaryOperator::Multiply, t, d, span(1388))?;
+    let r = b.binary(crate::SolveBinaryOperator::Add, ai, s, span(1388))?;
+    b.store(output, r, span(1389))
+}
+
+#[test]
+fn a_bounds_checked_map_subscript_reads_no_element_of_its_aggregate() {
+    let table = interpolation_table();
+    let site = table.owners()[0].call_site();
+    // Element i of the result reads element i of a and b; the bounds checks
+    // read only the binder, which reads no input.
+    assert!(site.execution_reads().is_empty(), "{:?}", site.execution_read_elements());
+}
+
+#[test]
+fn a_data_derived_subscript_still_reads_its_index() {
+    let integer = SolveValueType::scalar(SolveScalarType::integer(profile()));
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1395),
+            vec![vector(), integer],
+            vec![SolvePureCallOutput::result(real())],
+            span(1395),
+            |b, inputs, outputs| {
+                let r = b.load(inputs[0], span(1396))?;
+                let k = b.load(inputs[1], span(1397))?;
+                let rk = b.project_element_dynamic(r, &[k], span(1398))?;
+                b.store(outputs[0], rk, span(1399))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let site = table.owners()[0].call_site();
+    assert!(site.has_execution_obligations());
+    assert_eq!(site.execution_reads(), &[1], "the index k, never the values of r");
+}

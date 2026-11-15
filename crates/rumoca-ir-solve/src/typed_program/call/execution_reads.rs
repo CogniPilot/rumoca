@@ -180,7 +180,7 @@ impl ExecutionReadBuilder {
             }
             // The dependency flow derives these regions and charges their
             // obligations through their captures (see `region`).
-            SolveOperation::Conditional { .. } => return Ok(()),
+            SolveOperation::Conditional { .. } | SolveOperation::Map { .. } => return Ok(()),
             SolveOperation::Fold { state_captures, .. } if state_captures.is_empty() => {
                 return Ok(());
             }
@@ -191,10 +191,19 @@ impl ExecutionReadBuilder {
         }
         self.present = true;
         let mut error = None;
-        operation.visit_input_registers(|register| {
+        let mut visit = |register: crate::SolveRegisterId| {
             let dimensions = body.register_types()[register.index()].dimensions();
             self.extend(&registers[register.index()], dimensions, provenance, &mut error);
-        });
+        };
+        match operation {
+            // A bounds check reads its subscripts alone: the aggregate's
+            // extents are static, and its values cannot decide the fault.
+            SolveOperation::ProjectElementDynamic { indices, .. }
+            | SolveOperation::UpdateElement { indices, .. } => {
+                indices.iter().copied().for_each(&mut visit);
+            }
+            _ => operation.visit_input_registers(&mut visit),
+        }
         match operation {
             SolveOperation::AssignedConditional { program } => {
                 for state in program.state_captures() {
