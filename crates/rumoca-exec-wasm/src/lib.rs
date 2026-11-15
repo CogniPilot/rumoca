@@ -55,7 +55,8 @@ pub use linked::{LinkedAdmission, LinkedArtifact, linked_digest};
 
 /// The emitter profile every kernel of this build is emitted under. A saved
 /// product binds without being emitted again only under the profile it was
-/// emitted with, so a product's identity carries it.
+/// emitted with, so a product's identity carries it. It names every feature
+/// that changes emission; a new one must be added here.
 pub const EMITTER_PROFILE: &str = if cfg!(feature = "diagnostic-root-scalar-locals") {
     "diagnostic-root-scalar-locals"
 } else {
