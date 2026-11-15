@@ -16,14 +16,18 @@
 //! | `TensorFill` | the sum of the filled elements' adjoints onto the value |
 //! | `TensorIdentity` | none: a constant |
 
+#[cfg(feature = "reference-eval")]
 use super::{
     ReverseCotangents, ReverseInputs, accumulate, add_adj, binary_partials, load, reg, set,
     skips_untaken, take_adj,
 };
+#[cfg(feature = "reference-eval")]
 use crate::EvalSolveError;
-use rumoca_ir_solve::{LinearOp, Reg, TensorInputKind};
+use rumoca_ir_solve::LinearOp;
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::{Reg, TensorInputKind};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;
 
 /// Whether this module owns the reverse rule of `op`.
@@ -43,6 +47,7 @@ pub(super) fn supported(op: &LinearOp) -> bool {
     )
 }
 
+#[cfg(feature = "reference-eval")]
 /// Record the primal value of one supported tensor operation.
 pub(super) fn forward(
     op: &LinearOp,
@@ -63,6 +68,7 @@ pub(super) fn forward(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 /// Refuse a destination range that overlaps a source range. The IR admits
 /// such an operation and the canonical evaluator buffers it; this tape
 /// writes in place, so it would read overwritten operands.
@@ -133,6 +139,7 @@ fn refuse_overlap(op: &LinearOp) -> Result<(), EvalSolveError> {
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_load(
     op: &LinearOp,
     inputs: &ReverseInputs<'_>,
@@ -156,6 +163,7 @@ fn forward_load(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_dot(op: &LinearOp, regs: &mut [f64]) {
     let LinearOp::DotProduct {
         dst,
@@ -176,6 +184,7 @@ fn forward_dot(op: &LinearOp, regs: &mut [f64]) {
     set(regs, dst, value);
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_matmul(op: &LinearOp, regs: &mut [f64]) {
     let LinearOp::MatrixMultiply {
         dst_start,
@@ -201,6 +210,7 @@ fn forward_matmul(op: &LinearOp, regs: &mut [f64]) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_binary(op: &LinearOp, regs: &mut [f64]) {
     let LinearOp::TensorBinary {
         dst_start,
@@ -223,12 +233,14 @@ fn forward_binary(op: &LinearOp, regs: &mut [f64]) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_transpose(op: &LinearOp, regs: &mut [f64]) {
     for (dst, src) in transpose_pairs(op) {
         set(regs, dst, reg(regs, src));
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_fill(op: &LinearOp, regs: &mut [f64]) {
     let LinearOp::TensorFill {
         dst_start,
@@ -245,6 +257,7 @@ fn forward_fill(op: &LinearOp, regs: &mut [f64]) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn forward_identity(op: &LinearOp, regs: &mut [f64]) {
     let LinearOp::TensorIdentity {
         dst_start, size, ..
@@ -260,12 +273,14 @@ fn forward_identity(op: &LinearOp, regs: &mut [f64]) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 /// Mutable adjoint state one reverse rule reads and writes.
 struct Adjoints<'a> {
     adj: &'a mut [f64],
     untaken: &'a mut [bool],
 }
 
+#[cfg(feature = "reference-eval")]
 /// Consume the destination adjoints of one supported tensor operation and
 /// redistribute them to its operands or to the input cotangents.
 pub(super) fn reverse(
@@ -288,6 +303,7 @@ pub(super) fn reverse(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_load(op: &LinearOp, state: &mut Adjoints<'_>, cot: &mut ReverseCotangents<'_>) {
     let LinearOp::TensorLoad {
         dst_start,
@@ -310,6 +326,7 @@ fn reverse_load(op: &LinearOp, state: &mut Adjoints<'_>, cot: &mut ReverseCotang
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_dot(op: &LinearOp, regs: &[f64], state: &mut Adjoints<'_>) {
     let LinearOp::DotProduct {
         dst,
@@ -341,6 +358,7 @@ fn reverse_dot(op: &LinearOp, regs: &[f64], state: &mut Adjoints<'_>) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_matmul(op: &LinearOp, regs: &[f64], state: &mut Adjoints<'_>) {
     let LinearOp::MatrixMultiply {
         dst_start,
@@ -384,6 +402,7 @@ fn reverse_matmul(op: &LinearOp, regs: &[f64], state: &mut Adjoints<'_>) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_binary(op: &LinearOp, regs: &[f64], state: &mut Adjoints<'_>) {
     let LinearOp::TensorBinary {
         dst_start,
@@ -412,6 +431,7 @@ fn reverse_binary(op: &LinearOp, regs: &[f64], state: &mut Adjoints<'_>) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_transpose(op: &LinearOp, state: &mut Adjoints<'_>) {
     // Each destination element is a copy of one source element: `Move`'s rule.
     for (dst, src) in transpose_pairs(op) {
@@ -423,6 +443,7 @@ fn reverse_transpose(op: &LinearOp, state: &mut Adjoints<'_>) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_fill(op: &LinearOp, state: &mut Adjoints<'_>) {
     let LinearOp::TensorFill {
         dst_start,
@@ -444,6 +465,7 @@ fn reverse_fill(op: &LinearOp, state: &mut Adjoints<'_>) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn reverse_identity(op: &LinearOp, state: &mut Adjoints<'_>) {
     let LinearOp::TensorIdentity {
         dst_start, size, ..
@@ -458,6 +480,7 @@ fn reverse_identity(op: &LinearOp, state: &mut Adjoints<'_>) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn input_space<'a>(
     inputs: &ReverseInputs<'a>,
     input: TensorInputKind,
@@ -468,10 +491,12 @@ fn input_space<'a>(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn offset(start: Reg, index: usize) -> Reg {
     start + index as Reg
 }
 
+#[cfg(feature = "reference-eval")]
 /// Read and zero a destination range, so a later write to the same registers
 /// going backward starts from zero (as `take_adj` does for one register).
 fn take_range(adj: &mut [f64], start: Reg, count: usize) -> Vec<f64> {
@@ -480,6 +505,7 @@ fn take_range(adj: &mut [f64], start: Reg, count: usize) -> Vec<f64> {
         .collect()
 }
 
+#[cfg(feature = "reference-eval")]
 /// `(destination, source)` registers of a first-two-dimension transpose, in
 /// destination order, as `native_tensors::value_at` lays it out.
 fn transpose_pairs(op: &LinearOp) -> impl Iterator<Item = (Reg, Reg)> {

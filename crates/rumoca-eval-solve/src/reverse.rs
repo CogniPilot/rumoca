@@ -75,13 +75,15 @@
 //! `derivative_kinks` harness of `suite_template_runtime` pins the generated C
 //! kernel's block Jacobians at the same kinks.
 
-use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp};
+use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock};
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::{Reg, UnaryOp};
 
 mod tensor;
 
-use crate::{
-    EvalSolveError, RowEvalContext, RowInputRequirements, eval_binary, eval_compare, eval_unary,
-};
+use crate::{EvalSolveError, RowEvalContext, RowInputRequirements};
+#[cfg(feature = "reference-eval")]
+use crate::{eval_binary, eval_compare, eval_unary};
 
 /// Input cotangents accumulated by a reverse sweep, one entry per scalar input
 /// slot. Any slice may be empty if the caller does not need that input space
@@ -116,9 +118,12 @@ pub struct ReverseInputs<'a> {
 /// forward `StateDerivativeScratch`.
 #[derive(Default, Clone)]
 pub struct ReverseScratch {
+    #[cfg(feature = "reference-eval")]
     regs: Vec<f64>,
+    #[cfg(feature = "reference-eval")]
     adj: Vec<f64>,
     /// Registers reached only from the unselected arm of a selection.
+    #[cfg(feature = "reference-eval")]
     untaken: Vec<bool>,
 }
 
@@ -251,6 +256,7 @@ pub fn reverse_scalar_row_y_gradient(
     Ok(true)
 }
 
+#[cfg(feature = "reference-eval")]
 impl ReverseScratch {
     fn prepare(&mut self, register_count: usize) {
         self.regs.resize(register_count, 0.0);
@@ -280,6 +286,7 @@ pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
     ) || tensor::supported(op)
 }
 
+#[cfg(feature = "reference-eval")]
 /// Seed the row's `StoreOutput` register adjoints with the matching output
 /// cotangents. `StoreOutput`s are visited in output-ordinal order — the same
 /// order the forward sink stores them — so the running `ordinal` maps each to its
@@ -320,6 +327,7 @@ fn seed_row_output_adjoints(
     ordinal
 }
 
+#[cfg(feature = "reference-eval")]
 /// Forward pass: evaluate `row` (primal semantics identical to the canonical
 /// evaluator for the supported scalar ops) and record every register value.
 fn forward_row_tape(
@@ -393,6 +401,7 @@ fn forward_row_tape(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 /// Reverse pass: walk `row` backward, propagating each register's adjoint to its
 /// operands and reading input cotangents at the load sites.
 ///
@@ -505,6 +514,7 @@ fn reverse_row_adjoints(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 /// Inputs for the linear-solve VJP (kept in a struct to stay within the
 /// argument-count budget).
 struct LinearSolveAdjoint {
@@ -516,6 +526,7 @@ struct LinearSolveAdjoint {
     dst_adj: f64,
 }
 
+#[cfg(feature = "reference-eval")]
 /// Solve `A x = b` (row-major `A` at `matrix_start`, `b` at `rhs_start`).
 fn solve_linear_system(
     regs: &[f64],
@@ -536,6 +547,7 @@ fn solve_linear_system(
     Ok(x)
 }
 
+#[cfg(feature = "reference-eval")]
 /// Reverse a `LinearSolveComponent` (`x = A⁻¹ b`, output `x[component]`): with the
 /// cotangent `dst_adj` on `x[component]`, solve the adjoint system `Aᵀ μ = dst_adj
 /// · e_component` and scatter `∂x_c/∂b = (A⁻¹)ᵀ e_c = μ` onto the rhs registers and
@@ -583,6 +595,7 @@ fn reverse_linear_solve_component(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 /// Local derivative `d(op(x))/dx` at `x`. Piecewise-constant ops (Sign, Floor,
 /// Ceil, Trunc, Not) have zero derivative.
 fn unary_derivative(op: UnaryOp, x: f64) -> f64 {
@@ -686,6 +699,7 @@ fn guarded(value: f64) -> f64 {
     if value.is_finite() { value } else { 0.0 }
 }
 
+#[cfg(feature = "reference-eval")]
 // Register (regs/adj) reads and writes index statically-known slots that are
 // in bounds by construction: each row's `register_count` is `required_registers`
 // (max register index + 1), and the buffers are sized to it. This mirrors the
@@ -695,10 +709,12 @@ fn reg(values: &[f64], r: Reg) -> f64 {
     values[r as usize]
 }
 
+#[cfg(feature = "reference-eval")]
 fn set(regs: &mut [f64], r: Reg, value: f64) {
     regs[r as usize] = value;
 }
 
+#[cfg(feature = "reference-eval")]
 /// Whether an operation writing `dst` passes nothing back because `dst` holds
 /// only an unselected arm's value with a zero adjoint; its operands then
 /// inherit that mark. A register the taken path also reads carries that
@@ -721,10 +737,12 @@ fn skips_untaken(
     skip
 }
 
+#[cfg(feature = "reference-eval")]
 fn add_adj(adj: &mut [f64], r: Reg, value: f64) {
     adj[r as usize] += value;
 }
 
+#[cfg(feature = "reference-eval")]
 /// Consume a destination adjoint: return its value and reset the slot to zero.
 /// Zeroing is what makes the reverse sweep independent of single-assignment — a
 /// later (in forward order) write to the same register is a distinct value, so
@@ -735,6 +753,7 @@ fn take_adj(adj: &mut [f64], r: Reg) -> f64 {
     value
 }
 
+#[cfg(feature = "reference-eval")]
 /// Accumulate into a *cotangent* slot, skipping indices outside the tracked
 /// input space (e.g. a `LoadP` of a runtime-tail parameter that is not part of
 /// the differentiated seed space). This is a deliberate scope filter, not a
@@ -745,6 +764,7 @@ fn accumulate(values: &mut [f64], index: usize, value: f64) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn load(values: &[f64], name: &'static str, index: usize) -> Result<f64, EvalSolveError> {
     values
         .get(index)
@@ -752,6 +772,7 @@ fn load(values: &[f64], name: &'static str, index: usize) -> Result<f64, EvalSol
         .ok_or_else(|| unsupported(&format!("{name}[{index}] out of range for reverse sweep")))
 }
 
+#[cfg(feature = "reference-eval")]
 fn unsupported(reason: &str) -> EvalSolveError {
     EvalSolveError::InvalidRow {
         message: reason.to_string(),
@@ -759,6 +780,7 @@ fn unsupported(reason: &str) -> EvalSolveError {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn unsupported_reverse_op(op: &LinearOp) -> EvalSolveError {
     unsupported(&format!(
         "reverse-mode AD does not yet support the `{}` op (Track B: tensor / table / random VJP)",
@@ -766,7 +788,7 @@ fn unsupported_reverse_op(op: &LinearOp) -> EvalSolveError {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests {
     use super::*;
     use rumoca_ir_solve::ScalarProgramBlock;
