@@ -437,3 +437,66 @@ fn dev_self_edges_are_skipped_and_inherited_defaults_are_followed() {
         "a reference default inherited by the guest must be found"
     );
 }
+
+/// Whether `krate` with `feature` (its default when `None`) runs the solver
+/// without reference execution, the policy the host and browser rely on.
+fn solver_without_reference(
+    workspace: &str,
+    members: &BTreeMap<String, String>,
+    krate: &str,
+    feature: Option<&str>,
+) -> bool {
+    let mut closure = Closure::new(workspace, members);
+    closure.activate(krate, true);
+    if let Some(feature) = feature {
+        closure.enable(krate, feature);
+    }
+    closure.active.contains("rumoca-solver")
+        && !closure
+            .enabled
+            .contains(&("rumoca-solver".to_string(), "reference-execution".to_string()))
+}
+
+/// Every host crate and feature outside the guest closure that would run the
+/// solver without reference execution.
+fn host_reference_gaps(workspace: &str, members: &BTreeMap<String, String>) -> Vec<String> {
+    let guest = guest_closure(workspace, members, true).active;
+    let names: BTreeSet<String> = members.keys().cloned().collect();
+    let mut gaps = Vec::new();
+    for (krate, text) in members.iter().filter(|(krate, _)| !guest.contains(*krate)) {
+        let features = parse(workspace, &names, text).features;
+        let selections = std::iter::once(None)
+            .chain(features.keys().filter(|feature| *feature != "default").map(Some));
+        for feature in selections {
+            let feature = feature.map(String::as_str);
+            if solver_without_reference(workspace, members, krate, feature) {
+                gaps.push(format!("{krate}[{}]", feature.unwrap_or("default")));
+            }
+        }
+    }
+    gaps
+}
+
+#[test]
+fn every_host_feature_that_reaches_the_solver_enables_reference_execution() {
+    let (workspace, members) = read_workspace();
+    assert_eq!(
+        host_reference_gaps(&workspace, &members),
+        Vec::<String>::new(),
+        "host features would run the solver with its reference execution excluded"
+    );
+}
+
+#[test]
+fn a_host_feature_without_the_opt_in_is_found() {
+    let (workspace, mut members) = read_workspace();
+    let manifest = members.get_mut("rumoca-bind-wasm").expect("the browser binding manifest");
+    let opt_in = "\"reference-execution\", ";
+    assert!(manifest.contains(opt_in), "the browser binding opt-in under check");
+    *manifest = manifest.replace(opt_in, "");
+    let gaps = host_reference_gaps(&workspace, &members);
+    assert!(
+        gaps.iter().any(|gap| gap == "rumoca-bind-wasm[sim-rk45]"),
+        "the browser simulation without its opt-in must be found: {gaps:?}"
+    );
+}
