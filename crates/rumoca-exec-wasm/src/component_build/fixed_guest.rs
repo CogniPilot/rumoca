@@ -50,6 +50,14 @@ impl GuestProfile {
         }
     }
 
+    /// Whether this profile's core compiles reference (interpreted) execution:
+    /// only the interpreted scalar product opts in (`scalar-product`). The
+    /// linked product and its certification core build without it, so no
+    /// interpreter body is compiled into them. Part of the cache recipe.
+    fn reference_execution(self) -> bool {
+        self == Self::Scalar
+    }
+
     fn tag(self) -> &'static str {
         match self {
             Self::Native => "native",
@@ -322,9 +330,11 @@ fn build(
 /// Every build input besides the staged bytes and the compiler identity.
 fn recipe(flags: &str, profile: GuestProfile) -> String {
     format!(
-        "{flags}\n{CARGO_ARGUMENTS:?}\n{:?}\nprofile={}\nartifact=rumoca_runtime_fmi_ls",
+        "{flags}\n{CARGO_ARGUMENTS:?}\n{:?}\nprofile={}\nreference-execution={}\n\
+         artifact=rumoca_runtime_fmi_ls",
         profile.cargo_features(),
-        profile.tag()
+        profile.tag(),
+        profile.reference_execution()
     )
 }
 
@@ -540,5 +550,38 @@ mod profile_tests {
             certify.contains("certify-linked") && certify.contains("profile=scalar-linked-certify")
         );
         assert!(!linked.contains("certify-linked"));
+    }
+
+    /// Only the interpreted scalar product compiles reference execution; the
+    /// published linked core and its certification core never do, and the
+    /// cache recipe records which, so their cores never share a key with a
+    /// core built before the exclusion.
+    #[test]
+    fn only_the_interpreted_product_compiles_reference_execution() {
+        let manifest = include_str!("../../../rumoca-runtime-fmi-ls/Cargo.toml");
+        let feature = |name: &str| {
+            let prefix = format!("{name} = [");
+            manifest
+                .lines()
+                .find(|line| line.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("the {name} feature"))
+                .to_string()
+        };
+        for profile in [
+            GuestProfile::Native,
+            GuestProfile::Scalar,
+            GuestProfile::ScalarLinked,
+            GuestProfile::ScalarLinkedCertify,
+        ] {
+            let expected = format!("reference-execution={}", profile.reference_execution());
+            assert!(recipe("flags", profile).contains(&expected), "{profile:?}");
+        }
+        assert!(GuestProfile::Scalar.reference_execution());
+        assert!(feature("scalar-product").contains("rumoca-solver/reference-execution"));
+        for profile in [GuestProfile::ScalarLinked, GuestProfile::ScalarLinkedCertify] {
+            assert!(!profile.reference_execution(), "{profile:?}");
+        }
+        assert!(!feature("scalar-linked-product").contains("reference"));
+        assert!(!manifest.contains("certify-linked = [\""), "certify-linked stays empty");
     }
 }

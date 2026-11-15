@@ -22,7 +22,9 @@ certify-linked = []
 # Build-time product kind: a stateful (scalar) component instead of the
 # stateless native product. Interpreted until linked dispatch lands (M1a).
 # Its fixed guest imports no native model entry.
-scalar-product = ["rumoca-exec-wasm/fixed-scalar-guest-receiver"]
+# Interpreted bring-up product: the one guest product that compiles
+# reference execution. The linked product below never does.
+scalar-product = ["rumoca-exec-wasm/fixed-scalar-guest-receiver", "rumoca-solver/reference-execution"]
 # Build-time product kind: the compiled stateful component. Its saved
 # programs run as linked entries through the issued dispatch, certified
 # against the linked artifact; it never enables `scalar-product`.
