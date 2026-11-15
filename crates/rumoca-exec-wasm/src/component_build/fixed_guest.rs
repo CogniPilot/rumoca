@@ -578,10 +578,16 @@ mod profile_tests {
         }
         assert!(GuestProfile::Scalar.reference_execution());
         assert!(feature("scalar-product").contains("rumoca-solver/reference-execution"));
-        for profile in [GuestProfile::ScalarLinked, GuestProfile::ScalarLinkedCertify] {
+        for profile in [
+            GuestProfile::ScalarLinked,
+            GuestProfile::ScalarLinkedCertify,
+        ] {
             assert!(!profile.reference_execution(), "{profile:?}");
         }
         assert!(!feature("scalar-linked-product").contains("reference"));
-        assert!(!manifest.contains("certify-linked = [\""), "certify-linked stays empty");
+        assert!(
+            !manifest.contains("certify-linked = [\""),
+            "certify-linked stays empty"
+        );
     }
 }

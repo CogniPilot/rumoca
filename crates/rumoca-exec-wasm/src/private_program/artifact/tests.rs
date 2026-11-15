@@ -57,11 +57,19 @@ fn actual_private_module_roundtrip_preserves_outputs_and_refuses_foreign_inputs(
             .bind(None, &[(&blocks[0], Some(1)), (&blocks[1], None)], &layout)
             .is_err()
     );
-    assert!(huge_scratch(&decoded).bind(None, &requests, &layout).is_err());
+    assert!(
+        huge_scratch(&decoded)
+            .bind(None, &requests, &layout)
+            .is_err()
+    );
     assert!(decoded.bind(Some(&owner), &requests[..1], &layout).is_err());
     assert!(
         decoded
-            .bind(Some(&owner), &[(&blocks[1], None), (&blocks[0], None)], &layout)
+            .bind(
+                Some(&owner),
+                &[(&blocks[1], None), (&blocks[0], None)],
+                &layout
+            )
             .is_err()
     );
     assert!(
@@ -76,14 +84,22 @@ fn actual_private_module_roundtrip_preserves_outputs_and_refuses_foreign_inputs(
     let foreign = constant(3.0);
     assert!(
         decoded
-            .bind(Some(&owner), &[(&foreign, None), (&blocks[1], None)], &layout)
+            .bind(
+                Some(&owner),
+                &[(&foreign, None), (&blocks[1], None)],
+                &layout
+            )
             .is_err()
     );
     let mut corrupt = serde_json::to_value(&decoded).unwrap();
     corrupt["modules"][0]["bytes"][0] = serde_json::json!(255);
     let corrupt: PrecompiledPrivatePrograms = serde_json::from_value(corrupt).unwrap();
     assert!(corrupt.bind(Some(&owner), &requests, &layout).is_err());
-    assert!(huge_scratch(&decoded).bind(Some(&owner), &requests, &layout).is_err());
+    assert!(
+        huge_scratch(&decoded)
+            .bind(Some(&owner), &requests, &layout)
+            .is_err()
+    );
 }
 
 fn huge_scratch(wire: &PrecompiledPrivatePrograms) -> PrecompiledPrivatePrograms {

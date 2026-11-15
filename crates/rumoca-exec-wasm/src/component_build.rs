@@ -17,8 +17,7 @@ mod fixed_guest;
 pub use fixed_guest::{
     FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
     build_fixed_scalar_guest_core_cached, build_fixed_scalar_linked_certify_guest_core_cached,
-    build_fixed_scalar_linked_guest_core_cached,
-    check_embedded_core_modules,
+    build_fixed_scalar_linked_guest_core_cached, check_embedded_core_modules,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
 mod linked_graph;

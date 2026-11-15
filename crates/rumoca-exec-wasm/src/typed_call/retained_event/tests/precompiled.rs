@@ -13,7 +13,9 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     let wire = super::super::PrecompiledRetainedEvent::from_compiled(&original);
     let bytes = serde_json::to_vec(&wire).unwrap();
     let decoded: super::super::PrecompiledRetainedEvent = serde_json::from_slice(&bytes).unwrap();
-    let replay = decoded.bind(crate::SavedBinding::Certify, program()).unwrap();
+    let replay = decoded
+        .bind(crate::SavedBinding::Certify, program())
+        .unwrap();
     let model = original.source().source().model();
     let y = [0.0, 2.0];
     let p = vec![0.0; model.problem.layout.p_scalars()];
@@ -36,11 +38,19 @@ fn event_wire_rebinds_original_observation_and_refuses_missing_or_overflowing_in
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["invocations"] = serde_json::json!([]);
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(crate::SavedBinding::Certify, program()).is_err());
+    assert!(
+        changed
+            .bind(crate::SavedBinding::Certify, program())
+            .is_err()
+    );
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["invocations"][0]["status"] = serde_json::json!(u32::MAX);
     let changed: super::super::PrecompiledRetainedEvent = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(crate::SavedBinding::Certify, program()).is_err());
+    assert!(
+        changed
+            .bind(crate::SavedBinding::Certify, program())
+            .is_err()
+    );
 }
 
 fn bind_wire(
@@ -181,7 +191,10 @@ fn the_certified_invocation_table_differs_on_any_one_changed_field() {
     let decode = |value: serde_json::Value| {
         serde_json::from_value::<Vec<super::super::InvocationStorage>>(value).unwrap()
     };
-    assert!(same_invocations(&original.invocations, &decode(table.clone())));
+    assert!(same_invocations(
+        &original.invocations,
+        &decode(table.clone())
+    ));
     for field in [
         "operation",
         "input",

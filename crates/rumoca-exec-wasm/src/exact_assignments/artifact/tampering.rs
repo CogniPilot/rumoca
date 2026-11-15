@@ -11,7 +11,14 @@ fn bind_ordinary(
     layout: &VarLayout,
     calls: &SolvePureCallTable,
 ) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
-    wire.bind(crate::SavedBinding::Certify, source, owners, schedule, layout, calls)
+    wire.bind(
+        crate::SavedBinding::Certify,
+        source,
+        owners,
+        schedule,
+        layout,
+        calls,
+    )
 }
 
 fn bind_rows(

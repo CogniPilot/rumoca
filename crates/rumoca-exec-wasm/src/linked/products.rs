@@ -271,7 +271,9 @@ impl LinkedArtifact {
         if self.version != LINKED_ARTIFACT_VERSION || self.saved != saved {
             return Err(refusal("linked artifact belongs to another saved product"));
         }
-        let carried = LinkedEntryPlan::checked(&self.entries, &self.typed)
+        // The certifying admission keeps its own records for certify_prefix
+        // and finish, so its plan is checked over copies.
+        let carried = LinkedEntryPlan::checked(self.entries.clone(), self.typed.clone())
             .map_err(|message| refusal(&message))?;
         if carried.dispatch() != self.dispatch {
             return Err(refusal(
@@ -297,12 +299,20 @@ impl LinkedArtifact {
     /// export coverage were certified with the product before it was
     /// published and are not derived again; the admission can bind by
     /// position but not certify.
-    pub fn admit_trusted(self) -> Result<LinkedAdmission, WasmCompileError> {
+    ///
+    /// The entries and typed tables move into the carried plan instead of
+    /// being copied: a trusted admission is bound by position and never
+    /// certifies, so its artifact keeps only the modules and dispatch, and
+    /// [`LinkedAdmission::certify_prefix`] or [`LinkedAdmission::finish`] on
+    /// it refuses.
+    pub fn admit_trusted(mut self) -> Result<LinkedAdmission, WasmCompileError> {
         if self.version != LINKED_ARTIFACT_VERSION {
             return Err(refusal("linked artifact belongs to another saved product"));
         }
-        let carried = LinkedEntryPlan::checked(&self.entries, &self.typed)
-            .map_err(|message| refusal(&message))?;
+        let entries = std::mem::take(&mut self.entries);
+        let typed = std::mem::take(&mut self.typed);
+        let carried =
+            LinkedEntryPlan::checked(entries, typed).map_err(|message| refusal(&message))?;
         Ok(LinkedAdmission {
             saved: self.saved.clone(),
             artifact: self,

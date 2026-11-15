@@ -284,8 +284,14 @@ fn a_trusted_admission_carries_the_same_plan_and_refuses_a_misordered_entry() {
     let sources = Sources::new();
     let issued = product::build(&sources).linked;
     let wire = serde_json::to_value(issued.artifact(SAVED)).unwrap();
-    let certified = decode(wire.clone()).admit(SAVED).unwrap().into_carried_plan();
-    let trusted = decode(wire.clone()).admit_trusted().unwrap().into_carried_plan();
+    let certified = decode(wire.clone())
+        .admit(SAVED)
+        .unwrap()
+        .into_carried_plan();
+    let trusted = decode(wire.clone())
+        .admit_trusted()
+        .unwrap()
+        .into_carried_plan();
     assert!(certified.entries().eq(trusted.entries()));
     let mut unordered = wire.clone();
     unordered["entries"].as_array_mut().unwrap().swap(0, 1);

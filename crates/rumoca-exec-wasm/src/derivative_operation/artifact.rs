@@ -445,7 +445,9 @@ mod tests {
         assert!(json.get("plan").is_none());
         let replay: PrecompiledFmiDerivativeOperation =
             serde_json::from_value(json.clone()).unwrap();
-        let bound = replay.bind(crate::SavedBinding::Certify, &operation).unwrap();
+        let bound = replay
+            .bind(crate::SavedBinding::Certify, &operation)
+            .unwrap();
         let fresh_component = build_component(3);
         let fresh_root = fresh_component.runtime_view().retain_assertion_root();
         let fresh_operation = fresh_root
@@ -453,7 +455,11 @@ mod tests {
             .unwrap()
             .try_causal_operation()
             .unwrap();
-        assert!(replay.bind(crate::SavedBinding::Certify, &fresh_operation).is_ok());
+        assert!(
+            replay
+                .bind(crate::SavedBinding::Certify, &fresh_operation)
+                .is_ok()
+        );
         assert_eq!(bound.module_bytes(), compiled.module_bytes());
         assert_eq!(bound.workspace().regions(), compiled.workspace().regions());
         assert_eq!(bound.value_module_bytes(), compiled.values().module_bytes());
@@ -463,7 +469,10 @@ mod tests {
         let trusted = replay
             .bind(crate::SavedBinding::Trusted, &operation)
             .unwrap();
-        assert_eq!(trusted.workspace().regions(), compiled.workspace().regions());
+        assert_eq!(
+            trusted.workspace().regions(),
+            compiled.workspace().regions()
+        );
         assert_eq!(trusted.workspace().bytes(), compiled.workspace().bytes());
         assert_eq!(trusted.module_bytes(), compiled.module_bytes());
         let mut forged = json;
@@ -493,13 +502,29 @@ mod tests {
         assert!(wire.bind(crate::SavedBinding::Certify, &changed).is_err());
         let mut missing = wire.clone();
         missing.static_program = None;
-        assert!(missing.bind(crate::SavedBinding::Certify, &operation).is_err());
+        assert!(
+            missing
+                .bind(crate::SavedBinding::Certify, &operation)
+                .is_err()
+        );
         let mut modified = wire.clone();
         modified.bytes[0] ^= 1;
-        assert!(modified.bind(crate::SavedBinding::Certify, &operation).is_err());
+        assert!(
+            modified
+                .bind(crate::SavedBinding::Certify, &operation)
+                .is_err()
+        );
         let mut oversized = wire;
         oversized.bytes.resize((8 << 20) + 1, 0);
-        assert!(oversized.bind(crate::SavedBinding::Certify, &operation).is_err());
-        assert!(oversized.bind(crate::SavedBinding::Trusted, &operation).is_err());
+        assert!(
+            oversized
+                .bind(crate::SavedBinding::Certify, &operation)
+                .is_err()
+        );
+        assert!(
+            oversized
+                .bind(crate::SavedBinding::Trusted, &operation)
+                .is_err()
+        );
     }
 }

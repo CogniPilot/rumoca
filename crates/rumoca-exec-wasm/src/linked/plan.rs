@@ -341,8 +341,8 @@ impl LinkedEntryPlan {
     /// certifier compares against the receiver's own issuance.
     #[cfg(feature = "precompiled-programs")]
     pub(super) fn checked(
-        entries: &[LinkedEntry],
-        typed: &[Vec<TypedCallFault>],
+        entries: Vec<LinkedEntry>,
+        typed: Vec<Vec<TypedCallFault>>,
     ) -> Result<Self, String> {
         if typed
             .iter()
@@ -352,7 +352,7 @@ impl LinkedEntryPlan {
         }
         let mut plan = Self {
             entries: BTreeMap::new(),
-            typed: typed.to_vec(),
+            typed,
         };
         for entry in entries {
             let ordered = plan
@@ -395,7 +395,7 @@ impl LinkedEntryPlan {
                     entry.id.symbol()
                 ));
             }
-            plan.issue(entry.clone());
+            plan.issue(entry);
         }
         Ok(plan)
     }

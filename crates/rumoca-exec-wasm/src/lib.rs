@@ -20,8 +20,8 @@ pub use component_build::{
 pub use component_build::{
     FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
     build_fixed_scalar_guest_core_cached, build_fixed_scalar_linked_certify_guest_core_cached,
-    build_fixed_scalar_linked_guest_core_cached,
-    check_embedded_core_modules, link_single_provider_graph,
+    build_fixed_scalar_linked_guest_core_cached, check_embedded_core_modules,
+    link_single_provider_graph,
 };
 pub use derivative_operation::{
     CompiledFmiDerivativeOperationWasm, compile_fmi_derivative_operation_wasm,
@@ -38,13 +38,6 @@ mod exact_assignments;
 mod linked;
 #[cfg(feature = "precompiled-programs")]
 pub use exact_assignments::PrecompiledExactAssignments;
-#[cfg(all(
-    feature = "fixed-scalar-linked-receiver",
-    target_arch = "wasm32",
-    target_os = "wasi",
-    target_env = "p2"
-))]
-pub use linked::{LinkedPosition, linked_dispatch_calls};
 pub use linked::{
     LINKED_DISPATCH_EXPORT, LINKED_DISPATCH_REFUSED, LinkedBinding, LinkedDemand, LinkedEntry,
     LinkedEntryId, LinkedEntryKind, LinkedEntryPlan, LinkedFaultTables, LinkedKernelModule,
@@ -52,6 +45,13 @@ pub use linked::{
 };
 #[cfg(feature = "precompiled-programs")]
 pub use linked::{LinkedAdmission, LinkedArtifact, linked_digest};
+#[cfg(all(
+    feature = "fixed-scalar-linked-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+pub use linked::{LinkedPosition, linked_dispatch_calls};
 
 /// The emitter profile every kernel of this build is emitted under. A saved
 /// product binds without being emitted again only under the profile it was

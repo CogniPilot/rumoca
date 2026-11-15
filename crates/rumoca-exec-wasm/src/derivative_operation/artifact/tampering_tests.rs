@@ -57,7 +57,11 @@ fn every_persisted_helper_byte_and_fault_table_is_re_derived_at_bind() {
     let compiled = compile_fmi_derivative_operation_wasm(&operation).unwrap();
     let issued = PrecompiledFmiDerivativeOperation::from_compiled(&compiled);
     let json = serde_json::to_value(&issued).unwrap();
-    assert!(issued.bind(crate::SavedBinding::Certify, &operation).is_ok());
+    assert!(
+        issued
+            .bind(crate::SavedBinding::Certify, &operation)
+            .is_ok()
+    );
     for (field, helper) in [
         ("values", FmiDerivativeHelperRole::Values),
         ("kinematic", FmiDerivativeHelperRole::Kinematic),
