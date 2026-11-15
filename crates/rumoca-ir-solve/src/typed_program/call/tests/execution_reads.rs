@@ -785,7 +785,8 @@ fn a_guard_that_reads_a_carried_value_of_a_summarised_fold_reads_every_start_and
     .unwrap();
     // The carried value starts at x and each pass adds r[1], so the guard
     // covers x and every lane of r, not only the lane the update reads.
-    let elements = table.owners()[0].call_site().execution_read_elements();
+    let site = table.owners()[0].call_site();
+    let elements = site.execution_read_elements();
     assert_eq!(
         elements,
         [

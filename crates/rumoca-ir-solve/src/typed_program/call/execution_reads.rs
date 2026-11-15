@@ -16,7 +16,7 @@ use crate::{FaultClass, SolveAssignedStateOperation, SolveValueType};
 
 /// One input leaf the obligations read, with the ascending flat elements of
 /// that leaf they read, `None` for every element.
-pub type ExecutionReadElements = (usize, Option<Box<[usize]>>);
+pub(in crate::typed_program) type ExecutionReadElements = (usize, Option<Box<[usize]>>);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::typed_program) struct ExecutionReads {
@@ -143,9 +143,9 @@ impl ExecutionReadBuilder {
     /// its inputs.
     pub(super) fn finish(self, body: &TypedProgram, input_count: usize) -> ExecutionReads {
         ExecutionReads::new(dependency::union(self.reads), self.present, |leaf| {
-            (leaf < input_count)
-                .then(|| body.slots().get(leaf))
-                .flatten()
+            body.slots()
+                .get(leaf)
+                .filter(|_| leaf < input_count)
                 .map(|slot| slot.value_type())
         })
     }
