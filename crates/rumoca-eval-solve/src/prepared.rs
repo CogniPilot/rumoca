@@ -824,6 +824,17 @@ impl PreparedScalarProgramBlock {
             .specialization(row)
     }
 
+    /// The compiled product learns no reference-trace specialization: every
+    /// caller keeps the row's unspecialized compiled program.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables)] // no trace exists to read the row from
+    pub fn specialized_row_program(
+        &self,
+        row_idx: usize,
+    ) -> Option<crate::SpecializedRowProgram> {
+        None
+    }
+
     /// Whether this row retains a dependency-driven execution plan capable of
     /// learning one active conditional specialization without evaluating the
     /// inactive tensor branches first.
