@@ -669,3 +669,57 @@ fn source_roots_must_exist_be_absolute_and_be_listed_once() {
         "a missing root is refused"
     );
 }
+
+const LINKED_LIBRARY: &str = "package Lib\n  model Decay\n    parameter Real k = 1;\n    \
+                              Real x(start = 1, fixed = true);\n  equation\n    \
+                              der(x) = -k * x;\n  end Decay;\nend Lib;\n";
+const LINKED_MAIN: &str = "model M\n  Lib.Decay d;\nend M;\n";
+
+fn linked_workspace(companion: &str) -> String {
+    let mut set = serde_json::Map::new();
+    set.insert(companion.into(), LINKED_LIBRARY.into());
+    serde_json::Value::Object(set).to_string()
+}
+
+/// The linked package's input selection: the export's workspace object is
+/// compiled with its document count; source roots are refused by name.
+#[test]
+fn a_linked_package_compiles_a_workspace_object_and_refuses_source_roots() {
+    let (_, documents) =
+        compile_linked_package_source(LINKED_MAIN, "M", &linked_workspace("Lib.mo")).unwrap();
+    assert_eq!(documents, 1);
+    let refusal = compile_linked_package_source(LINKED_MAIN, "M", r#"["/abs/Lib.mo"]"#)
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("not source roots"), "{refusal}");
+}
+
+/// The SDK export's component construction (`scalar_package_component`, the
+/// function its linked export calls) and the linked packager's own path
+/// (`compile_linked_package_source`, lower, bind the linked runtime choices,
+/// prepare) give the same canonical component wire: two constructions, one
+/// options document read by the shared options owner.
+#[test]
+fn the_export_and_the_linked_packager_construct_the_same_component() {
+    let (dae, _) =
+        compile_linked_package_source(LINKED_MAIN, "M", &linked_workspace("Lib.mo")).unwrap();
+    let options = ScalarPackageOptions::parse(
+        &PAGE_OPTIONS.replace(r#""parameters":{"k":2.0}"#, r#""parameters":{}"#),
+    )
+    .unwrap();
+    let exported = rumoca_sim::scalar_package_component(&dae, options.sim_options()).unwrap();
+    let packaged = rumoca_sim::PreparedScalarFmiLsModel::from_component(
+        &options
+            .bind_linked_runtime_choices(
+                rumoca_sim::lower_fmi_scalar_export_component(&dae, options.sim_options()).unwrap(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let root = exported.runtime_view().retain_assertion_root();
+    let exported_wire = serde_json::to_vec(
+        &rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(exported_wire, packaged.capsule_bytes());
+}

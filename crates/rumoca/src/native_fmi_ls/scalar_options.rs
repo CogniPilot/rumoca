@@ -29,6 +29,32 @@ pub fn read_source_roots(path: &Path) -> Result<Vec<String>> {
     Ok(roots)
 }
 
+/// The model a scalar-linked package lowers, with the number of companion
+/// documents. `sources_json` must be the SDK export's own workspace source set
+/// (the JSON object of companion documents): it is compiled with `source` as
+/// `input.mo` through the export's compile, so every document keeps the name,
+/// and so every span its source id, that the saved product's component was
+/// lowered with. Source roots (a JSON array) are refused by name.
+pub fn compile_linked_package_source(
+    source: &str,
+    model: &str,
+    sources_json: &str,
+) -> Result<(std::sync::Arc<rumoca_compile::compile::Dae>, usize)> {
+    if sources_json.trim_start().starts_with('[') {
+        bail!(
+            "a linked package compiles the SDK export's workspace source set: \
+             SOURCES must be that JSON object, not source roots"
+        );
+    }
+    let documents =
+        serde_json::from_str::<std::collections::BTreeMap<String, String>>(sources_json)
+            .context("the linked package's workspace source set")?
+            .len();
+    let compiled = rumoca_compile::compile::compile_source_set(source, model, sources_json)
+        .map_err(anyhow::Error::msg)?;
+    Ok((compiled.dae, documents))
+}
+
 /// One checked options document for a scalar package.
 pub struct ScalarPackageOptions {
     options: InteractiveOptions,

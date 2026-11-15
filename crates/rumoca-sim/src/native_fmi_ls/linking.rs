@@ -277,48 +277,92 @@ fn check_saved_component(saved: &[u8], capsule: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// The first JSON path, in document order, where two canonical wires differ,
-/// with both values shortened: saved first, packaged second.
+/// Bytes of each wire shown from the first difference on.
+const DIFFERENCE_WINDOW: usize = 120;
+/// Innermost path segments shown; deeper prefixes are counted, not printed.
+const DIFFERENCE_PATH_SEGMENTS: usize = 12;
+
+/// Where two canonical wires first differ, without parsing either: both come
+/// from the same serializer, so their first differing byte is the first
+/// difference in document order. The JSON path to it is read from the saved
+/// prefix by a flat scan (expression trees are deeper than any stack allows
+/// recursion for), and both wires are shown as bounded byte windows.
 fn first_difference(saved: &[u8], packaged: &[u8]) -> String {
-    use serde_json::Value;
-    fn parse(bytes: &[u8]) -> Result<Value, serde_json::Error> {
-        let mut reader = serde_json::Deserializer::from_slice(bytes);
-        reader.disable_recursion_limit();
-        Value::deserialize(&mut reader)
-    }
-    fn short(value: &Value) -> String {
-        let text = value.to_string();
-        match text.char_indices().nth(120) {
-            Some((end, _)) => format!("{}...", &text[..end]),
-            None => text,
-        }
-    }
-    let (Ok(saved), Ok(packaged)) = (parse(saved), parse(packaged)) else {
-        return "unknown: a canonical wire is not JSON".into();
+    let offset = saved
+        .iter()
+        .zip(packaged)
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| saved.len().min(packaged.len()));
+    let segments = json_path_at(&saved[..offset]);
+    let skipped = segments.len().saturating_sub(DIFFERENCE_PATH_SEGMENTS);
+    let tail = segments[skipped..].join("/");
+    let path = if skipped == 0 {
+        format!("/{tail}")
+    } else {
+        format!("/...({skipped} more levels)/{tail}")
     };
-    // Depth first in document order, with an explicit stack: expression
-    // trees are deeper than the thread stack allows recursion for.
-    let mut pending = vec![(String::new(), &saved, &packaged)];
-    while let Some((path, left, right)) = pending.pop() {
-        let children: Vec<(String, &Value, &Value)> = match (left, right) {
-            (Value::Object(a), Value::Object(b)) if a.keys().eq(b.keys()) => a
-                .iter()
-                .zip(b.values())
-                .map(|((key, a), b)| (format!("{path}/{key}"), a, b))
-                .collect(),
-            (Value::Array(a), Value::Array(b)) if a.len() == b.len() => a
-                .iter()
-                .zip(b)
-                .enumerate()
-                .map(|(index, (a, b))| (format!("{path}/{index}"), a, b))
-                .collect(),
-            _ => {
-                return format!("at {path}: saved {} packaged {}", short(left), short(right));
-            }
-        };
-        pending.extend(children.into_iter().filter(|(_, a, b)| a != b).rev());
+    format!(
+        "at {path}: saved {} packaged {}",
+        byte_window(saved, offset),
+        byte_window(packaged, offset)
+    )
+}
+
+fn byte_window(bytes: &[u8], from: usize) -> String {
+    let end = from.saturating_add(DIFFERENCE_WINDOW).min(bytes.len());
+    let text = String::from_utf8_lossy(&bytes[from.min(end)..end]);
+    if end < bytes.len() {
+        format!("{text}...")
+    } else {
+        text.into_owned()
     }
-    "none found".into()
+}
+
+/// The object keys and array indices open at the end of `prefix`, a prefix of
+/// one compact JSON document, outermost first. Strings are skipped with their
+/// escapes, so brackets and commas inside them do not count.
+fn json_path_at(prefix: &[u8]) -> Vec<String> {
+    enum Open {
+        Object(Option<String>),
+        Array(usize),
+    }
+    let mut open = Vec::new();
+    let mut at = 0;
+    while at < prefix.len() {
+        match prefix[at] {
+            b'{' => open.push(Open::Object(None)),
+            b'[' => open.push(Open::Array(0)),
+            b'}' | b']' => {
+                open.pop();
+            }
+            b',' => {
+                if let Some(Open::Array(index)) = open.last_mut() {
+                    *index += 1;
+                }
+            }
+            b'"' => {
+                let start = at + 1;
+                at = start;
+                while at < prefix.len() && prefix[at] != b'"' {
+                    at += if prefix[at] == b'\\' { 2 } else { 1 };
+                }
+                let end = at.min(prefix.len());
+                if prefix.get(at + 1) == Some(&b':')
+                    && let Some(Open::Object(key)) = open.last_mut()
+                {
+                    *key = Some(String::from_utf8_lossy(&prefix[start..end]).into_owned());
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    open.into_iter()
+        .map(|entry| match entry {
+            Open::Object(key) => key.unwrap_or_default(),
+            Open::Array(index) => index.to_string(),
+        })
+        .collect()
 }
 
 fn canonical_wire(component: &rumoca_ir_solve::fmi::FmiComponent) -> Result<Vec<u8>, String> {
@@ -373,12 +417,34 @@ mod first_difference_tests {
         let packaged = br#"{"a":1,"b":{"c":[1,2,{"d":"y"}],"e":6}}"#;
         assert_eq!(
             first_difference(saved, packaged),
-            r#"at /b/c/2/d: saved "x" packaged "y""#
+            r#"at /b/c/2/d: saved x"}],"e":5}} packaged y"}],"e":6}}"#
+        );
+        assert_eq!(
+            first_difference(
+                br#"{"k":"a,]\"b","v":[1,2]}"#,
+                br#"{"k":"a,]\"b","v":[1,3]}"#
+            ),
+            "at /v/1: saved 2]} packaged 3]}"
         );
         assert_eq!(
             first_difference(b"[1,2]", b"[1,2,3]"),
-            "at : saved [1,2] packaged [1,2,3]"
+            "at /1: saved ] packaged ,3]"
         );
+    }
+
+    /// A difference at the bottom of a nesting far deeper than any thread
+    /// stack is found without recursion, and the message stays bounded.
+    #[test]
+    fn a_difference_under_deep_nesting_is_reported_without_recursion_and_bounded() {
+        const DEPTH: usize = 200_000;
+        let nested = |leaf: &str| format!("{}{leaf}{}", "[".repeat(DEPTH), "]".repeat(DEPTH));
+        let report = first_difference(nested("1").as_bytes(), nested("2").as_bytes());
+        assert!(
+            report.starts_with("at /...(199988 more levels)/0/0/0/0/0/0/0/0/0/0/0/0: saved 1]"),
+            "{}",
+            &report[..report.len().min(200)]
+        );
+        assert!(report.len() < 400, "{}", report.len());
     }
 }
 
@@ -431,5 +497,36 @@ mod saved_product_tests {
             refusal.contains("differs from the component this FMU packages; first difference at /"),
             "{refusal}"
         );
+    }
+
+    /// The same sources compiled under another companion document name lower
+    /// to a component whose span source ids differ, and the prepared model
+    /// refuses its saved product at a span's `source` field.
+    #[test]
+    fn the_same_sources_under_another_companion_name_are_refused_at_a_span_source() {
+        let decay_from = |companion: &str| {
+            let library = "package Lib\n  model Decay\n    Real x(start = 1);\n  equation\n    \
+                           der(x) = -x;\n  end Decay;\nend Lib;\n";
+            let mut set = serde_json::Map::new();
+            set.insert(companion.into(), library.into());
+            let dae = rumoca_compile::compile::compile_source_set(
+                "model M\n  Lib.Decay d;\nend M;\n",
+                "M",
+                &serde_json::Value::Object(set).to_string(),
+            )
+            .unwrap()
+            .dae;
+            crate::lower_fmi_scalar_export_component(&dae, &crate::SimOptions::default()).unwrap()
+        };
+        let packaged = decay_from("Lib.mo");
+        let prepared = PreparedScalarFmiLsModel::from_component(&packaged).unwrap();
+        prepared
+            .check_saved_product(&saved(&decay_from("Lib.mo")))
+            .unwrap();
+        let refusal = prepared
+            .check_saved_product(&saved(&decay_from("Library.mo")))
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("/source: saved "), "{refusal}");
     }
 }

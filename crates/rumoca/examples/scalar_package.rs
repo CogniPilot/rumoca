@@ -15,7 +15,9 @@
 //! initial inputs are applied when the model is lowered; its solver, step and
 //! tolerances become the component's Co-Simulation step plan, and a choice no
 //! plan or guest carries is refused, never substituted.
-use rumoca::native_fmi_ls::{ScalarFmiLsPackage, ScalarPackageOptions, read_source_roots};
+use rumoca::native_fmi_ls::{
+    ScalarFmiLsPackage, ScalarPackageOptions, compile_linked_package_source, read_source_roots,
+};
 use rumoca_ir_solve::fmi::{FmiComponent, FmiScalarDeploymentView};
 use rumoca_sim::PreparedScalarFmiLsModel;
 use sha2::{Digest, Sha256};
@@ -36,36 +38,6 @@ fn stage<T>(
         }
     }
     result.map(|value| (value, seconds))
-}
-
-/// What the model is compiled from: source roots, or for a linked package the
-/// SDK export's own workspace source set (its JSON object and document count).
-enum Sources {
-    Roots(Vec<String>),
-    Workspace { json: String, documents: usize },
-}
-
-impl Sources {
-    fn workspace(json: String) -> Result<Self, Box<dyn Error>> {
-        match serde_json::from_str::<serde_json::Value>(&json)? {
-            serde_json::Value::Object(documents) => Ok(Self::Workspace {
-                documents: documents.len(),
-                json,
-            }),
-            _ => Err(
-                "a linked package compiles the SDK export's workspace source set: \
-                      SOURCES must be that JSON object, not source roots"
-                    .into(),
-            ),
-        }
-    }
-
-    fn count(&self) -> usize {
-        match self {
-            Self::Roots(roots) => roots.len(),
-            Self::Workspace { documents, .. } => *documents,
-        }
-    }
 }
 
 /// Published variables counted by FMI type and causality.
@@ -120,26 +92,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let source = fs::read_to_string(source_path)?;
     let options = ScalarPackageOptions::parse(&fs::read_to_string(options_path)?)?;
-    // A linked package compiles the SDK export's own source set, through the
-    // export's own compile, so every document keeps the name (and source id)
-    // the saved product's component was lowered with. Otherwise the roots.
-    let sources = if linked.is_some() {
-        Sources::workspace(fs::read_to_string(roots_path)?)?
-    } else {
-        Sources::Roots(read_source_roots(Path::new(roots_path))?)
+    // A linked package compiles the SDK export's own workspace source set
+    // (compile_linked_package_source); otherwise the main document and roots.
+    let roots = match linked {
+        None => Some(read_source_roots(Path::new(roots_path))?),
+        Some(_) => None,
     };
-    let (dae, frontend_s) = stage("frontend", || match &sources {
-        Sources::Roots(roots) => rumoca::Compiler::new()
+    let ((dae, source_count), frontend_s) = stage("frontend", || match &roots {
+        Some(roots) => rumoca::Compiler::new()
             .model(model)
             .source_roots(roots)
             .compile_str(&source, source_path)
-            .map(|compilation| compilation.dae)
+            .map(|compilation| (compilation.dae, roots.len()))
             .map_err(|error| error.to_string().into()),
-        Sources::Workspace { json, .. } => {
-            rumoca_compile::compile::compile_source_set(&source, model, json)
-                .map(|compilation| compilation.dae)
-                .map_err(Into::into)
-        }
+        None => Ok(compile_linked_package_source(
+            &source,
+            model,
+            &fs::read_to_string(roots_path)?,
+        )?),
     })?;
     let (component, lower_s) = stage("lower", || {
         Ok(rumoca_sim::lower_fmi_scalar_export_component(
@@ -235,21 +205,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output = work.join("published");
     fs::create_dir(&output)?;
     let (_, publish_s) = stage("publish", || Ok(package.publish(&output)?))?;
-    println!(
-        "{}",
-        serde_json::json!({
-            "scope": scope,
-            "model": model, "model_description_bytes": description_bytes,
-            "model_description_sha256": description_sha256,
-            "public_variables_sha256": table_sha256,
-            "component_bytes": component_bytes,
-            "sources": sources.count(), "variables": variables,
-            "seconds": {"frontend": frontend_s, "lower": lower_s, "prepared_model": prepare_s,
-                        "fixed_guest_core": core_s, "construct": construct_s,
-                        "publish": publish_s},
-            "peak_rss_kib": fs::read_to_string("/proc/self/status")?.lines()
-                .find_map(|l| l.strip_prefix("VmHWM:")).map(str::trim).unwrap_or(""),
-        })
-    );
+    let mut summary = serde_json::json!({
+        "scope": scope,
+        "model": model, "model_description_bytes": description_bytes,
+        "model_description_sha256": description_sha256,
+        "public_variables_sha256": table_sha256,
+        "component_bytes": component_bytes,
+        "source_roots": source_count, "variables": variables,
+        "seconds": {"frontend": frontend_s, "lower": lower_s, "prepared_model": prepare_s,
+                    "fixed_guest_core": core_s, "construct": construct_s,
+                    "publish": publish_s},
+        "peak_rss_kib": fs::read_to_string("/proc/self/status")?.lines()
+            .find_map(|l| l.strip_prefix("VmHWM:")).map(str::trim).unwrap_or(""),
+    });
+    // A linked package's sources are the export's workspace documents, not roots.
+    if linked.is_some()
+        && let Some(fields) = summary.as_object_mut()
+        && let Some(count) = fields.remove("source_roots")
+    {
+        fields.insert("workspace_documents".into(), count);
+    }
+    println!("{summary}");
     Ok(())
 }
