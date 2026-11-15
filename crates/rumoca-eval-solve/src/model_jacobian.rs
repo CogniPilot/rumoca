@@ -4,7 +4,7 @@
 mod admission;
 mod compact;
 mod scalar;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;
 
 use rumoca_core::Span;

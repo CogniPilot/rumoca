@@ -680,7 +680,7 @@ fn select_residual_programs(
     Ok((selected, rows))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests {
     use super::*;
     use solve::{BinaryOp, LinearOp};

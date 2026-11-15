@@ -1,6 +1,6 @@
 //! Pack fragmented AD register views without expanding long regular runs.
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;
 
 use super::*;

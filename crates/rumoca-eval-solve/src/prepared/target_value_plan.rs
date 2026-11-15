@@ -1,6 +1,6 @@
 //! Private-output executable view issued by the existing prepared target owner.
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;
 
 use super::*;

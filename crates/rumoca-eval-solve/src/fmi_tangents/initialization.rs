@@ -272,7 +272,7 @@ impl Relation {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests {
     use super::*;
     use solve::{BinaryOp, LinearOp};

@@ -209,10 +209,13 @@ fn update_row_vec_with_capacity<T>(
 
 #[cfg(test)]
 mod tests {
-    use rumoca_ir_solve::{LinearOp, ScalarProgramBlock, scalar_slot_p};
+    #[cfg(feature = "reference-eval")]
+    use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
+    use rumoca_ir_solve::scalar_slot_p;
 
     use super::*;
 
+    #[cfg(feature = "reference-eval")]
     fn fixture_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name("eval_solve_update_rows_source_46.mo"),
@@ -221,6 +224,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "reference-eval")]
     #[test]
     fn update_rows_apply_scalar_slot_targets_until_stable() {
         let block = ScalarProgramBlock::with_source_span(
@@ -270,6 +274,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "reference-eval")]
     #[test]
     fn update_row_vec_with_capacity_rejects_impossible_capacity() {
         let err = update_row_vec_with_capacity::<u8>(usize::MAX, "update row test vector")

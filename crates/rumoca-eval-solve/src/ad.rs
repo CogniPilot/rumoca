@@ -6,26 +6,26 @@
 //! two together with the typed directional owners.
 //!
 mod calls;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod discrete_call_tangent_tests;
 mod dispatch;
 mod error;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod inactive_tangent_tests;
 mod inactive_tangents;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod kink_rule_tests;
 mod loads;
 mod registers;
 mod rules;
 mod seed_domain;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod seed_domain_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod structured_lowering_tests;
 mod tensor_ops;
 mod tensor_packing;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod variability_tests;
 pub(crate) use seed_domain::lower_projection_domain;
 
@@ -46,7 +46,7 @@ struct DualReg {
     du: Reg,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod time_seed_tests;
 
 type FoldAdCache = Rc<RefCell<HashMap<usize, Arc<rumoca_ir_solve::FunctionFoldProgram>>>>;

@@ -17,12 +17,12 @@
 //! numbers) makes the whole program unlowerable, so the caller can refuse the
 //! model at the capability gate instead of failing inside a template.
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod budget_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod fold_tests;
 mod pure_calls;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod snapshot_tests;
 mod snapshots;
 
@@ -821,7 +821,7 @@ impl FoldPass {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests {
     use super::*;
 
