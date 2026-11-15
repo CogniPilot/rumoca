@@ -113,7 +113,7 @@ mod runner_tests {
   (core module $mem (memory (export "memory") 1))
   (core instance $mem-i (instantiate $mem))
   (core func $seed-lowered
-    (canon lower (func $seed-i "insecure-seed") (memory $mem-i "memory")))
+    (canon lower (func $seed-i "insecure-seed") (memory (core memory $mem-i "memory"))))
   (core func $now-lowered (canon lower (func $clock-i "now")))
   (core module $m
     (import "host" "seed" (func $seed (param i32)))
