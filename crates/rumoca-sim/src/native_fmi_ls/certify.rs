@@ -33,6 +33,13 @@ pub(super) fn certify_linked_component(component: &[u8]) -> Result<(), String> {
     let component = Component::new(&engine, component)
         .map_err(|error| format!("compile the certification component: {error:#}"))?;
     let mut linker = Linker::<u64>::new(&engine);
+    // Every import traps first. Stubbing visits each imported instance by
+    // name and refuses one already defined, so the seed instance is defined
+    // after it, replacing that instance's trap with the fixed seed.
+    linker
+        .define_unknown_imports_as_traps(&component)
+        .map_err(|error| format!("certification imports: {error:#}"))?;
+    linker.allow_shadowing(true);
     let seeds: Vec<String> = component
         .component_type()
         .imports(&engine)
@@ -53,9 +60,7 @@ pub(super) fn certify_linked_component(component: &[u8]) -> Result<(), String> {
             )
             .map_err(refused)?;
     }
-    linker
-        .define_unknown_imports_as_traps(&component)
-        .map_err(|error| format!("certification imports: {error:#}"))?;
+    linker.allow_shadowing(false);
     let mut store = Store::new(&engine, 0u64);
     let instance = linker
         .instantiate(&mut store, &component)
