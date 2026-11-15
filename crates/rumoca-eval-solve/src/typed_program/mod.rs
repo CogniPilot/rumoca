@@ -24,12 +24,12 @@ use rumoca_core::StructuredIndexDomain;
 #[cfg(feature = "reference-eval")]
 use rumoca_ir_solve::{
     SolveAlgorithmBlock, SolveBinaryOperator, SolveOperation, SolveProgramRegion,
-    SolvePureCallOwner, SolveRealFormat, SolveReductionOperator, SolveRegisterId, SolveSlotId,
-    SolveStorageClass, SolveTensorViewAxis, SolveValue, TypedProgram,
+    SolvePureCallOwner, SolveReductionOperator, SolveRegisterId, SolveSlotId, SolveStorageClass,
+    SolveTensorViewAxis, SolveValue, TypedProgram,
 };
 use rumoca_ir_solve::{
-    SolveFiniteCheck, SolvePureCallOwnerId, SolvePureCallTable, SolveScalarType, SolveValueKind,
-    SolveValueType,
+    SolveFiniteCheck, SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveScalarType,
+    SolveValueKind, SolveValueType,
 };
 
 pub use algorithm_block::eval_algorithm_method;

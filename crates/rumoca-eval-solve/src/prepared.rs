@@ -44,9 +44,9 @@ mod zero_assignment_tests;
 use std::cell::{OnceCell, RefCell};
 
 use crate::compute_block_scalarize::scalarize_product as checked_product;
-use crate::tensor_policy::{
-    LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
-};
+#[cfg(feature = "reference-eval")]
+use crate::tensor_policy::{LinearSolveKernel, MatMulKernel};
+use crate::tensor_policy::{select_linear_solve_kernel, select_matmul_kernel};
 use crate::{
     EvalSolveError, RowEvalContext, RowInputRequirements,
     compute_block_scalarize::{

@@ -2,7 +2,9 @@
 
 use rumoca_ir_solve as solve;
 
-use crate::{EvalSolveError, TypedValue, checked_scalar_payload_value, typed_kind_from_scalar};
+use crate::EvalSolveError;
+#[cfg(feature = "reference-eval")]
+use crate::{TypedValue, checked_scalar_payload_value, typed_kind_from_scalar};
 
 /// Prepared evaluator boundary for one [`solve::EventTransactionProgram`].
 ///
