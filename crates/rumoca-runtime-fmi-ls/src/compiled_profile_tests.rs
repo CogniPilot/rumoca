@@ -21,7 +21,8 @@ const REFERENCE: [(&str, &str); 3] = [
 ];
 
 /// The manifests the first static check whitelisted; the walk must reach
-/// beyond them.
+/// beyond them. Model lowering (`rumoca-phase-solve`) left the guest with the
+/// optional `lowering` feature, so it is listed but never reached.
 const FIRST_WHITELIST: [&str; 7] = [
     "rumoca-runtime-fmi-ls",
     "rumoca-sim",
@@ -31,6 +32,9 @@ const FIRST_WHITELIST: [&str; 7] = [
     "rumoca-eval-solve",
     "rumoca-phase-solve",
 ];
+
+/// Translation-only crates the published guest never links.
+const TRANSLATION_ONLY: [&str; 1] = ["rumoca-phase-solve"];
 
 const EVAL_REFERENCE_EDGE: &str =
     "rumoca-eval-solve = { workspace = true, features = [\"reference-eval\"] }";
@@ -367,8 +371,14 @@ fn the_published_and_certification_guests_enable_no_reference_execution() {
     for certify in [false, true] {
         let closure = guest_closure(&workspace, &members, certify);
         // The walk reached the compiled guest it guards, not an empty graph.
-        for krate in FIRST_WHITELIST {
-            assert!(closure.active.contains(krate), "certify={certify}: {krate} not reached");
+        for krate in FIRST_WHITELIST.iter().filter(|krate| !TRANSLATION_ONLY.contains(*krate)) {
+            assert!(closure.active.contains(*krate), "certify={certify}: {krate} not reached");
+        }
+        for krate in TRANSLATION_ONLY {
+            assert!(
+                !closure.active.contains(krate),
+                "certify={certify}: the guest links translation-only {krate}"
+            );
         }
         crate_beyond_first_whitelist(&closure);
         assert!(
