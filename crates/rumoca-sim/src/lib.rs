@@ -92,6 +92,8 @@ pub use precompiled_runtime::{LinkedGuestLoad, load_linked_guest};
 pub use precompiled_runtime::{
     export_precompiled_linked_runtime, export_precompiled_runtime, load_precompiled_runtime,
 };
+#[cfg(feature = "precompiled-runtime")]
+pub use rumoca_exec_wasm::EMITTER_PROFILE;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod session_protocol;
 pub mod sim_trace_compare;

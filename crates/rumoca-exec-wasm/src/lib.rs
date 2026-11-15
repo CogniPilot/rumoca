@@ -53,6 +53,15 @@ pub use linked::{
 #[cfg(feature = "precompiled-programs")]
 pub use linked::{LinkedAdmission, LinkedArtifact, linked_digest};
 
+/// The emitter profile every kernel of this build is emitted under. A saved
+/// product binds without being emitted again only under the profile it was
+/// emitted with, so a product's identity carries it.
+pub const EMITTER_PROFILE: &str = if cfg!(feature = "diagnostic-root-scalar-locals") {
+    "diagnostic-root-scalar-locals"
+} else {
+    "production"
+};
+
 /// How a load binds a saved compiled entry to the checked source it was
 /// compiled from.
 #[cfg(feature = "precompiled-programs")]

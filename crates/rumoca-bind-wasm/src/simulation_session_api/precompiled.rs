@@ -14,6 +14,9 @@ struct Key {
     schema: u32,
     model: prebuilt::ArtifactKey,
     options_sha256: String,
+    /// The kernels load without being emitted again, so a record emitted
+    /// under another profile of the same commit is refused, never bound.
+    emitter_profile: String,
 }
 
 fn digest(bytes: impl AsRef<[u8]>) -> String {
@@ -30,13 +33,15 @@ fn key(
     options: &InteractiveOptions,
 ) -> Result<Key, WasmError> {
     Ok(Key {
-        schema: 2,
+        schema: 3,
         model: prebuilt::key(source, model, sources)?,
         options_sha256: digest(serialize(options)?),
+        emitter_profile: rumoca_sim::EMITTER_PROFILE.into(),
     })
 }
 
-/// Identity of the exact compiler/model/source set and checked runtime options.
+/// Identity of the exact compiler/model/source set, emitter profile and
+/// checked runtime options.
 #[wasm_bindgen]
 pub fn precompiled_runtime_key(
     source: &str,

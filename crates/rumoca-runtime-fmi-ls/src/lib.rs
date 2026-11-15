@@ -65,3 +65,16 @@ pub mod bindings {
         ],
     });
 }
+
+/// A published product loads without re-deriving its kernels because the
+/// certifying core re-derived them at build. That certifies the published
+/// core only while `certify-linked` changes nothing else either core builds.
+#[cfg(test)]
+#[test]
+fn the_certify_feature_enables_no_other_feature() {
+    let manifest = include_str!("../Cargo.toml");
+    assert!(
+        manifest.lines().any(|line| line.trim() == "certify-linked = []"),
+        "certify-linked must stay an empty feature"
+    );
+}

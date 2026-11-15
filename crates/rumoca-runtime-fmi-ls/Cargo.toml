@@ -15,7 +15,9 @@ crate-type = ["rlib", "cdylib"]
 # The published component never carries it.
 preinit = []
 # Build-only: the build-time linked certification entry (`certify_linked`), wired
-# into the build-only certification world by the packager runner.
+# into the build-only certification world by the packager runner. It must enable
+# no other feature: the certifying core certifies the published core's emission
+# only while both build every kernel path identically (lib.rs test).
 certify-linked = []
 # Build-time product kind: a stateful (scalar) component instead of the
 # stateless native product. Interpreted until linked dispatch lands (M1a).
