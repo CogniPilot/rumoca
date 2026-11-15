@@ -24,6 +24,7 @@ pub(crate) fn element_matches_type(value: SolveValueKind, scalar: SolveScalarTyp
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn scalar_element(
     value: &TypedValue,
     provenance: Span,
@@ -34,6 +35,7 @@ pub(super) fn scalar_element(
     Ok(value.elements[0])
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn scalar_boolean(
     value: &TypedValue,
     provenance: Span,
@@ -44,6 +46,7 @@ pub(super) fn scalar_boolean(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn scalar_integer(
     value: &TypedValue,
     provenance: Span,
@@ -54,6 +57,7 @@ pub(super) fn scalar_integer(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn row_major_offset(dimensions: &[u32], indices: &[u32]) -> Option<usize> {
     if dimensions.len() != indices.len() {
         return None;
@@ -72,6 +76,7 @@ pub(super) fn row_major_offset(dimensions: &[u32], indices: &[u32]) -> Option<us
         })
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn select_modelica_element(
     value: &TypedValue,
     indices: &[i64],
@@ -106,6 +111,7 @@ pub(super) fn select_modelica_element(
         .ok_or(invalid_error("project aggregate element", provenance))
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn project_slice(
     aggregate: &TypedValue,
     origin: &[u32],
@@ -137,11 +143,13 @@ pub(super) fn project_slice(
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 pub(super) enum ResolvedTensorViewAxis {
     Index(u32),
     Span { origin: u32 },
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn project_tensor_view(
     aggregate: &TypedValue,
     axes: &[ResolvedTensorViewAxis],
@@ -167,6 +175,7 @@ pub(super) fn project_tensor_view(
     Ok(elements)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn tensor_view_coordinate(
     axes: &[ResolvedTensorViewAxis],
     coordinate: &[u32],
@@ -190,6 +199,7 @@ pub(super) fn tensor_view_coordinate(
     Ok(result)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn increment_coordinate(coordinate: &mut [u32], dimensions: &[u32]) {
     for axis in (0..coordinate.len()).rev() {
         coordinate[axis] += 1;

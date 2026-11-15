@@ -1,6 +1,9 @@
-use super::*;
+use super::{EvalSolveError, OutputCursor, PreparedRowEval, RowEvalScratch};
+#[cfg(feature = "reference-eval")]
+use super::{LazyEvalTask, LinearOp, Reg, eval_lazy_pure_op, push_lazy_dependencies};
 use rumoca_ir_solve::RegisterVersionProgram;
 
+#[cfg(feature = "reference-eval")]
 #[derive(Clone, Copy)]
 pub(crate) enum VersionTask {
     Evaluate(usize),
@@ -9,6 +12,18 @@ pub(crate) enum VersionTask {
     FinishSelect { operation: usize, source: usize },
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub(crate) fn evaluate(
+    input: PreparedRowEval<'_, '_>,
+    versions: &RegisterVersionProgram,
+    scratch: &mut RowEvalScratch,
+    sink: &mut OutputCursor<'_>,
+) -> Result<(), EvalSolveError> {
+    Err(crate::interpreter_excluded("versioned lazy evaluate"))
+}
+#[cfg(feature = "reference-eval")]
 pub(crate) fn evaluate(
     input: PreparedRowEval<'_, '_>,
     versions: &RegisterVersionProgram,
@@ -37,12 +52,14 @@ pub(crate) fn evaluate(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn source(versions: &RegisterVersionProgram, operation: usize, register: Reg) -> (usize, usize) {
     versions.operations()[operation]
         .source(register)
         .expect("the checked source-point view covers this operand")
 }
 
+#[cfg(feature = "reference-eval")]
 fn execute(
     input: PreparedRowEval<'_, '_>,
     versions: &RegisterVersionProgram,
@@ -62,6 +79,7 @@ fn execute(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn demand(
     input: PreparedRowEval<'_, '_>,
     versions: &RegisterVersionProgram,
@@ -93,6 +111,7 @@ fn demand(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn choose(
     input: PreparedRowEval<'_, '_>,
     versions: &RegisterVersionProgram,
@@ -122,6 +141,7 @@ fn choose(
     scratch.version_tasks.push(VersionTask::Evaluate(producer));
 }
 
+#[cfg(feature = "reference-eval")]
 fn apply(
     input: PreparedRowEval<'_, '_>,
     versions: &RegisterVersionProgram,

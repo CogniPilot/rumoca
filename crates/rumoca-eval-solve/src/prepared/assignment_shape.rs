@@ -2,6 +2,7 @@ use rumoca_ir_solve::{LinearOp, TargetAssignmentShape};
 
 use crate::EvalSolveError;
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_assignment_shape(
     shape: &TargetAssignmentShape,
     row_idx: usize,
@@ -79,6 +80,7 @@ pub(super) fn eval_assignment_shape(
 
 /// The isolated value of an affine, additive, or reciprocal shape, in the arithmetic of
 /// its materialized isolator ([`rumoca_ir_solve::IsolatedValue`]).
+#[cfg(feature = "reference-eval")]
 fn isolated_value(
     shape: &TargetAssignmentShape,
     regs: &[f64],
@@ -121,6 +123,7 @@ pub(super) fn target_assignment_shapes_with_output_offsets(
     rumoca_ir_solve::derive_target_assignment_shapes(row)
 }
 
+#[cfg(feature = "reference-eval")]
 fn read_shape_reg(
     regs: &[f64],
     reg: u32,
@@ -136,6 +139,7 @@ fn read_shape_reg(
         })
 }
 
+#[cfg(feature = "reference-eval")]
 #[cfg(test)]
 pub(super) fn checked_expr_eval_len(pos: usize) -> Result<usize, EvalSolveError> {
     pos.checked_add(1)

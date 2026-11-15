@@ -16,10 +16,9 @@
 
 use rumoca_ir_solve::{LinearOp, ScalarProgramBlock, TargetAssignmentShape};
 
-use super::{
-    AssignmentProgramBuilder, PreparedScalarProgramBlock, RowOutputRequest,
-    TargetAssignmentScratchRequest,
-};
+use super::{AssignmentProgramBuilder, PreparedScalarProgramBlock};
+#[cfg(feature = "reference-eval")]
+use super::{RowOutputRequest, TargetAssignmentScratchRequest};
 use crate::{EvalSolveError, RowEvalContext};
 
 /// One causal back-substitution step resolved at prepare time.
@@ -186,11 +185,28 @@ impl PreparedScalarProgramBlock {
         Some((runs, Some(Box::new(prepared))))
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_torn_sweep_unchecked_with_context(
+        &self,
+        sweep: &PreparedTornSweep,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        residual_out: &mut Vec<Option<f64>>,
+    ) -> Result<TornSweepStatus, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_torn_sweep_unchecked_with_context",
+        ))
+    }
     /// Execute one prepared sweep: every causal isolator in order (each
     /// writes its recovered unknown into `y`), then the reduced residual
     /// rows. `residual_out` receives the raw row values; `None` marks a row
     /// with no scalar view. The caller applies its own finiteness policy to
     /// the residual values, matching its per-row path.
+    #[cfg(feature = "reference-eval")]
     pub fn eval_torn_sweep_unchecked_with_context(
         &self,
         sweep: &PreparedTornSweep,
@@ -250,6 +266,7 @@ impl PreparedScalarProgramBlock {
 
     /// One causal step through its certified isolator: writes the recovered
     /// unknown, or declines on a singular or non-finite isolation.
+    #[cfg(feature = "reference-eval")]
     fn eval_torn_step(
         &self,
         step: &PreparedTornStep,
@@ -286,6 +303,7 @@ impl PreparedScalarProgramBlock {
     }
 
     /// Consecutive causal steps, each through its own isolator.
+    #[cfg(feature = "reference-eval")]
     fn eval_torn_steps(
         &self,
         steps: &[PreparedTornStep],
@@ -308,6 +326,7 @@ impl PreparedScalarProgramBlock {
     /// as the per-step isolators would. `None` when the chain evaluation
     /// fails, so the caller answers the run step by step and reaches the
     /// per-step outcome, including an earlier decline, exactly.
+    #[cfg(feature = "reference-eval")]
     fn eval_torn_chain(
         &self,
         sweep: &PreparedTornSweep,

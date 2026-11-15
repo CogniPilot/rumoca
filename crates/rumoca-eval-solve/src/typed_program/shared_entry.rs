@@ -1,19 +1,35 @@
 //! Mechanical reference consumption of an already-issued mixed-entry call plan.
 //! No derivative, sparsity, partition, storage or arithmetic policy lives here.
 
+#[cfg(feature = "reference-eval")]
 use rumoca_core::Span;
-use rumoca_ir_solve::{SharedEntryCallPlan, SolvePureCallOwner, TypedProgram};
+use rumoca_ir_solve::SharedEntryCallPlan;
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::{SolvePureCallOwner, TypedProgram};
 
+#[cfg(feature = "reference-eval")]
 use super::{
     AssertionPolicy, Direction, EvalFrame, EvaluationMode, FrameStorage, InvocationCompletion,
-    RecursionChain, SolvePureCallOwnerId, TypedProgramEvalError, TypedValue, invalid_error,
+    RecursionChain, SolvePureCallOwnerId, invalid_error,
 };
+use super::{TypedProgramEvalError, TypedValue};
 
 /// Evaluate one checked shared entry with source assertions in force.
 /// The caller prepares `plan` once; evaluation neither constructs partitions
 /// nor treats its lazy call inventory as an eager instruction schedule.
 /// Original slot identities determine the input/output ABI, including when
 /// inputs and outputs are interleaved in the source declaration order.
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_shared_entry_checked<'model>(
+    _plan: &'model SharedEntryCallPlan<'model>,
+    _arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    Err(TypedProgramEvalError::InterpreterExcluded {
+        operation: "eval_shared_entry_checked",
+    })
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_shared_entry_checked<'model>(
     plan: &'model SharedEntryCallPlan<'model>,
     arguments: &[TypedValue],
@@ -80,6 +96,7 @@ pub fn eval_shared_entry_checked<'model>(
 
 /// Only an actual nominal local operation may select a call partition. The
 /// callee's issued body form determines which existing interpreter entry runs.
+#[cfg(feature = "reference-eval")]
 pub(super) fn resolve_entry_call<'model>(
     plan: &'model SharedEntryCallPlan<'model>,
     program: &'model TypedProgram,

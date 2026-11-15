@@ -5,17 +5,33 @@
 //! method runs over it, leaving the slots it stored updated. Method locals are
 //! not part of that state; they start unwritten on every call.
 
-use rumoca_ir_solve::{SolveAlgorithmBlock, SolveBlockMethodKind, SolveStorageClass};
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::SolveStorageClass;
+use rumoca_ir_solve::{SolveAlgorithmBlock, SolveBlockMethodKind};
 
+#[cfg(feature = "reference-eval")]
 use super::{
     AssertionPolicy, EvalFrame, EvaluationMode, FrameStorage, RecursionChain, SolvePureCallOwnerId,
-    TypedProgramEvalError, TypedValue, invalid,
+    invalid,
 };
+use super::{TypedProgramEvalError, TypedValue};
 
 /// Run `method` of `block` over the persistent `state` (one entry per block
 /// slot, in slot order), updating the slots the method stored. A Startup that
 /// faults leaves `state` unchanged except for the signals it raised; a
 /// Recalibrate or DoStep that faults keeps what it stored before the fault.
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_algorithm_method(
+    _block: &SolveAlgorithmBlock,
+    _method: SolveBlockMethodKind,
+    _state: &mut [Option<TypedValue>],
+) -> Result<(), TypedProgramEvalError> {
+    Err(TypedProgramEvalError::InterpreterExcluded {
+        operation: "eval_algorithm_method",
+    })
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_algorithm_method(
     block: &SolveAlgorithmBlock,
     method: SolveBlockMethodKind,

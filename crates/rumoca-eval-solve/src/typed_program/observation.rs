@@ -32,6 +32,15 @@ pub enum AssertionInvocationEvaluation {
 
 /// The only observation adapter accepts the checked immutable construction,
 /// invokes its exact owner once and consumes that invocation's private stop.
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_assertion_invocation(
+    _invocation: &CheckedAssertionInvocation<'_>,
+    _arguments: &[TypedValue],
+) -> Result<AssertionInvocationEvaluation, EvalSolveError> {
+    Err(crate::interpreter_excluded("eval_assertion_invocation"))
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_assertion_invocation(
     invocation: &CheckedAssertionInvocation<'_>,
     arguments: &[TypedValue],
@@ -95,6 +104,7 @@ pub fn eval_assertion_invocation(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn evaluation_error(error: TypedProgramEvalError) -> EvalSolveError {
     EvalSolveError::ShapeContract {
         message: error.to_string(),
@@ -109,6 +119,7 @@ fn binding_error(message: &'static str) -> EvalSolveError {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn map_observation(
     invocation: &CheckedAssertionInvocation<'_>,
     observed: &ObservedAssertion<'_>,
@@ -174,6 +185,7 @@ fn map_observation(
     Ok(mapped)
 }
 
+#[cfg(feature = "reference-eval")]
 fn remap_captures(
     table: &SolvePureCallTable,
     observation: &mut assertions::AssertionObservation,

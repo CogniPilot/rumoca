@@ -101,7 +101,21 @@ impl PreparedEventTransactionProgram {
         &self.assertion_scalar_offsets
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval(
+        &self,
+        table: &solve::SolvePureCallTable,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        output: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval"))
+    }
     /// Evaluate the complete target/predicate tuple in one invocation scope.
+    #[cfg(feature = "reference-eval")]
     pub fn eval(
         &self,
         table: &solve::SolvePureCallTable,
@@ -141,7 +155,19 @@ impl PreparedEventTransactionProgram {
         Ok(())
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_payload(
+        &self,
+        table: &solve::SolvePureCallTable,
+        input: &[f64],
+        output: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_payload"))
+    }
     /// Evaluate an already materialized checked aggregate input tuple.
+    #[cfg(feature = "reference-eval")]
     pub fn eval_payload(
         &self,
         table: &solve::SolvePureCallTable,

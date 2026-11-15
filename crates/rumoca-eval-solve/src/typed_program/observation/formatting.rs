@@ -2,10 +2,13 @@
 
 use super::*;
 use rumoca_ir_solve::{
-    AssertionCaptureSelector, CheckedAssertionAction, CheckedAssertionConversion,
-    CheckedAssertionMessagePart, SolveStringConversionSource,
+    AssertionCaptureSelector, CheckedAssertionConversion, SolveStringConversionSource,
 };
 
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::{CheckedAssertionAction, CheckedAssertionMessagePart};
+
+#[cfg(feature = "reference-eval")]
 pub(super) fn render_message(
     action: &CheckedAssertionAction<'_>,
     observation: &assertions::AssertionObservation,

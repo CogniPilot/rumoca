@@ -122,9 +122,22 @@ pub struct ReverseScratch {
     untaken: Vec<bool>,
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn reverse_scalar_block_vjp(
+    program: &ScalarVjpProgram<'_>,
+    inputs: &ReverseInputs<'_>,
+    output_cotangents: &[f64],
+    cot: &mut ReverseCotangents<'_>,
+    scratch: &mut ReverseScratch,
+) -> Result<(), EvalSolveError> {
+    Err(crate::interpreter_excluded("reverse_scalar_block_vjp"))
+}
 /// Reverse-accumulate `Jᵀ · output_cotangents` of a scalar program block into
 /// `cot`. Each row is an independent program; its contribution is summed into the
 /// shared input cotangents.
+#[cfg(feature = "reference-eval")]
 pub fn reverse_scalar_block_vjp(
     program: &ScalarVjpProgram<'_>,
     inputs: &ReverseInputs<'_>,
@@ -171,12 +184,25 @@ pub fn reverse_scalar_block_vjp(
     Ok(())
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn reverse_scalar_row_y_gradient(
+    program: &ScalarVjpProgram<'_>,
+    row_idx: usize,
+    inputs: &ReverseInputs<'_>,
+    y_gradient: &mut [f64],
+    scratch: &mut ReverseScratch,
+) -> Result<bool, EvalSolveError> {
+    Err(crate::interpreter_excluded("reverse_scalar_row_y_gradient"))
+}
 /// Reverse one scalar-output row into its complete solver-`y` gradient.
 ///
 /// A scalar residual row has one output, so reverse mode obtains every
 /// `d(row)/d(y[i])` in one forward/reverse sweep. Returning `false` preserves a
 /// precise fallback for rows containing operations whose reverse rule is not
 /// implemented yet.
+#[cfg(feature = "reference-eval")]
 pub fn reverse_scalar_row_y_gradient(
     program: &ScalarVjpProgram<'_>,
     row_idx: usize,

@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+#[cfg(feature = "reference-eval")]
 use std::sync::Mutex;
 
+#[cfg(feature = "reference-eval")]
 use rumoca_ir_solve::RandomGenerator;
 
+#[cfg(feature = "reference-eval")]
 use crate::{EvalSolveError, RowEvalContext, get};
 
 #[derive(Clone, Default)]
@@ -45,6 +48,7 @@ impl ImpureRandomStream {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn impure_random_mutex<'a>(
     context: RowEvalContext<'a>,
 ) -> Result<&'a Mutex<ImpureRandomState>, EvalSolveError> {
@@ -57,10 +61,12 @@ pub(super) fn impure_random_mutex<'a>(
         .as_ref())
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn impure_random_stream_id(seed: i64) -> i64 {
     clamp_i64_to_positive_u31(scramble_seed((seed as u64) ^ 0x7158_2788_3000_0001))
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn impure_random_sample(
     id: i64,
     call_site: u64,
@@ -86,6 +92,7 @@ pub(super) fn impure_random_sample(
     value
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn read_reg_range(
     regs: &[f64],
     initialized: &[bool],
@@ -107,6 +114,7 @@ pub(super) fn read_reg_range(
     Ok(values)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn projected_random_value(values: &[f64], index: usize) -> Result<f64, EvalSolveError> {
     values
         .get(index)
@@ -117,6 +125,7 @@ pub(super) fn projected_random_value(values: &[f64], index: usize) -> Result<f64
         })
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn initial_state_values(
     generator: RandomGenerator,
     local_seed: i64,
@@ -138,6 +147,7 @@ pub(super) fn initial_state_values(
     Ok(out)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn random_result_and_state(
     generator: RandomGenerator,
     seed_values: &[f64],
@@ -166,6 +176,7 @@ pub(super) fn random_result_and_state(
     Ok((unit_from_u64(xorshift64star_next(&mut sample_state)), out))
 }
 
+#[cfg(feature = "reference-eval")]
 fn random_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
@@ -180,6 +191,7 @@ fn random_vec_with_capacity<T>(
     Ok(values)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn checked_random_reg_offset(start: u32, offset: usize) -> Result<u32, EvalSolveError> {
     let offset = u32::try_from(offset).map_err(|_| EvalSolveError::InvalidRow {
         message: format!("random register range offset {offset} exceeds register index type"),
@@ -193,6 +205,7 @@ pub(super) fn checked_random_reg_offset(start: u32, offset: usize) -> Result<u32
         })
 }
 
+#[cfg(feature = "reference-eval")]
 fn random_generator_state_len(generator: RandomGenerator) -> usize {
     match generator {
         RandomGenerator::Xorshift64Star => 2,
@@ -201,6 +214,7 @@ fn random_generator_state_len(generator: RandomGenerator) -> usize {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn random_generator_name(generator: RandomGenerator) -> &'static str {
     match generator {
         RandomGenerator::Xorshift64Star => "Modelica.Math.Random.Generators.Xorshift64star.random",
@@ -213,6 +227,7 @@ fn random_generator_name(generator: RandomGenerator) -> &'static str {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn scramble_seed(mut x: u64) -> u64 {
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58476d1ce4e5b9);
@@ -221,11 +236,13 @@ fn scramble_seed(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+#[cfg(feature = "reference-eval")]
 fn clamp_i64_to_positive_u31(v: u64) -> i64 {
     let raw = (v & 0x7FFF_FFFF) as i64;
     if raw == 0 { 1 } else { raw }
 }
 
+#[cfg(feature = "reference-eval")]
 fn xorshift64star_next(state: &mut u64) -> u64 {
     let mut x = *state;
     if x == 0 {
@@ -238,6 +255,7 @@ fn xorshift64star_next(state: &mut u64) -> u64 {
     x.wrapping_mul(0x2545F4914F6CDD1D)
 }
 
+#[cfg(feature = "reference-eval")]
 fn unit_from_u64(sample: u64) -> f64 {
     (((sample >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))).clamp(f64::EPSILON, 1.0)
 }

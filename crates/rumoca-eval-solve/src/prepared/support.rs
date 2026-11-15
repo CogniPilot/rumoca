@@ -2,7 +2,9 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) struct PreparedLinearOps {
+    #[cfg(feature = "reference-eval")]
     pub(super) ops: Vec<LinearOp>,
+    #[cfg(feature = "reference-eval")]
     pub(super) register_count: usize,
     pub(super) requirements: RowInputRequirements,
 }
@@ -17,13 +19,19 @@ impl PreparedLinearOps {
         ops: Vec<LinearOp>,
         requirements: RowInputRequirements,
     ) -> Result<Self, EvalSolveError> {
+        let register_count = required_registers(&ops)?;
+        #[cfg(not(feature = "reference-eval"))]
+        let _ = register_count;
         Ok(Self {
-            register_count: required_registers(&ops)?,
+            #[cfg(feature = "reference-eval")]
+            register_count,
             requirements,
+            #[cfg(feature = "reference-eval")]
             ops,
         })
     }
 
+    #[cfg(feature = "reference-eval")]
     pub(super) fn eval(
         &self,
         y: &[f64],
@@ -45,6 +53,7 @@ impl PreparedLinearOps {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 pub(super) struct MatMulEvalSpec<'a> {
     pub(super) lhs_start: usize,
     pub(super) rhs_start: usize,
@@ -56,6 +65,7 @@ pub(super) struct MatMulEvalSpec<'a> {
     pub(super) rhs_pattern: &'a rumoca_ir_solve::StructuralPattern,
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_matmul_with_policy(
     regs: &[f64],
     spec: MatMulEvalSpec,
@@ -102,6 +112,7 @@ pub(super) fn eval_matmul_with_policy(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_sparse_matmul(
     regs: &[f64],
     spec: MatMulEvalSpec<'_>,
@@ -133,6 +144,7 @@ fn eval_sparse_matmul(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn accumulate_sparse_matmul_row(
     regs: &[f64],
     spec: MatMulEvalSpec<'_>,
@@ -147,6 +159,7 @@ fn accumulate_sparse_matmul_row(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn accumulate_sparse_matmul_inner(
     regs: &[f64],
     spec: MatMulEvalSpec<'_>,
@@ -162,6 +175,7 @@ fn accumulate_sparse_matmul_inner(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_left_diagonal_matmul(
     regs: &[f64],
     lhs_start: usize,
@@ -179,6 +193,7 @@ pub(super) fn eval_left_diagonal_matmul(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_right_diagonal_matmul(
     regs: &[f64],
     lhs_start: usize,
@@ -195,6 +210,7 @@ pub(super) fn eval_right_diagonal_matmul(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn ensure_register_range(
     regs: &[f64],
     access: &'static str,
@@ -216,12 +232,14 @@ pub(super) fn ensure_register_range(
     })
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn checked_required_row_count(row_idx: usize) -> Result<usize, EvalSolveError> {
     row_idx
         .checked_add(1)
         .ok_or_else(|| invalid_prepared_row("row index overflows row count"))
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn checked_register_range_last(start: u32, len: usize) -> Result<u32, EvalSolveError> {
     let Some(offset) = len.checked_sub(1) else {
         return Ok(start);
@@ -347,6 +365,7 @@ pub(super) fn checked_prepared_output_count(
 }
 
 pub(crate) fn non_causal_linear_op(op: &LinearOp) -> bool {
+    #[cfg(feature = "reference-eval")]
     #[cfg(test)]
     super::capability_tests::record_causality_visit();
     matches!(

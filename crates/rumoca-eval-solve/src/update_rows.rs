@@ -12,6 +12,15 @@ pub struct UpdateRowApplication<'a> {
     pub max_iters: usize,
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn eval_and_apply_update_rows(
+    application: UpdateRowApplication<'_>,
+) -> Result<bool, EvalSolveError> {
+    Err(crate::interpreter_excluded("eval_and_apply_update_rows"))
+}
+#[cfg(feature = "reference-eval")]
 pub fn eval_and_apply_update_rows(
     application: UpdateRowApplication<'_>,
 ) -> Result<bool, EvalSolveError> {

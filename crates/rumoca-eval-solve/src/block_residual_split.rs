@@ -1,23 +1,29 @@
 //! Evaluation of a checked block residual split (SPEC_0043 §6a).
 
-use std::cell::RefCell;
-
 use rumoca_ir_solve::BlockResidualSplit;
 
+use crate::{EvalSolveError, RowEvalContext};
+#[cfg(feature = "reference-eval")]
 use crate::{
-    EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    RowInputRequirements, SimulationRuntimeState, eval_row_prepared_maybe_fast,
-    row_input_requirements, validate_input_requirements,
+    OutputCursor, PreparedRowEval, RowEvalScratch, RowInputRequirements, SimulationRuntimeState,
+    eval_row_prepared_maybe_fast, validate_input_requirements,
 };
+#[cfg(feature = "reference-eval")]
+use std::cell::RefCell;
 
 /// A [`BlockResidualSplit`] prepared for one block projection call's
 /// invariant evaluation and each pass's dependent evaluation.
 pub struct PreparedBlockResidualSplit {
     split: BlockResidualSplit,
+    #[cfg(feature = "reference-eval")]
     output_count: usize,
+    #[cfg(feature = "reference-eval")]
     span: Option<rumoca_core::Span>,
+    #[cfg(feature = "reference-eval")]
     invariant_requirements: Result<RowInputRequirements, EvalSolveError>,
+    #[cfg(feature = "reference-eval")]
     dependent_requirements: Result<RowInputRequirements, EvalSolveError>,
+    #[cfg(feature = "reference-eval")]
     scratch: RefCell<RowEvalScratch>,
 }
 
@@ -29,12 +35,26 @@ impl PreparedBlockResidualSplit {
         output_count: usize,
         span: Option<rumoca_core::Span>,
     ) -> Self {
-        Self {
-            invariant_requirements: row_input_requirements(split.invariant()),
-            dependent_requirements: row_input_requirements(split.dependent()),
-            split,
+        let invariant_requirements = crate::row_input_requirements(split.invariant());
+        let dependent_requirements = crate::row_input_requirements(split.dependent());
+        #[cfg(not(feature = "reference-eval"))]
+        let _ = (
             output_count,
             span,
+            invariant_requirements,
+            dependent_requirements,
+        );
+        Self {
+            #[cfg(feature = "reference-eval")]
+            invariant_requirements,
+            #[cfg(feature = "reference-eval")]
+            dependent_requirements,
+            split,
+            #[cfg(feature = "reference-eval")]
+            output_count,
+            #[cfg(feature = "reference-eval")]
+            span,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         }
     }
@@ -44,8 +64,20 @@ impl PreparedBlockResidualSplit {
         &self.split
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_invariant(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        context: RowEvalContext<'_>,
+        values: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_invariant"))
+    }
     /// Evaluate the invariant part and write its live-out registers to
     /// `values`, in [`BlockResidualSplit::live_out`] order.
+    #[cfg(feature = "reference-eval")]
     pub fn eval_invariant(
         &self,
         (y, p, t): (&[f64], &[f64], f64),
@@ -89,8 +121,21 @@ impl PreparedBlockResidualSplit {
         Ok(())
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_dependent(
+        &self,
+        values: &[f64],
+        (y, p, t): (&[f64], &[f64], f64),
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_dependent"))
+    }
     /// Evaluate the dependent part over the invariant `values` and write the
     /// program's outputs to `out`, as a whole-program evaluation would.
+    #[cfg(feature = "reference-eval")]
     pub fn eval_dependent(
         &self,
         values: &[f64],
@@ -110,6 +155,7 @@ impl PreparedBlockResidualSplit {
         if values.len() != self.split.live_out().len() {
             return Err(EvalSolveError::InvalidRow {
                 message: "block residual split received a different live-out count".to_string(),
+                #[cfg(feature = "reference-eval")]
                 span: self.span,
             });
         }
@@ -139,5 +185,5 @@ impl PreparedBlockResidualSplit {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;

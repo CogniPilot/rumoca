@@ -11,33 +11,41 @@
 pub mod model_jacobian;
 
 use std::{
-    cell::RefCell,
     collections::BTreeMap,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Instant,
 };
 
+#[cfg(feature = "reference-eval")]
+use std::{cell::RefCell, time::Instant};
+
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, Reg,
-    ScalarProgramBlock, ScalarProgramRegisterFlow, SolveEventActionKind, SolveEventPartition,
-    SolvePureCallDirectionalSite, SolvePureCallSite, SolvePureCallTable, SolveScalarType,
-    SolveValueKind, SolveValueType, UnaryOp, resolve_indexed_slot,
+    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, ScalarProgramRegisterFlow,
+    SolveEventActionKind, SolveEventPartition, SolvePureCallTable, SolveScalarType, SolveValueKind,
+    SolveValueType, UnaryOp,
+};
+
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::{
+    FoldTensorUpdateStore, MatrixProductShape, SolvePureCallDirectionalSite, SolvePureCallSite,
+    resolve_indexed_slot,
 };
 
 pub mod ad;
 pub mod artifacts;
 mod block_residual_split;
 mod compute_block_scalarize;
+#[cfg(feature = "reference-eval")]
 mod conditional_region;
 mod errors;
 mod event_messages;
 mod event_observations;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod execution_read_tests;
 pub mod fmi_tangents;
+#[cfg(feature = "reference-eval")]
 #[cfg(test)]
 use event_messages::MAX_EVENT_MESSAGE_BYTES;
 pub use event_messages::{
@@ -53,10 +61,21 @@ pub mod fmi_wire;
 #[cfg(feature = "wire-replay")]
 pub mod model_wire;
 pub use errors::EvalSolveError;
+
+/// The refusal a gated evaluator entry returns in the compiled-only product,
+/// which excludes that entry's body.
+#[cfg(not(feature = "reference-eval"))]
+pub(crate) fn interpreter_excluded(operation: &'static str) -> EvalSolveError {
+    EvalSolveError::CompiledExecution {
+        message: format!("{operation}: this evaluator is excluded from the compiled-only product"),
+        span: None,
+    }
+}
 pub use event_observations::{CheckedEventObservationContext, EventObservationAuthority};
 pub mod dense_basis;
 pub mod linear_solve;
 pub mod nan_trace;
+#[cfg(feature = "reference-eval")]
 mod native_tensors;
 mod ops;
 mod prepared;
@@ -68,7 +87,7 @@ mod random_runtime;
 pub mod refresh_plan;
 pub mod reverse;
 mod scalar_ops;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod scalar_program_contract_tests;
 pub use scalar_ops::lower_scalar_ops;
 mod sparsity;
@@ -77,7 +96,9 @@ mod tangent_lanes;
 mod tensor_index;
 pub mod tensor_policy;
 mod tensor_snapshot;
+#[cfg(feature = "reference-eval")]
 mod versioned_lazy;
+#[cfg(feature = "reference-eval")]
 use tensor_index::tensor_register_offset;
 mod typed_program;
 mod update_rows;
@@ -88,6 +109,7 @@ pub use compute_block_scalarize::{
     checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
     tensor_output_indices, to_scalar_program_block, to_scalar_program_projection,
 };
+#[cfg(feature = "reference-eval")]
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
@@ -100,9 +122,11 @@ pub use prepared::{
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;
 pub use pure_call_execution::{PureCallExecution, PureCallInvocation};
+use random_runtime::ImpureRandomState;
+#[cfg(feature = "reference-eval")]
 use random_runtime::{
-    ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
-    initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
+    impure_random_mutex, impure_random_sample, impure_random_stream_id, initial_state_values,
+    projected_random_value, random_result_and_state, read_reg_range,
 };
 pub use sparsity::{
     derive_column_coloring, derive_jacobian_pattern_from_jvp,
@@ -232,6 +256,7 @@ fn solve_row_eval_trace_active() -> bool {
 }
 
 #[inline(always)]
+#[cfg(feature = "reference-eval")]
 pub(crate) fn record_solve_block_eval(kind: &'static str, len: usize, rows: usize) {
     if !solve_row_eval_trace_active() {
         return;
@@ -249,6 +274,7 @@ fn block_eval_stats() -> &'static Mutex<BlockEvalStatsMap> {
     STATS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+#[cfg(feature = "reference-eval")]
 fn elapsed_nanos_u64(start: Instant) -> u64 {
     start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
 }
@@ -363,6 +389,7 @@ pub struct JacobianEvalInputs<'a> {
     pub seed: &'a [f64],
 }
 
+#[cfg(feature = "reference-eval")]
 impl<'a> RowEvalContext<'a> {
     fn with_runtime_state(self, runtime_state: &'a SimulationRuntimeState) -> Self {
         Self {
@@ -372,6 +399,20 @@ impl<'a> RowEvalContext<'a> {
     }
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn eval_scalar_program_block(
+    block: &ScalarProgramBlock,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    seed: Option<&[f64]>,
+    out: &mut [f64],
+) -> Result<(), EvalSolveError> {
+    Err(crate::interpreter_excluded("eval_scalar_program_block"))
+}
+#[cfg(feature = "reference-eval")]
 pub fn eval_scalar_program_block(
     block: &ScalarProgramBlock,
     y: &[f64],
@@ -393,6 +434,22 @@ pub fn eval_scalar_program_block(
     )
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn eval_scalar_program_block_with_context(
+    block: &ScalarProgramBlock,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    context: RowEvalContext<'_>,
+    out: &mut [f64],
+) -> Result<(), EvalSolveError> {
+    Err(crate::interpreter_excluded(
+        "eval_scalar_program_block_with_context",
+    ))
+}
+#[cfg(feature = "reference-eval")]
 pub fn eval_scalar_program_block_with_context(
     block: &ScalarProgramBlock,
     y: &[f64],
@@ -438,6 +495,7 @@ pub fn eval_scalar_program_block_with_context(
 /// invariant on [`rumoca_ir_solve::ScalarProgramBlock::output_count`]). One
 /// cursor is shared across all programs of a block so a matmul/linsolve program
 /// that emits several outputs lands in consecutive slots.
+#[cfg(feature = "reference-eval")]
 pub(crate) struct OutputCursor<'out> {
     out: &'out mut [f64],
     output_indices: Option<&'out [usize]>,
@@ -445,6 +503,7 @@ pub(crate) struct OutputCursor<'out> {
     discard_outputs: bool,
 }
 
+#[cfg(feature = "reference-eval")]
 impl<'out> OutputCursor<'out> {
     pub(crate) fn new(out: &'out mut [f64]) -> Self {
         Self {
@@ -509,6 +568,7 @@ impl<'out> OutputCursor<'out> {
 }
 
 #[derive(Default)]
+#[cfg(feature = "reference-eval")]
 pub(crate) struct RowEvalScratch {
     pub(crate) regs: Vec<f64>,
     pub(crate) initialized: Vec<bool>,
@@ -518,8 +578,11 @@ pub(crate) struct RowEvalScratch {
     lazy_tasks: Vec<LazyEvalTask>,
     lazy_trace: Vec<LazyTraceStep>,
     lazy_outputs: Vec<f64>,
+    #[cfg(feature = "reference-eval")]
     version_values: Vec<f64>,
+    #[cfg(feature = "reference-eval")]
     version_computed: Vec<bool>,
+    #[cfg(feature = "reference-eval")]
     version_tasks: Vec<versioned_lazy::VersionTask>,
     /// Evaluation frames of nested function-conditional regions, reused across
     /// region runs so a region run allocates nothing once its frame is warm.
@@ -528,6 +591,7 @@ pub(crate) struct RowEvalScratch {
     region_values: Vec<f64>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl RowEvalScratch {
     /// The first scratch a nesting depth uses, before the pool holds one for it.
     fn fresh() -> Self {
@@ -536,23 +600,29 @@ impl RowEvalScratch {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 enum LazyEvalTask {
     Eval(Reg),
+    #[cfg(feature = "reference-eval")]
     Apply(usize),
+    #[cfg(feature = "reference-eval")]
     Select {
         dst: Reg,
         cond: Reg,
         if_true: Reg,
         if_false: Reg,
     },
+    #[cfg(feature = "reference-eval")]
     FinishSelect {
         dst: Reg,
         src: Reg,
     },
+    #[cfg(feature = "reference-eval")]
     Store(Reg),
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 enum LazyTraceStep {
     Apply(usize),
     /// Validate branch activation before replaying its demanded dependencies.
@@ -570,11 +640,14 @@ enum LazyTraceStep {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "reference-eval")]
 pub(crate) struct PreparedLazyRowPlan {
     definitions: Box<[usize]>,
+    #[cfg(feature = "reference-eval")]
     outputs: Box<[Reg]>,
     trace: RefCell<Option<Box<[LazyTraceStep]>>>,
     trace_native_specialization: bool,
+    #[cfg(feature = "reference-eval")]
     versions: Option<rumoca_ir_solve::RegisterVersionProgram>,
 }
 
@@ -589,6 +662,7 @@ pub struct SpecializedRowProgram {
     pub guard_expectations: Box<[bool]>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl PreparedLazyRowPlan {
     pub(crate) fn new(row: &[LinearOp], register_count: usize) -> Option<Self> {
         Self::with_conditional_captures(row, register_count, None)
@@ -626,6 +700,7 @@ impl PreparedLazyRowPlan {
         }
         Some(Self {
             definitions: definitions.into_boxed_slice(),
+            #[cfg(feature = "reference-eval")]
             outputs: outputs.into_boxed_slice(),
             trace: RefCell::new(None),
             trace_native_specialization: versions.is_none() && !row.iter().any(|operation| {
@@ -640,6 +715,7 @@ impl PreparedLazyRowPlan {
                         | LinearOp::LoadFunctionConditionalCaptureRange { .. }
                 )
             }),
+            #[cfg(feature = "reference-eval")]
             versions,
         })
     }
@@ -698,6 +774,7 @@ impl PreparedLazyRowPlan {
             push_lazy_dependencies(&mut dependency_tasks, row[op_index].clone());
             tasks.extend(dependency_tasks.into_iter().filter_map(|task| match task {
                 LazyEvalTask::Eval(source) => Some(source),
+                #[cfg(feature = "reference-eval")]
                 _ => None,
             }));
         }
@@ -717,8 +794,10 @@ impl PreparedLazyRowPlan {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 type SpecializedSelections = BTreeMap<Reg, (Reg, bool, Reg)>;
 
+#[cfg(feature = "reference-eval")]
 fn specialization_trace(trace: &[LazyTraceStep]) -> (SpecializedSelections, Vec<Reg>) {
     let mut selected = BTreeMap::new();
     let mut outputs = Vec::new();
@@ -739,6 +818,7 @@ fn specialization_trace(trace: &[LazyTraceStep]) -> (SpecializedSelections, Vec<
     (selected, outputs)
 }
 
+#[cfg(feature = "reference-eval")]
 fn first_missing_specialization_dependency(
     row: &[LinearOp],
     selected: &SpecializedSelections,
@@ -771,6 +851,7 @@ fn first_missing_specialization_dependency(
     None
 }
 
+#[cfg(feature = "reference-eval")]
 fn effective_specialization_op(
     op: LinearOp,
     selected: &SpecializedSelections,
@@ -787,6 +868,7 @@ fn effective_specialization_op(
     })
 }
 
+#[cfg(feature = "reference-eval")]
 fn build_specialized_program(
     row: &[LinearOp],
     selected: &SpecializedSelections,
@@ -810,6 +892,14 @@ fn build_specialized_program(
         }
     }
     Some(program)
+}
+
+#[cfg(not(feature = "reference-eval"))]
+fn lazy_row_plan_eligible(row: &[LinearOp]) -> bool {
+    row.iter().any(|op| matches!(op, LinearOp::Select { .. }))
+        && row.iter().all(lazy_row_op_supported)
+        && rumoca_ir_solve::RegisterVersionProgram::for_mutable_program_with_captures(row, None)
+            .is_some()
 }
 
 fn lazy_row_op_supported(op: &LinearOp) -> bool {
@@ -846,6 +936,7 @@ fn lazy_row_op_supported(op: &LinearOp) -> bool {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 pub(crate) struct PreparedRowEval<'row, 'ctx> {
     row: &'row [LinearOp],
     register_count: usize,
@@ -861,6 +952,7 @@ pub(crate) struct PreparedRowEval<'row, 'ctx> {
     conditional_captures: Option<&'row [f64]>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl<'row, 'ctx> PreparedRowEval<'row, 'ctx> {
     pub(crate) fn new(
         row: &'row [LinearOp],
@@ -942,6 +1034,19 @@ pub enum EventActionRequest {
     Terminate { message: String },
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn eval_event_action_request(
+    events: &SolveEventPartition,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    context: RowEvalContext<'_>,
+) -> Result<EventActionRequest, EvalSolveError> {
+    Err(crate::interpreter_excluded("eval_event_action_request"))
+}
+#[cfg(feature = "reference-eval")]
 pub fn eval_event_action_request(
     events: &SolveEventPartition,
     y: &[f64],
@@ -1018,6 +1123,7 @@ pub fn event_action_request_from_values(
 }
 
 /// Largest interleaved lane count of one tensor operation.
+#[cfg(feature = "reference-eval")]
 const MAX_OP_LANES: usize = rumoca_ir_solve::MAX_TENSOR_LANES;
 
 /// Seed index of tangent lane `lane` (1-based) of element `element` of a tensor
@@ -1026,6 +1132,19 @@ fn tensor_seed_index(seed_start: usize, element: usize, lanes: usize, lane: usiz
     (seed_start + element) * (lanes - 1) + (lane - 1)
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn eval_row(
+    row: &[LinearOp],
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    seed: Option<&[f64]>,
+) -> Result<f64, EvalSolveError> {
+    Err(crate::interpreter_excluded("eval_row"))
+}
+#[cfg(feature = "reference-eval")]
 pub fn eval_row(
     row: &[LinearOp],
     y: &[f64],
@@ -1045,6 +1164,19 @@ pub fn eval_row(
     )
 }
 
+/// Refused in the compiled-only product, which excludes this evaluator body.
+#[cfg(not(feature = "reference-eval"))]
+#[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+pub fn eval_row_with_context(
+    row: &[LinearOp],
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    context: RowEvalContext<'_>,
+) -> Result<f64, EvalSolveError> {
+    Err(crate::interpreter_excluded("eval_row_with_context"))
+}
+#[cfg(feature = "reference-eval")]
 pub fn eval_row_with_context(
     row: &[LinearOp],
     y: &[f64],
@@ -1074,6 +1206,7 @@ pub fn eval_row_with_context(
 /// Convenience for callers that operate on programs with exactly one
 /// `StoreOutput` (residual rows, root conditions, event-message numbers,
 /// target-assignment rows).
+#[cfg(feature = "reference-eval")]
 pub(crate) fn eval_program_single(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
@@ -1089,6 +1222,7 @@ pub(crate) fn eval_program_single(
 /// Construction through `PreparedScalarProgramBlock` owns that proof. Keeping
 /// the unchecked primitive crate-private prevents an unprepared row from
 /// bypassing the ordinary shape check.
+#[cfg(feature = "reference-eval")]
 pub(crate) fn eval_prevalidated_single_output_program(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
@@ -1102,6 +1236,7 @@ pub(crate) fn eval_prevalidated_single_output_program(
     Ok(buf[0])
 }
 
+#[cfg(feature = "reference-eval")]
 pub(crate) fn eval_program_no_output(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
@@ -1113,6 +1248,7 @@ pub(crate) fn eval_program_no_output(
 
 /// Evaluate a program prefix whose prepared assignment shape proves that it
 /// stores no outputs.
+#[cfg(feature = "reference-eval")]
 pub(crate) fn eval_prevalidated_no_output_program(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
@@ -1124,6 +1260,7 @@ pub(crate) fn eval_prevalidated_no_output_program(
 
 /// Evaluate an assignment prefix while discarding earlier outputs from the
 /// same retained multi-output source program.
+#[cfg(feature = "reference-eval")]
 pub(crate) fn eval_prevalidated_discard_output_program(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
@@ -1133,6 +1270,7 @@ pub(crate) fn eval_prevalidated_discard_output_program(
     eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)
 }
 
+#[cfg(feature = "reference-eval")]
 fn require_program_output_count(
     row: &[LinearOp],
     expected: usize,
@@ -1149,6 +1287,7 @@ fn require_program_output_count(
 }
 
 #[inline(always)]
+#[cfg(feature = "reference-eval")]
 pub(crate) fn eval_row_prepared_maybe_fast(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
@@ -1170,6 +1309,7 @@ pub(crate) fn eval_row_prepared_maybe_fast(
     result
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_row_prepared_lazy(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
@@ -1215,6 +1355,7 @@ fn eval_row_prepared_lazy(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn execute_lazy_task(
     input: PreparedRowEval<'_, '_>,
     plan: &PreparedLazyRowPlan,
@@ -1304,6 +1445,7 @@ fn execute_lazy_task(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_cached_lazy_trace(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1341,6 +1483,7 @@ fn eval_cached_lazy_trace(
     Ok(true)
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
     match op {
         LinearOp::Const { .. }
@@ -1414,6 +1557,7 @@ fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_tensor_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
     match op {
         LinearOp::MatrixMultiply {
@@ -1495,6 +1639,7 @@ fn push_lazy_tensor_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_tensor_update_dependencies(
     tasks: &mut Vec<LazyEvalTask>,
     base_start: Reg,
@@ -1531,6 +1676,7 @@ fn push_lazy_tensor_update_dependencies(
     push_lazy_register_range(tasks, base_start, base_count, 1);
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_region_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
     match op {
         LinearOp::FunctionFold {
@@ -1562,10 +1708,12 @@ fn push_lazy_region_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_register(tasks: &mut Vec<LazyEvalTask>, register: Reg) {
     tasks.push(LazyEvalTask::Eval(register));
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_register_range(
     tasks: &mut Vec<LazyEvalTask>,
     start: Reg,
@@ -1579,6 +1727,7 @@ fn push_lazy_register_range(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn push_lazy_tensor_elements(
     tasks: &mut Vec<LazyEvalTask>,
     start: Reg,
@@ -1595,6 +1744,7 @@ fn push_lazy_tensor_elements(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_lazy_pure_op(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1635,6 +1785,7 @@ fn eval_lazy_pure_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_conditional_capture_op(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1664,6 +1815,7 @@ fn eval_conditional_capture_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_lazy_scalar_op(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1737,6 +1889,7 @@ fn eval_lazy_scalar_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_lazy_tensor_algebra_op(
     regs: &mut [f64],
     tensor_results: &mut Vec<f64>,
@@ -1745,6 +1898,7 @@ fn eval_lazy_tensor_algebra_op(
     native_tensors::eval(regs, tensor_results, &op)
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_lazy_tensor_constructor_op(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1786,6 +1940,7 @@ fn eval_lazy_tensor_constructor_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 struct LazyTensorLoadRange {
     dst_start: Reg,
     source: rumoca_ir_solve::TensorInputKind,
@@ -1795,6 +1950,7 @@ struct LazyTensorLoadRange {
     lanes: usize,
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_lazy_tensor_load(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1825,6 +1981,7 @@ fn eval_lazy_tensor_load(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_lazy_region_op(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
@@ -1885,6 +2042,7 @@ fn eval_lazy_region_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_row_prepared_with_context(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
@@ -1903,6 +2061,7 @@ fn eval_row_prepared_with_context(
     .eval()
 }
 
+#[cfg(feature = "reference-eval")]
 struct CheckedRowEvaluator<'scratch, 'row, 'ctx, 'out> {
     regs: &'scratch mut [f64],
     initialized: &'scratch mut [bool],
@@ -1910,6 +2069,7 @@ struct CheckedRowEvaluator<'scratch, 'row, 'ctx, 'out> {
     sink: &'scratch mut OutputCursor<'out>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl CheckedRowEvaluator<'_, '_, '_, '_> {
     fn eval(mut self) -> Result<(), EvalSolveError> {
         for (operation, op) in self.input.row.iter().enumerate() {
@@ -2585,6 +2745,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
 
 // SPEC_0021: Exception - exhaustive fast execution dispatch over every LinearOp variant.
 #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+#[cfg(feature = "reference-eval")]
 fn eval_row_prepared_fast(
     input: PreparedRowEval<'_, '_>,
     scratch: &mut RowEvalScratch,
@@ -3000,6 +3161,7 @@ fn eval_row_prepared_fast(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_fold_tensor_update(
     regs: &[f64],
     input: PreparedRowEval<'_, '_>,
@@ -3047,6 +3209,7 @@ fn eval_fold_tensor_update(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn fold_tensor_node_value(
     regs: &[f64],
     updates: &[rumoca_ir_solve::FoldTensorUpdate],
@@ -3127,6 +3290,7 @@ fn eval_tensor_binary_primal(op: BinaryOp, lhs_re: f64, rhs_re: f64, lanes: usiz
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_tensor_cross(
     regs: &mut [f64],
     dst_start: Reg,
@@ -3148,9 +3312,11 @@ fn eval_tensor_cross(
 }
 
 /// Register values of the widest cross product, kept on the stack.
+#[cfg(feature = "reference-eval")]
 const CROSS_VALUES: usize = 3 * MAX_OP_LANES;
 
 /// The cross product of two `lanes`-wide 3-vectors into `output`.
+#[cfg(feature = "reference-eval")]
 fn tensor_cross_values(lhs: &[f64], rhs: &[f64], lanes: usize, output: &mut [f64]) {
     for (component, (first, second)) in [(1, 2), (2, 0), (0, 1)].into_iter().enumerate() {
         let dst = component * lanes;
@@ -3165,6 +3331,7 @@ fn tensor_cross_values(lhs: &[f64], rhs: &[f64], lanes: usize, output: &mut [f64
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_tensor_binary_tangent(
     op: BinaryOp,
     lhs_re: f64,
@@ -3183,6 +3350,7 @@ fn eval_tensor_binary_tangent(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_function_fold(
     input: PreparedRowEval<'_, '_>,
     program: &rumoca_ir_solve::FunctionFoldProgram,
@@ -3238,6 +3406,7 @@ fn eval_function_fold(
 /// Evaluate the ordered arms of one function conditional into `out`, which
 /// has the program's result width. `frames` are reusable evaluation frames for
 /// the arm regions, so a warm evaluation allocates nothing.
+#[cfg(feature = "reference-eval")]
 fn eval_function_conditional(
     input: PreparedRowEval<'_, '_>,
     program: &rumoca_ir_solve::FunctionConditionalProgram,
@@ -3285,6 +3454,7 @@ fn eval_function_conditional(
 }
 
 /// [`eval_function_conditional`] for callers that own no reusable frames.
+#[cfg(feature = "reference-eval")]
 fn eval_function_conditional_owned(
     input: PreparedRowEval<'_, '_>,
     program: &rumoca_ir_solve::FunctionConditionalProgram,
@@ -3297,6 +3467,7 @@ fn eval_function_conditional_owned(
 
 /// Run one region over a frame taken from `frames`. The frame receives the
 /// remaining pool for the regions it nests and hands it back with itself.
+#[cfg(feature = "reference-eval")]
 fn eval_function_conditional_region(
     input: PreparedRowEval<'_, '_>,
     region: &[LinearOp],
@@ -3340,6 +3511,7 @@ fn eval_function_conditional_region(
     result
 }
 
+#[cfg(feature = "reference-eval")]
 fn tensor_update_register_value_offset<E>(
     dimensions: &[u32],
     subscripts: &[rumoca_ir_solve::TensorUpdateSubscript],
@@ -3381,6 +3553,7 @@ fn tensor_update_register_value_offset<E>(
     Ok(Some(value_offset))
 }
 
+#[cfg(feature = "reference-eval")]
 fn tensor_index_coordinate<E>(
     index: rumoca_ir_solve::TensorIndex,
     extent: u32,
@@ -3397,6 +3570,7 @@ fn tensor_index_coordinate<E>(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 fn tensor_slice_coordinate_offset<E>(
     start: Reg,
     count: usize,
@@ -3412,6 +3586,7 @@ fn tensor_slice_coordinate_offset<E>(
     Ok(None)
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_fast_table_op(
     regs: &mut [f64],
     initialized: &mut Vec<bool>,
@@ -3422,6 +3597,7 @@ fn eval_fast_table_op(
     apply_table_op(regs, initialized, op, input.context, input.source_span)
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_fast_random_op(
     regs: &mut [f64],
     initialized: &mut Vec<bool>,
@@ -3439,6 +3615,7 @@ fn eval_fast_random_op(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 fn apply_table_op(
     regs: &mut [f64],
     initialized: &mut [bool],
@@ -3506,6 +3683,7 @@ fn apply_table_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn external_table_error(
     operation: &'static str,
     table_id: f64,
@@ -3520,6 +3698,7 @@ fn external_table_error(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn apply_random_op(
     regs: &mut [f64],
     initialized: &mut [bool],
@@ -3627,6 +3806,7 @@ fn apply_random_op(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn linear_op_name(op: &LinearOp) -> &'static str {
     match op {
         LinearOp::Const { .. } => "Const",
@@ -3685,6 +3865,7 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_observation_payload(
     input: PreparedRowEval<'_, '_>,
     operation: usize,
@@ -3700,6 +3881,7 @@ fn eval_observation_payload(
     context.evaluate(table, input.row, operation, read)
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_pure_call_payload(
     context: RowEvalContext<'_>,
     site: &SolvePureCallSite,
@@ -3739,6 +3921,7 @@ fn eval_pure_call_payload(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_pure_call_directional_payload(
     context: RowEvalContext<'_>,
     site: &SolvePureCallDirectionalSite,
@@ -3786,12 +3969,14 @@ fn eval_pure_call_directional_payload(
 /// of each argument, and `output_count` the scalar width the site expects
 /// back, which the payload checks the callee against.
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 struct PureCallSignature<'a> {
     owner: rumoca_ir_solve::SolvePureCallOwnerId,
     inputs: &'a [SolveValueType],
     output_count: Option<usize>,
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_typed_call_payload(
     table: &SolvePureCallTable,
     signature: PureCallSignature<'_>,
@@ -4135,6 +4320,7 @@ fn invalid_row(message: impl Into<String>) -> EvalSolveError {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_solve_f64_values(
     len: usize,
     value: f64,
@@ -4145,6 +4331,7 @@ fn eval_solve_f64_values(
     Ok(values)
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_solve_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
@@ -4156,6 +4343,7 @@ fn eval_solve_vec_with_capacity<T>(
     Ok(values)
 }
 
+#[cfg(feature = "reference-eval")]
 fn set(
     regs: &mut [f64],
     initialized: &mut [bool],
@@ -4205,5 +4393,5 @@ fn get(
     Ok(value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;

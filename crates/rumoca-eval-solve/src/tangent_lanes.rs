@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use rumoca_ir_solve::{ColoredTangentPlan, TangentLaneProgram, TornTangentPlan};
 
+use crate::{EvalSolveError, RowEvalContext};
+#[cfg(feature = "reference-eval")]
 use crate::{
-    EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    RowInputRequirements, SimulationRuntimeState, eval_row_prepared_maybe_fast,
-    row_input_requirements, validate_input_requirements, validate_output_len,
+    OutputCursor, PreparedRowEval, RowEvalScratch, RowInputRequirements, SimulationRuntimeState,
+    eval_row_prepared_maybe_fast, validate_input_requirements, validate_output_len,
 };
 
 /// A [`TangentLaneProgram`] prepared for repeated evaluation.
@@ -20,16 +21,23 @@ pub struct PreparedTangentLaneProgram {
     program: TangentLaneProgram,
     /// The inputs the program reads, derived once; an error is reported at
     /// every evaluation.
+    #[cfg(feature = "reference-eval")]
     requirements: Result<RowInputRequirements, EvalSolveError>,
+    #[cfg(feature = "reference-eval")]
     scratch: RefCell<RowEvalScratch>,
 }
 
 impl PreparedTangentLaneProgram {
     #[must_use]
     pub fn new(program: TangentLaneProgram) -> Self {
+        let requirements = crate::row_input_requirements(program.ops());
+        #[cfg(not(feature = "reference-eval"))]
+        let _ = requirements;
         Self {
-            requirements: row_input_requirements(program.ops()),
+            #[cfg(feature = "reference-eval")]
+            requirements,
             program,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         }
     }
@@ -39,7 +47,23 @@ impl PreparedTangentLaneProgram {
         &self.program
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "PreparedTangentLaneProgram::eval",
+        ))
+    }
     /// Evaluate every lane of every output into `out`.
+    #[cfg(feature = "reference-eval")]
     pub fn eval(
         &self,
         y: &[f64],
@@ -519,9 +543,22 @@ impl ColoredTangentEvaluator {
         &self.plan
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        context: RowEvalContext<'_>,
+        seed_len: usize,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("colored tangent eval"))
+    }
     /// Evaluate every placement into the column-major buffer `out` (length
     /// [`ColoredTangentPlan::output_len`]), leaving other entries untouched.
     /// `seed_len` is the length of one direction of the application's seed.
+    #[cfg(feature = "reference-eval")]
     pub fn eval(
         &self,
         (y, p, t): (&[f64], &[f64], f64),
@@ -564,5 +601,5 @@ impl ColoredTangentEvaluator {
 }
 
 mod sweep;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;

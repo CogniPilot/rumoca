@@ -3,7 +3,9 @@ use rumoca_ir_solve::{
     SolveValueType,
 };
 
-use crate::{EvalSolveError, Reg, invalid_row, typed_kind_from_scalar, typed_kind_to_scalar};
+use crate::EvalSolveError;
+#[cfg(feature = "reference-eval")]
+use crate::{Reg, invalid_row, typed_kind_from_scalar, typed_kind_to_scalar};
 
 /// One checked call site at the final scalar runtime ABI boundary.
 #[derive(Clone, Copy)]
@@ -61,6 +63,7 @@ pub trait PureCallExecution {
     ) -> Result<(), EvalSolveError>;
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_compiled_call(
     execution: &dyn PureCallExecution,
     invocation: PureCallInvocation<'_>,
@@ -85,6 +88,7 @@ pub(super) fn eval_compiled_call(
     Ok(output)
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn read_input_element(
     start: Reg,
     offset: usize,

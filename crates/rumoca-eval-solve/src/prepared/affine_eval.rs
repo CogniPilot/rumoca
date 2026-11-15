@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_prepared_affine_node(
     node: &PreparedComputeNode,
     y: &[f64],
@@ -47,6 +48,7 @@ pub(super) fn eval_prepared_affine_node(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 struct PreparedAffineEval<'a> {
     program: &'a PreparedLinearOps,
     scalar_count: usize,
@@ -59,6 +61,7 @@ struct PreparedAffineEval<'a> {
     span: rumoca_core::Span,
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_prepared_affine(
     affine: PreparedAffineEval<'_>,
     y: &[f64],
@@ -91,6 +94,7 @@ fn eval_prepared_affine(
     result
 }
 
+#[cfg(feature = "reference-eval")]
 fn apply_prepared_affine_adjustments(
     affine: &PreparedAffineEval<'_>,
     ordinal: usize,
@@ -147,6 +151,7 @@ fn apply_prepared_affine_adjustments(
     apply_prepared_affine_const_adjustments(affine, ordinal, ops)
 }
 
+#[cfg(feature = "reference-eval")]
 fn apply_prepared_affine_const_adjustments(
     affine: &PreparedAffineEval<'_>,
     ordinal: usize,
@@ -187,6 +192,7 @@ fn apply_prepared_affine_const_adjustments(
     Ok(())
 }
 
+#[cfg(feature = "reference-eval")]
 fn prepared_affine_output_index(
     affine: &PreparedAffineEval<'_>,
     ordinal: usize,
@@ -200,6 +206,7 @@ fn prepared_affine_output_index(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 fn prepared_affine_index(
     base_index: usize,
     strides: &[i128],
@@ -232,6 +239,7 @@ fn prepared_affine_index(
         .map_err(|_| prepared_affine_arithmetic_error("index exceeds host range", affine.span))
 }
 
+#[cfg(feature = "reference-eval")]
 fn prepared_affine_position(
     affine: &PreparedAffineEval<'_>,
     ordinal: usize,

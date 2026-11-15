@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod evaluation_facts_tests;
 
 use super::*;
@@ -18,6 +18,7 @@ impl Clone for PreparedScalarProgramBlock {
             row_execution: self.row_execution.clone(),
             row_requires_checked_observation: self.row_requires_checked_observation.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
+            #[cfg(feature = "reference-eval")]
             row_tensor_affine_assignments: self.row_tensor_affine_assignments.clone(),
             row_parameter_indices: self.row_parameter_indices.clone(),
             row_parameter_static_y_gradient_params: self
@@ -25,7 +26,9 @@ impl Clone for PreparedScalarProgramBlock {
                 .clone(),
             facts: self.facts,
             requirements: self.requirements,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
+            #[cfg(feature = "reference-eval")]
             row_output_scratch: RefCell::new(Vec::new()),
             target_value_families: RefCell::default(),
         }
@@ -35,11 +38,15 @@ impl Clone for PreparedScalarProgramBlock {
 /// Every per-program fact the prepared block records for one program.
 struct PreparedRow {
     register_count: usize,
+    #[cfg(feature = "reference-eval")]
     lazy_plan: Option<PreparedLazyRowPlan>,
+    #[cfg(not(feature = "reference-eval"))]
+    lazy_plan: bool,
     requirement: RowInputRequirements,
     reverse_y_gradient_supported: bool,
     is_causal: bool,
     requires_checked_observation: bool,
+    #[cfg(feature = "reference-eval")]
     tensor_affine_assignments: tensor_affine_assignment::PreparedTensorAffineAssignments,
     parameter_indices: Box<[usize]>,
     parameter_static_y_gradient_params: Option<Box<[usize]>>,
@@ -63,18 +70,23 @@ fn prepare_row(block: &ScalarProgramBlock, row_idx: usize) -> Result<PreparedRow
         invalid_row("checked block has no register certificate for its program")
             .with_source_span(span)
     })?;
+    #[cfg(feature = "reference-eval")]
     let tensor_affine_assignments =
         tensor_affine_assignment::PreparedTensorAffineAssignments::default();
     let parameter_indices = row_parameter_indices(row).into_boxed_slice();
     Ok(PreparedRow {
         register_count,
+        #[cfg(feature = "reference-eval")]
         lazy_plan: PreparedLazyRowPlan::new(row, register_count),
+        #[cfg(not(feature = "reference-eval"))]
+        lazy_plan: crate::lazy_row_plan_eligible(row),
         requirement,
         reverse_y_gradient_supported: reverse_y_gradient_supported(row),
         is_causal: !row.iter().any(non_causal_linear_op),
         requires_checked_observation: row
             .iter()
             .any(|operation| matches!(operation, LinearOp::PureCallObservation { .. })),
+        #[cfg(feature = "reference-eval")]
         tensor_affine_assignments,
         parameter_static_y_gradient_params: parameter_static_y_gradient(row)
             .then(|| parameter_indices.clone()),
@@ -165,6 +177,7 @@ impl PreparedScalarProgramBlock {
                 "prepared row assignment shape count",
                 block_span,
             )?,
+            #[cfg(feature = "reference-eval")]
             row_tensor_affine_assignments: Vec::with_capacity(row_count),
             row_parameter_indices: prepared_vec_with_capacity(
                 row_count,
@@ -178,7 +191,9 @@ impl PreparedScalarProgramBlock {
             )?,
             facts,
             requirements: RowInputRequirements::default(),
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
+            #[cfg(feature = "reference-eval")]
             row_output_scratch: RefCell::new(Vec::new()),
             target_value_families: RefCell::default(),
             block,
@@ -233,6 +248,7 @@ impl PreparedScalarProgramBlock {
         self.row_requires_checked_observation
             .push(row.requires_checked_observation);
         self.row_assignment_shapes.push(OnceCell::new());
+        #[cfg(feature = "reference-eval")]
         self.row_tensor_affine_assignments
             .push(row.tensor_affine_assignments);
         self.row_parameter_indices.push(row.parameter_indices);
@@ -249,7 +265,10 @@ impl PreparedScalarProgramBlock {
         self.row_execution[row_idx] = OnceCell::new();
         self.row_requires_checked_observation[row_idx] = row.requires_checked_observation;
         self.row_assignment_shapes[row_idx] = OnceCell::new();
-        self.row_tensor_affine_assignments[row_idx] = row.tensor_affine_assignments;
+        #[cfg(feature = "reference-eval")]
+        {
+            self.row_tensor_affine_assignments[row_idx] = row.tensor_affine_assignments;
+        }
         self.row_parameter_indices[row_idx] = row.parameter_indices;
         self.row_parameter_static_y_gradient_params[row_idx] =
             row.parameter_static_y_gradient_params;
@@ -296,6 +315,7 @@ impl PreparedComputeBlock {
             requirements: node.requirements(),
             nodes: vec![PreparedComputeNode::ScalarPrograms(Box::new(node))],
             len,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         })
     }
@@ -339,7 +359,21 @@ impl PreparedEvaluationBlock {
         self.0.requirements()
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_with_context(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_with_context"))
+    }
     /// [`PreparedScalarProgramBlock::eval_with_context`].
+    #[cfg(feature = "reference-eval")]
     pub fn eval_with_context(
         &self,
         y: &[f64],
@@ -351,7 +385,20 @@ impl PreparedEvaluationBlock {
         self.0.eval_with_context(y, p, t, context, out)
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn reverse_vjp(
+        &self,
+        inputs: &crate::reverse::ReverseInputs<'_>,
+        output_cotangents: &[f64],
+        cot: &mut crate::reverse::ReverseCotangents<'_>,
+        scratch: &mut crate::reverse::ReverseScratch,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("reverse_vjp"))
+    }
     /// [`PreparedScalarProgramBlock::reverse_vjp`].
+    #[cfg(feature = "reference-eval")]
     pub fn reverse_vjp(
         &self,
         inputs: &crate::reverse::ReverseInputs<'_>,
@@ -362,7 +409,24 @@ impl PreparedEvaluationBlock {
         self.0.reverse_vjp(inputs, output_cotangents, cot, scratch)
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_row_outputs_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_row_outputs_unchecked_with_context",
+        ))
+    }
     /// [`PreparedScalarProgramBlock::eval_row_outputs_unchecked_with_context`].
+    #[cfg(feature = "reference-eval")]
     pub fn eval_row_outputs_unchecked_with_context(
         &self,
         row_idx: usize,

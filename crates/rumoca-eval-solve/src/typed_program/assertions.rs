@@ -1,6 +1,7 @@
 //! Private ordered observations; only complete invocations publish values.
 
 use super::*;
+#[cfg(feature = "reference-eval")]
 use rumoca_ir_solve::{SolveAssertionLevel, SolveAssertionMessage};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +15,7 @@ pub(super) struct AssertionObservation {
 // Exact owner and actual input cells retained only when observations exist.
 #[allow(dead_code)]
 #[derive(Debug)]
+#[cfg(feature = "reference-eval")]
 pub(super) struct AssertionInvocation<'model> {
     pub(super) owner: &'model SolvePureCallOwner,
     pub(super) arguments: std::sync::Arc<[TypedValue]>,
@@ -22,6 +24,7 @@ pub(super) struct AssertionInvocation<'model> {
 // Retained for the checked C25 projection; ordinary diagnostics confer no membership.
 #[allow(dead_code)]
 #[derive(Debug)]
+#[cfg(feature = "reference-eval")]
 pub(super) struct AssertionFrame<'model> {
     pub(super) owner: SolvePureCallOwnerId,
     pub(super) program: &'model TypedProgram,
@@ -31,12 +34,14 @@ pub(super) struct AssertionFrame<'model> {
 }
 
 #[derive(Debug)]
+#[cfg(feature = "reference-eval")]
 pub(super) struct ObservedAssertion<'model> {
     pub(super) observation: AssertionObservation,
     pub(super) invocation_path: Vec<AssertionFrame<'model>>,
 }
 
 #[derive(Debug)]
+#[cfg(feature = "reference-eval")]
 pub(super) struct AssertionStop<'model> {
     pub(super) observations: Vec<ObservedAssertion<'model>>,
 }
@@ -69,6 +74,7 @@ impl TypedAssertionFailure {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) enum InvocationCompletion<'model, T> {
     Complete {
         values: T,
@@ -84,6 +90,7 @@ pub(super) enum InvocationCompletion<'model, T> {
     },
 }
 
+#[cfg(feature = "reference-eval")]
 impl<T> InvocationCompletion<'_, T> {
     pub(super) fn into_complete(self) -> Result<T, TypedProgramEvalError> {
         match self {
@@ -102,6 +109,7 @@ impl<T> InvocationCompletion<'_, T> {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 impl<'model> EvalFrame<'model, '_> {
     pub(super) fn retain_invocation(
         &mut self,

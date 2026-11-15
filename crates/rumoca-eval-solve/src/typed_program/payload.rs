@@ -25,13 +25,14 @@ impl Payload {
     }
 
     /// Whether another value shares this payload's allocation.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "reference-eval"))]
     pub(super) fn is_shared(&self) -> bool {
         matches!(self, Self::Aggregate(elements) if Arc::strong_count(elements) > 1)
     }
 
     /// The elements to rewrite: in place when nothing else shares them, on a
     /// copy otherwise.
+    #[cfg(feature = "reference-eval")]
     pub(super) fn make_mut(&mut self) -> &mut [SolveValueKind] {
         match self {
             Self::Scalar(element) => std::slice::from_mut(element),
@@ -59,7 +60,7 @@ impl PartialEq for Payload {
 
 impl Eq for Payload {}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 impl Payload {
     /// How many values hold this payload's aggregate allocation.
     pub(super) fn holders(&self) -> usize {
@@ -93,6 +94,7 @@ mod tests {
         assert!(Payload::of(Vec::new()).is_empty());
     }
 
+    #[cfg(feature = "reference-eval")]
     #[test]
     fn rewriting_a_shared_aggregate_copies_it_and_an_unshared_one_does_not() {
         let (zero, one) = (SolveValueKind::Integer(0), SolveValueKind::Integer(1));

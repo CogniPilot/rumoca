@@ -1,11 +1,16 @@
 use rumoca_core::Span;
+#[cfg(feature = "reference-eval")]
+use rumoca_ir_solve::SolveValueType;
 use rumoca_ir_solve::{
     SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator, SolveIntegerDomain,
-    SolveRealFormat, SolveScalarType, SolveUnaryOperator, SolveValueKind, SolveValueType,
+    SolveRealFormat, SolveScalarType, SolveUnaryOperator, SolveValueKind,
 };
 
-use super::{TypedProgramEvalError, TypedValue, invalid};
+#[cfg(feature = "reference-eval")]
+use super::TypedValue;
+use super::{TypedProgramEvalError, invalid};
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_unary_typed(
     operator: SolveUnaryOperator,
     value: &TypedValue,
@@ -114,6 +119,7 @@ fn eval_real_unary_f64(operator: SolveUnaryOperator, value: f64) -> f64 {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_binary_typed(
     operator: SolveBinaryOperator,
     lhs: &TypedValue,
@@ -244,6 +250,7 @@ fn eval_real_binary_f64(operator: SolveBinaryOperator, lhs: f64, rhs: f64) -> f6
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_compare_typed(
     operator: SolveCompareOperator,
     lhs: &TypedValue,
@@ -307,6 +314,7 @@ fn compare_ordered<T: PartialOrd + PartialEq>(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 pub(super) fn eval_convert_typed(
     operator: SolveConversionOperator,
     value: &TypedValue,

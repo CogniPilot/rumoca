@@ -2,39 +2,43 @@
 
 // SPEC_0021 file-size exception - split plan: extract tensor-node orchestration into prepared/tensor_nodes.rs, leaving prepared row evaluation and its module facade here; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod additive_assignment_tests;
 mod affine_eval;
 mod assignment_shape;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod assignment_shape_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod capability_tests;
+#[cfg(all(test, not(feature = "reference-eval")))]
+mod compiled_only_tests;
 mod construction;
 mod dependency;
+#[cfg(feature = "reference-eval")]
 mod isolated_value;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod isolated_value_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod isolation_chain_tests;
 mod isolation_program;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod isolation_program_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod prepared_compute_block_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod replaced_programs_tests;
 mod support;
 mod target_value_plan;
+#[cfg(feature = "reference-eval")]
 mod tensor_affine_assignment;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tensor_affine_assignment_tests;
 mod torn_sweep;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod torn_sweep_failable_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod torn_sweep_run_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod zero_assignment_tests;
 
 use std::cell::{OnceCell, RefCell};
@@ -44,21 +48,26 @@ use crate::tensor_policy::{
     LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
 };
 use crate::{
-    EvalSolveError, OutputCursor, PreparedLazyRowPlan, PreparedRowEval, RowEvalContext,
-    RowEvalScratch, RowInputRequirements, SimulationRuntimeState, SpecializedRowProgram,
+    EvalSolveError, RowEvalContext, RowInputRequirements,
     compute_block_scalarize::{
         checked_contiguous_output_count, scalar_program_output_count,
         scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
     },
-    eval_prevalidated_discard_output_program, eval_prevalidated_single_output_program,
-    eval_program_no_output, eval_row_prepared_maybe_fast,
-    linear_solve::solve_all_unchecked,
-    record_solve_block_eval, required_registers, row_input_requirements,
-    validate_input_requirements, validate_input_requirements_with_span, validate_output_len,
+    required_registers, row_input_requirements,
+};
+#[cfg(feature = "reference-eval")]
+use crate::{
+    OutputCursor, PreparedLazyRowPlan, PreparedRowEval, RowEvalScratch, SimulationRuntimeState,
+    SpecializedRowProgram, eval_prevalidated_discard_output_program,
+    eval_prevalidated_single_output_program, eval_program_no_output, eval_row_prepared_maybe_fast,
+    linear_solve::solve_all_unchecked, record_solve_block_eval, validate_input_requirements,
+    validate_input_requirements_with_span, validate_output_len,
 };
 use affine_eval::*;
+#[cfg(feature = "reference-eval")]
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
+#[cfg(feature = "reference-eval")]
 use assignment_shape::eval_assignment_shape;
 use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
@@ -68,6 +77,7 @@ pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 pub use isolation_program::{TargetIsolationProgram, TornSweepRun};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::AlgebraicRefreshRow;
+#[cfg(feature = "reference-eval")]
 #[cfg(test)]
 use rumoca_ir_solve::BinaryOp;
 use rumoca_ir_solve::program_parameter_indices as row_parameter_indices;
@@ -86,7 +96,10 @@ pub struct PreparedScalarProgramBlock {
     output_count: usize,
     row_outputs: Box<PreparedRowOutputMetadata>,
     row_registers: Vec<usize>,
+    #[cfg(feature = "reference-eval")]
     row_lazy_plans: Vec<Option<PreparedLazyRowPlan>>,
+    #[cfg(not(feature = "reference-eval"))]
+    row_lazy_plans: Vec<bool>,
     row_requirements: Vec<RowInputRequirements>,
     row_reverse_y_gradient_supported: Vec<bool>,
     row_is_causal: Vec<bool>,
@@ -98,6 +111,7 @@ pub struct PreparedScalarProgramBlock {
     /// model prepares many programs whose shapes no reader ever asks for.
     row_assignment_shapes: Vec<OnceCell<AssignmentShapes>>,
     target_value_families: RefCell<target_value_plan::TargetValueFamilies>,
+    #[cfg(feature = "reference-eval")]
     row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
     row_parameter_indices: Vec<Box<[usize]>>,
     row_parameter_static_y_gradient_params: Vec<Option<Box<[usize]>>>,
@@ -105,7 +119,9 @@ pub struct PreparedScalarProgramBlock {
     /// prepared with the same ones.
     facts: construction::RowFacts,
     requirements: RowInputRequirements,
+    #[cfg(feature = "reference-eval")]
     scratch: RefCell<RowEvalScratch>,
+    #[cfg(feature = "reference-eval")]
     row_output_scratch: RefCell<Vec<f64>>,
 }
 
@@ -182,10 +198,23 @@ impl PreparedScalarProgramBlock {
             .map(LinearOp::kind_name)
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn reverse_vjp(
+        &self,
+        inputs: &crate::reverse::ReverseInputs<'_>,
+        output_cotangents: &[f64],
+        cot: &mut crate::reverse::ReverseCotangents<'_>,
+        scratch: &mut crate::reverse::ReverseScratch,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("reverse_vjp"))
+    }
     /// Reverse-mode VJP: accumulate `Jᵀ · output_cotangents` of this block into
     /// `cot` at the `LoadY` / `LoadP` / `LoadSeed` input sites (Track A scalar
     /// reverse core). `scratch` is caller-owned so a hot loop stays
     /// allocation-free. See [`crate::reverse`].
+    #[cfg(feature = "reference-eval")]
     pub fn reverse_vjp(
         &self,
         inputs: &crate::reverse::ReverseInputs<'_>,
@@ -202,14 +231,28 @@ impl PreparedScalarProgramBlock {
             inputs,
             output_cotangents,
             cot,
+            #[cfg(feature = "reference-eval")]
             scratch,
         )
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn reverse_row_y_gradient(
+        &self,
+        row_idx: usize,
+        inputs: &crate::reverse::ReverseInputs<'_>,
+        gradient: &mut [f64],
+        scratch: &mut crate::reverse::ReverseScratch,
+    ) -> Result<bool, EvalSolveError> {
+        Err(crate::interpreter_excluded("reverse_row_y_gradient"))
+    }
     /// Evaluate the complete solver-`y` gradient of one scalar residual row.
     /// Returns `false` when that row contains an operation without a reverse AD
     /// rule, allowing the projection solver to retain its exact forward-JVP
     /// fallback.
+    #[cfg(feature = "reference-eval")]
     pub fn reverse_row_y_gradient(
         &self,
         row_idx: usize,
@@ -235,10 +278,25 @@ impl PreparedScalarProgramBlock {
             row_idx,
             inputs,
             gradient,
+            #[cfg(feature = "reference-eval")]
             scratch,
         )
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_with_context(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_with_context"))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_with_context(
         &self,
         y: &[f64],
@@ -262,6 +320,20 @@ impl PreparedScalarProgramBlock {
         self.eval_rows_unchecked(y, p, t, context, out, &mut scratch)
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_row_with_context(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_row_with_context"))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_row_with_context(
         &self,
         row_idx: usize,
@@ -281,6 +353,22 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_row_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_row_unchecked_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_row_unchecked_with_context(
         &self,
         row_idx: usize,
@@ -300,6 +388,23 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_row_output_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_row_output_unchecked_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_row_output_unchecked_with_context(
         &self,
         row_idx: usize,
@@ -321,6 +426,7 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    #[cfg(feature = "reference-eval")]
     fn eval_row_inner(&self, request: RowEvalRequest<'_>) -> Result<f64, EvalSolveError> {
         let span = self.block.program_span(request.row_idx);
         let row =
@@ -361,6 +467,7 @@ impl PreparedScalarProgramBlock {
         .map_err(|error| error.with_source_span(span))
     }
 
+    #[cfg(feature = "reference-eval")]
     fn eval_row_output_inner(&self, request: RowOutputRequest<'_>) -> Result<f64, EvalSolveError> {
         let mut out = self.row_output_scratch.borrow_mut();
         let mut scratch = self.scratch.borrow_mut();
@@ -370,6 +477,7 @@ impl PreparedScalarProgramBlock {
     /// Core of [`Self::eval_row_output_inner`] with caller-owned scratch, so a
     /// batched sweep borrows each scratch cell once instead of once per row.
     /// Both entry points share this body; they cannot diverge.
+    #[cfg(feature = "reference-eval")]
     fn eval_row_output_with_scratch(
         &self,
         request: RowOutputRequest<'_>,
@@ -428,6 +536,7 @@ impl PreparedScalarProgramBlock {
             .with_lazy_plan(self.row_lazy_plans[request.row_idx].as_ref())
             .with_source_span(self.block.program_span(request.row_idx)),
             true,
+            #[cfg(feature = "reference-eval")]
             scratch,
             &mut sink,
         )
@@ -435,6 +544,23 @@ impl PreparedScalarProgramBlock {
         Ok(out[request.output_offset])
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_target_assignment_row_with_context(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<Option<f64>, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_target_assignment_row_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_target_assignment_row_with_context(
         &self,
         row_idx: usize,
@@ -689,6 +815,7 @@ impl PreparedScalarProgramBlock {
     /// evaluator for `row_idx`, if that row has already been evaluated.
     /// Execution adapters must validate the appended guards on every call and
     /// fall back to this prepared evaluator when any guard changes.
+    #[cfg(feature = "reference-eval")]
     pub fn specialized_row_program(&self, row_idx: usize) -> Option<SpecializedRowProgram> {
         let row = self.block.programs().get(row_idx)?;
         self.row_lazy_plans
@@ -700,12 +827,37 @@ impl PreparedScalarProgramBlock {
     /// Whether this row retains a dependency-driven execution plan capable of
     /// learning one active conditional specialization without evaluating the
     /// inactive tensor branches first.
+    #[cfg(feature = "reference-eval")]
     pub fn has_lazy_row_plan(&self, row_idx: usize) -> bool {
         self.row_lazy_plans
             .get(row_idx)
             .is_some_and(Option::is_some)
     }
 
+    /// Whether this checked row is eligible for the reference lazy-plan shape.
+    /// The compiled product retains the analysis fact without reference trace state.
+    #[cfg(not(feature = "reference-eval"))]
+    pub fn has_lazy_row_plan(&self, row_idx: usize) -> bool {
+        self.row_lazy_plans.get(row_idx).copied().unwrap_or(false)
+    }
+
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_target_assignment_row_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<Option<f64>, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_target_assignment_row_unchecked_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_target_assignment_row_unchecked_with_context(
         &self,
         row_idx: usize,
@@ -728,6 +880,18 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_target_assignment_output_unchecked_with_context(
+        &self,
+        request: TargetAssignmentOutputRequest<'_>,
+    ) -> Result<Option<f64>, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_target_assignment_output_unchecked_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_target_assignment_output_unchecked_with_context(
         &self,
         request: TargetAssignmentOutputRequest<'_>,
@@ -745,6 +909,23 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_row_outputs_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_row_outputs_unchecked_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_row_outputs_unchecked_with_context(
         &self,
         row_idx: usize,
@@ -786,6 +967,27 @@ impl PreparedScalarProgramBlock {
         .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn apply_target_assignment_rows_unchecked_with_context<'a, I>(
+        &self,
+        rows: I,
+        mut program_row: impl FnMut(&AlgebraicRefreshRow) -> Option<usize>,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<(), EvalSolveError>
+    where
+        I: IntoIterator<Item = &'a AlgebraicRefreshRow>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        Err(crate::interpreter_excluded(
+            "apply_target_assignment_rows_unchecked_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn apply_target_assignment_rows_unchecked_with_context<'a, I>(
         &self,
         rows: I,
@@ -834,6 +1036,7 @@ impl PreparedScalarProgramBlock {
                     p,
                     t,
                     context,
+                    #[cfg(feature = "reference-eval")]
                     scratch: &mut scratch,
                 })?;
             y[row.target_index()] = value;
@@ -841,6 +1044,7 @@ impl PreparedScalarProgramBlock {
         Ok(())
     }
 
+    #[cfg(feature = "reference-eval")]
     fn eval_target_assignment_row_inner(
         &self,
         request: TargetAssignmentRowRequest<'_>,
@@ -927,11 +1131,13 @@ impl PreparedScalarProgramBlock {
             p: request.p,
             t: request.t,
             context: request.context,
+            #[cfg(feature = "reference-eval")]
             scratch: &mut scratch,
         })
         .map(Some)
     }
 
+    #[cfg(feature = "reference-eval")]
     fn require_row_output_count(
         &self,
         row_idx: usize,
@@ -952,6 +1158,7 @@ impl PreparedScalarProgramBlock {
         })
     }
 
+    #[cfg(feature = "reference-eval")]
     fn eval_target_assignment_row_with_scratch(
         &self,
         request: TargetAssignmentScratchRequest<'_>,
@@ -1009,6 +1216,7 @@ impl PreparedScalarProgramBlock {
             })
     }
 
+    #[cfg(feature = "reference-eval")]
     fn eval_rows_unchecked(
         &self,
         y: &[f64],
@@ -1030,6 +1238,7 @@ impl PreparedScalarProgramBlock {
                     .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
                     .with_source_span(self.block.program_span(row_idx)),
                 true,
+                #[cfg(feature = "reference-eval")]
                 scratch,
                 &mut sink,
             )
@@ -1039,6 +1248,7 @@ impl PreparedScalarProgramBlock {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 struct RowEvalRequest<'a> {
     row_idx: usize,
     y: &'a [f64],
@@ -1049,6 +1259,7 @@ struct RowEvalRequest<'a> {
     label: &'static str,
 }
 
+#[cfg(feature = "reference-eval")]
 struct RowOutputRequest<'a> {
     row_idx: usize,
     output_offset: usize,
@@ -1060,6 +1271,7 @@ struct RowOutputRequest<'a> {
     label: &'static str,
 }
 
+#[cfg(feature = "reference-eval")]
 struct TargetAssignmentRowRequest<'a> {
     row_idx: usize,
     output_offset: Option<usize>,
@@ -1072,6 +1284,7 @@ struct TargetAssignmentRowRequest<'a> {
     label: &'static str,
 }
 
+#[cfg(feature = "reference-eval")]
 struct TargetAssignmentScratchRequest<'a> {
     row_idx: usize,
     shape: &'a TargetAssignmentShape,
@@ -1079,6 +1292,7 @@ struct TargetAssignmentScratchRequest<'a> {
     p: &'a [f64],
     t: f64,
     context: RowEvalContext<'a>,
+    #[cfg(feature = "reference-eval")]
     scratch: &'a mut RowEvalScratch,
 }
 
@@ -1176,6 +1390,7 @@ pub struct PreparedComputeBlock {
     nodes: Vec<PreparedComputeNode>,
     len: usize,
     requirements: RowInputRequirements,
+    #[cfg(feature = "reference-eval")]
     scratch: RefCell<RowEvalScratch>,
 }
 
@@ -1200,6 +1415,7 @@ impl Clone for PreparedComputeBlock {
             nodes: self.nodes.clone(),
             len: self.len,
             requirements: self.requirements,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         }
     }
@@ -1243,6 +1459,7 @@ impl PreparedComputeBlock {
             nodes,
             len: declared_len,
             requirements,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         })
     }
@@ -1255,6 +1472,20 @@ impl PreparedComputeBlock {
         self.len == 0
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_with_context(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_with_context"))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_with_context(
         &self,
         y: &[f64],
@@ -1283,6 +1514,7 @@ impl PreparedComputeBlock {
                 t,
                 context,
                 out,
+                #[cfg(feature = "reference-eval")]
                 scratch: &mut scratch,
                 block_label: self.label,
             })?;
@@ -1290,6 +1522,18 @@ impl PreparedComputeBlock {
         Ok(())
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_node_covering_output_range_with_context(
+        &self,
+        request: ComputeNodeOutputRangeRequest<'_>,
+    ) -> Result<bool, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "eval_node_covering_output_range_with_context",
+        ))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_node_covering_output_range_with_context(
         &self,
         request: ComputeNodeOutputRangeRequest<'_>,
@@ -1326,6 +1570,7 @@ impl PreparedComputeBlock {
             t: request.t,
             context,
             out: request.out,
+            #[cfg(feature = "reference-eval")]
             scratch: &mut scratch,
             block_label: self.label,
         })?;
@@ -1337,42 +1582,72 @@ impl PreparedComputeBlock {
 enum PreparedComputeNode {
     ScalarPrograms(Box<PreparedScalarProgramBlock>),
     Affine {
+        #[cfg(feature = "reference-eval")]
         program: PreparedLinearOps,
+        #[cfg(feature = "reference-eval")]
         scalar_count: usize,
+        #[cfg(feature = "reference-eval")]
         extents: Vec<usize>,
+        #[cfg(feature = "reference-eval")]
         ordinal_strides: Vec<usize>,
+        #[cfg(feature = "reference-eval")]
         output_start: usize,
+        #[cfg(feature = "reference-eval")]
         output_strides: Vec<i128>,
+        #[cfg(feature = "reference-eval")]
         load_adjustments: Vec<PreparedAffineLoadAdjustment>,
+        #[cfg(feature = "reference-eval")]
         const_adjustments: Vec<PreparedAffineConstAdjustment>,
+        #[cfg(feature = "reference-eval")]
         contiguous_output_range: Option<(usize, usize)>,
+        #[cfg(feature = "reference-eval")]
         span: rumoca_core::Span,
         requirements: RowInputRequirements,
     },
     MatMul {
         setup: PreparedLinearOps,
+        #[cfg(feature = "reference-eval")]
         lhs_start: u32,
+        #[cfg(feature = "reference-eval")]
         rhs_start: u32,
+        #[cfg(feature = "reference-eval")]
         output_start: usize,
+        #[cfg(feature = "reference-eval")]
         lhs_len: usize,
+        #[cfg(feature = "reference-eval")]
         rhs_len: usize,
+        #[cfg(feature = "reference-eval")]
         output_len: usize,
+        #[cfg(feature = "reference-eval")]
         m: usize,
+        #[cfg(feature = "reference-eval")]
         k: usize,
+        #[cfg(feature = "reference-eval")]
         n: usize,
+        #[cfg(feature = "reference-eval")]
         kernel: MatMulKernel,
+        #[cfg(feature = "reference-eval")]
         lhs_pattern: StructuralPattern,
+        #[cfg(feature = "reference-eval")]
         rhs_pattern: StructuralPattern,
     },
     LinSolve {
         setup: PreparedLinearOps,
+        #[cfg(feature = "reference-eval")]
         matrix_start: u32,
+        #[cfg(feature = "reference-eval")]
         rhs_start: u32,
+        #[cfg(feature = "reference-eval")]
         output_start: usize,
+        #[cfg(feature = "reference-eval")]
         matrix_len: usize,
+        #[cfg(feature = "reference-eval")]
         n: usize,
+        #[cfg(feature = "reference-eval")]
         kernel: LinearSolveKernel,
+        #[cfg(feature = "reference-eval")]
         matrix_pattern: StructuralPattern,
+        #[cfg(feature = "reference-eval")]
         span: rumoca_core::Span,
     },
 }
@@ -1383,18 +1658,21 @@ struct PreparedAffineLoadAdjustment {
     strides: Vec<i128>,
 }
 
+#[cfg(feature = "reference-eval")]
 #[derive(Clone)]
 struct PreparedAffineConstAdjustment {
     op_position: usize,
     strides: Vec<f64>,
 }
 
+#[cfg(feature = "reference-eval")]
 struct ComputeNodeEvalRequest<'a> {
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
     context: RowEvalContext<'a>,
     out: &'a mut [f64],
+    #[cfg(feature = "reference-eval")]
     scratch: &'a mut RowEvalScratch,
     block_label: &'static str,
 }
@@ -1476,20 +1754,34 @@ fn prepared_matmul(
             span: Some(span),
         }
     })?;
+    #[cfg(not(feature = "reference-eval"))]
+    let _ = (lhs_start, rhs_start, lhs_len, rhs_len, kernel);
     Ok((
         PreparedComputeNode::MatMul {
             setup: PreparedLinearOps::new(setup_ops)?,
+            #[cfg(feature = "reference-eval")]
             lhs_start,
+            #[cfg(feature = "reference-eval")]
             rhs_start,
+            #[cfg(feature = "reference-eval")]
             output_start: output_cursor,
+            #[cfg(feature = "reference-eval")]
             lhs_len,
+            #[cfg(feature = "reference-eval")]
             rhs_len,
+            #[cfg(feature = "reference-eval")]
             output_len,
+            #[cfg(feature = "reference-eval")]
             m,
+            #[cfg(feature = "reference-eval")]
             k,
+            #[cfg(feature = "reference-eval")]
             n,
+            #[cfg(feature = "reference-eval")]
             kernel,
+            #[cfg(feature = "reference-eval")]
             lhs_pattern: lhs_pattern.clone(),
+            #[cfg(feature = "reference-eval")]
             rhs_pattern: rhs_pattern.clone(),
         },
         next_output_cursor,
@@ -1514,16 +1806,26 @@ fn prepared_linsolve(
             span: Some(span),
         }
     })?;
+    #[cfg(not(feature = "reference-eval"))]
+    let _ = (matrix_start, rhs_start, matrix_len, kernel);
     Ok((
         PreparedComputeNode::LinSolve {
             setup: PreparedLinearOps::new(setup_ops.to_vec())?,
+            #[cfg(feature = "reference-eval")]
             matrix_start,
+            #[cfg(feature = "reference-eval")]
             rhs_start,
+            #[cfg(feature = "reference-eval")]
             output_start: output_cursor,
+            #[cfg(feature = "reference-eval")]
             matrix_len,
+            #[cfg(feature = "reference-eval")]
             n,
+            #[cfg(feature = "reference-eval")]
             kernel,
+            #[cfg(feature = "reference-eval")]
             matrix_pattern: matrix_pattern.clone(),
+            #[cfg(feature = "reference-eval")]
             span,
         },
         next_output_cursor,
@@ -1569,17 +1871,30 @@ fn prepared_affine(
         &ordinal_strides,
         &output_strides,
     );
+    let program = PreparedLinearOps::new_with_requirements(base_ops.to_vec(), requirements)?;
+    #[cfg(not(feature = "reference-eval"))]
+    let _ = (program, const_adjustments, contiguous_output_range);
     Ok((
         PreparedComputeNode::Affine {
-            program: PreparedLinearOps::new_with_requirements(base_ops.to_vec(), requirements)?,
+            #[cfg(feature = "reference-eval")]
+            program,
+            #[cfg(feature = "reference-eval")]
             scalar_count,
+            #[cfg(feature = "reference-eval")]
             extents,
+            #[cfg(feature = "reference-eval")]
             ordinal_strides,
+            #[cfg(feature = "reference-eval")]
             output_start: output_map.start,
+            #[cfg(feature = "reference-eval")]
             output_strides,
+            #[cfg(feature = "reference-eval")]
             load_adjustments,
+            #[cfg(feature = "reference-eval")]
             const_adjustments,
+            #[cfg(feature = "reference-eval")]
             contiguous_output_range,
+            #[cfg(feature = "reference-eval")]
             span,
             requirements,
         },
@@ -1680,6 +1995,7 @@ fn prepared_load_adjustments(
         .collect())
 }
 
+#[cfg(feature = "reference-eval")]
 fn prepared_const_adjustments(
     const_strides: &[AffineStencilConstStride],
     op_count: usize,
@@ -1725,6 +2041,45 @@ fn prepared_const_adjustments(
             })
         })
         .collect())
+}
+
+#[cfg(not(feature = "reference-eval"))]
+fn prepared_const_adjustments(
+    const_strides: &[AffineStencilConstStride],
+    op_count: usize,
+    rank: usize,
+    span: rumoca_core::Span,
+) -> Result<(), EvalSolveError> {
+    let mut by_op = vec![None::<Vec<f64>>; op_count];
+    for const_stride in const_strides {
+        let Some(strides) = by_op.get_mut(const_stride.op_position) else {
+            return Err(prepared_affine_op_error(
+                "constant",
+                const_stride.op_position,
+                op_count,
+                span,
+            ));
+        };
+        let strides = strides.get_or_insert_with(|| vec![0.0; rank]);
+        for term in &const_stride.terms {
+            let Some(stride) = strides.get_mut(term.dimension) else {
+                return Err(prepared_affine_dimension_error(
+                    "constant",
+                    term.dimension,
+                    rank,
+                    span,
+                ));
+            };
+            *stride += term.stride;
+            if !stride.is_finite() {
+                return Err(prepared_affine_arithmetic_error(
+                    "constant stride accumulation is non-finite",
+                    span,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn prepared_affine_requirements(
@@ -1950,6 +2305,7 @@ impl PreparedComputeNode {
         }
     }
 
+    #[cfg(feature = "reference-eval")]
     fn contiguous_output_range_covers(&self, start: usize, end: usize) -> bool {
         let Some((node_start, node_len)) = self.contiguous_output_range() else {
             return false;
@@ -1960,6 +2316,7 @@ impl PreparedComputeNode {
         start >= node_start && end <= node_end
     }
 
+    #[cfg(feature = "reference-eval")]
     fn contiguous_output_range(&self) -> Option<(usize, usize)> {
         match self {
             Self::MatMul {
@@ -1978,6 +2335,7 @@ impl PreparedComputeNode {
         }
     }
 
+    #[cfg(feature = "reference-eval")]
     fn eval_into(&self, request: ComputeNodeEvalRequest<'_>) -> Result<(), EvalSolveError> {
         let ComputeNodeEvalRequest {
             y,
@@ -1985,6 +2343,7 @@ impl PreparedComputeNode {
             t,
             context,
             out,
+            #[cfg(feature = "reference-eval")]
             scratch,
             block_label,
         } = request;

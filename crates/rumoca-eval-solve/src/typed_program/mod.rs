@@ -1,35 +1,52 @@
 mod algorithm_block;
 mod assertions;
+#[cfg(feature = "reference-eval")]
 mod assigned_state;
+#[cfg(all(test, not(feature = "reference-eval")))]
+mod compiled_only_tests;
 mod elements;
+#[cfg(feature = "reference-eval")]
 mod linear_solve;
+#[cfg(feature = "reference-eval")]
 mod native;
 pub(crate) mod number;
 mod observation;
 mod payload;
 mod shared_entry;
+#[cfg(feature = "reference-eval")]
 mod tensor;
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 mod tests;
 
 use rumoca_core::Span;
+#[cfg(feature = "reference-eval")]
 use rumoca_core::StructuredIndexDomain;
+#[cfg(feature = "reference-eval")]
 use rumoca_ir_solve::{
-    SolveAlgorithmBlock, SolveBinaryOperator, SolveFiniteCheck, SolveOperation, SolveProgramRegion,
-    SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat,
-    SolveReductionOperator, SolveRegisterId, SolveScalarType, SolveSlotId, SolveStorageClass,
-    SolveTensorViewAxis, SolveValue, SolveValueKind, SolveValueType, TypedProgram,
+    SolveAlgorithmBlock, SolveBinaryOperator, SolveOperation, SolveProgramRegion,
+    SolvePureCallOwner, SolveRealFormat, SolveReductionOperator, SolveRegisterId, SolveSlotId,
+    SolveStorageClass, SolveTensorViewAxis, SolveValue, TypedProgram,
+};
+use rumoca_ir_solve::{
+    SolveFiniteCheck, SolvePureCallOwnerId, SolvePureCallTable, SolveScalarType, SolveValueKind,
+    SolveValueType,
 };
 
 pub use algorithm_block::eval_algorithm_method;
 pub use assertions::TypedAssertionFailure;
+#[cfg(feature = "reference-eval")]
 use assertions::{AssertionStop, InvocationCompletion, ObservedAssertion};
 pub(crate) use elements::element_matches_type;
+use elements::invalid;
+#[cfg(feature = "reference-eval")]
+use elements::invalid_error;
+#[cfg(feature = "reference-eval")]
 use elements::{
-    ResolvedTensorViewAxis, increment_coordinate, invalid, invalid_error, project_slice,
-    project_tensor_view, row_major_offset, scalar_boolean, scalar_element, scalar_integer,
-    select_modelica_element, tensor_view_coordinate,
+    ResolvedTensorViewAxis, increment_coordinate, project_slice, project_tensor_view,
+    row_major_offset, scalar_boolean, scalar_element, scalar_integer, select_modelica_element,
+    tensor_view_coordinate,
 };
+#[cfg(feature = "reference-eval")]
 use number::{
     eval_binary_element, eval_binary_typed, eval_compare_typed, eval_convert_typed,
     eval_unary_typed,
@@ -41,7 +58,7 @@ pub use observation::{
 use payload::Payload;
 pub use shared_entry::eval_shared_entry_checked;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reference-eval"))]
 thread_local! {
     /// Payload copies made by aggregate updates on this thread.
     static PAYLOAD_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -98,6 +115,7 @@ impl TypedValue {
         &self.elements
     }
 
+    #[cfg(feature = "reference-eval")]
     fn scalar(value: &SolveValue) -> Self {
         Self {
             value_type: value.value_type().clone(),
@@ -108,6 +126,7 @@ impl TypedValue {
     /// This value with elements rewritten by `update`, which writes exactly
     /// `written`. The payload is rewritten in place when no other
     /// value shares it and copied first otherwise (value semantics).
+    #[cfg(feature = "reference-eval")]
     fn updated(
         mut self,
         value_type: SolveValueType,
@@ -136,6 +155,7 @@ impl TypedValue {
         Ok(self)
     }
 
+    #[cfg(feature = "reference-eval")]
     fn checked(
         value_type: SolveValueType,
         elements: Vec<SolveValueKind>,
@@ -149,6 +169,7 @@ impl TypedValue {
         })
     }
 
+    #[cfg(feature = "reference-eval")]
     fn checked_elements(
         value_type: SolveValueType,
         mut elements: impl ExactSizeIterator<Item = Result<SolveValueKind, TypedProgramEvalError>>,
@@ -192,6 +213,11 @@ impl std::error::Error for TypedValueConstructionError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypedProgramEvalError {
+    /// This product excludes typed IR execution; no input or state was evaluated.
+    #[cfg(not(feature = "reference-eval"))]
+    InterpreterExcluded {
+        operation: &'static str,
+    },
     NonFinite {
         check: SolveFiniteCheck,
         element: usize,
@@ -251,6 +277,8 @@ impl TypedProgramEvalError {
     #[must_use]
     pub const fn source_span(&self) -> Option<Span> {
         match self {
+            #[cfg(not(feature = "reference-eval"))]
+            Self::InterpreterExcluded { .. } => None,
             Self::UnknownOwner { .. } | Self::InvalidBlockMethod { .. } => None,
             Self::AssertionFailed { failure } => Some(failure.source_span()),
             Self::NonFinite { provenance, .. }
@@ -269,6 +297,11 @@ impl TypedProgramEvalError {
 impl std::fmt::Display for TypedProgramEvalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(not(feature = "reference-eval"))]
+            Self::InterpreterExcluded { operation } => write!(
+                formatter,
+                "{operation}: typed evaluator is excluded from the compiled-only product"
+            ),
             Self::NonFinite { check, element, .. } => {
                 write!(formatter, "nonfinite {check:?} element {element}")
             }
@@ -323,6 +356,13 @@ impl std::error::Error for TypedProgramEvalError {}
 impl From<TypedProgramEvalError> for crate::EvalSolveError {
     fn from(error: TypedProgramEvalError) -> Self {
         match error {
+            #[cfg(not(feature = "reference-eval"))]
+            TypedProgramEvalError::InterpreterExcluded { operation } => Self::CompiledExecution {
+                message: format!(
+                    "{operation}: typed evaluator is excluded from the compiled-only product"
+                ),
+                span: None,
+            },
             TypedProgramEvalError::TensorIndexOutOfBounds {
                 axis,
                 index,
@@ -343,6 +383,18 @@ impl From<TypedProgramEvalError> for crate::EvalSolveError {
 }
 
 /// Evaluate one compiler-issued pure-call owner with compact typed arguments.
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_pure_call(
+    _table: &SolvePureCallTable,
+    _owner: SolvePureCallOwnerId,
+    _arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    Err(TypedProgramEvalError::InterpreterExcluded {
+        operation: "eval_pure_call",
+    })
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_pure_call(
     table: &SolvePureCallTable,
     owner: SolvePureCallOwnerId,
@@ -366,6 +418,18 @@ pub fn eval_pure_call(
 /// Evaluate the construction-issued compact directional relation of one
 /// typed owner. Arguments and results use the directional site's aggregate
 /// primal/tangent ABI; tensor coordinates are materialized only as payload.
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_pure_call_directional(
+    _table: &SolvePureCallTable,
+    _owner: SolvePureCallOwnerId,
+    _arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    Err(TypedProgramEvalError::InterpreterExcluded {
+        operation: "eval_pure_call_directional",
+    })
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_pure_call_directional(
     table: &SolvePureCallTable,
     owner: SolvePureCallOwnerId,
@@ -390,6 +454,18 @@ pub fn eval_pure_call_directional(
 /// Error-level assertion ends the call and is returned as the diagnostic
 /// failure. Rows never evaluate this way; it serves diagnostics and the
 /// construction tests of the assertion owner.
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_pure_call_checked(
+    _table: &SolvePureCallTable,
+    _owner: SolvePureCallOwnerId,
+    _arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    Err(TypedProgramEvalError::InterpreterExcluded {
+        operation: "eval_pure_call_checked",
+    })
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_pure_call_checked(
     table: &SolvePureCallTable,
     owner: SolvePureCallOwnerId,
@@ -403,6 +479,18 @@ pub fn eval_pure_call_checked(
 }
 
 /// The directional counterpart of [`eval_pure_call_checked`].
+#[cfg(not(feature = "reference-eval"))]
+pub fn eval_pure_call_directional_checked(
+    _table: &SolvePureCallTable,
+    _owner: SolvePureCallOwnerId,
+    _arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    Err(TypedProgramEvalError::InterpreterExcluded {
+        operation: "eval_pure_call_directional_checked",
+    })
+}
+
+#[cfg(feature = "reference-eval")]
 pub fn eval_pure_call_directional_checked(
     table: &SolvePureCallTable,
     owner: SolvePureCallOwnerId,
@@ -419,11 +507,13 @@ pub fn eval_pure_call_directional_checked(
 /// recursive group chain: `depth` counts the active invocations of that
 /// owner's group along the chain and is zero outside every group.
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 struct RecursionChain {
     owner: Option<SolvePureCallOwnerId>,
     depth: u32,
 }
 
+#[cfg(feature = "reference-eval")]
 impl RecursionChain {
     const ROOT: Self = Self {
         owner: None,
@@ -463,6 +553,7 @@ impl RecursionChain {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 enum Direction {
     Primal,
     Directional,
@@ -470,6 +561,7 @@ enum Direction {
 
 /// What an Error-level source assertion does to the evaluation that reaches it.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "reference-eval")]
 enum AssertionPolicy {
     /// The invocation stops at the failed assertion and reports it as an
     /// observation; only the checked observation adapter evaluates this way.
@@ -480,12 +572,14 @@ enum AssertionPolicy {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "reference-eval")]
 struct EvaluationMode<'model> {
     direction: Direction,
     policy: AssertionPolicy,
     entry_plan: Option<&'model rumoca_ir_solve::SharedEntryCallPlan<'model>>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl EvaluationMode<'_> {
     const fn primal(policy: AssertionPolicy) -> Self {
         Self {
@@ -504,6 +598,7 @@ impl EvaluationMode<'_> {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_owner<'model>(
     table: &'model SolvePureCallTable,
     owner: &'model SolvePureCallOwner,
@@ -520,6 +615,7 @@ fn eval_owner<'model>(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_directional_owner<'model>(
     table: &'model SolvePureCallTable,
     owner: &'model SolvePureCallOwner,
@@ -536,6 +632,7 @@ fn eval_directional_owner<'model>(
     )
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_owner_in_scope<'model>(
     table: &'model SolvePureCallTable,
     owner: &'model SolvePureCallOwner,
@@ -604,6 +701,7 @@ fn eval_owner_in_scope<'model>(
     })
 }
 
+#[cfg(feature = "reference-eval")]
 fn validate_arguments(
     inputs: &[SolveValueType],
     arguments: &[TypedValue],
@@ -623,6 +721,7 @@ fn validate_arguments(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_region<'model>(
     table: &'model SolvePureCallTable,
     region: &'model SolveProgramRegion,
@@ -670,11 +769,13 @@ fn eval_region<'model>(
     })
 }
 
+#[cfg(feature = "reference-eval")]
 struct AssignedRegionValues {
     normal: Vec<TypedValue>,
     states: Vec<Option<TypedValue>>,
 }
 
+#[cfg(feature = "reference-eval")]
 fn eval_region_assigned<'model>(
     table: &'model SolvePureCallTable,
     region: &'model SolveProgramRegion,
@@ -772,6 +873,7 @@ fn eval_region_assigned<'model>(
 /// Register and slot storage one frame runs in. A loop evaluates its body once
 /// per domain point in the same storage, so a point allocates none.
 #[derive(Default)]
+#[cfg(feature = "reference-eval")]
 struct FrameStorage {
     slots: Vec<Option<TypedValue>>,
     registers: Vec<Option<TypedValue>>,
@@ -780,6 +882,7 @@ struct FrameStorage {
     assigned_outputs: Vec<Option<Option<TypedValue>>>,
 }
 
+#[cfg(feature = "reference-eval")]
 impl FrameStorage {
     /// Empty storage for one run of `program`.
     fn reset(&mut self, program: &TypedProgram) {
@@ -798,6 +901,7 @@ impl FrameStorage {
     }
 }
 
+#[cfg(feature = "reference-eval")]
 struct EvalFrame<'model, 'scope> {
     owner: SolvePureCallOwnerId,
     /// The algorithm block whose method or function this frame runs, when
@@ -821,6 +925,7 @@ struct EvalFrame<'model, 'scope> {
     operation: usize,
 }
 
+#[cfg(feature = "reference-eval")]
 impl<'model, 'scope> EvalFrame<'model, 'scope> {
     fn new(
         table: &'model SolvePureCallTable,

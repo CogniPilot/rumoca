@@ -1,11 +1,14 @@
-use std::{cell::RefCell, sync::Arc};
+#[cfg(feature = "reference-eval")]
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use rumoca_ir_solve as solve;
 
+use crate::{EvalSolveError, RowEvalContext, row_input_requirements};
+#[cfg(feature = "reference-eval")]
 use crate::{
-    EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    RowInputRequirements, eval_row_prepared_maybe_fast, record_solve_block_eval,
-    row_input_requirements, validate_input_requirements_with_span,
+    OutputCursor, PreparedRowEval, RowEvalScratch, RowInputRequirements,
+    eval_row_prepared_maybe_fast, record_solve_block_eval, validate_input_requirements_with_span,
 };
 
 /// Prepared evaluator for one compact guarded-assignment owner.
@@ -18,8 +21,11 @@ pub struct PreparedGuardedAssignmentProgram {
     program: Arc<[solve::LinearOp]>,
     span: rumoca_core::Span,
     output_count: usize,
+    #[cfg(feature = "reference-eval")]
     register_count: usize,
+    #[cfg(feature = "reference-eval")]
     requirements: RowInputRequirements,
+    #[cfg(feature = "reference-eval")]
     scratch: RefCell<RowEvalScratch>,
 }
 
@@ -29,8 +35,11 @@ impl Clone for PreparedGuardedAssignmentProgram {
             program: self.program.clone(),
             span: self.span,
             output_count: self.output_count,
+            #[cfg(feature = "reference-eval")]
             register_count: self.register_count,
+            #[cfg(feature = "reference-eval")]
             requirements: self.requirements,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         }
     }
@@ -43,12 +52,17 @@ impl PreparedGuardedAssignmentProgram {
         let register_count = owner.register_count();
         let requirements =
             row_input_requirements(&program).map_err(|error| error.with_source_span(Some(span)))?;
+        #[cfg(not(feature = "reference-eval"))]
+        let _ = (register_count, requirements);
         Ok(Self {
             program,
             span,
             output_count: owner.output_count(),
+            #[cfg(feature = "reference-eval")]
             register_count,
+            #[cfg(feature = "reference-eval")]
             requirements,
+            #[cfg(feature = "reference-eval")]
             scratch: RefCell::new(RowEvalScratch::default()),
         })
     }
@@ -65,6 +79,20 @@ impl PreparedGuardedAssignmentProgram {
         self.output_count
     }
 
+    /// Refused in the compiled-only product, which excludes this evaluator body.
+    #[cfg(not(feature = "reference-eval"))]
+    #[allow(unused_variables, unused_mut)] // the refusal reads none of its arguments
+    pub fn eval_outputs_with_context(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), EvalSolveError> {
+        Err(crate::interpreter_excluded("eval_outputs_with_context"))
+    }
+    #[cfg(feature = "reference-eval")]
     pub fn eval_outputs_with_context(
         &self,
         y: &[f64],

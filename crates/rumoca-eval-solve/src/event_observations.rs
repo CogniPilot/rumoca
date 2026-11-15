@@ -1,5 +1,6 @@
 //! Checked predicate-only execution of exact event observation programs.
 
+#[cfg(feature = "reference-eval")]
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -9,10 +10,11 @@ use rumoca_ir_solve::{
     SolveEventAction, SolvePureCallTable, SolveVisitor,
 };
 
+#[cfg(feature = "reference-eval")]
 use crate::{
-    AssertionInvocationEvaluation, AssertionReport, EvalSolveError, Reg, TypedValue,
-    eval_assertion_invocation, invalid_row, typed_kind_from_scalar,
+    AssertionInvocationEvaluation, TypedValue, eval_assertion_invocation, typed_kind_from_scalar,
 };
+use crate::{AssertionReport, EvalSolveError, Reg, invalid_row};
 
 /// The exact programs one runtime has checked against its pure-call table and
 /// event actions, derived once when the runtime is built. A program is a
@@ -20,6 +22,7 @@ use crate::{
 /// occupies, so ownership is total over every block it was derived from.
 #[derive(Clone, Debug, Default)]
 pub struct EventObservationAuthority {
+    #[cfg(feature = "reference-eval")]
     programs: BTreeMap<(usize, usize), Option<AssertionProgramProof>>,
 }
 
@@ -40,6 +43,7 @@ impl EventObservationAuthority {
             collector.visit_scalar_program_block(block)?;
         }
         Ok(Self {
+            #[cfg(feature = "reference-eval")]
             programs: collector.programs,
         })
     }
@@ -48,8 +52,10 @@ impl EventObservationAuthority {
 /// Immutable invocation/action authority, with reports private until the
 /// complete accepted evaluation succeeds. Ordinary row contexts have none.
 pub struct CheckedEventObservationContext<'model> {
+    #[cfg(feature = "reference-eval")]
     table: &'model SolvePureCallTable,
     actions: &'model [SolveEventAction],
+    #[cfg(feature = "reference-eval")]
     authority: Cow<'model, EventObservationAuthority>,
     reports: RefCell<Vec<AssertionReport>>,
 }
@@ -62,9 +68,13 @@ impl<'model> CheckedEventObservationContext<'model> {
         table: &'model SolvePureCallTable,
         actions: &'model [SolveEventAction],
     ) -> Self {
+        #[cfg(not(feature = "reference-eval"))]
+        let _ = (authority, table);
         Self {
+            #[cfg(feature = "reference-eval")]
             table,
             actions,
+            #[cfg(feature = "reference-eval")]
             authority: Cow::Borrowed(authority),
             reports: RefCell::default(),
         }
@@ -77,9 +87,13 @@ impl<'model> CheckedEventObservationContext<'model> {
         actions: &'model [SolveEventAction],
     ) -> Result<Self, EvalSolveError> {
         let authority = EventObservationAuthority::derive(table, actions, [block])?;
+        #[cfg(not(feature = "reference-eval"))]
+        let _ = authority;
         Ok(Self {
+            #[cfg(feature = "reference-eval")]
             table,
             actions,
+            #[cfg(feature = "reference-eval")]
             authority: Cow::Owned(authority),
             reports: RefCell::default(),
         })
@@ -106,6 +120,22 @@ impl<'model> CheckedEventObservationContext<'model> {
             .map(|report| report.message.clone())
     }
 
+    /// The compiled product uses admitted compiled observations; this reference
+    /// evaluator refuses before program binding, register reads or report writes.
+    #[cfg(not(feature = "reference-eval"))]
+    pub(crate) fn evaluate(
+        &self,
+        _table: &SolvePureCallTable,
+        _program: &[LinearOp],
+        _operation: usize,
+        _read: impl FnMut(Reg) -> Result<f64, EvalSolveError>,
+    ) -> Result<Vec<f64>, EvalSolveError> {
+        Err(crate::interpreter_excluded(
+            "CheckedEventObservationContext::evaluate",
+        ))
+    }
+
+    #[cfg(feature = "reference-eval")]
     pub(crate) fn evaluate(
         &self,
         table: &SolvePureCallTable,
@@ -225,5 +255,24 @@ impl SolveVisitor for ObservationPrograms<'_> {
         let proof = self.prove(program)?;
         self.programs.insert(program_identity(program), proof);
         Ok(())
+    }
+}
+
+#[cfg(all(test, not(feature = "reference-eval")))]
+mod compiled_only_tests {
+    use super::*;
+
+    #[test]
+    fn excluded_observation_refuses_before_program_binding_or_register_reads() {
+        let authority = EventObservationAuthority::default();
+        let table = SolvePureCallTable::default();
+        let context = CheckedEventObservationContext::new(&authority, &table, &[]);
+        let error = context
+            .evaluate(&table, &[], usize::MAX, |_| {
+                panic!("excluded observation read an argument register")
+            })
+            .expect_err("an excluded evaluator must refuse before invocation binding");
+        assert!(matches!(error, EvalSolveError::CompiledExecution { .. }));
+        assert!(context.take_reports().is_empty());
     }
 }
