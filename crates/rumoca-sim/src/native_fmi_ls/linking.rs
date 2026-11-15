@@ -1,8 +1,8 @@
 //! Closed original-model/data/fixed-runtime graph; no selectable providers.
 
 use super::{
-    NativeFmiLsPreparationError, PreparedNativeFmiLsModel, PreparedScalarFmiLsModel, data,
-    publication,
+    NativeFmiLsPreparationError, PreparedNativeFmiLsModel, PreparedScalarFmiLsModel, certify,
+    data, publication,
 };
 use rumoca_core::artifact_build::{ArtifactBuildBinding, PreparedBuildRequest};
 use rumoca_exec_wasm::{
@@ -196,9 +196,16 @@ impl PreparedScalarFmiLsModel {
     /// data, the linked modules, the dispatch and the core; the linker stubs
     /// nothing, and the result must expose exactly the checked component
     /// interface, so the dispatch and data slots stay internal.
+    ///
+    /// Before the component is returned, the product is certified once: the
+    /// SAME data library and bodies are linked with `certify_core` (the
+    /// build-only certification core) and its certification export runs once.
+    /// A published load binds the certified artifact by position and never
+    /// certifies again, so any refusal here refuses the build.
     pub fn link_linked_guest<S>(
         self,
         core: FixedNativeGuestCore,
+        certify_core: FixedNativeGuestCore,
         artifact: &[u8],
         saved: &[u8],
         request: &PreparedBuildRequest<'_, S>,
@@ -207,6 +214,12 @@ impl PreparedScalarFmiLsModel {
         if !core.is_scalar_linked_product() {
             return Err(linkage(
                 "a scalar-linked component links only the scalar-linked fixed core".into(),
+            ));
+        }
+        if !certify_core.is_scalar_linked_certify() {
+            return Err(linkage(
+                "a scalar-linked product is certified only by the scalar-linked certification core"
+                    .into(),
             ));
         }
         let token = publication::token(request).map_err(linkage)?;
@@ -232,6 +245,11 @@ impl PreparedScalarFmiLsModel {
         let bytes = link_linked(&data, &bodies, core.bytes()).map_err(linkage)?;
         check_embedded_core_modules(&bytes, &bodies).map_err(linkage)?;
         core.check_component_interface(&bytes).map_err(linkage)?;
+        // The certified product is these exact `data` and `bodies`: the same
+        // values are linked with the certification core, never re-derived.
+        let certifying = link_linked(&data, &bodies, certify_core.bytes()).map_err(linkage)?;
+        check_embedded_core_modules(&certifying, &bodies).map_err(linkage)?;
+        certify::certify_linked_component(&certifying).map_err(linkage)?;
         Ok(LinkedScalarFmiLsComponent {
             binding: request.binding(),
             bytes,

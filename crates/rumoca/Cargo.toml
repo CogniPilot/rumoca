@@ -58,6 +58,8 @@ fmi = ["rumoca-sim/fmi"]
 fmu-packaging = ["dep:zip", "dep:rumoca-exec-wasm", "fmi"]
 component-build = ["fmu-packaging", "rumoca-exec-wasm/component-build"]
 native-fmi-ls-build = ["fmu-packaging", "rumoca-sim/native-fmi-ls-build"]
+# The packager that certifies a linked product at build (required to publish one).
+linked-build-certify = ["native-fmi-ls-build", "rumoca-sim/linked-build-certify"]
 examples-smoke-tests = []
 msl-sim-tests = []
 # Opt-in RDD2 metric gates inside `suite_gates` (`tests/rdd2_perf_guard.rs`,

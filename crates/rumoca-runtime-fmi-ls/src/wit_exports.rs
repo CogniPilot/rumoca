@@ -11,3 +11,10 @@ impl bindings::Guest for RumocaFmu {
         crate::bootstrap::preinitialize();
     }
 }
+
+#[cfg(feature = "certify-linked")]
+impl bindings::Guest for RumocaFmu {
+    fn rumoca_certify_linked() {
+        crate::bootstrap::certify_linked();
+    }
+}

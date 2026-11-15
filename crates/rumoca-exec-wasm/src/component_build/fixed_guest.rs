@@ -28,13 +28,16 @@ pub struct FixedNativeGuestCore {
 /// (`rumoca-runtime-fmi-ls/scalar-product`), or a stateful scalar product that
 /// executes linked compiled entries through `rumoca_dispatch`
 /// (`rumoca-runtime-fmi-ls/scalar-linked-product`). The linked product never
-/// enables `scalar-product`, whose bootstrap admits only the interpreter. Part
-/// of the cache recipe.
+/// enables `scalar-product`, whose bootstrap admits only the interpreter.
+/// `ScalarLinkedCertify` is the build-only certification core of the linked
+/// product (`certify-linked` added): the packager runs it once and never
+/// publishes it. Part of the cache recipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GuestProfile {
     Native,
     Scalar,
     ScalarLinked,
+    ScalarLinkedCertify,
 }
 
 impl GuestProfile {
@@ -43,6 +46,7 @@ impl GuestProfile {
             Self::Native => &[],
             Self::Scalar => &["--features", "scalar-product"],
             Self::ScalarLinked => &["--features", "scalar-linked-product"],
+            Self::ScalarLinkedCertify => &["--features", "scalar-linked-product,certify-linked"],
         }
     }
 
@@ -51,6 +55,7 @@ impl GuestProfile {
             Self::Native => "native",
             Self::Scalar => "scalar",
             Self::ScalarLinked => "scalar-linked",
+            Self::ScalarLinkedCertify => "scalar-linked-certify",
         }
     }
 }
@@ -71,6 +76,12 @@ impl FixedNativeGuestCore {
     /// `rumoca_dispatch` and the saved product and linked artifact slots.
     pub fn is_scalar_linked_product(&self) -> bool {
         self.profile == GuestProfile::ScalarLinked
+    }
+
+    /// Whether this is the build-only certification core of the linked
+    /// product: never published, run once by the packager before publication.
+    pub fn is_scalar_linked_certify(&self) -> bool {
+        self.profile == GuestProfile::ScalarLinkedCertify
     }
 
     /// Every export name of this core, as its contract read them.
@@ -225,6 +236,22 @@ pub fn build_fixed_scalar_linked_guest_core_cached(
         target_parent,
         Some(cache_root),
         GuestProfile::ScalarLinked,
+    )
+}
+
+/// As [`build_fixed_scalar_linked_guest_core_cached`] with the build-only
+/// `rumoca-runtime-fmi-ls/certify-linked` export added, under its own cache
+/// key. Its component is certified once at build and never published.
+pub fn build_fixed_scalar_linked_certify_guest_core_cached(
+    staging_parent: &Path,
+    target_parent: &Path,
+    cache_root: &Path,
+) -> Result<FixedNativeGuestCore, String> {
+    build(
+        staging_parent,
+        target_parent,
+        Some(cache_root),
+        GuestProfile::ScalarLinkedCertify,
     )
 }
 
@@ -494,5 +521,24 @@ mod profile_tests {
             linked.contains("scalar-linked-product") && linked.contains("profile=scalar-linked")
         );
         assert!(!scalar.contains("scalar-linked-product"));
+    }
+
+    /// The build-only certification core never shares the published linked
+    /// core's cached build: its feature and tag are in its own recipe.
+    #[test]
+    fn the_certification_profile_has_its_own_feature_and_cache_recipe() {
+        assert_eq!(
+            GuestProfile::ScalarLinkedCertify.cargo_features(),
+            ["--features", "scalar-linked-product,certify-linked"]
+        );
+        let (linked, certify) = (
+            recipe("flags", GuestProfile::ScalarLinked),
+            recipe("flags", GuestProfile::ScalarLinkedCertify),
+        );
+        assert_ne!(linked, certify);
+        assert!(
+            certify.contains("certify-linked") && certify.contains("profile=scalar-linked-certify")
+        );
+        assert!(!linked.contains("certify-linked"));
     }
 }

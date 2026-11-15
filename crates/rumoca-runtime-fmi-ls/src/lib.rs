@@ -15,7 +15,17 @@ pub use resource::{FmiLsResource, FmiLsResourceError, FmiLsStepResult};
     target_arch = "wasm32",
     target_os = "wasi",
     target_env = "p2",
-    not(feature = "preinit")
+    feature = "preinit",
+    feature = "certify-linked"
+))]
+compile_error!("the snapshot and the certification build worlds are exclusive");
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2",
+    not(feature = "preinit"),
+    not(feature = "certify-linked")
 ))]
 pub mod bindings {
     wit_bindgen::generate!({
@@ -36,6 +46,22 @@ pub mod bindings {
         path: [
             "../rumoca-phase-codegen/src/templates/fmi-ls-wasm/wit",
             "src/preinit",
+        ],
+    });
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2",
+    feature = "certify-linked"
+))]
+pub mod bindings {
+    wit_bindgen::generate!({
+        world: "rumoca:certify/co-simulation-fmu-certify",
+        path: [
+            "../rumoca-phase-codegen/src/templates/fmi-ls-wasm/wit",
+            "src/certify",
         ],
     });
 }

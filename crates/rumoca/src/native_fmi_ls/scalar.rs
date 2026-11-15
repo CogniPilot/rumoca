@@ -38,17 +38,19 @@ impl ScalarFmiLsPackage {
 
     /// [`Self::construct`] for the scalar-linked product: the scalar-linked
     /// core is linked with the modules and dispatch of `artifact`, the linked
-    /// artifact one SDK export issued beside the `saved` product, and the
-    /// guest receives both to certify before any linked entry runs.
+    /// artifact one SDK export issued beside the `saved` product. The product
+    /// is certified once here, through `certify_core`, before it can be
+    /// published; the published guest binds it by position at load.
     pub fn construct_linked(
         model: PreparedScalarFmiLsModel,
         core: FixedNativeGuestCore,
+        certify_core: FixedNativeGuestCore,
         model_name: &str,
         artifact: &[u8],
         saved: &[u8],
     ) -> Result<Self> {
         Self::construct_with(model, model_name, |model, request| {
-            Ok(model.link_linked_guest(core, artifact, saved, request)?)
+            Ok(model.link_linked_guest(core, certify_core, artifact, saved, request)?)
         })
     }
 

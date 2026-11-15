@@ -3,6 +3,8 @@
 use rumoca_exec_wasm::NativeModelLibrary;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
+mod certify;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
 mod data;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-fmi-ls-build"))]
 mod linking;

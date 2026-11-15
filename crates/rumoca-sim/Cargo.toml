@@ -18,6 +18,9 @@ native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
 # through the issued dispatch, certified against the linked artifact.
 linked-guest = ["fmi-derivative-operation", "solver-rk45", "rumoca-exec-wasm/fixed-scalar-linked-receiver"]
 native-fmi-ls-build = ["native-fmi-ls", "rumoca-exec-wasm/fixed-native-guest-build", "rumoca-exec-wasm/precompiled-programs", "dep:rmp-serde", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
+# Build-time certification runner of a linked scalar product (native packager
+# only). Without it a linked product is refused, never published uncertified.
+linked-build-certify = ["native-fmi-ls-build", "dep:wasmtime"]
 tracing = ["rumoca-phase-solve/tracing"]
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
@@ -58,6 +61,8 @@ rumoca-exec-wasm = { workspace = true, optional = true }
 wasm-encoder = { version = "0.241", optional = true }
 wit-component = { version = "0.241", optional = true }
 quick-xml = { workspace = true, optional = true }
+# The same pin as the fmi-ls-wasm-host fixture; used only by linked-build-certify.
+wasmtime = { version = "=45.0.1", features = ["component-model"], optional = true }
 rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 rumoca-solver = { workspace = true }
 rumoca-solver-diffsol = { workspace = true, optional = true }

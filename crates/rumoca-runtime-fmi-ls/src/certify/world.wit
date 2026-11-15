@@ -1,0 +1,11 @@
+// Build-only world: the canonical Co-Simulation world plus one export the
+// packager calls once, at build time, to certify the linked product before it
+// is published. The published component's world is exactly
+// `fmi:fmi3/co-simulation-fmu`; its core is built without this feature.
+package rumoca:certify;
+
+world co-simulation-fmu-certify {
+  include fmi:fmi3/co-simulation-fmu@3.0.0;
+
+  export rumoca-certify-linked: func();
+}

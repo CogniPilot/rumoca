@@ -50,6 +50,25 @@ fn census(component: &FmiComponent) -> BTreeMap<String, usize> {
     counts
 }
 
+/// The build-only certification core of a linked product, under its own
+/// staging, target and cache key; it is run once and never published.
+fn certify_core(
+    work: &Path,
+    scratch: Option<&Path>,
+) -> Result<rumoca_exec_wasm::FixedNativeGuestCore, Box<dyn Error>> {
+    let staging = work.join("fixed-certify-source");
+    let target = scratch.unwrap_or(work).join("fixed-certify-target");
+    fs::create_dir(&staging)?;
+    fs::create_dir(&target)?;
+    let cache = match scratch {
+        Some(scratch) => scratch.join("fixed-guest-cache"),
+        None => work.parent().unwrap_or(work).join("fixed-guest-cache"),
+    };
+    Ok(rumoca_exec_wasm::build_fixed_scalar_linked_certify_guest_core_cached(
+        &staging, &target, &cache,
+    )?)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<_> = env::args().collect();
     let [
@@ -178,11 +197,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             rumoca_exec_wasm::build_fixed_scalar_guest_core_cached(&staging, &target, &cache)?
         })
     })?;
+    let (certify_core, certify_core_s) = match &linked {
+        Some(_) => {
+            let (core, seconds) =
+                stage("fixed_guest_certify_core", || certify_core(work, scratch))?;
+            (Some(core), seconds)
+        }
+        None => (None, 0.0),
+    };
     let (package, construct_s) = stage("construct", || {
         Ok(match &linked {
-            Some((artifact, saved)) => {
-                ScalarFmiLsPackage::construct_linked(prepared, core, model, artifact, saved)?
-            }
+            Some((artifact, saved)) => ScalarFmiLsPackage::construct_linked(
+                prepared,
+                core,
+                certify_core.expect("a linked package builds its certification core"),
+                model,
+                artifact,
+                saved,
+            )?,
             None => ScalarFmiLsPackage::construct(prepared, core, model)?,
         })
     })?;
@@ -213,7 +245,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         "component_bytes": component_bytes,
         "source_roots": source_count, "variables": variables,
         "seconds": {"frontend": frontend_s, "lower": lower_s, "prepared_model": prepare_s,
-                    "fixed_guest_core": core_s, "construct": construct_s,
+                    "fixed_guest_core": core_s, "fixed_guest_certify_core": certify_core_s,
+                    "construct": construct_s,
                     "publish": publish_s},
         "peak_rss_kib": fs::read_to_string("/proc/self/status")?.lines()
             .find_map(|l| l.strip_prefix("VmHWM:")).map(str::trim).unwrap_or(""),

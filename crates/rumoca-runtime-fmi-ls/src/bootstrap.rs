@@ -21,7 +21,7 @@ use std::cell::OnceCell;
 thread_local! {
     static MODEL: OnceCell<Result<GuestModel, String>> = const { OnceCell::new() };
     /// Latched at the exported instantiate entry, before any refusal.
-    #[cfg(feature = "preinit")]
+    #[cfg(any(feature = "preinit", feature = "certify-linked"))]
     static INSTANTIATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The first instance's component, constructed at pre-initialisation and
     /// moved (never cloned) into the first instance whose token checks.
@@ -39,8 +39,9 @@ fn with_model<T>(query: impl FnOnce(&GuestModel) -> Result<T, String>) -> Result
     )
 }
 
-/// Record an instantiation attempt; any attempt ends pre-initialisation.
-#[cfg(feature = "preinit")]
+/// Record an instantiation attempt; any attempt ends pre-initialisation and
+/// build-time certification.
+#[cfg(any(feature = "preinit", feature = "certify-linked"))]
 pub(super) fn note_instantiation() {
     INSTANTIATED.with(|instantiated| instantiated.set(true));
 }

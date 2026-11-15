@@ -112,7 +112,7 @@ impl GuestCoSimulationInstance for Instance {
         early_return_allowed: bool,
         required_intermediate_variables: Vec<u32>,
     ) -> Option<CoSimulationInstance> {
-        #[cfg(feature = "preinit")]
+        #[cfg(any(feature = "preinit", feature = "certify-linked"))]
         super::bootstrap::note_instantiation();
         let prepared = if instance_name.is_empty()
             || visible

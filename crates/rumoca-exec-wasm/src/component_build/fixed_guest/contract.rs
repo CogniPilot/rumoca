@@ -278,7 +278,9 @@ impl State {
             super::GuestProfile::Scalar => {
                 (Vec::new(), [vec!["eval_assignments"], linked].concat())
             }
-            super::GuestProfile::ScalarLinked => (linked, vec!["eval_assignments"]),
+            super::GuestProfile::ScalarLinked | super::GuestProfile::ScalarLinkedCertify => {
+                (linked, vec!["eval_assignments"])
+            }
         };
         if let Some(slot) = forbidden
             .into_iter()
