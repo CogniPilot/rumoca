@@ -63,6 +63,10 @@ pub mod bindings {
             "../rumoca-phase-codegen/src/templates/fmi-ls-wasm/wit",
             "src/certify",
         ],
+        // The world lives in `rumoca:certify` and includes the `fmi:fmi3`
+        // world, so its interfaces belong to another package: generate them
+        // here, at the same paths the published bindings use.
+        generate_all,
     });
 }
 
