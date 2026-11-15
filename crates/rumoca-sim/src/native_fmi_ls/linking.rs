@@ -338,3 +338,55 @@ fn link_linked(data: &[u8], bodies: &[&[u8]], runtime: &[u8]) -> Result<Vec<u8>,
     link_single_provider_graph(&libraries)
         .map_err(|error| format!("link scalar-linked fixed FMI-LS graph: {error}"))
 }
+
+#[cfg(test)]
+mod saved_product_tests {
+    use super::*;
+    use rumoca_compile::compile::{Session, SessionConfig};
+    use rumoca_ir_solve::fmi::FmiComponent;
+
+    fn decay(start: &str) -> FmiComponent {
+        let mut session = Session::new(SessionConfig::default());
+        let source = format!(
+            "model Decay\n  Real x(start = {start});\nequation\n  der(x) = -x;\nend Decay;\n"
+        );
+        session.add_document("decay.mo", &source).unwrap();
+        let dae = session.compile_model("Decay").unwrap().dae;
+        crate::lower_fmi_scalar_export_component(&dae, &crate::SimOptions::default()).unwrap()
+    }
+
+    /// A saved product as the export writes its leading fields: the wire
+    /// version and the component on the canonical wire, in a named map.
+    fn saved(component: &FmiComponent) -> Vec<u8> {
+        #[derive(serde::Serialize)]
+        struct Saved<'a> {
+            version: u32,
+            component: rumoca_eval_solve::fmi_wire::FmiComponentWireRef<'a>,
+        }
+        let root = component.runtime_view().retain_assertion_root();
+        let component = rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).unwrap();
+        rmp_serde::to_vec_named(&Saved {
+            version: SAVED_PRODUCT_VERSION,
+            component,
+        })
+        .unwrap()
+    }
+
+    /// The prepared model refuses a saved product of another component on its
+    /// own, with no fixed guest core in hand, and names the first differing
+    /// canonical field; its own component's saved product is admitted.
+    #[test]
+    fn a_saved_product_of_another_component_is_refused_before_any_guest_is_built() {
+        let packaged = decay("1");
+        let prepared = PreparedScalarFmiLsModel::from_component(&packaged).unwrap();
+        prepared.check_saved_product(&saved(&packaged)).unwrap();
+        let refusal = prepared
+            .check_saved_product(&saved(&decay("2")))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("differs from the component this FMU packages; first difference at /"),
+            "{refusal}"
+        );
+    }
+}

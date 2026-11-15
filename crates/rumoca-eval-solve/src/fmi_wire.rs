@@ -112,12 +112,14 @@ where
 const DIFFERENCE_WINDOW: usize = 120;
 /// Innermost path segments shown; deeper prefixes are counted, not printed.
 const DIFFERENCE_PATH_SEGMENTS: usize = 12;
+/// Bytes of one object key shown in a path segment.
+const DIFFERENCE_KEY_BYTES: usize = 64;
 
-/// Where two canonical wires first differ, without parsing either: when both
-/// come from this module's serializer, so their first differing byte is the first
-/// difference in document order. The JSON path to it is read from the saved
-/// prefix by a flat scan (expression trees are deeper than any stack allows
-/// recursion for), and both wires are shown as bounded byte windows.
+/// Where two canonical component wires first differ, without parsing either.
+/// Both come from this module's serializer, so their first differing byte is
+/// the first difference in document order. The JSON path to it is read from
+/// the saved prefix by a flat scan (expression trees are deeper than any stack
+/// allows recursion for); keys, path depth and both byte windows are bounded.
 pub fn first_wire_difference(saved: &[u8], packaged: &[u8]) -> String {
     let offset = saved
         .iter()
@@ -139,14 +141,27 @@ pub fn first_wire_difference(saved: &[u8], packaged: &[u8]) -> String {
     )
 }
 
+/// At most `DIFFERENCE_WINDOW` bytes of `bytes` from `from`, rendered and then
+/// cut again to that many bytes, since replacing invalid UTF-8 can expand it.
 fn byte_window(bytes: &[u8], from: usize) -> String {
     let end = from.saturating_add(DIFFERENCE_WINDOW).min(bytes.len());
     let text = String::from_utf8_lossy(&bytes[from.min(end)..end]);
-    if end < bytes.len() {
-        format!("{text}...")
+    let (shown, cut) = bounded_text(&text, DIFFERENCE_WINDOW);
+    if cut || end < bytes.len() {
+        format!("{shown}...")
     } else {
-        text.into_owned()
+        shown.to_owned()
     }
+}
+
+/// `text` cut to at most `max` bytes at a character boundary, and whether it
+/// was cut.
+fn bounded_text(text: &str, max: usize) -> (&str, bool) {
+    let mut cut = text.len().min(max);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (&text[..cut], cut < text.len())
 }
 
 /// The object keys and array indices open at the end of `prefix`, a prefix of
@@ -181,7 +196,13 @@ fn json_path_at(prefix: &[u8]) -> Vec<String> {
                 if prefix.get(at + 1) == Some(&b':')
                     && let Some(Open::Object(key)) = open.last_mut()
                 {
-                    *key = Some(String::from_utf8_lossy(&prefix[start..end]).into_owned());
+                    let text = String::from_utf8_lossy(&prefix[start..end]);
+                    let (shown, cut) = bounded_text(&text, DIFFERENCE_KEY_BYTES);
+                    *key = Some(if cut {
+                        format!("{shown}...")
+                    } else {
+                        shown.to_owned()
+                    });
                 }
             }
             _ => {}
@@ -247,5 +268,28 @@ mod tests {
             &report[..report.len().min(200)]
         );
         assert!(report.len() < 400, "{}", report.len());
+    }
+
+    /// Invalid UTF-8 in a window and an overlong key stay within their byte
+    /// bounds after rendering.
+    #[test]
+    fn windows_and_keys_stay_bounded_after_rendering() {
+        let invalid = |digit: u8| {
+            let mut bytes = vec![b'[', digit];
+            bytes.extend([0xff; 300]);
+            bytes
+        };
+        let report = first_wire_difference(&invalid(b'1'), &invalid(b'2'));
+        assert!(report.starts_with("at /0: saved 1\u{fffd}"), "{report}");
+        assert!(report.len() < 300, "{}", report.len());
+        let key = "k".repeat(1000);
+        let report = first_wire_difference(
+            format!(r#"{{"{key}":1}}"#).as_bytes(),
+            format!(r#"{{"{key}":2}}"#).as_bytes(),
+        );
+        assert_eq!(
+            report,
+            format!("at /{}...: saved 1}} packaged 2}}", "k".repeat(64))
+        );
     }
 }
