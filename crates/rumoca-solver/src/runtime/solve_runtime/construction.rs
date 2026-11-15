@@ -11,6 +11,10 @@ impl SolveRuntime {
         model_jacobian_request: ModelStateJacobianRequest,
         primary: Option<&SolveRuntime>,
     ) -> Result<Self, EvalSolveError> {
+        require_compiled_backend(
+            execution_backend.is_some(),
+            cfg!(feature = "reference-execution"),
+        )?;
         model_owner
             .artifacts
             .continuous
@@ -719,4 +723,35 @@ fn grouped_program_capacity(structural: &solve::ContinuousStructuralArtifacts) -
         .map(|selection| selection.programs().len())
         .max()
         .unwrap_or(0)
+}
+
+/// A build without reference execution compiles no interpreter to fall back
+/// on, so a runtime without an admitted compiled backend is refused before any
+/// owner is prepared.
+fn require_compiled_backend(
+    has_backend: bool,
+    reference_execution: bool,
+) -> Result<(), EvalSolveError> {
+    if has_backend || reference_execution {
+        return Ok(());
+    }
+    Err(EvalSolveError::CompiledExecution {
+        message: "this build excludes reference execution: a compiled backend is required"
+            .to_string(),
+        span: None,
+    })
+}
+
+#[cfg(test)]
+mod backend_requirement_tests {
+    use super::require_compiled_backend;
+
+    #[test]
+    fn only_a_build_without_reference_execution_requires_a_compiled_backend() {
+        assert!(require_compiled_backend(true, false).is_ok());
+        assert!(require_compiled_backend(true, true).is_ok());
+        assert!(require_compiled_backend(false, true).is_ok());
+        let refused = require_compiled_backend(false, false).expect_err("refused");
+        assert!(refused.to_string().contains("compiled backend is required"), "{refused}");
+    }
 }
