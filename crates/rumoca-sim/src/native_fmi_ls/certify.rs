@@ -86,6 +86,103 @@ pub(super) fn certify_linked_component(_component: &[u8]) -> Result<(), String> 
         .into())
 }
 
+/// The runner's real wasmtime linker setup on a minimal certification
+/// component: it imports the seed interface the guest imports and one
+/// unrelated interface, and its export calls exactly one of them.
+#[cfg(all(test, feature = "linked-build-certify"))]
+mod runner_tests {
+    use super::{CERTIFY_SEED, SEED_INTERFACE, certify_linked_component};
+    use wasmtime::component::{Component, Linker};
+    use wasmtime::{Config, Engine, StoreContextMut};
+
+    /// The seed interface version the published guest imports (the full
+    /// chain's refusal named it).
+    const SEED: &str = "wasi:random/insecure-seed@0.2.4";
+    const CLOCK: &str = "wasi:clocks/monotonic-clock@0.2.4";
+
+    /// Calls the seed and traps unless its first word is the fixed seed.
+    const CALL_SEED: &str = "i32.const 0 call $seed i32.const 0 i64.load \
+        i64.const 0x72756d6f63610002 i64.ne if unreachable end";
+    /// Calls the unrelated clock import, which certification must trap.
+    const CALL_CLOCK: &str = "call $now drop";
+
+    fn component(body: &str) -> String {
+        format!(
+            r#"(component
+  (import "{SEED}" (instance $seed-i
+    (export "insecure-seed" (func (result (tuple u64 u64))))))
+  (import "{CLOCK}" (instance $clock-i
+    (export "now" (func (result u64)))))
+  (core module $mem (memory (export "memory") 1))
+  (core instance $mem-i (instantiate $mem))
+  (core func $seed-lowered
+    (canon lower (func $seed-i "insecure-seed") (memory $mem-i "memory")))
+  (core func $now-lowered (canon lower (func $clock-i "now")))
+  (core module $m
+    (import "host" "seed" (func $seed (param i32)))
+    (import "host" "now" (func $now (result i64)))
+    (import "host" "memory" (memory 1))
+    (func (export "certify") {body}))
+  (core instance $host
+    (export "seed" (func $seed-lowered))
+    (export "now" (func $now-lowered))
+    (export "memory" (memory $mem-i "memory")))
+  (core instance $i (instantiate $m (with "host" (instance $host))))
+  (func (export "rumoca-certify-linked") (canon lift (core func $i "certify"))))"#
+        )
+    }
+
+    #[test]
+    fn the_fixture_imports_the_seed_the_runner_answers() {
+        assert!(SEED.starts_with(SEED_INTERFACE));
+        assert_eq!(CERTIFY_SEED.0, 0x7275_6d6f_6361_0002);
+    }
+
+    /// The refused order of the full chain: defining the seed instance before
+    /// stubbing makes the stub walk redefine it.
+    #[test]
+    fn defining_the_seed_before_stubbing_collides() {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).unwrap();
+        let component = Component::new(&engine, component(CALL_SEED)).unwrap();
+        let mut linker = Linker::<u64>::new(&engine);
+        linker
+            .instance(SEED)
+            .unwrap()
+            .func_wrap("insecure-seed", |_: StoreContextMut<'_, u64>, (): ()| {
+                Ok((CERTIFY_SEED,))
+            })
+            .unwrap();
+        let error = linker
+            .define_unknown_imports_as_traps(&component)
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!("map entry `{SEED}` defined twice")),
+            "{error:#}"
+        );
+    }
+
+    /// The seed answers the fixed constant: the export traps on any other
+    /// value, and on the stub trap if the seed instance were not replaced.
+    #[test]
+    fn certification_answers_the_fixed_seed() {
+        certify_linked_component(component(CALL_SEED).as_bytes()).unwrap();
+    }
+
+    /// Every unrelated import still traps, so certification reads nothing else.
+    #[test]
+    fn certification_traps_every_other_import() {
+        let refusal = certify_linked_component(component(CALL_CLOCK).as_bytes()).unwrap_err();
+        assert!(
+            refusal.starts_with("linked certification refused"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("unknown import"), "{refusal}");
+        assert!(refusal.contains(CLOCK), "{refusal}");
+    }
+}
+
 #[cfg(all(test, not(feature = "linked-build-certify")))]
 mod tests {
     /// Without the runner nothing is certified, so nothing linked publishes.
