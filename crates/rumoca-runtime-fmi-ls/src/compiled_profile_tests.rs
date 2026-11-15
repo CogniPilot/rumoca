@@ -1,24 +1,17 @@
 //! The published compiled guest enables no reference (interpreted) execution.
 //!
-//! A static walk of the manifests the guest builds with, from the published and
-//! certification product features through every production edge it activates
-//! for `wasm32-wasip2`, applying Cargo's default-feature inheritance. It guards
-//! the feature graph only: `cargo tree -e features` over the real resolve and a
-//! name census of the built cores remain the build-time proof.
+//! A bounded static walk of every workspace manifest: from the published and
+//! certification product features through each production dependency edge a
+//! `wasm32-wasip2` library build activates. Only workspace crates can enable
+//! the reference features, so the walk covers every crate that can. It applies
+//! Cargo's workspace default-feature inheritance. It skips dev-dependencies
+//! (including this workspace's self edges) and build-dependencies, which a
+//! non-test target build does not unify under resolver 2. It guards the
+//! feature graph only: `cargo tree -e features` over the real resolve and a
+//! name census of the built cores remain the build proof.
 
 use std::collections::{BTreeMap, BTreeSet};
-
-const WORKSPACE: &str = include_str!("../../../Cargo.toml");
-
-const MANIFESTS: [(&str, &str); 7] = [
-    ("rumoca-runtime-fmi-ls", include_str!("../Cargo.toml")),
-    ("rumoca-sim", include_str!("../../rumoca-sim/Cargo.toml")),
-    ("rumoca-exec-wasm", include_str!("../../rumoca-exec-wasm/Cargo.toml")),
-    ("rumoca-solver", include_str!("../../rumoca-solver/Cargo.toml")),
-    ("rumoca-solver-rk45", include_str!("../../rumoca-solver-rk45/Cargo.toml")),
-    ("rumoca-eval-solve", include_str!("../../rumoca-eval-solve/Cargo.toml")),
-    ("rumoca-phase-solve", include_str!("../../rumoca-phase-solve/Cargo.toml")),
-];
+use std::path::{Path, PathBuf};
 
 /// The features that compile reference execution into a crate.
 const REFERENCE: [(&str, &str); 3] = [
@@ -26,6 +19,21 @@ const REFERENCE: [(&str, &str); 3] = [
     ("rumoca-solver", "reference-execution"),
     ("rumoca-sim", "reference-execution"),
 ];
+
+/// The manifests the first static check whitelisted; the walk must reach
+/// beyond them.
+const FIRST_WHITELIST: [&str; 7] = [
+    "rumoca-runtime-fmi-ls",
+    "rumoca-sim",
+    "rumoca-exec-wasm",
+    "rumoca-solver",
+    "rumoca-solver-rk45",
+    "rumoca-eval-solve",
+    "rumoca-phase-solve",
+];
+
+const EVAL_REFERENCE_EDGE: &str =
+    "rumoca-eval-solve = { workspace = true, features = [\"reference-eval\"] }";
 
 struct Edge {
     dependency: String,
@@ -37,6 +45,36 @@ struct Edge {
 struct Manifest {
     features: BTreeMap<String, Vec<String>>,
     edges: Vec<Edge>,
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The workspace manifest and every member manifest, keyed by package name.
+fn read_workspace() -> (String, BTreeMap<String, String>) {
+    let root = workspace_root();
+    let workspace = std::fs::read_to_string(root.join("Cargo.toml")).expect("workspace manifest");
+    let mut members = BTreeMap::new();
+    for entry in std::fs::read_dir(root.join("crates")).expect("crates directory") {
+        let path = entry.expect("crate entry").path().join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            members.insert(package_name(&text), text);
+        }
+    }
+    (workspace, members)
+}
+
+fn package_name(manifest: &str) -> String {
+    let package = manifest
+        .split("[package]")
+        .nth(1)
+        .expect("a [package] table");
+    let line = package
+        .lines()
+        .find(|line| line.trim_start().starts_with("name = "))
+        .expect("a package name");
+    quoted(line).remove(0)
 }
 
 fn quoted(text: &str) -> Vec<String> {
@@ -63,65 +101,118 @@ fn edge_features(body: &str) -> Vec<String> {
     Vec::new()
 }
 
-/// Whether a dependency table under `section` is linked into a
-/// `wasm32-wasip2` production build.
-fn production_section_for_wasip2(section: &str) -> bool {
+fn cfg_call<'a>(predicate: &'a str, name: &str) -> Option<&'a str> {
+    predicate
+        .strip_prefix(name)?
+        .trim_start()
+        .strip_prefix('(')?
+        .strip_suffix(')')
+}
+
+fn cfg_arguments(inner: &str) -> Vec<&str> {
+    let mut arguments = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (index, character) in inner.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                arguments.push(inner[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments.push(inner[start..].trim());
+    arguments
+}
+
+/// The workspace's `cfg(..)` target predicates, evaluated for `wasm32-wasip2`.
+/// An unrecognized predicate fails the check instead of guessing.
+fn cfg_holds(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if let Some(inner) = cfg_call(predicate, "all") {
+        return cfg_arguments(inner).into_iter().all(cfg_holds);
+    }
+    if let Some(inner) = cfg_call(predicate, "any") {
+        return cfg_arguments(inner).into_iter().any(cfg_holds);
+    }
+    if let Some(inner) = cfg_call(predicate, "not") {
+        return !cfg_holds(inner);
+    }
+    let Some((key, value)) = predicate.split_once('=') else {
+        return match predicate {
+            "unix" | "windows" | "kani" | "test" => false,
+            other => panic!("unrecognized cfg predicate `{other}`"),
+        };
+    };
+    let value = quoted(value).remove(0);
+    match key.trim() {
+        "target_arch" => value == "wasm32",
+        "target_os" => value == "wasi",
+        "target_env" => value == "p2",
+        "target_family" => value == "wasm",
+        other => panic!("unrecognized cfg key `{other}`"),
+    }
+}
+
+/// Whether a dependency table under `section` is in a `wasm32-wasip2`
+/// production build. Dev- and build-dependency tables never are.
+fn production_section(section: &str) -> bool {
     if section == "[dependencies]" {
         return true;
     }
-    if !section.starts_with("[target.") || !section.ends_with(".dependencies]") {
-        return false;
-    }
-    !section.contains("not(target_arch = \"wasm32\")")
-        && !section.contains("target_os = \"unknown\"")
+    section
+        .strip_prefix("[target.'cfg(")
+        .and_then(|rest| rest.strip_suffix(")'.dependencies]"))
+        .is_some_and(cfg_holds)
 }
 
-fn workspace_default_features(dependency: &str) -> bool {
+fn workspace_default_features(workspace: &str, dependency: &str) -> bool {
     let prefix = format!("{dependency} = ");
-    WORKSPACE
+    workspace
         .lines()
         .find(|line| line.starts_with(&prefix))
         .is_none_or(|line| !line.contains("default-features = false"))
 }
 
-fn parse(names: &BTreeSet<&str>, text: &str) -> Manifest {
-    let mut features = BTreeMap::new();
-    let mut edges = Vec::new();
-    let mut section = String::new();
-    let mut open: Option<(String, String)> = None;
+/// Complete logical entries: an array or inline table that spans lines is
+/// joined into one entry.
+fn entries(text: &str) -> Vec<String> {
+    let mut joined = Vec::new();
+    let mut open = String::new();
     for line in text.lines() {
         let line = line.trim();
-        if let Some((name, mut list)) = open.take() {
-            list.push_str(line);
-            if line.contains(']') {
-                features.insert(name, quoted(&list));
-            } else {
-                open = Some((name, list));
-            }
-            continue;
-        }
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // A key line never starts with `[`; a target header may contain `=`.
-        if line.starts_with('[') {
-            section = line.to_string();
+        open.push_str(line);
+        let depth = open.matches(['[', '{']).count();
+        if depth <= open.matches([']', '}']).count() || open.starts_with('[') {
+            joined.push(std::mem::take(&mut open));
+        }
+    }
+    joined
+}
+
+fn parse(workspace: &str, names: &BTreeSet<String>, text: &str) -> Manifest {
+    let mut features = BTreeMap::new();
+    let mut edges = Vec::new();
+    let mut section = String::new();
+    for entry in entries(text) {
+        if entry.starts_with('[') {
+            section = entry;
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        let Some((key, value)) = entry.split_once('=') else {
             continue;
         };
         let (key, value) = (key.trim(), value.trim());
         if section == "[features]" {
-            if value.contains(']') {
-                features.insert(key.to_string(), quoted(value));
-            } else {
-                open = Some((key.to_string(), value.to_string()));
-            }
-        } else if production_section_for_wasip2(&section) && names.contains(key) {
-            let inherited = value.contains("workspace = true");
-            let default_features = if inherited {
-                workspace_default_features(key)
+            features.insert(key.to_string(), quoted(value));
+        } else if production_section(&section) && names.contains(key) {
+            let default_features = if value.contains("workspace = true") {
+                workspace_default_features(workspace, key)
             } else {
                 !value.contains("default-features = false")
             };
@@ -143,11 +234,11 @@ struct Closure {
 }
 
 impl Closure {
-    fn new() -> Self {
-        let names = MANIFESTS.iter().map(|(name, _)| *name).collect();
-        let manifests = MANIFESTS
+    fn new(workspace: &str, members: &BTreeMap<String, String>) -> Self {
+        let names = members.keys().cloned().collect();
+        let manifests = members
             .iter()
-            .map(|(name, text)| (name.to_string(), parse(&names, text)))
+            .map(|(name, text)| (name.clone(), parse(workspace, &names, text)))
             .collect();
         Self {
             manifests,
@@ -238,44 +329,66 @@ impl Closure {
     }
 }
 
-fn product_closure(feature: &str) -> Closure {
-    let mut closure = Closure::new();
+/// The guest closure: the published core (`scalar-linked-product`), or the
+/// certifying core (with `certify-linked`, as the packager runner builds it).
+fn guest_closure(
+    workspace: &str,
+    members: &BTreeMap<String, String>,
+    certify: bool,
+) -> Closure {
+    let mut closure = Closure::new(workspace, members);
     closure.activate("rumoca-runtime-fmi-ls", true);
-    closure.enable("rumoca-runtime-fmi-ls", feature);
+    closure.enable("rumoca-runtime-fmi-ls", "scalar-linked-product");
+    if certify {
+        closure.enable("rumoca-runtime-fmi-ls", "certify-linked");
+    }
     closure
+}
+
+/// A crate the guest reaches only beyond the first whitelist.
+fn crate_beyond_first_whitelist(closure: &Closure) -> String {
+    closure
+        .active
+        .iter()
+        .find(|krate| !FIRST_WHITELIST.contains(&krate.as_str()))
+        .cloned()
+        .expect("the guest reaches a crate beyond the first whitelist")
+}
+
+fn insert_production_edge(members: &mut BTreeMap<String, String>, krate: &str, edge: &str) {
+    let manifest = members.get_mut(krate).expect("a workspace member");
+    assert!(manifest.contains("\n[dependencies]\n"), "{krate} has no [dependencies]");
+    *manifest = manifest.replacen("\n[dependencies]\n", &format!("\n[dependencies]\n{edge}\n"), 1);
 }
 
 #[test]
 fn the_published_and_certification_guests_enable_no_reference_execution() {
-    // The published core builds the product feature; the certifying core
-    // builds it with `certify-linked` (the packager runner).
-    for extra in [None, Some("certify-linked")] {
-        let mut closure = product_closure("scalar-linked-product");
-        if let Some(extra) = extra {
-            closure.enable("rumoca-runtime-fmi-ls", extra);
-        }
-        let feature = extra.unwrap_or("scalar-linked-product");
+    let (workspace, members) = read_workspace();
+    for certify in [false, true] {
+        let closure = guest_closure(&workspace, &members, certify);
         // The walk reached the compiled guest it guards, not an empty graph.
-        for krate in ["rumoca-sim", "rumoca-solver", "rumoca-solver-rk45", "rumoca-eval-solve"] {
-            assert!(closure.active.contains(krate), "{feature}: {krate} not reached");
+        for krate in FIRST_WHITELIST {
+            assert!(closure.active.contains(krate), "certify={certify}: {krate} not reached");
         }
+        crate_beyond_first_whitelist(&closure);
         assert!(
             closure
                 .enabled
                 .contains(&("rumoca-sim".to_string(), "linked-guest".to_string())),
-            "{feature}: the linked guest feature is not reached"
+            "certify={certify}: the linked guest feature is not reached"
         );
         assert_eq!(
             closure.reference_features(),
             Vec::<(String, String)>::new(),
-            "{feature}: the published compiled guest enables reference execution"
+            "certify={certify}: the published compiled guest enables reference execution"
         );
     }
 }
 
 #[test]
 fn the_walk_finds_reference_execution_where_a_host_feature_enables_it() {
-    let mut closure = Closure::new();
+    let (workspace, members) = read_workspace();
+    let mut closure = Closure::new(&workspace, &members);
     closure.activate("rumoca-sim", true);
     let found = closure.reference_features();
     for expected in REFERENCE {
@@ -284,4 +397,43 @@ fn the_walk_finds_reference_execution_where_a_host_feature_enables_it() {
             "the host simulation default must reach {expected:?}"
         );
     }
+}
+
+#[test]
+fn an_edge_from_a_crate_beyond_the_first_whitelist_is_found() {
+    let (workspace, mut members) = read_workspace();
+    let deep = crate_beyond_first_whitelist(&guest_closure(&workspace, &members, false));
+    insert_production_edge(&mut members, &deep, EVAL_REFERENCE_EDGE);
+    let found = guest_closure(&workspace, &members, false).reference_features();
+    assert!(
+        found.contains(&("rumoca-eval-solve".to_string(), "reference-eval".to_string())),
+        "an omitted edge from {deep} enabling reference-eval must be found"
+    );
+}
+
+#[test]
+fn dev_self_edges_are_skipped_and_inherited_defaults_are_followed() {
+    let (workspace, mut members) = read_workspace();
+    // The solver's own tests opt in through a dev self edge, which a non-test
+    // build of the guest does not unify.
+    assert!(
+        members["rumoca-solver"]
+            .contains("rumoca-solver = { path = \".\", features = [\"reference-execution\"] }"),
+        "the solver's test-only self edge is the one under check"
+    );
+    // The guest reaches the solver through inherited-default edges
+    // (solver-rk45), so a default that carried reference execution is found.
+    let manifest = members.get_mut("rumoca-solver").expect("the solver manifest");
+    let default = "default = [\"sparse-linalg\"]";
+    assert!(manifest.contains(default), "the solver default under check");
+    *manifest = manifest.replacen(
+        default,
+        "default = [\"sparse-linalg\", \"reference-execution\"]",
+        1,
+    );
+    let found = guest_closure(&workspace, &members, false).reference_features();
+    assert!(
+        found.contains(&("rumoca-solver".to_string(), "reference-execution".to_string())),
+        "a reference default inherited by the guest must be found"
+    );
 }
