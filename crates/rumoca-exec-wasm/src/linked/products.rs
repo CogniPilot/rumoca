@@ -302,9 +302,11 @@ impl LinkedArtifact {
     ///
     /// The entries and typed tables move into the carried plan instead of
     /// being copied: a trusted admission is bound by position and never
-    /// certifies, so its artifact keeps only the modules and dispatch, and
-    /// [`LinkedAdmission::certify_prefix`] or [`LinkedAdmission::finish`] on
-    /// it refuses.
+    /// certifies, so its artifact keeps only the modules and dispatch.
+    /// [`LinkedAdmission::certify_prefix`] and [`LinkedAdmission::finish`]
+    /// compare against the artifact's own entry and table records, so they
+    /// belong to a certifying admission ([`Self::admit`]) and say nothing
+    /// about a trusted one.
     pub fn admit_trusted(mut self) -> Result<LinkedAdmission, WasmCompileError> {
         if self.version != LINKED_ARTIFACT_VERSION {
             return Err(refusal("linked artifact belongs to another saved product"));
