@@ -108,6 +108,94 @@ where
         .map_err(serde::de::Error::custom)
 }
 
+/// Bytes of each wire shown from the first difference on.
+const DIFFERENCE_WINDOW: usize = 120;
+/// Innermost path segments shown; deeper prefixes are counted, not printed.
+const DIFFERENCE_PATH_SEGMENTS: usize = 12;
+
+/// Where two canonical wires first differ, without parsing either: when both
+/// come from this module's serializer, so their first differing byte is the first
+/// difference in document order. The JSON path to it is read from the saved
+/// prefix by a flat scan (expression trees are deeper than any stack allows
+/// recursion for), and both wires are shown as bounded byte windows.
+pub fn first_wire_difference(saved: &[u8], packaged: &[u8]) -> String {
+    let offset = saved
+        .iter()
+        .zip(packaged)
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| saved.len().min(packaged.len()));
+    let segments = json_path_at(&saved[..offset]);
+    let skipped = segments.len().saturating_sub(DIFFERENCE_PATH_SEGMENTS);
+    let tail = segments[skipped..].join("/");
+    let path = if skipped == 0 {
+        format!("/{tail}")
+    } else {
+        format!("/...({skipped} more levels)/{tail}")
+    };
+    format!(
+        "at {path}: saved {} packaged {}",
+        byte_window(saved, offset),
+        byte_window(packaged, offset)
+    )
+}
+
+fn byte_window(bytes: &[u8], from: usize) -> String {
+    let end = from.saturating_add(DIFFERENCE_WINDOW).min(bytes.len());
+    let text = String::from_utf8_lossy(&bytes[from.min(end)..end]);
+    if end < bytes.len() {
+        format!("{text}...")
+    } else {
+        text.into_owned()
+    }
+}
+
+/// The object keys and array indices open at the end of `prefix`, a prefix of
+/// one compact JSON document, outermost first. Strings are skipped with their
+/// escapes, so brackets and commas inside them do not count.
+fn json_path_at(prefix: &[u8]) -> Vec<String> {
+    enum Open {
+        Object(Option<String>),
+        Array(usize),
+    }
+    let mut open = Vec::new();
+    let mut at = 0;
+    while at < prefix.len() {
+        match prefix[at] {
+            b'{' => open.push(Open::Object(None)),
+            b'[' => open.push(Open::Array(0)),
+            b'}' | b']' => {
+                open.pop();
+            }
+            b',' => {
+                if let Some(Open::Array(index)) = open.last_mut() {
+                    *index += 1;
+                }
+            }
+            b'"' => {
+                let start = at + 1;
+                at = start;
+                while at < prefix.len() && prefix[at] != b'"' {
+                    at += if prefix[at] == b'\\' { 2 } else { 1 };
+                }
+                let end = at.min(prefix.len());
+                if prefix.get(at + 1) == Some(&b':')
+                    && let Some(Open::Object(key)) = open.last_mut()
+                {
+                    *key = Some(String::from_utf8_lossy(&prefix[start..end]).into_owned());
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    open.into_iter()
+        .map(|entry| match entry {
+            Open::Object(key) => key.unwrap_or_default(),
+            Open::Array(index) => index.to_string(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +211,41 @@ mod tests {
             format!("FMI component wire is invalid: {inner}")
         );
         assert_eq!(error.source().unwrap().to_string(), inner);
+    }
+
+    #[test]
+    fn the_first_differing_path_is_named_in_document_order() {
+        let saved = br#"{"a":1,"b":{"c":[1,2,{"d":"x"}],"e":5}}"#;
+        let packaged = br#"{"a":1,"b":{"c":[1,2,{"d":"y"}],"e":6}}"#;
+        assert_eq!(
+            first_wire_difference(saved, packaged),
+            r#"at /b/c/2/d: saved x"}],"e":5}} packaged y"}],"e":6}}"#
+        );
+        assert_eq!(
+            first_wire_difference(
+                br#"{"k":"a,]\"b","v":[1,2]}"#,
+                br#"{"k":"a,]\"b","v":[1,3]}"#
+            ),
+            "at /v/1: saved 2]} packaged 3]}"
+        );
+        assert_eq!(
+            first_wire_difference(b"[1,2]", b"[1,2,3]"),
+            "at /1: saved ] packaged ,3]"
+        );
+    }
+
+    /// A difference at the bottom of a nesting far deeper than any thread
+    /// stack is found without recursion, and the message stays bounded.
+    #[test]
+    fn a_difference_under_deep_nesting_is_reported_without_recursion_and_bounded() {
+        const DEPTH: usize = 200_000;
+        let nested = |leaf: &str| format!("{}{leaf}{}", "[".repeat(DEPTH), "]".repeat(DEPTH));
+        let report = first_wire_difference(nested("1").as_bytes(), nested("2").as_bytes());
+        assert!(
+            report.starts_with("at /...(199988 more levels)/0/0/0/0/0/0/0/0/0/0/0/0: saved 1]"),
+            "{}",
+            &report[..report.len().min(200)]
+        );
+        assert!(report.len() < 400, "{}", report.len());
     }
 }

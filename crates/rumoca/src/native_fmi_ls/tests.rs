@@ -722,4 +722,33 @@ fn the_export_and_the_linked_packager_construct_the_same_component() {
     )
     .unwrap();
     assert_eq!(exported_wire, packaged.capsule_bytes());
+    // The packager's own guard admits the export's component.
+    packaged.check_component(&exported).unwrap();
+}
+
+/// The same sources compiled under another companion document name give a
+/// component the packager's guard refuses with its first differing canonical
+/// path: the naming difference r10 stage 11 hit, through the actual guard.
+#[test]
+fn the_same_sources_under_another_companion_name_are_refused_at_a_span_source() {
+    let options = ScalarPackageOptions::parse(
+        &PAGE_OPTIONS.replace(r#""parameters":{"k":2.0}"#, r#""parameters":{}"#),
+    )
+    .unwrap();
+    let component = |companion: &str| {
+        let (dae, _) =
+            compile_linked_package_source(LINKED_MAIN, "M", &linked_workspace(companion)).unwrap();
+        rumoca_sim::scalar_package_component(&dae, options.sim_options()).unwrap()
+    };
+    let packaged =
+        rumoca_sim::PreparedScalarFmiLsModel::from_component(&component("Lib.mo")).unwrap();
+    packaged.check_component(&component("Lib.mo")).unwrap();
+    let refusal = packaged
+        .check_component(&component("Library.mo"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("differs from the component this FMU packages; first difference at /"),
+        "{refusal}"
+    );
 }

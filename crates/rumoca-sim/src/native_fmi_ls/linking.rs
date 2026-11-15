@@ -133,6 +133,16 @@ impl PreparedScalarFmiLsModel {
         check_saved_component(saved, &self.capsule).map_err(NativeFmiLsPreparationError::Linkage)
     }
 
+    /// The comparison `check_saved_product` makes once the saved product's
+    /// component is decoded: `saved` must be this component in the canonical
+    /// wire, and a refusal names the first difference.
+    pub fn check_component(
+        &self,
+        saved: &rumoca_ir_solve::fmi::FmiComponent,
+    ) -> Result<(), NativeFmiLsPreparationError> {
+        check_component(saved, &self.capsule).map_err(NativeFmiLsPreparationError::Linkage)
+    }
+
     /// Pair the scalar core with this component's own source data. The core
     /// must have been built for the scalar product; the scalar receiver then
     /// refuses a component of the other kind at instantiation.
@@ -256,6 +266,16 @@ fn check_saved_component(saved: &[u8], capsule: &[u8]) -> Result<(), String> {
             product.version
         ));
     }
+    check_component(&product.component, capsule)
+}
+
+/// Refuse unless `saved`, the component a saved product carries, is the
+/// capsule's component, compared in the canonical wire; a refusal names the
+/// first difference.
+fn check_component(
+    saved: &rumoca_ir_solve::fmi::FmiComponent,
+    capsule: &[u8],
+) -> Result<(), String> {
     // Read as the guest receiver replays the capsule: no recursion limit,
     // nothing after the component.
     let mut capsule_reader = serde_json::Deserializer::from_slice(capsule);
@@ -265,104 +285,16 @@ fn check_saved_component(saved: &[u8], capsule: &[u8]) -> Result<(), String> {
     capsule_reader
         .end()
         .map_err(|error| format!("decode packaged capsule: {error}"))?;
-    let saved_wire = canonical_wire(&product.component)?;
+    let saved_wire = canonical_wire(saved)?;
     let packaged_wire = canonical_wire(&packaged)?;
     if saved_wire != packaged_wire {
         return Err(format!(
             "the saved product's component differs from the component this FMU packages; \
              first difference {}",
-            first_difference(&saved_wire, &packaged_wire)
+            rumoca_eval_solve::fmi_wire::first_wire_difference(&saved_wire, &packaged_wire)
         ));
     }
     Ok(())
-}
-
-/// Bytes of each wire shown from the first difference on.
-const DIFFERENCE_WINDOW: usize = 120;
-/// Innermost path segments shown; deeper prefixes are counted, not printed.
-const DIFFERENCE_PATH_SEGMENTS: usize = 12;
-
-/// Where two canonical wires first differ, without parsing either: both come
-/// from the same serializer, so their first differing byte is the first
-/// difference in document order. The JSON path to it is read from the saved
-/// prefix by a flat scan (expression trees are deeper than any stack allows
-/// recursion for), and both wires are shown as bounded byte windows.
-fn first_difference(saved: &[u8], packaged: &[u8]) -> String {
-    let offset = saved
-        .iter()
-        .zip(packaged)
-        .position(|(a, b)| a != b)
-        .unwrap_or_else(|| saved.len().min(packaged.len()));
-    let segments = json_path_at(&saved[..offset]);
-    let skipped = segments.len().saturating_sub(DIFFERENCE_PATH_SEGMENTS);
-    let tail = segments[skipped..].join("/");
-    let path = if skipped == 0 {
-        format!("/{tail}")
-    } else {
-        format!("/...({skipped} more levels)/{tail}")
-    };
-    format!(
-        "at {path}: saved {} packaged {}",
-        byte_window(saved, offset),
-        byte_window(packaged, offset)
-    )
-}
-
-fn byte_window(bytes: &[u8], from: usize) -> String {
-    let end = from.saturating_add(DIFFERENCE_WINDOW).min(bytes.len());
-    let text = String::from_utf8_lossy(&bytes[from.min(end)..end]);
-    if end < bytes.len() {
-        format!("{text}...")
-    } else {
-        text.into_owned()
-    }
-}
-
-/// The object keys and array indices open at the end of `prefix`, a prefix of
-/// one compact JSON document, outermost first. Strings are skipped with their
-/// escapes, so brackets and commas inside them do not count.
-fn json_path_at(prefix: &[u8]) -> Vec<String> {
-    enum Open {
-        Object(Option<String>),
-        Array(usize),
-    }
-    let mut open = Vec::new();
-    let mut at = 0;
-    while at < prefix.len() {
-        match prefix[at] {
-            b'{' => open.push(Open::Object(None)),
-            b'[' => open.push(Open::Array(0)),
-            b'}' | b']' => {
-                open.pop();
-            }
-            b',' => {
-                if let Some(Open::Array(index)) = open.last_mut() {
-                    *index += 1;
-                }
-            }
-            b'"' => {
-                let start = at + 1;
-                at = start;
-                while at < prefix.len() && prefix[at] != b'"' {
-                    at += if prefix[at] == b'\\' { 2 } else { 1 };
-                }
-                let end = at.min(prefix.len());
-                if prefix.get(at + 1) == Some(&b':')
-                    && let Some(Open::Object(key)) = open.last_mut()
-                {
-                    *key = Some(String::from_utf8_lossy(&prefix[start..end]).into_owned());
-                }
-            }
-            _ => {}
-        }
-        at += 1;
-    }
-    open.into_iter()
-        .map(|entry| match entry {
-            Open::Object(key) => key.unwrap_or_default(),
-            Open::Array(index) => index.to_string(),
-        })
-        .collect()
 }
 
 fn canonical_wire(component: &rumoca_ir_solve::fmi::FmiComponent) -> Result<Vec<u8>, String> {
@@ -405,128 +337,4 @@ fn link_linked(data: &[u8], bodies: &[&[u8]], runtime: &[u8]) -> Result<Vec<u8>,
         .collect();
     link_single_provider_graph(&libraries)
         .map_err(|error| format!("link scalar-linked fixed FMI-LS graph: {error}"))
-}
-
-#[cfg(test)]
-mod first_difference_tests {
-    use super::first_difference;
-
-    #[test]
-    fn the_first_differing_path_is_named_in_document_order() {
-        let saved = br#"{"a":1,"b":{"c":[1,2,{"d":"x"}],"e":5}}"#;
-        let packaged = br#"{"a":1,"b":{"c":[1,2,{"d":"y"}],"e":6}}"#;
-        assert_eq!(
-            first_difference(saved, packaged),
-            r#"at /b/c/2/d: saved x"}],"e":5}} packaged y"}],"e":6}}"#
-        );
-        assert_eq!(
-            first_difference(
-                br#"{"k":"a,]\"b","v":[1,2]}"#,
-                br#"{"k":"a,]\"b","v":[1,3]}"#
-            ),
-            "at /v/1: saved 2]} packaged 3]}"
-        );
-        assert_eq!(
-            first_difference(b"[1,2]", b"[1,2,3]"),
-            "at /1: saved ] packaged ,3]"
-        );
-    }
-
-    /// A difference at the bottom of a nesting far deeper than any thread
-    /// stack is found without recursion, and the message stays bounded.
-    #[test]
-    fn a_difference_under_deep_nesting_is_reported_without_recursion_and_bounded() {
-        const DEPTH: usize = 200_000;
-        let nested = |leaf: &str| format!("{}{leaf}{}", "[".repeat(DEPTH), "]".repeat(DEPTH));
-        let report = first_difference(nested("1").as_bytes(), nested("2").as_bytes());
-        assert!(
-            report.starts_with("at /...(199988 more levels)/0/0/0/0/0/0/0/0/0/0/0/0: saved 1]"),
-            "{}",
-            &report[..report.len().min(200)]
-        );
-        assert!(report.len() < 400, "{}", report.len());
-    }
-}
-
-#[cfg(test)]
-mod saved_product_tests {
-    use super::*;
-    use rumoca_compile::compile::{Session, SessionConfig};
-    use rumoca_ir_solve::fmi::FmiComponent;
-
-    fn decay(start: &str) -> FmiComponent {
-        let mut session = Session::new(SessionConfig::default());
-        let source = format!(
-            "model Decay\n  Real x(start = {start});\nequation\n  der(x) = -x;\nend Decay;\n"
-        );
-        session.add_document("decay.mo", &source).unwrap();
-        let dae = session.compile_model("Decay").unwrap().dae;
-        crate::lower_fmi_scalar_export_component(&dae, &crate::SimOptions::default()).unwrap()
-    }
-
-    /// A saved product as the export writes its leading fields: the wire
-    /// version and the component on the canonical wire, in a named map.
-    fn saved(component: &FmiComponent) -> Vec<u8> {
-        #[derive(serde::Serialize)]
-        struct Saved<'a> {
-            version: u32,
-            component: rumoca_eval_solve::fmi_wire::FmiComponentWireRef<'a>,
-        }
-        let root = component.runtime_view().retain_assertion_root();
-        let component = rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).unwrap();
-        rmp_serde::to_vec_named(&Saved {
-            version: SAVED_PRODUCT_VERSION,
-            component,
-        })
-        .unwrap()
-    }
-
-    /// The prepared model refuses a saved product of another component on its
-    /// own, with no fixed guest core in hand, and names the first differing
-    /// canonical field; its own component's saved product is admitted.
-    #[test]
-    fn a_saved_product_of_another_component_is_refused_before_any_guest_is_built() {
-        let packaged = decay("1");
-        let prepared = PreparedScalarFmiLsModel::from_component(&packaged).unwrap();
-        prepared.check_saved_product(&saved(&packaged)).unwrap();
-        let refusal = prepared
-            .check_saved_product(&saved(&decay("2")))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refusal.contains("differs from the component this FMU packages; first difference at /"),
-            "{refusal}"
-        );
-    }
-
-    /// The same sources compiled under another companion document name lower
-    /// to a component whose span source ids differ, and the prepared model
-    /// refuses its saved product at a span's `source` field.
-    #[test]
-    fn the_same_sources_under_another_companion_name_are_refused_at_a_span_source() {
-        let decay_from = |companion: &str| {
-            let library = "package Lib\n  model Decay\n    Real x(start = 1);\n  equation\n    \
-                           der(x) = -x;\n  end Decay;\nend Lib;\n";
-            let mut set = serde_json::Map::new();
-            set.insert(companion.into(), library.into());
-            let dae = rumoca_compile::compile::compile_source_set(
-                "model M\n  Lib.Decay d;\nend M;\n",
-                "M",
-                &serde_json::Value::Object(set).to_string(),
-            )
-            .unwrap()
-            .dae;
-            crate::lower_fmi_scalar_export_component(&dae, &crate::SimOptions::default()).unwrap()
-        };
-        let packaged = decay_from("Lib.mo");
-        let prepared = PreparedScalarFmiLsModel::from_component(&packaged).unwrap();
-        prepared
-            .check_saved_product(&saved(&decay_from("Lib.mo")))
-            .unwrap();
-        let refusal = prepared
-            .check_saved_product(&saved(&decay_from("Library.mo")))
-            .unwrap_err()
-            .to_string();
-        assert!(refusal.contains("/source: saved "), "{refusal}");
-    }
 }
