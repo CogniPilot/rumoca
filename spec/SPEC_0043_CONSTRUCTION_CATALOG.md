@@ -1390,6 +1390,7 @@ prohibited. The code constant is authoritative.
 | Non-dense key duplicates fail before insertion | DAE serde | Maps cannot hide malformed input |
 | Derived counts and indexes are absent from wire | Private wire types | Caches cannot be forged |
 | Invariant-bearing children have no fieldwise `Deserialize` | IR serde | Bytes cannot bypass checks |
+| A build-certified replay runs every construction derivation of the checked decode and omits only its validators; only a published linked guest reads its own internal capsule this way (SPEC_0044 ME-LSW-004) | `SolveProblem` / FMI component replay | Its build replayed the same bytes checked before publication |
 
 `flat::Model`, `Dae`, and `SolveProblem` deserialize only private current-version
 records through checked construction; children prohibit fieldwise `Deserialize`.

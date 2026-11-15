@@ -253,7 +253,7 @@ change/receipt registries, generation tokens, and post-rewrite validation are pr
 
 ### Serialization
 
-Only the current wire exists; older payloads, adapters, migration readers and dual writes are prohibited. [SPEC_0043 catalog §15](SPEC_0043_CONSTRUCTION_CATALOG.md#15-serialization-catalog) is normative by reference.
+Only the current wire exists; older payloads, adapters, migration readers and dual writes are prohibited. Decode is checked construction; the one build-certified replay, of a published linked guest's own internal capsule, keeps every derivation and omits only re-validation (SPEC_0044 ME-LSW-004). [SPEC_0043 catalog §15](SPEC_0043_CONSTRUCTION_CATALOG.md#15-serialization-catalog) is normative by reference.
 
 ### Other IR Boundaries
 

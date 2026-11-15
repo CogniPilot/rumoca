@@ -127,10 +127,14 @@ fn check_publication_token(expected: &str, token: &str) -> Result<(), WasmCompil
 
 /// Fixed-core bootstrap of a scalar product. Like the native receiver it
 /// replays the linked capsule and reads the linked token; it never asks for a
-/// native preparation, so a stateful component is not refused here.
+/// native preparation, so a stateful component is not refused here. `proof`
+/// is `BuildCertified` only in a published linked guest, whose build replayed
+/// this same capsule `Checked` before publication (SPEC_0044 ME-LSW-004).
 #[doc(hidden)]
-pub fn receive_fixed_scalar_guest_model() -> Result<LinkedScalarGuestModel, WasmCompileError> {
-    let (component, _capacity) = replay_linked_source()?;
+pub fn receive_fixed_scalar_guest_model(
+    proof: rumoca_ir_solve::CapsuleReplay,
+) -> Result<LinkedScalarGuestModel, WasmCompileError> {
+    let (component, _capacity) = replay_linked_source(proof)?;
     // The product kind must agree with the received component: one the
     // stateless native profile admits belongs to that profile, not this one.
     if component
@@ -168,7 +172,7 @@ fn publication_token() -> Result<String, WasmCompileError> {
 /// The trusted graph binds these internal slots; no caller supplies either half.
 #[doc(hidden)]
 pub fn receive_fixed_native_guest_model() -> Result<LinkedNativeGuestModel, WasmCompileError> {
-    let (component, policy) = replay_linked_source()?;
+    let (component, policy) = replay_linked_source(rumoca_ir_solve::CapsuleReplay::Checked)?;
     let publication_token = publication_token()?;
     let inputs = component
         .runtime_view()
@@ -188,16 +192,24 @@ pub fn receive_fixed_native_guest_model() -> Result<LinkedNativeGuestModel, Wasm
     })
 }
 
-fn replay_linked_source()
--> Result<(FmiComponent, crate::CheckedNativeWasmCapacityPolicy), WasmCompileError> {
+fn replay_linked_source(
+    proof: rumoca_ir_solve::CapsuleReplay,
+) -> Result<(FmiComponent, crate::CheckedNativeWasmCapacityPolicy), WasmCompileError> {
     let bytes = slot_bytes(SourceSlot::Capsule)?;
     let (capsule, policy) =
         crate::decode_native_source_envelope(&bytes).map_err(WasmCompileError::Input)?;
     drop(bytes);
     let mut reader = serde_json::Deserializer::from_slice(&capsule);
     reader.disable_recursion_limit();
-    let component = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut reader)
-        .map_err(|error| WasmCompileError::Input(error.to_string()))?;
+    let component = match proof {
+        rumoca_ir_solve::CapsuleReplay::Checked => {
+            rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut reader)
+        }
+        rumoca_ir_solve::CapsuleReplay::BuildCertified => {
+            rumoca_eval_solve::fmi_wire::deserialize_build_certified_fmi_component(&mut reader)
+        }
+    }
+    .map_err(|error| WasmCompileError::Input(error.to_string()))?;
     reader
         .end()
         .map_err(|error| WasmCompileError::Input(error.to_string()))?;

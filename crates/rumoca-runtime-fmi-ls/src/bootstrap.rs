@@ -32,9 +32,32 @@ thread_local! {
 
 fn with_model<T>(query: impl FnOnce(&GuestModel) -> Result<T, String>) -> Result<T, String> {
     MODEL.with(
-        |slot| match slot.get_or_init(|| receive().map_err(|error| error.to_string())) {
+        |slot| match slot.get_or_init(|| receive_model().map_err(|error| error.to_string())) {
             Ok(model) => query(model),
             Err(error) => Err(error.clone()),
+        },
+    )
+}
+
+#[cfg(not(any(feature = "scalar-product", feature = "scalar-linked-product")))]
+fn receive_model() -> Result<GuestModel, rumoca_exec_wasm::WasmCompileError> {
+    receive()
+}
+
+/// How this guest replays its capsule (SPEC_0044 ME-LSW-004). Only a
+/// published linked guest replays it build-certified: its build ran the
+/// certify core, which replays the same capsule checked, before publication.
+#[cfg(any(feature = "scalar-product", feature = "scalar-linked-product"))]
+fn receive_model() -> Result<GuestModel, rumoca_exec_wasm::WasmCompileError> {
+    use rumoca_ir_solve::CapsuleReplay;
+    receive(
+        if cfg!(all(
+            feature = "scalar-linked-product",
+            not(feature = "certify-linked")
+        )) {
+            CapsuleReplay::BuildCertified
+        } else {
+            CapsuleReplay::Checked
         },
     )
 }

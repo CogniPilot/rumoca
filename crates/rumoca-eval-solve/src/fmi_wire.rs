@@ -80,32 +80,89 @@ struct FmiComponentWire {
     co_simulation: Option<CoSimulationStepPlan>,
 }
 
+/// The same current wire, its model replayed build-certified.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildCertifiedFmiComponentWire {
+    schema_version: u16,
+    #[serde(deserialize_with = "crate::model_wire::deserialize_build_certified_solve_model")]
+    solve_model: rumoca_ir_solve::SolveModel,
+    variables: Vec<FmiVariableInput>,
+    #[serde(default)]
+    co_simulation: Option<CoSimulationStepPlan>,
+}
+
 /// Replay the canonical FMI wire through the same checked component
 /// construction used by fresh lowering.
 pub fn deserialize_fmi_component<'de, D>(deserializer: D) -> Result<FmiComponent, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let wire = FmiComponentWire::deserialize(deserializer)?;
-    if wire.schema_version != FMI_COMPONENT_SCHEMA_VERSION {
-        return Err(serde::de::Error::custom(format!(
-            "unsupported FMI component schema {}; expected {}",
-            wire.schema_version, FMI_COMPONENT_SCHEMA_VERSION
-        )));
+    let FmiComponentWire {
+        schema_version,
+        solve_model,
+        variables,
+        co_simulation,
+    } = FmiComponentWire::deserialize(deserializer)?;
+    replay_fmi_component(
+        schema_version,
+        solve_model,
+        variables,
+        co_simulation,
+        rumoca_ir_solve::CapsuleReplay::Checked,
+    )
+    .map_err(serde::de::Error::custom)
+}
+
+/// [`deserialize_fmi_component`] of the internal capsule of a published
+/// linked guest, whose build replayed these exact bytes through the checked
+/// reader before publication (SPEC_0044 ME-LSW-004): every derivation runs
+/// again, the validators do not. Any other wire uses the checked reader.
+pub fn deserialize_build_certified_fmi_component<'de, D>(
+    deserializer: D,
+) -> Result<FmiComponent, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let BuildCertifiedFmiComponentWire {
+        schema_version,
+        solve_model,
+        variables,
+        co_simulation,
+    } = BuildCertifiedFmiComponentWire::deserialize(deserializer)?;
+    replay_fmi_component(
+        schema_version,
+        solve_model,
+        variables,
+        co_simulation,
+        rumoca_ir_solve::CapsuleReplay::BuildCertified,
+    )
+    .map_err(serde::de::Error::custom)
+}
+
+fn replay_fmi_component(
+    schema_version: u16,
+    solve_model: rumoca_ir_solve::SolveModel,
+    variables: Vec<FmiVariableInput>,
+    co_simulation: Option<CoSimulationStepPlan>,
+    proof: rumoca_ir_solve::CapsuleReplay,
+) -> Result<FmiComponent, String> {
+    if schema_version != FMI_COMPONENT_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported FMI component schema {schema_version}; expected {FMI_COMPONENT_SCHEMA_VERSION}"
+        ));
     }
-    let plan = match wire.co_simulation {
+    let plan = match co_simulation {
         None => CoSimulationStepPlan::STANDARD,
         Some(plan) if plan == CoSimulationStepPlan::STANDARD => {
-            return Err(serde::de::Error::custom(
-                "the standard Co-Simulation step plan is written by omission",
-            ));
+            return Err("the standard Co-Simulation step plan is written by omission".into());
         }
         Some(plan) => plan,
     };
-    FmiComponent::construct(wire.solve_model, wire.variables)
-        .map_err(serde::de::Error::custom)?
+    FmiComponent::replay(solve_model, variables, proof)
+        .map_err(|error| error.to_string())?
         .with_co_simulation(plan)
-        .map_err(serde::de::Error::custom)
+        .map_err(|error| error.to_string())
 }
 
 /// Bytes of each wire shown from the first difference on.

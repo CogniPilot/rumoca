@@ -987,17 +987,62 @@ impl Default for SolveProblem {
     }
 }
 
+/// How a replay of the current wire proves what it reconstructs (SPEC_0044
+/// ME-LSW-004). Every replay runs the same construction derivations; only
+/// `Checked` also re-runs the shape and call-site validators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapsuleReplay {
+    /// Any wire not certified by the build that published it.
+    Checked,
+    /// The internal capsule of a published linked guest, whose build replayed
+    /// this exact capsule through `Checked` before publication.
+    BuildCertified,
+}
+
+impl CapsuleReplay {
+    #[must_use]
+    pub const fn validates(self) -> bool {
+        matches!(self, Self::Checked)
+    }
+}
+
 impl<'de> Deserialize<'de> for SolveProblem {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let wire = SolveProblemWire::deserialize(deserializer)?;
+        SolveProblem::replay(SolveProblemWire::deserialize(deserializer)?, CapsuleReplay::Checked)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// A [`SolveProblem`] replayed from a build-certified capsule
+/// ([`CapsuleReplay::BuildCertified`]). Only the published linked guest's
+/// internal capsule reader names it.
+#[doc(hidden)]
+pub struct BuildCertifiedSolveProblem(pub SolveProblem);
+
+impl<'de> Deserialize<'de> for BuildCertifiedSolveProblem {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        SolveProblem::replay(
+            SolveProblemWire::deserialize(deserializer)?,
+            CapsuleReplay::BuildCertified,
+        )
+        .map(Self)
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl SolveProblem {
+    fn replay(wire: SolveProblemWire, proof: CapsuleReplay) -> Result<Self, String> {
         if wire.schema_version != SOLVE_SCHEMA_VERSION {
-            return Err(serde::de::Error::custom(format!(
+            return Err(format!(
                 "unsupported Solve schema_version {}; expected {}",
                 wire.schema_version, SOLVE_SCHEMA_VERSION
-            )));
+            ));
         }
 
         let mut problem = Self {
@@ -1014,7 +1059,7 @@ impl<'de> Deserialize<'de> for SolveProblem {
             .continuous
             .refresh_owners
             .rebuild_exact_assignment_programs(&problem.continuous.implicit_rhs)
-            .map_err(serde::de::Error::custom)?;
+            .map_err(|error| error.to_string())?;
         if problem
             .continuous
             .refresh_owners
@@ -1022,7 +1067,9 @@ impl<'de> Deserialize<'de> for SolveProblem {
         {
             issue_native_assignment_schedule(&mut problem);
         }
-        problem.validate().map_err(serde::de::Error::custom)?;
+        if proof.validates() {
+            problem.validate().map_err(|error| error.to_string())?;
+        }
         // The native value schedule is issued from the checked canonical rows.
         if !problem
             .continuous

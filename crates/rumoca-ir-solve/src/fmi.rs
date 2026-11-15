@@ -478,12 +478,25 @@ impl FmiComponent {
     /// SPEC_0044 §8 is not among them: this constructor derives it, exactly
     /// when the checked kernel is delay-bearing.
     pub fn construct(
-        mut model: SolveModel,
+        model: SolveModel,
         inputs: Vec<FmiVariableInput>,
     ) -> Result<Self, FmiComponentError> {
-        model
-            .validate()
-            .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
+        Self::replay(model, inputs, crate::CapsuleReplay::Checked)
+    }
+
+    /// [`Self::construct`] of a model replayed under `proof`: a
+    /// [`crate::CapsuleReplay::BuildCertified`] model was validated by the
+    /// build that published it, so only its derivations run again here.
+    pub fn replay(
+        mut model: SolveModel,
+        inputs: Vec<FmiVariableInput>,
+        proof: crate::CapsuleReplay,
+    ) -> Result<Self, FmiComponentError> {
+        if proof.validates() {
+            model
+                .validate()
+                .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
+        }
         let mut metadata = checked_metadata(&model.problem, inputs)?;
         metadata.publication_defaults_complete =
             input_defaults::check_model_defaults(&model, &metadata)?;

@@ -68,11 +68,11 @@ pub fn solve_model_wire(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SolveModelWire {
+struct SolveModelWire<P = solve::SolveProblem> {
     schema_version: u16,
     /// Read before `problem`: sites in the problem resolve against it.
     pure_calls: solve::ScopedSolvePureCallTable,
-    problem: solve::SolveProblem,
+    problem: P,
     initial_y: solve::SolveInitialValues,
     solver_nominals: Vec<f64>,
     parameters: solve::SolveInitialValues,
@@ -90,25 +90,62 @@ pub fn deserialize_solve_model<'de, D>(deserializer: D) -> Result<solve::SolveMo
 where
     D: serde::Deserializer<'de>,
 {
-    let wire = {
-        let _parse = rumoca_core::browser_profile::Span::new("parse_component_model");
-        SolveModelWire::deserialize(deserializer)?
-    };
-    let _replay = rumoca_core::browser_profile::Span::new("checked_solve_replay");
-    replay_solve_model(wire).map_err(serde::de::Error::custom)
+    deserialize_replayed::<D, solve::SolveProblem>(
+        deserializer,
+        |problem| problem,
+        solve::CapsuleReplay::Checked,
+    )
 }
 
-fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveModelWireError> {
+/// [`deserialize_solve_model`] of a build-certified capsule
+/// ([`solve::CapsuleReplay::BuildCertified`]): the same derivations, without
+/// the validators its build already ran on these exact bytes.
+pub fn deserialize_build_certified_solve_model<'de, D>(
+    deserializer: D,
+) -> Result<solve::SolveModel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_replayed::<D, solve::BuildCertifiedSolveProblem>(
+        deserializer,
+        |problem| problem.0,
+        solve::CapsuleReplay::BuildCertified,
+    )
+}
+
+fn deserialize_replayed<'de, D, P>(
+    deserializer: D,
+    problem: fn(P) -> solve::SolveProblem,
+    proof: solve::CapsuleReplay,
+) -> Result<solve::SolveModel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    P: Deserialize<'de>,
+{
+    let wire = {
+        let _parse = rumoca_core::browser_profile::Span::new("parse_component_model");
+        SolveModelWire::<P>::deserialize(deserializer)?
+    };
+    let _replay = rumoca_core::browser_profile::Span::new("checked_solve_replay");
+    replay_solve_model(wire, problem, proof).map_err(serde::de::Error::custom)
+}
+
+fn replay_solve_model<P>(
+    wire: SolveModelWire<P>,
+    replayed: fn(P) -> solve::SolveProblem,
+    proof: solve::CapsuleReplay,
+) -> Result<solve::SolveModel, SolveModelWireError> {
     let SolveModelWire {
         schema_version,
         pure_calls,
-        mut problem,
+        problem,
         initial_y,
         solver_nominals,
         parameters,
         external_tables,
         visible_projection,
     } = wire;
+    let mut problem = replayed(problem);
     let pure_calls = pure_calls.into_table();
     if schema_version != SOLVE_MODEL_SCHEMA_VERSION {
         return Err(SolveModelWireError::SchemaVersion {
@@ -125,8 +162,10 @@ fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveMo
     })?;
     let visible_projection = solve::VisibleProjection::construct(&problem, visible_projection)
         .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
-    solve::validate_problem_pure_call_sites(&problem, &pure_calls)
-        .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
+    if proof.validates() {
+        solve::validate_problem_pure_call_sites(&problem, &pure_calls)
+            .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
+    }
     solve::issue_native_assignment_schedule_with_calls(&mut problem, &pure_calls);
     let artifacts = super::artifacts::lower_solve_artifacts_with_calls(
         &problem,
@@ -148,9 +187,11 @@ fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveMo
         external_tables,
         visible_projection,
     };
-    model
-        .validate()
-        .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
+    if proof.validates() {
+        model
+            .validate()
+            .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
+    }
     Ok(model)
 }
 
