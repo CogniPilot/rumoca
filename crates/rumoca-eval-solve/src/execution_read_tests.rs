@@ -43,6 +43,8 @@ pub(crate) fn guarded_program(q: solve::LinearOp) -> Vec<solve::LinearOp> {
     ]
 }
 
+/// The fixtures above are shared; only this test runs the checked evaluator.
+#[cfg(feature = "reference-eval")]
 #[test]
 fn a_guard_only_input_changes_the_checked_execution_outcome() {
     let table = guarded_table();

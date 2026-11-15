@@ -42,7 +42,7 @@ mod conditional_region;
 mod errors;
 mod event_messages;
 mod event_observations;
-#[cfg(all(test, feature = "reference-eval"))]
+#[cfg(test)]
 mod execution_read_tests;
 pub mod fmi_tangents;
 #[cfg(feature = "reference-eval")]
