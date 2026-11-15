@@ -71,9 +71,6 @@ pub(super) fn certify_linked_component(component: &[u8]) -> Result<(), String> {
     certify
         .call(&mut store, ())
         .map_err(|error| format!("linked certification refused: {error:#}"))?;
-    certify
-        .post_return(&mut store)
-        .map_err(|error| format!("linked certification refused: {error:#}"))?;
     Ok(())
 }
 
