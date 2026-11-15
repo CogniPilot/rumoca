@@ -296,8 +296,53 @@ fn a_build_certified_capsule_replay_reconstructs_the_checked_replay() {
     )
     .unwrap();
     // Every derivation runs on both paths, so both reconstruct the same
-    // retained component wire.
+    // retained component wire and the same derived data absent from it.
     assert_eq!(retained_wire(&certified), retained_wire(&checked));
+    assert_same_derived_inventory(&checked, &certified);
+}
+
+/// The derived refresh plans (stages, execution-order refusals), exact and
+/// native assignment schedules and FMI variable/indicator bindings, compared
+/// by value. Lazily filled caches are not compared: the validators of a
+/// checked replay may fill some that a build-certified replay leaves empty.
+fn assert_same_derived_inventory(
+    checked: &rumoca_ir_solve::fmi::FmiComponent,
+    certified: &rumoca_ir_solve::fmi::FmiComponent,
+) {
+    let (checked_root, certified_root) = (
+        checked.runtime_view().retain_assertion_root(),
+        certified.runtime_view().retain_assertion_root(),
+    );
+    let expected = &checked_root.model().problem.continuous.refresh_owners;
+    let actual = &certified_root.model().problem.continuous.refresh_owners;
+    assert_eq!(actual.is_issued(), expected.is_issued());
+    assert_eq!(actual.algebraic(), expected.algebraic());
+    assert_eq!(actual.derivative(), expected.derivative());
+    assert_eq!(actual.root(), expected.root());
+    assert_eq!(actual.event(), expected.event());
+    assert_eq!(actual.clock_events(), expected.clock_events());
+    assert_eq!(
+        format!("{:?}", actual.exact_assignment_schedules()),
+        format!("{:?}", expected.exact_assignment_schedules())
+    );
+    assert_eq!(
+        actual.native_assignment_refusal(),
+        expected.native_assignment_refusal()
+    );
+    let native = |owners: &rumoca_ir_solve::ContinuousRefreshOwners| {
+        owners
+            .native_assignment_schedule()
+            .map(|schedule| (schedule.stages().len(), schedule.lane_bytes()))
+    };
+    assert_eq!(native(actual), native(expected));
+    assert_eq!(
+        format!("{:?}", certified.variables()),
+        format!("{:?}", checked.variables())
+    );
+    assert_eq!(
+        format!("{:?}", certified.event_indicators()),
+        format!("{:?}", checked.event_indicators())
+    );
 }
 
 #[test]
