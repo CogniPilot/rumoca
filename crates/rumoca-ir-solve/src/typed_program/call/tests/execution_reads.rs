@@ -585,9 +585,10 @@ fn lane_branch<'p>(
 }
 
 /// Checks only `r[lane]`: `kind` 0 directly, 1 in a branch on it, 2 in that
-/// branch inside a fold followed pass by pass over captures `(r, x)`, and 3 in
+/// branch inside a fold followed pass by pass over captures `(r, x)`, 3 in
 /// that branch in the early-exit predicate of a fold summarised over all
-/// passes.
+/// passes, and 4 by an Integer conversion of it that can fault but whose
+/// result nothing reads.
 fn lane_guard<'p>(
     kind: u64,
     b: &mut TypedProgramBuilder<'p>,
@@ -602,6 +603,15 @@ fn lane_guard<'p>(
             check(b, z)
         }
         1 => lane_branch(b, r, x, lane),
+        4 => {
+            let z = b.project_element(r, vec![lane], span(1314))?;
+            b.convert(
+                crate::SolveConversionOperator::RealToIntegerTowardZero,
+                z,
+                span(1327),
+            )?;
+            Ok(())
+        }
         2 => {
             b.fold(
                 domain(),
@@ -664,7 +674,7 @@ fn lane_guard_table(kind: u64, lane: u32) -> SolvePureCallTable {
 #[test]
 fn a_guard_on_one_lane_of_a_vector_input_reads_that_lane_alone() {
     use crate::typed_program::call::dependency::followed_work;
-    for kind in 0..4 {
+    for kind in 0..5 {
         for lane in [0, 2] {
             followed_work::reset();
             let table = lane_guard_table(kind, lane);
@@ -676,11 +686,11 @@ fn a_guard_on_one_lane_of_a_vector_input_reads_that_lane_alone() {
             let elements = site.execution_read_elements();
             assert_eq!(
                 elements[0],
-                (0, Some(vec![lane as usize])),
+                (0, Some(vec![lane as usize].into_boxed_slice())),
                 "kind {kind} lane {lane}: the other lanes are never read"
             );
             // A branch is decided by `r[lane] < x`, so it also reads `x`.
-            let expected: &[usize] = if kind == 0 { &[0] } else { &[0, 1] };
+            let expected: &[usize] = if matches!(kind, 0 | 4) { &[0] } else { &[0, 1] };
             assert_eq!(site.execution_reads(), expected, "kind {kind}");
             assert_eq!(
                 site.output_dependencies()[0]
@@ -732,7 +742,7 @@ fn a_lane_guard_substitutes_through_a_call_that_passes_the_whole_vector() {
     for owner in table.owners() {
         assert_eq!(
             owner.call_site().execution_read_elements(),
-            [(0, Some(vec![2]))]
+            [(0, Some(vec![2].into_boxed_slice()))]
         );
     }
 }
@@ -776,5 +786,56 @@ fn a_guard_that_reads_a_carried_value_of_a_summarised_fold_reads_every_start_and
     // The carried value starts at x and each pass adds r[1], so the guard
     // covers x and every lane of r, not only the lane the update reads.
     let elements = table.owners()[0].call_site().execution_read_elements();
-    assert_eq!(elements, [(0, Some(vec![0, 1, 2])), (1, Some(vec![0]))]);
+    assert_eq!(
+        elements,
+        [
+            (0, Some(vec![0, 1, 2].into_boxed_slice())),
+            (1, Some(vec![0].into_boxed_slice()))
+        ]
+    );
+}
+
+#[test]
+fn an_early_exit_predicate_is_read_by_the_obligations_it_lets_run() {
+    // The transition checks capture c; the predicate `0 < n` on capture n
+    // decides whether a pass runs, so n is read although no check reads it.
+    let table = SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1360),
+            vec![real(), real(), real()],
+            vec![SolvePureCallOutput::result(real())],
+            span(1360),
+            |b, inputs, outputs| {
+                let c = b.load(inputs[0], span(1361))?;
+                let n = b.load(inputs[1], span(1362))?;
+                let x = b.load(inputs[2], span(1363))?;
+                let zero = b.constant(SolveValue::real(profile(), 0.0), span(1364))?;
+                b.fold_while(
+                    domain(),
+                    &[zero],
+                    &[c, n],
+                    span(1365),
+                    |b, _, captures, _, outputs| {
+                        let n = b.load(captures[1], span(1366))?;
+                        let zero = b.constant(SolveValue::real(profile(), 0.0), span(1367))?;
+                        let go =
+                            b.compare(crate::SolveCompareOperator::Less, zero, n, span(1368))?;
+                        b.store(outputs[0], go, span(1369))
+                    },
+                    |b, carried, captures, _, outputs| {
+                        let c = b.load(captures[0], span(1370))?;
+                        check(b, c)?;
+                        let kept = b.load(carried[0], span(1371))?;
+                        b.store(outputs[0], kept, span(1372))
+                    },
+                )?;
+                b.store(outputs[0], x, span(1373))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let site = table.owners()[0].call_site();
+    assert!(site.has_execution_obligations());
+    assert_eq!(site.execution_reads(), &[0, 1]);
 }

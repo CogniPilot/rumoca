@@ -14,12 +14,19 @@ use super::dependency::{self, SolveCallDependency};
 use super::{SolveOperation, SolveProgramConstructionError, SolvePureCallTableView, TypedProgram};
 use crate::{FaultClass, SolveAssignedStateOperation, SolveValueType};
 
+/// One input leaf the obligations read, with the ascending flat elements of
+/// that leaf they read, `None` for every element.
+pub type ExecutionReadElements = (usize, Option<Box<[usize]>>);
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::typed_program) struct ExecutionReads {
     /// Canonical summary of one scalar over the owner's input leaves.
     reads: Box<[SolveCallDependency]>,
     /// The input leaves `reads` names, ascending.
     inputs: Box<[usize]>,
+    /// The elements `reads` names per leaf, listed once at construction for
+    /// every structural walk of a call site.
+    elements: Box<[ExecutionReadElements]>,
     present: bool,
 }
 
@@ -32,16 +39,18 @@ impl ExecutionReads {
         }
     }
 
-    fn new(reads: Box<[SolveCallDependency]>, present: bool) -> Self {
-        let mut inputs = reads
-            .iter()
-            .flat_map(SolveCallDependency::inputs)
-            .collect::<Vec<_>>();
-        inputs.sort_unstable();
-        inputs.dedup();
+    /// `input` gives the type of an input leaf; a leaf without one is read
+    /// whole.
+    fn new<'t>(
+        reads: Box<[SolveCallDependency]>,
+        present: bool,
+        input: impl Fn(usize) -> Option<&'t SolveValueType>,
+    ) -> Self {
+        let elements = listed_elements(&reads, input);
         Self {
+            inputs: elements.iter().map(|(leaf, _)| *leaf).collect(),
             reads,
-            inputs: inputs.into(),
+            elements,
             present,
         }
     }
@@ -56,41 +65,9 @@ impl ExecutionReads {
         &self.reads
     }
 
-    /// Each input leaf the obligations read, with the ascending flat elements
-    /// of that leaf they read, `None` for every element.
-    pub(in crate::typed_program) fn elements(
-        &self,
-        inputs: &[SolveValueType],
-    ) -> Vec<(usize, Option<Vec<usize>>)> {
-        let mut leaves = std::collections::BTreeMap::<usize, Option<Vec<usize>>>::new();
-        let read_leaves = self
-            .reads
-            .iter()
-            .flat_map(|read| read.inputs().map(move |leaf| (read, leaf)));
-        for (read, leaf) in read_leaves {
-            // A relation whose elements cannot be listed covers the leaf.
-            let elements = inputs
-                .get(leaf)
-                .and_then(|input| read.input_elements(&obligation_type(), 0, input));
-            let entry = leaves.entry(leaf).or_insert_with(|| Some(Vec::new()));
-            match (entry.take(), elements) {
-                (Some(mut held), Some(elements)) => {
-                    held.extend(elements);
-                    *entry = Some(held);
-                }
-                _ => *entry = None,
-            }
-        }
-        leaves
-            .into_iter()
-            .map(|(leaf, mut elements)| {
-                if let Some(elements) = elements.as_mut() {
-                    elements.sort_unstable();
-                    elements.dedup();
-                }
-                (leaf, elements)
-            })
-            .collect()
+    /// Each input leaf the obligations read, with the elements they read.
+    pub(in crate::typed_program) fn elements(&self) -> &[ExecutionReadElements] {
+        &self.elements
     }
 
     pub(super) fn retain_recursive_obligation(&mut self) {
@@ -104,12 +81,47 @@ impl ExecutionReads {
             .into_vec()
             .pop()
             .unwrap_or_default();
-        Self::new(reads, self.present)
+        Self::new(reads, self.present, |_| None)
     }
 
     pub(in crate::typed_program) fn has_obligations(&self) -> bool {
         self.present
     }
+}
+
+/// Each leaf `reads` names, with the ascending elements its relations list;
+/// a relation whose elements cannot be listed covers its leaf.
+fn listed_elements<'t>(
+    reads: &[SolveCallDependency],
+    input: impl Fn(usize) -> Option<&'t SolveValueType>,
+) -> Box<[ExecutionReadElements]> {
+    let mut leaves = std::collections::BTreeMap::<usize, Option<Vec<usize>>>::new();
+    let read_leaves = reads
+        .iter()
+        .flat_map(|read| read.inputs().map(move |leaf| (read, leaf)));
+    for (read, leaf) in read_leaves {
+        let elements =
+            input(leaf).and_then(|input| read.input_elements(&obligation_type(), 0, input));
+        let entry = leaves.entry(leaf).or_insert_with(|| Some(Vec::new()));
+        match (entry.take(), elements) {
+            (Some(mut held), Some(elements)) => {
+                held.extend(elements);
+                *entry = Some(held);
+            }
+            _ => *entry = None,
+        }
+    }
+    leaves
+        .into_iter()
+        .map(|(leaf, elements)| {
+            let elements = elements.map(|mut elements| {
+                elements.sort_unstable();
+                elements.dedup();
+                elements.into_boxed_slice()
+            });
+            (leaf, elements)
+        })
+        .collect()
 }
 
 /// The value type an obligation summary is stated for: one Boolean, whether
@@ -127,8 +139,15 @@ pub(super) struct ExecutionReadBuilder {
 }
 
 impl ExecutionReadBuilder {
-    pub(super) fn finish(self) -> ExecutionReads {
-        ExecutionReads::new(dependency::union(self.reads), self.present)
+    /// Seal the obligations of `body`, whose first `input_count` slots are
+    /// its inputs.
+    pub(super) fn finish(self, body: &TypedProgram, input_count: usize) -> ExecutionReads {
+        ExecutionReads::new(dependency::union(self.reads), self.present, |leaf| {
+            (leaf < input_count)
+                .then(|| body.slots().get(leaf))
+                .flatten()
+                .map(|slot| slot.value_type())
+        })
     }
 
     pub(super) fn observe(

@@ -303,12 +303,21 @@ fn fold(
     let unknown = vec![None; destinations.len()];
     let mut regions = Vec::new();
     let mut obligations = Vec::new();
-    for region in std::iter::once(transition).chain(continuation) {
+    let mut whole = false;
+    for (position, region) in std::iter::once(transition).chain(continuation).enumerate() {
         let followed = region_execution(region, context, &[])?;
+        let present = followed.execution_reads.has_obligations();
+        let mut reads = followed.execution_reads.reads().to_vec();
+        // The continuation decides how many passes meet the transition's
+        // obligations, so what its predicate reads is read by them too.
+        if position == 1 {
+            whole |= region.outputs().iter().any(|output| !output.dimensions().is_empty());
+            reads.extend(followed.summaries.iter().flat_map(|summary| summary.iter().cloned()));
+        }
         regions.push((region, followed.summaries));
-        obligations.push((region, followed.execution_reads));
+        obligations.push((region, present, reads));
     }
-    fold_obligations(context, initial, captures, &obligations, registers, execution)?;
+    fold_obligations(context, initial, captures, &obligations, whole, registers, execution)?;
     let mut results = Vec::new();
     let mut reads = Reads {
         registers,
@@ -383,48 +392,50 @@ fn fold(
     Ok(unknown)
 }
 
-/// Charge the obligations of a fold summarised over all its passes. Region
-/// inputs are the carried tuple, the readonly captures, then the binders,
-/// whose values depend on nothing. A capture read is substituted through the
-/// capture; a carried value can hold what any pass computed, so obligations
-/// that read one cover every initial value and capture instead.
+/// Charge the obligations of a fold summarised over all its passes. Each
+/// region comes with whether it can meet an obligation and what decides its
+/// obligations: their own reads and, for the continuation, its predicate.
+/// Region inputs are the carried tuple, the readonly captures, then the
+/// binders, whose values depend on nothing. A capture read is substituted
+/// through the capture; a carried value can hold what any pass computed, so
+/// reads of one (or `whole`, a predicate stated over more than one scalar)
+/// cover every initial value and capture instead.
 fn fold_obligations(
     context: Context<'_>,
     initial: &[SolveRegisterId],
     captures: &[SolveRegisterId],
-    regions: &[(&SolveProgramRegion, crate::typed_program::call::execution_reads::ExecutionReads)],
+    regions: &[(&SolveProgramRegion, bool, Vec<SolveCallDependency>)],
+    whole: bool,
     registers: &[Vec<SolveCallDependency>],
     execution: &mut ExecutionReadBuilder,
 ) -> Result<(), SolveProgramConstructionError> {
-    if !regions.iter().any(|(_, reads)| reads.has_obligations()) {
+    if !regions.iter().any(|(_, present, _)| *present) {
         return Ok(());
     }
     let carries = initial.len();
-    if regions
-        .iter()
-        .any(|(_, reads)| reads.inputs().iter().any(|&leaf| leaf < carries))
-    {
+    let reads_carried = regions.iter().any(|(_, _, reads)| {
+        reads
+            .iter()
+            .flat_map(SolveCallDependency::inputs)
+            .any(|leaf| leaf < carries)
+    });
+    if whole || reads_carried {
         let mut obligations = whole_obligations(context, initial, registers)?;
         obligations.extend(whole_obligations(context, captures, registers)?);
         execution.region(true, obligations);
         return Ok(());
     }
     let mut obligations = Vec::new();
-    for (region, reads) in regions {
-        let capture = |leaf: usize| {
-            leaf.checked_sub(carries)
-                .and_then(|position| captures.get(position))
-                .map(|capture| capture.index())
-        };
+    for (region, _, reads) in regions {
         // Binder leaves read no input: they read an empty dependency list.
         let mut arguments = vec![Vec::new(); region.inputs().len()];
-        for (leaf, argument) in arguments.iter_mut().enumerate() {
-            if let Some(register) = capture(leaf) {
-                argument.clone_from(&registers[register]);
+        for (position, capture) in captures.iter().enumerate() {
+            if let Some(argument) = arguments.get_mut(carries + position) {
+                argument.clone_from(&registers[capture.index()]);
             }
         }
         obligations.extend(super::substitute_obligations(
-            reads.reads(),
+            reads,
             region.inputs(),
             Some,
             &arguments,

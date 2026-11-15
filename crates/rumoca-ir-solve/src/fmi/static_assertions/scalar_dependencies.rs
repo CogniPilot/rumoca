@@ -113,10 +113,10 @@ fn obligation_settled(op: &Op, index: usize, registers: &[bool]) -> bool {
             input_starts, site, ..
         } => site
             .execution_read_elements()
-            .into_iter()
+            .iter()
             .all(|(input, elements)| {
                 let (Some(&start), Some(value_type)) =
-                    (input_starts.get(input), site.inputs().get(input))
+                    (input_starts.get(*input), site.inputs().get(*input))
                 else {
                     return false;
                 };

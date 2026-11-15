@@ -224,11 +224,10 @@ impl DependencyWalk<'_> {
                 input_starts, site, ..
             } => {
                 let inputs = site.value_site().inputs();
-                self.include_call_reads(
-                    input_starts,
-                    inputs,
-                    (0..inputs.len()).map(|input| (input, None)).collect(),
-                )
+                let whole = (0..inputs.len())
+                    .map(|input| (input, None))
+                    .collect::<Vec<_>>();
+                self.include_call_reads(input_starts, inputs, &whole)
             }
             LinearOp::FunctionConditional {
                 capture_start,
@@ -296,14 +295,14 @@ impl DependencyWalk<'_> {
         &self,
         starts: &[Reg],
         inputs: &[crate::SolveValueType],
-        reads: Vec<(usize, Option<Vec<usize>>)>,
+        reads: &[(usize, Option<Box<[usize]>>)],
     ) -> Result<(), StructuralPatternError> {
         if starts.len() != inputs.len() {
             return Err(dependency_error("execution call input mismatch", self.span));
         }
         let outside = || dependency_error("execution call read outside interface", self.span);
         for (input, elements) in reads {
-            let (Some(&start), Some(value_type)) = (starts.get(input), inputs.get(input)) else {
+            let (Some(&start), Some(value_type)) = (starts.get(*input), inputs.get(*input)) else {
                 return Err(outside());
             };
             let count = value_type.scalar_count() as usize;
@@ -311,7 +310,7 @@ impl DependencyWalk<'_> {
                 self.policy.include(self.range(start, count)?);
                 continue;
             };
-            for element in elements {
+            for &element in elements.iter() {
                 let register = (element < count)
                     .then(|| Reg::try_from(element).ok())
                     .flatten()

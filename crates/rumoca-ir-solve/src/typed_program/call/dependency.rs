@@ -453,7 +453,7 @@ fn derive_execution(
             .map(|slot| integers.slot(slot))
             .collect(),
         summaries: output_summaries(body, input_count, output_count, slots),
-        execution_reads: execution.finish(),
+        execution_reads: execution.finish(body, input_count),
     })
 }
 
