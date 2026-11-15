@@ -51,25 +51,46 @@ pub fn load_linked_guest(
         carried.admit_trusted()
     }
     .map_err(refusal)?;
+    // Only a certifying load reads the saved component, to compare it with the
+    // published one. A build-certified load skips its bytes: the guest runs the
+    // published component, so replaying the saved copy would only validate it
+    // again on load.
+    let programs = if certify {
+        let wire = read_saved::<ReplayedComponent>(saved)?;
+        let canonical = |component: &FmiComponent| {
+            let root = component.runtime_view().retain_assertion_root();
+            encode(
+                &rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
+                    .map_err(refusal)?,
+            )
+        };
+        if canonical(&wire.component.0)? != canonical(published)? {
+            return Err(refusal(
+                "the saved product's component differs from the published component",
+            ));
+        }
+        wire.programs
+    } else {
+        read_saved::<serde::de::IgnoredAny>(saved)?.programs
+    };
+    let scope = ProgramScope::load_linked(programs, admission, certify).map_err(refusal)?;
+    Ok(LinkedGuestLoad { scope })
+}
+
+/// The whole saved product, read as one runtime wire with nothing trailing.
+fn read_saved<C: serde::de::DeserializeOwned>(
+    saved: &[u8],
+) -> Result<RuntimeWire<serde::de::IgnoredAny, C>, SimulationDiagnosticError> {
     let mut reader = rmp_serde::Deserializer::new(Cursor::new(saved));
-    let wire = RuntimeWire::<serde::de::IgnoredAny>::deserialize(&mut reader).map_err(refusal)?;
+    let wire =
+        RuntimeWire::<serde::de::IgnoredAny, C>::deserialize(&mut reader).map_err(refusal)?;
     if reader.get_ref().position() != saved.len() as u64 {
         return Err(refusal("trailing runtime bytes"));
     }
     if wire.version != 3 {
         return Err(refusal("unsupported precompiled runtime schema"));
     }
-    let canonical = |component: &FmiComponent| {
-        let root = component.runtime_view().retain_assertion_root();
-        encode(&rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).map_err(refusal)?)
-    };
-    if certify && canonical(&wire.component)? != canonical(published)? {
-        return Err(refusal(
-            "the saved product's component differs from the published component",
-        ));
-    }
-    let scope = ProgramScope::load_linked(wire.programs, admission, certify).map_err(refusal)?;
-    Ok(LinkedGuestLoad { scope })
+    Ok(wire)
 }
 
 impl LinkedGuestLoad {

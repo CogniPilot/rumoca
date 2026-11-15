@@ -52,13 +52,21 @@ mod browser {
     }
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct RuntimeWire<T> {
+    struct RuntimeWire<T, C = ReplayedComponent> {
         #[serde(deserialize_with = "current_version")]
         version: u32,
         context: T,
-        #[serde(deserialize_with = "rumoca_eval_solve::fmi_wire::deserialize_fmi_component")]
-        component: FmiComponent,
+        component: C,
         programs: CorePrograms,
+    }
+    /// The checked replay of a saved component. A load that never reads the
+    /// saved component (a build-certified linked load) names `IgnoredAny`
+    /// instead, so it skips the bytes without replaying or validating them.
+    struct ReplayedComponent(FmiComponent);
+    impl<'de> Deserialize<'de> for ReplayedComponent {
+        fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+            rumoca_eval_solve::fmi_wire::deserialize_fmi_component(reader).map(Self)
+        }
     }
     // Reject an unsupported producer version as soon as its field is read,
     // before replaying the component that follows it in the canonical wire.
@@ -212,7 +220,7 @@ mod browser {
         let prepared = {
             let _initialization =
                 rumoca_core::browser_profile::Span::new("session_construct_and_init");
-            session(wire.component, configure(wire.context))?
+            session(wire.component.0, configure(wire.context))?
         };
         {
             let _initial_state = rumoca_core::browser_profile::Span::new("initial_observation");
