@@ -1,6 +1,8 @@
 use rumoca_ir_solve::{ScalarProgramBlock, ScalarSlot};
 
-use crate::{EvalSolveError, RowEvalContext, eval_scalar_program_block_with_context};
+use crate::{EvalSolveError, RowEvalContext};
+#[cfg(feature = "reference-eval")]
+use crate::eval_scalar_program_block_with_context;
 
 pub struct UpdateRowApplication<'a> {
     pub block: &'a ScalarProgramBlock,
@@ -128,6 +130,7 @@ pub fn apply_scalar_slot_value_exact(
     }
 }
 
+#[cfg(feature = "reference-eval")]
 fn validate_update_shape(
     block: &ScalarProgramBlock,
     targets: &[ScalarSlot],
@@ -182,12 +185,14 @@ fn update_indexed_slot_exact(
     Ok(changed)
 }
 
+#[cfg(feature = "reference-eval")]
 fn update_row_value_buffer(len: usize) -> Result<Vec<f64>, EvalSolveError> {
     let mut values = update_row_vec_with_capacity(len, "update row value count")?;
     values.resize(len, 0.0);
     Ok(values)
 }
 
+#[cfg(feature = "reference-eval")]
 fn update_row_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
