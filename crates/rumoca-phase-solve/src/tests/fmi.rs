@@ -276,3 +276,40 @@ fn retained_fmi_capsule_rebuilds_component_locals_from_the_same_source_root() {
         1
     );
 }
+
+/// The canonical retained wire of `component`, as JSON.
+fn retained_wire(component: &rumoca_ir_solve::fmi::FmiComponent) -> serde_json::Value {
+    let root = component.runtime_view().retain_assertion_root();
+    serde_json::to_value(rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn a_build_certified_capsule_replay_reconstructs_the_checked_replay() {
+    use serde::de::IntoDeserializer;
+    let wire = retained_wire(&component(&delayed_state_model()));
+    let checked =
+        rumoca_eval_solve::fmi_wire::deserialize_fmi_component(wire.clone().into_deserializer())
+            .unwrap();
+    let certified = rumoca_eval_solve::fmi_wire::deserialize_build_certified_fmi_component(
+        wire.clone().into_deserializer(),
+    )
+    .unwrap();
+    // Every derivation runs on both paths, so both reconstruct the same
+    // retained component wire.
+    assert_eq!(retained_wire(&certified), retained_wire(&checked));
+}
+
+#[test]
+fn a_checked_capsule_replay_still_refuses_a_broken_shape_contract() {
+    use serde::de::IntoDeserializer;
+    let mut wire = retained_wire(&component(&delayed_state_model()));
+    // Decodable, but the solver role extent no longer matches the Y layout:
+    // only the shape-contract validator refuses it.
+    let layout = &mut wire["solve_model"]["problem"]["solve_layout"];
+    let count = layout["output_scalar_count"].as_u64().unwrap();
+    layout["output_scalar_count"] = serde_json::json!(count + 1_000_000);
+    assert!(
+        rumoca_eval_solve::fmi_wire::deserialize_fmi_component(wire.into_deserializer()).is_err()
+    );
+}

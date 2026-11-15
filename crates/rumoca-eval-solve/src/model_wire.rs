@@ -100,6 +100,11 @@ where
 /// [`deserialize_solve_model`] of a build-certified capsule
 /// ([`solve::CapsuleReplay::BuildCertified`]): the same derivations, without
 /// the validators its build already ran on these exact bytes.
+///
+/// # Precondition
+///
+/// As for `fmi_wire::deserialize_build_certified_fmi_component`, its only
+/// caller: the bytes were replayed checked by the build that published them.
 pub fn deserialize_build_certified_solve_model<'de, D>(
     deserializer: D,
 ) -> Result<solve::SolveModel, D::Error>

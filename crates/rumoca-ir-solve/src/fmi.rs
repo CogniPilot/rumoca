@@ -487,6 +487,11 @@ impl FmiComponent {
     /// [`Self::construct`] of a model replayed under `proof`: a
     /// [`crate::CapsuleReplay::BuildCertified`] model was validated by the
     /// build that published it, so only its derivations run again here.
+    ///
+    /// # Precondition
+    ///
+    /// A `BuildCertified` model comes only from a build-certified capsule
+    /// replay; any other model is constructed with `Checked`.
     pub fn replay(
         mut model: SolveModel,
         inputs: Vec<FmiVariableInput>,

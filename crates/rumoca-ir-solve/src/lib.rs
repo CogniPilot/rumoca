@@ -1019,6 +1019,11 @@ impl<'de> Deserialize<'de> for SolveProblem {
 /// A [`SolveProblem`] replayed from a build-certified capsule
 /// ([`CapsuleReplay::BuildCertified`]). Only the published linked guest's
 /// internal capsule reader names it.
+///
+/// # Precondition
+///
+/// The bytes were replayed through the checked `SolveProblem` decode by the
+/// build that published them; this decode does not run the validators.
 #[doc(hidden)]
 pub struct BuildCertifiedSolveProblem(pub SolveProblem);
 

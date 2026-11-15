@@ -118,6 +118,14 @@ where
 /// linked guest, whose build replayed these exact bytes through the checked
 /// reader before publication (SPEC_0044 ME-LSW-004): every derivation runs
 /// again, the validators do not. Any other wire uses the checked reader.
+///
+/// # Precondition
+///
+/// The caller holds bytes its own build replayed through
+/// [`deserialize_fmi_component`] before publishing them, and reads them from
+/// a slot no other party can supply. Bytes from any other source (a cache,
+/// a file, a request, a test fixture standing in for one) go through the
+/// checked reader: this one does not detect a broken shape contract.
 pub fn deserialize_build_certified_fmi_component<'de, D>(
     deserializer: D,
 ) -> Result<FmiComponent, D::Error>
