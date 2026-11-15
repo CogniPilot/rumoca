@@ -140,19 +140,22 @@ pub(super) struct ValueShape {
 /// site encodes only its owner ordinal, which names a whole checked
 /// interface only within one owner table, and no derivation boundary
 /// carries that table; so an operation that carries a site anywhere in it
-/// adds its full text form (every interface field) after its exact
-/// encoding, length-delimited, under a tag no encoding starts with. The
-/// encoding keeps literal bits (a NaN payload) the text form prints alike.
+/// adds, after its length-delimited encoding and under a tag no encoding
+/// starts with, the identity of every site's checked interface (its issued
+/// storage, see [`crate::SolvePureCallSite::interface_identity`]). The
+/// encoding keeps literal bits (a NaN payload); the identities keep two
+/// tables' interfaces apart without printing them.
 pub(super) fn shape_bytes(op: &LinearOp) -> Option<Vec<u8>> {
     let mut encoded = Vec::new();
     bincode::serialize_into(&mut encoded, op).ok()?;
-    if !carries_call_site(op) {
+    let mut sites = Vec::new();
+    if !site_identities(op, &mut sites) {
         return Some(encoded);
     }
     let mut bytes = SITE_SHAPE_TAG.to_vec();
     bytes.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&encoded);
-    bytes.extend_from_slice(format!("{op:?}").as_bytes());
+    bytes.extend_from_slice(&sites);
     Some(bytes)
 }
 
@@ -160,28 +163,43 @@ pub(super) fn shape_bytes(op: &LinearOp) -> Option<Vec<u8>> {
 /// `u32` variant index, which never has all bits set.
 const SITE_SHAPE_TAG: [u8; 4] = [0xff; 4];
 
-/// Whether `op` or a program nested in it invokes a pure-call owner.
-fn carries_call_site(op: &LinearOp) -> bool {
-    let any = |ops: &[LinearOp]| ops.iter().any(carries_call_site);
+/// Append the interface identity of every pure-call site `op` or a program
+/// nested in it invokes, in operation order; whether there was any.
+fn site_identities(op: &LinearOp, out: &mut Vec<u8>) -> bool {
+    let all = |ops: &[LinearOp], out: &mut Vec<u8>| {
+        ops.iter()
+            .fold(false, |found, op| site_identities(op, out) | found)
+    };
     match op {
-        LinearOp::PureCall { .. }
-        | LinearOp::PureCallObservation { .. }
-        | LinearOp::PureCallDirectional { .. } => true,
+        LinearOp::PureCall { site, .. } => {
+            site.interface_identity(out);
+            true
+        }
+        LinearOp::PureCallObservation { site, .. } => {
+            site.value_site().interface_identity(out);
+            true
+        }
+        LinearOp::PureCallDirectional { site, .. } => {
+            site.interface_identity(out);
+            true
+        }
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }
         | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            any(&program.update)
-                || program
-                    .continuation
-                    .as_ref()
-                    .is_some_and(|continuation| any(&continuation.ops))
+            let update = all(&program.update, out);
+            let continuation = program
+                .continuation
+                .as_ref()
+                .is_some_and(|continuation| all(&continuation.ops, out));
+            update | continuation
         }
         LinearOp::FunctionConditional { program, .. } => {
-            program
-                .arms
-                .iter()
-                .any(|arm| any(&arm.condition) || any(&arm.result))
-                || any(&program.fallback)
+            let mut found = false;
+            for arm in program.arms.iter() {
+                found |= all(&arm.condition, out);
+                found |= all(&arm.result, out);
+            }
+            all(&program.fallback, out) | found
         }
         _ => false,
     }

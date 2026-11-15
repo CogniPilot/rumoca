@@ -372,7 +372,39 @@ impl PartialEq for SolvePureCallSite {
     }
 }
 
+/// One shared allocation's address, as identity bytes.
+fn push_address(out: &mut Vec<u8>, address: *const ()) {
+    out.extend_from_slice(&(address as usize as u64).to_le_bytes());
+}
+
+/// An optional shared allocation's address; zero for none.
+fn push_optional<T: ?Sized>(out: &mut Vec<u8>, shared: Option<&Arc<T>>) {
+    push_address(
+        out,
+        shared.map_or(std::ptr::null(), |shared| Arc::as_ptr(shared).cast()),
+    );
+}
+
 impl SolvePureCallSite {
+    /// The identity of this site's checked interface, appended to `out`: its
+    /// owner ordinal and the immutable interface storage it was issued with.
+    /// Sites issued from one owner share that storage, so they share an
+    /// identity; sites of different tables never do, and two sites with one
+    /// identity carry one interface. Valid while the sites are alive.
+    pub(crate) fn interface_identity(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.owner.0.to_le_bytes());
+        push_address(out, Arc::as_ptr(&self.dependencies).cast());
+        push_address(out, Arc::as_ptr(&self.execution_reads).cast());
+        push_optional(out, self.projections.as_ref());
+        push_optional(out, self.affinity.as_ref());
+        push_address(out, Arc::as_ptr(&self.inputs).cast());
+        push_address(out, Arc::as_ptr(&self.outputs).cast());
+        match &self.directional {
+            Some(directional) => directional.interface_identity(out),
+            None => out.push(0),
+        }
+    }
+
     pub(crate) fn output_degrees(
         &self,
         inputs: &[crate::affinity::Degree],
@@ -444,6 +476,19 @@ impl SolvePureCallSite {
 }
 
 impl SolvePureCallDirectionalSite {
+    /// As [`SolvePureCallSite::interface_identity`], for the directional
+    /// interface.
+    pub(crate) fn interface_identity(&self, out: &mut Vec<u8>) {
+        out.push(1);
+        out.extend_from_slice(&self.owner.0.to_le_bytes());
+        push_address(out, Arc::as_ptr(&self.dependencies).cast());
+        push_address(out, Arc::as_ptr(&self.execution_reads).cast());
+        push_optional(out, self.projections.as_ref());
+        push_optional(out, self.affinity.as_ref());
+        push_address(out, Arc::as_ptr(&self.inputs).cast());
+        push_address(out, Arc::as_ptr(&self.outputs).cast());
+    }
+
     pub(crate) fn output_degrees(
         &self,
         inputs: &[crate::affinity::Degree],
