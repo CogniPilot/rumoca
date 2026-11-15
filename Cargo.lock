@@ -5353,6 +5353,7 @@ dependencies = [
  "rumoca-eval-solve",
  "rumoca-exec-wasm",
  "rumoca-ir-solve",
+ "rumoca-solver",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
