@@ -1396,8 +1396,8 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    /// The stop time and its schedule, for horizon controls.
-    #[cfg(test)]
+    /// The stop time and its schedule, for the native scalar horizon controls.
+    #[cfg(all(test, feature = "native-wasm"))]
     pub(super) fn horizon_for_test(&self) -> (u64, String) {
         (
             self.stop_time.to_bits(),
