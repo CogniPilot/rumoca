@@ -12,6 +12,25 @@ pub struct PrecompiledRetainedEvent {
     /// Whether the emission of `artifact` issued the read-only-Y certificate.
     read_only_y: bool,
 }
+/// Whether two invocation tables are equal in every field (offsets,
+/// extents, status word, carrier range, sources and forwarding), compared
+/// through their one wire form.
+#[cfg(any(
+    test,
+    all(
+        feature = "fixed-scalar-linked-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )
+))]
+pub(super) fn same_invocations(a: &[InvocationStorage], b: &[InvocationStorage]) -> bool {
+    matches!(
+        (serde_json::to_vec(a), serde_json::to_vec(b)),
+        (Ok(a), Ok(b)) if a == b
+    )
+}
+
 impl PrecompiledRetainedEvent {
     pub fn from_compiled(program: &CompiledRetainedEventWasm) -> Self {
         Self {
@@ -162,8 +181,11 @@ impl PrecompiledRetainedEvent {
                 crate::emit::Linkage::Browser,
             )
             .map_err(WasmCompileError::Backend)?;
+            // A build-certified load runs the carried table, so the
+            // certification compares every field of it, not only its shape.
             if module.bytes != self.artifact.module_bytes()
                 || read_only_y.is_some() != self.read_only_y
+                || !same_invocations(&invocations, &self.invocations)
             {
                 return Err(WasmCompileError::Input(
                     "precompiled event differs from its issued emission".into(),

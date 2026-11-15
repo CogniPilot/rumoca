@@ -167,3 +167,35 @@ fn a_trusted_event_bind_uses_the_carried_flag_and_refuses_another_version() {
     changed["version"] = serde_json::json!(1);
     assert!(trusted(changed).is_err());
 }
+
+/// The certifying linked bind compares the carried invocation table with the
+/// emitted one in every field: an equal table matches, and a change to any
+/// one offset, extent or the operation, even one that stays in bounds, does not.
+#[test]
+fn the_certified_invocation_table_differs_on_any_one_changed_field() {
+    let original = compile();
+    let same_invocations = super::super::artifact::same_invocations;
+    let table = serde_json::to_value(&original.invocations).unwrap();
+    let decode = |value: serde_json::Value| {
+        serde_json::from_value::<Vec<super::super::InvocationStorage>>(value).unwrap()
+    };
+    assert!(same_invocations(&original.invocations, &decode(table.clone())));
+    for field in [
+        "operation",
+        "input",
+        "input_bytes",
+        "output",
+        "output_bytes",
+        "scratch",
+        "scratch_bytes",
+        "status",
+    ] {
+        let mut changed = table.clone();
+        let value = changed[0][field].as_u64().unwrap();
+        changed[0][field] = serde_json::json!(value + 8);
+        assert!(
+            !same_invocations(&original.invocations, &decode(changed)),
+            "{field}"
+        );
+    }
+}
