@@ -662,3 +662,60 @@ fn conditional_value_proofs_do_not_merge_distinct_execution_owners() {
         "equal values do not erase distinct execution owners"
     );
 }
+
+/// A site-carrying shape keeps the literal bits its text form prints alike:
+/// two conditionals whose fallback calls one owner and differ only in a NaN
+/// constant's payload are two shapes, and one of them twice is one.
+#[test]
+fn a_site_carrying_shape_keeps_a_nan_payload_its_text_merges() {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let real = crate::SolveValueType::scalar(crate::SolveScalarType::real(profile));
+    let span = crate::source_span_from_offsets(813, 1, 2);
+    let table = crate::SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            crate::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(1).unwrap()),
+            vec![real.clone()],
+            vec![crate::SolvePureCallOutput::result(real)],
+            span,
+            |builder, inputs, outputs| {
+                let x = builder.load(inputs[0], span)?;
+                builder.store(outputs[0], x, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let site = table.owners()[0].call_site();
+    let conditional = |payload: u64| LinearOp::FunctionConditional {
+        dst_start: 4,
+        capture_start: 0,
+        program: Arc::new(FunctionConditionalProgram {
+            owner: None,
+            capture_count: 1,
+            target_widths: vec![1].into(),
+            result_count: 1,
+            arms: Vec::new().into(),
+            fallback_register_count: 3,
+            fallback: vec![
+                LinearOp::Const {
+                    dst: 1,
+                    value: f64::from_bits(0x7ff8_0000_0000_0000 | payload),
+                },
+                LinearOp::PureCall {
+                    dst_start: 2,
+                    input_starts: vec![1].into(),
+                    site: site.clone(),
+                },
+            ],
+        }),
+    };
+    let (quiet, payload) = (conditional(0), conditional(1));
+    assert_eq!(
+        format!("{quiet:?}"),
+        format!("{payload:?}"),
+        "the text merges them"
+    );
+    let shape = |op: &LinearOp| super::symbolic::shape_bytes(op).unwrap();
+    assert_ne!(shape(&quiet), shape(&payload));
+    assert_eq!(shape(&quiet), shape(&conditional(0)));
+}

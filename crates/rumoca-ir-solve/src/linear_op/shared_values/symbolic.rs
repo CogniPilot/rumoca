@@ -140,16 +140,19 @@ pub(super) struct ValueShape {
 /// site encodes only its owner ordinal, which names a whole checked
 /// interface only within one owner table, and no derivation boundary
 /// carries that table; so an operation that carries a site anywhere in it
-/// keeps its full text form, every interface field included, under a tag
-/// no encoding starts with.
-fn shape_bytes(op: &LinearOp) -> Option<Vec<u8>> {
-    if carries_call_site(op) {
-        let mut bytes = SITE_SHAPE_TAG.to_vec();
-        bytes.extend_from_slice(format!("{op:?}").as_bytes());
-        return Some(bytes);
+/// adds its full text form (every interface field) after its exact
+/// encoding, length-delimited, under a tag no encoding starts with. The
+/// encoding keeps literal bits (a NaN payload) the text form prints alike.
+pub(super) fn shape_bytes(op: &LinearOp) -> Option<Vec<u8>> {
+    let mut encoded = Vec::new();
+    bincode::serialize_into(&mut encoded, op).ok()?;
+    if !carries_call_site(op) {
+        return Some(encoded);
     }
-    let mut bytes = Vec::new();
-    bincode::serialize_into(&mut bytes, op).ok()?;
+    let mut bytes = SITE_SHAPE_TAG.to_vec();
+    bytes.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&encoded);
+    bytes.extend_from_slice(format!("{op:?}").as_bytes());
     Some(bytes)
 }
 
