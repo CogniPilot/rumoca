@@ -1,10 +1,13 @@
-//! `cargo xtask ci`: read-only views of the hosted CI through the `gh` CLI.
+//! `cargo xtask ci`: read-only views of the hosted CI through the `gh` CLI,
+//! and the compiled-only profile's local check matrix.
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use serde_json::Value;
 use std::process::Command;
 use std::time::Duration;
+
+mod check_matrix;
 
 #[derive(Debug, Args)]
 pub(crate) struct CiArgs {
@@ -17,6 +20,9 @@ pub(crate) enum CiCommand {
     /// Wait for the `main` runs of a commit and print their conclusions and
     /// failed jobs
     Watch(CiWatchArgs),
+    /// Run the compiled-only profile's check, build, tree and test stages
+    /// locally and record each stage's command, exit, duration and output
+    CheckMatrix(check_matrix::CheckMatrixArgs),
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -89,6 +95,7 @@ pub(crate) type GhRunner<'a> = dyn FnMut(&[&str]) -> Result<String> + 'a;
 pub(crate) fn run(args: CiArgs, gh: &mut GhRunner<'_>) -> Result<()> {
     match args.command {
         CiCommand::Watch(args) => watch(&args, gh),
+        CiCommand::CheckMatrix(args) => check_matrix::run(&args),
     }
 }
 
