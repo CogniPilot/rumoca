@@ -60,6 +60,7 @@ mod scenario_config;
 mod session;
 mod source_root_cache;
 mod source_root_discovery;
+mod source_set;
 mod traversal_adapter;
 #[cfg(test)]
 mod when_array_element_tests;
@@ -234,6 +235,9 @@ pub mod compile {
         WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
         compile_phase_timing_stats, install_compile_phase_observer,
         reset_compile_phase_timing_stats,
+    };
+    pub use crate::source_set::{
+        PRIMARY_SOURCE_NAME, SourceSet, compile_requested, compile_source_set,
     };
 }
 

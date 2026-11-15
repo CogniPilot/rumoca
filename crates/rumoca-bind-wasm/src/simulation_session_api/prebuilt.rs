@@ -1,16 +1,14 @@
 //! Current-build DAE transport. Checked IR replay remains owned by DAE.
 
-mod sources;
-
 use std::sync::Arc;
 
-use rumoca_compile::{Session, compile::Dae};
+use rumoca_compile::compile::{Dae, SourceSet, compile_source_set};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
+use crate::WasmError;
 use crate::simulation_api::experiment::SimulationExperiment;
-use crate::{WasmError, compile_requested_model, qualify_input_model_name};
 
 const ARTIFACT_VERSION: u32 = 1;
 
@@ -55,7 +53,7 @@ pub(super) fn key(
     model_name: &str,
     sources_json: &str,
 ) -> Result<ArtifactKey, WasmError> {
-    let sources = sources::SourceSet::parse(source, sources_json)?;
+    let sources = SourceSet::parse(source, sources_json).map_err(WasmError::new)?;
     let identity = rumoca_tool_build_info::build_identity()
         .filter(|identity| !identity.ends_with("-dirty"))
         .ok_or_else(|| {
@@ -67,7 +65,7 @@ pub(super) fn key(
         compiler_identity: identity.into(),
         model_name: model_name.into(),
         source_sha256: digest(source),
-        sources_sha256: digest(serialize(&sources.hashes())?),
+        sources_sha256: digest(serialize(&sources.hashes(|source| digest(source)))?),
     })
 }
 
@@ -111,11 +109,10 @@ pub(super) fn compile_payload(
     model_name: &str,
     workspace_sources_json: &str,
 ) -> Result<Payload, WasmError> {
-    let sources = sources::SourceSet::parse(source, workspace_sources_json)?;
-    let mut session = Session::default();
-    sources.load(&mut session)?;
-    let requested = qualify_input_model_name(&session, model_name);
-    let compiled = compile_requested_model(&mut session, &requested)?;
+    // The one source-set compile the linked FMU packager also uses, so both
+    // name every document, and so every source id, the same way.
+    let compiled =
+        compile_source_set(source, model_name, workspace_sources_json).map_err(WasmError::new)?;
     let experiment = SimulationExperiment::from(&compiled);
     Ok(Payload {
         dae: compiled.dae,

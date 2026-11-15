@@ -7,7 +7,10 @@
 //!
 //! The model is compiled from its main document plus the listed source roots
 //! (each a file or a whole package directory) and nothing else: no library is
-//! discovered from the environment. The host's options document is read by
+//! discovered from the environment. A linked package instead takes the SDK
+//! export's own workspace source set (the JSON object of companion documents)
+//! and compiles it through the export's compile, so the saved product's
+//! component is the one this FMU packages. The host's options document is read by
 //! the same owner the browser session uses. Its parameter overrides and
 //! initial inputs are applied when the model is lowered; its solver, step and
 //! tolerances become the component's Co-Simulation step plan, and a choice no
@@ -35,6 +38,36 @@ fn stage<T>(
     result.map(|value| (value, seconds))
 }
 
+/// What the model is compiled from: source roots, or for a linked package the
+/// SDK export's own workspace source set (its JSON object and document count).
+enum Sources {
+    Roots(Vec<String>),
+    Workspace { json: String, documents: usize },
+}
+
+impl Sources {
+    fn workspace(json: String) -> Result<Self, Box<dyn Error>> {
+        match serde_json::from_str::<serde_json::Value>(&json)? {
+            serde_json::Value::Object(documents) => Ok(Self::Workspace {
+                documents: documents.len(),
+                json,
+            }),
+            _ => Err(
+                "a linked package compiles the SDK export's workspace source set: \
+                      SOURCES must be that JSON object, not source roots"
+                    .into(),
+            ),
+        }
+    }
+
+    fn count(&self) -> usize {
+        match self {
+            Self::Roots(roots) => roots.len(),
+            Self::Workspace { documents, .. } => *documents,
+        }
+    }
+}
+
 /// Published variables counted by FMI type and causality.
 fn census(component: &FmiComponent) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
@@ -58,7 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     ] = arguments.as_slice()
     else {
         return Err(
-            "usage: scalar_package SOURCE MODEL SOURCE_ROOTS_JSON OPTIONS_JSON \
+            "usage: scalar_package SOURCE MODEL SOURCES_JSON OPTIONS_JSON \
                     NEW_WORK_DIR [BUILD_SCRATCH [LINKED_ARTIFACT SAVED_PRODUCT]]"
                 .into(),
         );
@@ -86,18 +119,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         scratch.unwrap_or(work).join("rumoca-cache"),
     );
     let source = fs::read_to_string(source_path)?;
-    let roots = read_source_roots(Path::new(roots_path))?;
     let options = ScalarPackageOptions::parse(&fs::read_to_string(options_path)?)?;
-    let (compilation, frontend_s) = stage("frontend", || {
-        rumoca::Compiler::new()
+    // A linked package compiles the SDK export's own source set, through the
+    // export's own compile, so every document keeps the name (and source id)
+    // the saved product's component was lowered with. Otherwise the roots.
+    let sources = if linked.is_some() {
+        Sources::workspace(fs::read_to_string(roots_path)?)?
+    } else {
+        Sources::Roots(read_source_roots(Path::new(roots_path))?)
+    };
+    let (dae, frontend_s) = stage("frontend", || match &sources {
+        Sources::Roots(roots) => rumoca::Compiler::new()
             .model(model)
-            .source_roots(&roots)
+            .source_roots(roots)
             .compile_str(&source, source_path)
-            .map_err(|error| error.to_string().into())
+            .map(|compilation| compilation.dae)
+            .map_err(|error| error.to_string().into()),
+        Sources::Workspace { json, .. } => {
+            rumoca_compile::compile::compile_source_set(&source, model, json)
+                .map(|compilation| compilation.dae)
+                .map_err(Into::into)
+        }
     })?;
     let (component, lower_s) = stage("lower", || {
         Ok(rumoca_sim::lower_fmi_scalar_export_component(
-            &compilation.dae,
+            &dae,
             options.sim_options(),
         )?)
     })?;
@@ -118,6 +164,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (prepared, prepare_s) = stage("prepared_model", || {
         Ok(PreparedScalarFmiLsModel::from_component(&component)?)
     })?;
+    // A saved product whose component is not this one is refused here, before
+    // the fixed guest core is built; linkage repeats the same check.
+    if let Some((_, saved)) = &linked {
+        stage("saved_component", || {
+            Ok(prepared.check_saved_product(saved)?)
+        })?;
+    }
     // Every served type and VR is admitted by the scalar view, the owner the
     // package is constructed with, before the guest core is built.
     let (served, _) = stage("served_variables", || {
@@ -190,7 +243,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "model_description_sha256": description_sha256,
             "public_variables_sha256": table_sha256,
             "component_bytes": component_bytes,
-            "source_roots": roots.len(), "variables": variables,
+            "sources": sources.count(), "variables": variables,
             "seconds": {"frontend": frontend_s, "lower": lower_s, "prepared_model": prepare_s,
                         "fixed_guest_core": core_s, "construct": construct_s,
                         "publish": publish_s},

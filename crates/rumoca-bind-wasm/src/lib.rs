@@ -57,8 +57,8 @@ use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_compile::Session;
 use rumoca_compile::compile::{
-    CompilationMode, CompilationResult, CompilePhaseTimingSnapshot, FailedPhase, PhaseResult,
-    compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
+    CompilationMode, CompilationResult, CompilePhaseTimingSnapshot, compile_phase_timing_stats,
+    reset_compile_phase_timing_stats, session_cache_stats,
 };
 use rumoca_compile::parsing::{
     ClassDef, Expression, ParseError, StoredDefinition, collect_model_names, parse_source_to_ast,
@@ -645,35 +645,7 @@ fn compile_requested_model_with_mode(
     model_name: &str,
     mode: CompilationMode,
 ) -> Result<CompilationResult, WasmError> {
-    let mut report = session.compile_model_with_mode(model_name, mode);
-    if !report.failures.is_empty() {
-        return Err(WasmError::new(format!(
-            "Compilation error: {}",
-            report.failure_summary(8)
-        )));
-    }
-    match report.requested_result.take() {
-        Some(PhaseResult::Success(result)) => Ok(*result),
-        Some(PhaseResult::NeedsInner { missing_inners, .. }) => Err(WasmError::new(format!(
-            "Compilation error: missing inner declarations: {}",
-            missing_inners.join(", ")
-        ))),
-        Some(PhaseResult::Failed { phase, error, .. }) => {
-            let phase_name = match phase {
-                FailedPhase::Instantiate => "instantiate",
-                FailedPhase::Typecheck => "typecheck",
-                FailedPhase::Flatten => "flatten",
-                FailedPhase::ToDae => "todae",
-            };
-            Err(WasmError::new(format!(
-                "Compilation error: {phase_name} failed: {error}"
-            )))
-        }
-        None => Err(WasmError::new(format!(
-            "Compilation error: {}",
-            report.failure_summary(8)
-        ))),
-    }
+    rumoca_compile::compile::compile_requested(session, model_name, mode).map_err(WasmError::new)
 }
 
 pub(crate) fn with_singleton_session<T>(
@@ -731,7 +703,7 @@ fn discard_interrupted_session(
 /// the WASM bindings load, delegating to the shared [`Session::qualify_model_name`]
 /// rule so the `within`-qualification logic lives in one place.
 pub(crate) fn qualify_input_model_name(session: &Session, model_name: &str) -> String {
-    session.qualify_model_name("input.mo", model_name)
+    session.qualify_model_name(rumoca_compile::compile::PRIMARY_SOURCE_NAME, model_name)
 }
 
 fn compile_source_in_session(
