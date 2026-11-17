@@ -17,7 +17,7 @@ pub(super) fn validate_integer_reduction(
     ) {
         return validate_while_sum(function, context).map(Some);
     }
-    if contains_break(&function.body)
+    if function_returns::contains_break(&function.body)
         && matches!(function.body.as_slice(), [
             rumoca_core::Statement::Assignment { .. },
             rumoca_core::Statement::For { indices, .. },
@@ -334,23 +334,6 @@ fn is_integer_one(expression: &Expression) -> bool {
             ..
         }
     )
-}
-
-fn contains_break(statements: &[rumoca_core::Statement]) -> bool {
-    statements.iter().any(|statement| match statement {
-        rumoca_core::Statement::Break { .. } => true,
-        rumoca_core::Statement::For { equations, .. } => contains_break(equations),
-        rumoca_core::Statement::While { block, .. } => contains_break(&block.stmts),
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            cond_blocks.iter().any(|block| contains_break(&block.stmts))
-                || else_block.as_deref().is_some_and(contains_break)
-        }
-        _ => false,
-    })
 }
 
 fn unsupported_reduction(function: &rumoca_core::Function) -> ToDaeError {

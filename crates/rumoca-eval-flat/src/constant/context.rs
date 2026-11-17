@@ -52,6 +52,10 @@ pub struct EvalContext {
 
     /// Lexical instance scope used for modification-binding lookup.
     lookup_scope: Option<ComponentPath>,
+
+    /// The model's predefined scalar type identities, which tell a
+    /// declaration's value type apart (see [`super::DeclaredScalar`]).
+    predefined_types: Option<rumoca_ir_flat::PredefinedTypeIds>,
 }
 
 impl Default for EvalContext {
@@ -76,7 +80,19 @@ impl EvalContext {
             values_by_instance: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
             deferred_parameters: IndexMap::with_capacity_and_hasher(0, FxBuildHasher),
             lookup_scope: None,
+            predefined_types: None,
         }
+    }
+
+    /// Record the model's predefined scalar type identities, so a value stored
+    /// in a declaration takes the declared type.
+    pub fn set_predefined_types(&mut self, predefined: rumoca_ir_flat::PredefinedTypeIds) {
+        self.predefined_types = Some(predefined);
+    }
+
+    /// The model's predefined scalar type identities, when recorded.
+    pub fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {
+        self.predefined_types
     }
 
     /// Add a function definition for constant evaluation.

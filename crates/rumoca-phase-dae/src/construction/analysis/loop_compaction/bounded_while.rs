@@ -19,7 +19,7 @@
 //! * a top-level conjunct of `c` is `k < N`, `k <= N`, `N > k`, or `N >= k`,
 //!   with `N` settled at translation (a literal, a shape extent, an evaluable
 //!   parameter) and not written by `S`;
-//! * `S` has no `break` or `return`, writes `k` once at top level as
+//! * `S` writes `k` once at top level as
 //!   `k := k + d` with a positive Integer literal `d`, writes `k` after that
 //!   statement nowhere, and before it only as `k := N` (the `isEqual` early
 //!   exit), which cannot lower `k` while `c` holds;
@@ -37,7 +37,17 @@
 //! form (`shrinking`) proves a positive counter repeatedly divided by a fixed
 //! Integer greater than one reaches zero. A loop without a proof is left as
 //! written and keeps its typed rejection.
+//!
+//! A `break` of the loop (MLS §11.2.4) or a `return` (MLS §11.2.5) leaves
+//! the counter and division proofs intact: they bound the passes by the
+//! counter values a pass can start from, every pass that goes on moves the
+//! counter at top level, and a pass that exits is the last one. The progress
+//! form follows each path of a pass, so it ends an exiting path there and
+//! counts that pass like the one an exit flag ends. The `break` then belongs
+//! to the generated `for`, which is the innermost loop around it as the
+//! `while` was.
 
+use super::super::function_returns::{contains_return, statements_break};
 use super::super::guard_facts::{FactScope, GuardFacts};
 use super::*;
 use rumoca_core::{ForIndex, Literal, OpBinary, StatementBlock};
@@ -69,7 +79,8 @@ pub(super) fn bound_while_loops(
 /// A bounded loop whose condition provably holds on entry runs its body at
 /// least once, so that first iteration is written out unconditionally ahead
 /// of the guarded remainder; the definitions it makes are then visible on
-/// every path, as the source loop guarantees.
+/// every path, as the source loop guarantees. A body that breaks is not
+/// written out: its `break` would leave no loop.
 fn bound_statement(
     statement: &rumoca_core::Statement,
     scope: FactScope<'_>,
@@ -90,7 +101,10 @@ fn bound_statement(
     let Some(bound) = iteration_bound(&block, facts, &head, scope) else {
         return vec![rumoca_core::Statement::While { block, span: *span }];
     };
-    if bound == 0 || !facts.assuming(&block.cond, false, scope).is_unreachable() {
+    if bound == 0
+        || statements_break(&block.stmts)
+        || !facts.assuming(&block.cond, false, scope).is_unreachable()
+    {
         return vec![guarded_for(block, bound, *span)];
     }
     let mut peeled = block.stmts.clone();
@@ -196,9 +210,6 @@ fn iteration_bound(
         && head.assuming(&block.cond, true, scope).is_unreachable()
     {
         return Some(0);
-    }
-    if statements_exit_early(&block.stmts) {
-        return None;
     }
     counter_bound(block, entry, scope)
         .or_else(|| progress_bound(block, head, scope))
@@ -409,27 +420,6 @@ fn indexes_with(expression: &Expression, counter: &VarName) -> bool {
             matches!(subscript, Subscript::Expr { expr, .. }
                 if plain_reference(expr) == Some(counter))
         })
-    })
-}
-
-fn statements_exit_early(statements: &[rumoca_core::Statement]) -> bool {
-    statements.iter().any(|statement| match statement {
-        rumoca_core::Statement::Break { .. } | rumoca_core::Statement::Return { .. } => true,
-        rumoca_core::Statement::For { equations, .. } => statements_exit_early(equations),
-        rumoca_core::Statement::While { block, .. } => statements_exit_early(&block.stmts),
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            cond_blocks
-                .iter()
-                .any(|block| statements_exit_early(&block.stmts))
-                || else_block
-                    .as_ref()
-                    .is_some_and(|statements| statements_exit_early(statements))
-        }
-        _ => false,
     })
 }
 

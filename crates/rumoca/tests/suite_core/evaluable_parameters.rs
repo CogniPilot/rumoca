@@ -291,3 +291,193 @@ fn binding_reads(model: &dae::Dae, name: &str) -> Vec<String> {
         names
     })
 }
+
+const ARRAY_BUILTINS: &str = "
+record MassSplit
+  Real m;
+  Real c;
+end MassSplit;
+function bodyTranspose input Real B[2, 3]; output Real y[3, 2]; algorithm y := transpose(B); end bodyTranspose;
+function bodyIdentity input Integer n; output Integer y[n, n]; algorithm y := identity(n); end bodyIdentity;
+function bodyDiagonal input Real v[3]; output Real y[3, 3]; algorithm y := diagonal(v); end bodyDiagonal;
+function bodyOuter input Real v[3]; output Real y[3, 3]; algorithm y := outerProduct(v, v); end bodyOuter;
+function bodyCross input Real v[3]; output Real y[3]; algorithm y := cross(v, {0, 0, 1}); end bodyCross;
+function bodySkew input Real v[3]; output Real y[3, 3]; algorithm y := skew(v); end bodySkew;
+function bodySmooth input Real v; output Real y; algorithm y := smooth(0, v); end bodySmooth;
+function bodyNoEvent input Real v; output Real y; algorithm y := noEvent(v); end bodyNoEvent;
+function bodyBlock
+  input Real v[3];
+  output Real y[3, 3];
+algorithm
+  y := zeros(3, 3);
+  y[1:2, 2:3] := {{v[1], v[2]}, {v[3], v[1]}};
+  y[3, 1:2] := {v[2], v[3]};
+end bodyBlock;
+function split
+  input Real total;
+  output MassSplit head;
+algorithm
+  head.m := total - 0.5;
+  head.c := 2 * head.m;
+end split;
+model ArrayBuiltins
+  parameter Real a[3] = {1, 2, 3} annotation(Evaluate = true);
+  parameter Real B[2, 3] = {{1, 2, 3}, {4, 5, 6}} annotation(Evaluate = true);
+  final parameter Real t[3, 2] = transpose(B);
+  final parameter Integer i[3, 3] = identity(3);
+  final parameter Real d[3, 3] = diagonal(a);
+  final parameter Real o[3, 3] = outerProduct(a, a);
+  final parameter Real c[3] = cross(a, {0, 0, 1});
+  final parameter Real k[3, 3] = skew(a);
+  final parameter Real sm = smooth(0, a[1]);
+  final parameter Real ne = noEvent(a[2]);
+  final parameter Real ft[3, 2] = bodyTranspose(B);
+  final parameter Integer fi[3, 3] = bodyIdentity(3);
+  final parameter Real fd[3, 3] = bodyDiagonal(a);
+  final parameter Real fo[3, 3] = bodyOuter(a);
+  final parameter Real fc[3] = bodyCross(a);
+  final parameter Real fk[3, 3] = bodySkew(a);
+  final parameter Real fsm = bodySmooth(a[1]);
+  final parameter Real fne = bodyNoEvent(a[2]);
+  final parameter MassSplit p = split(a[3]);
+  final parameter Real fb[3, 3] = bodyBlock(a);
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = -(sum(t) + sum(i) + sum(d) + sum(o) + sum(c) + sum(k) + sm + ne
+    + sum(ft) + sum(fi) + sum(fd) + sum(fo) + sum(fc) + sum(fk) + fsm + fne
+    + p.m + p.c + sum(fb)) * x;
+end ArrayBuiltins;";
+
+/// MLS 3.7 §4.5, §18.6: a `final` parameter bound through an array builtin
+/// (§10.3: `transpose`, `identity`, `diagonal`, `outerProduct`, `cross`, `skew`)
+/// or a value-transparent one (§3.7.4: `smooth`, `noEvent`), in
+/// the binding itself or inside the body of the function it calls, or through
+/// a record output a function assigns field by field (§11.2.1), or through a
+/// block of a matrix a function assigns by slices (§10.5), is evaluated
+/// at translation like any other evaluable binding.
+#[test]
+fn bindings_through_array_and_transparent_builtins_are_evaluable() {
+    let source = compile(ARRAY_BUILTINS, "ArrayBuiltins");
+    let mut marked = evaluable(&source);
+    marked.sort();
+    let mut expected = [
+        "a", "B", "t", "i", "d", "o", "c", "k", "sm", "ne", "ft", "fi", "fd", "fo", "fc", "fk",
+        "fsm", "fne", "p.m", "p.c", "fb",
+    ];
+    expected.sort_unstable();
+    assert_eq!(marked, expected);
+}
+
+/// The folded value of `name` in row-major order, and its declared extents.
+fn folded_value(model: &dae::Dae, name: &str) -> (Vec<f64>, Vec<u32>) {
+    model.inspect(|view| {
+        let (id, variable) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .unwrap_or_else(|| panic!("`{name}` is declared"));
+        let values = rumoca_eval_dae::NumericEvaluator::new(view)
+            .source_initial_values(id)
+            .unwrap_or_else(|error| panic!("`{name}` has a value: {error}"))
+            .materialize()
+            .into_iter()
+            .map(|value| match value {
+                rumoca_eval_dae::NumericSourceScalar::Real(value) => value,
+                rumoca_eval_dae::NumericSourceScalar::Integer(value) => value as f64,
+                other => panic!("`{name}` holds a non-numeric {other:?}"),
+            })
+            .collect();
+        (values, variable.value_type().dimensions().to_vec())
+    })
+}
+
+/// The admitted parameters of `ArrayBuiltins` fold to their MLS values with
+/// their declared shapes, the binding and the function-body forms alike, and
+/// no expression reads them afterwards.
+#[test]
+fn bindings_through_array_and_transparent_builtins_fold_to_their_values() {
+    let source = compile(ARRAY_BUILTINS, "ArrayBuiltins");
+    let folded = fold_evaluable_parameters(&source)
+        .unwrap()
+        .expect("ArrayBuiltins reads evaluable parameters");
+    let expected: [(&[&str], &[f64], &[u32]); 11] = [
+        (&["t", "ft"], &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], &[3, 2]),
+        (
+            &["i", "fi"],
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            &[3, 3],
+        ),
+        (
+            &["d", "fd"],
+            &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
+            &[3, 3],
+        ),
+        (
+            &["o", "fo"],
+            &[1.0, 2.0, 3.0, 2.0, 4.0, 6.0, 3.0, 6.0, 9.0],
+            &[3, 3],
+        ),
+        (&["c", "fc"], &[2.0, -1.0, 0.0], &[3]),
+        (
+            &["k", "fk"],
+            &[0.0, -3.0, 2.0, 3.0, 0.0, -1.0, -2.0, 1.0, 0.0],
+            &[3, 3],
+        ),
+        (&["sm", "fsm"], &[1.0], &[]),
+        (&["ne", "fne"], &[2.0], &[]),
+        (&["p.m"], &[2.5], &[]),
+        (&["p.c"], &[5.0], &[]),
+        (
+            &["fb"],
+            &[0.0, 1.0, 2.0, 0.0, 3.0, 1.0, 2.0, 3.0, 0.0],
+            &[3, 3],
+        ),
+    ];
+    for (names, values, extents) in expected {
+        for name in names {
+            assert_eq!(
+                folded_value(&folded, name),
+                (values.to_vec(), extents.to_vec()),
+                "{name}"
+            );
+        }
+    }
+    let read = read_parameters(&folded);
+    assert!(
+        expected
+            .iter()
+            .flat_map(|(names, _, _)| names.iter())
+            .all(|name| !read.iter().any(|read| read == name)),
+        "every admitted parameter is folded: {read:?}"
+    );
+}
+
+/// MLS 3.7 §10.6.13: an Integer actual of a function's Real input is a Real
+/// inside the body, so a `final` parameter bound to `cube(2097152)` is the
+/// finite Real `2^63`, evaluated at translation, not an Integer overflow that
+/// leaves the parameter unevaluated.
+#[test]
+fn an_integer_actual_of_a_real_input_is_evaluated_as_a_real() {
+    let source = compile(
+        "function cube
+           input Real x;
+           output Real y;
+         algorithm
+           y := x * x * x;
+         end cube;
+         model RealInputs
+           final parameter Real big = cube(2097152);
+           Real x(start = 1, fixed = true);
+         equation
+           der(x) = -big * 1e-19 * x;
+         end RealInputs;",
+        "RealInputs",
+    );
+    assert_eq!(evaluable(&source), ["big"]);
+    let folded = fold_evaluable_parameters(&source)
+        .unwrap()
+        .expect("RealInputs reads an evaluable parameter");
+    assert_eq!(
+        folded_value(&folded, "big"),
+        (vec![2f64.powi(63)], Vec::new())
+    );
+}

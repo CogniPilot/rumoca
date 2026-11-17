@@ -302,11 +302,11 @@ fn a_bounded_while_fold_ends_at_its_first_false_condition() {
     });
 }
 
-/// A `while` that can leave through `break` has no exit at which its
-/// condition is known false, so no exit fact or iteration envelope is proven
-/// from the condition, and the loop is refused rather than bounded by it.
+/// A `while` that can leave through `break` (MLS §11.2.4) keeps its counter
+/// bound: a pass that breaks is the last one, so the loop lowers to the
+/// compact `for` owner and ends at the pass that breaks.
 #[test]
-fn a_while_loop_that_can_break_is_refused() {
+fn a_while_loop_that_can_break_ends_at_the_pass_that_breaks() {
     let source = r#"
 function firstAbove
   input Real x[4];
@@ -326,22 +326,33 @@ algorithm
   end while;
 end firstAbove;
 model WhileBreak
-  input Real limit = 2;
+  parameter Real limit = 2;
   Real k;
 equation
   k = firstAbove({1, 2, 3, 4}, limit + time);
 end WhileBreak;
 "#;
-    let error = Compiler::new()
+    let compiled = Compiler::new()
         .model("WhileBreak")
         .compile_str(source, "WhileBreak.mo")
-        .map(|_| ())
-        .expect_err("a while loop with break has no proven envelope");
-    let message = error.to_string();
-    assert!(
-        message.contains("`firstAbove`"),
-        "unexpected refusal: {message}"
-    );
+        .expect("a while loop with break keeps its counter bound");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.5,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("the search simulates");
+    for time in [0.0, 0.2, 0.4] {
+        let limit = 2.0 + time;
+        let expected = [1.0, 2.0, 3.0, 4.0]
+            .iter()
+            .position(|value| *value > limit)
+            .map_or(0.0, |index| (index + 1) as f64);
+        assert_eq!(at(&result, "k", time), expected, "k at {time}");
+    }
 }
 
 #[test]

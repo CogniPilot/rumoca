@@ -22,6 +22,7 @@ mod compiled_messages;
 mod continuous_input_writes;
 #[cfg(feature = "fmi")]
 mod fmi_export_defaults;
+mod function_loop_exits;
 mod function_returns;
 #[cfg(feature = "solver-diffsol")]
 mod g2_projection;

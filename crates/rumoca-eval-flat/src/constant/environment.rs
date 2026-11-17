@@ -43,6 +43,12 @@ pub trait EvalEnvironment {
     fn translation_resources(&self) -> Option<&ResourceRoots> {
         None
     }
+    /// The model's predefined scalar type identities, which decide the type a
+    /// declaration gives its values; `None` when the inventory has none, and
+    /// then values are stored as computed.
+    fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {
+        None
+    }
 }
 
 impl EvalEnvironment for EvalContext {
@@ -64,5 +70,9 @@ impl EvalEnvironment for EvalContext {
 
     fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource> {
         self.deferred_parameter(name)
+    }
+
+    fn predefined_types(&self) -> Option<rumoca_ir_flat::PredefinedTypeIds> {
+        self.predefined_types()
     }
 }

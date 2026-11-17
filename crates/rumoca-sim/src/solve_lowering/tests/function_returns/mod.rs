@@ -9,7 +9,11 @@ mod checked;
 mod dynamic;
 mod lazy;
 
-fn compile_model(model: &str, source: &str, filename: &str) -> Result<CompilationResult, String> {
+pub(super) fn compile_model(
+    model: &str,
+    source: &str,
+    filename: &str,
+) -> Result<CompilationResult, String> {
     let mut session = Session::new(SessionConfig::default());
     session
         .add_document(filename, source)
