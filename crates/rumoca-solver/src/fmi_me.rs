@@ -85,10 +85,10 @@ mod trace;
 mod validation;
 
 pub use integrator::{
-    MeAcceptedStep, MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeDerivativeRefused,
-    MeIntegrationError, MeIntegratorBackend, MeNumericalFailure, MeNumericalSetup, MeStepCandidate,
-    accepted_interval_contains, accepted_step_roundoff, reset_trial_discard_count,
-    trial_discard_count,
+    MeAcceptedStep, MeAdvanceRequest, MeCartesianPartition, MeContinuousPoint, MeDerivativeHandle,
+    MeDerivativeRefused, MeIntegrationError, MeIntegratorBackend, MeNumericalFailure,
+    MeNumericalSetup, MeStepCandidate, accepted_interval_contains, accepted_step_roundoff,
+    reset_trial_discard_count, trial_discard_count,
 };
 pub use kernel::SolveMeKernel;
 #[cfg(feature = "native-wasm")]

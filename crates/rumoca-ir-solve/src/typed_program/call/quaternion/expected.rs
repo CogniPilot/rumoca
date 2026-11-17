@@ -1,0 +1,71 @@
+use super::Token;
+// Postfix trees preserve every authored binary operation and its operand order.
+// In particular, no reassociation, cancellation or commutative normalization.
+pub(super) fn expected() -> Vec<Vec<Token>> {
+    use Token::{Add as A, Input as I, Mul as M, Neg as N, Real as R, Sub as S};
+    let half = R(0.5f64.to_bits());
+    vec![
+        vec![
+            half.clone(),
+            I(0, 1),
+            I(1, 0),
+            M,
+            N,
+            I(0, 2),
+            I(1, 1),
+            M,
+            S,
+            I(0, 3),
+            I(1, 2),
+            M,
+            S,
+            M,
+        ],
+        vec![
+            half.clone(),
+            I(0, 0),
+            I(1, 0),
+            M,
+            I(0, 3),
+            I(1, 1),
+            M,
+            S,
+            I(0, 2),
+            I(1, 2),
+            M,
+            A,
+            M,
+        ],
+        vec![
+            half.clone(),
+            I(0, 3),
+            I(1, 0),
+            M,
+            I(0, 0),
+            I(1, 1),
+            M,
+            A,
+            I(0, 1),
+            I(1, 2),
+            M,
+            S,
+            M,
+        ],
+        vec![
+            half,
+            I(0, 2),
+            I(1, 0),
+            M,
+            N,
+            I(0, 1),
+            I(1, 1),
+            M,
+            A,
+            I(0, 0),
+            I(1, 2),
+            M,
+            A,
+            M,
+        ],
+    ]
+}

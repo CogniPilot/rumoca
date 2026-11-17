@@ -506,4 +506,31 @@ mod tests {
             "one failure is latched once"
         );
     }
+
+    #[test]
+    fn derived_system_refuses_ordinary_float64_reads_through_the_host_handle() {
+        let controller = MeDerivativeController::over_component(Box::new(OdeComponent {
+            system: Rc::new(Decay),
+        }));
+        let handle = controller.issue_handle();
+        let _window = controller.activate();
+        let mut values = [42.0, 42.0];
+        handle
+            .float64_values_into(0.0, &[1.0], &[0, 1], &mut values)
+            .expect_err("a derived system has no ordinary FMI getter");
+        assert_eq!(values, [42.0, 42.0], "a refused read publishes no value");
+        assert!(handle.has_failed());
+        let first = controller
+            .take_error()
+            .expect("the host retains the refusal");
+        let MeIntegrationError::Component(failure) = first else {
+            panic!("expected the derived component's typed refusal");
+        };
+        assert!(matches!(failure.kind(), MeError::Contract { reason }
+            if reason.contains("no ordinary Float64 getter capability")));
+        assert!(
+            controller.take_error().is_none(),
+            "one failure is latched once"
+        );
+    }
 }

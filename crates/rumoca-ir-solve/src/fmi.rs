@@ -37,6 +37,8 @@ mod c_codegen;
 
 /// The constructor-reserved independent Float64 time reference in FMI 3.
 pub const FMI3_TIME_VALUE_REFERENCE: u32 = 0;
+mod articulated_bindings;
+pub use articulated_bindings::{FmiArticulatedReduction, FmiFactorChannel};
 mod co_simulation;
 mod deployment;
 mod event_free;
@@ -374,6 +376,7 @@ fn dependency_backed_indicator_sources(
 /// of [`FmiCodegenView::try_event_free`], never this inventory itself.
 #[derive(Debug)]
 pub struct FmiMetadata {
+    articulated_reductions: Vec<FmiArticulatedReduction>,
     variables: Vec<FmiVariable>,
     publication_defaults_complete: bool,
     state_variable_indices: Vec<usize>,
@@ -381,6 +384,11 @@ pub struct FmiMetadata {
 }
 
 impl FmiMetadata {
+    /// Constructor-only local source correspondences. These are not exported
+    /// annotations or a complete mechanical/numerical profile admission.
+    pub fn articulated_reductions(&self) -> &[FmiArticulatedReduction] {
+        &self.articulated_reductions
+    }
     /// The one ordered value-reference inventory both FMI versions project.
     ///
     /// One entry per addressable checked Solve storage run in storage order,
@@ -473,6 +481,7 @@ impl FmiComponent {
         let mut metadata = checked_metadata(&model.problem, inputs)?;
         metadata.publication_defaults_complete =
             input_defaults::check_model_defaults(&model, &metadata)?;
+        metadata.articulated_reductions = articulated_bindings::derive(&model, &metadata);
         let event_indicators = FmiEventIndicatorInventory::derive(&model)?;
         crate::refresh::issue_model_native_assignment_schedule(&mut model);
         Ok(Self {
@@ -732,6 +741,7 @@ fn checked_metadata(
 
     let derivative_value_reference_base_fmi3 = value_reference_fmi3(inventory.variables.len())?;
     Ok(FmiMetadata {
+        articulated_reductions: Vec::new(),
         publication_defaults_complete: false,
         variables: inventory.variables,
         state_variable_indices: inventory.state_variable_indices,

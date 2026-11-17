@@ -1,3 +1,6 @@
+mod articulated_source;
+mod mechanical_admission;
+mod quaternion_source;
 use rumoca_compile::compile::{Session, SessionConfig};
 
 use super::entry::lower_dae_for_simulation;
@@ -10,6 +13,8 @@ mod array_trajectories;
 mod binder_guard_families;
 mod block_residual_split;
 mod call_dependency_precision;
+#[cfg(feature = "solver-rk45")]
+mod cartesian_euler;
 mod coincident_strict;
 #[cfg(not(target_arch = "wasm32"))]
 mod compiled_messages;
@@ -25,6 +30,8 @@ mod initial_relation_truth;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
 mod jacobian_source_trajectories;
+#[cfg(all(not(target_arch = "wasm32"), feature = "solver-rk45"))]
+mod ordinary_fmi_reads;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod parameter_bindings;
 mod probe_jacobian;

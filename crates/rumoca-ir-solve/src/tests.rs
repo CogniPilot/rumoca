@@ -678,6 +678,8 @@ fn make_layout_with_private_parameters(
 fn representative_solve_problem_fixture() -> SolveProblem {
     SolveProblem {
         schema_version: SOLVE_SCHEMA_VERSION,
+        cartesian_pairs: None,
+        mechanical_step: None,
         layout: make_layout_with_private_parameters(
             &[("x", vec![1]), ("y", vec![1]), ("hold.y", vec![1])],
             &[("p", vec![1]), ("__pre__.hold.y", vec![1])],
