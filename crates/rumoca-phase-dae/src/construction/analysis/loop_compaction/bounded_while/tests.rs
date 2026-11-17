@@ -1,6 +1,6 @@
 use super::*;
 use crate::construction::analysis::loop_compaction::preservation_corpus::{
-    assign, binary, integer, span, var,
+    assign, binary, branch, integer, span, var,
 };
 use rumoca_core::BuiltinFunction;
 
@@ -251,4 +251,135 @@ fn a_write_of_the_enclosing_record_is_a_counter_write() {
     ));
     assert!(!writes_name(&written, &VarName::new("rk")));
     assert!(!writes_name(&written, &VarName::new("q.r")));
+}
+
+/// `if condition then <exit> end if`.
+fn exit_when(condition: Expression, exit: rumoca_core::Statement) -> rumoca_core::Statement {
+    branch(vec![(condition, vec![exit])], None)
+}
+
+fn leave_when(condition: Expression) -> rumoca_core::Statement {
+    exit_when(condition, rumoca_core::Statement::Break { span: span() })
+}
+
+/// MLS §11.2.4: a pass that breaks is the last one. The counter form keeps
+/// its bound, and the progress form counts that pass once more, as it counts
+/// the pass an exit flag ends.
+#[test]
+fn a_break_keeps_the_counter_bound_and_adds_its_pass_to_progress() {
+    let counted = binary(OpBinary::Lt, var("k"), integer(5));
+    let leave = leave_when(binary(OpBinary::Eq, var("k"), integer(2)));
+    let rise = step(OpBinary::Add, 1);
+    assert_eq!(bound(Some(1), counted.clone(), vec![rise.clone()]), Some(5));
+    assert_eq!(bound(Some(1), counted, vec![leave.clone(), rise]), Some(5));
+    let window = binary(
+        OpBinary::And,
+        binary(OpBinary::Ge, var("k"), integer(0)),
+        binary(OpBinary::Le, var("k"), integer(8)),
+    );
+    let fall = step(OpBinary::Sub, 1);
+    assert_eq!(bound(Some(8), window.clone(), vec![fall.clone()]), Some(9));
+    assert_eq!(bound(Some(8), window, vec![leave, fall]), Some(10));
+}
+
+/// MLS §11.2.5: a pass that returns is the last one too, so the counter
+/// form keeps its bound and the progress form counts that pass once more.
+#[test]
+fn a_return_keeps_the_counter_bound_and_adds_its_pass_to_progress() {
+    let ret = exit_when(
+        binary(OpBinary::Eq, var("k"), integer(2)),
+        rumoca_core::Statement::Return { span: span() },
+    );
+    assert_eq!(
+        bound(
+            Some(1),
+            binary(OpBinary::Lt, var("k"), integer(5)),
+            vec![ret.clone(), step(OpBinary::Add, 1)]
+        ),
+        Some(5)
+    );
+    let window = binary(
+        OpBinary::And,
+        binary(OpBinary::Ge, var("k"), integer(0)),
+        binary(OpBinary::Le, var("k"), integer(8)),
+    );
+    assert_eq!(
+        bound(Some(8), window, vec![ret, step(OpBinary::Sub, 1)]),
+        Some(10)
+    );
+}
+
+/// A loop that holds on entry has its first pass written out, but not when
+/// the pass can break: the `break` would then leave no loop.
+#[test]
+fn a_loop_that_can_break_is_not_peeled() {
+    let shapes = ShapeEnvironment::default();
+    let lowered = |stmts| {
+        let statement = rumoca_core::Statement::While {
+            block: StatementBlock {
+                cond: binary(OpBinary::Lt, var("k"), integer(5)),
+                stmts,
+            },
+            span: span(),
+        };
+        with_scope(&shapes, |scope| {
+            let mut entry = GuardFacts::entry();
+            entry.after(&assign("k", integer(1)), scope);
+            bound_statement(&statement, scope, &entry)
+        })
+    };
+    let rise = step(OpBinary::Add, 1);
+    assert!(
+        lowered(vec![rise.clone()]).len() > 1,
+        "a bounded loop peels"
+    );
+    let leave = leave_when(binary(OpBinary::Eq, var("k"), integer(2)));
+    assert!(matches!(
+        lowered(vec![leave, rise]).as_slice(),
+        [rumoca_core::Statement::For { .. }]
+    ));
+}
+
+/// `while not done` ends once `done` is true, as `while going` ends once
+/// `going` is false: both prove the same progress bound.
+#[test]
+fn a_negated_exit_flag_proves_the_same_progress_bound() {
+    let walk = |flag: &str, ends_with: bool| {
+        vec![branch(
+            vec![(
+                binary(OpBinary::Ge, var("k"), integer(4)),
+                vec![assign(
+                    flag,
+                    Expression::Literal {
+                        value: Literal::Boolean(ends_with),
+                        span: span(),
+                    },
+                )],
+            )],
+            Some(vec![step(OpBinary::Add, 1)]),
+        )]
+    };
+    let positive = bound(Some(0), var("going"), walk("going", false));
+    let negated = bound(
+        Some(0),
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs: Box::new(var("done")),
+            span: span(),
+        },
+        walk("done", true),
+    );
+    assert!(positive.is_some(), "the exit flag form proves a bound");
+    assert_eq!(negated, positive);
+    // Storing the value that keeps the loop running ends nothing.
+    let stalled = bound(
+        Some(0),
+        Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs: Box::new(var("done")),
+            span: span(),
+        },
+        walk("done", false),
+    );
+    assert_eq!(stalled, None);
 }

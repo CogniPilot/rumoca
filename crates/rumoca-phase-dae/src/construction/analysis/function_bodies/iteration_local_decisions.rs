@@ -127,10 +127,12 @@ fn collect_loop<'a>(
         .iter()
         .map(|local| VarName::new(&local.name))
         .collect::<HashSet<_>>();
+    // A generated Boolean is iteration-local exactly when the body defines it
+    // before any read. That holds for a mutable exit state too: the break
+    // state of a nested loop is defined false first in each pass.
     let generated = context
         .generated_booleans
         .iter()
-        .filter(|guard| !guard.mutable)
         .map(|guard| guard.target.clone())
         .collect::<HashSet<_>>();
     decisions.push(Decision {

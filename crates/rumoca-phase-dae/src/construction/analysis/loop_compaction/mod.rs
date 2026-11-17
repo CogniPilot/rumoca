@@ -1236,10 +1236,14 @@ fn distribute_partitioned_outer_loops(
             distributed.push(statement);
             continue;
         };
+        // A `return` (MLS §11.2.5) in a nested loop at one outer coordinate
+        // ends the function after every nested loop ran for the earlier
+        // coordinates; split loops would not yet have run the later ones.
         if equations.len() < 2
             || !equations
                 .iter()
                 .all(|nested| matches!(nested, rumoca_core::Statement::For { .. }))
+            || super::function_returns::contains_return(equations)
             || !loop_values_partitioned_by(equations, &index.ident)
         {
             distributed.push(statement);
