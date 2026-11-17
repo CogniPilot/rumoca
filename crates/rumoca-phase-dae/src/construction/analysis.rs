@@ -49,7 +49,9 @@ mod record_equation_elements;
 mod record_equations;
 mod sample_aliases;
 mod scalar_types;
-pub(super) use scalar_types::{effective_function_scalar_type, effective_variable_scalar_type};
+pub(super) use scalar_types::{
+    declared_parameter_value, effective_function_scalar_type, effective_variable_scalar_type,
+};
 mod source_balance;
 mod structural_selections;
 mod structured_families;
@@ -1601,6 +1603,9 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
 /// enumeration ordinals, with no variable values yet.
 fn seeded_eval_context(flat: &flat::Model) -> EvalContext {
     let mut context = EvalContext::with_capacity(flat.variables.len(), 0, flat.functions.len() * 2);
+    if flat.predefined_types.is_complete() {
+        context.set_predefined_types(flat.predefined_types);
+    }
     for function in flat.functions.values() {
         context.add_function(function.clone());
     }
@@ -1652,7 +1657,9 @@ fn evaluable_parameters(flat: &flat::Model) -> HashSet<VarName> {
             {
                 continue;
             }
-            let Ok(value) = eval_expr(binding, &context) else {
+            let Ok(value) = eval_expr(binding, &context)
+                .and_then(|value| declared_parameter_value(flat, variable, value))
+            else {
                 continue;
             };
             context.add_instance_parameter(variable.instance_id, name.to_string(), value);

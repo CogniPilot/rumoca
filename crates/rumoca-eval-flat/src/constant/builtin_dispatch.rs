@@ -54,13 +54,19 @@ pub(super) fn eval_builtin_function(
         BuiltinFunction::Linspace => eval_builtin("linspace", args, span),
         BuiltinFunction::Cat => eval_builtin("cat", args, span),
 
+        // Value-transparent and matrix builtins share the named implementations
+        // a function body reaches (MLS 3.7 §3.7.4, §10.3).
+        BuiltinFunction::NoEvent
+        | BuiltinFunction::Smooth
+        | BuiltinFunction::Identity
+        | BuiltinFunction::Diagonal
+        | BuiltinFunction::Transpose
+        | BuiltinFunction::OuterProduct
+        | BuiltinFunction::Symmetric
+        | BuiltinFunction::Cross
+        | BuiltinFunction::Skew => eval_builtin(func.name(), args, span),
+
         // Pass-through builtins
-        BuiltinFunction::NoEvent => args.first().cloned().ok_or_else(|| {
-            EvalError::not_constant("noEvent requires 1 argument".to_string(), span)
-        }),
-        BuiltinFunction::Smooth => args.get(1).cloned().ok_or_else(|| {
-            EvalError::not_constant("smooth requires 2 arguments".to_string(), span)
-        }),
         BuiltinFunction::Homotopy => args.first().cloned().ok_or_else(|| {
             EvalError::not_constant("homotopy requires 1 argument".to_string(), span)
         }),
@@ -95,18 +101,11 @@ pub(super) fn eval_builtin_function(
         )),
 
         // Other array/matrix functions that need more work
-        BuiltinFunction::Scalar
-        | BuiltinFunction::Vector
-        | BuiltinFunction::Matrix
-        | BuiltinFunction::Identity
-        | BuiltinFunction::Diagonal
-        | BuiltinFunction::Transpose
-        | BuiltinFunction::OuterProduct
-        | BuiltinFunction::Symmetric
-        | BuiltinFunction::Cross
-        | BuiltinFunction::Skew => Err(EvalError::UnsupportedExpression {
-            kind: format!("matrix function: {:?}", func),
-            span,
-        }),
+        BuiltinFunction::Scalar | BuiltinFunction::Vector | BuiltinFunction::Matrix => {
+            Err(EvalError::UnsupportedExpression {
+                kind: format!("matrix function: {:?}", func),
+                span,
+            })
+        }
     }
 }
