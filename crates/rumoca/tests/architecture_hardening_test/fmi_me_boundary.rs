@@ -33,8 +33,10 @@ const ALLOWED_HOST_RUNTIME_SURFACES: [&str; 3] =
 /// position rather than by being named `tests.rs`.
 #[test]
 fn test_numerical_plugin_reaches_the_model_only_through_the_fmi_me_contract() {
-    let crate_root = workspace_root().join("crates/rumoca-solver-rk45");
-    let offenders = me_boundary_offenders(&crate_root);
+    let offenders = ["rumoca-solver-rk45", "rumoca-solver-semiimplicit"]
+        .iter()
+        .flat_map(|name| me_boundary_offenders(&workspace_root().join("crates").join(name)))
+        .collect::<Vec<_>>();
 
     assert!(
         offenders.is_empty(),

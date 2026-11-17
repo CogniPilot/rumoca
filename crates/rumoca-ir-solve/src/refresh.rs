@@ -4,6 +4,7 @@
 // `construct_`, `materialize_`, and `append_` exact-assignment helpers into
 // `refresh/exact_assignment.rs`, leaving plan identity, stages, and validation
 // here.
+pub(crate) mod articulated_bindings;
 mod assignment_shape;
 mod chunks;
 mod compact_owner;

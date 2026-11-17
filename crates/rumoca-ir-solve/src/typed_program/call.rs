@@ -1,8 +1,12 @@
+mod articulated;
 mod assertion_flow;
+pub use articulated::ArticulatedJointReduction;
 mod bound_body;
 pub(super) mod dependency;
 pub(in crate::typed_program) mod execution_reads;
+mod quaternion;
 mod recursion;
+pub use quaternion::BodyQuaternionKinematics;
 mod scalar_boundary;
 mod sites;
 mod view;
@@ -287,6 +291,10 @@ pub struct SolvePureCallDirectionalOwner {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOwner {
     #[serde(skip)]
+    articulated: Option<ArticulatedJointReduction>,
+    #[serde(skip)]
+    quaternion: Option<BodyQuaternionKinematics>,
+    #[serde(skip)]
     input_coordinate: SolvePureCallInputCoordinate,
     #[serde(skip)]
     assertion_flow: Option<CheckedAssertionFlow>,
@@ -337,6 +345,7 @@ pub struct SolvePureCallDirectionalSite {
 /// owner table and is resolved against it when the site is read.
 #[derive(Debug, Clone, Eq)]
 pub struct SolvePureCallSite {
+    quaternion: Option<BodyQuaternionKinematics>,
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     execution_reads: Arc<ExecutionReads>,
     projections: Option<Arc<ValueProjections>>,
@@ -361,7 +370,8 @@ impl PartialEq for SolvePureCallDirectionalSite {
 
 impl PartialEq for SolvePureCallSite {
     fn eq(&self, other: &Self) -> bool {
-        self.owner == other.owner
+        self.quaternion == other.quaternion
+            && self.owner == other.owner
             && shared_slice_eq(&self.dependencies, &other.dependencies)
             && self.execution_reads == other.execution_reads
             && self.projections == other.projections
@@ -373,6 +383,12 @@ impl PartialEq for SolvePureCallSite {
 }
 
 impl SolvePureCallSite {
+    /// Owner-derived source fact, shared without inspecting the body again.
+    #[must_use]
+    pub fn body_quaternion_kinematics(&self) -> Option<&BodyQuaternionKinematics> {
+        self.quaternion.as_ref()
+    }
+
     pub(crate) fn output_degrees(
         &self,
         inputs: &[crate::affinity::Degree],
@@ -583,6 +599,18 @@ impl SolvePureCallDirectionalOwner {
 }
 
 impl SolvePureCallOwner {
+    /// Exact original joint-factor formula, without granting tree/runtime admission.
+    #[must_use]
+    pub fn articulated_joint_reduction(&self) -> Option<&ArticulatedJointReduction> {
+        self.articulated.as_ref()
+    }
+
+    /// Exact scalar-first `q_dot = 0.5*q*[0,omega_body]` source relation.
+    #[must_use]
+    pub fn body_quaternion_kinematics(&self) -> Option<&BodyQuaternionKinematics> {
+        self.quaternion.as_ref()
+    }
+
     /// How this owner's inputs and outputs cross its flat binary64 scalar
     /// boundary.
     pub fn scalar_boundary(&self) -> Result<SolveScalarBoundary, SolveScalarBoundaryError> {
@@ -697,6 +725,7 @@ impl SolvePureCallOwner {
     #[must_use]
     pub fn call_site(&self) -> SolvePureCallSite {
         SolvePureCallSite {
+            quaternion: self.quaternion,
             dependencies: self.dependencies.clone(),
             execution_reads: self.execution_reads.clone(),
             projections: self.projections.clone(),
@@ -847,6 +876,7 @@ impl SolvePureCallTable {
                 && owner.execution_reads == site.execution_reads
                 && owner.projections == site.projections
                 && owner.affinity == site.affinity
+                && owner.quaternion == site.quaternion
                 && shared_slice_eq(&owner.inputs, &site.inputs)
                 && shared_slice_eq(&owner.outputs, &site.outputs)
                 && match (owner.directional.as_ref(), site.directional.as_deref()) {
@@ -962,6 +992,8 @@ impl SolvePureCallTableBuilder {
         let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
         let assertion_flow = assertion_flow::derive(&body, inputs.len(), &outputs, interfaces);
         self.owners.push(SolvePureCallOwner {
+            articulated: articulated::derive(&body, &inputs, &outputs),
+            quaternion: quaternion::derive(&body, &inputs, &outputs),
             input_coordinate,
             assertion_flow,
             dependencies: dependencies.into(),
@@ -1307,6 +1339,8 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             let assertion_flow =
                 assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
             owners.push(SolvePureCallOwner {
+                articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
+                quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
                 input_coordinate,
                 assertion_flow,
                 dependencies: execution.dependencies.into(),

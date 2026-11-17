@@ -25,6 +25,7 @@
 
 use super::MeError;
 
+mod cartesian;
 /// The unrelated-solver conformance fixture required by ME-INT-001. It is
 /// compiled only under test, so it can never become a production path.
 #[cfg(test)]
@@ -36,6 +37,7 @@ mod derivative;
 mod fixed_step_tableau;
 pub mod time_only;
 
+pub use cartesian::MeCartesianPartition;
 pub(super) use derivative::{MeDerivativeComponent, MeDerivativeController};
 pub use derivative::{
     MeDerivativeHandle, MeDerivativeRefused, reset_trial_discard_count, trial_discard_count,

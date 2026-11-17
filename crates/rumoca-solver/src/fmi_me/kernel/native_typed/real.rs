@@ -77,11 +77,7 @@ impl SolveMeKernel {
         values: &mut [f64],
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("get_native_float64")?;
-        let transport = self
-            .native_transport
-            .as_ref()
-            .ok_or_else(|| contract("native Float64 access requires a prepared component"))?;
-        let root = transport.borrow().product().inputs().root().clone();
+        let root = self.float64_inventory_root()?;
         let (members, count) = request::read_request(
             root.metadata(),
             references,
@@ -94,6 +90,9 @@ impl SolveMeKernel {
                 values.len()
             )));
         }
+        let Some(transport) = self.native_transport.as_ref() else {
+            return self.read_public_float64(&members, values);
+        };
         for variable in members.iter().filter_map(request::ReadMember::variable) {
             if variable.role() == Some(SolveVariableStorageRole::ExternalInput) {
                 let storage = variable
