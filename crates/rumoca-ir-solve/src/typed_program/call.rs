@@ -1260,6 +1260,53 @@ fn replay_group(
     })
 }
 
+/// Rebuild one nonrecursive owner and re-derive its facts against prior owners.
+fn replay_single_owner(
+    arithmetic: SolveArithmeticProfile,
+    owner: OwnerWire,
+    prior: &[SolvePureCallOwner],
+) -> Result<SolvePureCallOwner, SolveProgramConstructionError> {
+    require_owner_interface(arithmetic, &owner.inputs, &owner.outputs, owner.provenance)?;
+    let interfaces = SolvePureCallTableView::primal(prior);
+    let body = replay_owner_program(&owner.body, interfaces, &owner.outputs)?;
+    let input_coordinate =
+        validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)?;
+    let directional_interfaces = SolvePureCallTableView::directional(prior);
+    let directional = body.derive_directional_owner(
+        &owner.inputs,
+        &owner.outputs,
+        directional_interfaces,
+        owner.provenance,
+    )?;
+    let execution = dependency::derive_with_execution(
+        &body,
+        owner.inputs.len(),
+        owner.outputs.len(),
+        interfaces,
+    )?;
+    let projections = derive_value_projections(&body, owner.inputs.len(), &owner.outputs, prior);
+    let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), prior);
+    let assertion_flow =
+        assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
+    Ok(SolvePureCallOwner {
+        articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
+        quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
+        input_coordinate,
+        assertion_flow,
+        dependencies: execution.dependencies.into(),
+        execution_reads: Arc::new(execution.execution_reads),
+        projections: projections.map(Arc::new),
+        affinity: affinity.map(Arc::new),
+        id: owner.id,
+        identity: owner.identity,
+        inputs: owner.inputs.into(),
+        outputs: owner.outputs.into(),
+        body,
+        directional,
+        provenance: owner.provenance,
+    })
+}
+
 impl<'de> Deserialize<'de> for SolvePureCallTable {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1304,57 +1351,9 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                     SolveProgramConstructionError::WireMismatch,
                 ));
             }
-            require_owner_interface(
-                wire.arithmetic,
-                &owner.inputs,
-                &owner.outputs,
-                owner.provenance,
-            )
-            .map_err(serde::de::Error::custom)?;
-            let interfaces = SolvePureCallTableView::primal(&owners);
-            let body = replay_owner_program(&owner.body, interfaces, &owner.outputs)
+            let replayed = replay_single_owner(wire.arithmetic, owner, &owners)
                 .map_err(serde::de::Error::custom)?;
-            let input_coordinate =
-                validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
-                    .map_err(serde::de::Error::custom)?;
-            let directional_interfaces = SolvePureCallTableView::directional(&owners);
-            let directional = body
-                .derive_directional_owner(
-                    &owner.inputs,
-                    &owner.outputs,
-                    directional_interfaces,
-                    owner.provenance,
-                )
-                .map_err(serde::de::Error::custom)?;
-            let execution = dependency::derive_with_execution(
-                &body,
-                owner.inputs.len(),
-                owner.outputs.len(),
-                interfaces,
-            )
-            .map_err(serde::de::Error::custom)?;
-            let projections =
-                derive_value_projections(&body, owner.inputs.len(), &owner.outputs, &owners);
-            let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), &owners);
-            let assertion_flow =
-                assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
-            owners.push(SolvePureCallOwner {
-                articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
-                quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
-                input_coordinate,
-                assertion_flow,
-                dependencies: execution.dependencies.into(),
-                execution_reads: Arc::new(execution.execution_reads),
-                projections: projections.map(Arc::new),
-                affinity: affinity.map(Arc::new),
-                id: owner.id,
-                identity: owner.identity,
-                inputs: owner.inputs.into(),
-                outputs: owner.outputs.into(),
-                body,
-                directional,
-                provenance: owner.provenance,
-            });
+            owners.push(replayed);
         }
         if pending_groups.next().is_some() {
             return Err(serde::de::Error::custom(
