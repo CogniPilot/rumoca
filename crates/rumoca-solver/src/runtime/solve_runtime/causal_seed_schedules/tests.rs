@@ -49,11 +49,8 @@ fn prunable_executor() -> CausalSeedSchedules {
         solve::LeafDependencies::Bounded(solve::IndexIntervals::of([1])),
         solve::LeafDependencies::Bounded(solve::IndexIntervals::of([0, 1])),
     ];
-    let schedule = SeedSchedule {
-        program: DirectionalProgram::prepare("pruned_seed", tangent, None, None).unwrap(),
-        targets: vec![vec![2], vec![3]],
-        cones: StateCones::from_leaves(2, &[vec![Some(&leaves[0])], vec![Some(&leaves[1])]]),
-    };
+    let cones = StateCones::from_leaves(2, &[vec![Some(&leaves[0])], vec![Some(&leaves[1])]]);
+    let schedule = SeedSchedule::prepare(tangent, vec![vec![2], vec![3]], cones, None).unwrap();
     let mut schedules = CausalSeedSchedules {
         state_count: 2,
         ..Default::default()
@@ -169,17 +166,71 @@ fn executor(fail_second: bool) -> CausalSeedSchedules {
     )
     .unwrap();
     let tangent = solve_eval::ad::lower_scalar_program_block_full_jvp(&primal, 3).unwrap();
-    let program = DirectionalProgram::prepare("test_seed", tangent, None, None).unwrap();
+    let schedule = SeedSchedule::prepare(tangent, vec![vec![1], vec![2]], None, None).unwrap();
     let mut schedules = CausalSeedSchedules::default();
-    schedules.schedules.insert(
-        Default::default(),
-        Rc::new(SeedSchedule {
-            program,
-            targets: vec![vec![1], vec![2]],
-            cones: None,
-        }),
-    );
     schedules
+        .schedules
+        .insert(Default::default(), Rc::new(schedule));
+    schedules
+}
+
+#[test]
+fn seed_construction_preserves_scalar_and_range_output_commits() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("seed_stores.mo"),
+        1,
+        2,
+    );
+    let backend: Rc<dyn SolveExecutionBackend> = Rc::new(test_kernels::ReferenceBackend);
+    for stores in [
+        vec![L::StoreOutput { src: 0 }, L::StoreOutput { src: 1 }],
+        vec![L::StoreOutputRange {
+            start: 0,
+            count: 2,
+            stride: 1,
+        }],
+    ] {
+        let mut first = vec![L::LoadY { dst: 0, index: 0 }, L::LoadP { dst: 1, index: 0 }];
+        first.extend(stores);
+        let second = vec![L::LoadY { dst: 0, index: 2 }, L::StoreOutput { src: 0 }];
+        let primal = solve::ScalarProgramBlock::with_output_indices(
+            vec![first, second],
+            vec![span; 2],
+            vec![0, 1, 2],
+        )
+        .unwrap();
+        let directional = solve_eval::ad::lower_scalar_program_block_full_jvp(&primal, 4).unwrap();
+        for backend in [None, Some(&backend)] {
+            let schedule = SeedSchedule::prepare(
+                directional.clone(),
+                vec![vec![2, 1], vec![3]],
+                None,
+                backend,
+            )
+            .unwrap();
+            let mut seed = [2.0, 99.0, 88.0, 77.0, -0.0];
+            schedule
+                .apply(
+                    AlgebraicLinearization {
+                        t: 0.0,
+                        params: &[3.0],
+                        settle: AlgebraicSettle {
+                            tol: 1e-10,
+                            max_iters: 4,
+                        },
+                    },
+                    &[5.0, 3.0, 5.0, 5.0],
+                    &mut seed,
+                    RowEvalContext::default(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                seed.map(f64::to_bits),
+                [2.0, -0.0, 2.0, 2.0, -0.0].map(f64::to_bits)
+            );
+        }
+    }
 }
 
 fn execute(
