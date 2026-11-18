@@ -84,6 +84,7 @@ use crate::simulation_api::{
     model_parameter_metadata_with_source_roots_impl,
     model_parameter_metadata_with_workspace_sources_impl, simulate_model_impl,
     simulate_model_with_workspace_sources_impl,
+    simulate_model_with_workspace_sources_selected_impl,
 };
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::simulation_session_api::WasmSimulationSession;
@@ -1904,6 +1905,32 @@ pub fn simulate_model_with_workspace_sources(
         dt,
         solver,
         parameter_overrides_json,
+    )
+}
+
+/// Compile with workspace sources, simulate, and transfer only the named
+/// public output columns in the requested order.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn simulate_model_with_workspace_sources_selected(
+    source: &str,
+    model_name: &str,
+    workspace_sources_json: &str,
+    t_end: f64,
+    dt: f64,
+    solver: &str,
+    parameter_overrides_json: &str,
+    output_variables_json: &str,
+) -> Result<String, WasmError> {
+    simulate_model_with_workspace_sources_selected_impl(
+        source,
+        model_name,
+        workspace_sources_json,
+        t_end,
+        dt,
+        solver,
+        parameter_overrides_json,
+        output_variables_json,
     )
 }
 

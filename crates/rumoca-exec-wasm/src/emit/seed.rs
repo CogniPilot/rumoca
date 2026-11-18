@@ -121,7 +121,14 @@ impl BodyEmitter<'_> {
         count: usize,
         index: Reg,
     ) -> Result<(), String> {
-        self.emit_indexed_load(dst, self.seed_index(base)?, count, index, self.seed_param())
+        self.emit_indexed_load(
+            dst,
+            self.seed_index(base)?,
+            count,
+            index,
+            false,
+            self.seed_param(),
+        )
     }
 
     pub(super) fn seed_array_address(&mut self, start: usize, counter: u32) -> Result<(), String> {

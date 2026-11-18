@@ -1679,6 +1679,7 @@ fn eval_lazy_scalar_op(
             base,
             count,
             index,
+            ..
         } => {
             let slot = resolve_indexed_slot(regs[index as usize], base, count);
             regs[dst as usize] = input.read_input("p", input.p, slot)?;
@@ -1937,7 +1938,8 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 base,
                 count,
                 index,
-            } => self.eval_load_indexed_p(dst, base, count, index)?,
+                checked,
+            } => self.eval_load_indexed_p(dst, base, count, index, checked)?,
             LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -2534,8 +2536,14 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
         base: usize,
         count: usize,
         index: Reg,
+        checked: bool,
     ) -> Result<(), EvalSolveError> {
-        let slot = resolve_indexed_slot(self.get(index)?, base, count);
+        let value = self.get(index)?;
+        let slot = if checked {
+            checked_indexed_slot(value, base, count, self.input.source_span)?
+        } else {
+            resolve_indexed_slot(value, base, count)
+        };
         self.set(dst, self.input.read_input("p", self.input.p, slot)?)
     }
 
@@ -2634,8 +2642,13 @@ fn eval_row_prepared_fast(
                 base,
                 count,
                 index,
+                checked,
             } => {
-                let slot = resolve_indexed_slot(regs[*index as usize], *base, *count);
+                let slot = if *checked {
+                    checked_indexed_slot(regs[*index as usize], *base, *count, input.source_span)?
+                } else {
+                    resolve_indexed_slot(regs[*index as usize], *base, *count)
+                };
                 regs[*dst as usize] = input.read_input("p", input.p, slot)?;
             }
             LinearOp::LoadIndexedRegister {
@@ -4207,3 +4220,23 @@ fn get(
 
 #[cfg(test)]
 mod tests;
+
+fn checked_indexed_slot(
+    value: f64,
+    base: usize,
+    count: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<usize, EvalSolveError> {
+    if count == 0
+        || !value.is_finite()
+        || value.trunc() != value
+        || value < 0.0
+        || value >= count as f64
+    {
+        return Err(EvalSolveError::NativeSourceIndexFault {
+            message: "indexed parameter load requires an exact in-range index".to_string(),
+            span,
+        });
+    }
+    Ok(base + value as usize)
+}

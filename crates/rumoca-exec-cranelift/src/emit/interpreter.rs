@@ -163,7 +163,14 @@ fn execute_general_op(
             base,
             count,
             index,
+            checked,
         } => {
+            if checked {
+                return Err(CompileError::Backend(
+                    "checked indexed parameter loads are not supported by the cranelift interpreter"
+                        .to_string(),
+                ));
+            }
             let slot = resolve_indexed_slot(read_reg_value(regs, index as usize), base, count);
             let value = read_input_value("p", p, slot)?;
             set_reg_value(regs, dst as usize, value);

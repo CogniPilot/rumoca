@@ -144,6 +144,7 @@ impl<'a> MlirFamilyRenderer<'a> {
                 base,
                 count,
                 index,
+                ..
             } => self.emit_indexed_p(dst, base, count, index),
             solve::LinearOp::Move { dst, src } => {
                 self.emit_move_from_value(dst, self.reg(src));

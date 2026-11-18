@@ -193,7 +193,27 @@ fn issue_intermediate_definition<'dae>(
         .expect("checked intermediate variable resolves")
         .scalar_count();
     for scalar in 0..scalar_count {
-        let compiler = layout.scalar_compiler(view, None);
+        let domain_point = discrete
+            .same_tick_definitions
+            .definition_domain(view, issue.variable.index())
+            .map(|domain| {
+                (
+                    domain,
+                    view.domain(domain)
+                        .expect("checked definition domain resolves")
+                        .structured()
+                        .index_tuple_at(scalar)
+                        .expect("checked definition domain remains valid")
+                        .expect("complete family covers the intermediate scalar"),
+                )
+            });
+        let definition_scalar = if domain_point.is_some() { 0 } else { scalar };
+        let compiler = layout.scalar_compiler(
+            view,
+            domain_point
+                .as_ref()
+                .map(|(domain, point)| (*domain, point.as_slice())),
+        );
         let program =
             if issue.read_boundary == rumoca_phase_structural::SameTickReadBoundary::Current {
                 compiler.current_definition_program(
@@ -209,10 +229,10 @@ fn issue_intermediate_definition<'dae>(
                         ),
                     ),
                     issue.definition,
-                    scalar,
+                    definition_scalar,
                 )?
             } else {
-                compiler.program(issue.definition, scalar)?
+                compiler.program(issue.definition, definition_scalar)?
             };
         let target = variable_scalar_slot(layout, issue.variable.index(), scalar, definition_span)?;
         let row = discrete.clock_partition_intermediate_targets.len();

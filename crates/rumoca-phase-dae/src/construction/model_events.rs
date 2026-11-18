@@ -1,3 +1,4 @@
+use super::analysis::when_function_call_plan;
 use super::*;
 
 /// The activation of a section that is not a `when`.
@@ -211,15 +212,11 @@ fn collect_when_targets(
                 span,
                 ..
             } => {
-                let outputs = function_calls[&when_function_call_key(flat, receivers, *span)
-                    .expect("analysis checked the receiver InstanceIds")]
-                    .outputs
-                    .iter()
-                    .flatten();
                 targets.extend(
-                    outputs
-                        .flat_map(ModelEventFunctionOutputPlan::receivers)
-                        .map(|(target, _)| target.clone()),
+                    when_function_call_plan(flat, function_calls, receivers, *span)
+                        .expect("analysis checked the receiver InstanceIds and issued plans")
+                        .receiver_targets()
+                        .cloned(),
                 );
             }
             flat::WhenEquation::Reinit { .. }

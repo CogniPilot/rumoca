@@ -45,6 +45,69 @@ fn tensor_coordinate_index(base: usize, scalar: usize, span: Span) -> Result<usi
 }
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    /// The storage run of a directly indexed parameter array, or `None` when
+    /// the base is computed, substituted, clocked, sampled, or not a parameter.
+    ///
+    /// This is the lowering boundary that lets a single runtime subscript read
+    /// one parameter directly instead of materializing the complete array.
+    pub(super) fn direct_parameter_input_run(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Option<(usize, usize)>, LowerError> {
+        let coordinate = match self.node(expression).operation() {
+            dae::ExpressionOperation::Coordinate(coordinate) => coordinate,
+            _ => return Ok(None),
+        };
+        if matches!(coordinate, dae::CoordinateView::Derivative(_)) {
+            return Ok(None);
+        }
+        if let dae::CoordinateView::Parameter(parameter) = coordinate
+            && self
+                .parameter_substitutions
+                .is_some_and(|substitutions| substitutions.binding(parameter.index()).is_some())
+        {
+            return Ok(None);
+        }
+        if self.pack_current_definition(coordinate, span)?.is_some() {
+            return Ok(None);
+        }
+        let Some(variable) = coordinate_variable(coordinate) else {
+            return Ok(None);
+        };
+        let count = scalar_count(self.view, expression);
+        if count <= 1 {
+            return Ok(None);
+        }
+        // A sampled source would need the sampled base, not the current one.
+        if self.sampled_source
+            && self
+                .layout
+                .pre_variables
+                .get(variable as usize)
+                .copied()
+                .flatten()
+                .is_some()
+        {
+            return Ok(None);
+        }
+        let first = variable_scalar_slot(self.layout, variable, 0, span)?;
+        let solve::ScalarSlot::P { index, .. } = first else {
+            return Ok(None);
+        };
+        self.validate_coordinate_extent(
+            CoordinateExtent {
+                variable,
+                count,
+                pre_variable: false,
+                sampled_base: None,
+                input_start: index,
+            },
+            span,
+        )?;
+        Ok(Some((index, count)))
+    }
+
     pub(super) fn pack_coordinate(
         &mut self,
         expression: dae::ExprId<'dae>,

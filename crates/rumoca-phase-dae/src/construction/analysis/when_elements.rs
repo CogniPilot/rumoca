@@ -300,21 +300,8 @@ fn whole_target_instances(
                 .unwrap_or_default());
         }
         flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
-            let invalid = || {
-                ToDaeError::unsupported_flat(
-                    "when function-call receivers",
-                    "requires an issued exact receiver plan",
-                    *span,
-                )
-            };
-            let key = when_function_call_key(flat, outputs, *span)?;
-            calls
-                .get(&key)
-                .ok_or_else(invalid)?
-                .outputs
-                .iter()
-                .flatten()
-                .flat_map(|output| output.receivers().into_iter().map(|(target, _)| target))
+            when_function_call_plan(flat, calls, outputs, *span)?
+                .receiver_targets()
                 .collect()
         }
         _ => Vec::new(),

@@ -116,6 +116,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             base: memory.parameter,
             count: memory.count,
             index: ordinal,
+            checked: false,
         });
         Ok(dst)
     }

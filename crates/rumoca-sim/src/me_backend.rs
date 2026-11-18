@@ -294,6 +294,7 @@ pub(crate) fn batch_options(
         default_output_dt(opts),
         opts.max_wall_seconds,
     )
+    .map(|options| options.with_output_variables(opts.output_variables.clone()))
     .map_err(Into::into)
 }
 

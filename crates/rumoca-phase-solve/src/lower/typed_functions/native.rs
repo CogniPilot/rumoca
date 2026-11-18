@@ -107,6 +107,7 @@ pub(super) fn register_native_call<'dae>(
             assertions: std::sync::Arc::from([]),
             recursive: false,
             scalar_storable: true,
+            simple_integer_gather: false,
         },
         site,
     })

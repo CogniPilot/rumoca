@@ -1160,8 +1160,10 @@ impl ScalarExecutionView<'_> {
         p: &mut [f64],
         t: f64,
     ) -> Result<bool, RuntimeSolveError> {
-        let eval_y = copy_runtime_values(y, "condition-memory advance y snapshot")?;
-        let eval_p = copy_runtime_values(p, "condition-memory advance p snapshot")?;
+        // Every write is staged below; the live buffers remain the exact
+        // pass-entry snapshot until all reads have completed.
+        let eval_y = &*y;
+        let eval_p = &*p;
         let mut eval_p_cache = EventEvalParamCache::default();
         let mut writes = Vec::new();
         for row_idx in 0..self.model.problem.discrete.rhs.len() {
@@ -1433,8 +1435,10 @@ impl ScalarExecutionView<'_> {
         scope: DiscreteRowEvalScope,
     ) -> Result<bool, RuntimeSolveError> {
         self.validate_discrete_row_eval_scope(scope)?;
-        let eval_y = copy_runtime_values(y, "discrete row eval y snapshot")?;
-        let eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
+        // Evaluation writes only private work and staged row values. Borrow
+        // the unchanged inputs rather than copying immutable parameter arrays.
+        let eval_y = &*y;
+        let eval_p = &*p;
         let mut eval_p_cache = EventEvalParamCache::default();
         let mut evaluated_transactions = self.evaluate_event_transactions_for_snapshot(
             snapshot,
@@ -1588,8 +1592,7 @@ impl ScalarExecutionView<'_> {
         // programs in issued order over a working state that carries each
         // produced value forward gives every reader the instant's value; a
         // program with no such reader sees exactly the pass-entry state.
-        let mut work_y = copy_runtime_values(input.eval_y, "guarded row work y")?;
-        let mut work_p = copy_runtime_values(input.eval_p, "guarded row work p")?;
+        let mut work = None;
         for program_index in 0..self.scalar.guarded_assignment_programs.len() {
             if self.scalar.event_transaction_coverage.guarded_assignments[program_index] {
                 continue;
@@ -1615,7 +1618,14 @@ impl ScalarExecutionView<'_> {
             if !self.guarded_assignment_accepts_snapshot(program_index, input.snapshot, input.t)? {
                 continue;
             }
-            let row_p = eval_p_cache.params(&work_p);
+            if work.is_none() {
+                work = Some((
+                    copy_runtime_values(input.eval_y, "guarded row work y")?,
+                    copy_runtime_values(input.eval_p, "guarded row work p")?,
+                ));
+            }
+            let (work_y, work_p) = work.as_mut().expect("an admitted row owns work storage");
+            let row_p = eval_p_cache.params(work_p);
             let row_p_with_root_overrides;
             let row_p = if input.snapshot.root_relation_overrides.is_empty() {
                 row_p
@@ -1630,7 +1640,7 @@ impl ScalarExecutionView<'_> {
             let mut values = Vec::new();
             self.eval_guarded_assignment_outputs(
                 program_index,
-                &work_y,
+                work_y,
                 row_p,
                 input.t,
                 &mut values,
@@ -1639,8 +1649,8 @@ impl ScalarExecutionView<'_> {
                 program_index,
                 &values,
                 input.snapshot.root_relation_overrides,
-                &mut work_y,
-                &mut work_p,
+                work_y,
+                work_p,
             )?;
             guarded_values.push((program_index, values));
         }

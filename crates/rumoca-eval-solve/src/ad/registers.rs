@@ -111,6 +111,7 @@ impl<'a> AdBuilder<'a> {
             base,
             count,
             index,
+            checked: false,
         });
         Ok(dst)
     }

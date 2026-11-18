@@ -6,6 +6,7 @@
 //! side. Ambiguous aliases, duplicate targets, self-dependencies, structured
 //! families, and cycles remain residual owners.
 
+pub(crate) mod families;
 #[cfg(test)]
 mod indexed_alias_tests;
 mod order;

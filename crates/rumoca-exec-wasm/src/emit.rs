@@ -373,6 +373,7 @@ struct BodyEmitter<'a> {
     region_frame_end: Option<Reg>,
     conditional_region: Option<conditional::Region>,
     gather_faults: Vec<crate::NativeGatherFault>,
+    gather_inputs: gather::InputViews,
     linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
     gather_status_base: Option<u32>,
     kernel_ordinal: usize,
@@ -417,6 +418,7 @@ impl<'a> BodyEmitter<'a> {
             region_frame_end: None,
             conditional_region: None,
             gather_faults: Vec::new(),
+            gather_inputs: gather::InputViews::default(),
             linear_solve_faults: Vec::new(),
             gather_status_base: None,
             kernel_ordinal: 0,
@@ -437,7 +439,8 @@ impl<'a> BodyEmitter<'a> {
         for row in rows {
             let issued = self.bind_root_program()?;
             let row = issued.as_deref().unwrap_or(row);
-            for op in row {
+            for (index, op) in row.iter().enumerate() {
+                self.operation_ordinal = index;
                 self.emit_op(op.clone())?;
             }
         }
@@ -445,6 +448,9 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_op(&mut self, op: LinearOp) -> Result<(), String> {
+        if self.gather_inputs.skips(self.operation_ordinal) {
+            return Ok(());
+        }
         if let Some(result) = self.emit_compact(&op) {
             return result;
         }
@@ -461,7 +467,8 @@ impl<'a> BodyEmitter<'a> {
                 base,
                 count,
                 index,
-            } => self.emit_indexed_load(dst, base, count, index, P_PTR_PARAM)?,
+                checked,
+            } => self.emit_indexed_load(dst, base, count, index, checked, P_PTR_PARAM)?,
             LinearOp::LoadIndexedSeed {
                 dst,
                 base,
@@ -611,8 +618,12 @@ impl<'a> BodyEmitter<'a> {
         base: usize,
         count: usize,
         index: Reg,
+        checked: bool,
         ptr_param: u32,
     ) -> Result<(), String> {
+        if checked {
+            self.emit_checked_index_check(index, count)?;
+        }
         self.emit_synthetic_index_slot(index, count)?;
         self.push(Instruction::I32Const(8));
         self.push(Instruction::I32Mul);
@@ -620,6 +631,30 @@ impl<'a> BodyEmitter<'a> {
         self.push(Instruction::I32Add);
         self.push(Instruction::F64Load(memarg_for_index(base)?));
         self.set_reg(dst)?;
+        Ok(())
+    }
+
+    fn emit_checked_index_check(&mut self, index: Reg, count: usize) -> Result<(), String> {
+        let count =
+            f64::from(u32::try_from(count).map_err(|_| "WASM checked index extent exceeds u32")?);
+        // valid = index >= 0 && index < count && trunc(index) == index.
+        // The second clause also rejects NaN and infinities by comparison.
+        self.push_reg(index)?;
+        self.push(Instruction::F64Const(0.0.into()));
+        self.push(Instruction::F64Ge);
+        self.push_reg(index)?;
+        self.push(Instruction::F64Const(count.into()));
+        self.push(Instruction::F64Lt);
+        self.push(Instruction::I32And);
+        self.push_reg(index)?;
+        self.push(Instruction::F64Trunc);
+        self.push_reg(index)?;
+        self.push(Instruction::F64Eq);
+        self.push(Instruction::I32And);
+        self.push(Instruction::If(BlockType::Empty));
+        self.push(Instruction::Else);
+        self.push(Instruction::Unreachable);
+        self.push(Instruction::End);
         Ok(())
     }
 

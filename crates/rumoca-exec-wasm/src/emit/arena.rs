@@ -244,6 +244,7 @@ impl BodyEmitter<'_> {
         };
         let issued = arena.root_program(self.root_program_cursor)?;
         self.root_register_layout = Some(std::rc::Rc::clone(&issued.layout));
+        self.gather_inputs = gather::InputViews::derive(&issued.program)?;
         self.root_program_cursor = self
             .root_program_cursor
             .checked_add(1)

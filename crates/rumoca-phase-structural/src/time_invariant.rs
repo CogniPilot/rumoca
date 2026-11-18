@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use rumoca_ir_dae as dae;
 
 use crate::CausalDefinitions;
-use crate::residual_normalization::equation_sides;
+use crate::causal_definitions::families::family_element_definition;
 
 /// Whole-model time-invariance facts: the algebraic variables proved
 /// parameter-constant and the functions whose calls are deterministic in their
@@ -400,70 +400,6 @@ fn family_element_definitions<'dae>(
         values.remove(&index);
     }
     values
-}
-
-/// Read a structured family body of the exact shape `target[binders] = value`,
-/// where `target` is a whole algebraic array indexed by every binder of the
-/// family's own domain, so the family defines each element of the array.
-fn family_element_definition<'dae>(
-    view: dae::DaeView<'dae>,
-    family: dae::StructuredFamilyView<'dae>,
-) -> Option<(dae::AlgebraicId<'dae>, dae::ExprId<'dae>)> {
-    let mut bodies = family.bodies().iter();
-    let body = bodies.next()?;
-    if bodies.next().is_some() {
-        return None;
-    }
-    let (lhs, rhs) = equation_sides(view, body)?;
-    family_indexed_target(view, family, lhs)
-        .map(|target| (target, rhs))
-        .or_else(|| family_indexed_target(view, family, rhs).map(|target| (target, lhs)))
-}
-
-/// The algebraic array a family body indexes with exactly its domain binders.
-fn family_indexed_target<'dae>(
-    view: dae::DaeView<'dae>,
-    family: dae::StructuredFamilyView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> Option<dae::AlgebraicId<'dae>> {
-    let dae::ExpressionOperation::Index { base, subscripts } =
-        view.expression(expression)?.operation()
-    else {
-        return None;
-    };
-    let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(target)) =
-        view.expression(base)?.operation()
-    else {
-        return None;
-    };
-    let dimensions = view
-        .variable(dae::VariableId::from(target))?
-        .value_type()
-        .dimensions()
-        .len();
-    if subscripts.len() != dimensions {
-        return None;
-    }
-    subscripts
-        .iter()
-        .all(|subscript| family_domain_binder(view, family, subscript))
-        .then_some(target)
-}
-
-/// Whether a subscript is a binder of the family's own domain.
-fn family_domain_binder<'dae>(
-    view: dae::DaeView<'dae>,
-    family: dae::StructuredFamilyView<'dae>,
-    subscript: dae::SubscriptView<'dae>,
-) -> bool {
-    let dae::SubscriptView::Index { expression, .. } = subscript else {
-        return false;
-    };
-    matches!(
-        view.expression(expression).map(|node| node.operation()),
-        Some(dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)))
-            if binder.domain() == family.domain()
-    )
 }
 
 #[cfg(test)]

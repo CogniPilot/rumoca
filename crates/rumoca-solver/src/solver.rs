@@ -296,6 +296,10 @@ pub struct SimOptions {
     /// Missing inputs still require a checked binding. Reset restores these
     /// values before solving the initialization equations again.
     pub initial_inputs: Vec<(String, f64)>,
+    /// Exact public output columns to record, in requested order. `None` keeps
+    /// every visible output. Event-side evidence and row coordinates are not
+    /// affected by this projection.
+    pub output_variables: Option<Vec<String>>,
     /// Which execution strategy the runtime may use for compiler-issued Solve
     /// programs. Part of the request so a run's interpreter/native selection is
     /// reproducible and inspectable rather than ambient.
@@ -324,6 +328,7 @@ impl Default for SimOptions {
             param_overrides: Vec::new(),
             start_overrides: Vec::new(),
             initial_inputs: Vec::new(),
+            output_variables: None,
             execution_policy: SimExecutionPolicy::NativeRequired,
             checkpoint_budget_bytes: DEFAULT_CHECKPOINT_BUDGET_BYTES,
         }

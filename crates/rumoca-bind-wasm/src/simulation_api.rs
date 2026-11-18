@@ -1,7 +1,7 @@
 pub(crate) mod experiment;
 
 use crate::{
-    WasmError, compile_requested_model, qualify_input_model_name,
+    WasmError, compile_cached_requested_model, compile_requested_model, qualify_input_model_name,
     source_root_api::{load_source_root_sources_in_session, load_workspace_sources_for_simulation},
     wasm_elapsed_ms, wasm_timing_start, with_singleton_session,
 };
@@ -30,6 +30,7 @@ pub(crate) fn simulate_model_impl(
             dt,
             solver,
             parameter_overrides_json,
+            None,
         )
     })
 }
@@ -93,6 +94,33 @@ pub(crate) fn simulate_model_with_workspace_sources_impl(
             dt,
             solver,
             parameter_overrides_json,
+            None,
+        )
+    })
+}
+
+pub(crate) fn simulate_model_with_workspace_sources_selected_impl(
+    source: &str,
+    model_name: &str,
+    workspace_sources_json: &str,
+    t_end: f64,
+    dt: f64,
+    solver: &str,
+    parameter_overrides_json: &str,
+    output_variables_json: &str,
+) -> Result<String, WasmError> {
+    let output_variables = parse_output_variables(output_variables_json)?;
+    with_singleton_session(|session| {
+        load_workspace_sources_for_simulation(session, workspace_sources_json)?;
+        simulate_model_in_session(
+            session,
+            source,
+            model_name,
+            t_end,
+            dt,
+            solver,
+            parameter_overrides_json,
+            output_variables,
         )
     })
 }
@@ -136,12 +164,14 @@ fn simulate_model_in_session(
     dt: f64,
     solver: &str,
     parameter_overrides_json: &str,
+    output_variables: Option<Vec<String>>,
 ) -> Result<String, WasmError> {
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
-    let result = compile_requested_model(session, &requested_model)?;
+    let result = compile_cached_requested_model(session, &requested_model)?;
 
-    let (opts, solver_label) = build_simulation_options(&result, t_end, dt, solver);
+    let (mut opts, solver_label) = build_simulation_options(&result, t_end, dt, solver);
+    opts.output_variables = output_variables;
     let parameter_overrides = parse_parameter_overrides(parameter_overrides_json)?;
     let sim_started = wasm_timing_start();
     let sim = run_simulation(&result, &opts, &parameter_overrides)?;
@@ -187,13 +217,28 @@ fn model_parameter_metadata_in_session(
 ) -> Result<String, WasmError> {
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
-    let result = compile_requested_model(session, &requested_model)?;
+    let result = compile_cached_requested_model(session, &requested_model)?;
     let (opts, _) = build_simulation_options(&result, 0.0, 0.0, "auto");
     let solve_model = lower_dae_for_simulation(&result.dae, &opts)
         .map_err(|e| WasmError::new(format!("solve lowering error: {e}")))?;
     let metadata = build_tunable_parameter_meta(&result.dae, &solve_model)
         .map_err(|error| WasmError::new(format!("parameter metadata error: {error}")))?;
     serde_json::to_string(&metadata).map_err(|e| WasmError::new(format!("JSON error: {e}")))
+}
+
+fn parse_output_variables(json: &str) -> Result<Option<Vec<String>>, WasmError> {
+    let trimmed = json.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(None);
+    }
+    let names: Vec<String> = serde_json::from_str(trimmed)
+        .map_err(|e| WasmError::new(format!("output variable JSON error: {e}")))?;
+    if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
+        return Err(WasmError::new(
+            "requested output variables must be a non-empty list of names",
+        ));
+    }
+    Ok(Some(names))
 }
 
 fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, WasmError> {

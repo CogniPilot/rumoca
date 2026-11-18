@@ -40,6 +40,10 @@ pub(super) struct VisibleValuePlan {
     pub(super) entries: Vec<VisibleValuePlanEntry>,
     pub(super) expression_rows: Vec<usize>,
     pub(super) expression_groups: Vec<VisibleExpressionGroup>,
+    /// The expression group owning each output index, or `None` for a direct
+    /// output. Built once so a selected trace reads one mapping per channel
+    /// instead of rescanning every group for every observation.
+    pub(super) expression_group_for_output: Vec<Option<usize>>,
 }
 
 #[derive(Clone, Copy)]
@@ -79,6 +83,7 @@ pub(super) fn visible_value_plan(
     let mut entries = Vec::with_capacity(rows.row_count());
     let mut expression_rows = Vec::new();
     let mut expression_groups = Vec::new();
+    let mut expression_group_for_output = vec![None; visible_count];
     let mut expression_groups_by_fingerprint = FxHashMap::<u64, Vec<usize>>::default();
     for (row_idx, row) in rows.programs().iter().enumerate() {
         let output_count = solve::ScalarProgramBlock::program_output_count(row);
@@ -100,6 +105,7 @@ pub(super) fn visible_value_plan(
         ) {
             Some(group_idx) => {
                 expression_groups[group_idx].output_indices.push(row_idx);
+                expression_group_for_output[row_idx] = Some(group_idx);
                 expression_groups[group_idx].row_index
             }
             None => {
@@ -109,6 +115,7 @@ pub(super) fn visible_value_plan(
                     row_index: row_idx,
                     output_indices: vec![row_idx],
                 });
+                expression_group_for_output[row_idx] = Some(group_index);
                 expression_groups_by_fingerprint
                     .entry(fingerprint)
                     .or_default()
@@ -122,6 +129,7 @@ pub(super) fn visible_value_plan(
         entries,
         expression_rows,
         expression_groups,
+        expression_group_for_output,
     })
 }
 

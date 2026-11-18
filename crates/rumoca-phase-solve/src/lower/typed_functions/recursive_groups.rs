@@ -353,5 +353,6 @@ fn group_callee<'dae>(
         assertions: std::sync::Arc::from([]),
         recursive: true,
         scalar_storable,
+        simple_integer_gather: false,
     }
 }

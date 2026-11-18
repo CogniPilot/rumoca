@@ -722,6 +722,49 @@ impl SolvePureCallOwner {
         }
     }
 
+    /// Whether this owner only projects one element of an Integer array.
+    ///
+    /// This is the issued-body proof used by scalar lowering and the C
+    /// backend: the owner has exactly an Integer array, an Integer index, and
+    /// one Integer scalar result, and its body contains only loads, the one
+    /// runtime projection, and the result store.
+    #[must_use]
+    pub fn simple_dynamic_integer_gather(&self) -> bool {
+        let [array, index] = self.inputs.as_ref() else {
+            return false;
+        };
+        let [output] = self.outputs.as_ref() else {
+            return false;
+        };
+        let is_integer = |value_type: &SolveValueType| {
+            matches!(
+                value_type.element_type(),
+                crate::SolveScalarType::Integer(_)
+            )
+        };
+        if !is_integer(array)
+            || array.dimensions().len() != 1
+            || array.scalar_count() == 0
+            || !is_integer(index)
+            || !index.dimensions().is_empty()
+            || !is_integer(output.value_type())
+            || !output.value_type().dimensions().is_empty()
+        {
+            return false;
+        }
+        let mut projections = 0usize;
+        for operation in self.body.operations() {
+            match operation.operation() {
+                SolveOperation::Load { .. } | SolveOperation::Store { .. } => {}
+                SolveOperation::ProjectElementDynamic { indices, .. } if indices.len() == 1 => {
+                    projections += 1;
+                }
+                _ => return false,
+            }
+        }
+        projections == 1
+    }
+
     #[must_use]
     pub fn call_site(&self) -> SolvePureCallSite {
         SolvePureCallSite {
@@ -906,6 +949,12 @@ pub struct SolvePureCallTableBuilder {
 }
 
 impl SolvePureCallTableBuilder {
+    /// The owner issued at `id` in this still-building table.
+    #[must_use]
+    pub fn owner(&self, id: SolvePureCallOwnerId) -> Option<&SolvePureCallOwner> {
+        self.owners.get(id.index() as usize)
+    }
+
     #[must_use]
     pub fn finish(self) -> SolvePureCallTable {
         SolvePureCallTable {

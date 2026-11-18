@@ -232,7 +232,7 @@ type DerivativeSources<'dae> = BTreeMap<(u32, usize), MatchedDerivativeSource<'d
 pub struct SameTickDefinitions<'dae> {
     derivative_sources: DerivativeSources<'dae>,
     ids: Vec<Option<dae::VariableId<'dae>>>,
-    exact: BTreeMap<u32, dae::ExprId<'dae>>,
+    exact: BTreeMap<u32, ExactDefinition<'dae>>,
     opaque: BTreeMap<u32, OwnerReadViews>,
     /// Exact always-active discrete definitions must execute inside a clock
     /// partition when one of its producers reads them. Their stored entry
@@ -246,8 +246,14 @@ pub struct SameTickDefinitions<'dae> {
 #[derive(Default)]
 struct WriterAccumulator<'dae> {
     count: usize,
-    definition: Option<dae::ExprId<'dae>>,
+    definition: Option<ExactDefinition<'dae>>,
     reads: OwnerReadViews,
+}
+
+#[derive(Clone, Copy)]
+struct ExactDefinition<'dae> {
+    value: dae::ExprId<'dae>,
+    family: Option<dae::ContinuousFamilyId<'dae>>,
 }
 
 /// Executable read facts for the two existing semantic boundaries.
@@ -340,7 +346,13 @@ impl<'dae> SameTickDefinitions<'dae> {
         for (id, _) in view.variables() {
             if let Some(definition) = causal.definition_for_variable(id) {
                 opaque.remove(&id.index());
-                exact.insert(id.index(), definition);
+                exact.insert(
+                    id.index(),
+                    ExactDefinition {
+                        value: definition,
+                        family: None,
+                    },
+                );
             }
         }
         refresh_on_tick.retain(|variable| exact.contains_key(variable));
@@ -364,7 +376,22 @@ impl<'dae> SameTickDefinitions<'dae> {
     /// The exact definition a same-tick consumer refreshes this coordinate from.
     #[must_use]
     pub fn definition(&self, variable: u32) -> Option<dae::ExprId<'dae>> {
-        self.exact.get(&variable).copied()
+        self.exact.get(&variable).map(|definition| definition.value)
+    }
+
+    /// Domain retained by a complete element-wise family definition. Its
+    /// row-major scalar projection must bind this domain before reading value.
+    #[must_use]
+    pub fn definition_domain(
+        &self,
+        view: dae::DaeView<'dae>,
+        variable: u32,
+    ) -> Option<dae::DomainId<'dae>> {
+        self.exact
+            .get(&variable)
+            .and_then(|definition| definition.family)
+            .and_then(|family| view.continuous_family(family.index() as usize))
+            .map(|family| family.domain())
     }
 
     /// The branded identity of one variable index (no linear rescan).
@@ -390,7 +417,10 @@ fn record_definition<'dae>(
 ) -> Result<(), SameTickOrderError> {
     let entry = writers.entry(target).or_default();
     entry.count += 1;
-    entry.definition = (entry.count == 1).then_some(value);
+    entry.definition = (entry.count == 1).then_some(ExactDefinition {
+        value,
+        family: None,
+    });
     collect_writer_reads(view, value, sources, &mut entry.reads)?;
     Ok(())
 }
@@ -429,7 +459,20 @@ fn collect_continuous_writers<'dae>(
     for owner in view.continuous_owners() {
         let residual = match owner {
             dae::ContinuousOwnerView::Residual { equation, .. } => equation.residual(),
-            dae::ContinuousOwnerView::Structured { family, .. } => {
+            dae::ContinuousOwnerView::Structured { id, family } => {
+                if let Some((target, value)) =
+                    crate::causal_definitions::families::family_element_definition(view, family)
+                {
+                    let target = dae::VariableId::from(target).index();
+                    record_definition(view, sources, writers, target, value)?;
+                    if let Some(definition) = writers
+                        .get_mut(&target)
+                        .and_then(|writer| writer.definition.as_mut())
+                    {
+                        definition.family = Some(id);
+                    }
+                    continue;
+                }
                 let Some(body) =
                     crate::causal_definitions::exact_row_major_family_body(view, family)
                 else {

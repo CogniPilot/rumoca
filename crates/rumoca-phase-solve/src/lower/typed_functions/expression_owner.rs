@@ -320,6 +320,10 @@ impl<'dae> PureCallRegistry<'dae> {
                 assertions: assertions.into(),
                 recursive,
                 scalar_storable,
+                simple_integer_gather: self
+                    .table
+                    .owner(owner)
+                    .is_some_and(solve::SolvePureCallOwner::simple_dynamic_integer_gather),
             },
         };
         self.identities.expressions.insert(

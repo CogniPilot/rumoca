@@ -132,6 +132,7 @@ fn time_domain_refuses_storage_aliases_and_extent_overflow() {
             base: 0,
             count: 2,
             index: 0,
+            checked: false,
         },
         LinearOp::StoreOutput { src: 1 },
     ]);

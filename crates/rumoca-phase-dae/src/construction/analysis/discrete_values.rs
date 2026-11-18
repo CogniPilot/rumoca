@@ -100,6 +100,7 @@ pub(super) fn analyze_discrete_value_topology(
     connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
     record_equations: &HashMap<usize, RecordEquationPlan>,
+    when_function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owners = Vec::new();
     let reads = LazyModelReads::new(flat, templates);
@@ -116,7 +117,7 @@ pub(super) fn analyze_discrete_value_topology(
         &mut owners,
     )?;
     collect_algorithm_owners(flat, roles, &mut owners)?;
-    collect_when_owners(flat, roles, &mut owners)?;
+    collect_when_owners(flat, roles, when_function_calls, &mut owners)?;
     let held_targets = add_held_owners(flat, roles, &mut owners)?;
     order_owners(flat, owners, held_targets, &observed)
 }
@@ -632,13 +633,20 @@ fn expression_reads_current_target(
 fn collect_when_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     owners: &mut Vec<SourceOwner>,
 ) -> Result<(), ToDaeError> {
     for chain in &flat.when_chains {
         let mut written = HashSet::new();
         for branch in chain.branches() {
             let mut branch_written = HashSet::new();
-            validate_when_equation_targets(&branch.equations, roles, &mut branch_written)?;
+            validate_when_equation_targets(
+                flat,
+                calls,
+                &branch.equations,
+                roles,
+                &mut branch_written,
+            )?;
             written.extend(branch_written);
         }
         let target_names = stable_discrete_targets(flat, roles, written);
@@ -651,8 +659,14 @@ fn collect_when_owners(
             .into_iter()
             .map(|name| {
                 let mut dependencies = control_dependencies.clone();
-                let occurrence =
-                    collect_when_target_dependencies(flat, chain, &name, roles, &mut dependencies);
+                let occurrence = collect_when_target_dependencies(
+                    flat,
+                    calls,
+                    chain,
+                    &name,
+                    roles,
+                    &mut dependencies,
+                );
                 let span =
                     require_target_occurrence(&name, "when chain", chain.span(), occurrence)?;
                 Ok(SourceTarget {
@@ -665,12 +679,115 @@ fn collect_when_owners(
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
         targets.append(&mut element_targets);
-        owners.push(SourceOwner {
-            targets,
-            span: chain.span(),
-        });
+        if let Some(groups) = when_equation_owner_groups(flat, calls, chain) {
+            // MLS §8.5: independent equations may have intervening Real
+            // producers. Keep every issued function receiver group correlated.
+            for group in groups {
+                let (members, remaining) = targets
+                    .into_iter()
+                    .partition(|target| group.contains(&target.key(flat)));
+                targets = remaining;
+                if !members.is_empty() {
+                    owners.push(SourceOwner {
+                        targets: members,
+                        span: chain.span(),
+                    });
+                }
+            }
+            debug_assert!(targets.is_empty());
+        } else {
+            owners.push(SourceOwner {
+                targets,
+                span: chain.span(),
+            });
+        }
     }
     Ok(())
+}
+
+fn when_equation_owner_groups(
+    flat: &flat::Model,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+    chain: &flat::WhenChain,
+) -> Option<Vec<HashSet<DiscreteTargetKey>>> {
+    let mut groups = Vec::new();
+    for branch in chain.branches() {
+        for equation in &branch.equations {
+            let group = match equation {
+                flat::WhenEquation::Assign { target, .. }
+                    if whole_primitive_declaration(flat, target) =>
+                {
+                    HashSet::from([DiscreteTargetKey::Whole(flat.variables[target].instance_id)])
+                }
+                flat::WhenEquation::AssignElement {
+                    target,
+                    subscripts,
+                    span,
+                    ..
+                } => {
+                    let selected =
+                        when_elements::selected_target(flat, target, subscripts, *span).ok()?;
+                    if !whole_primitive_declaration(flat, &selected.name) {
+                        return None;
+                    }
+                    HashSet::from([selected.key()])
+                }
+                flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
+                    when_function_call_plan(flat, calls, outputs, *span)
+                        .expect("when receiver plan was validated")
+                        .receiver_targets()
+                        .map(|name| DiscreteTargetKey::Whole(flat.variables[name].instance_id))
+                        .collect()
+                }
+                flat::WhenEquation::Reinit { .. }
+                | flat::WhenEquation::Assert { .. }
+                | flat::WhenEquation::Terminate { .. } => continue,
+                _ => return None,
+            };
+            merge_when_owner_group(&mut groups, group);
+        }
+    }
+    Some(groups)
+}
+
+fn merge_when_owner_group(
+    groups: &mut Vec<HashSet<DiscreteTargetKey>>,
+    mut group: HashSet<DiscreteTargetKey>,
+) {
+    // Alternative branches can overlap in their receiver sets. Their union
+    // remains one owner; disjoint equations keep independent staging ranks.
+    let mut index = 0;
+    while index < groups.len() {
+        if groups[index].is_disjoint(&group) {
+            index += 1;
+        } else {
+            group.extend(groups.remove(index));
+            index = 0;
+        }
+    }
+    groups.push(group);
+}
+
+fn whole_primitive_declaration(flat: &flat::Model, name: &VarName) -> bool {
+    let Some(variable) = flat.variables.get(name) else {
+        return false;
+    };
+    let Some(reference) = variable.component_ref.as_ref() else {
+        return false;
+    };
+    if !variable.is_primitive || reference.parts().iter().any(|part| !part.subs.is_empty()) {
+        return false;
+    }
+    // A flattened primitive field is still a projection of its record owner.
+    // Use the retained structured reference, never parse display names.
+    let mut parent = rumoca_core::ComponentPath::from_component_reference(reference).parent();
+    while let Some(path) = parent {
+        if flat.record_instances.contains_key(path.var_name()) {
+            return false;
+        }
+        parent = path.parent();
+    }
+    true
 }
 
 fn collect_element_when_targets(
@@ -1325,6 +1442,8 @@ fn source_target_contains(source: &VarName, concrete: &VarName) -> bool {
 }
 
 fn validate_when_equation_targets(
+    flat: &flat::Model,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     equations: &[flat::WhenEquation],
     roles: &HashMap<VarName, PlannedRole>,
     written: &mut HashSet<VarName>,
@@ -1343,18 +1462,32 @@ fn validate_when_equation_targets(
                 let mut branch_targets = HashSet::new();
                 for (_, equations) in branches {
                     let mut branch_written = written.clone();
-                    validate_when_equation_targets(equations, roles, &mut branch_written)?;
+                    validate_when_equation_targets(
+                        flat,
+                        calls,
+                        equations,
+                        roles,
+                        &mut branch_written,
+                    )?;
                     branch_targets.extend(branch_written.difference(written).cloned());
                 }
                 if let Some(else_branch) = else_branch {
                     let mut branch_written = written.clone();
-                    validate_when_equation_targets(else_branch, roles, &mut branch_written)?;
+                    validate_when_equation_targets(
+                        flat,
+                        calls,
+                        else_branch,
+                        roles,
+                        &mut branch_written,
+                    )?;
                     branch_targets.extend(branch_written.difference(written).cloned());
                 }
                 written.extend(branch_targets);
             }
             flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
-                for output in outputs {
+                for output in
+                    when_function_call_plan(flat, calls, outputs, *span)?.receiver_targets()
+                {
                     claim_when_equation_target(output, *span, roles, written)?;
                 }
             }
@@ -1424,6 +1557,7 @@ fn collect_when_control_dependencies(
 
 fn collect_when_target_dependencies(
     flat: &flat::Model,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     chain: &flat::WhenChain,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
@@ -1433,6 +1567,7 @@ fn collect_when_target_dependencies(
     for branch in chain.branches() {
         first_action = first_action.or(collect_when_equation_target_dependencies(
             flat,
+            calls,
             &branch.equations,
             target,
             roles,
@@ -1444,6 +1579,7 @@ fn collect_when_target_dependencies(
 
 fn collect_when_equation_target_dependencies(
     flat: &flat::Model,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     equations: &[flat::WhenEquation],
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
@@ -1470,6 +1606,7 @@ fn collect_when_equation_target_dependencies(
                 for (_, equations) in branches {
                     nested = nested.or(collect_when_equation_target_dependencies(
                         flat,
+                        calls,
                         equations,
                         target,
                         roles,
@@ -1479,6 +1616,7 @@ fn collect_when_equation_target_dependencies(
                 if let Some(else_branch) = else_branch {
                     nested = nested.or(collect_when_equation_target_dependencies(
                         flat,
+                        calls,
                         else_branch,
                         target,
                         roles,
@@ -1492,16 +1630,21 @@ fn collect_when_equation_target_dependencies(
                 function,
                 span,
                 ..
-            } if outputs.contains(target) => {
-                collect_current_discrete_dependencies(flat, function, roles, dependencies);
-                Some(*span)
+            } => {
+                let plan = when_function_call_plan(flat, calls, outputs, *span)
+                    .expect("when receiver identities and plans were checked before topology");
+                if plan.receiver_targets().any(|receiver| receiver == target) {
+                    collect_current_discrete_dependencies(flat, function, roles, dependencies);
+                    Some(*span)
+                } else {
+                    None
+                }
             }
             flat::WhenEquation::Assign { .. }
             | flat::WhenEquation::AssignElement { .. }
             | flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
-            | flat::WhenEquation::Terminate { .. }
-            | flat::WhenEquation::FunctionCallOutputs { .. } => None,
+            | flat::WhenEquation::Terminate { .. } => None,
         };
         first_action = first_action.or(action);
     }

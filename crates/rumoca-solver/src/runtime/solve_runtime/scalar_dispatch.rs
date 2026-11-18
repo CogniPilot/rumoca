@@ -466,6 +466,17 @@ impl SolveRuntime {
             .visible_values_selected(y, params, t, names, selected)
     }
 
+    pub fn visible_values_for_indices(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        indices: &[usize],
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        self.scalar_execution()?
+            .visible_values_for_indices(y, params, t, indices)
+    }
+
     pub fn eval_state_jacobian_v_ad_into(
         &self,
         lin: AlgebraicLinearization<'_>,

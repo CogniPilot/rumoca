@@ -100,6 +100,13 @@ impl<'dae> PureCallRegistry<'dae> {
         )
     }
 
+    pub(crate) fn owner(
+        &self,
+        id: solve::SolvePureCallOwnerId,
+    ) -> Option<&solve::SolvePureCallOwner> {
+        self.table.owner(id)
+    }
+
     pub(crate) fn finish(&mut self) -> solve::SolvePureCallTable {
         let replacement = solve::SolvePureCallTable::builder(arithmetic_profile());
         self.identities = CallRegistration::new(None);
@@ -160,6 +167,9 @@ pub(crate) struct CalleeInterface<'dae> {
     /// only Integer values scalar row storage holds exactly and converts no
     /// Real to an Integer, derived once when the owner is registered.
     pub(crate) scalar_storable: bool,
+    /// Whether the owner only projects one element of an Integer array. Scalar
+    /// lowering may replace such a call with a checked direct load.
+    pub(crate) simple_integer_gather: bool,
 }
 
 /// One call-scoped assertion output of a pure-call owner.

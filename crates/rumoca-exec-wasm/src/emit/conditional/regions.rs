@@ -13,6 +13,10 @@ impl BodyEmitter<'_> {
             self.register_base,
             self.region_frame_end,
             self.conditional_region,
+            std::mem::replace(
+                &mut self.gather_inputs,
+                gather::InputViews::derive(operations)?,
+            ),
         );
         self.register_base = frame.registers;
         self.region_frame_end = Reg::try_from(registers)
@@ -45,6 +49,7 @@ impl BodyEmitter<'_> {
             self.register_base,
             self.region_frame_end,
             self.conditional_region,
+            self.gather_inputs,
         ) = previous;
         result
     }

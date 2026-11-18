@@ -1342,6 +1342,29 @@ impl ScalarExecutionView<'_> {
         t: f64,
         names: &[String],
     ) -> Result<IndexMap<String, f64>, RuntimeSolveError> {
+        if self.scalar.visible_value_plan.is_some() {
+            let indices = names
+                .iter()
+                .filter_map(|name| self.scalar.visible_name_index.get(name).copied())
+                .collect::<Vec<_>>();
+            let selected = self.visible_values_for_indices(y, params, t, &indices)?;
+            let mut values = IndexMap::new();
+            reserve_runtime_index_map_capacity(
+                &mut values,
+                names.len(),
+                "visible plan name values",
+            )?;
+            let mut selected = selected.into_iter();
+            for name in names {
+                if self.scalar.visible_name_index.contains_key(name) {
+                    let value = selected.next().ok_or_else(|| {
+                        visible_value_index_error(name, 0, 0, "visible plan name values")
+                    })?;
+                    values.insert(name.clone(), value);
+                }
+            }
+            return Ok(values);
+        }
         if self.scalar.visible_value_rows.len() == self.model.visible_projection.scalar_count() {
             return self.visible_values_for_names_from_rows(y, params, t, names);
         }
@@ -1358,6 +1381,128 @@ impl ScalarExecutionView<'_> {
             values.insert(name.clone(), value);
         }
         Ok(values)
+    }
+
+    /// Evaluate only the requested visible scalar indices.
+    ///
+    /// Direct entries read their source slot; expression entries are grouped by
+    /// their checked program so one compiled row serves every selected output
+    /// that shares it. Unselected visible variables are never evaluated.
+    pub(super) fn visible_values_for_indices(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        indices: &[usize],
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let Some(plan) = &self.scalar.visible_value_plan else {
+            if self.scalar.visible_value_rows.len() == self.model.visible_projection.scalar_count()
+            {
+                let mut values = zero_runtime_values(
+                    self.scalar.visible_value_rows.len(),
+                    "selected visible values",
+                )?;
+                self.eval_single_output_rows_with_native(
+                    SpecializedRows {
+                        block: &self.scalar.visible_value_rows,
+                        cache: &self.scalar.compiled_visible_rows,
+                        failed: &self.scalar.failed_visible_rows,
+                    },
+                    indices,
+                    RowEvalPoint { y, p: params, t },
+                    &mut values,
+                )?;
+                return indices
+                    .iter()
+                    .map(|&index| {
+                        values.get(index).copied().ok_or_else(|| {
+                            visible_value_index_error(
+                                "selected index",
+                                index,
+                                values.len(),
+                                "selected visible values",
+                            )
+                        })
+                    })
+                    .collect();
+            }
+            let all = self.visible_values(y, params, t)?;
+            return indices
+                .iter()
+                .map(|&index| {
+                    all.get(index).copied().ok_or_else(|| {
+                        visible_value_index_error(
+                            "selected index",
+                            index,
+                            all.len(),
+                            "visible values",
+                        )
+                    })
+                })
+                .collect();
+        };
+        let mut values = zero_runtime_values(plan.entries.len(), "selected visible values")?;
+        let mut rows = Vec::new();
+        for &index in indices {
+            match plan.entries.get(index).copied() {
+                Some(VisibleValuePlanEntry::Direct(source)) => {
+                    values[index] = direct_visible_value(source, y, params, t)?;
+                }
+                Some(VisibleValuePlanEntry::Expression { .. }) => {
+                    let group_index = plan
+                        .expression_group_for_output
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .ok_or_else(|| {
+                            visible_value_index_error(
+                                "selected expression",
+                                index,
+                                plan.entries.len(),
+                                "visible plan groups",
+                            )
+                        })?;
+                    let row = plan.expression_groups[group_index].row_index;
+                    if !rows.contains(&row) {
+                        rows.push(row);
+                    }
+                }
+                None => {
+                    return Err(visible_value_index_error(
+                        "selected index",
+                        index,
+                        plan.entries.len(),
+                        "visible plan values",
+                    ));
+                }
+            }
+        }
+        if !rows.is_empty() {
+            self.eval_single_output_rows_with_native(
+                SpecializedRows {
+                    block: &self.scalar.visible_value_rows,
+                    cache: &self.scalar.compiled_visible_rows,
+                    failed: &self.scalar.failed_visible_rows,
+                },
+                &rows,
+                RowEvalPoint { y, p: params, t },
+                &mut values,
+            )?;
+            copy_grouped_expression_values(plan, &mut values)?;
+        }
+        indices
+            .iter()
+            .map(|&index| {
+                values.get(index).copied().ok_or_else(|| {
+                    visible_value_index_error(
+                        "selected index",
+                        index,
+                        values.len(),
+                        "selected visible values",
+                    )
+                })
+            })
+            .collect()
     }
 
     pub(super) fn visible_values_for_names_from_rows(

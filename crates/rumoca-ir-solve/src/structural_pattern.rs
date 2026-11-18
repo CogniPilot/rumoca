@@ -1983,7 +1983,7 @@ fn apply_dependency_op(
             walk.load_conditional_capture(*dst, *index)?,
         LinearOp::LoadFunctionConditionalCaptureRange { dst_start, index_start, count } =>
             walk.load_conditional_capture_range(*dst_start, *index_start, *count)?,
-        LinearOp::LoadIndexedP { dst, base, count, index } =>
+        LinearOp::LoadIndexedP { dst, base, count, index, .. } =>
             walk.load_indexed_p(*dst, *base, *count, *index)?,
         LinearOp::LoadIndexedRegister { dst, base, stride, dimensions, indices } =>
             walk.load_indexed_register(*dst, *base, *stride, dimensions, indices)?,

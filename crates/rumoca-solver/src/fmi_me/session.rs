@@ -232,6 +232,44 @@ impl MeRetainedComponent {
     }
 }
 
+/// Resolve the exact public columns a trace records. Names are matched by
+/// source identity, never by display guessing, and the requested order is
+/// preserved. Duplicate or unknown columns are rejected before initialization.
+fn select_outputs(
+    names: Vec<String>,
+    meta: Vec<SimVariableMeta>,
+    requested: Option<&[String]>,
+) -> Result<(Vec<String>, Vec<SimVariableMeta>, Option<Vec<usize>>, usize), MeSessionError> {
+    let source_width = names.len();
+    let Some(requested) = requested else {
+        return Ok((names, meta, None, source_width));
+    };
+    let reject = |reason: String| MeSessionError::Options { reason };
+    if requested.is_empty() {
+        return Err(reject("the requested output list is empty".into()));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut selection = Vec::with_capacity(requested.len());
+    for name in requested {
+        if !seen.insert(name.as_str()) {
+            return Err(reject(format!(
+                "requested output '{name}' appears more than once"
+            )));
+        }
+        let index = names
+            .iter()
+            .position(|candidate| candidate == name)
+            .ok_or_else(|| reject(format!("requested output '{name}' is unavailable")))?;
+        selection.push(index);
+    }
+    let selected_names = selection
+        .iter()
+        .map(|&index| names[index].clone())
+        .collect();
+    let selected_meta = selection.iter().map(|&index| meta[index].clone()).collect();
+    Ok((selected_names, selected_meta, Some(selection), source_width))
+}
+
 /// Construct the host state with every aggregate already valid.
 ///
 /// The derivative controller is minted here, per lease, from the same single
@@ -241,27 +279,39 @@ fn build_host_state(
     kernel: Rc<MeKernelCell>,
     options: MeSessionOptions,
 ) -> Result<MeHostState, MeSessionError> {
-    let (state_count, indicator_count, names, meta, max_step_duration_reference) = {
+    let (
+        state_count,
+        indicator_count,
+        names,
+        meta,
+        selection,
+        source_width,
+        max_step_duration_reference,
+    ) = {
         let borrowed = kernel.borrow()?;
-        let (names, meta) = if options.records_trace() {
+        let (names, meta, selection, source_width) = if options.records_trace() {
             let description = borrowed.model_description();
-            (
+            select_outputs(
                 description.output_names.to_vec(),
                 description.output_meta.to_vec(),
-            )
+                options.output_variables(),
+            )?
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), None, 0)
         };
         (
             borrowed.continuous_state_count(),
             borrowed.event_indicator_count(),
             names,
             meta,
+            selection,
+            source_width,
             borrowed.max_step_duration_value_reference(),
         )
     };
     let capacity = trace_capacity(&options);
-    let mut trace = MeTraceRecorder::new(names, meta, state_count, capacity)?;
+    let mut trace =
+        MeTraceRecorder::new(names, meta, state_count, capacity, selection, source_width)?;
     let outcome = run_fmi_initialization(
         &mut *kernel.borrow_mut()?,
         &options,
@@ -1327,6 +1377,18 @@ impl MeSimulationSession<'_, '_> {
         let Some(coordinate) = self.host.event_left_coordinate(candidate, event_time) else {
             return Ok(None);
         };
+        if self.host.trace.can_repeat_event_domain()
+            && self
+                .host
+                .trace
+                .last_time()
+                .is_some_and(|last| coordinate > last)
+        {
+            self.host
+                .trace
+                .repeat_last(TraceObservationRole::EventLeft, coordinate)?;
+            return Ok(None);
+        }
         let Some((previous, accepted)) = self.host.retained_interval else {
             return Ok(None);
         };

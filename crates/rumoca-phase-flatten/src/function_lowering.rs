@@ -901,6 +901,9 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
     }
 
     if decomposition_map.is_empty() {
+        if !flat.record_instances.is_empty() {
+            decompose_record_calls_in_model_whens(flat, &decomposition_map)?;
+        }
         return Ok(false);
     }
 
@@ -988,12 +991,7 @@ fn rewrite_decomposed_record_call_sites(
             decompose_record_call_args_in_stmt(statement, decomposition_map, None)?;
         }
     }
-    for chain in &mut flat.when_chains {
-        for branch in chain.branches_mut() {
-            decompose_record_call_args_in_expr(&mut branch.condition, decomposition_map, None)?;
-            decompose_record_calls_in_when_equations(&mut branch.equations, decomposition_map)?;
-        }
-    }
+    decompose_record_calls_in_model_whens(flat, decomposition_map)?;
     for (func_name, func) in flat.functions.iter_mut() {
         let local_record_params = local_decomposed_params.get(func_name.as_str());
         let aggregate_record_values = func
@@ -1044,6 +1042,23 @@ fn rewrite_decomposed_record_call_sites(
     Ok(())
 }
 
+fn decompose_record_calls_in_model_whens(
+    flat: &mut flat::Model,
+    decomposition_map: &RecordDecompositionMap,
+) -> Result<(), FlattenError> {
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            decompose_record_call_args_in_expr(&mut branch.condition, decomposition_map, None)?;
+            decompose_record_calls_in_when_equations(
+                &mut branch.equations,
+                decomposition_map,
+                &flat.record_instances,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn decompose_record_calls_in_function_parameter(
     parameter: &mut rumoca_core::FunctionParam,
     decomposition_map: &RecordDecompositionMap,
@@ -1081,8 +1096,32 @@ fn decompose_record_calls_in_function_parameter(
 fn decompose_record_calls_in_when_equations(
     equations: &mut [flat::WhenEquation],
     decomposition_map: &RecordDecompositionMap,
+    records: &flat::VarNameIndexMap<flat::RecordInstance>,
 ) -> Result<(), FlattenError> {
     for equation in equations {
+        // A whole scalar record receives one complete result of this call.
+        // Keep the same event-call owner as an explicit receiving tuple.
+        if let flat::WhenEquation::Assign {
+            target,
+            value:
+                value @ rumoca_core::Expression::FunctionCall {
+                    is_constructor: false,
+                    ..
+                },
+            span,
+            origin,
+        } = equation
+            && records
+                .get(target)
+                .is_some_and(|record| record.dims.is_empty())
+        {
+            *equation = flat::WhenEquation::FunctionCallOutputs {
+                outputs: vec![target.clone()],
+                function: value.clone(),
+                span: *span,
+                origin: origin.clone(),
+            };
+        }
         match equation {
             flat::WhenEquation::Assign { value, .. }
             | flat::WhenEquation::AssignElement { value, .. }
@@ -1111,10 +1150,18 @@ fn decompose_record_calls_in_when_equations(
             } => {
                 for (condition, branch_equations) in branches {
                     decompose_record_call_args_in_expr(condition, decomposition_map, None)?;
-                    decompose_record_calls_in_when_equations(branch_equations, decomposition_map)?;
+                    decompose_record_calls_in_when_equations(
+                        branch_equations,
+                        decomposition_map,
+                        records,
+                    )?;
                 }
                 if let Some(else_branch) = else_branch {
-                    decompose_record_calls_in_when_equations(else_branch, decomposition_map)?;
+                    decompose_record_calls_in_when_equations(
+                        else_branch,
+                        decomposition_map,
+                        records,
+                    )?;
                 }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
@@ -1505,6 +1552,15 @@ pub(crate) fn expand_record_arg(
     aggregate_record_values: Option<&HashSet<String>>,
     out: &mut Vec<rumoca_core::Expression>,
 ) -> Result<(), FlattenError> {
+    if expand_record_pre_arg(
+        arg,
+        fields,
+        local_record_params,
+        aggregate_record_values,
+        out,
+    )? {
+        return Ok(());
+    }
     if expand_record_constructor_arg(function_name, arg, fields, out)? {
         return Ok(());
     }
@@ -1606,6 +1662,59 @@ pub(crate) fn expand_record_arg(
         });
     }
     Ok(())
+}
+
+/// MLS §3.7.5: the history of a whole record argument is the history of its
+/// identity-bearing primitive fields. DAE still checks every history lane.
+fn expand_record_pre_arg(
+    arg: &rumoca_core::Expression,
+    fields: &[rumoca_core::FunctionParam],
+    local_record_params: Option<&HashSet<String>>,
+    aggregate_record_values: Option<&HashSet<String>>,
+    out: &mut Vec<rumoca_core::Expression>,
+) -> Result<bool, FlattenError> {
+    use rumoca_core::{BuiltinFunction, Expression};
+    let Expression::BuiltinCall {
+        function: BuiltinFunction::Pre,
+        args,
+        span,
+    } = arg
+    else {
+        return Ok(false);
+    };
+    let [
+        value @ Expression::VarRef {
+            name, subscripts, ..
+        },
+    ] = args.as_slice()
+    else {
+        return Ok(false);
+    };
+    if !subscripts.is_empty()
+        || name.is_generated()
+        || !name
+            .component_ref()
+            .is_some_and(|reference| reference.parts().iter().all(|part| part.subs.is_empty()))
+        || local_record_params.is_some_and(|params| params.contains(name.as_str()))
+        || aggregate_record_values.is_some_and(|values| values.contains(name.as_str()))
+        || fields.is_empty()
+    {
+        return Ok(false);
+    }
+    let mut projected = Vec::with_capacity(fields.len());
+    expand_record_var_ref(value, fields, None, None, &mut projected)?;
+    if !projected
+        .iter()
+        .all(|field| matches!(field, Expression::VarRef { .. }))
+    {
+        return Ok(false);
+    }
+    out.extend(projected.into_iter().map(|field| Expression::BuiltinCall {
+        function: BuiltinFunction::Pre,
+        args: vec![field],
+        span: *span,
+    }));
+    Ok(true)
 }
 
 fn expand_record_var_ref(

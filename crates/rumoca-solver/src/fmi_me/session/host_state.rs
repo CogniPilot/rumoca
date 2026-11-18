@@ -434,7 +434,15 @@ impl MeHostState {
             return Ok(());
         }
         let Self { trace, kernel, .. } = self;
-        trace.record_with::<MeSessionError, _>(role, time, || Ok(observe_current(kernel)?))?;
+        if role == TraceObservationRole::Settled {
+            trace.record_with_selected::<MeSessionError, _>(role, time, |indices| {
+                Ok(observe_settled_indices(kernel, indices)?)
+            })?;
+        } else {
+            trace.record_with_selected::<MeSessionError, _>(role, time, |indices| {
+                Ok(observe_current_indices(kernel, indices)?)
+            })?;
+        }
         Ok(())
     }
 
@@ -467,7 +475,21 @@ impl MeHostState {
             time: *accepted_time,
             states: accepted_states,
         };
-        trace.record_with::<MeSessionError, _>(role, time, || anchor.observe_at(time, states))?;
+        if matches!(
+            role,
+            TraceObservationRole::EventLeft | TraceObservationRole::Nominal
+        ) && trace
+            .last_time()
+            .is_some_and(|last| canonical_coordinate(time) > last)
+            && trace.can_repeat_event_domain()
+        {
+            if trace.repeat_last(role, time)? {
+                return Ok(());
+            }
+        }
+        trace.record_with_selected::<MeSessionError, _>(role, time, |indices| {
+            anchor.observe_at_indices(time, states, indices)
+        })?;
         Ok(())
     }
 
@@ -808,6 +830,28 @@ fn observe_current(kernel: &Rc<MeKernelCell>) -> Result<Vec<f64>, MeError> {
     read_outputs(&kernel)
 }
 
+fn observe_settled_indices(
+    kernel: &Rc<MeKernelCell>,
+    indices: &[usize],
+) -> Result<Vec<f64>, MeError> {
+    let kernel = kernel.borrow()?;
+    let observation = kernel.observe_settled()?;
+    let values = kernel.get_outputs_for_indices(&observation, observation.time(), indices)?;
+    kernel.report_warnings(&observation)?;
+    Ok(values)
+}
+
+fn observe_current_indices(
+    kernel: &Rc<MeKernelCell>,
+    indices: &[usize],
+) -> Result<Vec<f64>, MeError> {
+    let kernel = kernel.borrow()?;
+    let observation = kernel.observe()?;
+    let values = kernel.get_outputs_for_indices(&observation, observation.time(), indices)?;
+    kernel.report_warnings(&observation)?;
+    Ok(values)
+}
+
 /// The exact accepted point an off-point excursion returns the component to.
 ///
 /// SPEC_0044 §6 and ME-BUF-001 make the session's accepted time/state and the
@@ -858,6 +902,20 @@ impl AcceptedAnchor<'_> {
         read: impl FnOnce(&Rc<MeKernelCell>) -> Result<T, MeError>,
     ) -> Result<T, MeSessionError> {
         let attempted = self.read_at(time, states, read);
+        self.settle(attempted)
+    }
+
+    /// Read only the selected output indices at a coordinate the session does
+    /// not stand on.
+    pub(super) fn observe_at_indices(
+        &self,
+        time: f64,
+        states: &[f64],
+        indices: &[usize],
+    ) -> Result<Vec<f64>, MeSessionError> {
+        let attempted = self.read_at(time, states, |kernel| {
+            observe_current_indices(kernel, indices)
+        });
         self.settle(attempted)
     }
 

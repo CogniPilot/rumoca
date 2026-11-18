@@ -70,6 +70,12 @@ pub(super) struct ScalarEventProfile {
     root_neighborhoods: Vec<Vec<usize>>,
     /// The event iteration schedule the component walks (ME-EVENT-006).
     schedule: crate::EventIterationSchedule,
+    /// Compiler certificate that one ordered clocked pass is the complete
+    /// event iteration for this model. False keeps the standard fixed point.
+    single_pass: bool,
+    /// The same issued partition is acyclic, so one discrete settle pass is
+    /// the complete fixed point; false keeps the standard settle loop.
+    single_settle: bool,
 }
 
 impl ScalarEventProfile {
@@ -211,6 +217,8 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
         condition_memories: events.condition_memory_parameter_indices.clone(),
         schedule: discrete.event_iteration_plan.schedule.clone(),
+        single_pass: problem.single_pass_clock_partition(),
+        single_settle: problem.single_pass_clock_partition(),
         root_neighborhoods: crate::root_neighborhoods(&events.root_conditions)
             .map_err(|_| "a root condition's coordinate reads cannot be derived")?,
     })

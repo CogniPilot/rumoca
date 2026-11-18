@@ -763,6 +763,7 @@ impl<'a> Taint<'a> {
                 base,
                 count,
                 index,
+                ..
             } => {
                 let hit = (*base..base + count).any(|slot| self.chosen.contains(&slot));
                 let flags = if hit {

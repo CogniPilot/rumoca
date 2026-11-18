@@ -2012,6 +2012,7 @@ fn solve_problem_shape_contract_rejects_parameter_run_outside_layout() {
                     base: 1,
                     count: 5,
                     index: 0,
+                    checked: false,
                 },
                 LinearOp::StoreOutput { src: 1 },
             ]],
@@ -2414,6 +2415,90 @@ fn clock_partition_order_excludes_transaction_owned_producers() {
             .contains("scalar step names a transaction-owned row"),
         "unexpected rejection: {error}"
     );
+}
+
+fn single_pass_clock_problem() -> SolveProblem {
+    let mut problem = SolveProblem::default();
+    problem.clocks.periodic_event_schedules = vec![
+        PeriodicEventSchedule::from_seconds(0.1, 0.0).expect("fixture clock lattice is exact"),
+    ];
+    problem
+}
+
+#[test]
+fn single_pass_clock_certificate_admits_one_ordered_clocked_partition() {
+    let mut problem = single_pass_clock_problem();
+    assert!(problem.single_pass_clock_partition());
+    let clock = problem
+        .clocks
+        .periodic_clock_id(0)
+        .expect("fixture clock resolves");
+    problem.discrete.guarded_assignments = vec![
+        GuardedAssignmentProgram::checked(
+            guarded_range_program(1),
+            fixture_provenance(),
+            [(scalar_slot_p(0), 1)],
+            DiscreteRowRole::Equation,
+            DiscreteEventPreMode::FollowCurrent,
+            false,
+            IntegratorHistoryEffect::Preserve,
+            Some(clock),
+        )
+        .expect("guarded fixture is valid"),
+    ];
+    problem.discrete.clock_partition_order =
+        vec![ClockPartitionStep::GuardedAssignment { program_index: 0 }];
+    assert!(problem.single_pass_clock_partition());
+    problem.discrete.clock_partition_order.clear();
+    assert!(
+        !problem.single_pass_clock_partition(),
+        "a clocked producer without an issued step is not certified"
+    );
+    problem.discrete.clock_partition_order = vec![
+        ClockPartitionStep::GuardedAssignment { program_index: 0 },
+        ClockPartitionStep::GuardedAssignment { program_index: 0 },
+    ];
+    assert!(
+        !problem.single_pass_clock_partition(),
+        "a repeated producer is not a single acyclic order"
+    );
+}
+
+#[test]
+fn single_pass_clock_certificate_rejects_non_single_clock_shapes() {
+    let mut problem = single_pass_clock_problem();
+    problem.clocks.periodic_event_schedules.push(
+        PeriodicEventSchedule::from_seconds(0.2, 0.0).expect("fixture clock lattice is exact"),
+    );
+    assert!(!problem.single_pass_clock_partition());
+
+    let mut problem = single_pass_clock_problem();
+    problem.discrete.event_transactions = vec![event_transaction_fixture()];
+    assert!(!problem.single_pass_clock_partition());
+
+    let mut problem = single_pass_clock_problem();
+    problem.discrete.clock_owners = vec![Some(
+        problem
+            .clocks
+            .periodic_clock_id(0)
+            .expect("fixture clock resolves"),
+    )];
+    assert!(!problem.single_pass_clock_partition());
+
+    let mut problem = single_pass_clock_problem();
+    problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_provenance(),
+    )
+    .expect("fixture root is computable");
+    assert!(!problem.single_pass_clock_partition());
+
+    let mut problem = single_pass_clock_problem();
+    problem.events.delays.value_parameter_indices = vec![0];
+    assert!(!problem.single_pass_clock_partition());
 }
 
 #[test]

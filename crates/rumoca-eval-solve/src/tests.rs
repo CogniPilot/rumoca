@@ -1482,6 +1482,51 @@ fn batched_linsolve_rejects_short_output_instead_of_truncating() {
 }
 
 #[test]
+fn checked_indexed_parameter_load_rejects_invalid_indexes() {
+    let checked = |index: f64| {
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const {
+                    dst: 0,
+                    value: index,
+                },
+                LinearOp::LoadIndexedP {
+                    dst: 1,
+                    base: 0,
+                    count: 3,
+                    index: 0,
+                    checked: true,
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ]],
+            fixture_span()
+                .require_provenance("checked indexed load fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("checked indexed load fixture is computable")
+    };
+    let mut out = [0.0];
+    eval_scalar_program_block(&checked(1.0), &[], &[10.0, 20.0, 30.0], 0.0, None, &mut out)
+        .expect("in-range checked index loads");
+    assert_eq!(out, [20.0]);
+    for index in [-1.0, 3.0, 1.5, f64::NAN] {
+        let error = eval_scalar_program_block(
+            &checked(index),
+            &[],
+            &[10.0, 20.0, 30.0],
+            0.0,
+            None,
+            &mut out,
+        )
+        .expect_err("out-of-range checked index must fail");
+        assert!(matches!(
+            error,
+            EvalSolveError::NativeSourceIndexFault { .. }
+        ));
+    }
+}
+
+#[test]
 fn eval_scalar_program_block_short_output_is_error_not_truncation() {
     let block = ScalarProgramBlock::with_source_span(
         vec![

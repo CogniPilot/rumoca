@@ -183,6 +183,15 @@ return 0;
     other types convert through local arrays. -#}
 {%- macro wrapper(owner, kind="") -%}
 RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
+{% if owner.simple_dynamic_integer_gather and not kind %}
+if (!out) return 1;
+double raw_index=in[1][0];
+if (!isfinite(raw_index) || trunc(raw_index) != raw_index || raw_index < 1.0 || raw_index > {{ owner.inputs[0].dimensions[0] }}.0) return 1;
+double raw_value=in[0][(size_t)raw_index-1];
+if (!isfinite(raw_value) || trunc(raw_value) != raw_value || raw_value < -9223372036854775808.0 || raw_value >= 9223372036854775808.0) return 1;
+out[0]=(double)(int64_t)raw_value;
+return 0;
+{% else %}
 (void)in;
 if (!out) return 1;
 {% for ty in owner.inputs -%}
@@ -199,6 +208,7 @@ if (!out) return 1;
 {% endfor %}
 { int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} }, observer); if (status) return status; }
 {{ offset.conversions }}return 0;
+{% endif %}
 }
 {% endmacro %}
 

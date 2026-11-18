@@ -142,6 +142,9 @@ pub(super) struct MeTraceRecorder {
     roles: Vec<TraceObservationRole>,
     columns: Vec<Vec<f64>>,
     state_count: usize,
+    selection: Option<Vec<usize>>,
+    observation_indices: Vec<usize>,
+    source_width: usize,
 }
 
 impl MeTraceRecorder {
@@ -152,6 +155,8 @@ impl MeTraceRecorder {
         meta: Vec<SimVariableMeta>,
         state_count: usize,
         capacity: usize,
+        selection: Option<Vec<usize>>,
+        source_width: usize,
     ) -> Result<Self, MeTraceViolation> {
         // The first name already seen is the first duplicate in channel order.
         let mut seen = rustc_hash::FxHashSet::default();
@@ -170,6 +175,9 @@ impl MeTraceRecorder {
         try_reserve(&mut times, capacity, "trace times")?;
         let mut roles = Vec::new();
         try_reserve(&mut roles, capacity, "trace roles")?;
+        let observation_indices = selection
+            .clone()
+            .unwrap_or_else(|| (0..source_width).collect());
         Ok(Self {
             names,
             meta,
@@ -177,6 +185,9 @@ impl MeTraceRecorder {
             roles,
             columns,
             state_count,
+            selection,
+            observation_indices,
+            source_width,
         })
     }
 
@@ -243,6 +254,7 @@ impl MeTraceRecorder {
     /// Returns whether the row entered the trace. A suppressed row is not a
     /// failure: it is the policy's answer for evidence the trace already
     /// carries at that exact instant, and it costs no FMI getter.
+    #[cfg(test)]
     pub(super) fn record_with<E, F>(
         &mut self,
         role: TraceObservationRole,
@@ -260,6 +272,70 @@ impl MeTraceRecorder {
         }
         let values = evaluate()?;
         self.commit(decision, role, time, &values)?;
+        Ok(true)
+    }
+
+    /// Retain one observation, passing the selected source indices to the
+    /// evaluator so the component reads exactly those visible slots.
+    pub(super) fn record_with_selected<E, F>(
+        &mut self,
+        role: TraceObservationRole,
+        time: f64,
+        evaluate: F,
+    ) -> Result<bool, E>
+    where
+        E: From<MeTraceViolation>,
+        F: FnOnce(&[usize]) -> Result<Vec<f64>, E>,
+    {
+        let time = canonical_coordinate(time);
+        let decision = self.decide(role, time)?;
+        if decision == TraceDecision::Suppress {
+            return Ok(false);
+        }
+        let values = evaluate(&self.observation_indices)?;
+        self.commit_selected(decision, role, time, &values)?;
+        Ok(true)
+    }
+
+    /// Whether every selected channel is defined only at event instants.
+    ///
+    /// Such an output is constant over each open interval between events, so
+    /// its event-left limit is the preceding settled row. A channel without
+    /// this metadata, or with a continuous time domain, keeps the ordinary
+    /// getter path.
+    pub(super) fn can_repeat_event_domain(&self) -> bool {
+        self.columns
+            .first()
+            .and_then(|column| column.last())
+            .is_some()
+            && self.meta.iter().all(|meta| {
+                matches!(
+                    meta.time_domain.as_deref(),
+                    Some("event-discrete" | "event-discontinuous")
+                )
+            })
+    }
+
+    /// Record the preceding settled row again at an event-left coordinate.
+    pub(super) fn repeat_last(
+        &mut self,
+        role: TraceObservationRole,
+        time: f64,
+    ) -> Result<bool, MeTraceViolation> {
+        let time = canonical_coordinate(time);
+        let decision = self.decide(role, time)?;
+        if decision == TraceDecision::Suppress {
+            return Ok(false);
+        }
+        let Some(values) = self
+            .columns
+            .iter()
+            .map(|column| column.last().copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(false);
+        };
+        self.commit_selected(decision, role, time, &values)?;
         Ok(true)
     }
 
@@ -287,6 +363,35 @@ impl MeTraceRecorder {
 
     /// Apply a decision reached by [`Self::decide`] to already-read values.
     fn commit(
+        &mut self,
+        decision: TraceDecision,
+        role: TraceObservationRole,
+        time: f64,
+        values: &[f64],
+    ) -> Result<(), MeTraceViolation> {
+        if values.len() != self.source_width {
+            return Err(MeTraceViolation::RowWidth {
+                time,
+                actual: values.len(),
+                expected: self.source_width,
+            });
+        }
+        let selected;
+        let values = if let Some(selection) = &self.selection {
+            selected = selection
+                .iter()
+                .map(|&index| values[index])
+                .collect::<Vec<_>>();
+            selected.as_slice()
+        } else {
+            values
+        };
+        self.commit_selected(decision, role, time, values)
+    }
+
+    /// Commit values that already contain exactly the selected channels, in
+    /// their requested order.
+    fn commit_selected(
         &mut self,
         decision: TraceDecision,
         role: TraceObservationRole,
@@ -396,8 +501,15 @@ mod tests {
     use std::cell::Cell;
 
     fn recorder() -> MeTraceRecorder {
-        MeTraceRecorder::new(vec!["a".to_string(), "b".to_string()], Vec::new(), 0, 4)
-            .expect("fixture channels are unique")
+        MeTraceRecorder::new(
+            vec!["a".to_string(), "b".to_string()],
+            Vec::new(),
+            0,
+            4,
+            None,
+            2,
+        )
+        .expect("fixture channels are unique")
     }
 
     fn record(
@@ -411,8 +523,14 @@ mod tests {
 
     #[test]
     fn duplicate_channels_are_rejected_at_construction() {
-        let duplicate =
-            MeTraceRecorder::new(vec!["a".to_string(), "a".to_string()], Vec::new(), 0, 1);
+        let duplicate = MeTraceRecorder::new(
+            vec!["a".to_string(), "a".to_string()],
+            Vec::new(),
+            0,
+            1,
+            None,
+            2,
+        );
         assert!(matches!(
             duplicate,
             Err(MeTraceViolation::DuplicateChannel { .. })

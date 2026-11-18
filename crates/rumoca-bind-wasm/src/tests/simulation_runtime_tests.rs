@@ -3,6 +3,28 @@ use super::*;
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
+fn batch_metadata_and_simulation_reuse_compilation_and_invalidate_edits() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let source = "model BatchCache parameter Real k=1; Real x(start=1,fixed=true); equation der(x)=-k*x; end BatchCache;";
+    model_parameter_metadata(source, "BatchCache").unwrap();
+    rumoca_compile::compile::reset_compile_phase_timing_stats();
+    simulate_model(source, "BatchCache", 0.1, 0.05, "auto", "{}").unwrap();
+    let warm = rumoca_compile::compile::compile_phase_timing_stats();
+    assert_eq!(warm.instantiate.calls, 0);
+    let changed = source.replace("-k*x", "-2*k*x");
+    simulate_model(&changed, "BatchCache", 0.1, 0.05, "auto", "{}").unwrap();
+    assert!(
+        rumoca_compile::compile::compile_phase_timing_stats()
+            .instantiate
+            .calls
+            > 0
+    );
+    clear_source_root_cache().unwrap();
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
 fn interactive_scenario_parameters_match_the_authored_curve_and_reset() {
     let _guard = session_test_guard();
     clear_source_root_cache().unwrap();

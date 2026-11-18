@@ -1843,6 +1843,7 @@ fn indexed_param_root_row() -> Vec<solve::LinearOp> {
             base: 0,
             count: 2,
             index: 0,
+            checked: false,
         },
         solve::LinearOp::StoreOutput { src: 1 },
     ]

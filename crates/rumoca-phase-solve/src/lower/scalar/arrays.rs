@@ -227,6 +227,22 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .expect("checked indexed coordinates belong to the base shape");
             return self.expression(base, selected);
         }
+        if base_dimensions.len() == 1
+            && let [solve::TensorIndex::Runtime(index)] = indices.as_slice()
+            && let Some((input_start, count)) = self.direct_parameter_input_run(base, span)?
+        {
+            let one = self.constant(1.0, span)?;
+            let zero_based = self.binary(dae::BinaryOperator::Subtract, *index, one, span)?;
+            let dst = self.register(span)?;
+            self.emit(solve::LinearOp::LoadIndexedP {
+                dst,
+                base: input_start,
+                count,
+                index: zero_based,
+                checked: true,
+            })?;
+            return Ok(dst);
+        }
         if let Some(carried_base) = self.fold_carried_tensor_base(base) {
             let dst = self.register(span)?;
             self.emit(solve::LinearOp::LoadIndexedFoldCarried {

@@ -14,6 +14,7 @@ pub(super) struct OptionsKey {
     parameters: Vec<(String, u64)>,
     starts: Vec<(String, u64)>,
     inputs: Vec<(String, u64)>,
+    outputs: Option<Vec<String>>,
     execution_policy: SimExecutionPolicy,
     checkpoint_budget_bytes: u64,
 }
@@ -37,6 +38,7 @@ impl OptionsKey {
             param_overrides,
             start_overrides,
             initial_inputs,
+            output_variables,
             execution_policy,
             checkpoint_budget_bytes,
         } = options;
@@ -56,6 +58,7 @@ impl OptionsKey {
             parameters: value_bits(param_overrides),
             starts: value_bits(start_overrides),
             inputs: value_bits(initial_inputs),
+            outputs: output_variables.clone(),
             execution_policy: *execution_policy,
             checkpoint_budget_bytes: *checkpoint_budget_bytes,
         })

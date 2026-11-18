@@ -6,6 +6,7 @@
 //! it can name the callee exactly: a continuous equation, a non-initial
 //! algorithm, or a function body declared `pure` may not reach an impure function.
 use super::*;
+use rumoca_core::ExpressionVisitor;
 
 /// Reject every impure call that reaches a context MLS §12.3 forbids.
 ///
@@ -197,4 +198,101 @@ fn reject_impure_calls(
         reject_impure_calls(child, flat, context)?;
     }
     Ok(())
+}
+
+/// Prove that repeated result projections cannot repeat an external effect.
+/// This transformation proof is separate from the written-prefix call-context
+/// restriction above. Follow exact collected callable identities, including
+/// indirect calls and parameter defaults; an unresolved call is not a proof.
+pub(super) fn call_is_repeatable(
+    flat: &flat::Model,
+    function: &rumoca_core::Function,
+    arguments: &[Expression],
+) -> bool {
+    let mut calls = RepeatableCalls {
+        flat,
+        visited: HashSet::new(),
+        repeatable: true,
+    };
+    calls.visit_function(function);
+    for argument in arguments {
+        calls.visit_expression(argument);
+    }
+    calls.repeatable
+}
+
+struct RepeatableCalls<'model> {
+    flat: &'model flat::Model,
+    visited: HashSet<rumoca_core::FunctionInstanceId>,
+    repeatable: bool,
+}
+
+impl RepeatableCalls<'_> {
+    fn visit_function(&mut self, function: &rumoca_core::Function) {
+        use flat::StatementVisitor;
+        if !function.body_is_pure() {
+            self.repeatable = false;
+            return;
+        }
+        let Some(identity) = function.instance_id else {
+            self.repeatable = false;
+            return;
+        };
+        if !self.visited.insert(identity) {
+            return;
+        }
+        for statement in &function.body {
+            self.visit_statement(statement);
+        }
+        for parameter in function
+            .inputs
+            .iter()
+            .chain(&function.outputs)
+            .chain(&function.locals)
+        {
+            if let Some(default) = &parameter.default {
+                self.visit_expression(default);
+            }
+        }
+        if let Some(external) = &function.external {
+            for argument in &external.args {
+                self.visit_expression(argument);
+            }
+        }
+    }
+}
+
+impl rumoca_core::ExpressionVisitor for RepeatableCalls<'_> {
+    fn visit_function_call(
+        &mut self,
+        name: &rumoca_core::Reference,
+        args: &[Expression],
+        is_constructor: bool,
+    ) {
+        if !is_constructor {
+            if let Some(function) = name
+                .resolved_function()
+                .and_then(|resolved| self.flat.get_function_instance(resolved.instance_id))
+            {
+                self.visit_function(function);
+            } else {
+                self.repeatable = false;
+            }
+        }
+        self.walk_function_call(name, args, is_constructor);
+    }
+}
+
+impl flat::StatementVisitor for RepeatableCalls<'_> {
+    fn visit_statement_function_call(
+        &mut self,
+        comp: &rumoca_core::Reference,
+        args: &[Expression],
+        outputs: &[Option<rumoca_core::ComponentReference>],
+    ) {
+        self.visit_function_call(comp, args, false);
+        for output in outputs.iter().flatten() {
+            self.visit_component_reference(output);
+        }
+    }
 }
