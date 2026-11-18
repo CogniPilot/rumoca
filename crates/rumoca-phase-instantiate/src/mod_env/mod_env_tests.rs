@@ -91,7 +91,7 @@ fn process_nested_test_modifications(
         source_scope,
         imports: &[],
     };
-    process_nested_modifications_recursive(ctx, prefix, modifications, &nested_ctx, flags)
+    process_nested_modifications_recursive(ctx, prefix, modifications, &nested_ctx, flags, None)
 }
 
 #[test]

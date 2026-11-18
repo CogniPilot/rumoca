@@ -19,7 +19,7 @@ pub(super) fn is_forwarding_component_redeclare(
     part.subs.is_none() && part.ident.text.as_ref() == target_name
 }
 
-pub(super) fn component_source_modifier_target_name(mod_expr: &ast::Expression) -> Option<String> {
+pub(crate) fn component_source_modifier_target_name(mod_expr: &ast::Expression) -> Option<String> {
     class_redeclare_alias_ref(mod_expr)?
         .parts
         .first()

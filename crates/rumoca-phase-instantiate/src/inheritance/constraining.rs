@@ -119,7 +119,7 @@ pub(super) fn merge_constrained(
 
 /// Whether the element at `path` below `class` takes attributes (a primitive
 /// type) or elements (MLS 4.9); `None` when a type on the way is unresolved.
-fn nested_arguments(
+pub(crate) fn nested_arguments(
     tree: &ast::ClassTree,
     class: Option<&ast::ClassDef>,
     path: &[String],

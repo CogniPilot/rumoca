@@ -293,6 +293,286 @@ fn component_redeclare_preserves_explicit_replacement_modifiers() {
 }
 
 #[test]
+fn component_redeclare_modifier_binds_the_instance_using_its_alias() {
+    let source = r"
+model Redecl
+  model Base
+    parameter Real a = 1;
+  end Base;
+  model Inner
+    replaceable model M = Base;
+    M m;
+  end Inner;
+  Inner untouched;
+  Inner modified(redeclare model M = Base(a = 4));
+  Inner overridden(redeclare model M = Base(a = 4), m(a = 6));
+end Redecl;
+";
+    let tree = resolved_tree(source);
+    let overlay = crate::instantiate_model(&tree, "Redecl").expect("fixture instantiates");
+    let component = |name: &str| {
+        overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == name)
+            .expect("expected component occurrence")
+    };
+    let alias = component("modified")
+        .class_overrides
+        .values()
+        .find(|class_override| class_override.alias == "M")
+        .expect("expected the explicit alias override");
+    assert_eq!(alias.modifier_args.len(), 1);
+    for (name, expected) in [
+        ("untouched.m.a", 1.0),
+        ("modified.m.a", 4.0),
+        ("overridden.m.a", 6.0),
+    ] {
+        let binding = component(name).binding.as_ref().expect("bound parameter");
+        assert_eq!(
+            binding.to_string().parse::<f64>().ok(),
+            Some(expected),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn qualified_type_uses_the_exact_redeclared_terminal_alias_modifiers() {
+    let source = r"
+model Qualified
+  model Base
+    parameter Real a = 1;
+  end Base;
+  model P
+    replaceable model M = Base;
+    P.M member;
+    Base other;
+  end P;
+  P unchanged;
+  P selected(redeclare model M = Base(a = 4));
+end Qualified;
+";
+    let tree = resolved_tree(source);
+    let overlay = crate::instantiate_model(&tree, "Qualified").expect("fixture instantiates");
+    for (name, expected) in [
+        ("unchanged.member.a", 1.0),
+        ("selected.member.a", 4.0),
+        ("selected.other.a", 1.0),
+    ] {
+        let binding = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == name)
+            .and_then(|component| component.binding.as_ref())
+            .expect("bound parameter occurrence");
+        assert_eq!(
+            binding.to_string().parse::<f64>().ok(),
+            Some(expected),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn class_redeclare_preserves_dotted_modifier_targets() {
+    let source = r"
+model Redecl
+  model Leaf
+    parameter Real a = 1;
+  end Leaf;
+  model Base
+    Leaf leaf;
+    Leaf 'quoted.leaf';
+  end Base;
+  model Inner
+    replaceable model M = Base;
+    M m;
+  end Inner;
+  Inner modified(redeclare model M = Base(leaf.a = 4, 'quoted.leaf'.a = 5));
+end Redecl;
+";
+    let tree = resolved_tree(source);
+    let overlay = crate::instantiate_model(&tree, "Redecl").expect("fixture instantiates");
+    for (name, expected) in [
+        ("modified.m.leaf.a", 4.0),
+        ("modified.m.'quoted.leaf'.a", 5.0),
+    ] {
+        let binding = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == name)
+            .and_then(|component| component.binding.as_ref())
+            .expect("bound parameter occurrence");
+        assert_eq!(
+            binding.to_string().parse::<f64>().ok(),
+            Some(expected),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn class_redeclare_final_modifier_rejects_an_outer_override() {
+    let source = r"
+model Redecl
+  model Base
+    parameter Real a = 1;
+  end Base;
+  model Inner
+    replaceable model M = Base;
+    M m;
+  end Inner;
+  Inner modified(redeclare model M = Base(final a = 4), m(a = 6));
+end Redecl;
+";
+    let tree = resolved_tree(source);
+    let error = crate::instantiate_model(&tree, "Redecl").expect_err("a is final");
+    assert!(matches!(
+        *error,
+        crate::InstantiateError::RedeclareFinal { ref name, .. } if name == "a"
+    ));
+}
+
+#[test]
+fn final_redeclared_class_modification_seals_the_written_subtree() {
+    let source = r"
+model FinalSubtree
+  model Leaf
+    parameter Real a = 1;
+    parameter Real b = 2;
+  end Leaf;
+  model Base
+    Leaf leaf;
+  end Base;
+  model Inner
+    replaceable model M = Base;
+    M m;
+  end Inner;
+  Inner modified(redeclare model M = Base(final leaf(a = 4)), m(leaf(b = 6)));
+end FinalSubtree;
+";
+    let tree = resolved_tree(source);
+    let error = crate::instantiate_model(&tree, "FinalSubtree").expect_err("leaf is final");
+    assert!(matches!(
+        *error,
+        crate::InstantiateError::RedeclareFinal { ref name, .. } if name == "leaf"
+    ));
+
+    let leaf_final = source.replace("final leaf(a = 4)", "leaf(final a = 4)");
+    let tree = resolved_tree(&leaf_final);
+    crate::instantiate_model(&tree, "FinalSubtree").expect("b is outside the final path");
+
+    let forwarded = source.replace(
+        "  Inner modified(redeclare model M = Base(final leaf(a = 4)), m(leaf(b = 6)));",
+        r"  model Forwarder
+    replaceable model Selected = Base;
+    Inner consumer(redeclare model M = Selected);
+  end Forwarder;
+  Forwarder modified(redeclare model Selected = Base(final leaf(a = 4)), consumer(m(leaf(b = 6))));",
+    );
+    let tree = resolved_tree(&forwarded);
+    let error = crate::instantiate_model(&tree, "FinalSubtree").expect_err("leaf is still final");
+    assert!(matches!(
+        *error,
+        crate::InstantiateError::RedeclareFinal { ref name, .. } if name == "leaf"
+    ));
+}
+
+#[test]
+fn final_redeclared_class_paths_mark_the_subtree_in_the_overlay() {
+    let source = r"
+model FinalFlags
+  model Leaf
+    parameter Real a = 1;
+    parameter Real b = 2;
+  end Leaf;
+  model Wrapper
+    Leaf leaf;
+  end Wrapper;
+  model Base
+    Leaf leaf;
+    Leaf sibling;
+    Wrapper wrapper;
+  end Base;
+  model Inner
+    replaceable model M = Base;
+    M m;
+  end Inner;
+  model Forwarder
+    replaceable model Selected = Base;
+    Inner consumer(redeclare model M = Selected);
+  end Forwarder;
+  Inner direct(redeclare model M = Base(final leaf(a = 4), wrapper(final leaf(a = 7))));
+  Forwarder forwarded(redeclare model Selected = Base(final leaf(a = 5), wrapper(final leaf(a = 8))));
+end FinalFlags;
+";
+    let tree = resolved_tree(source);
+    let overlay = crate::instantiate_model(&tree, "FinalFlags").expect("fixture instantiates");
+    for instance in ["direct.m", "forwarded.consumer.m"] {
+        for (member, expected) in [
+            ("leaf", true),
+            ("leaf.a", true),
+            ("leaf.b", true),
+            ("sibling", false),
+            ("sibling.b", false),
+            ("wrapper", false),
+            ("wrapper.leaf", true),
+            ("wrapper.leaf.b", true),
+        ] {
+            let name = format!("{instance}.{member}");
+            let component = overlay
+                .components
+                .values()
+                .find(|component| component.qualified_name.to_flat_string() == name)
+                .expect("expected component occurrence");
+            assert_eq!(component.is_final, expected, "{name}");
+        }
+    }
+}
+
+#[test]
+fn forwarded_class_redeclare_preserves_the_modifier_source_scope() {
+    let source = r"
+model Forwarded
+  model Base
+    parameter Real a = 1;
+  end Base;
+  model Consumer
+    replaceable model M = Base;
+    M m;
+  end Consumer;
+  model Forwarder
+    replaceable model Selected = Base;
+    parameter Real n = 9;
+    Consumer consumer(redeclare model M = Selected);
+  end Forwarder;
+  parameter Real n = 4;
+  Forwarder untouched;
+  Forwarder modified(redeclare model Selected = Base(a = n));
+end Forwarded;
+";
+    let tree = resolved_tree(source);
+    let overlay = crate::instantiate_model(&tree, "Forwarded").expect("fixture instantiates");
+    for (name, expected) in [
+        ("untouched.consumer.m.a", 1.0),
+        ("modified.consumer.m.a", 4.0),
+    ] {
+        let binding = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == name)
+            .and_then(|component| component.binding.as_ref())
+            .expect("bound parameter occurrence");
+        assert_eq!(
+            binding.to_string().parse::<f64>().ok(),
+            Some(expected),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn dotted_type_under_redeclared_package_materializes_exact_instance_identity() {
     let source = r"
 package P

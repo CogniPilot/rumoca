@@ -264,6 +264,13 @@ pub struct ExpressionList {
     pub replaceable_flags: Vec<bool>,
 }
 
+impl ExpressionList {
+    pub(crate) fn is_redeclaration(&self, index: usize) -> bool {
+        self.redeclare_flags.get(index).copied().unwrap_or(false)
+            || self.replaceable_flags.get(index).copied().unwrap_or(false)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionCallArguments {
     pub args: Vec<rumoca_ir_ast::Expression>,
@@ -870,6 +877,7 @@ fn convert_element_redeclaration(
 /// The input is the inner ElementModification type directly.
 fn convert_element_modification(
     elem: &modelica_grammar_trait::ElementModification,
+    is_final: bool,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
     // ElementModification has: name (AST Name), element_modification_opt
     let target = ast_name_to_comp_ref(&elem.name, "element modification")?;
@@ -924,6 +932,16 @@ fn convert_element_modification(
                 }
             }
         },
+        // A bare final argument has a target and no binding or child modifiers.
+        // Its final prefix is retained by the enclosing argument list.
+        None if is_final => Ok(rumoca_ir_ast::Expression::ClassModification {
+            span: target.span,
+            target,
+            modifications: Vec::new(),
+            each_flags: Vec::new(),
+            final_flags: Vec::new(),
+            redeclare_flags: Vec::new(),
+        }),
         // An element modification without a modification (a bare name,
         // MLS §18.2) is dropped here: representing it as a ComponentReference
         // corrupts modification consumers that treat entries as values
@@ -943,7 +961,10 @@ fn convert_element_mod_or_replaceable(
             elem,
         ) => {
             // Unwrap to get inner ElementModification
-            convert_element_modification(&elem.element_modification)
+            convert_element_modification(
+                &elem.element_modification,
+                modif.element_modification_or_replaceable_opt0.is_some(),
+            )
         }
         modelica_grammar_trait::ElementModificationOrReplaceableGroup::ElementReplaceable(repl) => {
             convert_element_replaceable_redecl(&repl.element_replaceable)

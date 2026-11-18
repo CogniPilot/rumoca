@@ -26,6 +26,7 @@ mod function_interfaces;
 mod nested_modifications;
 mod redeclaration;
 
+pub(super) use constraining::nested_arguments;
 pub(crate) use function_interfaces::function_reference_compatible;
 
 use crate::errors::{InstantiateError, InstantiateResult};
@@ -38,7 +39,7 @@ use constraining::*;
 use duplicate_identity::{
     inherited_components_are_identical, merged_declared_names, merged_element_names,
 };
-use nested_modifications::merge_nested_extends_modifications;
+use nested_modifications::{merge_nested_extends_modifications, preserve_nested_source_argument};
 use redeclaration::*;
 
 /// Cache for inheritance results to avoid recomputation.
@@ -1646,6 +1647,24 @@ pub(super) fn activate_constrainedby_defaults(
         inserts.push((target_name.to_string(), value.clone()));
     }
 
+    for modification in std::mem::take(&mut comp.constraining_modifications) {
+        let Some(target) = modification
+            .expr
+            .modification_target()
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        if !comp.modifications.contains_key(&target) {
+            preserve_nested_source_argument(
+                comp,
+                &modification.expr,
+                modification.each,
+                modification.final_,
+                modification.redeclare,
+            );
+        }
+    }
     for (target_name, value) in inserts {
         let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if let Some(stated) = comp.modifications.get_mut(&target_name) {

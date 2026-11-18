@@ -518,6 +518,7 @@ fn process_single_component(
         source_modification_each_flags: Vec::new(),
         source_modification_final_flags: Vec::new(),
         source_modification_redeclare_flags: Vec::new(),
+        constraining_modifications: Vec::new(),
         modifications: IndexMap::default(),
         location: comp_location,
         condition,
@@ -713,6 +714,14 @@ fn merge_constraining_clause_modifications(
             continue;
         }
         value.modifications.insert(key.clone(), stored_value);
+        value
+            .constraining_modifications
+            .push(rumoca_ir_ast::ExtendModification {
+                expr: arg.clone(),
+                each: has_each,
+                final_: has_final,
+                redeclare: class_mod_opt.argument_list.is_redeclaration(idx),
+            });
         if has_each {
             value.each_modifications.insert(key.clone());
         }
@@ -1238,18 +1247,7 @@ fn process_component_modification(
                         .get(idx)
                         .copied()
                         .unwrap_or(false);
-                    let is_redeclare = opt
-                        .argument_list
-                        .redeclare_flags
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(false)
-                        || opt
-                            .argument_list
-                            .replaceable_flags
-                            .get(idx)
-                            .copied()
-                            .unwrap_or(false);
+                    let is_redeclare = opt.argument_list.is_redeclaration(idx);
                     process_mod_arg(value, arg, has_each, has_final, is_redeclare)?;
                 }
             }
@@ -1283,18 +1281,6 @@ fn preserve_component_source_modification(
     // redeclaration. Preserve the semantic fact on the component instead of
     // forcing instantiation to infer redeclare intent from expression shape.
     value.source_modification_redeclare_flags = (0..value.source_modifications.len())
-        .map(|index| {
-            opt.argument_list
-                .redeclare_flags
-                .get(index)
-                .copied()
-                .unwrap_or(false)
-                || opt
-                    .argument_list
-                    .replaceable_flags
-                    .get(index)
-                    .copied()
-                    .unwrap_or(false)
-        })
+        .map(|index| opt.argument_list.is_redeclaration(index))
         .collect();
 }

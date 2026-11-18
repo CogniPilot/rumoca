@@ -158,6 +158,10 @@ pub struct Component {
     /// Structural parameters affect array sizes, for-loop ranges, or if-equation conditions
     /// and must be evaluable at translation time.
     pub is_structural: bool,
+    /// Source arguments in the constraining clause, applied as defaults
+    /// when the component is instantiated (MLS §7.3.2).
+    #[serde(default)]
+    pub constraining_modifications: Vec<ExtendModification>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +257,7 @@ impl Component {
             redeclared_by_modification: false,
             has_unapplied_redeclare: false,
             constrainedby: None,
+            constraining_modifications: Vec::new(),
             is_structural: false,
         }
     }
