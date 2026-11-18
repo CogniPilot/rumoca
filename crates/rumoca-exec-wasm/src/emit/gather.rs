@@ -1,7 +1,5 @@
 //! Checked compact model-scope register gathers at the final WASM boundary.
-mod input_views;
 use super::*;
-pub(super) use input_views::InputViews;
 use rumoca_ir_solve::TensorIndex;
 
 impl BodyEmitter<'_> {

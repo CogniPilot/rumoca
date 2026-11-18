@@ -4438,23 +4438,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         {
             return Ok(None);
         }
-        if registered.callee.simple_integer_gather
-            && let [array, index] = arguments.as_slice()
-            && let Some((base, count)) = self.direct_parameter_input_run(*array, span)?
-        {
-            let index = self.pack_expression(*index)?;
-            let one = self.constant(1.0, span)?;
-            let zero_based = self.binary(dae::BinaryOperator::Subtract, index, one, span)?;
-            let dst = self.register(span)?;
-            self.emit(solve::LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index: zero_based,
-                checked: true,
-            })?;
-            return Ok(Some((dst, registered)));
-        }
         let mut input_starts = Vec::new();
         for (argument, value_type) in arguments
             .iter()
@@ -4735,32 +4718,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .register_exact_expression(self.view, &form)
             .map_err(|error| error.into_lower_error(span))?
             .site;
-        let readers = form.input_readers().collect::<Vec<_>>();
-        let simple_gather = self
-            .layout
-            .pure_calls
-            .borrow()
-            .owner(site.owner())
-            .is_some_and(solve::SolvePureCallOwner::simple_dynamic_integer_gather);
-        if simple_gather
-            && let [array, index] = readers.as_slice()
-            && let Some((base, count)) = self.direct_parameter_input_run(*array, span)?
-        {
-            let index = self.pack_expression(*index)?;
-            let one = self.constant(1.0, span)?;
-            let zero_based = self.binary(dae::BinaryOperator::Subtract, index, one, span)?;
-            let dst = self.register(span)?;
-            self.emit(solve::LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index: zero_based,
-                checked: true,
-            })?;
-            return Ok(dst);
-        }
-        let inputs = readers
-            .into_iter()
+        let inputs = form
+            .input_readers()
             .map(|reader| self.pack_expression(reader))
             .collect::<Result<Vec<_>, _>>()?;
         let count = site

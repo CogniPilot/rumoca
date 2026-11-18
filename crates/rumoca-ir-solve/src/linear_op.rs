@@ -910,10 +910,6 @@ pub enum LinearOp {
         base: usize,
         count: usize,
         index: Reg,
-        /// Reject a non-finite, non-integer, or out-of-range index instead of
-        /// clamping it. Scalar lowering sets this when the operation replaces
-        /// a checked [`Self::LoadIndexedRegister`] projection.
-        checked: bool,
     },
     /// Project one scalar from a packed tensor register range.
     ///

@@ -84,7 +84,6 @@ fn only_relation_wrappers_own_allowed_mode_reads() {
             base: 6,
             count: 3,
             index: 0,
-            checked: false,
         },
         LinearOp::TensorLoad {
             dst_start: 1,

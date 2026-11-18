@@ -119,6 +119,46 @@ fn warning_assertions_leave_the_trace_unchanged() {
 }
 
 #[test]
+fn selecting_only_a_discrete_output_preserves_warning_observation() {
+    let source = r#"
+model SelectedWarning
+  Real x(start = 0, fixed = true);
+  output Integer tick(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when sample(0, 2) then
+    tick = pre(tick) + 1;
+  end when;
+  assert(noEvent(time < 0.35), "warning between ticks", level = AssertionLevel.warning);
+end SelectedWarning;
+"#;
+    let compiled = Compiler::new()
+        .model("SelectedWarning")
+        .compile_str(source, "SelectedWarning.mo")
+        .expect("selected-warning model compiles");
+    let options = SimOptions {
+        t_end: 0.9,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let full = simulate_dae_with_diagnostics(&compiled.dae, &options).expect("full trace");
+    let selected = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            output_variables: Some(vec!["tick".into()]),
+            ..options
+        },
+    )
+    .expect("selected trace");
+
+    assert_eq!(selected.names, ["tick"]);
+    assert_eq!(full.diagnostics.len(), 1);
+    assert_eq!(selected.diagnostics.len(), 1);
+    assert_eq!(selected.diagnostics[0].message, "warning between ticks");
+    assert_eq!(selected.diagnostics[0].time, full.diagnostics[0].time);
+}
+
+#[test]
 fn an_explicit_error_level_fails_like_the_default() {
     let error = simulate(Some("AssertionLevel.error")).expect_err("error-level assertions abort");
     assert!(

@@ -2669,8 +2669,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 base,
                 count,
                 index,
-                checked,
-            } => self.lower_indexed_loaded_reg(dst, self.p_ptr, base, count, index, checked),
+            } => self.lower_indexed_loaded_reg(dst, self.p_ptr, base, count, index),
             LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -2688,7 +2687,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 let base_ptr = self.v_ptr.ok_or_else(|| {
                     CompileError::Backend("LoadIndexedSeed in row without seed input".to_string())
                 })?;
-                self.lower_indexed_loaded_reg(dst, base_ptr, base, count, index, false)
+                self.lower_indexed_loaded_reg(dst, base_ptr, base, count, index)
             }
             LinearOp::LoadFoldCarried { dst, index } => {
                 let carried = self.fold_carried.ok_or_else(|| {
@@ -6021,14 +6020,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         base: usize,
         count: usize,
         index: u32,
-        checked: bool,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        if checked {
-            return Err(CompileError::Backend(
-                "checked indexed parameter loads are not supported by the cranelift backend"
-                    .to_string(),
-            ));
-        }
         let idx = self.lookup(index)?;
         let rounded = self.fb.ins().nearest(idx);
         let zero = self.fb.ins().f64const(0.0);

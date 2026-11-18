@@ -413,15 +413,12 @@ fn record_definition<'dae>(
     sources: &DerivativeSources<'dae>,
     writers: &mut Writers<'dae>,
     target: u32,
-    value: dae::ExprId<'dae>,
+    definition: ExactDefinition<'dae>,
 ) -> Result<(), SameTickOrderError> {
     let entry = writers.entry(target).or_default();
     entry.count += 1;
-    entry.definition = (entry.count == 1).then_some(ExactDefinition {
-        value,
-        family: None,
-    });
-    collect_writer_reads(view, value, sources, &mut entry.reads)?;
+    entry.definition = (entry.count == 1).then_some(definition);
+    collect_writer_reads(view, definition.value, sources, &mut entry.reads)?;
     Ok(())
 }
 
@@ -464,13 +461,16 @@ fn collect_continuous_writers<'dae>(
                     crate::causal_definitions::families::family_element_definition(view, family)
                 {
                     let target = dae::VariableId::from(target).index();
-                    record_definition(view, sources, writers, target, value)?;
-                    if let Some(definition) = writers
-                        .get_mut(&target)
-                        .and_then(|writer| writer.definition.as_mut())
-                    {
-                        definition.family = Some(id);
-                    }
+                    record_definition(
+                        view,
+                        sources,
+                        writers,
+                        target,
+                        ExactDefinition {
+                            value,
+                            family: Some(id),
+                        },
+                    )?;
                     continue;
                 }
                 let Some(body) =
@@ -487,7 +487,16 @@ fn collect_continuous_writers<'dae>(
         if let Some((target, value)) =
             single_coordinate_definition(view, residual, CoordinateKinds::Algebraic)
         {
-            record_definition(view, sources, writers, target, value)?;
+            record_definition(
+                view,
+                sources,
+                writers,
+                target,
+                ExactDefinition {
+                    value,
+                    family: None,
+                },
+            )?;
         }
     }
     Ok(())
@@ -534,7 +543,16 @@ fn collect_discrete_real_writers<'dae>(
             None
         };
         if let Some((target, value)) = definition {
-            record_definition(view, sources, writers, target, value)?;
+            record_definition(
+                view,
+                sources,
+                writers,
+                target,
+                ExactDefinition {
+                    value,
+                    family: None,
+                },
+            )?;
             refresh_on_tick.insert(target);
         }
     }
@@ -606,7 +624,16 @@ fn record_discrete_value_writer<'dae>(
         collect_writer_reads(view, value, sources, &mut reads)?;
         record_opaque_writer(writers, variable, &reads);
     } else {
-        record_definition(view, sources, writers, variable, value)?;
+        record_definition(
+            view,
+            sources,
+            writers,
+            variable,
+            ExactDefinition {
+                value,
+                family: None,
+            },
+        )?;
         refresh_on_tick.insert(variable);
     }
     Ok(())

@@ -312,7 +312,6 @@ fn forward_row_tape(
                 base,
                 count,
                 index,
-                ..
             } => {
                 let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
                 set(regs, dst, load(inputs.p, "p", slot)?);
@@ -403,7 +402,6 @@ fn reverse_row_adjoints(
                 base,
                 count,
                 index,
-                ..
             } => {
                 let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
                 accumulate(cot.p, slot, take_adj(adj, dst));
@@ -1019,7 +1017,6 @@ mod tests {
                     base: 1,
                     count: 3,
                     index: 0,
-                    checked: false,
                 },
                 LinearOp::StoreOutput { src: 1 },
             ]],

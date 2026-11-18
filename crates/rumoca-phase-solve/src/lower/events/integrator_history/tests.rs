@@ -23,7 +23,6 @@ fn supported_scalar_and_overlapping_tensor_reads_keep_the_exact_union() {
             base: 8,
             count: 2,
             index: 0,
-            checked: false,
         },
     ];
     assert_eq!(

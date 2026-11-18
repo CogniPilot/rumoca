@@ -17,7 +17,6 @@ impl<'a> AdBuilder<'a> {
                 base,
                 count,
                 index,
-                ..
             } => self.lower_load_indexed_p(dst, base, count, index),
             LinearOp::LoadIndexedRegister {
                 dst,

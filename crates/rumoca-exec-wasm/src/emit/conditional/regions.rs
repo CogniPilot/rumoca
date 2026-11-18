@@ -15,7 +15,9 @@ impl BodyEmitter<'_> {
             self.conditional_region,
             std::mem::replace(
                 &mut self.gather_inputs,
-                gather::InputViews::derive(operations)?,
+                std::rc::Rc::new(rumoca_ir_solve::BorrowedParameterGathers::derive(
+                    operations,
+                )),
             ),
         );
         self.register_base = frame.registers;

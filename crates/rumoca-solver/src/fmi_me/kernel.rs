@@ -958,53 +958,6 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    /// Observe the component's already-settled coordinate without running the
-    /// public-coordinate refresh again. The event loop has just settled this
-    /// coordinate, so a trace getter at that point reads the settled values.
-    pub(crate) fn observe_settled(&self) -> Result<MeObservation, MeError> {
-        self.require_active_lifecycle("observe_settled")?;
-        let parameters = self.params.clone();
-        let mut solver_y = self.solver_y_guess.borrow().clone();
-        if solver_y.len() < self.states.len() {
-            return Err(contract(format!(
-                "settled observation solver vector has {} entries for {} state values",
-                solver_y.len(),
-                self.states.len()
-            )));
-        }
-        solver_y[..self.states.len()].copy_from_slice(&self.states);
-        Ok(MeObservation {
-            time: self.time,
-            solver_y,
-            parameters,
-            instance_brand: Rc::clone(&self.instance_brand),
-        })
-    }
-
-    pub(crate) fn get_outputs_for_indices(
-        &self,
-        observation: &MeObservation,
-        sample_time: f64,
-        indices: &[usize],
-    ) -> Result<Vec<f64>, MeError> {
-        self.require_active_lifecycle("get_outputs_for_indices")?;
-        self.require_observation_brand(observation)?;
-        #[cfg(feature = "native-wasm")]
-        if self.native_transport.is_some() {
-            return Err(contract(
-                "native outputs require original typed FMI value references",
-            ));
-        }
-        self.runtime
-            .visible_values_for_indices(
-                &observation.solver_y,
-                &observation.parameters,
-                sample_time,
-                indices,
-            )
-            .map_err(Into::into)
-    }
-
     pub(crate) fn set_float64(
         &mut self,
         refs: &[MeValueRef],

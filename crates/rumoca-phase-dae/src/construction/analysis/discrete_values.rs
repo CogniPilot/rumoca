@@ -679,28 +679,28 @@ fn collect_when_owners(
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
         targets.append(&mut element_targets);
-        if let Some(groups) = when_equation_owner_groups(flat, calls, chain) {
-            // MLS §8.5: independent equations may have intervening Real
-            // producers. Keep every issued function receiver group correlated.
-            for group in groups {
-                let (members, remaining) = targets
-                    .into_iter()
-                    .partition(|target| group.contains(&target.key(flat)));
-                targets = remaining;
-                if !members.is_empty() {
-                    owners.push(SourceOwner {
-                        targets: members,
-                        span: chain.span(),
-                    });
-                }
-            }
-            debug_assert!(targets.is_empty());
-        } else {
+        let Some(groups) = when_equation_owner_groups(flat, calls, chain) else {
             owners.push(SourceOwner {
                 targets,
                 span: chain.span(),
             });
+            continue;
+        };
+        // MLS §8.5: independent equations may have intervening Real
+        // producers. Keep every issued function receiver group correlated.
+        for group in groups {
+            let (members, remaining) = targets
+                .into_iter()
+                .partition(|target| group.contains(&target.key(flat)));
+            targets = remaining;
+            if !members.is_empty() {
+                owners.push(SourceOwner {
+                    targets: members,
+                    span: chain.span(),
+                });
+            }
         }
+        debug_assert!(targets.is_empty());
     }
     Ok(())
 }
@@ -725,11 +725,9 @@ fn when_equation_owner_groups(
                     span,
                     ..
                 } => {
-                    let selected =
-                        when_elements::selected_target(flat, target, subscripts, *span).ok()?;
-                    if !whole_primitive_declaration(flat, &selected.name) {
-                        return None;
-                    }
+                    let selected = when_elements::selected_target(flat, target, subscripts, *span)
+                        .ok()
+                        .filter(|selected| whole_primitive_declaration(flat, &selected.name))?;
                     HashSet::from([selected.key()])
                 }
                 flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {

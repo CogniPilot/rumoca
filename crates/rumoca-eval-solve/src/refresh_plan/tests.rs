@@ -228,7 +228,6 @@ fn runtime_parameter_tail_invalidates_the_static_refresh_certificate() {
             base: 7,
             count: 2,
             index: 0,
-            checked: false,
         },
         solve::LinearOp::StoreOutput { src: 1 },
     ]);

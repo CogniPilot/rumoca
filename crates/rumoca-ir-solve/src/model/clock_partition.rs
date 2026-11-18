@@ -141,19 +141,14 @@ impl SolveProblem {
         }
         let mut covered = vec![false; discrete.guarded_assignments.len()];
         for step in &discrete.clock_partition_order {
-            match step {
-                ClockPartitionStep::GuardedAssignment { program_index } => {
-                    let Some(slot) = covered.get_mut(*program_index) else {
-                        return false;
-                    };
-                    if std::mem::replace(slot, true) {
-                        return false;
-                    }
-                }
-                ClockPartitionStep::ScalarRows { .. }
-                | ClockPartitionStep::StructuredUpdate { .. }
-                | ClockPartitionStep::EventTransaction { .. }
-                | ClockPartitionStep::Intermediate { .. } => return false,
+            let ClockPartitionStep::GuardedAssignment { program_index } = step else {
+                return false;
+            };
+            let Some(slot) = covered.get_mut(*program_index) else {
+                return false;
+            };
+            if std::mem::replace(slot, true) {
+                return false;
             }
         }
         covered.into_iter().all(|value| value)

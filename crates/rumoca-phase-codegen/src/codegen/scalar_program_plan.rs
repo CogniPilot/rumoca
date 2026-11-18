@@ -430,19 +430,9 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             Some(Value::from(index))
         }
         LinearOp::LoadIndexedP {
-            base,
-            count,
-            index,
-            checked,
-            ..
-        } => match key {
-            "base" => Some(Value::from(base)),
-            "count" => Some(Value::from(count)),
-            "index_ref" => Some(Value::from(index as usize)),
-            "checked" => Some(Value::from(checked)),
-            _ => None,
-        },
-        LinearOp::LoadIndexedSeed {
+            base, count, index, ..
+        }
+        | LinearOp::LoadIndexedSeed {
             base, count, index, ..
         } => match key {
             "base" => Some(Value::from(base)),
@@ -906,8 +896,9 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         LinearOp::LoadFunctionConditionalCaptureRange { .. } => {
             &["kind", "dst", "index_start", "count"]
         }
-        LinearOp::LoadIndexedP { .. } => &["kind", "dst", "base", "count", "index_ref", "checked"],
-        LinearOp::LoadIndexedSeed { .. } => &["kind", "dst", "base", "count", "index_ref"],
+        LinearOp::LoadIndexedP { .. } | LinearOp::LoadIndexedSeed { .. } => {
+            &["kind", "dst", "base", "count", "index_ref"]
+        }
         LinearOp::LoadIndexedRegister { .. }
         | LinearOp::LoadIndexedFoldCarried { .. }
         | LinearOp::LoadIndexedFoldCapture { .. } => {

@@ -84,10 +84,7 @@
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}    r[{{ op.dst }}] = m->p[{{ op.index }}];
 {%- elif op.kind == "LoadSeed" %}    r[{{ op.dst }}] = seed[{{ op.index }}];
-{%- elif op.kind == "LoadIndexedP" %}
-{%- if op.checked %}    { double i = r[{{ op.index_ref }}]; if (!(isfinite(i) && trunc(i) == i && i >= 0.0 && i < {{ op.count }}.0)) {{ scalar_failure(error_status, observation_mode) }} r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)i]; }
-{%- else %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
-{%- endif %}
+{%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
 {%- elif op.kind == "LinearSolveComponent" %}    { double w[{{ op.n * (op.n + 1) }}]; if (!rmc_linear_solve_component(&r[{{ op.matrix_start }}], &r[{{ op.rhs_start }}], {{ op.n }}, {{ op.component }}, w, &r[{{ op.dst }}])) {{ scalar_failure(error_status, observation_mode) }} }
 {%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};

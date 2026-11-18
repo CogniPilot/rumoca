@@ -2012,7 +2012,6 @@ fn solve_problem_shape_contract_rejects_parameter_run_outside_layout() {
                     base: 1,
                     count: 5,
                     index: 0,
-                    checked: false,
                 },
                 LinearOp::StoreOutput { src: 1 },
             ]],

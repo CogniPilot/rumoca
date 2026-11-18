@@ -1487,7 +1487,6 @@ fn render_indexed_load_op(
             base,
             count,
             index,
-            ..
         } => (*dst, *base, *count, *index, false),
         LinearOp::LoadIndexedSeed {
             dst,

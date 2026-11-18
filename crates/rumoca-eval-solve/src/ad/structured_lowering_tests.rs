@@ -382,7 +382,6 @@ fn runtime_indexed_parameter_tangent_is_the_seed_at_the_same_offset() {
             base: 0,
             count: 3,
             index: 0,
-            checked: false,
         },
         LinearOp::LoadY { dst: 2, index: 0 },
         mul(3, 1, 2),

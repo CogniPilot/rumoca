@@ -257,7 +257,6 @@ fn an_unread_indexed_parameter_load_still_declines_the_primal_profile() {
             base: 0,
             count: 1,
             index: 101,
-            checked: false,
         },
     ]);
     assert!(

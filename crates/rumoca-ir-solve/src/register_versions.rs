@@ -1,8 +1,10 @@
 //! Canonical immutable source-point register range versions.
+mod parameter_gathers;
 mod program;
 #[cfg(test)]
 mod tests;
 
+pub use parameter_gathers::BorrowedParameterGathers;
 pub use program::{RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram};
 
 use crate::Reg;

@@ -31,7 +31,6 @@ struct OwnerView<'a> {
     outputs: &'a [solve::SolvePureCallOutput],
     body: &'a solve::TypedProgram,
     source_predicate_outputs: BTreeMap<usize, usize>,
-    simple_dynamic_integer_gather: bool,
 }
 
 /// Serialized primal and directional views of one owner.
@@ -163,7 +162,6 @@ fn directional_owner_view(
                     directional.outputs(),
                     true,
                 )?,
-                simple_dynamic_integer_gather: false,
             })
         })
         .transpose()
@@ -184,7 +182,6 @@ fn owner_json(
         outputs: owner.outputs(),
         body: owner.body(),
         source_predicate_outputs: source_predicate_outputs(owner, owner.outputs(), false)?,
-        simple_dynamic_integer_gather: simple_dynamic_integer_gather(owner),
     })?;
     let directional = directional_owner_view(owner)?
         .map(|view| to_json(&view))
@@ -193,12 +190,6 @@ fn owner_json(
         primal,
         directional,
     })
-}
-
-/// A checked pure function that only projects one element of an Integer array.
-/// Its C wrapper can convert that element instead of materializing the array.
-fn simple_dynamic_integer_gather(owner: &solve::SolvePureCallOwner) -> bool {
-    owner.simple_dynamic_integer_gather()
 }
 
 fn source_predicate_outputs(

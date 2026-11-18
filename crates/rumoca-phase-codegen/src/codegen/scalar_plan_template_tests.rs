@@ -21,7 +21,6 @@ fn scalar_plan_preserves_indexed_load_semantics_output_mapping_and_provenance() 
             base: 1,
             count: 3,
             index: 0,
-            checked: false,
         },
         solve::LinearOp::StoreOutput { src: 1 },
     ];
@@ -329,7 +328,6 @@ fn indexed_python_targets_keep_indexing_inside_symbolic_array_dialects() {
             base: 0,
             count: 3,
             index: 0,
-            checked: false,
         },
         solve::LinearOp::StoreOutput { src: 1 },
     ]);
@@ -366,7 +364,6 @@ fn scalar_plan_objects_enumerate_only_keys_they_resolve() {
             base: 1,
             count: 2,
             index: 0,
-            checked: false,
         },
         solve::LinearOp::Binary {
             dst: 3,

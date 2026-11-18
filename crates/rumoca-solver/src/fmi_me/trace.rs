@@ -143,7 +143,6 @@ pub(super) struct MeTraceRecorder {
     columns: Vec<Vec<f64>>,
     state_count: usize,
     selection: Option<Vec<usize>>,
-    observation_indices: Vec<usize>,
     source_width: usize,
 }
 
@@ -175,9 +174,6 @@ impl MeTraceRecorder {
         try_reserve(&mut times, capacity, "trace times")?;
         let mut roles = Vec::new();
         try_reserve(&mut roles, capacity, "trace roles")?;
-        let observation_indices = selection
-            .clone()
-            .unwrap_or_else(|| (0..source_width).collect());
         Ok(Self {
             names,
             meta,
@@ -186,7 +182,6 @@ impl MeTraceRecorder {
             columns,
             state_count,
             selection,
-            observation_indices,
             source_width,
         })
     }
@@ -254,7 +249,6 @@ impl MeTraceRecorder {
     /// Returns whether the row entered the trace. A suppressed row is not a
     /// failure: it is the policy's answer for evidence the trace already
     /// carries at that exact instant, and it costs no FMI getter.
-    #[cfg(test)]
     pub(super) fn record_with<E, F>(
         &mut self,
         role: TraceObservationRole,
@@ -263,78 +257,15 @@ impl MeTraceRecorder {
     ) -> Result<bool, E>
     where
         E: From<MeTraceViolation>,
-        F: FnOnce() -> Result<Vec<f64>, E>,
+        F: FnOnce(Option<&[String]>) -> Result<Vec<f64>, E>,
     {
         let time = canonical_coordinate(time);
         let decision = self.decide(role, time)?;
         if decision == TraceDecision::Suppress {
             return Ok(false);
         }
-        let values = evaluate()?;
-        self.commit(decision, role, time, &values)?;
-        Ok(true)
-    }
-
-    /// Retain one observation, passing the selected source indices to the
-    /// evaluator so the component reads exactly those visible slots.
-    pub(super) fn record_with_selected<E, F>(
-        &mut self,
-        role: TraceObservationRole,
-        time: f64,
-        evaluate: F,
-    ) -> Result<bool, E>
-    where
-        E: From<MeTraceViolation>,
-        F: FnOnce(&[usize]) -> Result<Vec<f64>, E>,
-    {
-        let time = canonical_coordinate(time);
-        let decision = self.decide(role, time)?;
-        if decision == TraceDecision::Suppress {
-            return Ok(false);
-        }
-        let values = evaluate(&self.observation_indices)?;
-        self.commit_selected(decision, role, time, &values)?;
-        Ok(true)
-    }
-
-    /// Whether every selected channel is defined only at event instants.
-    ///
-    /// Such an output is constant over each open interval between events, so
-    /// its event-left limit is the preceding settled row. A channel without
-    /// this metadata, or with a continuous time domain, keeps the ordinary
-    /// getter path.
-    pub(super) fn can_repeat_event_domain(&self) -> bool {
-        self.columns
-            .first()
-            .and_then(|column| column.last())
-            .is_some()
-            && self.meta.iter().all(|meta| {
-                matches!(
-                    meta.time_domain.as_deref(),
-                    Some("event-discrete" | "event-discontinuous")
-                )
-            })
-    }
-
-    /// Record the preceding settled row again at an event-left coordinate.
-    pub(super) fn repeat_last(
-        &mut self,
-        role: TraceObservationRole,
-        time: f64,
-    ) -> Result<bool, MeTraceViolation> {
-        let time = canonical_coordinate(time);
-        let decision = self.decide(role, time)?;
-        if decision == TraceDecision::Suppress {
-            return Ok(false);
-        }
-        let Some(values) = self
-            .columns
-            .iter()
-            .map(|column| column.last().copied())
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(false);
-        };
+        let requested = self.selection.as_ref().map(|_| self.names.as_slice());
+        let values = evaluate(requested)?;
         self.commit_selected(decision, role, time, &values)?;
         Ok(true)
     }
@@ -518,7 +449,7 @@ mod tests {
         time: f64,
         values: [f64; 2],
     ) -> Result<bool, MeTraceViolation> {
-        trace.record_with(role, time, || Ok(values.to_vec()))
+        trace.record_with(role, time, |_| Ok(values.to_vec()))
     }
 
     #[test]
@@ -550,7 +481,7 @@ mod tests {
             Err(MeTraceViolation::NonFiniteTime { .. })
         ));
         assert!(matches!(
-            trace.record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.0, || Ok(
+            trace.record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.0, |_| Ok(
                 vec![0.0]
             )),
             Err(MeTraceViolation::RowWidth { .. })
@@ -621,7 +552,7 @@ mod tests {
         record(&mut trace, TraceObservationRole::Nominal, 0.5, [1.0, 1.0]).unwrap();
         let evaluations = Cell::new(0usize);
         let retained = trace
-            .record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.5, || {
+            .record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.5, |_| {
                 evaluations.set(evaluations.get() + 1);
                 Ok(vec![9.0, 9.0])
             })

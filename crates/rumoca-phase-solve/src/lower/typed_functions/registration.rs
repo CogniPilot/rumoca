@@ -270,7 +270,6 @@ impl<'dae> OwnerBody<'_, 'dae> {
             assertions: self.layout.registered.clone().into(),
             recursive: self.callees.values().any(|callee| callee.recursive),
             scalar_storable,
-            simple_integer_gather: false,
         }
     }
 

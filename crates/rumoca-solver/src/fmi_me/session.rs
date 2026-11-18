@@ -1377,18 +1377,6 @@ impl MeSimulationSession<'_, '_> {
         let Some(coordinate) = self.host.event_left_coordinate(candidate, event_time) else {
             return Ok(None);
         };
-        if self.host.trace.can_repeat_event_domain()
-            && self
-                .host
-                .trace
-                .last_time()
-                .is_some_and(|last| coordinate > last)
-        {
-            self.host
-                .trace
-                .repeat_last(TraceObservationRole::EventLeft, coordinate)?;
-            return Ok(None);
-        }
         let Some((previous, accepted)) = self.host.retained_interval else {
             return Ok(None);
         };
