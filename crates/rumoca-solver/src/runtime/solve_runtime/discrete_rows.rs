@@ -1178,8 +1178,8 @@ impl ScalarExecutionView<'_> {
             let input = DiscreteRowEvalInput {
                 snapshot,
                 row_idx,
-                eval_y: &eval_y,
-                eval_p: &eval_p,
+                eval_y,
+                eval_p,
                 t,
             };
             if let Some(value) =
@@ -1197,8 +1197,8 @@ impl ScalarExecutionView<'_> {
             let input = StructuredDiscreteRowEvalInput {
                 snapshot,
                 row,
-                eval_y: &eval_y,
-                eval_p: &eval_p,
+                eval_y,
+                eval_p,
                 t,
             };
             let value =
@@ -1207,7 +1207,7 @@ impl ScalarExecutionView<'_> {
                 writes.push((row.target, value));
             }
         }
-        let reinitializations = self.eval_pass_reinitializations(snapshot, &eval_y, &eval_p, t)?;
+        let reinitializations = self.eval_pass_reinitializations(snapshot, eval_y, eval_p, t)?;
         let mut changed = false;
         for (target, value) in writes {
             changed |= solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
@@ -1444,14 +1444,14 @@ impl ScalarExecutionView<'_> {
             snapshot,
             scope.observation_only,
             scope.skip_solver_or_time_rows,
-            &eval_y,
-            &eval_p,
+            eval_y,
+            eval_p,
             t,
         )?;
         let input = DiscreteSnapshotEvalInput {
             snapshot,
-            eval_y: &eval_y,
-            eval_p: &eval_p,
+            eval_y,
+            eval_p,
             t,
             scope,
         };
@@ -1467,10 +1467,7 @@ impl ScalarExecutionView<'_> {
         let mut guarded_values = Vec::new();
         self.execute_clock_partition_steps(
             ClockPartitionPassMode::Filtered { snapshot, scope },
-            ClockPartitionEntry {
-                eval_y: &eval_y,
-                eval_p: &eval_p,
-            },
+            ClockPartitionEntry { eval_y, eval_p },
             t,
             ClockPartitionOutputs {
                 row_values: &mut row_values,

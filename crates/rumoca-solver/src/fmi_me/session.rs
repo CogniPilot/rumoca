@@ -232,6 +232,14 @@ impl MeRetainedComponent {
     }
 }
 
+#[derive(Default)]
+struct TraceChannels {
+    names: Vec<String>,
+    meta: Vec<SimVariableMeta>,
+    selection: Option<Vec<usize>>,
+    source_width: usize,
+}
+
 /// Resolve the exact public columns a trace records. Names are matched by
 /// source identity, never by display guessing, and the requested order is
 /// preserved. Duplicate or unknown columns are rejected before initialization.
@@ -239,10 +247,15 @@ fn select_outputs(
     names: Vec<String>,
     meta: Vec<SimVariableMeta>,
     requested: Option<&[String]>,
-) -> Result<(Vec<String>, Vec<SimVariableMeta>, Option<Vec<usize>>, usize), MeSessionError> {
+) -> Result<TraceChannels, MeSessionError> {
     let source_width = names.len();
     let Some(requested) = requested else {
-        return Ok((names, meta, None, source_width));
+        return Ok(TraceChannels {
+            names,
+            meta,
+            selection: None,
+            source_width,
+        });
     };
     let reject = |reason: String| MeSessionError::Options { reason };
     if requested.is_empty() {
@@ -267,7 +280,12 @@ fn select_outputs(
         .map(|&index| names[index].clone())
         .collect();
     let selected_meta = selection.iter().map(|&index| meta[index].clone()).collect();
-    Ok((selected_names, selected_meta, Some(selection), source_width))
+    Ok(TraceChannels {
+        names: selected_names,
+        meta: selected_meta,
+        selection: Some(selection),
+        source_width,
+    })
 }
 
 /// Construct the host state with every aggregate already valid.
@@ -279,17 +297,9 @@ fn build_host_state(
     kernel: Rc<MeKernelCell>,
     options: MeSessionOptions,
 ) -> Result<MeHostState, MeSessionError> {
-    let (
-        state_count,
-        indicator_count,
-        names,
-        meta,
-        selection,
-        source_width,
-        max_step_duration_reference,
-    ) = {
+    let (state_count, indicator_count, channels, max_step_duration_reference) = {
         let borrowed = kernel.borrow()?;
-        let (names, meta, selection, source_width) = if options.records_trace() {
+        let channels = if options.records_trace() {
             let description = borrowed.model_description();
             select_outputs(
                 description.output_names.to_vec(),
@@ -297,21 +307,24 @@ fn build_host_state(
                 options.output_variables(),
             )?
         } else {
-            (Vec::new(), Vec::new(), None, 0)
+            TraceChannels::default()
         };
         (
             borrowed.continuous_state_count(),
             borrowed.event_indicator_count(),
-            names,
-            meta,
-            selection,
-            source_width,
+            channels,
             borrowed.max_step_duration_value_reference(),
         )
     };
     let capacity = trace_capacity(&options);
-    let mut trace =
-        MeTraceRecorder::new(names, meta, state_count, capacity, selection, source_width)?;
+    let mut trace = MeTraceRecorder::new(
+        channels.names,
+        channels.meta,
+        state_count,
+        capacity,
+        channels.selection,
+        channels.source_width,
+    )?;
     let outcome = run_fmi_initialization(
         &mut *kernel.borrow_mut()?,
         &options,
