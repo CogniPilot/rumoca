@@ -14,6 +14,7 @@ impl FunctionDefinitions {
         }
         targets
             .iter()
+            .filter(|name| !context.loop_binders.contains(*name))
             .filter(|name| {
                 self.require_named_readable((&self.folds, &[]), name, &[], context, span)
                     .is_ok()

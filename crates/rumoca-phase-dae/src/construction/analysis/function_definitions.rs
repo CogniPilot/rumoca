@@ -703,6 +703,13 @@ impl FunctionDefinitions {
         context: FunctionValidationContext<'_>,
         span: Span,
     ) -> Result<(), ToDaeError> {
+        if subscripts.is_empty()
+            && context
+                .comprehension_values
+                .is_some_and(|bindings| bindings.contains(reference))
+        {
+            return Ok(());
+        }
         self.require_named_readable(
             (folds, selected_by),
             reference.var_name(),
@@ -1392,9 +1399,10 @@ fn settled_subscript_integer(
     integers: &HashMap<VarName, i64>,
     context: FunctionValidationContext<'_>,
 ) -> Option<i64> {
-    let rewritten = context
-        .comprehension_values
-        .map(|values| values.rewrite(expression));
+    let rewritten = match context.comprehension_values {
+        Some(values) => Some(values.rewrite(expression)?),
+        None => None,
+    };
     static_shape_integer_expression(
         rewritten.as_ref().unwrap_or(expression),
         integers,

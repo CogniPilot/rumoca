@@ -29,6 +29,22 @@ impl<'scope> DefinedValueReadChecker<'scope> {
         self.selected_by.push(condition.clone());
         self
     }
+
+    fn with_comprehension<'point>(
+        &'point self,
+        bindings: &'point ComprehensionValues,
+    ) -> DefinedValueReadChecker<'point> {
+        DefinedValueReadChecker {
+            definitions: self.definitions,
+            folds: std::borrow::Cow::Borrowed(&self.folds),
+            selected_by: self.selected_by.clone(),
+            context: FunctionValidationContext {
+                comprehension_values: Some(bindings),
+                ..self.context
+            },
+            span: self.span,
+        }
+    }
 }
 
 impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
@@ -143,24 +159,19 @@ impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
         indices: &[rumoca_core::ComprehensionIndex],
         filter: Option<&Expression>,
     ) -> Result<(), Self::Error> {
+        let mut bindings = self
+            .context
+            .comprehension_values
+            .cloned()
+            .unwrap_or_default();
         for index in indices.iter().rev() {
-            self.visit_expression(&index.range)?;
+            self.with_comprehension(&bindings)
+                .visit_expression(&index.range)?;
+            bindings.declare(index);
         }
-        let Some(points) = comprehension_points(indices, self.context) else {
-            self.visit_expression(expr)?;
-            return filter.map_or(Ok(()), |filter| self.visit_expression(filter));
-        };
+        let points = comprehension_points(indices, self.context).unwrap_or_else(|| vec![bindings]);
         for point in points {
-            let mut checker = DefinedValueReadChecker {
-                definitions: self.definitions,
-                folds: std::borrow::Cow::Borrowed(&self.folds),
-                selected_by: self.selected_by.clone(),
-                context: FunctionValidationContext {
-                    comprehension_values: Some(&point),
-                    ..self.context
-                },
-                span: self.span,
-            };
+            let mut checker = self.with_comprehension(&point);
             if let Some(filter) = filter {
                 checker.visit_expression(filter)?;
             }

@@ -98,3 +98,61 @@ fn comprehension_reads_of_undefined_columns_are_refused() {
         "expected the element definedness refusal, got: {rendered}"
     );
 }
+
+#[test]
+fn function_iterators_shadow_unassigned_locals() {
+    let source = r#"
+model Shadow
+  function f2
+    input Real x;
+    output Real y;
+  protected
+    Integer i;
+    constant Real a[4] = {1, 2, 3, 4};
+  algorithm
+    y := sum(a[i]*x^(i - 1) for i in 1:4);
+  end f2;
+  function f4
+    input Real x;
+    output Real y;
+  protected
+    Integer i;
+    Integer j;
+    Real r;
+  algorithm
+    y := 0;
+    if x < 0 then
+      y := -1;
+    else
+      for i in 1:2 loop
+        r := 1;
+        for j in 0:5 loop
+          if j <> 0 then
+            r := r*x;
+          end if;
+          y := y + i*r;
+        end for;
+      end for;
+    end if;
+  end f4;
+  Real y2 = f2(time + 1);
+  Real y4 = f4(time + 0.5);
+end Shadow;
+"#;
+    let compiled = Compiler::new()
+        .model("Shadow")
+        .compile_str(source, "Shadow.mo")
+        .expect("comprehension and nested loop indices use their lexical declarations");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("the shadowed-iterator model simulates");
+    for (name, expected) in [("y2", 49.0), ("y4", 62.34375)] {
+        let value = series(&result, name).last().unwrap();
+        assert!((value - expected).abs() < 1e-9, "{name} at t = 1: {value}");
+    }
+}
