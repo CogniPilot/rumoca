@@ -19,6 +19,7 @@
 
 mod aliases;
 mod literal;
+mod projection;
 mod proof;
 mod scoped;
 #[cfg(test)]
@@ -82,7 +83,7 @@ impl<'dae> PhasorSources<'dae> {
 
     pub(crate) fn of(view: dae::DaeView<'dae>) -> Self {
         let mut sources = HashMap::new();
-        for (target, phasor) in view
+        let scalar_facts = view
             .continuous_owners()
             .filter_map(|owner| match owner {
                 dae::ContinuousOwnerView::Residual { equation, .. } => {
@@ -92,10 +93,18 @@ impl<'dae> PhasorSources<'dae> {
             })
             .flat_map(|(lhs, rhs)| [(lhs, rhs), (rhs, lhs)])
             .filter_map(|(target, value)| {
-                let target = scalar_coordinate(view, target, None, &ProofQuery::default())?;
-                Some((target, phasor_of(view, value, target)?))
+                let query = ProofQuery::default();
+                let target = scalar_coordinate(view, target, None, &query)?;
+                Some((target, phasor_of(view, value, target, &query)?))
+            });
+        let array_facts = view
+            .continuous_owners()
+            .filter_map(|owner| match owner {
+                dae::ContinuousOwnerView::Structured { family, .. } => Some(family),
+                dae::ContinuousOwnerView::Residual { .. } => None,
             })
-        {
+            .flat_map(|family| projection::facts(view, family));
+        for (target, phasor) in scalar_facts.chain(array_facts) {
             let recorded = sources
                 .entry(target)
                 .or_insert_with(|| Some(phasor.clone()));
@@ -129,19 +138,19 @@ fn phasor_of<'dae>(
     view: dae::DaeView<'dae>,
     value: dae::ExprId<'dae>,
     target: ScalarCoordinate,
+    query: &ProofQuery<'dae>,
 ) -> Option<PhasorFact> {
-    let query = ProofQuery::default();
     let (function, operands) = match view.expression(value)?.operation() {
         dae::ExpressionOperation::Builtin {
             builtin: dae::PureBuiltin::Cos,
             arguments,
         } if arguments.len() == 1 => (
             solve::SolvePhasorFunction::CosineOfAngle,
-            angle_operands(view, arguments.get(0)?, None, &query)?,
+            angle_operands(view, arguments.get(0)?, None, query)?,
         ),
         _ => (
             solve::SolvePhasorFunction::Angle,
-            angle_operands(view, value, None, &query)?,
+            angle_operands(view, value, None, query)?,
         ),
     };
     if operands.im == target || operands.re == target || operands.im == operands.re {
@@ -360,18 +369,7 @@ fn scalar_coordinate_uncached<'dae>(
             (view.variable(variable)?.scalar_count() == 1).then_some((variable.index(), 0))
         }
         dae::ExpressionOperation::Index { base, subscripts } => {
-            let dae::ExpressionOperation::Coordinate(coordinate) =
-                view.expression(base)?.operation()
-            else {
-                return None;
-            };
-            let variable = visible_value_variable(view, base, coordinate)?;
-            let scalar = crate::model_values::single_index_scalar(
-                view,
-                subscripts,
-                view.variable(variable)?.scalar_count(),
-            )?;
-            Some((variable.index(), scalar))
+            projection::index(view, base, subscripts, frame, query)
         }
         _ => None,
     }

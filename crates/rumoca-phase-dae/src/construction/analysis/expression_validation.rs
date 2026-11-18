@@ -1302,7 +1302,7 @@ mod tests {
                 ..flat::Variable::empty_with_span(span)
             },
         );
-        let constants = constant_context(&model)
+        let constants = fold_parameter_bindings(&model)
             .expect("an initialization-owned parameter is valid but not translation-settled");
         let shapes = FunctionShapeAnalysis::analyze(&model, &constants)
             .expect("the model still has a scalar parameter shape");

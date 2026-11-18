@@ -1,5 +1,5 @@
 mod algorithm_coordinates;
-pub(super) use algorithm_coordinates::prepared_flat;
+use std::borrow::Cow;
 mod assignment_conditionals;
 mod branch_snapshots;
 mod clocks;
@@ -691,17 +691,55 @@ pub(super) enum RecordEquationFieldValue {
     Coordinate(VarName),
 }
 
+struct ParameterBindings {
+    constants: EvalContext,
+    evaluable: HashSet<VarName>,
+}
+
+impl ParameterBindings {
+    fn evaluate(flat: &flat::Model) -> Result<Self, ToDaeError> {
+        Ok(Self {
+            constants: fold_parameter_bindings(flat)?,
+            evaluable: evaluable_parameters(flat),
+        })
+    }
+}
+
+pub(super) fn analyze_prepared_model(
+    flat: &flat::Model,
+) -> Result<(Cow<'_, flat::Model>, Analysis), ToDaeError> {
+    let (prepared, bindings) = algorithm_coordinates::prepared_flat(flat)?;
+    let analysis = analyze_with_bindings(prepared.as_ref(), bindings)?;
+    Ok((prepared, analysis))
+}
+
+#[cfg(test)]
+pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
+    analyze_with_bindings(flat, None)
+}
+
 // SPEC_0021: Exception - ToDAE analysis entry point assembling every Analysis field
 #[expect(
     clippy::too_many_lines,
     reason = "the ToDAE analysis entry point runs each ordered pass once and assembles its result"
 )]
-pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
+fn analyze_with_bindings(
+    flat: &flat::Model,
+    prepared_bindings: Option<ParameterBindings>,
+) -> Result<Analysis, ToDaeError> {
     validate_source_model(flat)?;
     // Fold the parameter fixed point before shape analysis: MLS §12.2 array
     // dimensions can depend on the settled parameter values from MLS §4.5.
-    let constants = constant_context(flat)?;
-    let mut evaluable = evaluable_parameters(flat);
+    let ParameterBindings {
+        mut constants,
+        mut evaluable,
+    } = match prepared_bindings {
+        Some(bindings) => bindings,
+        None => ParameterBindings::evaluate(flat)?,
+    };
+    // Structural selection can change the initial equation that determines
+    // a deferred parameter. Refresh that evidence for the selected equations.
+    register_deferred_parameters(flat, &mut constants);
     let (mut function_shapes, templates, record_array_fields) =
         analyze_selected_shape_owners(flat, &constants, &evaluable)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
@@ -1556,7 +1594,7 @@ pub(super) fn analyze_record_array_field_plans(
 /// initialization instead, and those failures carry a
 /// `RuntimeDependentReason`. Any other failure proves the model or the
 /// evaluator wrong and is reported at the binding.
-fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
+fn fold_parameter_bindings(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
     let mut context = seeded_eval_context(flat);
     for _ in 0..flat.variables.len() {
         let mut progress = false;
@@ -1595,7 +1633,6 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
             break;
         }
     }
-    register_deferred_parameters(flat, &mut context);
     Ok(context)
 }
 
@@ -1754,7 +1791,7 @@ impl rumoca_core::ExpressionVisitor for ValueReads {
 ///
 /// A parameter that *has* a binding reading a deferred parameter is not
 /// registered here — the guard below skips binding-holders, and the fold at
-/// [`constant_context`] discards its failure through the
+/// [`fold_parameter_bindings`] discards its failure through the
 /// `runtime_dependent_reason` arm — so such a parameter is still reported as an
 /// unknown name. This is real MSL, not a hypothetical:
 /// `Modelica.Blocks.Math.ContinuousMean` (`Blocks/Math.mo:2349-2352`) declares

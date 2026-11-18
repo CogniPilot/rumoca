@@ -137,3 +137,36 @@ fn a_value_that_does_not_convert_to_the_declared_type_is_refused() {
     let error = typed_fold(&func, vec![Value::Bool(true)]).expect_err("Boolean to Real is refused");
     assert_eq!(error.runtime_dependent_reason(), None, "{error}");
 }
+
+/// MLS §3.7.1: an Integer local can receive sign(Real), as the pivot
+/// direction `s` does in MSL quadratureLobatto. Arbitrary Real stores still fail.
+#[test]
+fn integer_local_receives_sign_of_real_without_weakening_store_types() {
+    let mut func = Function::new("test.sign_store", Span::DUMMY);
+    func.add_input(real_param("x"));
+    func.add_local(integer_param("s"));
+    func.add_output(integer_param("y"));
+    func.pure = true;
+    func.body = vec![
+        assign(
+            component_reference("s"),
+            Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Sign,
+                args: vec![var_ref("x")],
+                span: test_span(),
+            },
+        ),
+        assign(component_reference("y"), var_ref("s")),
+    ];
+    for (operand, expected) in [(-2.5, -1), (-0.0, 0), (0.0, 0), (2.5, 1)] {
+        assert_eq!(
+            typed_fold(&func, vec![Value::Real(operand)]).expect("sign has Integer type"),
+            Value::Integer(expected)
+        );
+    }
+    func.body[0] = assign(component_reference("s"), var_ref("x"));
+    assert!(
+        typed_fold(&func, vec![Value::Real(2.5)]).is_err(),
+        "Real to Integer remains forbidden"
+    );
+}

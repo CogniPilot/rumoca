@@ -14,6 +14,10 @@ fn profile() -> SolveArithmeticProfile {
 /// authored operation order. `flip` turns the first row's last subtraction
 /// into an addition, which is no longer the Hamilton relation.
 fn kinematics(flip: bool) -> SolvePureCallTable {
+    kinematics_with_static_updates(flip, false)
+}
+
+fn kinematics_with_static_updates(flip: bool, static_updates: bool) -> SolvePureCallTable {
     use SolveBinaryOperator::{Add, Multiply as Mul, Subtract as Sub};
     let real = |n| SolveValueType::tensor(SolveScalarType::real(profile()), vec![n]).unwrap();
     SolvePureCallTable::construct(profile(), |table| {
@@ -62,13 +66,29 @@ fn kinematics(flip: bool) -> SolvePureCallTable {
                 let b = body.binary(Mul, q[0], w[2], span())?;
                 let a = body.binary(Add, a, b, span())?;
                 let r3 = body.binary(Mul, half, a, span())?;
-                let derivative = body.construct_aggregate(&[r0, r1, r2, r3], vec![4], span())?;
+                let derivative = result_array(body, [r0, r1, r2, r3], static_updates)?;
                 body.store(outputs[0], derivative, span())
             },
         )?;
         Ok(())
     })
     .unwrap()
+}
+
+fn result_array<'p>(
+    body: &mut TypedProgramBuilder<'p>,
+    values: [ProgramRegister<'p>; 4],
+    static_updates: bool,
+) -> Result<ProgramRegister<'p>, SolveProgramConstructionError> {
+    if !static_updates {
+        return body.construct_aggregate(&values, vec![4], span());
+    }
+    let zero = body.constant(SolveValue::real(profile(), 0.0), span())?;
+    let mut result = body.fill(zero, vec![4], span())?;
+    for (index, value) in values.into_iter().enumerate() {
+        result = body.update_element_static(result, value, vec![index as u32], span())?;
+    }
+    Ok(result)
 }
 
 /// States `q = y[0..4]`, `w = y[4..7]`. One program calls the owner on them and
@@ -144,4 +164,25 @@ fn a_changed_owner_or_misplaced_rows_issue_no_quaternion_group() {
         GeometricStepPlan::from_derivative(&derivative(&calls, false), 7, &calls),
         None
     );
+}
+
+#[test]
+fn literal_element_updates_preserve_original_hamilton_proof() {
+    // SOLVE-C111 and MLS §11.2.1: current literal indexed assignments retain
+    // the same authored scalar operation trees through static slice updates.
+    let calls = kinematics_with_static_updates(false, true);
+    assert!(
+        calls.owners()[0]
+            .body()
+            .operations()
+            .iter()
+            .any(|op| { matches!(op.operation(), SolveOperation::UpdateSlice { .. }) })
+    );
+    assert!(calls.owners()[0].body_quaternion_kinematics().is_some());
+    let plan = GeometricStepPlan::from_derivative(&derivative(&calls, true), 7, &calls).unwrap();
+    assert_eq!(plan.quaternions()[0].quaternion(), &[0, 1, 2, 3]);
+    assert_eq!(plan.quaternions()[0].angular_velocity(), &[4, 5, 6]);
+    let changed = kinematics_with_static_updates(true, true);
+    assert!(changed.owners()[0].body_quaternion_kinematics().is_none());
+    assert!(GeometricStepPlan::from_derivative(&derivative(&changed, true), 7, &changed).is_none());
 }

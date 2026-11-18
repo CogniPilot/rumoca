@@ -58,6 +58,8 @@ impl<K: Eq + std::hash::Hash, T: Copy> Memo<K, T> {
 
 #[derive(Default)]
 pub(super) struct ProofQuery<'dae> {
+    // Fixed before any memoized reduction; one query per original scalar view.
+    pub(super) binders: HashMap<dae::DomainId<'dae>, Vec<i64>>,
     pub(super) angle_operands: Memo<ExpressionKey<'dae>, AngleOperands>,
     pub(super) scalar_coordinate: Memo<ExpressionKey<'dae>, ScalarCoordinate>,
     pub(super) literal: Memo<ExpressionKey<'dae>, NumericSourceScalar>,
