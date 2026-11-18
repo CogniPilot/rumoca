@@ -839,6 +839,7 @@ mod tests {
     /// when its operand is Real; both signed zeros select the zero branch.
     #[test]
     fn sign_returns_integer_for_real_and_integer_operands() {
+        let span = Span::from_offsets(rumoca_core::SourceId::from_source_name("sign.mo"), 0, 4);
         for (operand, expected) in [
             (Value::Real(-2.5), -1),
             (Value::Real(-0.0), 0),
@@ -849,7 +850,7 @@ mod tests {
             (Value::Integer(i64::MAX), 1),
         ] {
             assert_eq!(
-                eval_builtin("sign", &[operand], Span::DUMMY).unwrap(),
+                eval_builtin("sign", &[operand], span).unwrap(),
                 Value::Integer(expected)
             );
         }
