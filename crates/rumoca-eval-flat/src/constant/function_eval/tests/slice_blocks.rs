@@ -80,3 +80,66 @@ fn slice_assignment_writes_a_block_of_a_matrix() {
     ));
     assert!(fold(&func).is_err());
 }
+
+/// MLS §10.5: vector subscripts retain their axis, and the RHS is read
+/// before an overlapping assignment (the pivot swap in LinearAlgebra.solve).
+#[test]
+fn vector_subscript_assignment_swaps_matrix_rows() {
+    let real = rumoca_core::TypeId::new(1);
+    let mut func = Function::new("test.swap_rows", Span::DUMMY);
+    func.add_output(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        rumoca_core::EffectiveType::new(real, real, vec![2, 2]).expect("matrix type"),
+        test_span(),
+    ));
+    func.pure = true;
+    let rows = |indices: &[i64]| Subscript::Expr {
+        expr: Box::new(Expression::Array {
+            elements: indices.iter().copied().map(integer_literal).collect(),
+            kind: rumoca_core::ArrayConstructor::Array,
+            span: Span::DUMMY,
+        }),
+        span: test_span(),
+    };
+    func.body = vec![
+        assign(
+            component_reference("y"),
+            real_rows(&[&[1.0, 2.0], &[3.0, 4.0]]),
+        ),
+        assign(
+            element_target(
+                "y",
+                vec![rows(&[1, 2]), Subscript::Colon { span: test_span() }],
+            ),
+            Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "y",
+                    component_reference("y"),
+                ),
+                subscripts: vec![rows(&[2, 1]), Subscript::Colon { span: test_span() }],
+                span: test_span(),
+            },
+        ),
+    ];
+    let expected = Value::Array(vec![
+        Value::Array(vec![Value::Real(3.0), Value::Real(4.0)]),
+        Value::Array(vec![Value::Real(1.0), Value::Real(2.0)]),
+    ]);
+    assert_eq!(fold(&func).expect("pivot swap folds"), expected);
+
+    // A vector alone also retains its axis; it needs no colon to be a slice.
+    func.body[1] = assign(
+        element_target("y", vec![rows(&[2, 1])]),
+        real_rows(&[&[1.0, 2.0], &[3.0, 4.0]]),
+    );
+    assert_eq!(fold(&func).expect("vector-only target folds"), expected);
+
+    for indices in [&[0, 1][..], &[1, 3][..], &[1][..]] {
+        func.body[1] = assign(
+            element_target("y", vec![rows(indices)]),
+            real_rows(&[&[1.0, 2.0], &[3.0, 4.0]]),
+        );
+        assert!(fold(&func).is_err(), "invalid bounds or shape must fail");
+    }
+}

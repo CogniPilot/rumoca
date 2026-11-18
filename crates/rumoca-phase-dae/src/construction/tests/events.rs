@@ -934,3 +934,34 @@ fn a_sample_start_settled_without_time_names_the_initialization_system() {
         "the refusal must name the initialization system as the owner, got: {message}"
     );
 }
+
+#[test]
+fn a_sample_start_ignores_a_time_read_in_a_structurally_dead_arm() {
+    let text = "model M discrete Real y; parameter Real t0(fixed = false); \
+                initial equation t0 = if false then time else 0.5; \
+                equation when sample(t0, 0.25) then y = 1.0; end when; end M;";
+    let source = TestSource::new(text);
+    let settling = Expression::If {
+        branches: vec![(
+            Expression::Literal {
+                value: Literal::Boolean(false),
+                span: source.span("false then", 0),
+            },
+            variable_reference(&source, "time", "time", 0, Vec::new()),
+        )],
+        else_branch: Box::new(Expression::Literal {
+            value: Literal::Real(0.5),
+            span: source.span("0.5", 0),
+        }),
+        span: source.span("if false then time else 0.5", 0),
+    };
+    let model = deferred_start_sample_model(&source, settling, "sample(t0, 0.25)");
+
+    let error = construct(&model, source.map).expect_err("the selected value needs initialization");
+    assert!(
+        error.to_string().contains(
+            "`t0` is a `fixed = false` parameter determined by the initialization system"
+        ),
+        "{error}"
+    );
+}

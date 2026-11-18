@@ -113,6 +113,12 @@ fn reduce_expression<'frame, 'dae>(
             dae::ExpressionOperation::FunctionConditionalOutput {
                 conditional, value, ..
             } => ask(Needed::State(conditional, value, frame), query)?,
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => query
+                .binders
+                .get(&binder.domain())
+                .and_then(|point| point.get(binder.ordinal() as usize))
+                .copied()
+                .map(NumericSourceScalar::Integer),
             dae::ExpressionOperation::Literal(value) => match value {
                 dae::DaeLiteral::Real(value) if value.is_finite() => {
                     Some(NumericSourceScalar::Real(*value))

@@ -551,3 +551,70 @@ fn canonical_source_evaluator_confirms_real_guard_rounding_before_phasor_proof()
         }
     });
 }
+
+#[test]
+fn vectorized_record_angles_record_each_original_component_pair() {
+    // SPEC_0040 SOLVE-C65: the vectorized call preserves the defining
+    // scalar angle and component identities for every element.
+    let source = r#"
+model VectorAngles
+  record Cplx
+    Real re;
+    Real im;
+  end Cplx;
+  function arg
+    input Cplx c;
+    output Real phi;
+  algorithm
+    phi := atan2(c.im, c.re);
+  end arg;
+  function selectedArg
+    input Cplx c;
+    input Integer index;
+    output Real phi;
+  algorithm
+    if index == 2 then phi := 1; else phi := atan2(c.im,c.re); end if;
+  end selectedArg;
+  function conditionalArg
+    input Cplx c;
+    input Boolean guard;
+    output Real phi;
+  algorithm
+    if guard then phi := atan2(c.im,c.re); else phi := atan2(c.re,c.im); end if;
+  end conditionalArg;
+  input Boolean guard = false;
+  Cplx z[3];
+  output Real angle[3] = arg(z);
+  output Real selected[3] = {selectedArg(z[k], k) for k in 1:3};
+  output Real unresolved[3] = conditionalArg(z, guard);
+equation
+  for k in 1:3 loop
+    z[k].re = time + k;
+    z[k].im = time - k;
+  end for;
+end VectorAngles;
+"#;
+    let mut expected = (1..=3)
+        .map(|index| {
+            (
+                format!("angle[{index}]"),
+                phasor(
+                    SolvePhasorFunction::Angle,
+                    &format!("z[{index}].re"),
+                    &format!("z[{index}].im"),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for index in [1, 3] {
+        expected.insert(
+            format!("selected[{index}]"),
+            phasor(
+                SolvePhasorFunction::Angle,
+                &format!("z[{index}].re"),
+                &format!("z[{index}].im"),
+            ),
+        );
+    }
+    assert_eq!(phasors(&lowered(source, "VectorAngles")), expected);
+}

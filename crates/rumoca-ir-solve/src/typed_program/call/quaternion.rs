@@ -188,6 +188,26 @@ fn aggregate(
                 .collect::<Option<Vec<_>>>()?;
             Some((*destination, Value::Array(array)))
         }
+        // SOLVE-C111: static element/slice writes preserve the same original
+        // scalar operation trees as the checked dynamic element write.
+        O::UpdateSlice {
+            destination,
+            aggregate,
+            value,
+            origin,
+        } if origin.len() == 1 => {
+            let Value::Array(array) = values.get(aggregate.index())?.as_ref()? else {
+                return None;
+            };
+            let Value::Array(replacement) = values.get(value.index())?.as_ref()? else {
+                return None;
+            };
+            let start = origin[0] as usize;
+            let end = start.checked_add(replacement.len())?;
+            let mut array = array.clone();
+            array.get_mut(start..end)?.clone_from_slice(replacement);
+            Some((*destination, Value::Array(array)))
+        }
         O::UpdateElement {
             destination,
             aggregate,

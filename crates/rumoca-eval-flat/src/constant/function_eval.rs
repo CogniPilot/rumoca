@@ -1010,7 +1010,7 @@ fn assign_subscripted(
     value: Value,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
-    if has_range_subscript(subscripts) {
+    if has_nonliteral_subscript(subscripts) {
         return assign_array_slice(env, base_name, subscripts, value, eval);
     }
     let indices = eval_subscript_indices(subscripts, env, eval)?;
@@ -1795,10 +1795,10 @@ fn parse_subscripted_assignment(comp: &ComponentReference) -> Option<(String, Ve
     Some((part.ident.to_string(), part.subs.clone()))
 }
 
-/// Check if any subscript contains a range expression.
-fn has_range_subscript(subscripts: &[Subscript]) -> bool {
+/// Expression subscripts may evaluate to scalar or vector indices (MLS §10.5).
+fn has_nonliteral_subscript(subscripts: &[Subscript]) -> bool {
     subscripts.iter().any(|s| match s {
-        Subscript::Expr { expr: e, .. } => matches!(e.as_ref(), Expression::Range { .. }),
+        Subscript::Expr { .. } => true,
         Subscript::Colon { .. } => true,
         Subscript::Index { .. } => false,
     })
