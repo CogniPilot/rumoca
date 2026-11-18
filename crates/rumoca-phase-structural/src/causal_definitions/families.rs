@@ -147,19 +147,29 @@ mod tests {
                     .at(at)
                     .binary(dae::BinaryOperator::Subtract, selected, value)
             })?;
-            for _ in 0..copies {
-                model.continuous(|rows| {
-                    rows.structured_family(
-                        at,
-                        domain,
-                        rumoca_core::ComprehensionScalarView::BinderSubstitution,
-                        |family| family.body(body),
-                    )
-                })?;
-            }
-            Ok(())
+            add_family_definitions(model, at, domain, body, copies)
         })
         .unwrap()
+    }
+
+    fn add_family_definitions<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        at: dae::DaeProvenance,
+        domain: dae::DomainId<'dae>,
+        body: dae::ExprId<'dae>,
+        copies: usize,
+    ) -> Result<(), dae::DaeConstructionError> {
+        for _ in 0..copies {
+            model.continuous(|rows| {
+                rows.structured_family(
+                    at,
+                    domain,
+                    rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                    |family| family.body(body),
+                )
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
