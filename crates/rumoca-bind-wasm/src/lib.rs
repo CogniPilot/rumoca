@@ -1908,29 +1908,25 @@ pub fn simulate_model_with_workspace_sources(
     )
 }
 
-/// Compile with workspace sources, simulate, and transfer only the named
-/// public output columns in the requested order.
+/// Compile with workspace sources and simulate with JSON options.
+/// The object accepts `t_end`, `dt`, `solver` and `output_variables`.
+/// A list in `output_variables` selects the public columns in that order.
+/// Missing or null `output_variables` returns every output column.
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[wasm_bindgen]
 pub fn simulate_model_with_workspace_sources_selected(
     source: &str,
     model_name: &str,
     workspace_sources_json: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
+    options_json: &str,
     parameter_overrides_json: &str,
-    output_variables_json: &str,
 ) -> Result<String, WasmError> {
     simulate_model_with_workspace_sources_selected_impl(
         source,
         model_name,
         workspace_sources_json,
-        t_end,
-        dt,
-        solver,
+        options_json,
         parameter_overrides_json,
-        output_variables_json,
     )
 }
 

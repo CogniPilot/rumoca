@@ -25,6 +25,47 @@ fn batch_metadata_and_simulation_reuse_compilation_and_invalidate_edits() {
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
+fn batch_selected_trace_options_preserve_column_order_and_overrides() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let source = "model SelectedTrace parameter Real k=1; Real x(start=0,fixed=true); output Real y; equation der(x)=k; y=2*x; end SelectedTrace;";
+    let full = simulate_model(source, "SelectedTrace", 0.1, 0.05, "auto", r#"{"k":3}"#).unwrap();
+    let selected = simulate_model_with_workspace_sources_selected(
+        source,
+        "SelectedTrace",
+        "{}",
+        r#"{"t_end":0.1,"dt":0.05,"solver":"auto","output_variables":["y","x"]}"#,
+        r#"{"k":3}"#,
+    )
+    .unwrap();
+    let full: Value = serde_json::from_str(&full).unwrap();
+    let selected: Value = serde_json::from_str(&selected).unwrap();
+    let columns = selected["payload"]["allData"].as_array().unwrap();
+    let full_names = full["payload"]["names"].as_array().unwrap();
+    let full_columns = full["payload"]["allData"].as_array().unwrap();
+    assert_eq!(selected["payload"]["names"], serde_json::json!(["y", "x"]));
+    assert_eq!(columns.len(), 3);
+    assert_eq!(columns[0], full_columns[0]);
+    for (column, name) in columns[1..].iter().zip(["y", "x"]) {
+        let full_index = full_names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap();
+        assert_eq!(*column, full_columns[full_index + 1]);
+    }
+    let x_end = columns[2]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!((x_end - 0.3).abs() < 1e-7, "x(0.1) is {x_end}");
+    clear_source_root_cache().unwrap();
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
 fn interactive_scenario_parameters_match_the_authored_curve_and_reset() {
     let _guard = session_test_guard();
     clear_source_root_cache().unwrap();

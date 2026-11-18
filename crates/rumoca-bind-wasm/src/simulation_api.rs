@@ -12,6 +12,17 @@ use rumoca_sim::{
     finish_fmi_component, lower_correlated_for_native_execution_with_overrides,
     lower_dae_for_simulation, retained_fmi_component_wire, simulate_dae_with_diagnostics,
 };
+use std::borrow::Cow;
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BatchSimulationOptions<'a> {
+    t_end: f64,
+    dt: f64,
+    #[serde(borrow)]
+    solver: Cow<'a, str>,
+    output_variables: Option<Vec<String>>,
+}
 
 pub(crate) fn simulate_model_impl(
     source: &str,
@@ -26,11 +37,13 @@ pub(crate) fn simulate_model_impl(
             session,
             source,
             model_name,
-            t_end,
-            dt,
-            solver,
+            BatchSimulationOptions {
+                t_end,
+                dt,
+                solver: solver.into(),
+                output_variables: None,
+            },
             parameter_overrides_json,
-            None,
         )
     })
 }
@@ -90,11 +103,13 @@ pub(crate) fn simulate_model_with_workspace_sources_impl(
             session,
             source,
             model_name,
-            t_end,
-            dt,
-            solver,
+            BatchSimulationOptions {
+                t_end,
+                dt,
+                solver: solver.into(),
+                output_variables: None,
+            },
             parameter_overrides_json,
-            None,
         )
     })
 }
@@ -103,24 +118,28 @@ pub(crate) fn simulate_model_with_workspace_sources_selected_impl(
     source: &str,
     model_name: &str,
     workspace_sources_json: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
+    options_json: &str,
     parameter_overrides_json: &str,
-    output_variables_json: &str,
 ) -> Result<String, WasmError> {
-    let output_variables = parse_output_variables(output_variables_json)?;
+    let options: BatchSimulationOptions<'_> = serde_json::from_str(options_json)
+        .map_err(|error| WasmError::new(format!("simulation options JSON error: {error}")))?;
+    if options
+        .output_variables
+        .as_ref()
+        .is_some_and(|names| names.is_empty() || names.iter().any(|name| name.trim().is_empty()))
+    {
+        return Err(WasmError::new(
+            "requested output variables must be a non-empty list of names",
+        ));
+    }
     with_singleton_session(|session| {
         load_workspace_sources_for_simulation(session, workspace_sources_json)?;
         simulate_model_in_session(
             session,
             source,
             model_name,
-            t_end,
-            dt,
-            solver,
+            options,
             parameter_overrides_json,
-            output_variables,
         )
     })
 }
@@ -160,18 +179,16 @@ fn simulate_model_in_session(
     session: &mut Session,
     source: &str,
     model_name: &str,
-    t_end: f64,
-    dt: f64,
-    solver: &str,
+    options: BatchSimulationOptions<'_>,
     parameter_overrides_json: &str,
-    output_variables: Option<Vec<String>>,
 ) -> Result<String, WasmError> {
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
     let result = compile_cached_requested_model(session, &requested_model)?;
 
-    let (mut opts, solver_label) = build_simulation_options(&result, t_end, dt, solver);
-    opts.output_variables = output_variables;
+    let (mut opts, solver_label) =
+        build_simulation_options(&result, options.t_end, options.dt, &options.solver);
+    opts.output_variables = options.output_variables;
     let parameter_overrides = parse_parameter_overrides(parameter_overrides_json)?;
     let sim_started = wasm_timing_start();
     let sim = run_simulation(&result, &opts, &parameter_overrides)?;
@@ -224,21 +241,6 @@ fn model_parameter_metadata_in_session(
     let metadata = build_tunable_parameter_meta(&result.dae, &solve_model)
         .map_err(|error| WasmError::new(format!("parameter metadata error: {error}")))?;
     serde_json::to_string(&metadata).map_err(|e| WasmError::new(format!("JSON error: {e}")))
-}
-
-fn parse_output_variables(json: &str) -> Result<Option<Vec<String>>, WasmError> {
-    let trimmed = json.trim();
-    if trimmed.is_empty() || trimmed == "null" {
-        return Ok(None);
-    }
-    let names: Vec<String> = serde_json::from_str(trimmed)
-        .map_err(|e| WasmError::new(format!("output variable JSON error: {e}")))?;
-    if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
-        return Err(WasmError::new(
-            "requested output variables must be a non-empty list of names",
-        ));
-    }
-    Ok(Some(names))
 }
 
 fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, WasmError> {
