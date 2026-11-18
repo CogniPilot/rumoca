@@ -155,23 +155,24 @@ fn read_outputs(
     selected_names: Option<&[String]>,
 ) -> Result<Vec<f64>, MeError> {
     let observation = kernel.observe()?;
-    let values = if let Some(names) = selected_names {
+    let mut values = Vec::new();
+    if let Some(names) = selected_names {
         let mut selected = Vec::new();
         kernel.get_selected_outputs(&observation, observation.time(), names, &mut selected)?;
-        selected
-            .into_iter()
-            .zip(names)
-            .map(|(value, name)| {
-                value.ok_or_else(|| MeError::Contract {
-                    reason: format!("trace output '{name}' disappeared after preparation"),
-                })
-            })
-            .collect::<Result<_, _>>()?
-    } else {
-        let mut values = Vec::new();
-        kernel.get_outputs(&observation, observation.time(), &mut values)?;
         values
-    };
+            .try_reserve_exact(names.len())
+            .map_err(|_| MeError::Allocation {
+                context: "selected trace values",
+                entries: names.len(),
+            })?;
+        for (value, name) in selected.into_iter().zip(names) {
+            values.push(value.ok_or_else(|| MeError::Contract {
+                reason: format!("trace output '{name}' disappeared after preparation"),
+            })?);
+        }
+    } else {
+        kernel.get_outputs(&observation, observation.time(), &mut values)?;
+    }
     kernel.report_warnings(&observation)?;
     Ok(values)
 }

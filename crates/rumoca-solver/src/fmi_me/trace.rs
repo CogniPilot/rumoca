@@ -307,12 +307,10 @@ impl MeTraceRecorder {
                 expected: self.source_width,
             });
         }
-        let selected;
+        let mut selected = Vec::new();
         let values = if let Some(selection) = &self.selection {
-            selected = selection
-                .iter()
-                .map(|&index| values[index])
-                .collect::<Vec<_>>();
+            try_reserve(&mut selected, selection.len(), "selected trace slice")?;
+            selected.extend(selection.iter().map(|&index| values[index]));
             selected.as_slice()
         } else {
             values
