@@ -6,6 +6,7 @@
 //! whole point is that the *component* owns the derivative.
 
 mod committed_seed;
+mod continuous_assertions;
 mod failure_atomicity;
 mod kinematic_derivatives;
 mod manifold;

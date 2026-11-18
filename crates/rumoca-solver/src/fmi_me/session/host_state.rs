@@ -18,7 +18,7 @@ use crate::{
         MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeTime,
         SolveMeKernel,
         integrator::{
-            MeContinuousPoint, MeDerivativeController, accepted_step_roundoff, canonical_coordinate,
+            MeContinuousPoint, MeDerivativeController, canonical_coordinate, reached_event_time,
         },
         root::MeRootSearchPolicy,
         trace::{MeTraceRecorder, TraceObservationRole},
@@ -767,17 +767,6 @@ fn unwound_loss(recorded: Option<MeSessionLoss>, restored: bool) -> MeSessionLos
         (None | Some(MeSessionLoss::NumericalStep), false) => MeSessionLoss::AcceptedPoint,
         (Some(existing), false) => existing,
     }
-}
-
-/// The pure half of [`MeHostState::reached_cached_event_time`].
-///
-/// Kept free of the host so the one decision that makes an endpoint's left
-/// evidence durable *before* `fmi3CompletedIntegratorStep` can be exhausted
-/// directly. It is deliberately the master loop's own coincidence rule, so an
-/// endpoint the loop will treat as an event is exactly an endpoint this admits.
-fn reached_event_time(next_event_time: Option<f64>, endpoint: f64) -> Option<f64> {
-    let roundoff = accepted_step_roundoff(endpoint, 0.0);
-    next_event_time.filter(|event| (event - endpoint).abs() <= roundoff)
 }
 
 /// The pure half of [`MeHostState::event_left_coordinate`].

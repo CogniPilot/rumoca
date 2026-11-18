@@ -40,6 +40,19 @@ impl SolveRuntime {
         }
     }
 
+    pub(crate) fn observes_scalar_accepted_step_assertions(&self) -> bool {
+        match &self.execution {
+            RuntimeExecutionInventory::Scalar(scalar) => ScalarExecutionView {
+                runtime: self,
+                scalar,
+            }
+            .has_unclocked_error_assertions(),
+            // The admitted native value schedule owns native assigned-read assertions.
+            #[cfg(feature = "native-wasm")]
+            RuntimeExecutionInventory::Native(_) => false,
+        }
+    }
+
     pub(super) fn scalar_backend(&self) -> Option<&dyn SolveExecutionBackend> {
         match &self.execution {
             RuntimeExecutionInventory::Scalar(scalar) => scalar.execution_backend.as_deref(),

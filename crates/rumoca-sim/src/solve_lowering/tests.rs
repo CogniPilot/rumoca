@@ -33,6 +33,7 @@ mod initial_relation_truth;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
 mod jacobian_source_trajectories;
+mod noevent_assertions;
 #[cfg(all(not(target_arch = "wasm32"), feature = "solver-rk45"))]
 mod ordinary_fmi_reads;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
