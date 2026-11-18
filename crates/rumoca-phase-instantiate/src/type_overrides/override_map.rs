@@ -11,10 +11,32 @@ use crate::type_lookup::find_member_type_in_class;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClassModifierValues {
+    pub(crate) bindings: IndexMap<ast::QualifiedName, ast::ModificationValue>,
+    pub(crate) final_paths: Vec<ast::QualifiedName>,
+}
+
+#[derive(Debug, Clone)]
+struct TypeSelection {
+    target_def_id: DefId,
+    modifier_values: Option<Arc<ClassModifierValues>>,
+}
+
+impl TypeSelection {
+    fn new(target_def_id: DefId) -> Self {
+        Self {
+            target_def_id,
+            modifier_values: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TypeOverrideMap {
-    targets_by_alias_def_id: IndexMap<DefId, DefId>,
+    targets_by_alias_def_id: IndexMap<DefId, TypeSelection>,
     targets_by_alias_path: IndexMap<ast::QualifiedName, DefId>,
 }
 
@@ -35,7 +57,7 @@ impl TypeOverrideMap {
     ) {
         if let Some(alias_def_id) = alias_def_id {
             self.targets_by_alias_def_id
-                .insert(alias_def_id, target_def_id);
+                .insert(alias_def_id, TypeSelection::new(target_def_id));
         }
         self.targets_by_alias_path.insert(alias_path, target_def_id);
     }
@@ -49,7 +71,7 @@ impl TypeOverrideMap {
         if let Some(alias_def_id) = alias_def_id {
             self.targets_by_alias_def_id
                 .entry(alias_def_id)
-                .or_insert(target_def_id);
+                .or_insert_with(|| TypeSelection::new(target_def_id));
         }
         self.targets_by_alias_path
             .entry(alias_path)
@@ -57,17 +79,33 @@ impl TypeOverrideMap {
     }
 
     pub(crate) fn insert_class_override(&mut self, class_override: &ast::ClassOverride) {
-        self.insert_alias(
+        self.insert_class_override_with_values(class_override, ClassModifierValues::default());
+    }
+
+    pub(crate) fn insert_class_override_with_values(
+        &mut self,
+        class_override: &ast::ClassOverride,
+        values: ClassModifierValues,
+    ) {
+        let modifier_values = (!values.bindings.is_empty() || !values.final_paths.is_empty())
+            .then(|| Arc::new(values));
+        self.targets_by_alias_def_id.insert(
+            class_override.alias_def_id,
+            TypeSelection {
+                target_def_id: class_override.target_def_id,
+                modifier_values,
+            },
+        );
+        self.targets_by_alias_path.insert(
             ast::QualifiedName::from_ident(&class_override.alias),
-            Some(class_override.alias_def_id),
             class_override.target_def_id,
         );
     }
 
     pub(crate) fn extend_from(&mut self, other: &TypeOverrideMap) {
-        for (alias_def_id, target_def_id) in &other.targets_by_alias_def_id {
+        for (alias_def_id, selection) in &other.targets_by_alias_def_id {
             self.targets_by_alias_def_id
-                .insert(*alias_def_id, *target_def_id);
+                .insert(*alias_def_id, selection.clone());
         }
         for (alias_path, target_def_id) in &other.targets_by_alias_path {
             self.targets_by_alias_path
@@ -76,7 +114,19 @@ impl TypeOverrideMap {
     }
 
     pub(crate) fn target_for_alias_def_id(&self, alias_def_id: DefId) -> Option<DefId> {
-        self.targets_by_alias_def_id.get(&alias_def_id).copied()
+        self.targets_by_alias_def_id
+            .get(&alias_def_id)
+            .map(|selection| selection.target_def_id)
+    }
+
+    pub(crate) fn class_modifier_values(
+        &self,
+        alias_def_id: DefId,
+    ) -> Option<&ClassModifierValues> {
+        self.targets_by_alias_def_id
+            .get(&alias_def_id)?
+            .modifier_values
+            .as_deref()
     }
 
     pub(crate) fn target_for_alias_name(&self, alias: &str) -> Option<DefId> {
@@ -106,8 +156,8 @@ impl TypeOverrideMap {
     pub(crate) fn class_overrides(&self, tree: &ast::ClassTree) -> ast::ClassOverrideMap {
         self.targets_by_alias_def_id
             .iter()
-            .filter_map(|(alias_def_id, target_def_id)| {
-                if alias_def_id == target_def_id {
+            .filter_map(|(alias_def_id, selection)| {
+                if *alias_def_id == selection.target_def_id {
                     return None;
                 }
                 let alias = tree
@@ -117,7 +167,7 @@ impl TypeOverrideMap {
                     .to_string();
                 Some((
                     *alias_def_id,
-                    ast::ClassOverride::new(alias, *alias_def_id, *target_def_id, None),
+                    ast::ClassOverride::new(alias, *alias_def_id, selection.target_def_id, None),
                 ))
             })
             .collect()

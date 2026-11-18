@@ -13,6 +13,14 @@ pub enum NestedArguments {
     Elements,
 }
 
+impl NestedArguments {
+    /// A whole binding retains primitive attributes and explicitly restated
+    /// structured elements (MLS §7.2.3).
+    pub const fn retains_below_binding(self, restated: bool) -> bool {
+        matches!(self, Self::Attributes) || restated
+    }
+}
+
 /// Why a lower modification cannot be merged below a stated one. Each holds
 /// the element's path below the merged one (`a`, `p.a`; empty for the merged
 /// element itself).
@@ -139,18 +147,19 @@ impl Expression {
         let at = || path.join(".");
         match classify(path) {
             None => Err(MergeRefusal::Unclassified(at())),
-            Some(NestedArguments::Elements) => {
+            Some(arguments @ NestedArguments::Elements) => {
                 let restated = self
                     .nested_modification()
                     .map(argument_names)
                     .unwrap_or_default();
-                let superseded =
-                    arguments_where(lower, |name| !restated.iter().any(|stated| stated == name));
+                let retains = |name: &str| {
+                    arguments.retains_below_binding(restated.iter().any(|stated| stated == name))
+                };
+                let superseded = arguments_where(lower, |name| !retains(name));
                 if let Some(element) = first_final(&superseded) {
                     return Err(MergeRefusal::Final(element).within_path(&at()));
                 }
-                let kept =
-                    arguments_where(lower, |name| restated.iter().any(|stated| stated == name));
+                let kept = arguments_where(lower, retains);
                 match self.nested_modification_mut() {
                     Some(stated) => merge_arguments_below(stated, &kept, path, classify),
                     None => Ok(()),

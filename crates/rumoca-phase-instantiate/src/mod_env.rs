@@ -5,11 +5,11 @@ mod record_projection;
 mod tests;
 
 use super::inheritance::{
-    find_class_in_tree, get_effective_components, is_type_subtype,
+    find_class_in_tree, get_effective_components, is_type_subtype, nested_arguments,
     resolve_effective_components_for_eval,
 };
-use super::nested_scope::remap_redeclare_class_modifier;
-use super::type_overrides::{TypeOverrideMap, find_nested_class_in_hierarchy};
+use super::nested_scope::{SelectedClassModifiers, remap_redeclare_class_modifier, target_path};
+use super::type_overrides::{ClassModifierValues, TypeOverrideMap};
 use super::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_eval_ast::eval_instantiate::{
     InstantiateEvalCtx, evaluate_component_condition, try_eval_integer_expr, try_eval_string_expr,
@@ -43,6 +43,7 @@ pub(super) struct PopulateModEnvInput<'a> {
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
     pub(super) type_overrides: &'a TypeOverrideMap,
     pub(super) target_class: Option<&'a ast::ClassDef>,
+    pub(super) class_overrides: &'a ast::ClassOverrideMap,
     pub(super) parent_snapshot: &'a IndexMap<ast::QualifiedName, rumoca_ir_ast::ModificationValue>,
     pub(super) shifted_parent_keys: &'a IndexMap<ast::QualifiedName, ()>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2).
@@ -103,12 +104,13 @@ pub(super) fn populate_modification_environment(
     ctx: &mut InstantiateContext,
     tree: &ast::ClassTree,
     input: PopulateModEnvInput<'_>,
-) -> InstantiateResult<()> {
+) -> InstantiateResult<SelectedClassModifiers> {
     let PopulateModEnvInput {
         comp,
         effective_components,
         type_overrides,
         target_class,
+        class_overrides,
         parent_snapshot,
         shifted_parent_keys,
         modifier_imports,
@@ -126,14 +128,89 @@ pub(super) fn populate_modification_environment(
         },
     };
 
+    let mut selected_modifiers = IndexMap::default();
     for (target_name, mod_expr) in &comp.modifications {
         let prefixes = ModifierPrefixes {
             final_: comp.final_attributes.contains(target_name),
             each: comp.each_modifications.contains(target_name),
         };
-        apply_component_modifier(ctx, target_name, mod_expr, prefixes, &eval_ctx)?;
+        let mut owners = class_overrides
+            .values()
+            .filter(|selection| selection.alias == *target_name)
+            .peekable();
+        if let Some(owner) = owners.peek()
+            && let ast::Expression::ClassModification {
+                modifications,
+                each_flags,
+                final_flags,
+                ..
+            } = mod_expr
+        {
+            let values = evaluate_selected_class_modifiers(
+                ctx,
+                owner,
+                &eval_ctx,
+                modifications,
+                NestedModificationFlags {
+                    prefixes,
+                    each_flags,
+                    final_flags,
+                },
+            )?;
+            for owner in owners {
+                selected_modifiers.insert(owner.alias_def_id, values.clone());
+            }
+            preserve_redeclare_class_modifier(ctx, target_name, mod_expr, &eval_ctx);
+        } else {
+            apply_component_modifier(ctx, target_name, mod_expr, prefixes, &eval_ctx)?;
+        }
     }
-    Ok(())
+    Ok(selected_modifiers)
+}
+
+/// Evaluate the written arguments inside their resolved selection's own
+/// modifier environment. An enclosing alias with the same name contributes
+/// only when the caller forwards its exact declaration.
+fn evaluate_selected_class_modifiers(
+    ctx: &mut InstantiateContext,
+    owner: &ast::ClassOverride,
+    eval_ctx: &ModifierEvalContext<'_>,
+    modifications: &[ast::Expression],
+    flags: NestedModificationFlags<'_>,
+) -> InstantiateResult<ClassModifierValues> {
+    let mut written = ClassModifierValues::default();
+    process_nested_modifications_recursive(
+        ctx,
+        &ast::QualifiedName::new(),
+        modifications,
+        &NestedModificationContext {
+            effective_components: eval_ctx.effective_components,
+            tree: eval_ctx.tree,
+            source_scope: eval_ctx.insert_ctx.source_scope.clone(),
+            imports: eval_ctx.insert_ctx.imports,
+        },
+        flags,
+        Some(&mut written),
+    )?;
+
+    let mut bindings = ctx
+        .mod_env()
+        .active
+        .iter()
+        .filter(|(name, _)| eval_ctx.insert_ctx.shifted_parent_keys.contains_key(*name))
+        .filter_map(|(name, value)| Some((name.strip_prefix(&owner.alias)?, value.clone())))
+        .collect();
+    add_class_modifier_defaults(
+        &mut bindings,
+        &written,
+        |_| true,
+        eval_ctx.tree,
+        eval_ctx.tree.get_class_by_def_id(owner.target_def_id),
+    )?;
+    Ok(ClassModifierValues {
+        bindings,
+        final_paths: written.final_paths,
+    })
 }
 
 fn insert_modifier_value_with_structural_overrides(
@@ -287,7 +364,6 @@ fn apply_component_modifier(
                 each_flags,
                 final_flags,
             )?;
-            preserve_redeclare_class_modifier(ctx, target_name, mod_expr, eval_ctx);
         }
         // Nested class modification WITH binding: field(start=X) = expr.
         // MLS §7.2: process both nested attribute modifications and binding.
@@ -347,15 +423,6 @@ fn apply_component_modifier(
     Ok(())
 }
 
-/// `a.b(c = 1)` means `a(b(c = 1))`; a quoted identifier is one name, dots included.
-fn target_path(target_name: &str) -> ast::QualifiedName {
-    if target_name.starts_with('\'') {
-        ast::QualifiedName::from_ident(target_name)
-    } else {
-        ast::QualifiedName::from_dotted(target_name)
-    }
-}
-
 fn apply_nested_class_modifier(
     ctx: &mut InstantiateContext,
     target_name: &str,
@@ -382,6 +449,7 @@ fn apply_nested_class_modifier(
             each_flags,
             final_flags,
         },
+        None,
     )
 }
 
@@ -393,23 +461,20 @@ fn preserve_redeclare_class_modifier(
 ) {
     // MLS §7.3: preserve class/package redeclare bindings in mod_env so
     // downstream type resolution sees component-level redeclare overrides.
-    let is_redeclare_class_target = eval_ctx.target_class.is_some_and(|tc| {
-        find_nested_class_in_hierarchy(eval_ctx.tree, tc, target_name)
-            .is_some_and(|nested| nested.is_replaceable)
-    });
-    if is_redeclare_class_target {
-        let qn = ast::QualifiedName::from_ident(target_name);
-        let resolved_class_mod =
-            remap_redeclare_class_modifier(mod_expr, target_name, eval_ctx.type_overrides);
-        ctx.mod_env_mut().add(
-            qn,
-            ast::ModificationValue::with_source_scope(
-                resolved_class_mod,
-                None,
-                eval_ctx.insert_ctx.source_scope.clone(),
-            ),
-        );
+    let qn = ast::QualifiedName::from_ident(target_name);
+    let resolved_class_mod =
+        remap_redeclare_class_modifier(mod_expr, target_name, eval_ctx.type_overrides);
+    if !eval_ctx.insert_ctx.shifted_parent_keys.contains_key(&qn) {
+        ctx.mod_env_mut().active.shift_remove(&qn);
     }
+    ctx.mod_env_mut().add(
+        qn,
+        ast::ModificationValue::with_source_scope(
+            resolved_class_mod,
+            None,
+            eval_ctx.insert_ctx.source_scope.clone(),
+        ),
+    );
 }
 
 fn modifier_target_component(
@@ -490,6 +555,91 @@ fn required_binding_source_span(
         Some(expr) => required_modifier_expr_span(expr, context),
         None => required_modifier_expr_span(value, context),
     }
+}
+
+/// The occurrence's modifiers take precedence over the selected class's own
+/// modifiers. Both sets already carry the scope where each value was written.
+pub(super) fn add_class_modifier_defaults(
+    outer: &mut IndexMap<ast::QualifiedName, ast::ModificationValue>,
+    class_modifiers: &ClassModifierValues,
+    is_outer_modifier: impl Fn(&ast::QualifiedName) -> bool,
+    tree: &ast::ClassTree,
+    class: Option<&ast::ClassDef>,
+) -> InstantiateResult<()> {
+    let final_paths = class_modifiers.final_paths.iter().chain(
+        class_modifiers
+            .bindings
+            .iter()
+            .filter_map(|(name, value)| value.final_.then_some(name)),
+    );
+    for path in final_paths {
+        let descendant = outer
+            .iter()
+            .find(|(name, _)| is_outer_modifier(name) && name.parts.starts_with(&path.parts))
+            .map(|(_, value)| value);
+        let replacing = match descendant {
+            Some(value) => Some(value),
+            None => replacing_modifier(outer, path, &is_outer_modifier, tree, class)?,
+        };
+        if let Some(override_value) = replacing {
+            let span = required_binding_source_span(
+                override_value.source.as_ref(),
+                &override_value.value,
+                "final redeclared class modifier",
+            )?;
+            return Err(Box::new(InstantiateError::redeclare_final(
+                path.to_flat_string(),
+                span,
+            )));
+        }
+    }
+    let mut admitted = Vec::new();
+    for (name, modifier) in &class_modifiers.bindings {
+        if !(is_outer_modifier(name) && outer.contains_key(name))
+            && replacing_modifier(outer, name, &is_outer_modifier, tree, class)?.is_none()
+        {
+            admitted.push((name.clone(), modifier.clone()));
+        }
+    }
+    outer.extend(admitted);
+    Ok(())
+}
+
+fn replacing_modifier<'a>(
+    outer: &'a IndexMap<ast::QualifiedName, ast::ModificationValue>,
+    path: &ast::QualifiedName,
+    is_outer_modifier: &impl Fn(&ast::QualifiedName) -> bool,
+    tree: &ast::ClassTree,
+    class: Option<&ast::ClassDef>,
+) -> InstantiateResult<Option<&'a ast::ModificationValue>> {
+    for (name, value) in outer {
+        if !is_outer_modifier(name)
+            || name.parts.len() >= path.parts.len()
+            || !path.parts.starts_with(&name.parts)
+        {
+            continue;
+        }
+        let segments = name
+            .parts
+            .iter()
+            .map(|(segment, _)| rumoca_core::strip_all_subscripts(segment))
+            .collect::<Vec<_>>();
+        let arguments = nested_arguments(tree, class, &segments).ok_or_else(|| {
+            Box::new(InstantiateError::redeclare_error(
+                name.to_flat_string(),
+                "the type of a binding above inherited class modifiers is unresolved",
+                value.value.span(),
+            ))
+        })?;
+        let next = &path.parts[..name.parts.len() + 1];
+        let restated = outer
+            .keys()
+            .any(|other| is_outer_modifier(other) && other.parts.starts_with(next));
+        if !arguments.retains_below_binding(restated) {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
 }
 
 fn required_modifier_expr_span(
@@ -910,74 +1060,101 @@ fn process_nested_modifications_recursive(
     modifications: &[ast::Expression],
     nested_ctx: &NestedModificationContext<'_>,
     flags: NestedModificationFlags<'_>,
+    mut selected: Option<&mut ClassModifierValues>,
 ) -> InstantiateResult<()> {
     for (idx, nested_mod) in modifications.iter().enumerate() {
         let nested_prefixes = ModifierPrefixes {
             each: flags.prefixes.each || flags.each_flags.get(idx).copied().unwrap_or(false),
             final_: flags.prefixes.final_ || flags.final_flags.get(idx).copied().unwrap_or(false),
         };
-        match nested_mod {
-            ast::Expression::Modification {
-                target: attr_target,
-                value,
+        let (target, nested, value) = match nested_mod {
+            ast::Expression::Modification { target, value, .. } => {
+                (target, None, Some(value.as_ref()))
+            }
+            ast::Expression::ClassModification { target, .. } => (target, Some(nested_mod), None),
+            ast::Expression::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
                 ..
             } => {
-                let attr_name = attr_target.to_string();
-                let preserve_source = preserves_source_scoped_attribute(attr_name.as_str());
-                let mut qn = prefix.clone();
-                qn.parts.extend(target_path(&attr_name).parts);
-                let stored_expr = if preserve_source {
-                    value.as_ref().clone()
-                } else {
-                    resolve_modification_expr(
-                        value,
-                        ModifierResolveScope {
-                            mod_env: ctx.mod_env(),
-                            effective_components: nested_ctx.effective_components,
-                            tree: nested_ctx.tree,
-                            imports: nested_ctx.imports,
-                        },
-                        false,
-                    )?
+                let ast::Expression::ClassModification { target, .. } = lhs.as_ref() else {
+                    continue;
                 };
-                ctx.mod_env_mut().add(
-                    qn,
-                    ast::ModificationValue::with_source_scope_and_prefixes(
-                        stored_expr,
-                        Some(value.as_ref().clone()),
-                        nested_ctx.source_scope.clone(),
-                        nested_prefixes.each,
-                        nested_prefixes.final_,
-                    ),
-                );
+                (target, Some(lhs.as_ref()), Some(rhs.as_ref()))
             }
-            ast::Expression::ClassModification {
-                target,
-                modifications: nested_mods,
-                each_flags: nested_each_flags,
-                final_flags: nested_final_flags,
-                ..
-            } => {
-                let target_name = target.to_string();
-                let mut nested_prefix = prefix.clone();
-                nested_prefix.parts.extend(target_path(&target_name).parts);
-                process_nested_modifications_recursive(
-                    ctx,
-                    &nested_prefix,
-                    nested_mods,
-                    nested_ctx,
-                    NestedModificationFlags {
-                        prefixes: nested_prefixes,
-                        each_flags: nested_each_flags,
-                        final_flags: nested_final_flags,
-                    },
-                )?;
+            _ => continue,
+        };
+        let mut path = prefix.clone();
+        path.parts
+            .extend(ast::QualifiedName::from_component_reference(target).parts);
+        if nested_prefixes.final_
+            && value.is_none()
+            && let Some(selection) = selected.as_deref_mut()
+        {
+            selection.final_paths.push(path.clone());
+        }
+        if let Some(ast::Expression::ClassModification {
+            modifications,
+            each_flags,
+            final_flags,
+            ..
+        }) = nested
+        {
+            process_nested_modifications_recursive(
+                ctx,
+                &path,
+                modifications,
+                nested_ctx,
+                NestedModificationFlags {
+                    prefixes: nested_prefixes,
+                    each_flags,
+                    final_flags,
+                },
+                selected.as_deref_mut(),
+            )?;
+        }
+        if let Some(value) = value {
+            let binding = nested_modifier_binding(ctx, target, value, nested_ctx, nested_prefixes)?;
+            if let Some(selection) = selected.as_deref_mut() {
+                selection.bindings.entry(path).or_insert(binding);
+            } else {
+                ctx.mod_env_mut().add(path, binding);
             }
-            _ => {}
         }
     }
 
     Ok(())
+}
+
+fn nested_modifier_binding(
+    ctx: &InstantiateContext,
+    target: &ast::ComponentReference,
+    value: &ast::Expression,
+    nested_ctx: &NestedModificationContext<'_>,
+    prefixes: ModifierPrefixes,
+) -> InstantiateResult<ast::ModificationValue> {
+    let resolved = if preserves_source_scoped_attribute(&target.to_string()) {
+        value.clone()
+    } else {
+        resolve_modification_expr(
+            value,
+            ModifierResolveScope {
+                mod_env: ctx.mod_env(),
+                effective_components: nested_ctx.effective_components,
+                tree: nested_ctx.tree,
+                imports: nested_ctx.imports,
+            },
+            false,
+        )?
+    };
+    Ok(ast::ModificationValue::with_source_scope_and_prefixes(
+        resolved,
+        Some(value.clone()),
+        nested_ctx.source_scope.clone(),
+        prefixes.each,
+        prefixes.final_,
+    ))
 }
 
 fn preserves_source_scoped_attribute(attr_name: &str) -> bool {

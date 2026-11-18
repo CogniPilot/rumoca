@@ -42,8 +42,10 @@ pub(super) use deferred_references::{
     resolve_dynamic_expression_targets, resolve_dynamic_statement_targets,
 };
 pub(super) use override_collection::build_type_override_map;
-pub(super) use override_map::TypeOverrideMap;
+pub(super) use override_map::{ClassModifierValues, TypeOverrideMap};
 pub(super) use post_materialization::resolve_post_materialization_component_targets;
-pub(super) use redeclare_modifiers::class_redeclare_modifier_args;
+pub(super) use redeclare_modifiers::{
+    class_redeclare_modifier_args, component_source_modifier_target_name,
+};
 pub(super) use redeclare_values::resolve_redeclare_value_def_id;
 pub(super) use selected_class_members::resolve_class_override_modifier_targets;

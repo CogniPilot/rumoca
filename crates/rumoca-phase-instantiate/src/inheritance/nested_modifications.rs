@@ -143,7 +143,7 @@ fn insert_nested_modification(
 /// Keep the source argument and its prefixes at the same component boundary
 /// as the normalized value. Replacement selection consumes the resolved source
 /// reference, not the flattened value alone (MLS §7.2/§7.3).
-fn preserve_nested_source_argument(
+pub(super) fn preserve_nested_source_argument(
     comp: &mut ast::Component,
     argument: &ast::Expression,
     each: bool,

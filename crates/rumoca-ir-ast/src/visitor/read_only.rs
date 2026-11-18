@@ -307,6 +307,12 @@ pub fn walk_component_default<V: Visitor + ?Sized>(
                 ExpressionContext::ComponentModification,
             )?;
         }
+        for modification in &comp.constraining_modifications {
+            visitor.visit_expression_ctx(
+                &modification.expr,
+                ExpressionContext::ComponentModification,
+            )?;
+        }
     }
     if let Some(cond) = &comp.condition {
         visitor.visit_expression_ctx(cond, ExpressionContext::ComponentCondition)?;

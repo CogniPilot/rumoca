@@ -186,6 +186,9 @@ impl Resolver {
             for source_modification in comp.source_modifications.iter_mut() {
                 self.resolve_source_modification(source_modification, class_scope);
             }
+            for modification in &mut comp.constraining_modifications {
+                self.resolve_source_modification(&mut modification.expr, class_scope);
+            }
             self.resolve_subscripts(&mut comp.shape_expr, class_scope);
             if let Some(ref mut cond) = comp.condition {
                 self.resolve_expression(cond, class_scope);

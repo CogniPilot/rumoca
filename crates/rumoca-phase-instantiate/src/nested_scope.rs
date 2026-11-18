@@ -1,8 +1,9 @@
+use super::mod_env::add_class_modifier_defaults;
 use super::type_overrides::{
-    TypeOverrideMap, build_type_override_map, class_redeclare_modifier_args,
-    extract_component_class_overrides, find_all_nested_classes_in_hierarchy,
-    find_nested_class_in_hierarchy, resolve_class_override_modifier_targets,
-    validate_component_class_redeclare_target,
+    ClassModifierValues, TypeOverrideMap, build_type_override_map, class_redeclare_modifier_args,
+    component_source_modifier_target_name, extract_component_class_overrides,
+    find_all_nested_classes_in_hierarchy, find_nested_class_in_hierarchy,
+    resolve_class_override_modifier_targets, validate_component_class_redeclare_target,
 };
 use super::{InstantiateContext, InstantiateError, InstantiateResult, location_to_span};
 use rumoca_core::DefId;
@@ -11,6 +12,117 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::collections::BTreeSet;
 
 pub(super) type NestedTypeOverrides = (ast::ClassOverrideMap, bool, TypeOverrideMap);
+pub(super) type SelectedClassModifiers = IndexMap<DefId, ClassModifierValues>;
+
+pub(super) struct NestedClassTypeSelection<'a> {
+    pub(super) overrides: &'a TypeOverrideMap,
+    pub(super) redeclarations: &'a ast::ClassOverrideMap,
+    pub(super) selected_class_modifiers: Option<&'a ClassModifierValues>,
+}
+
+impl NestedClassTypeSelection<'_> {
+    pub(super) fn final_paths(
+        &self,
+        parent_paths: &[ast::QualifiedName],
+        component_name: &str,
+    ) -> Vec<ast::QualifiedName> {
+        parent_paths
+            .iter()
+            .filter_map(|path| path.strip_prefix(component_name))
+            .chain(
+                self.selected_class_modifiers
+                    .into_iter()
+                    .flat_map(|modifiers| modifiers.final_paths.iter().cloned()),
+            )
+            .collect()
+    }
+}
+
+pub(super) fn prepare_nested_class_modifiers(
+    ctx: &mut InstantiateContext,
+    comp: &ast::Component,
+    nested_types: NestedClassTypeSelection<'_>,
+    parent_snapshot: &IndexMap<ast::QualifiedName, ast::ModificationValue>,
+    targeted_keys: &IndexMap<ast::QualifiedName, ()>,
+    record_projected_keys: &IndexMap<ast::QualifiedName, ()>,
+    (tree, class, declared): (&ast::ClassTree, &ast::ClassDef, SelectedClassModifiers),
+) -> InstantiateResult<TypeOverrideMap> {
+    let referenced_mod_roots = collect_referenced_mod_roots(comp);
+    let is_outer_modifier = |key: &ast::QualifiedName| {
+        !parent_snapshot.contains_key(key)
+            || record_projected_keys.contains_key(key)
+            || targeted_keys.contains_key(key)
+    };
+    ctx.mod_env_mut().active.retain(|key, _| {
+        // A colliding parent value may remain only when this occurrence owns
+        // the binding or a modifier in this occurrence needs it for lookup.
+        is_outer_modifier(key) || key_matches_referenced_root(key, &referenced_mod_roots)
+    });
+
+    if let Some(modifiers) = nested_types.selected_class_modifiers {
+        add_class_modifier_defaults(
+            &mut ctx.mod_env_mut().active,
+            modifiers,
+            is_outer_modifier,
+            tree,
+            Some(class),
+        )?;
+    }
+
+    let mut selections = nested_types.overrides.clone();
+    capture_redeclared_class_modifiers(
+        &mut selections,
+        ctx.active_type_overrides.last(),
+        nested_types.redeclarations,
+        declared,
+        tree,
+    )?;
+    Ok(selections)
+}
+
+/// Associate the evaluated class modification with its resolved alias before
+/// entering the nested scope. A forwarded alias retains its original values
+/// and source scopes through its exact referenced declaration.
+fn capture_redeclared_class_modifiers(
+    selections: &mut TypeOverrideMap,
+    enclosing: Option<&TypeOverrideMap>,
+    class_overrides: &ast::ClassOverrideMap,
+    mut declared: SelectedClassModifiers,
+    tree: &ast::ClassTree,
+) -> InstantiateResult<()> {
+    for class_override in class_overrides.values() {
+        let mut values = match declared.shift_remove(&class_override.alias_def_id) {
+            Some(values) => values,
+            None if class_override.modifier_args.is_empty() => ClassModifierValues::default(),
+            None => {
+                return Err(Box::new(InstantiateError::redeclare_error(
+                    &class_override.alias,
+                    "no scoped values were constructed for the class modifier",
+                    class_override.modifier_args[0].span(),
+                )));
+            }
+        };
+        let forwarded = class_override
+            .target_ref
+            .as_ref()
+            .and_then(ast::ComponentReference::target_def_id)
+            .and_then(|alias| enclosing?.class_modifier_values(alias));
+        if let Some(forwarded) = forwarded {
+            add_class_modifier_defaults(
+                &mut values.bindings,
+                forwarded,
+                |_| true,
+                tree,
+                tree.get_class_by_def_id(class_override.target_def_id),
+            )?;
+            values
+                .final_paths
+                .extend(forwarded.final_paths.iter().cloned());
+        }
+        selections.insert_class_override_with_values(class_override, values);
+    }
+    Ok(())
+}
 
 pub(super) fn collect_referenced_mod_roots(comp: &ast::Component) -> BTreeSet<String> {
     let mut roots = BTreeSet::new();
@@ -61,6 +173,7 @@ fn test_span() -> rumoca_core::Span {
 pub(super) fn collect_targeted_mod_keys(
     comp: &ast::Component,
     parent_snapshot: &IndexMap<ast::QualifiedName, rumoca_ir_ast::ModificationValue>,
+    class_overrides: &ast::ClassOverrideMap,
 ) -> IndexMap<ast::QualifiedName, ()> {
     let mut keys = IndexMap::default();
 
@@ -73,22 +186,24 @@ pub(super) fn collect_targeted_mod_keys(
 
     // Populated keys: from the component's own modifications
     for (target_name, mod_expr) in &comp.modifications {
-        let qn = ast::QualifiedName::from_ident(target_name);
+        let qn = target_path(target_name);
         match mod_expr {
             // Class modifications like `m_flow(each min=..., each max=...)` target
             // attribute paths (`m_flow.min`, `m_flow.max`) and must not mark the
             // bare `m_flow` key as targeted; doing so can leak unrelated parent
             // bindings into nested members with the same name (MLS §7.2 scope).
             ast::Expression::ClassModification { modifications, .. } => {
-                // MLS §7.3: pure class/package redeclare forwarding has no nested
-                // attribute modifications (e.g., `redeclare package Medium = Medium`).
-                // Keep the bare key targeted so the forwarded binding survives
-                // nested-scope pruning in instantiate_nested_class.
-                if modifications.is_empty() {
-                    keys.insert(qn.clone(), ());
-                    continue;
+                // An empty argument has no binding. A resolved class
+                // redeclaration also carries a selection at the alias key.
+                if modifications.is_empty()
+                    && class_overrides
+                        .values()
+                        .any(|selection| selection.alias == *target_name)
+                {
+                    keys.insert(qn, ());
+                } else {
+                    collect_nested_mod_keys_recursive(&qn, modifications, &mut keys);
                 }
-                collect_nested_mod_keys_recursive(&qn, modifications, &mut keys);
             }
             _ => {
                 keys.insert(qn.clone(), ());
@@ -126,7 +241,8 @@ fn collect_nested_mod_keys_recursive(
         match nested_mod {
             ast::Expression::Modification { target, .. } => {
                 let mut qn = prefix.clone();
-                qn.push(target.to_string(), Vec::new());
+                qn.parts
+                    .extend(ast::QualifiedName::from_component_reference(target).parts);
                 keys.insert(qn, ());
             }
             ast::Expression::ClassModification {
@@ -135,11 +251,22 @@ fn collect_nested_mod_keys_recursive(
                 ..
             } => {
                 let mut nested_prefix = prefix.clone();
-                nested_prefix.push(target.to_string(), Vec::new());
+                nested_prefix
+                    .parts
+                    .extend(ast::QualifiedName::from_component_reference(target).parts);
                 collect_nested_mod_keys_recursive(&nested_prefix, nested_mods, keys);
             }
             _ => {}
         }
+    }
+}
+
+/// `a.b(c = 1)` means `a(b(c = 1))`; a quoted identifier is one name, dots included.
+pub(super) fn target_path(target_name: &str) -> ast::QualifiedName {
+    if target_name.starts_with('\'') {
+        ast::QualifiedName::from_ident(target_name)
+    } else {
+        ast::QualifiedName::from_dotted(target_name)
     }
 }
 
@@ -249,10 +376,23 @@ pub(super) fn resolve_component_nested_type_overrides(
     let mut has_forwarding_class_redeclare = false;
 
     if let Some(target_class) = class_def {
-        for (target_name, mod_expr) in &comp.modifications {
-            let nested_class = find_nested_class_in_hierarchy(tree, target_class, target_name);
+        for (source_modifier, &is_redeclare) in comp
+            .source_modifications
+            .iter()
+            .zip(&comp.source_modification_redeclare_flags)
+        {
+            if !is_redeclare {
+                continue;
+            }
+            let Some(target_name) = component_source_modifier_target_name(source_modifier) else {
+                continue;
+            };
+            let Some(mod_expr) = comp.modifications.get(&target_name) else {
+                continue;
+            };
+            let nested_class = find_nested_class_in_hierarchy(tree, target_class, &target_name);
             if !nested_class.is_some_and(|nested| nested.is_replaceable)
-                || !is_self_forwarding_redeclare(mod_expr, target_name)
+                || !is_self_forwarding_redeclare(mod_expr, &target_name)
             {
                 continue;
             }
@@ -261,7 +401,7 @@ pub(super) fn resolve_component_nested_type_overrides(
             };
             let Some(alias_def_id) = nested_class.def_id else {
                 return Err(Box::new(InstantiateError::redeclare_error(
-                    target_name,
+                    &target_name,
                     "resolved forwarding redeclare target has no DefId",
                     location_to_span(
                         &target_class.location,
@@ -272,11 +412,11 @@ pub(super) fn resolve_component_nested_type_overrides(
             };
             if let Some(effective_def_id) = type_overrides
                 .target_for_alias_def_id(alias_def_id)
-                .or_else(|| type_overrides.target_for_alias_name(target_name))
+                .or_else(|| type_overrides.target_for_alias_name(&target_name))
             {
                 validate_component_class_redeclare_target(
                     tree,
-                    target_name,
+                    &target_name,
                     nested_class,
                     mod_expr,
                     effective_def_id,
@@ -288,7 +428,7 @@ pub(super) fn resolve_component_nested_type_overrides(
                 )?;
                 insert_forwarded_declaration_overrides(
                     &mut class_overrides,
-                    (tree, target_class, target_name),
+                    (tree, target_class, &target_name),
                     (effective_def_id, mod_expr, modifier_args),
                 );
                 has_forwarding_class_redeclare = true;
@@ -456,7 +596,7 @@ mod tests {
             },
         );
 
-        let keys = collect_targeted_mod_keys(&comp, &IndexMap::default());
+        let keys = collect_targeted_mod_keys(&comp, &IndexMap::default(), &IndexMap::default());
         let key_names: std::collections::BTreeSet<String> =
             keys.keys().map(ToString::to_string).collect();
 

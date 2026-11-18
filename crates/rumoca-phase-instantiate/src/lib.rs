@@ -106,8 +106,9 @@ use mod_env::{
     propagate_record_binding_to_fields,
 };
 use nested_scope::{
-    collect_referenced_mod_roots, collect_shifted_parent_mod_keys, collect_targeted_mod_keys,
-    key_matches_referenced_root, resolve_component_nested_type_overrides, shift_modifications_down,
+    NestedClassTypeSelection, collect_shifted_parent_mod_keys, collect_targeted_mod_keys,
+    prepare_nested_class_modifiers, resolve_component_nested_type_overrides,
+    shift_modifications_down,
 };
 use package_constant_imports::{
     resolved_imports_with_active_package_constants,
@@ -241,6 +242,7 @@ struct ScopeFrame {
     /// instantiated beneath it, record members included.
     evaluate: EvaluateMark,
     is_final: bool,
+    final_modifier_paths: Vec<ast::QualifiedName>,
     causality: Option<rumoca_core::Causality>,
     flow: bool,
     stream: bool,
@@ -253,6 +255,7 @@ struct ScopeFrameInput<'a> {
     variability: &'a rumoca_core::Variability,
     evaluate: EvaluateMark,
     is_final: bool,
+    final_modifier_paths: Vec<ast::QualifiedName>,
     causality: &'a rumoca_core::Causality,
     flow: bool,
     stream: bool,
@@ -284,6 +287,7 @@ impl ScopeFrame {
             variability,
             evaluate: input.evaluate,
             is_final: input.is_final,
+            final_modifier_paths: input.final_modifier_paths,
             causality,
             flow: input.flow,
             stream: input.stream,
@@ -624,6 +628,19 @@ impl InstantiateContext {
 
     fn inherited_final(&self) -> bool {
         self.scope_frames.iter().any(|frame| frame.is_final)
+    }
+
+    fn final_modifier_paths(&self) -> &[ast::QualifiedName] {
+        self.scope_frames
+            .last()
+            .map_or(&[], |frame| frame.final_modifier_paths.as_slice())
+    }
+
+    fn has_final_modifier(&self, component_name: &str) -> bool {
+        self.final_modifier_paths().iter().any(|path| {
+            matches!(path.parts.as_slice(), [(name, subscripts)]
+                if name == component_name && subscripts.is_empty())
+        })
     }
 
     /// Push inherited scope metadata for nested class instantiation.
@@ -1418,6 +1435,7 @@ fn instantiate_component(
     let causality = resolve_component_causality(comp, class_def, ctx.inherited_causality());
     let is_final = comp.is_final
         || ctx.inherited_final()
+        || ctx.has_final_modifier(&comp.name)
         || ctx
             .mod_env()
             .get(&ast::QualifiedName::from_ident(&comp.name))
@@ -1488,6 +1506,15 @@ fn instantiate_component(
         return Ok(());
     }
 
+    // The occurrence uses the selection from its enclosing class. The
+    // nested override map can add lexical package exposures for its members.
+    let selected_class_modifiers = scope
+        .effective_components
+        .get(&comp.name)
+        .filter(|declaration| declaration.def_id == Some(component_def_id))
+        .and_then(|declaration| declaration.type_def_id)
+        .filter(|alias| scope.type_overrides.target_for_alias_def_id(*alias) == comp.type_def_id)
+        .and_then(|alias| scope.type_overrides.class_modifier_values(alias));
     instantiate_nested_component_if_needed(
         tree,
         ctx,
@@ -1508,7 +1535,11 @@ fn instantiate_component(
             binding_scope_for_record_expansion: binding_scope_for_record_expansion.as_ref(),
             binding_is_each,
             effective_components: scope.effective_components,
-            type_overrides: &nested_type_overrides,
+            nested_types: NestedClassTypeSelection {
+                overrides: &nested_type_overrides,
+                redeclarations: &class_overrides,
+                selected_class_modifiers,
+            },
             modifier_imports: scope.imports.attributes,
         },
     )?;
@@ -1700,7 +1731,7 @@ struct NestedComponentRequest<'a> {
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
     binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
-    type_overrides: &'a TypeOverrideMap,
+    nested_types: NestedClassTypeSelection<'a>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2),
     /// used to qualify unqualified names in modifier expressions.
     modifier_imports: &'a [(String, String)],
@@ -1732,12 +1763,16 @@ fn instantiate_nested_component_if_needed(
             causality: request.causality,
             flow: request.flow,
             stream: request.stream,
-            binding_for_record_expansion: request.binding_for_record_expansion,
-            binding_source_for_record_expansion: request.binding_source_for_record_expansion,
-            binding_scope_for_record_expansion: request.binding_scope_for_record_expansion,
-            binding_is_each: request.binding_is_each,
+            record_binding: request.binding_for_record_expansion.map(|value| {
+                RecordBindingProjection {
+                    value,
+                    source: request.binding_source_for_record_expansion,
+                    source_scope: request.binding_scope_for_record_expansion.cloned(),
+                    each: request.binding_is_each,
+                }
+            }),
             effective_components: request.effective_components,
-            type_overrides: request.type_overrides,
+            nested_types: request.nested_types,
             modifier_imports: request.modifier_imports,
         },
     )
@@ -1777,12 +1812,9 @@ struct NestedInstantiationInput<'a> {
     causality: &'a rumoca_core::Causality,
     flow: bool,
     stream: bool,
-    binding_for_record_expansion: Option<&'a ast::Expression>,
-    binding_source_for_record_expansion: Option<&'a ast::Expression>,
-    binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
-    binding_is_each: bool,
+    record_binding: Option<RecordBindingProjection<'a>>,
     effective_components: &'a IndexMap<String, ast::Component>,
-    type_overrides: &'a TypeOverrideMap,
+    nested_types: NestedClassTypeSelection<'a>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2).
     modifier_imports: &'a [(String, String)],
 }
@@ -1803,12 +1835,9 @@ fn instantiate_nested_class(
         causality,
         flow,
         stream,
-        binding_for_record_expansion,
-        binding_source_for_record_expansion,
-        binding_scope_for_record_expansion,
-        binding_is_each,
+        record_binding,
         effective_components,
-        type_overrides,
+        nested_types,
         modifier_imports,
     } = input;
 
@@ -1829,54 +1858,42 @@ fn instantiate_nested_class(
         )?;
     let mod_env_snapshot = ctx.mod_env().active.clone();
     let shifted_parent_keys = collect_shifted_parent_mod_keys(comp, &mod_env_snapshot);
-    let targeted_keys = collect_targeted_mod_keys(comp, &mod_env_snapshot);
+    let targeted_keys =
+        collect_targeted_mod_keys(comp, &mod_env_snapshot, nested_types.redeclarations);
 
     shift_modifications_down(ctx, &comp.name);
 
-    populate_modification_environment(
+    let selected_class_modifiers = populate_modification_environment(
         ctx,
         tree,
         PopulateModEnvInput {
             comp,
             effective_components,
-            type_overrides,
+            type_overrides: nested_types.overrides,
             target_class: Some(nested_class),
+            class_overrides: nested_types.redeclarations,
             parent_snapshot: &mod_env_snapshot,
             shifted_parent_keys: &shifted_parent_keys,
             modifier_imports,
         },
     )?;
 
-    let record_projected_keys = if let Some(binding_expr) = binding_for_record_expansion {
-        propagate_record_binding_to_fields(
-            tree,
-            ctx,
-            RecordBindingProjection {
-                value: binding_expr,
-                source: binding_source_for_record_expansion,
-                source_scope: binding_scope_for_record_expansion.cloned(),
-                each: binding_is_each,
-            },
-            nested_class,
-            &targeted_keys,
-        )?
+    let record_projected_keys = if let Some(binding) = record_binding {
+        propagate_record_binding_to_fields(tree, ctx, binding, nested_class, &targeted_keys)?
     } else {
         IndexMap::default()
     };
 
-    let referenced_mod_roots = collect_referenced_mod_roots(comp);
-    ctx.mod_env_mut().active.retain(|key, _| {
-        // Keep entries not in the snapshot (they were newly added)
-        !mod_env_snapshot.contains_key(key)
-        // Keep record-field projections even when their local field names also
-        // existed in the parent snapshot (for example, `path.startPosition`
-        // nested inside a component modified at `startPosition`).
-        || record_projected_keys.contains_key(key)
-        // Keep entries that were explicitly targeted at this component
-        || targeted_keys.contains_key(key)
-        // Keep parent keys referenced by this component's modifier RHS expressions.
-        || key_matches_referenced_root(key, &referenced_mod_roots)
-    });
+    let final_modifier_paths = nested_types.final_paths(ctx.final_modifier_paths(), &comp.name);
+    let type_overrides = prepare_nested_class_modifiers(
+        ctx,
+        comp,
+        nested_types,
+        &mod_env_snapshot,
+        &targeted_keys,
+        &record_projected_keys,
+        (tree, nested_class, selected_class_modifiers),
+    )?;
 
     let eq_size = inheritance::equality_constraint_output_size(nested_class);
 
@@ -1884,6 +1901,7 @@ fn instantiate_nested_class(
         variability: effective_variability,
         evaluate,
         is_final,
+        final_modifier_paths,
         causality,
         flow,
         stream,
@@ -1892,11 +1910,11 @@ fn instantiate_nested_class(
         protected: comp.is_protected,
     });
 
-    let active_package_alias = active_package_constant_alias(comp, type_overrides);
+    let active_package_alias = active_package_constant_alias(comp, &type_overrides);
     if let Some(alias) = active_package_alias.as_ref() {
         ctx.active_package_constant_aliases.push(alias.clone());
     }
-    ctx.active_type_overrides.push(type_overrides.clone());
+    ctx.active_type_overrides.push(type_overrides);
     let parent_redeclarations =
         std::mem::replace(&mut ctx.component_redeclarations, component_redeclarations);
     let parent_unapplied = ctx.has_unapplied_redeclare;
