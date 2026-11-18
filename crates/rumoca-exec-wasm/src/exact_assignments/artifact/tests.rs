@@ -28,8 +28,10 @@ fn issued_exact_artifact_roundtrip_keeps_native_bits_and_refuses_foreign_binding
     let wire = PrecompiledExactAssignments::from_compiled(&original);
     let decoded: PrecompiledExactAssignments =
         serde_json::from_slice(&serde_json::to_vec(&wire).unwrap()).unwrap();
-    let key = rumoca_ir_solve::PreparedKernelSource::new(layout, &model.pure_calls).unwrap();
-    let replay = decoded.bind(&key, source, layout).unwrap();
+    let bind = |wire: &PrecompiledExactAssignments, source: &ComputeBlock| {
+        wire.bind(source, owners, schedule, layout, &model.pure_calls)
+    };
+    let replay = bind(&decoded, source).unwrap();
     assert_eq!(original.module_bytes(), replay.module_bytes());
     let mut results = Vec::new();
     for code in [&original, &replay] {
@@ -50,17 +52,13 @@ fn issued_exact_artifact_roundtrip_keeps_native_bits_and_refuses_foreign_binding
         results.push(y.into_iter().map(f64::to_bits).collect::<Vec<_>>());
     }
     assert_eq!(results[0], results[1]);
-    assert!(
-        decoded
-            .bind(&key, &ComputeBlock::default(), layout)
-            .is_err()
-    );
+    assert!(bind(&decoded, &ComputeBlock::default()).is_err());
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["version"] = serde_json::json!(0);
     let changed: PrecompiledExactAssignments = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(&key, source, layout).is_err());
+    assert!(bind(&changed, source).is_err());
     let mut changed = serde_json::to_value(&wire).unwrap();
     changed["payload"]["scratch_bytes"] = serde_json::json!(u32::MAX);
     let changed: PrecompiledExactAssignments = serde_json::from_value(changed).unwrap();
-    assert!(changed.bind(&key, source, layout).is_err());
+    assert!(bind(&changed, source).is_err());
 }

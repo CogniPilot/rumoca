@@ -23,11 +23,33 @@ pub(super) fn validate_inputs(
     p: usize,
     external_tables: usize,
 ) -> Result<(), String> {
-    if y != layout.y_scalars() || p != layout.p_scalars() {
-        return Err("WASM input lengths differ from the issued layout".into());
+    InputExtent::of(layout).validate(y, p, external_tables)
+}
+
+/// The input lengths a product checks on each call. A product that owns its
+/// module, and so shares no batch layout, keeps these counts, never a copy of
+/// the layout.
+#[derive(Clone, Copy)]
+pub(super) struct InputExtent {
+    y: usize,
+    p: usize,
+}
+
+impl InputExtent {
+    pub(super) fn of(layout: &VarLayout) -> Self {
+        Self {
+            y: layout.y_scalars(),
+            p: layout.p_scalars(),
+        }
     }
-    if external_tables != 0 {
-        return Err("WASM profile declines external tables".into());
+
+    pub(super) fn validate(self, y: usize, p: usize, external_tables: usize) -> Result<(), String> {
+        if y != self.y || p != self.p {
+            return Err("WASM input lengths differ from the issued layout".into());
+        }
+        if external_tables != 0 {
+            return Err("WASM profile declines external tables".into());
+        }
+        Ok(())
     }
-    Ok(())
 }

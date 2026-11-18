@@ -53,13 +53,21 @@ impl WasmExpression {
     /// Request every program of the block from `batch`, which emits them with
     /// the other requests of the same preparation. A refused program is
     /// reported with its own span, also when its refusal comes from linkage
-    /// cached for an earlier request.
+    /// cached for an earlier request. The expression shares the batch's layout,
+    /// which its programs are admitted against, and keeps no copy of its own.
     pub(super) fn compile_deferred(
         source: &ScalarProgramBlock,
         layout: &VarLayout,
         batch: &super::batch::ModuleBatch,
         seed_len: Option<usize>,
     ) -> Result<Self, rumoca_solver::CompileRefusal> {
+        let shared = batch.layout();
+        if !std::ptr::eq(layout, &**shared) && !layout.same_execution_layout(shared) {
+            return Err(rumoca_solver::CompileRefusal::new(
+                "WASM expression layout differs from its module batch",
+                None,
+            ));
+        }
         let entries = source
             .programs()
             .iter()
@@ -78,14 +86,15 @@ impl WasmExpression {
         // A program's scratch is at least the whole Y vector wide, so one buffer
         // per program grows with the program count (20k+ on large models). Calls
         // run one program at a time and copy its outputs out before the next, so
-        // one buffer, sized once its module is emitted, serves all of them.
-        let private = Rc::new(RefCell::new(Vec::new()));
+        // the batch's one buffer, sized once its module is emitted, serves all
+        // of them and every other entry of the batch.
+        let private = batch.scratch();
         let selected = entries
             .into_iter()
             .map(|entry| Rc::new((entry, Rc::clone(&private))))
             .collect();
         Ok(Self {
-            layout: Rc::new(layout.clone()),
+            layout: Rc::clone(shared),
             source: source.clone(),
             selected,
             scratch: RefCell::new(vec![0.0; source.output_count()]),
@@ -216,26 +225,48 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
 }
 
 struct WasmExecutionBackend {
-    layout: VarLayout,
     calls: Rc<rumoca_ir_solve::SolvePureCallTable>,
-    // Private programs requested by one preparation, emitted in shared modules.
+    // Private programs requested by one preparation, emitted in shared modules;
+    // it also owns the layout the preparation's products share.
     batch: Rc<super::batch::ModuleBatch>,
 }
 
 impl WasmExecutionBackend {
     fn new(layout: VarLayout, calls: Rc<rumoca_ir_solve::SolvePureCallTable>) -> Self {
-        let batch = super::batch::ModuleBatch::new(layout.clone(), Rc::clone(&calls));
-        Self {
-            layout,
-            calls,
-            batch,
-        }
+        let batch = super::batch::ModuleBatch::new(layout, Rc::clone(&calls));
+        Self { calls, batch }
+    }
+
+    fn layout(&self) -> &VarLayout {
+        self.batch.layout()
     }
 }
 
 impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
+    #[cfg(all(
+        feature = "fmi-derivative-operation",
+        target_arch = "wasm32",
+        target_os = "unknown"
+    ))]
+    fn compile_fmi_derivative_operation(
+        &self,
+        root: rumoca_ir_solve::RetainedAssertionRoot,
+    ) -> Result<Option<Rc<dyn rumoca_solver::CompiledSolveDerivativeOperation>>, String> {
+        super::derivatives::WasmDerivative::prepare(root, self.batch.mode())
+            .map(|compiled| compiled.map(|compiled| Rc::new(compiled) as Rc<_>))
+    }
+
+    #[cfg(all(
+        feature = "fmi-derivative-operation",
+        target_arch = "wasm32",
+        target_os = "unknown"
+    ))]
+    fn binds_issued_operations(&self) -> bool {
+        true
+    }
+
     fn validate_model_context(&self, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
-        if !self.layout.same_execution_layout(&model.problem.layout) {
+        if !self.layout().same_execution_layout(&model.problem.layout) {
             return Err("portable kernel layout differs from the model execution layout".into());
         }
         if !self.calls.shares_table_owner(&model.pure_calls) {
@@ -256,13 +287,13 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         if let Some(mode) = self.batch.mode() {
             return super::observations::WasmObservations::compile_product(
                 program,
-                &self.layout,
+                self.layout(),
                 &self.calls,
                 mode,
             )
             .map(|compiled| Rc::new(compiled) as Rc<_>);
         }
-        super::observations::WasmObservations::compile(program, &self.layout, &self.calls)
+        super::observations::WasmObservations::compile(program, self.layout(), &self.calls)
             .map(|compiled| Rc::new(compiled) as Rc<_>)
     }
 
@@ -271,21 +302,15 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         plan: &rumoca_eval_solve::PreparedTargetValuePlan,
         context: rumoca_eval_solve::RowEvalContext<'_>,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveTargetValues>, String> {
-        super::target_values::WasmTargetValues::compile(
-            plan,
-            &self.layout,
-            &self.calls,
-            &self.batch,
-            context,
-        )
-        .map(|compiled| Rc::new(compiled) as Rc<_>)
+        super::target_values::WasmTargetValues::compile(plan, &self.calls, &self.batch, context)
+            .map(|compiled| Rc::new(compiled) as Rc<_>)
     }
 
     fn compile_expression(
         &self,
         block: &ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, rumoca_solver::CompileRefusal> {
-        WasmExpression::compile_deferred(block, &self.layout, &self.batch, None)
+        WasmExpression::compile_deferred(block, self.layout(), &self.batch, None)
             .map(|compiled| Rc::new(compiled) as Rc<_>)
     }
     fn compile_jacobian_expression(
@@ -293,7 +318,7 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
         block: &ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, rumoca_solver::CompileRefusal>
     {
-        super::jacobians::WasmJacobian::compile_deferred(block, &self.layout, &self.batch)
+        super::jacobians::WasmJacobian::compile_deferred(block, self.layout(), &self.batch)
             .map(|code| Rc::new(code) as Rc<_>)
     }
     fn compile_assignment_schedule(
@@ -307,7 +332,7 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
             source,
             owners,
             schedule,
-            &self.layout,
+            self.layout(),
             &self.calls,
             self.batch.mode(),
         );
@@ -316,9 +341,25 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
             source,
             owners,
             schedule,
-            &self.layout,
+            self.layout(),
             &self.calls,
         );
+        compiled.map(|compiled| Rc::new(compiled) as Rc<_>)
+    }
+    fn compile_issued_assignment_rows(
+        &self,
+        rows: &rumoca_ir_solve::IssuedAssignmentRows,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
+        #[cfg(all(feature = "precompiled-runtime", target_arch = "wasm32"))]
+        let compiled = assignments::WasmAssignments::compile_issued_product(
+            rows,
+            self.layout(),
+            &self.calls,
+            self.batch.mode(),
+        );
+        #[cfg(not(all(feature = "precompiled-runtime", target_arch = "wasm32")))]
+        let compiled =
+            assignments::WasmAssignments::compile_issued(rows, self.layout(), &self.calls);
         compiled.map(|compiled| Rc::new(compiled) as Rc<_>)
     }
     fn compile_event_transaction(

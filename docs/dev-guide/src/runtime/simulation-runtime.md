@@ -43,6 +43,7 @@ value. The concrete configuration belongs to the selected backend crate:
 | `Bdf` | `Bdf` | `rumoca_solver_diffsol::DiffsolOptions` |
 | `RkLike` | `Rk45` | `rumoca_solver_rk45::Rk45Options` |
 | `VelImplicit` | `VelImplicit` | `rumoca_solver_velimplicit::VelImplicitConfig` |
+| `FixedStep` | `FixedStep` | `rumoca_solver_rk45::FixedStepConfig` |
 
 Leave the payload absent to use the selected backend's defaults, including
 normal `Auto` selection. An explicit payload requires an explicit solver;

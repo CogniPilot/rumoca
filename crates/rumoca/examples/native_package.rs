@@ -22,7 +22,7 @@ fn stage<T>(
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    use rumoca_exec_wasm::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
+    use rumoca_ir_solve::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
     let arguments: Vec<_> = env::args().collect();
     let [_, source_path, model, work, private, public] = arguments.as_slice() else {
         return Err(

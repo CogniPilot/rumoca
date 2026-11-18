@@ -353,3 +353,68 @@ fn prior_reused_last_query_releases_facts_built_for_earlier_outputs() {
     }
     assert_eq!(resident(&cache), 0);
 }
+
+#[test]
+fn value_isolation_cannot_certify_a_guard_of_the_targets_previous_value() {
+    let mut program =
+        crate::execution_read_tests::guarded_program(solve::LinearOp::LoadY { dst: 1, index: 0 });
+    program.pop();
+    program.extend([
+        solve::LinearOp::LoadY { dst: 3, index: 0 },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::Sub,
+            lhs: 3,
+            rhs: 2,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]);
+    let shape = solve::derive_target_assignment_shape_for_output(&program, 0, 0)
+        .expect("the value can be isolated");
+    let (_, certificates) = RowAnalysisCache::default().assignment(0, &program, 0, 0);
+    assert!(!certificates.exact);
+    assert!(!certificates.direct);
+    assert!(
+        solve::ScalarProgramExecutionYDependency::new(&program)
+            .prefix(shape.expr_eval_len())
+            .is_some_and(|reads| reads.contains(shape.target_y_index())),
+        "the evaluated prefix guards the target's previous value"
+    );
+}
+
+#[test]
+fn fallback_certificates_share_one_source_and_execution_proof_for_many_outputs() {
+    for guarded in [false, true] {
+        let mut source = if guarded {
+            let mut source = crate::execution_read_tests::guarded_program(solve::LinearOp::LoadY {
+                dst: 1,
+                index: 0,
+            });
+            source.pop();
+            source
+        } else {
+            vec![solve::LinearOp::Const { dst: 2, value: 1.0 }]
+        };
+        source.extend([
+            solve::LinearOp::LoadY { dst: 3, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 3,
+                rhs: 2,
+            },
+        ]);
+        source.extend((0..256).map(|_| solve::LinearOp::StoreOutput { src: 4 }));
+        let mut cache = RowAnalysisCache::default();
+        for output in 0..256 {
+            let (shape, certificate) = cache.assignment(0, &source, output, 0);
+            assert!(shape.is_some());
+            assert_eq!(certificate.exact, !guarded);
+        }
+        assert_eq!(cache.fact_builds, 1);
+        assert_eq!(
+            cache.programs[0].as_ref().unwrap().execution_builds.get(),
+            1
+        );
+    }
+}

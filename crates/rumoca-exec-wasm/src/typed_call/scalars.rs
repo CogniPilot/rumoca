@@ -11,8 +11,9 @@ use wasm_encoder::{Instruction as I, ValType};
 /// Locals 0..13 are the call parameters and the emitter's transient locals.
 pub(super) const FIRST_PROMOTED_LOCAL: u32 = 13;
 
-/// The transient locals every body declares, then the promoted ones.
-pub(super) fn locals_header(total: LocalCounts) -> Vec<(u32, ValType)> {
+/// The transient locals every body declares, then the promoted ones, then
+/// the `cells` locals of the cell iteration owner.
+pub(super) fn locals_header(total: LocalCounts, cells: u32) -> Vec<(u32, ValType)> {
     let mut locals = vec![
         (1, ValType::I32),
         (4, ValType::I64),
@@ -24,6 +25,9 @@ pub(super) fn locals_header(total: LocalCounts) -> Vec<(u32, ValType)> {
     }
     if total.reals > 0 {
         locals.push((total.reals, ValType::F64));
+    }
+    if cells > 0 {
+        locals.push((cells, ValType::I32));
     }
     locals
 }
@@ -115,8 +119,8 @@ impl Emitter<'_> {
         }
     }
 
-    /// Push one cell of a register: its scalar value, or the cell selected by
-    /// the cell index (local 3) of an aggregate.
+    /// Push one cell of a register: its scalar value, or the cell of an
+    /// aggregate that the enclosing cell iteration is at.
     pub(super) fn load_register(&mut self, register: solve::SolveRegisterId, real: bool) {
         let range = self.reg(register);
         if self.home(register) != Home::Memory || range.bytes == 8 {

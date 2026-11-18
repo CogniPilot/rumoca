@@ -1,4 +1,5 @@
 //! WASM emitter for residual linear-op rows.
+pub(crate) mod derivative_operation;
 
 mod arena;
 mod compute;
@@ -9,9 +10,10 @@ mod seed;
 mod tensor;
 pub(super) use compute::{
     AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
-    emit_exact_assignment_module, emit_private_entries_modules,
+    emit_exact_assignment_module, emit_issued_assignment_module, emit_private_entries_modules,
 };
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
+pub(super) use compute::{emit_derivative_value_module, emit_kinematic_value_module};
 pub(super) use compute::{
     emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
 };
@@ -366,6 +368,8 @@ struct BodyEmitter<'a> {
     register_base: Reg,
     root_program_cursor: usize,
     root_register_layout: Option<std::rc::Rc<arena::register_layout::RegisterLayout>>,
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    diagnostic_scalar_base: Option<u32>,
     region_frame_end: Option<Reg>,
     conditional_region: Option<conditional::Region>,
     gather_faults: Vec<crate::NativeGatherFault>,
@@ -385,6 +389,8 @@ struct BodyEmitter<'a> {
     event_invocations: Option<&'a [crate::typed_call::retained_event::InvocationStorage]>,
     event_stops: &'a [u32],
     private_seed_offset: Option<u32>,
+    /// The Y slot holding seed coordinate 0 when the seed is issued in Y.
+    seed_slots: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -406,6 +412,8 @@ impl<'a> BodyEmitter<'a> {
             register_base: 0,
             root_program_cursor: 0,
             root_register_layout: None,
+            #[cfg(feature = "diagnostic-root-scalar-locals")]
+            diagnostic_scalar_base: None,
             region_frame_end: None,
             conditional_region: None,
             gather_faults: Vec::new(),
@@ -421,6 +429,7 @@ impl<'a> BodyEmitter<'a> {
             event_invocations: None,
             event_stops: &[],
             private_seed_offset: None,
+            seed_slots: None,
         }
     }
 
@@ -852,6 +861,11 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn push_reg(&mut self, reg: Reg) -> Result<(), String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if let Some(local) = self.diagnostic_scalar_local(reg)? {
+            self.push(Instruction::LocalGet(local));
+            return Ok(());
+        }
         if self.arena.is_some() {
             self.push_arena_address(reg, None, 0)?;
             self.push(Instruction::F64Load(arena::memarg()));
@@ -862,6 +876,11 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn set_reg(&mut self, reg: Reg) -> Result<(), String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if let Some(local) = self.diagnostic_scalar_local(reg)? {
+            self.push(Instruction::LocalSet(local));
+            return Ok(());
+        }
         if self.arena.is_some() {
             self.push(Instruction::LocalSet(LOCAL_BASE));
             self.push_arena_address(reg, None, 0)?;
@@ -871,6 +890,24 @@ impl<'a> BodyEmitter<'a> {
             self.push(Instruction::LocalSet(local_for_reg(reg)?));
         }
         Ok(())
+    }
+
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    fn diagnostic_scalar_local(&self, register: Reg) -> Result<Option<u32>, String> {
+        if self.conditional_region.is_some() || self.register_base != 0 {
+            return Ok(None);
+        }
+        let Some(base) = self.diagnostic_scalar_base else {
+            return Ok(None);
+        };
+        self.root_register_layout
+            .as_ref()
+            .and_then(|layout| layout.scalar_local_slot(register))
+            .map(|slot| {
+                base.checked_add(slot)
+                    .ok_or_else(|| "diagnostic scalar local index overflow".into())
+            })
+            .transpose()
     }
 }
 

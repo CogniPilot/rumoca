@@ -100,12 +100,12 @@ fn le_bytes(values: &[f64]) -> Vec<u8> {
 
 fn parse_policy(
     capacity: &[String],
-) -> Result<rumoca_exec_wasm::CheckedNativeWasmCapacityPolicy, Box<dyn Error>> {
+) -> Result<rumoca_ir_solve::CheckedNativeWasmCapacityPolicy, Box<dyn Error>> {
     match capacity {
-        [] => Ok(rumoca_exec_wasm::CheckedNativeWasmCapacityPolicy::default()),
+        [] => Ok(rumoca_ir_solve::CheckedNativeWasmCapacityPolicy::default()),
         [private, public] | [private, public, _] => {
-            Ok(rumoca_exec_wasm::CheckedNativeWasmCapacityPolicy::new(
-                rumoca_exec_wasm::NativeWasmCapacityRequest {
+            Ok(rumoca_ir_solve::CheckedNativeWasmCapacityPolicy::new(
+                rumoca_ir_solve::NativeWasmCapacityRequest {
                     private_arena_bytes: private.parse()?,
                     public_scratch_bytes: public.parse()?,
                 },
@@ -156,7 +156,7 @@ fn compile_host(
     source_path: &str,
     model: &str,
     (policy, carried): (
-        rumoca_exec_wasm::CheckedNativeWasmCapacityPolicy,
+        rumoca_ir_solve::CheckedNativeWasmCapacityPolicy,
         Option<&StateNames>,
     ),
 ) -> Result<(rumoca_exec_wasm::RetainedNativeWasmHost, StageSeconds), Box<dyn Error>> {

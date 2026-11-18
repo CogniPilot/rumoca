@@ -28,6 +28,23 @@ pub(crate) fn emit_exact_assignment_module(
     )
 }
 
+/// Issued ordered rows: every row commits its slot targets before the next
+/// row reads them, one function per issued chunk. `layout` holds the issued
+/// slots as its Y.
+pub(crate) fn emit_issued_assignment_module(
+    rows: &solve::IssuedAssignmentRows,
+    layout: &VarLayout,
+    table: &solve::SolvePureCallTable,
+) -> Result<CompiledNativeCallProgramWasm, String> {
+    let chunks = rows.chunks().collect::<Vec<_>>();
+    emit_module(
+        Ready::issued_rows(rows, layout, table)?,
+        layout,
+        false,
+        &chunks,
+    )
+}
+
 /// The standalone per-program module the shared entries replace, kept as the
 /// reference their results are checked against.
 #[cfg(test)]
@@ -478,6 +495,25 @@ fn emit_programs(
 ) -> Result<EmittedFunction, String> {
     let mut locals = ready.arena.locals();
     locals.extend([(2, ValType::I32), (1, ValType::I64)]);
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    let diagnostic_scalar_base = LOCAL_BASE
+        .checked_add(locals.iter().try_fold(0u32, |sum, &(count, _)| {
+            sum.checked_add(count)
+                .ok_or("diagnostic existing local count overflow")
+        })?)
+        .ok_or("diagnostic scalar local base overflow")?;
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    {
+        let scalar_count = ready.arena.scalar_local_count();
+        if diagnostic_scalar_base
+            .checked_sub(LOCAL_BASE)
+            .and_then(|n| n.checked_add(scalar_count))
+            .is_none_or(|total| total > crate::typed_call::cost::ENGINE_LOCAL_LIMIT)
+        {
+            return Err("diagnostic root function local capacity exceeded".into());
+        }
+        locals.push((scalar_count, ValType::F64));
+    }
     let mut function = Function::new(locals);
     let stops = ready
         .faults
@@ -486,7 +522,12 @@ fn emit_programs(
         .map(|fault| fault.status)
         .collect::<Vec<_>>();
     let mut emitter = BodyEmitter::new(catalog, &mut function);
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    {
+        emitter.diagnostic_scalar_base = Some(diagnostic_scalar_base);
+    }
     emitter.private_seed_offset = seed_offset;
+    emitter.seed_slots = ready.plan.seed_slots;
     if !ready.observations.is_empty() {
         emitter.event_invocations = Some(&ready.observations);
         emitter.event_stops = &stops;

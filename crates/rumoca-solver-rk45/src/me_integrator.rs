@@ -509,7 +509,7 @@ fn try_vec<T>(capacity: usize, context: &'static str) -> Result<Vec<T>, MeIntegr
     Ok(values)
 }
 
-fn resize_work<T: Clone + Default>(
+pub(crate) fn resize_work<T: Clone + Default>(
     values: &mut Vec<T>,
     len: usize,
     context: &'static str,
@@ -526,7 +526,10 @@ fn resize_work<T: Clone + Default>(
     Ok(())
 }
 
-fn try_copied<T: Copy>(values: &[T], context: &'static str) -> Result<Vec<T>, MeIntegrationError> {
+pub(crate) fn try_copied<T: Copy>(
+    values: &[T],
+    context: &'static str,
+) -> Result<Vec<T>, MeIntegrationError> {
     let mut copied = try_vec(values.len(), context)?;
     copied.extend_from_slice(values);
     Ok(copied)
@@ -538,7 +541,22 @@ fn evaluate_derivative(
     states: &[f64],
     out: &mut Vec<f64>,
 ) -> Result<(), MeIntegrationError> {
-    resize_work(out, derivatives.state_count(), "RK45 derivative workspace")?;
+    evaluate_derivative_in(derivatives, time, states, out, "RK45 derivative workspace")
+}
+
+/// One checked derivative evaluation through the retained handle, shared by
+/// every explicit method of this crate: a refused trial point is the typed
+/// discard, and a latched failure is the opaque refusal whose typed cause the
+/// host substitutes. `context` names the caller's workspace in an allocation
+/// failure.
+pub(crate) fn evaluate_derivative_in(
+    derivatives: &MeDerivativeHandle,
+    time: f64,
+    states: &[f64],
+    out: &mut Vec<f64>,
+    context: &'static str,
+) -> Result<(), MeIntegrationError> {
+    resize_work(out, derivatives.state_count(), context)?;
     derivatives.derivatives_into(time, states, out);
     if derivatives.take_discard() {
         return Err(MeIntegrationError::ComponentDiscard { time });

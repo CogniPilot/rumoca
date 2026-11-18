@@ -322,3 +322,84 @@ fn a_fold_whose_exit_test_reads_a_carry_updated_from_a_changing_input_is_not_sta
     assert!(!counted_fold_is_stable(test, Counter::AddsInput, false));
     assert!(counted_fold_is_stable(test, Counter::AddsInput, true));
 }
+
+/// An owner returning its first input after checking its second is finite
+/// (or not, without `guard`), and a program that calls it on `(1, y[0])`
+/// and stores a constant: the call's result is unused.
+fn unused_call(guard: bool) -> (crate::SolvePureCallTable, Vec<LinearOp>) {
+    let profile = crate::SolvePureCallTable::default().arithmetic();
+    let real = crate::SolveValueType::scalar(crate::SolveScalarType::real(profile));
+    let span = crate::source_span_from_offsets(820, 1, 2);
+    let table = crate::SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            crate::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(820).unwrap()),
+            vec![real.clone(), real.clone()],
+            vec![crate::SolvePureCallOutput::result(real)],
+            span,
+            |b, inputs, outputs| {
+                let x = b.load(inputs[0], span)?;
+                let q = b.load(inputs[1], span)?;
+                if guard {
+                    b.check_finite(q, crate::SolveFiniteCheck::Derivative, span)?;
+                }
+                b.store(outputs[0], x, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let program = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::LoadY { dst: 1, index: 0 },
+        LinearOp::PureCall {
+            dst_start: 2,
+            input_starts: vec![0, 1].into(),
+            site: table.owners()[0].call_site(),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    (table, program)
+}
+
+#[test]
+fn an_unused_guard_on_an_unsettled_value_unsettles_its_program() {
+    for guard in [false, true] {
+        let (table, program) = unused_call(guard);
+        // The stored value is a constant either way.
+        assert_eq!(
+            scalar_dependencies::program_outputs(&table, &program, &[false], &[]),
+            Some(vec![!guard]),
+            "guard={guard}"
+        );
+        assert_eq!(
+            scalar_dependencies::program_outputs(&table, &program, &[true], &[]),
+            Some(vec![true]),
+            "guard={guard} over a settled value"
+        );
+    }
+}
+
+#[test]
+fn an_unused_failable_operation_on_an_unsettled_value_unsettles_its_program() {
+    let program = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 2.0 },
+        LinearOp::LinearSolveComponent {
+            dst: 2,
+            matrix_start: 0,
+            rhs_start: 1,
+            n: 1,
+            component: 0,
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ];
+    let table = crate::SolvePureCallTable::default();
+    assert_eq!(
+        scalar_dependencies::program_outputs(&table, &program, &[false], &[]),
+        Some(vec![false])
+    );
+    assert_eq!(
+        scalar_dependencies::program_outputs(&table, &program, &[true], &[]),
+        Some(vec![true])
+    );
+}

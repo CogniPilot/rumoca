@@ -45,6 +45,16 @@ impl BodyEmitter<'_> {
                 );
             }
         };
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if self.has_value_local(&[dst_start, lhs_start, rhs_start])? {
+            for element in 0..count {
+                self.push_reg(cell(lhs_start, element, lhs_stride)?)?;
+                self.push_reg(cell(rhs_start, element, rhs_stride)?)?;
+                self.push(arithmetic.clone());
+                self.set_reg(cell(dst_start, element, 1)?)?;
+            }
+            return Ok(());
+        }
         let counter = self.arena_plan()?.counter;
         self.loop_start(counter, count)?;
         self.push_arena_address(dst_start, Some(counter), 1)?;
@@ -77,6 +87,10 @@ impl BodyEmitter<'_> {
         let count = rows
             .checked_mul(columns)
             .ok_or("native matrix count overflow")?;
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if self.has_value_local(&[dst_start, lhs_start, rhs_start])? {
+            return self.value_matrix(dst_start, lhs_start, rhs_start, [count, inner, columns]);
+        }
         let arena = self.arena_plan()?;
         let cols = i32::try_from(columns).map_err(|_| "native matrix columns exceed i32")?;
         let width = i32::try_from(inner).map_err(|_| "native matrix inner extent exceeds i32")?;
@@ -148,9 +162,12 @@ impl BodyEmitter<'_> {
         else {
             return Err("expected TensorCross".into());
         };
+        let value_local = self.has_value_local(&[dst_start])?;
         // Fixed vector rank, independent of any tensor extent.
         for (index, left, right) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
-            self.push_arena_address(dst_start + index, None, 0)?;
+            if !value_local {
+                self.push_arena_address(dst_start + index, None, 0)?;
+            }
             self.push_reg(lhs_start + left)?;
             self.push_reg(rhs_start + right)?;
             self.push(Instruction::F64Mul);
@@ -158,8 +175,70 @@ impl BodyEmitter<'_> {
             self.push_reg(rhs_start + left)?;
             self.push(Instruction::F64Mul);
             self.push(Instruction::F64Sub);
-            self.push(Instruction::F64Store(memarg()));
+            if value_local {
+                self.set_reg(dst_start + index)?;
+            } else {
+                self.push(Instruction::F64Store(memarg()));
+            }
         }
         Ok(())
     }
+
+    /// The matrix product in the element and term order of the counted loop,
+    /// with every cell named statically so an issued local home needs no address.
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    fn value_matrix(
+        &mut self,
+        dst_start: Reg,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        [count, inner, columns]: [usize; 3],
+    ) -> Result<(), String> {
+        for output in 0..count {
+            let (row, column) = (output / columns, output % columns);
+            // The first term is its own sum; an empty dot is +0.0.
+            if inner == 0 {
+                self.push(Instruction::F64Const(0.0.into()));
+            }
+            for term in 0..inner {
+                self.push_reg(cell(lhs_start, row * inner + term, 1)?)?;
+                self.push_reg(cell(rhs_start, term * columns + column, 1)?)?;
+                self.push(Instruction::F64Mul);
+                self.push_sum_after_first(term);
+            }
+            self.set_reg(cell(dst_start, output, 1)?)?;
+        }
+        Ok(())
+    }
+
+    /// Every term after the first joins the running sum on the stack.
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    fn push_sum_after_first(&mut self, term: usize) {
+        if term != 0 {
+            self.push(Instruction::F64Add);
+        }
+    }
+
+    /// Whether any named run has an issued local home, which admits no address.
+    pub(in crate::emit) fn has_value_local(&self, starts: &[Reg]) -> Result<bool, String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        for &start in starts {
+            if self.diagnostic_scalar_local(start)?.is_some() {
+                return Ok(true);
+            }
+        }
+        #[cfg(not(feature = "diagnostic-root-scalar-locals"))]
+        let _ = starts;
+        Ok(false)
+    }
+}
+
+/// The register of one statically named element of a strided run.
+#[cfg(feature = "diagnostic-root-scalar-locals")]
+pub(in crate::emit) fn cell(start: Reg, element: usize, stride: usize) -> Result<Reg, String> {
+    element
+        .checked_mul(stride)
+        .and_then(|offset| Reg::try_from(offset).ok())
+        .and_then(|offset| start.checked_add(offset))
+        .ok_or_else(|| "native static tensor cell overflows".into())
 }

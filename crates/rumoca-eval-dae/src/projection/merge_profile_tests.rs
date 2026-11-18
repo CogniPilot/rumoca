@@ -118,6 +118,7 @@ fn model() -> dae::Dae {
             }
             let dynamic = e.at(at).coordinate(dae::CoordinateInput::Input(input))?;
             e.at(at).call(function, 0, [x, dynamic])?;
+            e.at(at).call(function, 1, [x, dynamic])?;
             Ok(())
         })?;
         Ok(())
@@ -150,13 +151,13 @@ fn exact_profiles_keep_fold_results_separate_and_restore_generic_shared_caches()
         let roots=(0..view.expression_count()).filter_map(|i| view.expression_id(i))
             .filter(|id| matches!(view.expression(*id).unwrap().operation(),dae::ExpressionOperation::Call {..}))
             .collect::<Vec<_>>();
-        assert_eq!(roots.len(),13);
+        assert_eq!(roots.len(),14);
         let mut cache=ScalarCoordinateProjectionCache::default();
         let mut reference=ScalarCoordinateProjectionCache {uncached_fold_reference:true,
             uncached_parameter_fragments:true,..Default::default()};
         // The unrelated carried output is a complete generic summary, with
         // real shared fold/fragment facts. Profiled calls must restore them.
-        assert_eq!(project(view,roots[1],&mut cache).unwrap(),vec![(false,0,0),(false,0,1),(false,0,2)]);
+        assert_eq!(project(view,roots[13],&mut cache).unwrap(),vec![(false,0,0),(false,0,1),(false,0,2)]);
         let folds=cache.completed_folds.clone();
         assert!(!folds.is_empty());
         let fragments=(0..view.expression_count()).flat_map(|expression| (0..3).map(move |scalar| (expression,scalar)))
@@ -170,7 +171,8 @@ fn exact_profiles_keep_fold_results_separate_and_restore_generic_shared_caches()
             let actual=project(view,roots[root],&mut cache).unwrap();
             assert_eq!(actual,vec![(false,0,expected)]);
             assert_eq!(actual,project(view,roots[root],&mut reference).unwrap());
-            assert_eq!(cache.completed_folds,folds);
+            let generic=cache.completed_folds.iter().filter(|(node,_)|node.integer_profile.is_empty()).map(|(node,values)|(node.clone(),Arc::clone(values))).collect::<HashMap<_,_>>();
+            assert_eq!(generic,folds,"exact profiles preserve every generic closure");
             for (key,values) in &fragments {
                 assert!(Arc::ptr_eq(values,&cache.parameter_fragments.get(key).unwrap()));
             }
@@ -181,9 +183,11 @@ fn exact_profiles_keep_fold_results_separate_and_restore_generic_shared_caches()
             } else { None }
         }).collect::<std::collections::BTreeSet<_>>();
         assert_eq!(profile_values,std::collections::BTreeSet::from([vec![1],vec![3]]));
+        let completed=cache.completed_folds.clone();
+        assert!(completed.keys().any(|node|!node.integer_profile.is_empty()));
         for (root,index) in [(6,0),(9,4)] {
             assert!(matches!(project(view,roots[root],&mut cache),Err(ProjectionError::IndexOutOfBounds {index:i,extent:3,..}) if i==index));
-            assert_eq!(cache.completed_folds,folds);
+            assert_eq!(cache.completed_folds,completed,"failed profiles publish no closures");
         }
         // Runtime integer selection uses the original conservative direct walk.
         assert_eq!(project(view,roots[12],&mut cache).unwrap(),

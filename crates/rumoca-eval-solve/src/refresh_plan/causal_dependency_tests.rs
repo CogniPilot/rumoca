@@ -187,3 +187,75 @@ fn full_source_ranges_include_unused_loads_and_distinct_immutable_owners() {
     assert!(!dependencies.solver_inputs_are_in_bounds(&independent, 4_000_000));
     assert_eq!(COUNTS.with(Cell::get), (2, 6));
 }
+
+#[test]
+fn a_guard_only_forward_read_refuses_the_certificate_without_reordering() {
+    let (mut problem, _) = fixture(2, true);
+    let mut guarded =
+        crate::execution_read_tests::guarded_program(solve::LinearOp::LoadY { dst: 1, index: 1 });
+    guarded.pop();
+    guarded.extend([
+        solve::LinearOp::LoadY { dst: 3, index: 0 },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::Sub,
+            lhs: 3,
+            rhs: 2,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]);
+    let constant = vec![
+        solve::LinearOp::LoadY { dst: 0, index: 1 },
+        solve::LinearOp::Const { dst: 1, value: 2.0 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ];
+    let block = PreparedScalarProgramBlock::new(
+        solve::ScalarProgramBlock::with_program_spans(
+            vec![guarded, constant],
+            vec![solve::source_span_from_offsets(814, 1, 2); 2],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(block.block().clone());
+    let plan = build_algebraic_refresh_plan(&problem, &block).unwrap();
+    assert!(!plan.causal_solution_certified);
+    assert!(matches!(
+        plan.execution_order_refusal,
+        Some(solve::RefreshExecutionRefusal::ForwardRead {
+            target: 0,
+            read: 1,
+            ..
+        })
+    ));
+    assert_eq!(
+        plan.rows
+            .iter()
+            .map(|row| row.target_index())
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(
+        plan.possible_stage_schedules(),
+        &[solve::RefreshStageSchedule::Uncertified]
+    );
+    let mut wire = serde_json::to_value(&plan).unwrap();
+    assert!(wire.get("execution_order_refusal").is_none());
+    wire["execution_order_refusal"] = serde_json::Value::Null;
+    let mut replay: RefreshPlan = serde_json::from_value(wire).unwrap();
+    replay.check_execution_order(|source| {
+        block
+            .block()
+            .programs()
+            .get(source.program() as usize)
+            .map(Vec::as_slice)
+    });
+    assert_eq!(replay.execution_order_refusal, plan.execution_order_refusal);
+}

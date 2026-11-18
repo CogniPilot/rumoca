@@ -7,8 +7,8 @@ use crate::{TypedCallFault, WasmCompileError};
 #[cfg(feature = "precompiled-programs")]
 pub use artifact::PrecompiledExactAssignments;
 use rumoca_ir_solve::{
-    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, SolvePureCallTable,
-    VarLayout,
+    ComputeBlock, ContinuousRefreshOwners, ExactRefreshAssignmentSchedule, IssuedAssignmentRows,
+    SolvePureCallTable, VarLayout,
 };
 
 pub struct CompiledExactAssignmentWasm {
@@ -94,23 +94,57 @@ pub fn compile_exact_assignment_schedule_wasm(
     let artifact =
         crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
             .map_err(WasmCompileError::Backend)?;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let runtime = crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
-    Ok(CompiledExactAssignmentWasm {
-        gather_faults: artifact.gather_faults.clone(),
-        #[cfg(any(
-            feature = "precompiled-programs",
-            all(target_arch = "wasm32", target_os = "unknown")
-        ))]
-        linear_solve_faults: artifact.linear_solve_faults.clone(),
-        artifact: artifact.into(),
-        #[cfg(feature = "precompiled-programs")]
-        source_key: rumoca_ir_solve::PreparedKernelSource::new(layout, table)
-            .and_then(|source_key| source_key.exact_assignments(source))
-            .map_err(WasmCompileError::Input)?,
-        y_count: layout.y_scalars(),
-        p_count: layout.p_scalars(),
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        runtime,
+    CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
+        rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|source_key| source_key.exact_assignment_schedule(source, owners, schedule))
     })
+}
+
+/// Issued ordered rows as one schedule call: each row commits its outputs to
+/// its slot targets before the next row reads them, in issued order, with one
+/// function per issued chunk. `layout` holds the issued slots as its Y and the
+/// model's P; seeded rows read their seed from the issued seed slots.
+pub fn compile_issued_assignment_rows_wasm(
+    rows: &IssuedAssignmentRows,
+    layout: &VarLayout,
+    table: &SolvePureCallTable,
+) -> Result<CompiledExactAssignmentWasm, WasmCompileError> {
+    let artifact = crate::emit::emit_issued_assignment_module(rows, layout, table)
+        .map_err(WasmCompileError::Backend)?;
+    CompiledExactAssignmentWasm::from_artifact(artifact, layout, || {
+        rumoca_ir_solve::PreparedKernelSource::new(layout, table)
+            .and_then(|source_key| source_key.issued_assignment_rows(rows))
+    })
+}
+
+impl CompiledExactAssignmentWasm {
+    fn from_artifact(
+        artifact: crate::native_program::CompiledNativeCallProgramWasm,
+        layout: &VarLayout,
+        source_key: impl FnOnce() -> Result<String, String>,
+    ) -> Result<Self, WasmCompileError> {
+        #[cfg(not(feature = "precompiled-programs"))]
+        let _ = source_key;
+        // The key is settled before the emitted module is activated.
+        #[cfg(feature = "precompiled-programs")]
+        let source_key = source_key().map_err(WasmCompileError::Input)?;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let runtime =
+            crate::WasmKernelRuntime::new_named(artifact.module_bytes(), "eval_assignments")?;
+        Ok(Self {
+            gather_faults: artifact.gather_faults.clone(),
+            #[cfg(any(
+                feature = "precompiled-programs",
+                all(target_arch = "wasm32", target_os = "unknown")
+            ))]
+            linear_solve_faults: artifact.linear_solve_faults.clone(),
+            artifact: artifact.into(),
+            #[cfg(feature = "precompiled-programs")]
+            source_key,
+            y_count: layout.y_scalars(),
+            p_count: layout.p_scalars(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            runtime,
+        })
+    }
 }

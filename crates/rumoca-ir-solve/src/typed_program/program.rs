@@ -614,7 +614,7 @@ impl TypedProgram {
     ) -> Self {
         let read_flow = read_flow::ReadFlow::of(&operations, register_types.len(), &slots);
         let fault_flow = fault_flow::FaultFlow::of(&operations, &register_types, &slots, &[]);
-        let loop_flow = loop_flow::LoopFlow::of(&operations);
+        let loop_flow = loop_flow::LoopFlow::of(&operations, &register_types);
         let pass_flow = pass_flow::PassFlow::of(&operations, &fault_flow);
         let storage = SolveStoragePlan::host(
             &slots,
@@ -668,6 +668,17 @@ impl TypedProgram {
             _ => return None,
         };
         (!(observed && body_observes)).then_some(passes)
+    }
+
+    /// Whether tensor operation `operation`, over a static shape, may be
+    /// emitted as straight-line code with one pass per cell (and each cell's
+    /// terms) instead of counted loops over its axes: decided once, under the
+    /// unroll bounds of loops (`MAX_UNROLLED_PASSES` cells and
+    /// `MAX_UNROLLED_OPERATIONS` scalar operations), which a target profile
+    /// declares. `false` for any other operation.
+    #[must_use]
+    pub fn straight_cells(&self, operation: usize) -> bool {
+        self.loop_flow.straight_cells(operation)
     }
 
     /// The independent-passes property of loop operation `operation`, proven

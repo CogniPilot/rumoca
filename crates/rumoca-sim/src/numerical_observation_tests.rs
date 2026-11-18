@@ -6,7 +6,7 @@ use rumoca_solver::fmi_me::numerical_observation::{
     ConstructionPurpose, IncompleteReason, RecordKind, SettingsCollector, SettingsStage,
 };
 
-fn model() -> std::sync::Arc<dae::Dae> {
+pub(crate) fn model() -> std::sync::Arc<dae::Dae> {
     let mut compiler = Session::new(SessionConfig::default());
     compiler.add_document(
         "observed.mo",

@@ -287,53 +287,6 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
     }
 }
 
-/// Walk the values of a class modification `x(...)` in `scope`, the scope its
-/// values are written in (MLS §7.2), as a plain modifier value is. Nested
-/// targets name members of the modified element's type, which Resolve does
-/// not own, so they are not walked.
-pub(crate) fn walk_class_modification_values<C: ResolveTraversalCallbacks>(
-    callbacks: &mut C,
-    expr: &mut Expression,
-    scope: ScopeId,
-) {
-    let Expression::ClassModification { modifications, .. } = expr else {
-        return;
-    };
-    for modification in modifications.iter_mut() {
-        match modification {
-            Expression::Modification { value, .. } | Expression::NamedArgument { value, .. } => {
-                walk_modifier_value(callbacks, Arc::make_mut(value), scope);
-            }
-            Expression::Binary {
-                op: rumoca_core::OpBinary::Assign,
-                lhs,
-                rhs,
-                ..
-            } => {
-                walk_class_modification_values(callbacks, Arc::make_mut(lhs), scope);
-                walk_expression(callbacks, Arc::make_mut(rhs), scope);
-            }
-            nested @ Expression::ClassModification { .. } => {
-                walk_class_modification_values(callbacks, nested, scope);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// One nested modifier value: a further class modification, or a value.
-fn walk_modifier_value<C: ResolveTraversalCallbacks>(
-    callbacks: &mut C,
-    value: &mut Expression,
-    scope: ScopeId,
-) {
-    if matches!(value, Expression::ClassModification { .. }) {
-        walk_class_modification_values(callbacks, value, scope);
-    } else {
-        walk_expression(callbacks, value, scope);
-    }
-}
-
 pub(crate) fn walk_subscripts<C: ResolveTraversalCallbacks>(
     callbacks: &mut C,
     subscripts: &mut [ast::Subscript],

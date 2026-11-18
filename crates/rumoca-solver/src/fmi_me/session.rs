@@ -15,12 +15,15 @@
 mod deferred_crossing;
 mod error;
 mod host_state;
+#[cfg(any(test, feature = "input-write-audit"))]
+pub mod input_write_audit;
 mod inputs;
 #[cfg(feature = "native-wasm")]
 mod native_inputs;
 mod numerical_observation;
 mod options;
 mod recovery;
+mod selected_values;
 
 use std::{
     cell::{Cell, RefCell},
@@ -510,12 +513,9 @@ impl MeSimulationSession<'_, '_> {
     /// Batched `fmi3GetFloat64` over every output at the current coordinate.
     pub fn output_values(&self) -> Result<Vec<f64>, MeSessionError> {
         self.require_live()?;
-        match (&self.deferred, self.snapped_yield) {
-            (Some(deferred), _) => self
-                .host
-                .observe_off_point(deferred.observed_time, &deferred.observed_states),
-            (None, Some(snapped)) => self.host.observe_off_point(snapped, &self.host.states),
-            (None, None) => Ok(self.host.observe_current()?),
+        match self.off_point_observation() {
+            Some((time, states)) => self.host.observe_off_point(time, states),
+            None => Ok(self.host.observe_current()?),
         }
     }
 
@@ -537,24 +537,6 @@ impl MeSimulationSession<'_, '_> {
             visible.insert(name.clone(), *value);
         }
         Ok(visible)
-    }
-
-    /// Whether `name` is a declared **input** of this component.
-    ///
-    /// Causality comes from the model description's input
-    /// inventory, not from the mere existence of a value reference.
-    #[must_use]
-    pub fn has_input(&self, name: &str) -> bool {
-        self.host
-            .kernel
-            .with_model(|model| {
-                model
-                    .problem
-                    .solve_layout
-                    .input_parameter_index(name)
-                    .is_some()
-            })
-            .unwrap_or(false)
     }
 
     /// Restart the session at `start_time` from the pristine component state.

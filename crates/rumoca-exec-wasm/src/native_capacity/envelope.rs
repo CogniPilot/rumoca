@@ -1,5 +1,5 @@
 //! Unchecked wire transport; only the existing paired product binds these bytes.
-use super::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
+use rumoca_ir_solve::{CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest};
 
 const MAGIC: &[u8; 8] = b"RUMONAT2";
 const HEADER: usize = 24;

@@ -935,6 +935,7 @@ impl WorkerSimSettings {
             rumoca_sim::SimSolverMode::Bdf => "bdf",
             rumoca_sim::SimSolverMode::RkLike => "rk",
             rumoca_sim::SimSolverMode::VelImplicit => "velimplicit",
+            rumoca_sim::SimSolverMode::FixedStep => "fixed-step",
         };
         let span = (options.t_end - options.t_start).abs();
         Self {

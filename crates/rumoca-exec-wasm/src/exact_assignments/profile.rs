@@ -1,9 +1,11 @@
 //! Conservative exact-program storage subset; no new alias certificate.
-use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
+use rumoca_ir_solve::LinearOp;
 use std::collections::BTreeMap;
 
-pub(crate) fn disjoint_destinations(block: &ScalarProgramBlock) -> Result<(), String> {
-    for program in block.programs() {
+pub(crate) fn disjoint_destinations<'a>(
+    programs: impl IntoIterator<Item = &'a [LinearOp]>,
+) -> Result<(), String> {
+    for program in programs {
         let mut written = BTreeMap::<u64, u64>::new();
         for operation in program {
             let Some(start) = operation.dst_register() else {

@@ -157,6 +157,15 @@ impl CellRange {
         }
     }
 
+    /// The frame parameter and the offset in it of the pointer cell that
+    /// holds the range's address, when the range is reached by reference.
+    pub(super) fn pointer_frame(self) -> Option<(u32, u32)> {
+        self.pointer_cell().map(|cell| match cell {
+            PointerCell::Input(cell) => (0, cell),
+            PointerCell::Scratch(cell) => (2, cell),
+        })
+    }
+
     /// Whether the two ranges share a byte of one address space.
     fn overlaps(self, other: Self) -> bool {
         self.base == other.base

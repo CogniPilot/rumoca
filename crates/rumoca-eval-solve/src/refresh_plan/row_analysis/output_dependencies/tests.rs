@@ -127,8 +127,8 @@ fn refused_suffix_keeps_earlier_prefix_and_refuses_later_or_missing_outputs() {
             "refused complete proof is retained too"
         );
         assert_eq!(
-            reads.prefix_builds, 4,
-            "one active prefix, replaced when returning to an earlier store"
+            reads.prefix_builds, 1,
+            "refused execution prefixes do not construct a value proof"
         );
     }
 }
@@ -154,19 +154,23 @@ fn failable_operation_dependencies_keep_their_exact_inputs_and_source_identity()
     ];
     let mut reads = OutputDependencies::new(&source);
     let mut other_reads = OutputDependencies::new(&other);
-    assert!(!reads.depends_on(0, 5));
+    assert!(
+        reads.depends_on(0, 5),
+        "the whole checked program executes its solve obligation"
+    );
+    assert!(
+        !canonical_depends_on(&source, 0, 5),
+        "value-only control remains unchanged"
+    );
     assert!(reads.depends_on(1, 5));
     assert!(!reads.depends_on(1, 9));
     assert!(!other_reads.depends_on(0, 5));
     assert!(other_reads.depends_on(0, 9));
-    // Dependency analysis cannot execute or erase the singular-solve check.
+    // Execution reads conservatively add the solve's guard to every output;
+    // this does not change the value-only dependency API or erase the check.
     for output in 0..2 {
-        for target in [5, 9] {
-            assert_eq!(
-                reads.depends_on(output, target),
-                canonical_depends_on(&source, output, target)
-            );
-        }
+        assert!(reads.depends_on(output, 5));
+        assert!(!reads.depends_on(output, 9));
     }
 }
 
@@ -233,5 +237,31 @@ fn another_targets_shape_cannot_admit_an_independent_requested_target() {
         super::super::analyze_refresh_row(&program, (0, 0, 0, 9), None, &mut cache)
             .unwrap()
             .is_none()
+    );
+}
+
+#[test]
+fn refused_suffix_shares_one_guard_proof_across_valid_earlier_outputs() {
+    let mut source =
+        crate::execution_read_tests::guarded_program(LinearOp::LoadY { dst: 1, index: 7 });
+    source.pop();
+    // The checked call result is unused, but its guard still executes.
+    source.extend((0..128).map(|_| LinearOp::StoreOutput { src: 0 }));
+    source.extend([
+        LinearOp::Move { dst: 3, src: 99 },
+        LinearOp::StoreOutput { src: 0 },
+    ]);
+    let mut reads = OutputDependencies::new(&source);
+    for output in 0..128 {
+        assert!(reads.depends_on(output, 7));
+        assert!(!reads.depends_on(output, 8));
+    }
+    assert!(reads.depends_on(128, 8), "refused suffix is conservative");
+    assert!(reads.depends_on(129, 8), "missing output is conservative");
+    assert_eq!(reads.complete_builds, 1);
+    assert_eq!(
+        reads.execution_builds.get(),
+        1,
+        "one prefix factory per source, not per output"
     );
 }

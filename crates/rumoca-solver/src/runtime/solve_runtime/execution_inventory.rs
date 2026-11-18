@@ -127,6 +127,7 @@ impl SolveRuntime {
             warning_log: RefCell::new(warnings::WarningLog::default()),
             clock_activation_cache: RefCell::new(ClockActivationCache::default()),
             pre_bindings: PreBindingPlan::new(&model.problem.solve_layout.pre_param_bindings),
+            input_event_reach: std::cell::OnceCell::new(),
             model,
             execution,
         }

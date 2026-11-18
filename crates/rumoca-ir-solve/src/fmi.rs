@@ -41,7 +41,9 @@ mod articulated_bindings;
 pub use articulated_bindings::{FmiArticulatedReduction, FmiFactorChannel};
 mod co_simulation;
 mod deployment;
+mod derivative_operation;
 mod event_free;
+mod fixed_step_tableau;
 mod indicator_plan;
 mod input_defaults;
 pub use input_defaults::{
@@ -70,7 +72,17 @@ pub use co_simulation::{
 pub use deployment::{
     FmiDeploymentCapabilities, FmiDeploymentError, FmiDeploymentView, FmiInterfaceProfile,
 };
+pub use derivative_operation::{
+    FmiDerivativeCausalOperation, FmiDerivativeCausalRefusal, FmiDerivativeControlInstruction,
+    FmiDerivativeControlPlan, FmiDerivativeHelper, FmiDerivativeOperationRefusal,
+    FmiDerivativeOperationSource, FmiDerivativeStatus, FmiDerivativeWorkspace,
+    FmiKinematicDerivativeOperation, FmiKinematicRefusal,
+};
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
+pub use fixed_step_tableau::{
+    FIXED_STEP_FOLD_START, FixedStepStateRoles, FixedStepTableau, FixedStepTableauRefusal,
+    FixedStepTerm,
+};
 pub use indicator_plan::{
     FmiIndicatorPlan, IndicatorEntry, IndicatorPlanError, IndicatorPlanInputs,
     IndicatorPlanRejection, IndicatorReading, IndicatorZeroSide,
@@ -327,13 +339,12 @@ fn dependency_backed_indicator_sources(
     let mut output_ordinal = 0usize;
     for (program_index, program) in block.programs().iter().enumerate() {
         let span = block.program_span(program_index);
-        let dependencies = crate::StructuralPattern::derive_output_y_dependency_ranges(
-            program, span,
-        )
-        .map_err(|error| FmiComponentError::EventIndicatorInventory {
-            message: error.to_string(),
-            span,
-        })?;
+        let dependencies =
+            crate::StructuralPattern::derive_output_execution_y_dependency_ranges(program, span)
+                .map_err(|error| FmiComponentError::EventIndicatorInventory {
+                    message: error.to_string(),
+                    span,
+                })?;
         for dependencies in dependencies {
             let output_index = block
                 .output_indices()

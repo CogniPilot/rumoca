@@ -283,3 +283,47 @@ fn activation_retains_dense_scoped_and_sparse_membership_in_both_orders() {
         }
     }
 }
+
+#[test]
+fn whole_visits_need_completion_and_exact_membership_owner_generation_and_key() {
+    let mut visited = Visited::default();
+    let key = ScalarExpressionDependency {
+        activation: crate::projection::Activation::Guaranteed,
+        expression: 7,
+        field: None,
+        scalar: 0,
+        domain_context: DomainContextId::default(),
+    };
+    let (request, complete) = visited.whole_visit(key.clone());
+    assert!(!complete);
+    assert!(
+        !visited.whole_visit(key.clone()).1,
+        "an unfinished walk is not published"
+    );
+    visited.finish_whole(request);
+    assert!(visited.whole_visit(key.clone()).1);
+    for other in [
+        ScalarExpressionDependency {
+            expression: 8,
+            ..key.clone()
+        },
+        ScalarExpressionDependency {
+            activation: crate::projection::Activation::Conditional,
+            ..key.clone()
+        },
+        ScalarExpressionDependency {
+            domain_context: DomainContextId::test_identity(1),
+            ..key.clone()
+        },
+    ] {
+        assert!(!visited.whole_visit(other).1);
+    }
+    let (other_owner, _) = Visited::default().whole_visit(key.clone());
+    let mut next = Visited::default();
+    next.finish_whole(other_owner);
+    assert!(!next.whole_visit(key.clone()).1);
+    let (stale, _) = visited.whole_visit(key.clone());
+    visited.clear();
+    visited.finish_whole(stale);
+    assert!(!visited.whole_visit(key).1);
+}

@@ -2,6 +2,8 @@
 mod fixture;
 mod private_targets;
 mod runner;
+mod torn_rows;
+mod torn_tangent;
 
 use rumoca_ir_solve as solve;
 
@@ -224,6 +226,56 @@ fn an_unused_original_prefix_load_still_requires_its_exact_layout_bound() {
         .err()
         .expect("an unused invalid load must refuse admission");
     assert!(error.to_string().contains("outside 6 slots"));
+}
+
+/// The refusal of a schedule whose prefix holds `unread`, after checking that
+/// its final program holds none of those operations and that the same prefix
+/// with an admitted unread load compiles.
+fn unread_prefix_refusal(unread: Vec<solve::LinearOp>) -> String {
+    let admitted = fixture::unread_prefix(vec![solve::LinearOp::LoadY { dst: 100, index: 5 }]);
+    admitted.compile().unwrap();
+    let fixture = fixture::unread_prefix(unread.clone());
+    let emitted = fixture.first_final_program();
+    assert_eq!(emitted, admitted.first_final_program());
+    assert!(unread.iter().all(|operation| !emitted.contains(operation)));
+    fixture
+        .compile()
+        .err()
+        .expect("an unread source operation outside the profile must refuse admission")
+        .to_string()
+}
+
+#[test]
+fn an_unread_indexed_parameter_load_still_declines_the_primal_profile() {
+    let refusal = unread_prefix_refusal(vec![
+        solve::LinearOp::Const {
+            dst: 101,
+            value: 0.,
+        },
+        solve::LinearOp::LoadIndexedP {
+            dst: 100,
+            base: 0,
+            count: 1,
+            index: 101,
+        },
+    ]);
+    assert!(
+        refusal.contains("declines directional/seed operations"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn an_unread_two_lane_tensor_load_still_declines_the_primal_arena_profile() {
+    let refusal = unread_prefix_refusal(vec![solve::LinearOp::TensorLoad {
+        dst_start: 100,
+        input: solve::TensorInputKind::Y,
+        input_start: 0,
+        count: 2,
+        seed_start: None,
+        lanes: 2,
+    }]);
+    assert!(refusal.contains("requires one primal lane"), "{refusal}");
 }
 
 #[test]

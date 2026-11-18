@@ -217,7 +217,7 @@ impl BodyEmitter<'_> {
     fn affine_load_source(&self, op: &LinearOp, index: usize) -> Result<(u32, usize), String> {
         match op {
             LinearOp::LoadP { .. } => Ok((P_PTR_PARAM, index)),
-            LinearOp::LoadSeed { .. } => Ok((SEED_PTR_PARAM, self.seed_index(index)?)),
+            LinearOp::LoadSeed { .. } => Ok((self.seed_param(), self.seed_index(index)?)),
             _ => Ok((Y_PTR_PARAM, index)),
         }
     }
@@ -235,6 +235,7 @@ impl BodyEmitter<'_> {
         self.loop_start(counter, plan.count)?;
         self.emit_coordinates(&plan.extents, counter)?;
         for (position, op) in ops.iter().enumerate() {
+            self.operation_ordinal = position;
             match *op {
                 LinearOp::LoadY { dst, index }
                 | LinearOp::LoadP { dst, index }

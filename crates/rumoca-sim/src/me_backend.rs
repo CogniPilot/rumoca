@@ -97,12 +97,13 @@ impl BackendSimulationSession {
     /// The engine selection with the compile requests the backend has declined
     /// so far; compilation is lazy, so the list can grow as the session runs.
     pub(crate) fn execution_receipt(&self) -> SimExecutionReceipt {
-        let declined = self
-            .execution_backend
-            .as_ref()
-            .map(MeExecutionBackend::declined)
-            .unwrap_or_default();
-        self.execution.clone().with_declined(declined)
+        let Some(backend) = self.execution_backend.as_ref() else {
+            return self.execution.clone();
+        };
+        self.execution
+            .clone()
+            .with_declined(backend.declined())
+            .with_programs(backend.programs())
     }
 
     pub(crate) fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
@@ -123,7 +124,15 @@ impl BackendSimulationSession {
     }
 
     pub(crate) fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
-        Ok(self.session.visible_values()?.get(name).copied())
+        Ok(self.selected_values(&[name])?.into_iter().next().flatten())
+    }
+
+    /// The requested values in request order; `None` for an unknown name.
+    pub(crate) fn selected_values<N: AsRef<str>>(
+        &self,
+        names: &[N],
+    ) -> Result<Vec<Option<f64>>, SimError> {
+        self.session.selected_values(names).map_err(Into::into)
     }
 
     pub(crate) fn visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {

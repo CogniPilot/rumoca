@@ -215,31 +215,20 @@ fn time_and_param_loads(first: &LinearOp, second: &LinearOp) -> Option<(Reg, Reg
 /// and no time, seed, or effect, keeps its Event Mode value but offers no
 /// surface to the continuous root finder.
 fn static_root(row: &[LinearOp], static_y: &IndexIntervals, inputs: &Range<usize>) -> bool {
-    let Ok(y_dependencies) = StructuralPattern::derive_output_y_dependency_ranges(row, None) else {
+    let Ok(y_dependencies) = StructuralPattern::derive_execution_y_dependency_ranges(row, None)
+    else {
         return false;
     };
-    if y_dependencies
-        .iter()
-        .any(|dependencies| !dependencies.is_subset(static_y))
-    {
+    if !y_dependencies.is_subset(static_y) {
         return false;
     }
-    StructuralPattern::derive_output_p_dependency_ranges(row, None).is_ok_and(|dependencies| {
-        let inputs = IndexIntervals::range(inputs.start, inputs.end);
+    StructuralPattern::derive_execution_p_dependency_ranges(row, None).is_ok_and(|dependencies| {
         dependencies
-            .iter()
-            .all(|dependencies| dependencies.intersection(&inputs).is_empty())
-    }) && none_depend(StructuralPattern::derive_output_time_dependencies(
-        row, None,
-    )) && none_depend(StructuralPattern::derive_output_seed_dependencies(
-        row, None,
-    )) && none_depend(StructuralPattern::derive_output_effect_dependencies(
-        row, None,
-    ))
-}
-
-fn none_depend<E>(dependencies: Result<Vec<bool>, E>) -> bool {
-    dependencies.is_ok_and(|dependencies| dependencies.iter().all(|depends| !depends))
+            .intersection(&IndexIntervals::range(inputs.start, inputs.end))
+            .is_empty()
+    }) && StructuralPattern::execution_reads_time(row, None).is_ok_and(|reads| !reads)
+        && StructuralPattern::execution_reads_seed(row, None).is_ok_and(|reads| !reads)
+        && StructuralPattern::execution_has_effect(row, None).is_ok_and(|reads| !reads)
 }
 
 #[cfg(test)]
@@ -458,5 +447,15 @@ mod tests {
                 assert_input_time_root_slot(index, reverse);
             }
         }
+    }
+
+    #[test]
+    fn static_roots_cannot_omit_guard_only_input_or_time_reads() {
+        let program = crate::structural_pattern::execution_reads_tests::guarded_program();
+        let static_y = IndexIntervals::of([3]);
+        assert!(!static_root(&program, &static_y, &(7..8)));
+        let mut timed = program;
+        timed[1] = LinearOp::LoadTime { dst: 1 };
+        assert!(!static_root(&timed, &static_y, &(7..8)));
     }
 }

@@ -61,13 +61,6 @@ struct ProjectionStageSeed<'a> {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct StaticRefreshCache {
-    pub(super) valid: bool,
-    pub(super) params: Vec<f64>,
-    pub(super) values: Vec<Option<f64>>,
-}
-
-#[derive(Clone, Default)]
 pub(super) struct ParameterStaticGradientCache {
     rows: Vec<CachedParameterStaticGradient>,
 }
@@ -186,16 +179,11 @@ pub(super) fn cached_static_refresh_value(
     cache: &StaticRefreshCache,
     target_index: usize,
 ) -> Result<f64, RuntimeSolveError> {
-    cache
-        .values
-        .get(target_index)
-        .copied()
-        .flatten()
-        .ok_or_else(|| {
-            RuntimeSolveError::solve_ir(
-                "parameter-static refresh cache inventory changed during reuse".to_string(),
-            )
-        })
+    cache.values.get(target_index).ok_or_else(|| {
+        RuntimeSolveError::solve_ir(
+            "parameter-static refresh cache inventory changed during reuse".to_string(),
+        )
+    })
 }
 
 pub(super) fn trace_reverse_projection_coverage(

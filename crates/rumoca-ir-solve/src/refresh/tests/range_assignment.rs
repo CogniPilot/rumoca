@@ -68,12 +68,13 @@ fn exact_refresh_issues_one_checked_fill_for_a_broadcast_direct_value() {
         .unwrap();
     let shared = schedule.shared_segments(&source, &owners).unwrap();
     let segment = &shared.segments().segments()[0];
-    assert_eq!(segment.ops().len(), 4);
+    // The load of the targets the fill overwrites is not part of the program.
+    assert_eq!(segment.ops().len(), 3);
     assert!(
-        matches!(segment.ops()[1], LinearOp::Const { value, .. } if value.to_bits() == (-0.0f64).to_bits())
+        matches!(segment.ops()[0], LinearOp::Const { value, .. } if value.to_bits() == (-0.0f64).to_bits())
     );
     assert_eq!(
-        segment.ops()[2],
+        segment.ops()[1],
         LinearOp::TensorFill {
             dst_start: 121,
             value_start: 120,
@@ -82,7 +83,7 @@ fn exact_refresh_issues_one_checked_fill_for_a_broadcast_direct_value() {
         }
     );
     assert_eq!(
-        segment.ops()[3],
+        segment.ops()[2],
         LinearOp::StoreOutputRange {
             start: 121,
             count: 120,
@@ -138,7 +139,25 @@ fn exact_refresh_preserves_source_range_through_shared_schedule() {
         let [segment] = shared.segments().segments() else {
             panic!("one source range must retain one correlated assignment program");
         };
-        assert_eq!(segment.ops().len(), 3, "operation count follows the source");
+        assert_eq!(
+            segment.ops(),
+            [
+                LinearOp::TensorLoad {
+                    dst_start: u32::try_from(count).unwrap(),
+                    input: crate::TensorInputKind::P,
+                    input_start: 0,
+                    count,
+                    seed_start: None,
+                    lanes: 1,
+                },
+                LinearOp::StoreOutputRange {
+                    start: u32::try_from(count).unwrap(),
+                    count,
+                    stride: 1,
+                },
+            ],
+            "the value load and the range store, without the overwritten target load"
+        );
         assert_eq!(
             segment.ops().last(),
             Some(&LinearOp::StoreOutputRange {

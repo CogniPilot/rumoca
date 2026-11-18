@@ -8,7 +8,7 @@
 
 use super::{
     ComputeBlock, ContinuousRefreshConstructionError, ExactRefreshAssignmentProgram,
-    ExactRefreshAssignmentProgramId, scalar_source_program,
+    ExactRefreshAssignmentProgramId, LinearOp, scalar_source_program,
 };
 
 /// Source operations one chunk holds before the next program starts another.
@@ -35,6 +35,16 @@ pub(super) fn chunk_ends(
         );
     }
     Ok(group_ends(operations, EXACT_ASSIGNMENT_CHUNK_OPS))
+}
+
+/// Exclusive ends of the function chunks of ordered assignment programs issued
+/// outside a refresh schedule (the causal chain of a torn sweep), under the
+/// same operation budget and the same cuts between complete programs.
+pub fn assignment_program_chunk_ends(programs: &[Vec<LinearOp>]) -> Box<[usize]> {
+    group_ends(
+        programs.iter().map(|program| program.len().max(1)),
+        EXACT_ASSIGNMENT_CHUNK_OPS,
+    )
 }
 
 /// Greedy consecutive groups: a program joins the open group unless that

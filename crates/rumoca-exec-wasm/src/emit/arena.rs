@@ -60,9 +60,13 @@ impl ArenaPlan {
         )
     }
 
-    /// The primal profile of entries sharing a directional module's storage.
-    pub(super) fn validate_primal(rows: &[Vec<LinearOp>]) -> Result<(), String> {
-        conditional::visit_operations(rows, |operation| validate_profile(operation, false))
+    /// The primal profile of programs whose storage this plan does not derive:
+    /// entries sharing a directional module's storage, and the complete source
+    /// prefixes an exact schedule is admitted on.
+    pub(super) fn validate_primal<'a>(
+        rows: impl IntoIterator<Item = &'a [LinearOp]>,
+    ) -> Result<(), String> {
+        conditional::visit_program_operations(rows, |operation| validate_profile(operation, false))
     }
 
     fn required_with_profile(
@@ -134,6 +138,15 @@ impl ArenaPlan {
             (2, ValType::F64),
             (self.last_integer_local() - LOCAL_BASE - 1, ValType::I32),
         ]
+    }
+
+    #[cfg(feature = "diagnostic-root-scalar-locals")]
+    pub(in crate::emit) fn scalar_local_count(&self) -> u32 {
+        self.layouts
+            .iter()
+            .map(|issued| issued.layout.scalar_local_count())
+            .max()
+            .unwrap_or(0)
     }
 
     pub(super) fn add_memory(&self, module: &mut Module) {
@@ -273,6 +286,10 @@ impl BodyEmitter<'_> {
         counter: Option<u32>,
         stride: usize,
     ) -> Result<(), String> {
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if self.diagnostic_scalar_local(start)?.is_some() {
+            return Err("diagnostic scalar local cannot be addressed".into());
+        }
         let start = self.physical_arena_register(start)?;
         self.push_absolute_arena_address(start, counter, stride)
     }
@@ -331,6 +348,24 @@ impl BodyEmitter<'_> {
             .checked_mul(8)
             .and_then(|n| u32::try_from(n).ok())
             .ok_or("native output address overflow")?;
+        #[cfg(feature = "diagnostic-root-scalar-locals")]
+        if self.has_value_local(&[start])? {
+            for element in 0..count {
+                let offset = u64::try_from(element)
+                    .ok()
+                    .and_then(|element| element.checked_mul(8))
+                    .and_then(|element| element.checked_add(u64::from(bytes)))
+                    .ok_or("native output address overflow")?;
+                self.push(Instruction::LocalGet(OUT_PTR_PARAM));
+                self.push_reg(arithmetic::cell(start, element, stride)?)?;
+                self.push(Instruction::F64Store(MemArg {
+                    offset,
+                    align: 3,
+                    memory_index: 0,
+                }));
+            }
+            return Ok(());
+        }
         self.loop_start(arena.counter, count)?;
         self.push(Instruction::LocalGet(OUT_PTR_PARAM));
         self.push(Instruction::LocalGet(arena.counter));

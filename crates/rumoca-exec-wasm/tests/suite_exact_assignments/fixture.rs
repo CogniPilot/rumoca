@@ -91,6 +91,38 @@ pub(super) fn plain(unused_index: usize) -> Fixture {
     )
 }
 
+/// `y[1] := y[0] * p[0]` after `unread`, pure operations on registers from
+/// 100 that nothing reads, so the final program does not hold them.
+pub(super) fn unread_prefix(unread: Vec<solve::LinearOp>) -> Fixture {
+    let length = unread.len() + 4;
+    let mut program = unread;
+    program.extend([
+        solve::LinearOp::LoadY { dst: 0, index: 1 },
+        solve::LinearOp::LoadY { dst: 1, index: 0 },
+        solve::LinearOp::LoadP { dst: 2, index: 0 },
+        binary(3, solve::BinaryOp::Mul, 1, 2),
+        binary(4, solve::BinaryOp::Sub, 0, 3),
+        solve::LinearOp::StoreOutput { src: 4 },
+    ]);
+    assemble(
+        vec![program],
+        vec![row(0, 0, 0, 1, 3, length)],
+        solve::SolvePureCallTable::builder(arithmetic()).finish(),
+        1,
+    )
+}
+
+impl Fixture {
+    /// The operations of the schedule's first final program.
+    pub(super) fn first_final_program(&self) -> Vec<solve::LinearOp> {
+        let owner = self
+            .owners
+            .exact_assignment_program(self.schedule().program_ids()[0])
+            .unwrap();
+        owner.final_scalar_program(&self.source).unwrap().programs()[0].clone()
+    }
+}
+
 /// `y[1] := {42, 64}[p[0]]`: a checked model-scope gather whose runtime
 /// index can fail Integer conversion or the array bound.
 pub(super) fn gather() -> Fixture {

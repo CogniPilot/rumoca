@@ -68,6 +68,8 @@ mod build_timing;
 pub mod bulk;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod error;
+#[cfg(all(test, feature = "solver-rk45"))]
+mod fixed_step_session_tests;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod me_backend;
 #[cfg(all(test, feature = "solver-rk45"))]
@@ -120,6 +122,8 @@ pub mod native_expansion {
 
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod backend_options;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub use backend_options::{fixed_step_backend_options, fixed_step_semi_implicit_backend_options};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
@@ -229,7 +233,7 @@ fn simulate_with_observation(
     backend_options::validate(opts)?;
     match opts.solver_mode {
         SimSolverMode::Auto => simulate_with_auto_diagnostics(dae_model, opts, observation),
-        SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
+        SimSolverMode::RkLike | SimSolverMode::VelImplicit | SimSolverMode::FixedStep => {
             simulate_with_rk45_diagnostics(dae_model, opts, observation)
         }
         SimSolverMode::Bdf => simulate_with_diffsol_diagnostics(dae_model, opts, observation),
@@ -260,7 +264,7 @@ pub fn simulate_fmi_component(
         rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);
     match opts.solver_mode {
         SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend, None),
-        SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
+        SimSolverMode::RkLike | SimSolverMode::VelImplicit | SimSolverMode::FixedStep => {
             simulate_artifact_rk45(artifact, opts, execution_backend, None)
         }
         SimSolverMode::Bdf => simulate_artifact_diffsol(artifact, opts, execution_backend, None),

@@ -1,4 +1,19 @@
 use super::*;
+use crate::SimSolverMode;
+
+#[test]
+fn only_the_explicit_derivative_only_profiles_are_admitted() {
+    for mode in [SimSolverMode::RkLike, SimSolverMode::FixedStep] {
+        assert!(admits_solver_profile(mode), "{mode:?}");
+    }
+    for mode in [
+        SimSolverMode::Auto,
+        SimSolverMode::Bdf,
+        SimSolverMode::VelImplicit,
+    ] {
+        assert!(!admits_solver_profile(mode), "{mode:?}");
+    }
+}
 
 #[test]
 fn native_build_refuses_browser_export_and_load_before_runtime_fallback() {

@@ -20,3 +20,10 @@ mod transactions;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use expressions::{admitted_native_execution_backend, execution_receipt};
+
+#[cfg(all(
+    feature = "fmi-derivative-operation",
+    target_arch = "wasm32",
+    target_os = "unknown"
+))]
+mod derivatives;

@@ -525,14 +525,18 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
             .map_err(|error| error.to_string())
     }
 
-    fn compile_torn_assignment_rows(
+    fn compile_issued_assignment_rows(
         &self,
-        rows: &[Vec<rumoca_ir_solve::LinearOp>],
-        target_y_indices: &[usize],
+        rows: &rumoca_ir_solve::IssuedAssignmentRows,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
+        // A seeded schedule (a torn tangent) keeps this backend's committing
+        // JVP sweep; the native assignment schedule reads no seed.
+        if rows.seed().is_some() {
+            return Err("seeded assignment rows are not compiled by this backend".into());
+        }
         let compiled = rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
-            rows,
-            target_y_indices,
+            rows.rows().programs(),
+            rows.targets(),
             &self.pure_calls,
         );
         compiled

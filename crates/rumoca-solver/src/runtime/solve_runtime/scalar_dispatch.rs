@@ -80,6 +80,18 @@ impl SolveRuntime {
             .eval_state_derivatives_into(t, state, params, tol, max_iters, out)
     }
 
+    pub(crate) fn eval_derivative_rows_at_settled_y(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        rows: &[usize],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .eval_derivative_rows_at_settled_y(t, solver_y, params, rows, out)
+    }
+
     pub fn eval_state_derivatives_with_guess(
         &self,
         t: f64,
@@ -440,6 +452,18 @@ impl SolveRuntime {
     ) -> Result<IndexMap<String, f64>, RuntimeSolveError> {
         self.scalar_execution()?
             .visible_values_for_names(y, params, t, names)
+    }
+
+    pub fn visible_values_selected<N: AsRef<str>>(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        t: f64,
+        names: &[N],
+        selected: &mut Vec<Option<f64>>,
+    ) -> Result<usize, RuntimeSolveError> {
+        self.scalar_execution()?
+            .visible_values_selected(y, params, t, names, selected)
     }
 
     pub fn eval_state_jacobian_v_ad_into(

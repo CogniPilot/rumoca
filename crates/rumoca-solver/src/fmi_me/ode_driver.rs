@@ -29,6 +29,25 @@ pub trait ContinuousOde {
 
     /// Write `f(time, state)` into `out`; a failure is a rendered message.
     fn derivatives_into(&self, time: f64, state: &[f64], out: &mut [f64]) -> Result<(), String>;
+
+    /// The states whose derivatives the system can evaluate at a point that
+    /// differs from its last full evaluation only in the other states (see
+    /// `MeDerivativeHandle::kinematic_states`). None by default.
+    fn kinematic_states(&self) -> &[usize] {
+        &[]
+    }
+
+    /// Write the derivatives of [`Self::kinematic_states`] at `(time, state)`
+    /// into their entries of `out`. The driver calls it only after a full
+    /// evaluation at the same time and the same kinematic entries.
+    fn kinematic_derivatives_into(
+        &self,
+        _time: f64,
+        _state: &[f64],
+        _out: &mut [f64],
+    ) -> Result<(), String> {
+        Err("the system has no kinematic states".to_owned())
+    }
 }
 
 /// The derivative source a plugin evaluates through its retained handle.
@@ -79,6 +98,32 @@ impl MeDerivativeComponent for OdeComponent {
 
     fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
         None
+    }
+
+    fn kinematic_states(&self) -> &[usize] {
+        self.system.kinematic_states()
+    }
+
+    fn kinematic_derivatives_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        _event_boundary: Option<f64>,
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.system
+            .kinematic_derivatives_into(time, states, out)
+            .map_err(|message| MeError::Evaluation { message })?;
+        let kinematic = self.system.kinematic_states();
+        if let Some(&index) = kinematic
+            .iter()
+            .find(|&&index| !out.get(index).is_some_and(|value| value.is_finite()))
+        {
+            return Err(MeError::Evaluation {
+                message: format!("derivative {index} is not finite at t={time}"),
+            });
+        }
+        Ok(())
     }
 }
 

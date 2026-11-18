@@ -1,6 +1,6 @@
 //! Deferred-step yield admission for live observations.
 
-use super::{DeferredCrossing, accepted_step_roundoff};
+use super::{DeferredCrossing, MeSimulationSession, accepted_step_roundoff};
 
 impl DeferredCrossing {
     /// Whether `time` lies strictly inside this step and before any located
@@ -17,5 +17,19 @@ impl DeferredCrossing {
                 .located
                 .as_ref()
                 .is_none_or(|root| root.application().time() - time > roundoff)
+    }
+}
+
+impl MeSimulationSession<'_, '_> {
+    /// The coordinate an output read observes when the caller does not stand
+    /// on the accepted point: a deferred live yield, else a snapped one.
+    pub(super) fn off_point_observation(&self) -> Option<(f64, &[f64])> {
+        match (&self.deferred, self.snapped_yield) {
+            (Some(deferred), _) => {
+                Some((deferred.observed_time, deferred.observed_states.as_slice()))
+            }
+            (None, Some(snapped)) => Some((snapped, self.host.states.as_slice())),
+            (None, None) => None,
+        }
     }
 }

@@ -13,9 +13,9 @@
 //! programs", IEEE Computational Science and Engineering 3(3):18-32, 1996,
 //! doi:10.1109/99.537089.
 
+#[cfg(test)]
+mod kinematic_tests;
 mod reverse_invalidations;
-
-use std::collections::BTreeSet;
 
 use rumoca_core::Span;
 use rumoca_ir_solve::{
@@ -24,11 +24,14 @@ use rumoca_ir_solve::{
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
-use reverse_invalidations::derive_algebraic_reverse_invalidations;
+use reverse_invalidations::derive_algebraic_reverse_invalidations_with_execution;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without
 /// losing the owner span the authority reported it against.
-fn from_pattern_error(error: StructuralPatternError, owner_span: Option<Span>) -> EvalSolveError {
+pub(crate) fn from_pattern_error(
+    error: StructuralPatternError,
+    owner_span: Option<Span>,
+) -> EvalSolveError {
     match error {
         StructuralPatternError::UninitializedRegister { register, span } => {
             EvalSolveError::UninitializedRegister {
@@ -117,14 +120,6 @@ pub fn row_seed_dependencies(program: &[LinearOp]) -> Result<Vec<usize>, EvalSol
         .map_err(|error| from_pattern_error(error, None))
 }
 
-pub(crate) fn program_output_y_dependencies(
-    program: &[LinearOp],
-    span: Option<Span>,
-) -> Result<Vec<BTreeSet<usize>>, EvalSolveError> {
-    StructuralPattern::derive_output_y_dependencies(program, span)
-        .map_err(|error| from_pattern_error(error, span))
-}
-
 /// Issue the checked pattern owner's canonical coloring for colored construction.
 pub fn derive_column_coloring(
     pattern: &StructuralPattern,
@@ -210,9 +205,10 @@ fn derive_structural_artifacts(
             implicit.as_ref(),
             &problem.continuous.algebraic_projection_plan,
         )?;
-        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
+        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations_with_execution(
             implicit.as_ref(),
             &problem.continuous.algebraic_projection_plan,
+            Some(&to_scalar_program_block(&problem.continuous.implicit_rhs)?),
         )?;
         let manifold_projection = derive_y_projection_patterns(
             manifold.as_ref(),
@@ -246,7 +242,12 @@ fn derive_structural_artifacts(
             solver_columns,
         )
         .map_err(|error| from_pattern_error(error, None))?
-    };
+    }
+    .with_kinematic_states(derive_kinematic_states(
+        &problem.continuous,
+        problem.solve_layout.state_scalar_count,
+        solver_columns,
+    ));
     let initialization_columns = solver_columns
         .checked_add(problem.layout.p_scalars())
         .ok_or_else(|| {
@@ -270,6 +271,31 @@ fn derive_structural_artifacts(
         initialization_projection,
     );
     Ok((continuous, initialization))
+}
+
+/// Issue the Solve IR kinematic state partition over the scalar rows the
+/// runtime executes: each tensor compute node enters as its per-cell rows, so
+/// a cell is judged by what that cell reads. A block that does not scalarize
+/// issues no partition.
+#[must_use]
+pub fn derive_kinematic_states(
+    continuous: &rumoca_ir_solve::ContinuousSolveSystem,
+    state_count: usize,
+    solver_count: usize,
+) -> rumoca_ir_solve::KinematicStates {
+    let (Ok(derivative), Ok(implicit)) = (
+        to_scalar_program_block(&continuous.derivative_rhs),
+        to_scalar_program_block(&continuous.implicit_rhs),
+    ) else {
+        return rumoca_ir_solve::KinematicStates::default();
+    };
+    rumoca_ir_solve::KinematicStates::derive(
+        &derivative,
+        &implicit,
+        &continuous.algebraic_projection_plan,
+        state_count,
+        solver_count,
+    )
 }
 
 fn derive_y_projection_patterns(

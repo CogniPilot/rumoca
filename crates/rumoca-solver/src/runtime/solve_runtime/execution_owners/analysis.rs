@@ -135,13 +135,6 @@ impl<'source> ProgramAnalysis<'source> {
         self.source.single_output_row_for_output_index(output)
     }
 
-    pub(in crate::runtime::solve_runtime) fn row_parameter_indices(
-        &self,
-        row: usize,
-    ) -> Option<&'source [usize]> {
-        self.source.row_parameter_indices(row)
-    }
-
     pub(in crate::runtime::solve_runtime) fn parameter_static_y_gradient_params(
         &self,
         row: usize,

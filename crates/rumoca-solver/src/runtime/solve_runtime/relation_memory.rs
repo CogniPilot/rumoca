@@ -1305,12 +1305,7 @@ impl ScalarExecutionView<'_> {
             }
         }
         if !plan.expression_rows.is_empty() {
-            self.eval_single_output_rows_with_native(
-                SpecializedRows {
-                    block: &self.scalar.visible_value_rows,
-                    cache: &self.scalar.compiled_visible_rows,
-                    failed: &self.scalar.failed_visible_rows,
-                },
+            self.eval_visible_expression_rows(
                 &plan.expression_rows,
                 RowEvalPoint { y, p: params, t },
                 values,
@@ -1318,6 +1313,26 @@ impl ScalarExecutionView<'_> {
             copy_grouped_expression_values(plan, values)?;
         }
         Ok(())
+    }
+
+    /// Evaluate the visible expression rows `rows`, each into its own slot of
+    /// `values`: the one evaluator of a planned read, full or selected.
+    pub(super) fn eval_visible_expression_rows(
+        &self,
+        rows: &[usize],
+        point: RowEvalPoint<'_>,
+        values: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.eval_single_output_rows_with_native(
+            SpecializedRows {
+                block: &self.scalar.visible_value_rows,
+                cache: &self.scalar.compiled_visible_rows,
+                failed: &self.scalar.failed_visible_rows,
+            },
+            rows,
+            point,
+            values,
+        )
     }
 
     pub fn visible_values_for_names(
@@ -1438,6 +1453,9 @@ impl ScalarExecutionView<'_> {
         solver_y: &mut [f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if let Some(result) = self.try_complete_derivative(t, solver_y, params, out) {
+            return result;
+        }
         self.refresh_derivative_dependencies(t, solver_y, params, tol, max_iters)?;
         // `eval_derivative_rhs_from_solver_y` fills `out` and *then* rejects
         // non-finite derivatives, so trace before propagating: on failure `out`
@@ -1465,6 +1483,46 @@ impl ScalarExecutionView<'_> {
             out,
         )?;
         self.validate_finite_derivatives(out)
+    }
+
+    /// The derivative program over `solver_y` as given, without the algebraic
+    /// refresh a full evaluation runs first: the caller supplies a coordinate
+    /// a derivative refresh already settled. Only the rows in `rows` are
+    /// checked finite; the others read values the caller does not vouch for.
+    /// The complete operation's kinematic entry, when it serves exactly
+    /// `rows`, evaluates no other row.
+    pub(crate) fn eval_derivative_rows_at_settled_y(
+        &self,
+        t: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        rows: &[usize],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        validate_derivative_output_len(out, self.state_count)?;
+        if let Some(result) = self.try_complete_kinematic(t, solver_y, params, rows, out) {
+            return result;
+        }
+        self.scalar.derivative_scalar.eval(
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
+                t,
+            },
+            self.row_eval_context(),
+            out,
+        )?;
+        for &row in rows {
+            if !out.get(row).is_some_and(|value| value.is_finite()) {
+                let state_name = self
+                    .model
+                    .visible_projection()
+                    .name(row)
+                    .unwrap_or_else(|| format!("state[{row}]"));
+                return Err(RuntimeSolveError::NonFiniteDerivative { state_name });
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn validate_finite_derivatives(

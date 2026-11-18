@@ -330,3 +330,32 @@ fn unchanged_28800_row_full_relation_and_empty_plan_do_not_expand_adjacency() {
     assert!(!result[0]);
     assert!(result[1..].iter().all(|invalidates| *invalidates));
 }
+
+#[test]
+fn guard_only_reads_invalidate_an_earlier_projection_without_jacobian_edges() {
+    let matrix = vec![vec![true, false], vec![false, true]];
+    let source = seed_pattern(&matrix, 2);
+    let plan = AlgebraicProjectionPlan {
+        blocks: vec![block(&[0], &[0]), block(&[1], &[1])].into(),
+    };
+    let first = crate::execution_read_tests::guarded_program(LinearOp::LoadY { dst: 1, index: 1 });
+    let second = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let primal =
+        ScalarProgramBlock::with_program_spans(vec![first, second], vec![span(); 2]).unwrap();
+    assert_eq!(
+        derive_algebraic_reverse_invalidations(Some(&source), &plan).unwrap(),
+        [false, false]
+    );
+    assert_eq!(
+        derive_algebraic_reverse_invalidations_with_execution(Some(&source), &plan, Some(&primal))
+            .unwrap(),
+        [false, true]
+    );
+    assert!(
+        !source.contains(0, 1),
+        "execution obligations do not become Jacobian edges"
+    );
+}

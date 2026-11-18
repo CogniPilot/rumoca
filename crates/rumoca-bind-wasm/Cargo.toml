@@ -61,6 +61,7 @@ flate2 = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 
 [features]
+fmi-derivative-operation = ["precompiled-runtime", "rumoca-sim/fmi-derivative-operation"]
 browser-profile = ["rumoca-core/browser-profile"]
 default = ["console_error_panic_hook"]
 # The full web build is the browser-safe simulation build: explicit rk45 only.

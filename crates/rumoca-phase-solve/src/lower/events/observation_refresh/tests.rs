@@ -141,3 +141,53 @@ fn wide_shared_inputs_do_not_expand_during_closure() {
     assert_eq!(reads_p.intervals().count(), 1);
     assert!(rows.iter().all(|row| Arc::ptr_eq(&reads_p, &row.reads_p)));
 }
+
+#[test]
+fn observation_refresh_includes_guard_only_activation_and_solver_reads() {
+    let profile = solve::SolvePureCallTable::default().arithmetic();
+    let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(profile));
+    let span = solve::source_span_from_offsets(816, 1, 2);
+    let table = solve::SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(816).unwrap()),
+            vec![real.clone(), real.clone()],
+            vec![solve::SolvePureCallOutput::result(real)],
+            span,
+            |b, inputs, outputs| {
+                let x = b.load(inputs[0], span)?;
+                let q = b.load(inputs[1], span)?;
+                b.check_finite(q, solve::SolveFiniteCheck::Derivative, span)?;
+                b.store(outputs[0], x, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    for y in [false, true] {
+        let program = vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            if y {
+                solve::LinearOp::LoadY { dst: 1, index: 7 }
+            } else {
+                solve::LinearOp::LoadP { dst: 1, index: 7 }
+            },
+            solve::LinearOp::PureCall {
+                dst_start: 2,
+                input_starts: vec![0, 1].into(),
+                site: table.owners()[0].call_site(),
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ];
+        let mut discrete = solve::DiscreteSolveSystem {
+            rhs: solve::ScalarProgramBlock::with_program_spans(vec![program], vec![span]).unwrap(),
+            update_targets: vec![solve::scalar_slot_p(0)],
+            clock_owners: vec![None],
+            pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+            observation_refresh: vec![false],
+            ..Default::default()
+        };
+        derive_observation_refresh(&mut discrete, &[7], if y { &[0] } else { &[] }).unwrap();
+        assert_eq!(discrete.observation_refresh, [true]);
+        assert_eq!(discrete.observation_refresh_reads_y, y);
+    }
+}

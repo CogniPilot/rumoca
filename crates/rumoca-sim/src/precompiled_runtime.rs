@@ -10,6 +10,17 @@ fn refusal(message: impl ToString) -> SimulationDiagnosticError {
         span: None,
     }
 }
+/// The solver profiles a precompiled browser product may declare: the
+/// explicit plugins of the rk45 session. Both evaluate only state derivatives
+/// (neither requests a model state Jacobian), so they prepare and replay the
+/// same program inventory.
+#[cfg(any(test, all(target_arch = "wasm32", feature = "solver-rk45")))]
+pub(crate) fn admits_solver_profile(mode: crate::SimSolverMode) -> bool {
+    matches!(
+        mode,
+        crate::SimSolverMode::RkLike | crate::SimSolverMode::FixedStep
+    )
+}
 #[cfg(all(target_arch = "wasm32", feature = "solver-rk45"))]
 mod browser {
     use super::*;
@@ -39,7 +50,7 @@ mod browser {
     // before replaying the component that follows it in the canonical wire.
     fn current_version<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<u32, D::Error> {
         let version = u32::deserialize(reader)?;
-        if version != 2 {
+        if version != 3 {
             return Err(serde::de::Error::custom(
                 "unsupported precompiled runtime schema",
             ));
@@ -80,9 +91,9 @@ mod browser {
         opts: SimOptions,
         context: T,
     ) -> Result<Vec<u8>, SimulationDiagnosticError> {
-        if opts.solver_mode != crate::SimSolverMode::RkLike {
+        if !admits_solver_profile(opts.solver_mode) {
             return Err(refusal(
-                "precompiled browser product requires the declared rk-like profile",
+                "precompiled browser product requires the declared rk-like or fixed-step profile",
             ));
         }
         crate::backend_options::validate(&opts)?;
@@ -106,7 +117,7 @@ mod browser {
         drop(prepared);
         let programs = scope.finish_capture().map_err(refusal)?;
         encode(&RuntimeWireRef {
-            version: 2,
+            version: 3,
             context,
             component: rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
                 .map_err(refusal)?,
@@ -127,7 +138,7 @@ mod browser {
             }
             wire
         };
-        if wire.version != 2 {
+        if wire.version != 3 {
             return Err(refusal("unsupported precompiled runtime schema"));
         }
         let scope = ProgramScope::load(wire.programs).map_err(refusal)?;

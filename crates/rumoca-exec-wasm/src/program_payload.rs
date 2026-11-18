@@ -33,6 +33,20 @@ impl From<CompiledNativeCallProgramWasm> for ProgramPayload {
     }
 }
 
+/// The persisted operation artifact keeps its compiled helpers, so it copies them.
+#[cfg(feature = "precompiled-programs")]
+impl From<&CompiledNativeCallProgramWasm> for ProgramPayload {
+    fn from(module: &CompiledNativeCallProgramWasm) -> Self {
+        Self {
+            bytes: module.bytes.clone(),
+            scratch_bytes: module.scratch_bytes,
+            faults: module.faults.clone(),
+            gather: module.gather_faults.clone(),
+            linear: module.linear_solve_faults.clone(),
+        }
+    }
+}
+
 impl ProgramPayload {
     pub(crate) fn module_bytes(&self) -> &[u8] {
         &self.bytes
@@ -42,6 +56,24 @@ impl ProgramPayload {
     }
     pub(crate) fn faults(&self) -> &[TypedCallFault] {
         &self.faults
+    }
+    /// Every fault table the payload decodes a failure status with.
+    #[cfg(feature = "precompiled-programs")]
+    pub(crate) fn fault_tables(
+        &self,
+    ) -> (
+        &[TypedCallFault],
+        &[NativeGatherFault],
+        &[NativeLinearSolveFault],
+    ) {
+        (&self.faults, &self.gather, &self.linear)
+    }
+    /// Every persisted field that affects code, storage or fault decoding.
+    #[cfg(feature = "precompiled-programs")]
+    pub(crate) fn same_emission(&self, issued: &Self) -> bool {
+        self.bytes == issued.bytes
+            && self.scratch_bytes == issued.scratch_bytes
+            && self.fault_tables() == issued.fault_tables()
     }
     pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
         self.entry_status_error(status, &self.gather, &self.linear)

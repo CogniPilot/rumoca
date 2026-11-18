@@ -78,22 +78,26 @@ fn observation_rows(
             .rhs
             .program_span(program_index)
             .expect("checked scalar program has provenance");
-        let y_dependencies =
-            solve::StructuralPattern::derive_output_y_dependency_ranges(program, Some(span))
-                .map_err(|error| {
-                    LowerError::contract(
-                        format!("cannot prove observation-refresh Y dependencies: {error}"),
-                        span,
-                    )
-                })?;
-        let p_dependencies =
-            solve::StructuralPattern::derive_output_p_dependency_ranges(program, Some(span))
-                .map_err(|error| {
-                    LowerError::contract(
-                        format!("cannot prove observation-refresh P dependencies: {error}"),
-                        span,
-                    )
-                })?;
+        let y_dependencies = solve::StructuralPattern::derive_output_execution_y_dependency_ranges(
+            program,
+            Some(span),
+        )
+        .map_err(|error| {
+            LowerError::contract(
+                format!("cannot prove observation-refresh Y dependencies: {error}"),
+                span,
+            )
+        })?;
+        let p_dependencies = solve::StructuralPattern::derive_output_execution_p_dependency_ranges(
+            program,
+            Some(span),
+        )
+        .map_err(|error| {
+            LowerError::contract(
+                format!("cannot prove observation-refresh P dependencies: {error}"),
+                span,
+            )
+        })?;
         if y_dependencies.len() != p_dependencies.len() {
             return Err(LowerError::contract(
                 "observation-refresh dependency projections disagree on output count",

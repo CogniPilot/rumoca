@@ -8,16 +8,18 @@ pub(super) mod call_program;
 mod cell_loop_tests;
 mod exact_assignments;
 mod matrix;
+mod values;
 pub(crate) use assignments::emit_native_assignment_module;
 pub(crate) use call_program::{
     emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
 };
 pub(crate) use exact_assignments::{
     AdmissionCache, AdmittedEntry, admit_private_entry, emit_event_program_module,
-    emit_exact_assignment_module, emit_private_entries_modules,
+    emit_exact_assignment_module, emit_issued_assignment_module, emit_private_entries_modules,
 };
 #[cfg(test)]
 pub(crate) use exact_assignments::{emit_private_directional_module, emit_private_program_module};
+pub(crate) use values::{emit_derivative_value_module, emit_kinematic_value_module};
 
 use super::*;
 use affine::AffinePlan;

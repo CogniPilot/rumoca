@@ -1,6 +1,7 @@
 mod caches;
 
 mod indicators;
+mod kinematic;
 #[cfg(test)]
 mod tests;
 
@@ -478,7 +479,13 @@ impl SolveMeKernel {
         solver_y: &[f64],
     ) {
         self.solver_y_guess.borrow_mut().clone_from_slice(solver_y);
-        self.cache_continuous_linearization(time, state, parameters, solver_y);
+        self.cache_continuous_linearization(time, state, parameters);
+    }
+
+    /// A write to the solver guess that leaves its values as they are.
+    #[cfg(test)]
+    pub(crate) fn verification_touch_solver_guess(&self) {
+        drop(self.solver_y_guess.borrow_mut());
     }
 
     #[cfg(test)]
@@ -522,7 +529,7 @@ impl SolveMeKernel {
             )
             && root_cache_bit_eq(self.root_cache.borrow().as_ref(), state.root_cache.as_ref())
             && continuous_linearization_cache_bit_eq(
-                self.continuous_linearization_cache.borrow().as_ref(),
+                self.snapshot_settled_coordinate().as_ref(),
                 state.continuous_linearization_cache.as_ref(),
             )
             && observations_bit_eq(&self.initial_observations, &state.initial_observations)
@@ -752,7 +759,7 @@ impl SolveMeKernel {
             active_chart: 0,
             active_reference: None,
             pending_basis_change: None,
-            solver_y_guess: RefCell::new(initial_y.clone()),
+            solver_y_guess: solver_guess::SolverGuess::new(initial_y.clone()),
             committed_seed: RefCell::default(),
             indicator_root_scratch: RefCell::new(scratch.indicator_root_scratch),
             indicator_deadline_scratch: RefCell::new(scratch.indicator_deadline_scratch),
@@ -971,18 +978,17 @@ impl SolveMeKernel {
         };
         {
             let cache = self.continuous_linearization_cache.borrow();
-            if let Some(cached) = cache.as_ref().filter(|cached| {
-                cached.kind == SettledCoordinateKind::Derivative
-                    && cached.matches(time, &self.states, parameters)
-            }) {
+            if let Some(values) = cache
+                .as_ref()
+                .filter(|cached| {
+                    cached.kind == SettledCoordinateKind::Derivative
+                        && cached.matches(time, &self.states, parameters)
+                })
+                .and_then(|cached| self.settled_values(cached))
+            {
                 return self
                     .runtime
-                    .eval_state_jacobian_v_at_settled_solver_y_into(
-                        lin,
-                        &cached.solver_y,
-                        seed,
-                        sensitivity,
-                    )
+                    .eval_state_jacobian_v_at_settled_solver_y_into(lin, &values, seed, sensitivity)
                     .map_err(MeError::from);
             }
         }
@@ -998,7 +1004,7 @@ impl SolveMeKernel {
                 )
                 .map_err(MeError::from);
             if result.is_ok() {
-                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+                self.cache_continuous_linearization(time, &self.states, parameters);
             } else {
                 self.invalidate_continuous_linearization();
             }
@@ -1016,7 +1022,7 @@ impl SolveMeKernel {
         self.with_callback_solver_y(time, |guess, settled| {
             if let Some(settled) = settled {
                 derivatives.copy_from_slice(settled);
-                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+                self.cache_continuous_linearization(time, &self.states, parameters);
                 return Ok(());
             }
             let result = self
@@ -1032,7 +1038,7 @@ impl SolveMeKernel {
                 )
                 .map_err(MeError::from);
             if result.is_ok() {
-                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+                self.cache_continuous_linearization(time, &self.states, parameters);
             } else {
                 self.invalidate_continuous_linearization();
             }

@@ -138,3 +138,65 @@ fn interleaved_programs_on_one_shared_scratch_match_each_program_alone() {
 fn interleaved_directional_programs_on_one_shared_scratch_match_each_program_alone() {
     assert_interleaved_matches_alone(true);
 }
+
+fn assert_batch_expressions_match_alone(directional: bool) {
+    let layout = VarLayout::from_parts(Default::default(), 2, 1);
+    let batch = super::super::super::batch::ModuleBatch::new(
+        layout.clone(),
+        Rc::new(SolvePureCallTable::default()),
+    );
+    let programs = [wide(directional), narrow(directional)];
+    let shared = programs
+        .iter()
+        .map(|program| {
+            let source =
+                ScalarProgramBlock::with_program_spans(vec![program.clone()], vec![span()])
+                    .unwrap();
+            WasmExpression::compile_deferred(&source, &layout, &batch, directional.then_some(2))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    batch.finish();
+    let arena = batch.scratch();
+    assert!(
+        shared
+            .iter()
+            .flat_map(|expression| &expression.selected)
+            .all(|program| Rc::ptr_eq(&program.1, &arena))
+    );
+    let alone = programs
+        .into_iter()
+        .map(|program| compile(vec![program], directional))
+        .collect::<Vec<_>>();
+    let (mut actual, mut expected) = (Vec::new(), Vec::new());
+    for (y, p, seed) in [
+        ([1.5, -2.0], [3.0], [0.25, -8.0]),
+        ([-0.0, 7.25], [0.5], [f64::NAN, 0.0]),
+    ] {
+        let inputs = rumoca_eval_solve::JacobianEvalInputs {
+            y: &y,
+            p: &p,
+            t: 0.75,
+            seed: if directional { &seed } else { &[] },
+        };
+        for expression in [1, 0, 1, 1, 0] {
+            shared[expression]
+                .values_with_seed(0, inputs, &[], &mut actual)
+                .unwrap();
+            alone[expression]
+                .values_with_seed(0, inputs, &[], &mut expected)
+                .unwrap();
+            assert_eq!(
+                bits(&actual),
+                bits(&expected),
+                "directional {directional}, expression {expression}"
+            );
+        }
+    }
+}
+
+#[test]
+fn expressions_of_one_batch_run_on_its_one_scratch_and_match_each_alone() {
+    assert_batch_expressions_match_alone(false);
+    assert_batch_expressions_match_alone(true);
+}

@@ -96,7 +96,7 @@ impl<'source> ComputeOutputPlacement<'source> {
         &self.image
     }
 
-    pub(super) fn append_indices(
+    pub(crate) fn append_indices(
         &self,
         outputs: &mut BTreeSet<usize>,
         context: &'static str,

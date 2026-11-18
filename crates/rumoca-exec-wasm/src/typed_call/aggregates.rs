@@ -1,6 +1,7 @@
 //! Aggregate constructions and reductions, each the WASM form of its
 //! `rumoca_eval_solve` typed definition: element order, operation order and
 //! Integer overflow faults match the reference evaluator cell for cell.
+use super::cells::Index;
 use super::emit::{CELL, Emitter};
 use super::layout::CellRange;
 use super::numbers::{Operand, binary_supported};
@@ -157,25 +158,13 @@ impl Emitter<'_> {
         }
         let extent = self.program.register_types()[operand.index()].dimensions()[0];
         let (source, output) = (self.reg(operand), self.reg(destination));
-        self.cells(output.bytes / 8, |e| {
+        self.cells_shaped(&[extent, extent], |e| {
             e.cell_address(output);
-            e.address(source);
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(extent as i32));
-            e.push(I::I32DivU);
-            e.push(I::I32Const(8));
-            e.push(I::I32Mul);
-            e.push(I::I32Add);
-            e.push(I::I64Load(CELL));
-            e.push(I::I64Const(0));
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(extent as i32));
-            e.push(I::I32DivU);
-            e.push(I::LocalGet(3));
-            e.push(I::I32Const(extent as i32));
-            e.push(I::I32RemU);
-            e.push(I::I32Eq);
-            e.push(I::Select);
+            e.diagonal_select(|e| {
+                let row = e.axis(0);
+                e.cell_at(source, 0, &[(row, 1)]);
+                e.push(I::I64Load(CELL));
+            });
             e.push(I::I64Store(CELL));
         });
         Ok(())
@@ -280,16 +269,24 @@ impl Emitter<'_> {
         });
     }
 
-    /// `range` advanced by `row` bytes per cell index (local 3) plus `offset`.
+    /// `range` advanced by `row` bytes per row index (axis 0) plus `offset`.
     fn row_address(&mut self, range: CellRange, row: u32, offset: u32) {
-        self.address(range);
-        self.push(I::LocalGet(3));
-        self.push(I::I32Const(row as i32));
-        self.push(I::I32Mul);
-        self.push(I::I32Add);
-        if offset > 0 {
-            self.push(I::I32Const(offset as i32));
-            self.push(I::I32Add);
+        match self.axis(0) {
+            Index::At(at) => self.address(CellRange {
+                offset: range.offset + at * row + offset,
+                ..range
+            }),
+            index => {
+                self.address(range);
+                self.push_index(index);
+                self.push(I::I32Const(row as i32));
+                self.push(I::I32Mul);
+                self.push(I::I32Add);
+                if offset > 0 {
+                    self.push(I::I32Const(offset as i32));
+                    self.push(I::I32Add);
+                }
+            }
         }
     }
 }

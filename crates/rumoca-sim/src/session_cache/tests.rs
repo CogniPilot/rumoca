@@ -198,6 +198,79 @@ fn explicit_backend_default_is_consumed_and_has_its_own_cache_identity() {
     assert_eq!(drive(&mut reused).to_bits(), expected.to_bits());
 }
 
+#[cfg(feature = "solver-rk45")]
+fn fixed_step_options(step: f64, order: u32) -> SimOptions {
+    SimOptions {
+        solver_mode: SimSolverMode::FixedStep,
+        backend_options: Some(crate::fixed_step_backend_options(step, order)),
+        dt: Some(0.25),
+        ..options()
+    }
+}
+
+#[cfg(feature = "solver-rk45")]
+fn drive_counting_steps(lease: &mut SimulationSessionLease) -> (u64, f64) {
+    rumoca_solver::reset_step_counts();
+    let result = drive(lease);
+    (rumoca_solver::step_counts().solver_steps, result)
+}
+
+/// `der(x) = u` with `u = 2` is integrated exactly by every order, so the
+/// step count alone shows which configuration ran.
+#[cfg(feature = "solver-rk45")]
+#[test]
+fn fixed_step_options_select_the_integration_and_the_exact_cache_identity() {
+    let cache = SimulationSessionCache::default();
+    let model = dae();
+    let mut coarse = cache
+        .acquire(Arc::clone(&model), fixed_step_options(0.03125, 4))
+        .unwrap();
+    assert!(!coarse.preparation_reused());
+    let (coarse_steps, expected) = drive_counting_steps(&mut coarse);
+    assert_eq!(coarse_steps, 8);
+    assert!((expected - 1.5).abs() < 1e-12);
+    drop(coarse);
+
+    // The cache holds the most recently released session: each changed
+    // step or order is a different exact identity and prepares afresh.
+    let mut last = f64::NAN;
+    for changed in [
+        fixed_step_options(0.015625, 4),
+        fixed_step_options(0.015625, 1),
+    ] {
+        let mut lease = cache.acquire(Arc::clone(&model), changed).unwrap();
+        assert!(!lease.preparation_reused());
+        let (steps, value) = drive_counting_steps(&mut lease);
+        assert_eq!(steps, 16);
+        assert!((value - expected).abs() < 1e-12);
+        last = value;
+    }
+
+    let mut replay = cache
+        .acquire(Arc::clone(&model), fixed_step_options(0.015625, 1))
+        .unwrap();
+    assert!(replay.preparation_reused());
+    assert_eq!(value(&mut replay, "x"), 1.0);
+    let (replayed_steps, replayed_value) = drive_counting_steps(&mut replay);
+    assert_eq!(replayed_steps, 16);
+    assert_eq!(replayed_value.to_bits(), last.to_bits());
+    drop(replay);
+
+    assert!(matches!(
+        cache.acquire(Arc::clone(&model), fixed_step_options(0.015625, 3)),
+        Err(SimulationDiagnosticError::BackendOptions(
+            crate::BackendOptionsError::InvalidValue {
+                backend: crate::NumericalBackend::FixedStep,
+                field: "order",
+            }
+        ))
+    ));
+    let reused = cache
+        .acquire(model, fixed_step_options(0.015625, 1))
+        .unwrap();
+    assert!(reused.preparation_reused());
+}
+
 #[cfg(feature = "solver-velimplicit")]
 fn velimplicit_options(config: rumoca_solver_velimplicit::VelImplicitConfig) -> SimOptions {
     SimOptions {

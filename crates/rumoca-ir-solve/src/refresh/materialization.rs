@@ -257,7 +257,8 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
         Some(dst)
     }
 
-    fn allocate(&mut self) -> Option<u32> {
+    /// Reserve one fresh register for an operation appended through `push`.
+    pub fn allocate(&mut self) -> Option<u32> {
         self.allocate_range(1)
     }
 

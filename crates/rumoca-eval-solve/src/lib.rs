@@ -35,6 +35,8 @@ mod conditional_region;
 mod errors;
 mod event_messages;
 mod event_observations;
+#[cfg(test)]
+mod execution_read_tests;
 pub mod fmi_tangents;
 #[cfg(test)]
 use event_messages::MAX_EVENT_MESSAGE_BYTES;
@@ -104,8 +106,9 @@ use random_runtime::{
 };
 pub use sparsity::{
     derive_column_coloring, derive_jacobian_pattern_from_jvp,
-    derive_jacobian_pattern_from_scalar_jvp, derive_solve_structural_artifacts,
-    derive_solve_structural_artifacts_with_calls, row_seed_dependencies,
+    derive_jacobian_pattern_from_scalar_jvp, derive_kinematic_states,
+    derive_solve_structural_artifacts, derive_solve_structural_artifacts_with_calls,
+    row_seed_dependencies,
 };
 pub use table_runtime::{
     TableRuntimeError, eval_table_bound_value_in, eval_table_lookup_slope_value_in,
@@ -114,7 +117,7 @@ pub use table_runtime::{
 pub use tangent_lanes::{
     ColoredTangentEvaluator, DirectionCall, DirectionCommit, DirectionSweep, PreparedLaneCatalog,
     PreparedTangentLaneProgram, TangentPoint, TornTangentEvaluator, TornTangentJacobian,
-    causal_coefficient_is_finite,
+    causal_coefficient_is_finite, torn_tangent_schedule_outcome,
 };
 pub use typed_program::{
     AssertionInvocationEvaluation, AssertionReport, TypedAssertionFailure, TypedProgramEvalError,

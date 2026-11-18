@@ -3,6 +3,7 @@ mod assertion_flow;
 pub use articulated::ArticulatedJointReduction;
 mod bound_body;
 pub(super) mod dependency;
+pub(in crate::typed_program) mod execution_reads;
 mod quaternion;
 mod recursion;
 pub use quaternion::BodyQuaternionKinematics;
@@ -29,6 +30,7 @@ use std::sync::Arc;
 use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
+use execution_reads::ExecutionReads;
 pub(super) use recursion::visit_calls;
 pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
 pub use sites::SolveCallSiteCount;
@@ -268,6 +270,7 @@ pub(super) struct SolvePureCallInterface<'owner> {
     pub(super) inputs: &'owner [SolveValueType],
     pub(super) outputs: &'owner [SolvePureCallOutput],
     pub(super) dependencies: &'owner [Box<[SolveCallDependency]>],
+    pub(super) execution_reads: &'owner ExecutionReads,
     pub(super) projections: Option<&'owner ValueProjections>,
     pub(super) affinity: Option<&'owner Affinity>,
     pub(super) assertion_flow: Option<&'owner CheckedAssertionFlow>,
@@ -277,6 +280,7 @@ pub(super) struct SolvePureCallInterface<'owner> {
 pub struct SolvePureCallDirectionalOwner {
     input_coordinate: SolvePureCallInputCoordinate,
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    execution_reads: Arc<ExecutionReads>,
     projections: Option<Arc<ValueProjections>>,
     affinity: Option<Arc<Affinity>>,
     inputs: Arc<[SolveValueType]>,
@@ -296,6 +300,8 @@ pub struct SolvePureCallOwner {
     assertion_flow: Option<CheckedAssertionFlow>,
     #[serde(skip)]
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    #[serde(skip)]
+    execution_reads: Arc<ExecutionReads>,
     #[serde(skip)]
     projections: Option<Arc<ValueProjections>>,
     #[serde(skip)]
@@ -317,6 +323,7 @@ pub struct SolvePureCallOwner {
 #[derive(Debug, Clone, Eq)]
 pub struct SolvePureCallDirectionalSite {
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    execution_reads: Arc<ExecutionReads>,
     projections: Option<Arc<ValueProjections>>,
     affinity: Option<Arc<Affinity>>,
     owner: SolvePureCallOwnerId,
@@ -340,6 +347,7 @@ pub struct SolvePureCallDirectionalSite {
 pub struct SolvePureCallSite {
     quaternion: Option<BodyQuaternionKinematics>,
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
+    execution_reads: Arc<ExecutionReads>,
     projections: Option<Arc<ValueProjections>>,
     affinity: Option<Arc<Affinity>>,
     owner: SolvePureCallOwnerId,
@@ -352,6 +360,7 @@ impl PartialEq for SolvePureCallDirectionalSite {
     fn eq(&self, other: &Self) -> bool {
         self.owner == other.owner
             && shared_slice_eq(&self.dependencies, &other.dependencies)
+            && self.execution_reads == other.execution_reads
             && self.projections == other.projections
             && self.affinity == other.affinity
             && shared_slice_eq(&self.inputs, &other.inputs)
@@ -364,6 +373,7 @@ impl PartialEq for SolvePureCallSite {
         self.quaternion == other.quaternion
             && self.owner == other.owner
             && shared_slice_eq(&self.dependencies, &other.dependencies)
+            && self.execution_reads == other.execution_reads
             && self.projections == other.projections
             && self.affinity == other.affinity
             && shared_slice_eq(&self.inputs, &other.inputs)
@@ -400,6 +410,19 @@ impl SolvePureCallSite {
     #[must_use]
     pub fn output_dependencies(&self) -> &[Box<[SolveCallDependency]>] {
         &self.dependencies
+    }
+
+    /// Whole typed input leaves whose values can affect execution obligations.
+    /// This constructor-derived fact is independent of value/Jacobian sparsity.
+    #[must_use]
+    pub fn execution_reads(&self) -> &[usize] {
+        self.execution_reads.inputs()
+    }
+
+    /// Whether execution has an obligation, including a constant guard.
+    #[must_use]
+    pub fn has_execution_obligations(&self) -> bool {
+        self.execution_reads.has_obligations()
     }
 
     #[must_use]
@@ -452,6 +475,19 @@ impl SolvePureCallDirectionalSite {
         &self.dependencies
     }
 
+    /// Whole typed input leaves whose values can affect execution obligations.
+    /// This constructor-derived fact is independent of value/Jacobian sparsity.
+    #[must_use]
+    pub fn execution_reads(&self) -> &[usize] {
+        self.execution_reads.inputs()
+    }
+
+    /// Whether execution has an obligation, including a constant guard.
+    #[must_use]
+    pub fn has_execution_obligations(&self) -> bool {
+        self.execution_reads.has_obligations()
+    }
+
     #[must_use]
     pub const fn owner(&self) -> SolvePureCallOwnerId {
         self.owner
@@ -483,7 +519,7 @@ impl SolvePureCallDirectionalOwner {
         inputs: Vec<SolveValueType>,
         outputs: Vec<SolvePureCallOutput>,
         body: TypedProgram,
-        dependencies: Box<[Box<[SolveCallDependency]>]>,
+        dependencies: dependency::Execution,
         projections: Option<ValueProjections>,
         affinity: Option<Affinity>,
         provenance: Span,
@@ -491,7 +527,8 @@ impl SolvePureCallDirectionalOwner {
         let input_coordinate = validate_owner_body(&body, &inputs, &outputs, provenance)?;
         Ok(Self {
             input_coordinate,
-            dependencies: dependencies.into(),
+            dependencies: dependencies.dependencies.into(),
+            execution_reads: Arc::new(dependencies.execution_reads),
             projections: projections.map(Arc::new),
             affinity: affinity.map(Arc::new),
             inputs: inputs.into(),
@@ -524,6 +561,7 @@ impl SolvePureCallDirectionalOwner {
     fn interface(&self, id: SolvePureCallOwnerId) -> SolvePureCallInterface<'_> {
         SolvePureCallInterface {
             dependencies: &self.dependencies,
+            execution_reads: &self.execution_reads,
             projections: self.projections.as_deref(),
             affinity: self.affinity.as_deref(),
             assertion_flow: None,
@@ -536,6 +574,7 @@ impl SolvePureCallDirectionalOwner {
     fn call_site(&self, owner: SolvePureCallOwnerId) -> SolvePureCallDirectionalSite {
         SolvePureCallDirectionalSite {
             dependencies: self.dependencies.clone(),
+            execution_reads: self.execution_reads.clone(),
             projections: self.projections.clone(),
             affinity: self.affinity.clone(),
             owner,
@@ -551,6 +590,7 @@ impl SolvePureCallDirectionalOwner {
     ) -> bool {
         owner == site.owner
             && shared_slice_eq(&self.dependencies, &site.dependencies)
+            && self.execution_reads == site.execution_reads
             && self.projections == site.projections
             && self.affinity == site.affinity
             && shared_slice_eq(&self.inputs, &site.inputs)
@@ -676,6 +716,7 @@ impl SolvePureCallOwner {
             inputs: &self.inputs,
             outputs: &self.outputs,
             dependencies: &self.dependencies,
+            execution_reads: &self.execution_reads,
             projections: self.projections.as_deref(),
             affinity: self.affinity.as_deref(),
         }
@@ -686,6 +727,7 @@ impl SolvePureCallOwner {
         SolvePureCallSite {
             quaternion: self.quaternion,
             dependencies: self.dependencies.clone(),
+            execution_reads: self.execution_reads.clone(),
             projections: self.projections.clone(),
             affinity: self.affinity.clone(),
             owner: self.id,
@@ -831,6 +873,7 @@ impl SolvePureCallTable {
     pub fn matches_site(&self, site: &SolvePureCallSite) -> bool {
         self.owner(site.owner).is_some_and(|owner| {
             shared_slice_eq(&owner.dependencies, &site.dependencies)
+                && owner.execution_reads == site.execution_reads
                 && owner.projections == site.projections
                 && owner.affinity == site.affinity
                 && owner.quaternion == site.quaternion
@@ -941,7 +984,10 @@ impl SolvePureCallTableBuilder {
         let directional_interfaces = SolvePureCallTableView::directional(&self.owners);
         let directional =
             body.derive_directional_owner(&inputs, &outputs, directional_interfaces, provenance)?;
-        let dependencies = dependency::derive(&body, inputs.len(), outputs.len(), interfaces)?;
+        let dependency::Execution {
+            dependencies,
+            execution_reads,
+        } = dependency::derive_with_execution(&body, inputs.len(), outputs.len(), interfaces)?;
         let projections = derive_value_projections(&body, inputs.len(), &outputs, &self.owners);
         let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
         let assertion_flow = assertion_flow::derive(&body, inputs.len(), &outputs, interfaces);
@@ -951,6 +997,7 @@ impl SolvePureCallTableBuilder {
             input_coordinate,
             assertion_flow,
             dependencies: dependencies.into(),
+            execution_reads: Arc::new(execution_reads),
             projections: projections.map(Arc::new),
             affinity: affinity.map(Arc::new),
             id,
@@ -1213,6 +1260,53 @@ fn replay_group(
     })
 }
 
+/// Rebuild one nonrecursive owner and re-derive its facts against prior owners.
+fn replay_single_owner(
+    arithmetic: SolveArithmeticProfile,
+    owner: OwnerWire,
+    prior: &[SolvePureCallOwner],
+) -> Result<SolvePureCallOwner, SolveProgramConstructionError> {
+    require_owner_interface(arithmetic, &owner.inputs, &owner.outputs, owner.provenance)?;
+    let interfaces = SolvePureCallTableView::primal(prior);
+    let body = replay_owner_program(&owner.body, interfaces, &owner.outputs)?;
+    let input_coordinate =
+        validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)?;
+    let directional_interfaces = SolvePureCallTableView::directional(prior);
+    let directional = body.derive_directional_owner(
+        &owner.inputs,
+        &owner.outputs,
+        directional_interfaces,
+        owner.provenance,
+    )?;
+    let execution = dependency::derive_with_execution(
+        &body,
+        owner.inputs.len(),
+        owner.outputs.len(),
+        interfaces,
+    )?;
+    let projections = derive_value_projections(&body, owner.inputs.len(), &owner.outputs, prior);
+    let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), prior);
+    let assertion_flow =
+        assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
+    Ok(SolvePureCallOwner {
+        articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
+        quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
+        input_coordinate,
+        assertion_flow,
+        dependencies: execution.dependencies.into(),
+        execution_reads: Arc::new(execution.execution_reads),
+        projections: projections.map(Arc::new),
+        affinity: affinity.map(Arc::new),
+        id: owner.id,
+        identity: owner.identity,
+        inputs: owner.inputs.into(),
+        outputs: owner.outputs.into(),
+        body,
+        directional,
+        provenance: owner.provenance,
+    })
+}
+
 impl<'de> Deserialize<'de> for SolvePureCallTable {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1257,52 +1351,9 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                     SolveProgramConstructionError::WireMismatch,
                 ));
             }
-            require_owner_interface(
-                wire.arithmetic,
-                &owner.inputs,
-                &owner.outputs,
-                owner.provenance,
-            )
-            .map_err(serde::de::Error::custom)?;
-            let interfaces = SolvePureCallTableView::primal(&owners);
-            let body = replay_owner_program(&owner.body, interfaces, &owner.outputs)
+            let replayed = replay_single_owner(wire.arithmetic, owner, &owners)
                 .map_err(serde::de::Error::custom)?;
-            let input_coordinate =
-                validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
-                    .map_err(serde::de::Error::custom)?;
-            let directional_interfaces = SolvePureCallTableView::directional(&owners);
-            let directional = body
-                .derive_directional_owner(
-                    &owner.inputs,
-                    &owner.outputs,
-                    directional_interfaces,
-                    owner.provenance,
-                )
-                .map_err(serde::de::Error::custom)?;
-            let dependencies =
-                dependency::derive(&body, owner.inputs.len(), owner.outputs.len(), interfaces)
-                    .map_err(serde::de::Error::custom)?;
-            let projections =
-                derive_value_projections(&body, owner.inputs.len(), &owner.outputs, &owners);
-            let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), &owners);
-            let assertion_flow =
-                assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
-            owners.push(SolvePureCallOwner {
-                articulated: articulated::derive(&body, &owner.inputs, &owner.outputs),
-                quaternion: quaternion::derive(&body, &owner.inputs, &owner.outputs),
-                input_coordinate,
-                assertion_flow,
-                dependencies: dependencies.into(),
-                projections: projections.map(Arc::new),
-                affinity: affinity.map(Arc::new),
-                id: owner.id,
-                identity: owner.identity,
-                inputs: owner.inputs.into(),
-                outputs: owner.outputs.into(),
-                body,
-                directional,
-                provenance: owner.provenance,
-            });
+            owners.push(replayed);
         }
         if pending_groups.next().is_some() {
             return Err(serde::de::Error::custom(
@@ -1333,6 +1384,7 @@ mod tests {
     mod demand;
     mod dependencies;
     mod discrete_broadcast;
+    mod execution_reads;
     mod integer_tensors;
     mod observation_aliases;
     mod recursion;

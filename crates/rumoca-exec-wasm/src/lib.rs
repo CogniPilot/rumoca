@@ -6,6 +6,7 @@ pub const HOST_ENGINE_ENTRY: bool = cfg!(all(feature = "host-engine", not(target
 
 mod component_build;
 mod cost_model;
+mod derivative_operation;
 #[cfg(feature = "component-build")]
 pub use component_build::NativeLinkableModelLibrary;
 #[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
@@ -18,6 +19,15 @@ pub use component_build::{
 #[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
 pub use component_build::{
     FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
+};
+pub use derivative_operation::{
+    CompiledFmiDerivativeOperationWasm, compile_fmi_derivative_operation_wasm,
+};
+
+#[cfg(feature = "precompiled-programs")]
+pub use derivative_operation::{
+    BoundFmiDerivativeOperation, FmiDerivativeCall, FmiDerivativeFailure, FmiKinematicCall,
+    PrecompiledFmiDerivativeOperation,
 };
 
 mod emit;
@@ -39,10 +49,7 @@ mod math_abi;
 mod native_capacity;
 mod native_program;
 mod outline;
-pub use native_capacity::{
-    CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest, decode_native_source_envelope,
-    encode_native_source_envelope,
-};
+pub use native_capacity::{decode_native_source_envelope, encode_native_source_envelope};
 mod private_program;
 #[cfg(feature = "precompiled-programs")]
 pub use private_program::PrecompiledPrivatePrograms;
@@ -64,7 +71,10 @@ mod scratch_report;
 mod typed_call;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm_runtime;
-pub use exact_assignments::{CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm};
+pub use exact_assignments::{
+    CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm,
+    compile_issued_assignment_rows_wasm,
+};
 pub use native_program::{
     CompiledNativeCallProgramWasm, NativeGatherFault, NativeLinearSolveFault,
     compile_native_assignment_schedule_with_calls_wasm,
@@ -100,7 +110,9 @@ pub use typed_call::{
     TypedCallLayout, compile_checked_assertion_wasm, compile_pure_call_wasm,
 };
 
-use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
+#[cfg(test)]
+use rumoca_ir_solve::NativeWasmCapacityRequest;
+use rumoca_ir_solve::{CheckedNativeWasmCapacityPolicy, ScalarProgramBlock, VarLayout};
 
 #[derive(Debug)]
 pub enum WasmCompileError {

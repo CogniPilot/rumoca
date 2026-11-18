@@ -35,9 +35,10 @@ impl SimulationSession {
         backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimulationDiagnosticError> {
         crate::backend_options::validate(&opts)?;
-        if opts.solver_mode != SimSolverMode::RkLike {
+        if !crate::precompiled_runtime::admits_solver_profile(opts.solver_mode) {
             return Err(SimulationDiagnosticError::Solver(
-                "precompiled browser product requires its declared rk-like profile".into(),
+                "precompiled browser product requires its declared rk-like or fixed-step profile"
+                    .into(),
             ));
         }
         crate::rk45::SimulationSession::from_artifact(artifact, opts, backend).map(|session| Self {
@@ -60,7 +61,7 @@ impl SimulationSession {
         match opts.solver_mode {
             SimSolverMode::Auto => new_auto_session(dae_model, opts),
             SimSolverMode::Bdf => new_bdf_session(dae_model, opts),
-            SimSolverMode::RkLike | SimSolverMode::VelImplicit => {
+            SimSolverMode::RkLike | SimSolverMode::VelImplicit | SimSolverMode::FixedStep => {
                 new_rk_like_session(dae_model, opts)
             }
         }
@@ -163,6 +164,24 @@ impl SimulationSession {
             SimulationSessionInner::RkLike(session) => {
                 session.get(name).map_err(SimulationDiagnosticError::from)
             }
+        }
+    }
+
+    /// The requested variables at the current point, in request order; `None`
+    /// for a name that is not a variable.
+    pub fn selected_values(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<f64>>, SimulationDiagnosticError> {
+        match &self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session
+                .selected_values(names)
+                .map_err(SimulationDiagnosticError::from),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session
+                .selected_values(names)
+                .map_err(SimulationDiagnosticError::from),
         }
     }
 

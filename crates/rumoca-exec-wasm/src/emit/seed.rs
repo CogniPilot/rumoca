@@ -91,13 +91,27 @@ impl BodyEmitter<'_> {
     }
 
     pub(super) fn seed_index(&self, index: usize) -> Result<usize, String> {
+        let base = match self.seed_slots {
+            Some(slot) => slot,
+            None => self.private_seed_offset.unwrap_or(0) as usize / 8,
+        };
         index
-            .checked_add(self.private_seed_offset.unwrap_or(0) as usize / 8)
+            .checked_add(base)
             .ok_or_else(|| "WASM private seed address overflows".into())
     }
 
+    /// The pointer parameter the seed coordinates are read from: the issued
+    /// Y slots, or the private scratch extension.
+    pub(super) fn seed_param(&self) -> u32 {
+        if self.seed_slots.is_some() {
+            Y_PTR_PARAM
+        } else {
+            SEED_PTR_PARAM
+        }
+    }
+
     pub(super) fn emit_seed_load(&mut self, dst: Reg, index: usize) -> Result<(), String> {
-        self.emit_array_load(dst, self.seed_index(index)?, SEED_PTR_PARAM)
+        self.emit_array_load(dst, self.seed_index(index)?, self.seed_param())
     }
 
     pub(super) fn emit_indexed_seed_load(
@@ -107,11 +121,11 @@ impl BodyEmitter<'_> {
         count: usize,
         index: Reg,
     ) -> Result<(), String> {
-        self.emit_indexed_load(dst, self.seed_index(base)?, count, index, SEED_PTR_PARAM)
+        self.emit_indexed_load(dst, self.seed_index(base)?, count, index, self.seed_param())
     }
 
     pub(super) fn seed_array_address(&mut self, start: usize, counter: u32) -> Result<(), String> {
-        self.push(Instruction::LocalGet(SEED_PTR_PARAM));
+        self.push(Instruction::LocalGet(self.seed_param()));
         self.push(Instruction::I32Const(arena::layouts::cell_bytes(
             self.seed_index(start)?,
         )?));

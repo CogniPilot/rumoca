@@ -15,10 +15,17 @@
 //! wasm and Cranelift backends without a second-level code-size decision), and
 //! at most `MAX_UNROLLED_PASSES` passes so that the per-pass binder constants
 //! stay a small fixed set.
+//!
+//! A tensor operation over a static shape is a loop over its cells with no
+//! binder, predicate or region: under the same two bounds it carries a
+//! straight-cells property, and every executor may print one pass per cell
+//! (with the terms of each cell, such as the products a matrix cell sums)
+//! instead of counted loops over its axes. A cell pass costs the scalar
+//! operations of one cell.
 
 use super::{
-    SolveAssertionMessage, SolveOperation, SolveProgramRegion, SolveSpannedOperation,
-    SolveStorageClass,
+    SolveAssertionMessage, SolveOperation, SolveProgramRegion, SolveRegisterId,
+    SolveSpannedOperation, SolveStorageClass, SolveValueType,
 };
 use crate::fault::FaultClass;
 use rumoca_core::StructuredIndexDomain;
@@ -35,6 +42,9 @@ pub const MAX_UNROLLED_OPERATIONS: usize = 1024;
 pub(super) struct LoopFlow {
     /// Per operation: the pass count when it is a loop emitted unrolled.
     unrolled: Box<[Option<usize>]>,
+    /// Per operation: whether it is a tensor operation printed one pass per
+    /// cell.
+    straight_cells: Box<[bool]>,
     weight: usize,
     observes: bool,
 }
@@ -58,7 +68,7 @@ fn loop_of(
 }
 
 impl LoopFlow {
-    pub(super) fn of(operations: &[SolveSpannedOperation]) -> Self {
+    pub(super) fn of(operations: &[SolveSpannedOperation], types: &[SolveValueType]) -> Self {
         let unrolled = operations
             .iter()
             .map(|operation| {
@@ -74,8 +84,18 @@ impl LoopFlow {
         let observes = operations
             .iter()
             .any(|operation| operation_observes(operation.operation()));
+        let straight_cells = operations
+            .iter()
+            .map(|operation| {
+                cell_passes(operation.operation(), types).is_some_and(|(cells, weight)| {
+                    cells <= MAX_UNROLLED_PASSES
+                        && cells.saturating_mul(weight) <= MAX_UNROLLED_OPERATIONS
+                })
+            })
+            .collect();
         Self {
             unrolled,
+            straight_cells,
             weight,
             observes,
         }
@@ -92,6 +112,59 @@ impl LoopFlow {
     pub(super) fn unrolled(&self, operation: usize) -> Option<usize> {
         self.unrolled.get(operation).copied().flatten()
     }
+
+    pub(super) fn straight_cells(&self, operation: usize) -> bool {
+        self.straight_cells.get(operation).copied().unwrap_or(false)
+    }
+}
+
+/// The cell passes of a tensor operation over its static shape and the scalar
+/// operations of one pass; `None` for any other operation.
+fn cell_passes(operation: &SolveOperation, types: &[SolveValueType]) -> Option<(usize, usize)> {
+    let cells = |register: &SolveRegisterId| {
+        types
+            .get(register.index())
+            .map(|value| value.scalar_count() as usize)
+    };
+    let (count, weight) = match operation {
+        SolveOperation::Unary { destination, .. }
+        | SolveOperation::Binary { destination, .. }
+        | SolveOperation::Compare { destination, .. }
+        | SolveOperation::Convert { destination, .. }
+        | SolveOperation::BroadcastBinary { destination, .. }
+        | SolveOperation::Scale { destination, .. }
+        | SolveOperation::Identity { destination }
+        | SolveOperation::Diagonal { destination, .. }
+        | SolveOperation::Transpose { destination, .. }
+        | SolveOperation::ProjectView { destination, .. }
+        | SolveOperation::ProjectSlice { destination, .. } => (cells(destination)?, 1),
+        SolveOperation::UpdateView { value, .. } | SolveOperation::UpdateSlice { value, .. } => {
+            (cells(value)?, 1)
+        }
+        SolveOperation::Reduce { operand, .. } => (cells(operand)?.saturating_sub(1), 1),
+        SolveOperation::MatrixMultiply {
+            destination, lhs, ..
+        } => (
+            cells(destination)?,
+            *types.get(lhs.index())?.dimensions().last()? as usize,
+        ),
+        SolveOperation::Concatenate {
+            destination,
+            axis,
+            operands,
+        } => (
+            types
+                .get(destination.index())?
+                .dimensions()
+                .get(..*axis as usize)?
+                .iter()
+                .map(|extent| *extent as usize)
+                .product(),
+            operands.len(),
+        ),
+        _ => return None,
+    };
+    Some((count, weight))
 }
 
 /// The passes a loop of `domain` runs when emitted unrolled: one binder, no

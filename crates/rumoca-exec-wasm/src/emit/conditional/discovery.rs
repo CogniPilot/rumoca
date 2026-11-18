@@ -4,6 +4,14 @@ use rumoca_ir_solve::{LinearOpSliceKind, SolveVisitor};
 
 pub(in crate::emit) fn visit_operations(
     rows: &[Vec<LinearOp>],
+    visit: impl FnMut(&LinearOp) -> Result<(), String>,
+) -> Result<(), String> {
+    visit_program_operations(rows.iter().map(Vec::as_slice), visit)
+}
+
+/// [`visit_operations`] over borrowed programs, in order.
+pub(in crate::emit) fn visit_program_operations<'a>(
+    rows: impl IntoIterator<Item = &'a [LinearOp]>,
     mut visit: impl FnMut(&LinearOp) -> Result<(), String>,
 ) -> Result<(), String> {
     struct Borrowed<F>(F);
@@ -19,7 +27,7 @@ pub(in crate::emit) fn visit_operations(
         }
     }
     let mut borrowed = Borrowed(&mut visit);
-    for (program_index, row) in rows.iter().enumerate() {
+    for (program_index, row) in rows.into_iter().enumerate() {
         borrowed.visit_linear_op_slice(
             LinearOpSliceKind::ScalarProgram {
                 program_index,

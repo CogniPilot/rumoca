@@ -51,6 +51,16 @@ pub(super) struct Visited {
     word_limit: usize,
     scope_limit: usize,
     generation: u64,
+    whole_owner: std::rc::Rc<()>,
+    whole: HashSet<ScalarExpressionDependency>,
+}
+
+/// A request in exactly one membership owner and generation. It is only
+/// published as completed after every scalar has returned successfully.
+pub(super) struct WholeVisit {
+    owner: std::rc::Rc<()>,
+    generation: u64,
+    key: ScalarExpressionDependency,
 }
 
 impl Default for Visited {
@@ -64,11 +74,34 @@ impl Default for Visited {
             word_limit: WORD_LIMIT,
             scope_limit: SCOPE_LIMIT,
             generation: 0,
+            whole_owner: std::rc::Rc::new(()),
+            whole: HashSet::default(),
         }
     }
 }
 
 impl Visited {
+    pub(super) fn whole_visit(&self, key: ScalarExpressionDependency) -> (WholeVisit, bool) {
+        let complete = self.whole.contains(&key);
+        (
+            WholeVisit {
+                owner: std::rc::Rc::clone(&self.whole_owner),
+                generation: self.generation,
+                key,
+            },
+            complete,
+        )
+    }
+
+    pub(super) fn finish_whole(&mut self, visit: WholeVisit) {
+        if std::rc::Rc::ptr_eq(&visit.owner, &self.whole_owner)
+            && visit.generation == self.generation
+            && self.whole.len() < self.scope_limit
+        {
+            self.whole.insert(visit.key);
+        }
+    }
+
     pub(super) fn insert(&mut self, key: ScalarExpressionDependency) -> bool {
         let expression = key.expression as usize;
         if key.field.is_some() || expression >= DENSE_LIMIT || key.scalar >= DENSE_LIMIT {
@@ -101,6 +134,7 @@ impl Visited {
     }
 
     pub(super) fn clear(&mut self) {
+        self.whole.clear();
         self.sparse.clear();
         let reclaim =
             self.scopes > 0 && (self.scopes >= self.scope_limit || self.words >= self.word_limit);
@@ -124,6 +158,7 @@ impl Visited {
             self.scoped_words = 0;
             self.scopes = 0;
             self.generation = 0;
+            self.whole_owner = std::rc::Rc::new(());
         }
     }
 }

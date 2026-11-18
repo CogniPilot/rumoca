@@ -512,13 +512,12 @@ fn specialized_actual_arguments_remain_distinct_and_out_of_bounds_stays_a_refusa
                 ..
             }
         ));
-        assert_eq!(cache.function_results.len(), 3);
+        assert_eq!(cache.function_results.len(), 2);
         let mut profiles = Vec::new();
         for (key, entry) in &cache.function_results {
             match entry {
-                FunctionSummaryEntry::NeedsIntegers(needed) => {
-                    assert!(key.integers.is_empty());
-                    assert_eq!(needed, &[(1, 0)]);
+                FunctionSummaryEntry::NeedsIntegers(_) => {
+                    panic!("literal Integer profiles must be issued before the first walk");
                 }
                 FunctionSummaryEntry::Complete(dependencies) => {
                     assert_eq!(key.integers.len(), 1);
@@ -654,6 +653,7 @@ fn checked_graph_nodes<'dae>(
     let transition = view.function_fold(fold).unwrap();
     std::array::from_fn(|carried| crate::projection::fold_graph::FoldNode {
         activation: crate::projection::Activation::Guaranteed,
+        integer_profile: Arc::from([]),
         fold,
         carried: carried as u32,
         field: None,
@@ -692,12 +692,14 @@ fn check_graph_case(
     direct: u32,
 ) {
     let mut graph = crate::projection::fold_graph::FoldGraph::default();
-    for node in nodes {
+    let mut owner = crate::projection::fold_nodes::Nodes::default();
+    let issued = nodes.each_ref().map(|node| owner.intern(node.clone()));
+    for node in &issued {
         graph.enqueue(node.clone());
     }
-    for node in 0..2 {
-        assert_eq!(graph.begin_next().as_ref(), Some(&nodes[node]));
-        for (target, key) in nodes.iter().enumerate() {
+    for (node, expected) in nodes.iter().enumerate() {
+        assert_eq!(graph.begin_next().as_deref(), Some(expected));
+        for (target, key) in issued.iter().enumerate() {
             if edges & (1 << (2 * node + target)) != 0 {
                 graph.enqueue(key.clone());
             }
@@ -740,5 +742,199 @@ fn graph_fixed_point_matches_every_two_node_graph_and_parameter_assignment() {
                 check_graph_case(&nodes, edges, direct);
             }
         }
+    });
+}
+
+#[test]
+fn node_identity_is_issued_from_exact_values_and_never_crosses_owners() {
+    positive_model().inspect(|view| {
+        let [node, other] = checked_graph_nodes(view);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let issued = owner.intern(node.clone());
+        let mut equal = node.clone();
+        equal.integer_profile = Arc::from(node.integer_profile.as_ref());
+        equal.parent = Arc::new((*node.parent).clone());
+        assert_eq!(issued, owner.intern(equal));
+        assert_ne!(issued, owner.intern(other));
+        let changed = [
+            crate::projection::fold_graph::FoldNode {
+                activation: crate::projection::Activation::Conditional,
+                ..node.clone()
+            },
+            crate::projection::fold_graph::FoldNode {
+                scalar: 1,
+                ..node.clone()
+            },
+            crate::projection::fold_graph::FoldNode {
+                integer_profile: Arc::from([crate::projection::IntegerBinding {
+                    parameter: 0,
+                    scalar: 0,
+                    value: 2,
+                }]),
+                ..node.clone()
+            },
+            crate::projection::fold_graph::FoldNode {
+                parent: Arc::new(vec![(0, vec![2])]),
+                ..node.clone()
+            },
+        ];
+        for different in changed {
+            assert_ne!(issued, owner.intern(different));
+        }
+        let mut foreign = crate::projection::fold_nodes::Nodes::default();
+        assert_ne!(issued, foreign.intern(node.clone()));
+        // No external owner is needed to keep an issued allocation alive.
+        drop(owner);
+        assert_eq!(&*issued, &node);
+        assert_eq!(issued, issued.clone());
+    });
+}
+
+#[test]
+fn full_node_identity_cache_keeps_existing_ids_and_exact_local_fallback() {
+    positive_model().inspect(|view| {
+        let [first, second] = checked_graph_nodes(view);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let issued = owner.with_test_limit(first.clone(), 1);
+        let local = owner.with_test_limit(second.clone(), 1);
+        assert!(issued.retained());
+        assert!(!local.retained());
+        assert_eq!(issued, owner.with_test_limit(first, 1));
+        assert_eq!(local, owner.with_test_limit(second.clone(), 1));
+        let mut changed = second;
+        changed.scalar = 1;
+        assert_ne!(local, owner.with_test_limit(changed, 1));
+    });
+}
+
+#[derive(Default)]
+struct HashedBytes(usize);
+
+impl std::hash::Hasher for HashedBytes {
+    fn finish(&self) -> u64 {
+        self.0 as u64
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 += bytes.len();
+    }
+}
+
+fn node_hash_bytes(node: &crate::projection::fold_nodes::Node<'_>) -> usize {
+    use std::hash::Hash;
+    let mut counter = HashedBytes::default();
+    node.hash(&mut counter);
+    std::hash::Hasher::finish(&counter) as usize
+}
+
+#[test]
+fn retained_node_hashing_is_constant_after_exact_construction() {
+    positive_model().inspect(|view| {
+        let [small, mut large] = checked_graph_nodes(view);
+        large.parent = Arc::new(vec![(0, vec![1; 4096])]);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let a = owner.intern(small);
+        let b = owner.intern(large.clone());
+        assert_eq!(node_hash_bytes(&a), node_hash_bytes(&b));
+        assert_eq!(node_hash_bytes(&b), node_hash_bytes(&b.clone()));
+        let mut fallback = crate::projection::fold_nodes::Nodes::default();
+        let local = fallback.with_test_limit(large, 0);
+        assert!(node_hash_bytes(&local) > 4096 * std::mem::size_of::<i64>());
+    });
+}
+
+#[test]
+fn completed_recipe_edges_reenter_queue_without_reproving_unique_membership() {
+    positive_model().inspect(|view| {
+        let [first, second] = checked_graph_nodes(view);
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let keys = [
+            owner.with_test_limit(first, 1),
+            owner.with_test_limit(second, 1),
+        ];
+        let mut original = crate::projection::fold_graph::FoldGraph::default();
+        original.enqueue(keys[0].clone());
+        assert_eq!(original.begin_next(), Some(keys[0].clone()));
+        original.enqueue(keys[1].clone());
+        original.enqueue(keys[1].clone());
+        original.finish_node();
+        assert_eq!(original.begin_next(), Some(keys[1].clone()));
+        original.enqueue(keys[0].clone());
+        original.finish_node();
+        assert!(original.begin_next().is_none());
+        assert_eq!(original.recorded_edges, 2);
+        let recipes = original.recipes(usize::MAX);
+        let mut replay = crate::projection::fold_graph::FoldGraph::default();
+        replay.enqueue(keys[0].clone());
+        for (key, recipe) in recipes {
+            assert_eq!(replay.begin_next(), Some(key));
+            replay.replay_edges(&recipe);
+            replay.finish_node();
+        }
+        assert_eq!(replay.begin_next(), Some(keys[1].clone()));
+        replay.enqueue(keys[0].clone());
+        replay.finish_node();
+        assert!(replay.begin_next().is_none());
+        assert_eq!(original.ordered_edges(), replay.ordered_edges());
+        assert_eq!(replay.recorded_edges, 1);
+        assert_eq!(replay.replayed_edges, 1);
+        assert_eq!(replay.recipes(usize::MAX).count(), 0);
+    });
+}
+
+#[test]
+fn recipe_construction_is_lazy_bounded_and_only_for_new_source_bodies() {
+    positive_model().inspect(|view| {
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let keys = checked_graph_nodes(view).map(|node| owner.intern(node));
+        let mut source = crate::projection::fold_graph::FoldGraph::default();
+        for key in &keys {
+            source.enqueue(key.clone());
+        }
+        for key in &keys {
+            assert_eq!(source.begin_next(), Some(key.clone()));
+            source.finish_node();
+        }
+        assert!(source.begin_next().is_none());
+        assert_eq!(source.recipes(0).count(), 0);
+        assert_eq!(source.recipe_emissions.get(), 0);
+        let one = source.recipes(1).collect::<Vec<_>>();
+        assert_eq!(one.len(), 1);
+        assert_eq!(source.recipe_emissions.get(), 1);
+        let mut mixed = crate::projection::fold_graph::FoldGraph::default();
+        for key in &keys {
+            mixed.enqueue(key.clone());
+        }
+        assert_eq!(mixed.begin_next(), Some(keys[0].clone()));
+        mixed.replay_edges(&one[0].1);
+        mixed.finish_node();
+        assert_eq!(mixed.begin_next(), Some(keys[1].clone()));
+        mixed.finish_node();
+        assert!(mixed.begin_next().is_none());
+        assert_eq!(mixed.ordered_edges(), source.ordered_edges());
+        let fresh = mixed.recipes(usize::MAX).collect::<Vec<_>>();
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].0, keys[1]);
+        assert_eq!(mixed.recipe_emissions.get(), 1);
+    });
+}
+
+#[test]
+fn completed_replay_never_reconstructs_any_recipe() {
+    positive_model().inspect(|view| {
+        let mut owner = crate::projection::fold_nodes::Nodes::default();
+        let key = owner.intern(checked_graph_nodes(view)[0].clone());
+        let mut source = crate::projection::fold_graph::FoldGraph::default();
+        source.enqueue(key.clone());
+        assert_eq!(source.begin_next(), Some(key.clone()));
+        source.finish_node();
+        let recipe = source.recipes(1).next().unwrap().1;
+        let mut replay = crate::projection::fold_graph::FoldGraph::default();
+        replay.enqueue(key.clone());
+        assert_eq!(replay.begin_next(), Some(key));
+        replay.replay_edges(&recipe);
+        replay.finish_node();
+        assert_eq!(replay.recipes(usize::MAX).count(), 0);
+        assert_eq!(replay.recipe_emissions.get(), 0);
     });
 }

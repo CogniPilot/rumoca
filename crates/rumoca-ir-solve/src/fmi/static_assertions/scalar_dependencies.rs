@@ -13,27 +13,42 @@ pub(super) fn outputs(
     Some(outputs)
 }
 
+/// Whether each output of `program` is settled under `y` and `p`.
+///
+/// A settled output is also one whose evaluation has a settled outcome: an
+/// execution obligation of the program (a checked call's guard, an operation
+/// that can fault, a fold that holds either) that reads an unsettled value
+/// leaves every output unsettled, even when no output uses its result, since
+/// the runtime evaluates the program where its guard can fail and a
+/// partition that keeps it static never does.
 pub(in crate::fmi) fn program_outputs(
     table: &SolvePureCallTable,
     program: &[Op],
     y: &[bool],
     p: &[bool],
 ) -> Option<Vec<bool>> {
-    region_outputs(table, program, y, p, &[])
+    let mut obligations = true;
+    let mut outputs = region_outputs(table, program, y, p, &[], &mut obligations)?;
+    if !obligations {
+        outputs.fill(false);
+    }
+    Some(outputs)
 }
 
 /// [`program_outputs`] of a program whose function-conditional capture loads
-/// read `captures`.
+/// read `captures`; `obligations` is cleared by an execution obligation that
+/// reads an unsettled value.
 fn region_outputs(
     table: &SolvePureCallTable,
     program: &[Op],
     y: &[bool],
     p: &[bool],
     captures: &[bool],
+    obligations: &mut bool,
 ) -> Option<Vec<bool>> {
     let mut outputs = Vec::new();
     let mut registers = Vec::new();
-    for op in program {
+    for (index, op) in program.iter().enumerate() {
         let end = op
             .dst_register()
             .map_or(0, |dst| dst as usize + op.dst_register_count());
@@ -58,6 +73,11 @@ fn region_outputs(
                 let inner = registers
                     .get(*capture_start as usize..*capture_start as usize + program.capture_count)?
                     .to_vec();
+                // Whether an arm's obligation runs depends on the captured
+                // condition values.
+                if crate::structural_pattern::conditional_obligation(program) {
+                    *obligations &= inner.iter().all(|value| *value);
+                }
                 let mut settled = true;
                 for region in program
                     .arms
@@ -65,7 +85,7 @@ fn region_outputs(
                     .flat_map(|arm| [&arm.condition, &arm.result])
                     .chain(std::iter::once(&program.fallback))
                 {
-                    settled &= region_outputs(table, region, y, p, &inner)?
+                    settled &= region_outputs(table, region, y, p, &inner, obligations)?
                         .iter()
                         .all(|value| *value);
                 }
@@ -73,10 +93,43 @@ fn region_outputs(
                     .get_mut(*dst_start as usize..*dst_start as usize + program.result_count)?
                     .fill(settled);
             }
-            _ => transfer(table, op, &mut registers, y, p, &mut outputs)?,
+            _ => {
+                *obligations &= obligation_settled(op, index, &registers);
+                transfer(table, op, &mut registers, y, p, &mut outputs)?;
+            }
         }
     }
     Some(outputs)
+}
+
+/// Whether what `op`'s execution obligations read is settled in `registers`
+/// (before `op` writes its results). A call's guard reads the arguments its
+/// owner's execution reads name; another operation that can fault reads its
+/// register operands; a fold holding an obligation is not analysed here.
+fn obligation_settled(op: &Op, index: usize, registers: &[bool]) -> bool {
+    match op {
+        Op::PureCall {
+            input_starts, site, ..
+        } => site.execution_reads().iter().all(|&input| {
+            let (Some(&start), Some(value_type)) =
+                (input_starts.get(input), site.inputs().get(input))
+            else {
+                return false;
+            };
+            registers
+                .get(start as usize..start as usize + value_type.scalar_count() as usize)
+                .is_some_and(|values| values.iter().all(|value| *value))
+        }),
+        Op::FunctionFold { program, .. }
+        | Op::GuardedFunctionFold { program, .. }
+        | Op::StoreOutputFunctionFold { program, .. } => {
+            !crate::structural_pattern::fold_obligation(program)
+                && crate::ScalarProgramRegisterFlow::op_reads_only(op, index, registers)
+        }
+        Op::StoreOutput { .. } | Op::StoreOutputRange { .. } => true,
+        _ if op.fault_class().is_prunable() => true,
+        _ => crate::ScalarProgramRegisterFlow::op_reads_only(op, index, registers),
+    }
 }
 
 fn transfer(

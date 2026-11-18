@@ -198,48 +198,6 @@ pub(super) fn parameter_static_y_gradient(row: &[LinearOp]) -> bool {
     parameter_static_y_gradient_inner(row).unwrap_or(false)
 }
 
-pub(super) fn row_parameter_indices(row: &[LinearOp]) -> Vec<usize> {
-    let mut indices = BTreeSet::new();
-    collect_parameter_indices(row, &mut indices);
-    indices.into_iter().collect()
-}
-
-fn collect_parameter_indices(row: &[LinearOp], indices: &mut BTreeSet<usize>) {
-    for op in row {
-        match op {
-            LinearOp::LoadP { index, .. } => {
-                indices.insert(*index);
-            }
-            LinearOp::LoadIndexedP { base, count, .. } => {
-                indices.extend(*base..base.saturating_add(*count));
-            }
-            LinearOp::TensorLoad {
-                input: rumoca_ir_solve::TensorInputKind::P,
-                input_start,
-                count,
-                ..
-            } => {
-                indices.extend(*input_start..input_start.saturating_add(*count));
-            }
-            LinearOp::FunctionFold { program, .. }
-            | LinearOp::GuardedFunctionFold { program, .. }
-            | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                for region in program.regions() {
-                    collect_parameter_indices(region, indices);
-                }
-            }
-            LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    collect_parameter_indices(&arm.condition, indices);
-                    collect_parameter_indices(&arm.result, indices);
-                }
-                collect_parameter_indices(&program.fallback, indices);
-            }
-            _ => {}
-        }
-    }
-}
-
 fn parameter_static_y_gradient_inner(row: &[LinearOp]) -> Option<bool> {
     let register_count = required_registers(row).ok()?;
     let mut registers = vec![GradientDependency::default(); register_count];

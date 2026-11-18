@@ -347,3 +347,88 @@ fn declare_test_class(
     resolver.class_def_scopes.insert(def_id, scope);
     (def_id, scope)
 }
+
+#[test]
+fn inherited_nested_redeclare_value_resolves_in_modifier_scope() {
+    let source = r#"
+model Replacement
+  Real x;
+end Replacement;
+model Host
+  replaceable Replacement item;
+  model Replacement
+    Real x;
+  end Replacement;
+end Host;
+model Base
+  Host h;
+end Base;
+model Derived
+  extends Base(h(redeclare Replacement item));
+end Derived;
+"#;
+    let tree = resolve_tree_source(source).into_inner();
+    let expected = tree.definitions.classes["Replacement"].def_id;
+    let ast::Expression::ClassModification { modifications, .. } =
+        &tree.definitions.classes["Derived"].extends[0].modifications[0].expr
+    else {
+        panic!("fixture modifies h");
+    };
+    let ast::Expression::Modification {
+        target: slot,
+        value,
+        ..
+    } = &modifications[0]
+    else {
+        panic!("fixture redeclares item");
+    };
+    let ast::Expression::ClassModification { target, .. } = value.as_ref() else {
+        panic!("fixture names the replacement type");
+    };
+    assert_eq!(slot.target_def_id(), None, "slot stays instance-owned");
+    assert_eq!(
+        target.target_def_id(),
+        expected,
+        "replacement uses declaring scope"
+    );
+}
+
+#[test]
+fn inherited_bound_nested_modifier_keeps_target_and_value_scopes_separate() {
+    let source = r#"
+model Element
+  parameter Real x=1;
+end Element;
+model Base
+  Element h;
+end Base;
+model Derived
+  parameter Real x=4;
+  extends Base(h(x(min=0)=x));
+end Derived;
+"#;
+    let tree = resolve_tree_source(source).into_inner();
+    let derived = &tree.definitions.classes["Derived"];
+    let expected = derived.components["x"].def_id;
+    let ast::Expression::ClassModification { modifications, .. } =
+        &derived.extends[0].modifications[0].expr
+    else {
+        panic!("fixture modifies h");
+    };
+    let ast::Expression::Binary { lhs, rhs, .. } = &modifications[0] else {
+        panic!("fixture binds a nested modification");
+    };
+    let ast::Expression::ClassModification { target, .. } = lhs.as_ref() else {
+        panic!("fixture gives x an attribute");
+    };
+    assert_eq!(
+        target.target_def_id(),
+        None,
+        "nested target stays instance-owned"
+    );
+    assert_eq!(
+        find_comp_ref_def_id(rhs),
+        expected,
+        "value uses declaring scope"
+    );
+}

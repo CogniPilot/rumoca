@@ -241,26 +241,51 @@ fn may_depend_coordinates(
         .ok_or(SolveProgramConstructionError::InvalidCallInterface { provenance })
 }
 
+/// The two independent facts issued from one checked dependency-flow walk.
+pub(in crate::typed_program) struct Execution {
+    pub(in crate::typed_program) dependencies: Box<[Box<[SolveCallDependency]>]>,
+    pub(in crate::typed_program) execution_reads: super::execution_reads::ExecutionReads,
+}
+
 pub(in crate::typed_program) fn derive(
     body: &TypedProgram,
     input_count: usize,
     output_count: usize,
     available: SolvePureCallTableView<'_>,
 ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
+    derive_with_execution(body, input_count, output_count, available)
+        .map(|derived| derived.dependencies)
+}
+
+/// Value flow and execution obligations share the same checked register flow.
+pub(in crate::typed_program) fn derive_with_execution(
+    body: &TypedProgram,
+    input_count: usize,
+    output_count: usize,
+    available: SolvePureCallTableView<'_>,
+) -> Result<Execution, SolveProgramConstructionError> {
     // One budget for the whole derivation: every followed pass of every fold
     // in this body, however nested, draws on it.
     let work = std::cell::Cell::new(regions::FOLLOWED_WORK_BUDGET);
     #[cfg(test)]
     followed_work::start();
-    Ok(derive_execution(body, input_count, output_count, available, &[], &work)?.summaries)
+    let followed = derive_execution(body, input_count, output_count, available, &[], &work)?;
+    Ok(Execution {
+        dependencies: followed.summaries,
+        execution_reads: followed.execution_reads,
+    })
 }
 
-/// The summaries of one execution of a body and the Integer values it leaves
-/// in its outputs.
-struct Execution {
+/// The summaries of one execution of a body, the Integer values it leaves in
+/// its outputs and the inputs its guards read.
+struct Followed {
     summaries: Box<[Box<[SolveCallDependency]>]>,
     /// Per output: its value, when the known inputs fix it.
     integers: Vec<Option<i64>>,
+    /// Issued for a whole body only. Inside a followed pass of a region they
+    /// are not consulted: the operation that owns the region already reads
+    /// every capture and its control (see `execution_reads`).
+    execution_reads: super::execution_reads::ExecutionReads,
 }
 
 /// [`derive`] for the executions whose leading inputs hold `known` Integer
@@ -275,7 +300,8 @@ fn derive_execution(
     available: SolvePureCallTableView<'_>,
     known: &[Option<i64>],
     work: &std::cell::Cell<usize>,
-) -> Result<Execution, SolveProgramConstructionError> {
+) -> Result<Followed, SolveProgramConstructionError> {
+    let mut execution = super::execution_reads::ExecutionReadBuilder::default();
     let mut slots = input_dependencies(body, input_count);
     let mut registers = vec![Vec::new(); body.register_types().len()];
     let mut assigned = vec![Vec::new(); body.assigned_state_types().len()];
@@ -286,6 +312,7 @@ fn derive_execution(
     );
     for (index, spanned) in body.operations().iter().enumerate() {
         let operation = spanned.operation();
+        execution.observe(body, index, &registers, &assigned, available)?;
         integers.track(operation);
         let context = regions::Context {
             body,
@@ -367,11 +394,12 @@ fn derive_execution(
         }
         retire_registers(body, operation, index, &mut registers);
     }
-    Ok(Execution {
+    Ok(Followed {
         integers: (input_count..input_count + output_count)
             .map(|slot| integers.slot(slot))
             .collect(),
         summaries: output_summaries(body, input_count, output_count, slots),
+        execution_reads: execution.finish(),
     })
 }
 

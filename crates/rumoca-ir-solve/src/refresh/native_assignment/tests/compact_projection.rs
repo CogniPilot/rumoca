@@ -267,6 +267,34 @@ fn compact_refresh_recipe_owns_complete_source_and_refuses_scalar_dispatch() {
     );
 }
 
+#[test]
+fn a_compact_refresh_recipe_replays_inside_its_solve_problem() {
+    let (source, stages, declarations, layout) = fixture(7);
+    let mut problem = crate::SolveProblem {
+        layout,
+        solve_layout: declarations,
+        ..crate::SolveProblem::default()
+    };
+    problem.continuous.implicit_rhs = source;
+    problem.continuous.implicit_row_targets = ImplicitRowTargets::from_projection(&stages);
+    problem.continuous.algebraic_projection_plan.blocks = stages;
+    problem.continuous.refresh_owners =
+        crate::ContinuousRefreshOwners::try_compact_for_problem(&problem)
+            .unwrap()
+            .expect("complete paired source is admitted");
+    // A compact recipe keeps its block inventory without scalar rows or
+    // canonical block identities, so its replay has no execution order and no
+    // value remainder to re-derive.
+    let encoded = serde_json::to_vec(&problem).unwrap();
+    let decoded: crate::SolveProblem = serde_json::from_slice(&encoded).unwrap();
+    let owners = &decoded.continuous.refresh_owners;
+    assert!(owners.has_compact_source_recipe());
+    assert!(owners.algebraic().rows.is_empty());
+    assert!(owners.algebraic().simultaneous_block_indices.is_empty());
+    assert_eq!(owners.algebraic().execution_order_refusal, None);
+    assert_complete_value_projection(owners, &decoded.continuous.algebraic_projection_plan.blocks);
+}
+
 fn assert_complete_value_projection(
     owners: &crate::ContinuousRefreshOwners,
     source: &ProjectionBlocks,

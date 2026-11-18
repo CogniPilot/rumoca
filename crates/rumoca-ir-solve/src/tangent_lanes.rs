@@ -28,11 +28,13 @@ mod operands;
 mod plan;
 mod regions;
 mod replicate;
+mod schedule;
 
 pub use plan::{
     ColoredLaneCall, ColoredTangentPlan, TangentLaneCatalog, TangentRowSource, TornTangentPlan,
     TornTangentResidual, TornTangentStep,
 };
+pub use schedule::{TornTangentSchedule, TornTangentScheduleRefusal, TornTangentSlots};
 
 use crate::linear_op::ScalarProgramRegisterFlow;
 use crate::{LinearOp, MAX_TENSOR_LANES, ScalarProgramBlock, ScalarProgramRegisterError};

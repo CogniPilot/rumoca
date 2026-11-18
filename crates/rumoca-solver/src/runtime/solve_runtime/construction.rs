@@ -192,6 +192,19 @@ impl SolveRuntime {
                     .transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let compiled_derivative_operation =
+            match (
+                execution_backend.as_ref(),
+                model_owner.retained_assertion_root(),
+            ) {
+                (Some(backend), Some(root)) => backend
+                    .compile_fmi_derivative_operation(root.clone())
+                    .map_err(|message| EvalSolveError::CompiledExecution {
+                        message,
+                        span: None,
+                    })?,
+                _ => None,
+            };
         let derivative_scalar = EvaluationPrimal::prepare(
             "derivative_rhs",
             derivative_scalar_rhs.clone(),
@@ -235,8 +248,16 @@ impl SolveRuntime {
             &implicit_scalar_programs,
             &algebraic_refresh.simultaneous_plan,
         )?;
-        let projection_demand =
-            refresh_projection::projection_jacobian_demand(model, settled_read_cones.as_deref())?;
+        let settled_execution_read_cones = initial_projection::settled_execution_read_cones(
+            model,
+            &initial_scalar_residual,
+            &implicit_scalar_programs,
+            &algebraic_refresh.simultaneous_plan,
+        )?;
+        let projection_demand = refresh_projection::projection_jacobian_demand(
+            model,
+            settled_execution_read_cones.as_deref(),
+        )?;
         let compiled_algebraic_jacobians = match primary {
             Some(primary) => chart_sharing::shared_projection_jacobians(
                 primary,
@@ -257,18 +278,24 @@ impl SolveRuntime {
         for (clock, plan) in clock_event_refresh.iter().enumerate() {
             trace_refresh_plan(model, &format!("clock-event-{clock}"), plan);
         }
-        let mut refresh_plans = vec![
-            &algebraic_refresh,
-            &derivative_refresh,
-            &root_refresh,
-            &event_refresh,
-        ];
-        refresh_plans.extend(clock_event_refresh.iter());
-        let static_refresh_parameter_indices = static_refresh_parameter_indices(
-            implicit_scalar_rhs.source(),
-            refresh_plans,
-            &refresh_program_rows,
-        );
+        let static_refresh_parameter_indices = refresh_owners
+            .static_cache_parameters(&model.problem.continuous.implicit_rhs)
+            .map_err(|error| EvalSolveError::InvalidRow {
+                message: error.to_string(),
+                span: None,
+            })?;
+        let mut static_refresh_cache = StaticRefreshCache::default();
+        if compiled_derivative_operation.is_some() {
+            static_refresh_cache
+                .prepare_operation_storage(
+                    model.problem.layout.y_scalars(),
+                    static_refresh_parameter_indices.len(),
+                )
+                .map_err(|message| EvalSolveError::CompiledExecution {
+                    message,
+                    span: None,
+                })?;
+        }
         let root_refresh_after_derivative = refresh_owners.root_after_derivative().cloned();
         let root_refresh_after_algebraic = refresh_owners.root_after_algebraic().cloned();
         let algebraic_refresh_after_derivative =
@@ -419,6 +446,19 @@ impl SolveRuntime {
             primary.map(|primary| &primary.scalar.derivative_jacobian_v),
         )?;
         let has_compiled_projection = implicit_projection_scalar_jacobian_v.is_compiled();
+        let torn_tangents = torn_tangent_evaluators(
+            &model.problem.continuous.algebraic_projection_plan,
+            &implicit_projection_scalar_jacobian,
+            has_compiled_projection,
+        );
+        let compiled_torn_tangents = compiled_torn_tangents(
+            &torn_tangents,
+            &implicit_projection_scalar_jacobian,
+            execution_backend
+                .as_ref()
+                .filter(|_| !implicit_projection_scalar_jacobian_v.has_direct_committing_sweep()),
+            model.problem.layout.y_scalars(),
+        );
         let expressions = match &execution_backend {
             None => PreparedExpressions::Reference,
             Some(backend) => PreparedExpressions::Compiled(Box::new(CompiledExpressions {
@@ -495,6 +535,7 @@ impl SolveRuntime {
         );
         let mut scalar = ScalarExecutionInventory {
             model_jacobian,
+            compiled_derivative_operation,
             initial_binding_rows,
             coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
                 &model.artifacts.discrete,
@@ -502,11 +543,8 @@ impl SolveRuntime {
             )?,
             expressions,
             observation_authority: solve_eval::EventObservationAuthority::default(),
-            torn_tangents: torn_tangent_evaluators(
-                &model.problem.continuous.algebraic_projection_plan,
-                &implicit_projection_scalar_jacobian,
-                has_compiled_projection,
-            ),
+            torn_tangents,
+            compiled_torn_tangents,
             // A backend-compiled JVP evaluates the colors natively, so the
             // colored lanes are built only for the interpreted runtime.
             colored_tangents: if has_compiled_projection {
@@ -547,6 +585,7 @@ impl SolveRuntime {
             seed_projection_cache: RefCell::new(SeedProjectionCache::default()),
             algebraic_refresh,
             settled_read_cones,
+            settled_execution_read_cones,
             derivative_refresh,
             root_refresh,
             event_refresh,
@@ -608,7 +647,7 @@ impl SolveRuntime {
             refresh_snapshot_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
             refresh_tensor_scratch: RefCell::new(Vec::new()),
-            static_refresh_cache: RefCell::new(StaticRefreshCache::default()),
+            static_refresh_cache: RefCell::new(static_refresh_cache),
             static_refresh_parameter_indices,
             parameter_static_gradient_cache: RefCell::new(ParameterStaticGradientCache::default()),
             torn_sweep_cache: TornSweepCache::default(),

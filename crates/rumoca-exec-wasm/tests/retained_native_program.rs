@@ -7,11 +7,13 @@ mod retained_native_program {
 
 use retained_native_program::fixture::{self, BOOLEAN, INTEGER, REAL};
 use rumoca_exec_wasm::{
-    CheckedNativeWasmCapacityPolicy, NativeTransportError, NativeTypedInputBatch,
-    PreparedNativeStorage, PreparedNativeWasmCode, WasmCompileError,
-    compile_retained_native_preparation_wasm, compile_retained_native_preparation_wasm_carrying,
+    NativeTransportError, NativeTypedInputBatch, PreparedNativeStorage, PreparedNativeWasmCode,
+    WasmCompileError, compile_retained_native_preparation_wasm,
+    compile_retained_native_preparation_wasm_carrying,
 };
-use rumoca_ir_solve::{NativeCarriedHost, NativeCarriedState, SolveValueKind};
+use rumoca_ir_solve::{
+    CheckedNativeWasmCapacityPolicy, NativeCarriedHost, NativeCarriedState, SolveValueKind,
+};
 
 const NO_ENGINE: &str = "native FMI execution has no sealed entry for this engine";
 

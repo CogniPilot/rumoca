@@ -1,5 +1,7 @@
 //! Declaration-shaped scalar names: one name and shape per declared variable.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// One declared variable's scalar names, derived from its name and shape.
@@ -66,14 +68,39 @@ impl SolveScalarNameRun {
 /// The read API is that of a name table (`len`, `get`, `iter`, `position`);
 /// the storage and the wire form hold one [`SolveScalarNameRun`] per declared
 /// variable, never one string per scalar.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Lookup by name goes through a per-declaration index that is built as the
+/// declarations are appended. The index is derived from the runs: it is not
+/// on the wire and not part of the table's identity.
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(try_from = "Vec<SolveScalarNameRun>", into = "Vec<SolveScalarNameRun>")]
 pub struct SolveScalarNames {
     runs: Vec<SolveScalarNameRun>,
     /// `starts[i]` is the first scalar ordinal of `runs[i]`.
     starts: Vec<usize>,
     len: usize,
+    /// The runs declared under each name, in storage order.
+    declared: HashMap<String, Vec<usize>>,
 }
+
+impl std::fmt::Debug for SolveScalarNames {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SolveScalarNames")
+            .field("runs", &self.runs)
+            .field("starts", &self.starts)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+impl PartialEq for SolveScalarNames {
+    fn eq(&self, other: &Self) -> bool {
+        self.runs == other.runs
+    }
+}
+
+impl Eq for SolveScalarNames {}
 
 /// A run list whose scalar extent does not fit the address space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +157,7 @@ impl SolveScalarNames {
             .len
             .checked_add(count)
             .ok_or(SolveScalarNamesOverflow)?;
+        self.index_run(&run.name);
         self.starts.push(self.len);
         self.runs.push(run);
         self.len = len;
@@ -138,9 +166,27 @@ impl SolveScalarNames {
 
     /// Append one scalar declaration named `name`.
     pub fn push_scalar(&mut self, name: impl Into<String>) {
+        let run = SolveScalarNameRun::new(name, Vec::new());
+        self.index_run(&run.name);
         self.starts.push(self.len);
-        self.runs.push(SolveScalarNameRun::new(name, Vec::new()));
+        self.runs.push(run);
         self.len += 1;
+    }
+
+    /// Record the run about to be appended under its declaration name.
+    fn index_run(&mut self, name: &str) {
+        let run = self.runs.len();
+        match self.declared.get_mut(name) {
+            Some(runs) => runs.push(run),
+            None => {
+                self.declared.insert(name.to_owned(), vec![run]);
+            }
+        }
+    }
+
+    /// The runs declared as `name`, in storage order.
+    fn declared(&self, name: &str) -> &[usize] {
+        self.declared.get(name).map_or(&[], Vec::as_slice)
     }
 
     /// The declarations, one per variable.
@@ -182,12 +228,23 @@ impl SolveScalarNames {
     }
 
     /// The first scalar ordinal named `name`.
+    ///
+    /// A scalar declaration answers to its whole name and an array declaration
+    /// to its name followed by subscripts, so only the runs declared under
+    /// those two names are examined.
     #[must_use]
     pub fn position(&self, name: &str) -> Option<usize> {
-        self.runs
+        let subscripted = rumoca_core::parse_scalar_name(name)
+            .map_or(&[][..], |scalar| self.declared(scalar.base));
+        self.declared(name)
             .iter()
-            .zip(&self.starts)
-            .find_map(|(run, start)| run.ordinal_of(name).map(|ordinal| start + ordinal))
+            .chain(subscripted)
+            .filter_map(|&run| {
+                let ordinal = self.runs[run].ordinal_of(name)?;
+                Some((run, self.starts[run] + ordinal))
+            })
+            .min_by_key(|(run, _)| *run)
+            .map(|(_, position)| position)
     }
 }
 
@@ -255,6 +312,48 @@ mod tests {
     fn a_run_list_that_overflows_the_scalar_count_is_refused() {
         let wire = r#"[{"name":"a","dimensions":[4294967295,4294967295,4294967295]}]"#;
         assert!(serde_json::from_str::<SolveScalarNames>(wire).is_err());
+    }
+
+    #[test]
+    fn position_is_the_first_matching_declaration_in_storage_order() {
+        let mut names = SolveScalarNames::default();
+        names
+            .push_run(SolveScalarNameRun::new("x", vec![2]))
+            .unwrap();
+        names.push_scalar("x[2]");
+        names.push_scalar("y");
+        names
+            .push_run(SolveScalarNameRun::new("y", vec![1]))
+            .unwrap();
+        names.push_scalar("y");
+        // The linear scan the index replaces.
+        let scan = |name: &str| {
+            names
+                .runs
+                .iter()
+                .zip(&names.starts)
+                .find_map(|(run, start)| run.ordinal_of(name).map(|ordinal| start + ordinal))
+        };
+        for name in [
+            "x", "x[1]", "x[2]", "x[3]", "y", "y[1]", "y[2]", "z", "x[", "",
+        ] {
+            assert_eq!(names.position(name), scan(name), "{name}");
+        }
+        assert_eq!(names.position("x[2]"), Some(1));
+        assert_eq!(names.position("y"), Some(3));
+        assert_eq!(names.position("y[1]"), Some(4));
+    }
+
+    #[test]
+    fn the_name_index_is_not_on_the_wire_or_in_the_identity() {
+        let names = table();
+        let wire = serde_json::to_string(&names).unwrap();
+        assert!(!wire.contains("declared"));
+        let replayed: SolveScalarNames = serde_json::from_str(&wire).unwrap();
+        assert_eq!(replayed, names);
+        assert_eq!(replayed.position("gain[2]"), Some(8));
+        assert_eq!(format!("{replayed:?}"), format!("{names:?}"));
+        assert!(!format!("{names:?}").contains("declared"));
     }
 
     #[test]

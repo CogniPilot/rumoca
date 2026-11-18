@@ -15,6 +15,7 @@ impl Clone for PreparedScalarProgramBlock {
             row_requirements: self.row_requirements.clone(),
             row_reverse_y_gradient_supported: self.row_reverse_y_gradient_supported.clone(),
             row_is_causal: self.row_is_causal.clone(),
+            row_execution: self.row_execution.clone(),
             row_requires_checked_observation: self.row_requires_checked_observation.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
             row_tensor_affine_assignments: self.row_tensor_affine_assignments.clone(),
@@ -149,6 +150,11 @@ impl PreparedScalarProgramBlock {
                 "prepared row causality count",
                 block_span,
             )?,
+            row_execution: prepared_vec_with_capacity(
+                row_count,
+                "prepared row execution proof count",
+                block_span,
+            )?,
             row_requires_checked_observation: prepared_vec_with_capacity(
                 row_count,
                 "prepared row observation count",
@@ -223,6 +229,7 @@ impl PreparedScalarProgramBlock {
         self.row_reverse_y_gradient_supported
             .push(row.reverse_y_gradient_supported);
         self.row_is_causal.push(row.is_causal);
+        self.row_execution.push(OnceCell::new());
         self.row_requires_checked_observation
             .push(row.requires_checked_observation);
         self.row_assignment_shapes.push(OnceCell::new());
@@ -239,6 +246,7 @@ impl PreparedScalarProgramBlock {
         self.row_requirements[row_idx] = row.requirement;
         self.row_reverse_y_gradient_supported[row_idx] = row.reverse_y_gradient_supported;
         self.row_is_causal[row_idx] = row.is_causal;
+        self.row_execution[row_idx] = OnceCell::new();
         self.row_requires_checked_observation[row_idx] = row.requires_checked_observation;
         self.row_assignment_shapes[row_idx] = OnceCell::new();
         self.row_tensor_affine_assignments[row_idx] = row.tensor_affine_assignments;

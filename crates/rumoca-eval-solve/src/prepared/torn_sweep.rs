@@ -63,11 +63,30 @@ pub struct TornSweepComposite {
     pub assignment_rows: Vec<Vec<LinearOp>>,
     /// The solver-Y slot each assignment row writes.
     pub assignment_targets: Vec<usize>,
+    /// The source span of each assignment row: its residual program.
+    pub assignment_spans: Vec<rumoca_core::Span>,
     /// The reduced residual rows as one expression block.
     pub residual_block: ScalarProgramBlock,
     /// Flat output index of each residual row in `residual_block`'s output
     /// order; `None` marks a row with no scalar view.
     pub residual_outputs: Vec<Option<usize>>,
+}
+
+impl TornSweepComposite {
+    /// The causal chain as issued assignment rows over a solver Y of `y_len`
+    /// values, with the function chunks a backend emits them in.
+    pub fn assignment(
+        &self,
+        y_len: usize,
+    ) -> Result<rumoca_ir_solve::IssuedAssignmentRows, rumoca_ir_solve::IssuedAssignmentRowsError>
+    {
+        rumoca_ir_solve::IssuedAssignmentRows::new(
+            self.assignment_rows.clone(),
+            self.assignment_spans.clone(),
+            self.assignment_targets.clone(),
+            y_len,
+        )
+    }
 }
 
 /// Whether one batched sweep completed or declined at a causal step.
@@ -325,9 +344,11 @@ impl PreparedScalarProgramBlock {
     pub fn torn_sweep_composite(&self, sweep: &PreparedTornSweep) -> Option<TornSweepComposite> {
         let mut assignment_rows = Vec::with_capacity(sweep.steps.len());
         let mut assignment_targets = Vec::with_capacity(sweep.steps.len());
+        let mut assignment_spans = Vec::with_capacity(sweep.steps.len());
         for step in &sweep.steps {
             assignment_rows.push(self.torn_step_isolator_program(step)?);
             assignment_targets.push(step.target_y_index);
+            assignment_spans.push(self.block.program_span(step.program_row)?);
         }
         let mut residual_programs = Vec::new();
         let mut residual_spans = Vec::new();
@@ -354,6 +375,7 @@ impl PreparedScalarProgramBlock {
         Some(TornSweepComposite {
             assignment_rows,
             assignment_targets,
+            assignment_spans,
             residual_block,
             residual_outputs,
         })

@@ -19,7 +19,7 @@ pub(super) const INLINE_MOVE_BYTES: u32 = CALL_COST_CELLS * 8;
 /// (V8 `kV8MaxWasmFunctionLocals`). Promotion of scratch cells to locals stops
 /// at it: below it the engine's register allocator, which works on live
 /// ranges, decides what stays in a register.
-pub(super) const ENGINE_LOCAL_LIMIT: u32 = 50_000;
+pub(crate) const ENGINE_LOCAL_LIMIT: u32 = 50_000;
 
 /// Accesses the web analysis of one function may handle. Its walk keeps one bit
 /// per definition per control-flow state, so this bound keeps a state under
