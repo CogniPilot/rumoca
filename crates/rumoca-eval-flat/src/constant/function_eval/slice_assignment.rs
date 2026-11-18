@@ -158,7 +158,21 @@ fn target_selection(
         Subscript::Expr { expr, .. } if matches!(expr.as_ref(), Expression::Range { .. }) => {
             slice_indices(subscript, extent, env, eval).map(Selection::Indices)
         }
-        Subscript::Expr { expr, .. } => slice_bound(expr, env, eval).map(Selection::Index),
+        Subscript::Expr { expr, .. } => match eval_expr_in_function(expr, env, eval)? {
+            Value::Array(values) => values
+                .iter()
+                .map(|value| {
+                    value.as_integer().ok_or_else(|| {
+                        EvalError::type_mismatch("Integer", value.type_name(), eval.span)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Selection::Indices),
+            value => value
+                .as_integer()
+                .map(Selection::Index)
+                .ok_or_else(|| EvalError::type_mismatch("Integer", value.type_name(), eval.span)),
+        },
     }
 }
 

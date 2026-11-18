@@ -6,7 +6,7 @@
 //! Implemented functions:
 //! - Mathematical functions (MLS §3.7.3): sin, cos, tan, asin, acos, atan, etc.
 //! - Array functions (MLS §10.3): size, ndims, sum, product, fill, zeros, ones, linspace, cat,
-//!   and the matrix functions of [`super::array_builtins`]
+//!   and the matrix functions implemented in `array_builtins`
 //! - Event-free value functions (MLS §3.7.4): smooth, noEvent
 //! - Conversion functions (MLS §3.7.2): integer, div, mod, rem
 
@@ -257,11 +257,11 @@ fn eval_abs(args: &[Value], span: Span) -> Result<Value, EvalError> {
     }
 }
 
-// sign: returns -1, 0, or 1
+// MLS §3.7.1: sign returns Integer -1, 0, or 1 for either numeric operand.
 fn eval_sign(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
-        Value::Real(x) => Ok(Value::Real(rumoca_core::modelica_sign(*x))),
+        Value::Real(x) => Ok(Value::Integer(rumoca_core::modelica_sign(*x) as i64)),
         Value::Integer(x) => {
             let s = if *x > 0 {
                 1
@@ -834,6 +834,27 @@ fn get_nested_dim_size(arr: &[Value], dim: i64, span: Span) -> Result<Value, Eva
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MLS §3.7.1 / EXPR-019: sign expands to Integer literals even
+    /// when its operand is Real; both signed zeros select the zero branch.
+    #[test]
+    fn sign_returns_integer_for_real_and_integer_operands() {
+        let span = Span::from_offsets(rumoca_core::SourceId::from_source_name("sign.mo"), 0, 4);
+        for (operand, expected) in [
+            (Value::Real(-2.5), -1),
+            (Value::Real(-0.0), 0),
+            (Value::Real(0.0), 0),
+            (Value::Real(2.5), 1),
+            (Value::Integer(i64::MIN), -1),
+            (Value::Integer(0), 0),
+            (Value::Integer(i64::MAX), 1),
+        ] {
+            assert_eq!(
+                eval_builtin("sign", &[operand], span).unwrap(),
+                Value::Integer(expected)
+            );
+        }
+    }
 
     #[test]
     fn test_sin() {

@@ -56,6 +56,8 @@ use algorithm::{
     own_clocked_function_outputs,
 };
 use algorithm_lowering::{AlgorithmEnvironment, ModelAlgorithmsRequest, lower_algorithms};
+#[cfg(test)]
+use analysis::analyze;
 use analysis::{
     AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlans,
     DelayPlan, DerivedParameterPlan, DiscreteConnectionRanks, DiscreteValueAssignmentPlan,
@@ -69,15 +71,15 @@ use analysis::{
     MultiOutputEquationPlan, NativeLapackPlan, PlannedRole, RecordArrayFieldPlan,
     RecordArrayFieldPlans, RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan,
     RecordProjectionStep, RuntimeVariableRole, SemiLinearRules, StructuredSource, WhenBranchKey,
-    WhenFunctionCallKey, analyze, assigned_function_targets, collect_algorithm_writes,
-    discrete_value_assignment, effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
-    function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
-    is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
-    materialized_discrete_value_rows, model_algorithm_targets, names_overlap,
-    record_field_projections, selected_conditional_statements, selected_when_target,
-    specialized_comprehension_plan, structured_assignment_names,
-    when_conditional_selects_clock_structure, when_function_call_key,
+    WhenFunctionCallKey, analyze_prepared_model, assigned_function_targets,
+    collect_algorithm_writes, discrete_value_assignment, effective_function_scalar_type,
+    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
+    flattened_function_loop_source, function_assertion, function_record_field_name,
+    inferred_clock_transfer, is_event_condition, is_inferred_clock_condition,
+    is_whole_clock_coordinate, materialized_discrete_real_family, materialized_discrete_value_rows,
+    model_algorithm_targets, names_overlap, record_field_projections,
+    selected_conditional_statements, selected_when_target, specialized_comprehension_plan,
+    structured_assignment_names, when_conditional_selects_clock_structure, when_function_call_key,
 };
 use clock_operator_hosts::clock_operator_hosts;
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
@@ -268,9 +270,9 @@ pub(crate) fn construct_with_evidence(
     flat: &flat::Model,
     source_map: SourceMap,
 ) -> Result<crate::DaeConstructionResult, ToDaeError> {
-    let prepared = analysis::prepared_flat(flat)?;
+    let (prepared, analysis) = analyze_prepared_model(flat)?;
     let flat = prepared.as_ref();
-    let analysis = analyze(flat)?.with_semi_linear_rules(flat);
+    let analysis = analysis.with_semi_linear_rules(flat);
     if !flat.is_partial && !analysis.balance.is_balanced() {
         return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
     }
@@ -292,8 +294,8 @@ pub(crate) fn construct_with_evidence(
 pub(crate) fn construction_evidence(
     flat: &flat::Model,
 ) -> Result<(BalanceDetail, Vec<analysis::StructuralSelection>), ToDaeError> {
-    let prepared = analysis::prepared_flat(flat)?;
-    analyze(prepared.as_ref()).map(|analysis| (analysis.balance, analysis.structural_selections))
+    let (_, analysis) = analyze_prepared_model(flat)?;
+    Ok((analysis.balance, analysis.structural_selections))
 }
 
 fn build_checked<'dae>(

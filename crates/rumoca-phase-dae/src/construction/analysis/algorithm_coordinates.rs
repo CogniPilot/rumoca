@@ -8,19 +8,24 @@ use rumoca_core::{ComponentReference, FallibleExpressionRewriter, FallibleStatem
 /// algorithm loops unrolled and structural selections applied (SPEC_0040
 /// DAE-C22), both from one model-scope shape analysis, with algorithm targets
 /// resolved to declared storage coordinates. Borrowed when no change is needed.
-pub(in crate::construction) fn prepared_flat(
+pub(super) fn prepared_flat(
     flat: &flat::Model,
-) -> Result<std::borrow::Cow<'_, flat::Model>, ToDaeError> {
+) -> Result<(Cow<'_, flat::Model>, Option<ParameterBindings>), ToDaeError> {
     let carrying = model_algorithm_loops::has_carrying_loops(flat);
     if !carrying && !has_decidable_conditionals(flat) {
-        return resolve_algorithm_coordinates(std::borrow::Cow::Borrowed(flat));
+        return Ok((resolve_algorithm_coordinates(Cow::Borrowed(flat))?, None));
     }
-    let constants = constant_context(flat)?;
-    let evaluable = evaluable_parameters(flat);
-    let shapes = FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
+    let mut bindings = ParameterBindings::evaluate(flat)?;
+    register_deferred_parameters(flat, &mut bindings.constants);
+    let shapes =
+        FunctionShapeAnalysis::analyze_model(flat, &bindings.constants, Some(&bindings.evaluable))?;
     let unrolled =
         model_algorithm_loops::unroll_carrying_algorithm_loops(flat, shapes.model_values())?;
-    resolve_algorithm_coordinates(select_structural_branches(unrolled, shapes.model_values()))
+    let selected = select_structural_branches(unrolled, shapes.model_values());
+    let resolved = resolve_algorithm_coordinates(selected)?;
+    // These rewrites preserve parameter and constant declarations and their
+    // bindings, so analysis can reuse the evaluated values.
+    Ok((resolved, Some(bindings)))
 }
 
 /// All algorithm consumers must see the same storage coordinate. A literal
