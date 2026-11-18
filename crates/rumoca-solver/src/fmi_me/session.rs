@@ -41,6 +41,7 @@ pub use options::{MeAdvanceOutcome, MeOutputCursor, MeSessionOptions, MeSessionO
 
 use error::latched_failure;
 use options::trace_capacity;
+use selected_values::{TraceChannels, select_outputs};
 
 use super::{
     MeEventCause, MeExecutionBackend, MeInstanceConfig, MeModelSource, MeTime, SolveMeKernel,
@@ -230,62 +231,6 @@ impl MeRetainedComponent {
             lease: PhantomData,
         })
     }
-}
-
-#[derive(Default)]
-struct TraceChannels {
-    names: Vec<String>,
-    meta: Vec<SimVariableMeta>,
-    selection: Option<Vec<usize>>,
-    source_width: usize,
-}
-
-/// Resolve the exact public columns a trace records. Names are matched by
-/// source identity, never by display guessing, and the requested order is
-/// preserved. Duplicate or unknown columns are rejected before initialization.
-fn select_outputs(
-    names: Vec<String>,
-    meta: Vec<SimVariableMeta>,
-    requested: Option<&[String]>,
-) -> Result<TraceChannels, MeSessionError> {
-    let source_width = names.len();
-    let Some(requested) = requested else {
-        return Ok(TraceChannels {
-            names,
-            meta,
-            selection: None,
-            source_width,
-        });
-    };
-    let reject = |reason: String| MeSessionError::Options { reason };
-    if requested.is_empty() {
-        return Err(reject("the requested output list is empty".into()));
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    let mut selection = Vec::with_capacity(requested.len());
-    for name in requested {
-        if !seen.insert(name.as_str()) {
-            return Err(reject(format!(
-                "requested output '{name}' appears more than once"
-            )));
-        }
-        let index = names
-            .iter()
-            .position(|candidate| candidate == name)
-            .ok_or_else(|| reject(format!("requested output '{name}' is unavailable")))?;
-        selection.push(index);
-    }
-    let selected_names = selection
-        .iter()
-        .map(|&index| names[index].clone())
-        .collect();
-    let selected_meta = selection.iter().map(|&index| meta[index].clone()).collect();
-    Ok(TraceChannels {
-        names: selected_names,
-        meta: selected_meta,
-        selection: Some(selection),
-        source_width,
-    })
 }
 
 /// Construct the host state with every aggregate already valid.
