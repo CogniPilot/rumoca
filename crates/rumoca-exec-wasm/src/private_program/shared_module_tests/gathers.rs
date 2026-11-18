@@ -85,39 +85,37 @@ fn parameter_gather_private_emission_does_not_grow_with_the_array() {
 
 #[test]
 fn parameter_gather_private_preserves_bounds_other_readers_and_changed_inputs() {
-    for guarded in [false, true] {
-        for extra_reader in [false, true] {
-            let count = 128;
-            let layout = VarLayout::from_parts(Default::default(), 0, count + 1);
-            let program = compile_private_program_wasm(
-                &source(count, guarded, extra_reader),
-                &layout,
-                &table().0,
-            )
-            .unwrap();
-            let mut scratch = vec![0.; (program.scratch_bytes() as usize).div_ceil(8)];
-            let mut p = (0..=count)
-                .map(|value| value as f64 * 2.)
-                .collect::<Vec<_>>();
-            for first in [42., -12.] {
-                p[0] = 1.;
-                p[1] = first;
-                program.call(&[], &p, 0., &mut scratch).unwrap();
-                assert_eq!(scratch[0], first);
-                if extra_reader {
-                    assert_eq!(scratch[1], first);
-                }
-                p[0] = 128.;
-                program.call(&[], &p, 0., &mut scratch).unwrap();
-                assert_eq!(scratch[0], 256.);
+    for (guarded, extra_reader) in [(false, false), (false, true), (true, false), (true, true)] {
+        let count = 128;
+        let layout = VarLayout::from_parts(Default::default(), 0, count + 1);
+        let program = compile_private_program_wasm(
+            &source(count, guarded, extra_reader),
+            &layout,
+            &table().0,
+        )
+        .unwrap();
+        let mut scratch = vec![0.; (program.scratch_bytes() as usize).div_ceil(8)];
+        let mut p = (0..=count)
+            .map(|value| value as f64 * 2.)
+            .collect::<Vec<_>>();
+        for first in [42., -12.] {
+            p[0] = 1.;
+            p[1] = first;
+            program.call(&[], &p, 0., &mut scratch).unwrap();
+            assert_eq!(scratch[0], first);
+            if extra_reader {
+                assert_eq!(scratch[1], first);
             }
-            for index in [0., -1., 129., 1.5, f64::NAN, f64::INFINITY] {
-                p[0] = index;
-                assert!(
-                    program.call(&[], &p, 0., &mut scratch).is_err(),
-                    "index={index}"
-                );
-            }
+            p[0] = 128.;
+            program.call(&[], &p, 0., &mut scratch).unwrap();
+            assert_eq!(scratch[0], 256.);
+        }
+        for index in [0., -1., 129., 1.5, f64::NAN, f64::INFINITY] {
+            p[0] = index;
+            assert!(
+                program.call(&[], &p, 0., &mut scratch).is_err(),
+                "index={index}"
+            );
         }
     }
 }
