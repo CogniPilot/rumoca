@@ -164,14 +164,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .as_ref()
             .and_then(|owner| owner.definitions.definition_domain(self.view, variable))
         {
-            let count = self
-                .view
+            self.view
                 .domain(domain)
-                .expect("checked definition domain resolves")
-                .scalar_count();
-            (0..count)
-                .map(|scalar| self.comprehension(domain, definition, scalar as usize))
-                .collect::<Result<Vec<_>, _>>()
+                .ok_or_else(|| LowerError::contract("missing current definition domain", span))
+                .and_then(|definition_domain| {
+                    (0..definition_domain.scalar_count())
+                        .map(|scalar| self.comprehension(domain, definition, scalar as usize))
+                        .collect::<Result<Vec<_>, _>>()
+                })
                 .and_then(|values| self.pack_registers(&values, span))
         } else {
             self.pack_expression(definition)

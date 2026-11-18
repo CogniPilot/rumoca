@@ -666,7 +666,7 @@ fn collect_when_owners(
                     &name,
                     roles,
                     &mut dependencies,
-                );
+                )?;
                 let span =
                     require_target_occurrence(&name, "when chain", chain.span(), occurrence)?;
                 Ok(SourceTarget {
@@ -679,7 +679,7 @@ fn collect_when_owners(
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
         targets.append(&mut element_targets);
-        let Some(groups) = when_equation_owner_groups(flat, calls, chain) else {
+        let Some(groups) = when_equation_owner_groups(flat, calls, chain)? else {
             owners.push(SourceOwner {
                 targets,
                 span: chain.span(),
@@ -709,43 +709,44 @@ fn when_equation_owner_groups(
     flat: &flat::Model,
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     chain: &flat::WhenChain,
-) -> Option<Vec<HashSet<DiscreteTargetKey>>> {
+) -> Result<Option<Vec<HashSet<DiscreteTargetKey>>>, ToDaeError> {
     let mut groups = Vec::new();
-    for branch in chain.branches() {
-        for equation in &branch.equations {
-            let group = match equation {
-                flat::WhenEquation::Assign { target, .. }
-                    if whole_primitive_declaration(flat, target) =>
-                {
-                    HashSet::from([DiscreteTargetKey::Whole(flat.variables[target].instance_id)])
-                }
-                flat::WhenEquation::AssignElement {
-                    target,
-                    subscripts,
-                    span,
-                    ..
-                } => {
-                    let selected = when_elements::selected_target(flat, target, subscripts, *span)
+    for equation in chain.branches().flat_map(|branch| &branch.equations) {
+        let group = match equation {
+            flat::WhenEquation::Assign { target, .. }
+                if whole_primitive_declaration(flat, target) =>
+            {
+                HashSet::from([DiscreteTargetKey::Whole(flat.variables[target].instance_id)])
+            }
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                span,
+                ..
+            } => {
+                let Some(selected) =
+                    when_elements::selected_target(flat, target, subscripts, *span)
                         .ok()
-                        .filter(|selected| whole_primitive_declaration(flat, &selected.name))?;
-                    HashSet::from([selected.key()])
-                }
-                flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
-                    when_function_call_plan(flat, calls, outputs, *span)
-                        .expect("when receiver plan was validated")
-                        .receiver_targets()
-                        .map(|name| DiscreteTargetKey::Whole(flat.variables[name].instance_id))
-                        .collect()
-                }
-                flat::WhenEquation::Reinit { .. }
-                | flat::WhenEquation::Assert { .. }
-                | flat::WhenEquation::Terminate { .. } => continue,
-                _ => return None,
-            };
-            merge_when_owner_group(&mut groups, group);
-        }
+                        .filter(|selected| whole_primitive_declaration(flat, &selected.name))
+                else {
+                    return Ok(None);
+                };
+                HashSet::from([selected.key()])
+            }
+            flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
+                when_function_call_plan(flat, calls, outputs, *span)?
+                    .receiver_targets()
+                    .map(|name| DiscreteTargetKey::Whole(flat.variables[name].instance_id))
+                    .collect()
+            }
+            flat::WhenEquation::Reinit { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. } => continue,
+            _ => return Ok(None),
+        };
+        merge_when_owner_group(&mut groups, group);
     }
-    Some(groups)
+    Ok(Some(groups))
 }
 
 fn merge_when_owner_group(
@@ -1560,7 +1561,7 @@ fn collect_when_target_dependencies(
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
     dependencies: &mut HashSet<DiscreteTargetKey>,
-) -> Option<Span> {
+) -> Result<Option<Span>, ToDaeError> {
     let mut first_action = None;
     for branch in chain.branches() {
         first_action = first_action.or(collect_when_equation_target_dependencies(
@@ -1570,9 +1571,9 @@ fn collect_when_target_dependencies(
             target,
             roles,
             dependencies,
-        ));
+        )?);
     }
-    first_action
+    Ok(first_action)
 }
 
 fn collect_when_equation_target_dependencies(
@@ -1582,7 +1583,7 @@ fn collect_when_equation_target_dependencies(
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
     dependencies: &mut HashSet<DiscreteTargetKey>,
-) -> Option<Span> {
+) -> Result<Option<Span>, ToDaeError> {
     let mut first_action = None;
     for equation in equations {
         let action = match equation {
@@ -1609,7 +1610,7 @@ fn collect_when_equation_target_dependencies(
                         target,
                         roles,
                         dependencies,
-                    ));
+                    )?);
                 }
                 if let Some(else_branch) = else_branch {
                     nested = nested.or(collect_when_equation_target_dependencies(
@@ -1619,7 +1620,7 @@ fn collect_when_equation_target_dependencies(
                         target,
                         roles,
                         dependencies,
-                    ));
+                    )?);
                 }
                 nested
             }
@@ -1629,8 +1630,7 @@ fn collect_when_equation_target_dependencies(
                 span,
                 ..
             } => {
-                let plan = when_function_call_plan(flat, calls, outputs, *span)
-                    .expect("when receiver identities and plans were checked before topology");
+                let plan = when_function_call_plan(flat, calls, outputs, *span)?;
                 if plan.receiver_targets().any(|receiver| receiver == target) {
                     collect_current_discrete_dependencies(flat, function, roles, dependencies);
                     Some(*span)
@@ -1646,7 +1646,7 @@ fn collect_when_equation_target_dependencies(
         };
         first_action = first_action.or(action);
     }
-    first_action
+    Ok(first_action)
 }
 
 #[cfg(test)]

@@ -196,17 +196,8 @@ fn issue_intermediate_definition<'dae>(
         let domain_point = discrete
             .same_tick_definitions
             .definition_domain(view, issue.variable.index())
-            .map(|domain| {
-                (
-                    domain,
-                    view.domain(domain)
-                        .expect("checked definition domain resolves")
-                        .structured()
-                        .index_tuple_at(scalar)
-                        .expect("checked definition domain remains valid")
-                        .expect("complete family covers the intermediate scalar"),
-                )
-            });
+            .map(|domain| intermediate_definition_point(view, domain, scalar, definition_span))
+            .transpose()?;
         let definition_scalar = if domain_point.is_some() { 0 } else { scalar };
         let compiler = layout.scalar_compiler(
             view,
@@ -246,6 +237,33 @@ fn issue_intermediate_definition<'dae>(
         order.push(solve::ClockPartitionStep::Intermediate { row });
     }
     Ok(())
+}
+
+fn intermediate_definition_point<'dae>(
+    view: dae::DaeView<'dae>,
+    domain: dae::DomainId<'dae>,
+    scalar: usize,
+    span: Span,
+) -> Result<(dae::DomainId<'dae>, Vec<i64>), LowerError> {
+    let definition_domain = view
+        .domain(domain)
+        .ok_or_else(|| LowerError::contract("missing intermediate definition domain", span))?;
+    let point = definition_domain
+        .structured()
+        .index_tuple_at(scalar)
+        .map_err(|error| {
+            LowerError::contract(
+                format!("invalid intermediate definition domain: {error}"),
+                span,
+            )
+        })?
+        .ok_or_else(|| {
+            LowerError::contract(
+                "definition family does not cover the intermediate scalar",
+                span,
+            )
+        })?;
+    Ok((domain, point))
 }
 
 /// The SOLVE-C57 exchange relation over the producers' periodic clocks.
