@@ -147,17 +147,17 @@ mod tests {
                     .at(at)
                     .binary(dae::BinaryOperator::Subtract, selected, value)
             })?;
-            model.continuous(|rows| {
-                for _ in 0..copies {
+            for _ in 0..copies {
+                model.continuous(|rows| {
                     rows.structured_family(
                         at,
                         domain,
                         rumoca_core::ComprehensionScalarView::BinderSubstitution,
                         |family| family.body(body),
-                    )?;
-                }
-                Ok(())
-            })
+                    )
+                })?;
+            }
+            Ok(())
         })
         .unwrap()
     }
@@ -183,13 +183,12 @@ mod tests {
             ([[1, 2, 1], [1, 2, 1]], [0, 0]),
         ] {
             family_model(bounds, selections, 1).inspect(|view| {
-                let dae::ContinuousOwnerView::Structured { family, .. } =
-                    view.continuous_owner(0).unwrap()
-                else {
-                    panic!("retained source family");
-                };
                 assert!(
-                    family_element_definition(view, family).is_none(),
+                    matches!(
+                        view.continuous_owner(0),
+                        Some(dae::ContinuousOwnerView::Structured { family, .. })
+                            if family_element_definition(view, family).is_none()
+                    ),
                     "{bounds:?}, {selections:?}"
                 );
             });
