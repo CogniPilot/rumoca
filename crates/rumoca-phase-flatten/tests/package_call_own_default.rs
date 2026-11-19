@@ -10,6 +10,13 @@ const SOURCE_NAME: &str = "<package_call_own_default>";
 const SOURCE: &str = r#"
 package P
   partial package PartialMedium
+    constant Real k = 1;
+    function scale
+      input Real x;
+      output Real y;
+    algorithm
+      y := k*x;
+    end scale;
     replaceable record ThermodynamicState
     end ThermodynamicState;
     replaceable partial function density
@@ -18,7 +25,7 @@ package P
     end density;
   end PartialMedium;
   package Gas
-    extends PartialMedium;
+    extends PartialMedium(k = 2);
     redeclare record extends ThermodynamicState
       Real p;
       Real T;
@@ -29,7 +36,7 @@ package P
     end density;
   end Gas;
   package Liquid
-    extends PartialMedium;
+    extends PartialMedium(k = 3);
     redeclare record extends ThermodynamicState
       Real p;
       Real T;
@@ -81,6 +88,54 @@ package P
     Real d = Medium.density(state);
     LiquidMachine liquid;
   end RootAndComponent;
+  partial model PartialTwoPort
+    replaceable package Medium = PartialMedium;
+    Medium.ThermodynamicState state(p = 1e5 + time, T = 300);
+  end PartialTwoPort;
+  model Curve
+    extends PartialTwoPort(redeclare replaceable package Medium = Gas);
+    Real d;
+  equation
+    d = Medium.density(state);
+  end Curve;
+  model BoundCurve
+    extends PartialTwoPort(redeclare replaceable package Medium = Gas);
+    Real d = Medium.density(state);
+  end BoundCurve;
+  model Machine
+    replaceable package Medium = Gas constrainedby PartialMedium;
+    Real d = Medium.density(curve.state);
+    Curve curve(redeclare package Medium = Medium);
+  end Machine;
+  model EquationMachine
+    replaceable package Medium = Gas constrainedby PartialMedium;
+    Real d;
+    BoundCurve curve(redeclare package Medium = Medium);
+  equation
+    d = Medium.density(curve.state);
+  end EquationMachine;
+  model Vessel
+    replaceable package Medium = PartialMedium;
+    Real y = Medium.scale(1 + time);
+  end Vessel;
+  model Column
+    replaceable package Medium = Gas constrainedby PartialMedium;
+    replaceable package Medium_ST = Gas constrainedby PartialMedium;
+    Vessel vessel(redeclare package Medium = Medium);
+    Vessel steam(redeclare package Medium = Medium_ST);
+  end Column;
+  model Still
+    Column col(redeclare package Medium_ST = Liquid);
+  end Still;
+  model Explicit
+    replaceable package Medium = Liquid constrainedby PartialMedium;
+    Real a = P.Gas.scale(1 + time);
+    Real b = Medium.scale(1 + time);
+    Real c = Gas.scale(1 + time);
+  end Explicit;
+  model ExplicitHolder
+    Explicit e;
+  end ExplicitHolder;
 end P;
 "#;
 
@@ -220,4 +275,94 @@ fn a_root_call_and_a_component_call_select_their_own_function() {
         .find_map(|(name, collected)| (name.as_str() == calls[0].as_str()).then_some(collected))
         .expect("the root call's function is collected");
     assert_eq!(collected.def_id, Some(gas));
+}
+
+/// Every call in the flat model, wherever it is written.
+fn all_calls(flat: &flat::Model) -> Vec<Reference> {
+    let mut calls = Vec::new();
+    for variable in flat.variables.values() {
+        if let Some(binding) = &variable.binding {
+            calls.extend(calls_in(binding));
+        }
+    }
+    for equation in flat.equations.iter().chain(&flat.initial_equations) {
+        calls.extend(calls_in(&equation.residual));
+    }
+    calls
+}
+
+fn assert_every_call_is_gas_density(model: &str) {
+    let (instanced, flat) = flatten(model);
+    let gas = instanced.tree.get_def_id_by_name("P.Gas.density").unwrap();
+    let calls = all_calls(&flat);
+    assert_eq!(calls.len(), 2, "{model}: {calls:?}");
+    for call in &calls {
+        assert_eq!(call.target_def_id(), Some(gas), "{model}: {call:?}");
+        let collected = flat
+            .functions
+            .iter()
+            .find_map(|(name, collected)| (name.as_str() == call.as_str()).then_some(collected))
+            .unwrap_or_else(|| panic!("{model}: {} is collected", call.as_str()));
+        let inputs: Vec<_> = collected
+            .inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect();
+        assert_eq!(
+            inputs,
+            ["state_p", "state_T"],
+            "{model}: {} takes the selected package's state",
+            call.as_str()
+        );
+    }
+}
+
+#[test]
+fn a_root_call_and_an_inherited_component_call_share_the_selected_function() {
+    assert_every_call_is_gas_density("P.Machine");
+    assert_every_call_is_gas_density("P.EquationMachine");
+}
+
+#[test]
+fn two_selections_of_one_class_call_their_own_function() {
+    let (_, flat) = flatten("P.Still");
+    for (variable, function) in [
+        ("col.vessel.y", "P.Gas.scale"),
+        ("col.steam.y", "P.Liquid.scale"),
+    ] {
+        assert_eq!(
+            binding_call(&flat, variable).as_str(),
+            function,
+            "{variable}"
+        );
+    }
+}
+
+fn binding_call(flat: &flat::Model, variable: &str) -> Reference {
+    let binding = flat
+        .variables
+        .iter()
+        .find_map(|(name, candidate)| (name.as_str() == variable).then_some(candidate))
+        .and_then(|candidate| candidate.binding.as_ref())
+        .unwrap_or_else(|| panic!("{variable} has a binding"));
+    let calls = calls_in(binding);
+    assert_eq!(calls.len(), 1, "{variable}: {calls:?}");
+    calls.into_iter().next().unwrap()
+}
+
+/// `scale` is inherited, so each package's exposure is told apart by the
+/// package it is called through, which fixes the constant `k` it reads.
+#[test]
+fn a_call_spelled_through_a_named_package_is_not_reselected() {
+    for (model, prefix) in [("P.Explicit", ""), ("P.ExplicitHolder", "e.")] {
+        let (_, flat) = flatten(model);
+        for (variable, function) in [
+            ("a", "P.Gas.scale"),
+            ("b", "P.Liquid.scale"),
+            ("c", "P.Gas.scale"),
+        ] {
+            let call = binding_call(&flat, &format!("{prefix}{variable}"));
+            assert_eq!(call.as_str(), function, "{model} {variable}");
+        }
+    }
 }

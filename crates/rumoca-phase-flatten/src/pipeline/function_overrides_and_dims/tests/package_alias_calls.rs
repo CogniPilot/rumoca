@@ -89,7 +89,8 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
     let Expression::FunctionCall { name, .. } = value else {
         panic!("expected function call");
     };
-    assert_eq!(name.as_str(), "PartialMedium.density");
+    // The call is spelled through the package its scope selects.
+    assert_eq!(name.as_str(), "AliasMedium.density");
     assert_eq!(name.target_def_id(), Some(ids.concrete_density));
 }
 
