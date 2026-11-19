@@ -23,6 +23,7 @@ mod solver_guess;
 #[cfg(feature = "native-wasm")]
 pub use native_typed::{MePendingNativeComponent, MePendingNativeState};
 
+use super::integrator::reached_event_time;
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{
     MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop,
@@ -170,7 +171,7 @@ pub struct SolveMeKernel {
     /// group this is the only basis and never changes; a chart-bearing model
     /// swaps this pointer to `reduced_chart_runtimes[active_chart]` when the
     /// completed-step detector requests a basis change.
-    runtime: Rc<SolveRuntime>,
+    runtime: Rc<ActiveRuntime>,
     #[cfg(feature = "native-wasm")]
     native_transport: Option<RefCell<rumoca_exec_wasm::NativeTransport>>,
     /// The runtime-executable image of every reduced state selection chart, and
@@ -322,6 +323,29 @@ pub(super) fn event_right_limit_state_derivatives(
         settle.tol,
         settle.max_iters,
     )
+}
+
+/// One active basis and its assertion eligibility, resolved together.
+struct ActiveRuntime {
+    solve: SolveRuntime,
+    observes_accepted_step_assertions: bool,
+}
+
+impl ActiveRuntime {
+    fn new(solve: SolveRuntime) -> Self {
+        Self {
+            observes_accepted_step_assertions: solve.observes_scalar_accepted_step_assertions(),
+            solve,
+        }
+    }
+}
+
+impl std::ops::Deref for ActiveRuntime {
+    type Target = SolveRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.solve
+    }
 }
 
 impl SolveMeKernel {
@@ -763,6 +787,13 @@ impl SolveMeKernel {
         } else if self.last_projection_changed {
             self.clear_derivative_cache();
         }
+        if self.runtime.observes_accepted_step_assertions
+            && !enter_event_mode
+            && reached_event_time(self.pending_event_stop.map(|(time, _)| time), self.time)
+                .is_none()
+        {
+            self.check_error_assertions_at_accepted_step()?;
+        }
         self.commit_delay_point()
             .map_err(|error| error.at_stage(MeStage::Integration))?;
         Ok(MeCompletedIntegratorStep {
@@ -888,17 +919,49 @@ impl SolveMeKernel {
     }
 
     /// Report the violated warning-level assertions at one accepted output
-    /// point (MLS §8.3.7); the observation itself is unchanged.
+    /// point (MLS §8.3.7); the observation itself is unchanged. A violated
+    /// error-level assertion whose condition changes between events (inside
+    /// `noEvent`, MLS §8.5) aborts here as it would at an event.
     pub(crate) fn report_warnings(&self, observation: &MeObservation) -> Result<(), MeError> {
         self.require_active_lifecycle("report_warnings")?;
         self.require_observation_brand(observation)?;
-        self.runtime
-            .observe_warnings(
+        match self
+            .runtime
+            .observe_assertions(
                 &observation.solver_y,
                 &observation.parameters,
                 observation.time,
             )
-            .map_err(MeError::from)
+            .map_err(MeError::from)?
+        {
+            EventActionOutcome::AssertionFailed { time, message } => {
+                Err(MeError::Assertion { time, message })
+            }
+            EventActionOutcome::Continue | EventActionOutcome::Terminated { .. } => Ok(()),
+        }
+    }
+
+    /// An error-level assertion whose condition changes between events
+    /// (inside `noEvent`, MLS §8.5) owns no indicator, so it is checked at
+    /// each step accepted without a pending event. A step that crossed an
+    /// indicator ends past an event not yet located. At a located or scheduled
+    /// event, assertion conditions read the settled event state.
+    fn check_error_assertions_at_accepted_step(&self) -> Result<(), MeError> {
+        let observation = self.observe()?;
+        match self
+            .runtime
+            .check_error_assertions(
+                &observation.solver_y,
+                &observation.parameters,
+                observation.time,
+            )
+            .map_err(MeError::from)?
+        {
+            EventActionOutcome::AssertionFailed { time, message } => {
+                Err(MeError::Assertion { time, message })
+            }
+            EventActionOutcome::Continue | EventActionOutcome::Terminated { .. } => Ok(()),
+        }
     }
 
     /// The non-aborting diagnostics this component has reported.

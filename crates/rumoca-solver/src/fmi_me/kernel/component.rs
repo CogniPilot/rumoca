@@ -714,7 +714,7 @@ impl SolveMeKernel {
         config: &MeInstanceConfig,
         #[cfg(feature = "native-wasm")] adoption: &mut Option<rumoca_exec_wasm::NativeTransport>,
     ) -> Result<Self, MeError> {
-        let runtime = Rc::new(runtime);
+        let runtime = Rc::new(ActiveRuntime::new(runtime));
         let facts = source
             .as_ref()
             .expect("constructor owns its checked source facts");

@@ -26,6 +26,8 @@ use rumoca_ir_solve::{AlgebraicProjectionPlan, ComputeBlock, ContinuousSolveSyst
 use crate::runtime::solve_ops::RuntimeSolveError;
 use crate::runtime::solve_runtime::{SolveRuntime, SolveRuntimeSnapshot};
 
+use super::ActiveRuntime;
+
 /// The compile-time geometry of one admissible reduced chart, resolved into the
 /// solver-Y index space shared by every chart of the group.
 ///
@@ -57,7 +59,7 @@ pub(super) struct KernelChart {
 /// `state[k] - residual[binding_rows[k]]` recovers this chart's integrated
 /// source value for state coordinate `k`.
 pub(super) struct BuiltChart {
-    pub(super) runtime: Rc<SolveRuntime>,
+    pub(super) runtime: Rc<ActiveRuntime>,
     pub(super) binding_rows: Vec<usize>,
     /// The nominal of each generated state coordinate under this chart: the
     /// scale of the source coordinate it integrates. A state whose source the
@@ -69,7 +71,7 @@ pub(super) struct BuiltChart {
 /// being the primary basis executed by the enclosing continuous system.
 pub(super) struct ReducedChartRuntimes {
     /// The primary runtime, whose model carries every chart's plan.
-    primary: Rc<SolveRuntime>,
+    primary: Rc<ActiveRuntime>,
     state_count: usize,
     pub(super) charts: Vec<KernelChart>,
 }
@@ -114,7 +116,7 @@ impl ReducedChartRuntimes {
                 return Err(RuntimeSolveError::solve_ir("reduced chart carries no plan"));
             };
             match self.primary.new_alternate(&alternate) {
-                Ok(runtime) => Rc::new(runtime),
+                Ok(runtime) => Rc::new(ActiveRuntime::new(runtime)),
                 Err(error) => {
                     return Err(RuntimeSolveError::solve_ir(format!(
                         "alternate reduced chart is not runtime-executable: {error:?}"
@@ -151,7 +153,7 @@ impl ReducedChartRuntimes {
     }
 
     /// The runtime of chart `index` if it has been built.
-    pub(super) fn built_runtime(&self, index: usize) -> Option<&Rc<SolveRuntime>> {
+    pub(super) fn built_runtime(&self, index: usize) -> Option<&Rc<ActiveRuntime>> {
         self.charts
             .get(index)
             .and_then(|chart| chart.built.get())
@@ -436,7 +438,7 @@ fn slope_geometry(
 /// lowered to an executable plan, so in both cases the component runs on its
 /// primary basis alone.
 pub(super) fn build_reduced_charts(
-    runtime: &Rc<SolveRuntime>,
+    runtime: &Rc<ActiveRuntime>,
     state_count: usize,
 ) -> Result<Option<ReducedChartRuntimes>, RuntimeSolveError> {
     let model = runtime.model();

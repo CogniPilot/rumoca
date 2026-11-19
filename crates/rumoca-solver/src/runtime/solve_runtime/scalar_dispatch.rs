@@ -618,6 +618,28 @@ impl SolveRuntime {
         self.scalar_execution()?.observe_warnings(y, p, t)
     }
 
+    pub fn observe_assertions(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<EventActionOutcome, RuntimeSolveError> {
+        self.scalar_execution()?.observe_assertions(y, p, t)
+    }
+
+    pub fn check_error_assertions(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<EventActionOutcome, RuntimeSolveError> {
+        self.scalar_execution()?.check_error_assertions(y, p, t)
+    }
+
+    pub fn has_unclocked_error_assertions(&self) -> Result<bool, RuntimeSolveError> {
+        Ok(self.scalar_execution()?.has_unclocked_error_assertions())
+    }
+
     pub fn apply_projected_post_initial_event_update<P>(
         &self,
         input: ProjectedPostInitialEventInput<'_>,

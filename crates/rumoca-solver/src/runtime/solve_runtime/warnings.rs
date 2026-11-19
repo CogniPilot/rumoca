@@ -115,6 +115,74 @@ impl ScalarExecutionView<'_> {
     /// Only sites not yet reported are evaluated. Clock-owned warnings are
     /// observed at their clock ticks, which are events.
     pub fn observe_warnings(&self, y: &[f64], p: &[f64], t: f64) -> Result<(), RuntimeSolveError> {
+        self.observe_unclocked_actions(y, p, t, true, false)
+            .map(|_| ())
+    }
+
+    /// Observe the unclocked warning and error-level assertions at one
+    /// accepted output point.
+    ///
+    /// An assert "is an equation" that holds "during continuous integration
+    /// and at event instants" (MLS §8.3.7, §8.4). A relation outside
+    /// `noEvent` keeps its value from the last event between events and owns
+    /// a root, so its violation is found at the crossing. A relation inside
+    /// `noEvent` is taken literally and owns no root (MLS §8.5), so an
+    /// error-level assert whose condition changes there is checked here and
+    /// at each accepted integrator step (`check_error_assertions`); its
+    /// violation aborts the run as it would at an event.
+    pub fn observe_assertions(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<EventActionOutcome, RuntimeSolveError> {
+        self.observe_unclocked_actions(y, p, t, true, true)
+    }
+
+    /// Check the unclocked error-level assertions at one accepted integrator
+    /// step, without reporting warnings, which stay with the output points.
+    pub fn check_error_assertions(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<EventActionOutcome, RuntimeSolveError> {
+        self.observe_unclocked_actions(y, p, t, false, true)
+    }
+
+    /// Whether any unclocked error-level assertion is checked between events,
+    /// so a step can skip observing its coordinate when none is.
+    pub fn has_unclocked_error_assertions(&self) -> bool {
+        self.model
+            .problem
+            .events
+            .actions
+            .iter()
+            .enumerate()
+            .any(|(row, action)| {
+                self.unclocked_action(row, action, solve::SolveEventActionKind::Assert)
+            })
+    }
+
+    fn unclocked_action(
+        &self,
+        row: usize,
+        action: &solve::SolveEventAction,
+        kind: solve::SolveEventActionKind,
+    ) -> bool {
+        action.kind == kind
+            && action.clock_owner.is_none()
+            && !self.scalar.event_transaction_coverage.event_actions[row]
+    }
+
+    fn observe_unclocked_actions(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        warnings: bool,
+        errors: bool,
+    ) -> Result<EventActionOutcome, RuntimeSolveError> {
         let events = &self.model.problem.events;
         let rows = {
             let log = self.warning_log.borrow();
@@ -123,16 +191,25 @@ impl ScalarExecutionView<'_> {
                 .iter()
                 .enumerate()
                 .filter(|(row, action)| {
-                    action.kind == solve::SolveEventActionKind::Warning
-                        && action.clock_owner.is_none()
-                        && !self.scalar.event_transaction_coverage.event_actions[*row]
-                        && !log.reported.contains(row)
+                    (warnings
+                        && self.unclocked_action(
+                            *row,
+                            action,
+                            solve::SolveEventActionKind::Warning,
+                        )
+                        && !log.reported.contains(row))
+                        || (errors
+                            && self.unclocked_action(
+                                *row,
+                                action,
+                                solve::SolveEventActionKind::Assert,
+                            ))
                 })
                 .map(|(row, _)| row)
                 .collect::<Vec<_>>()
         };
         if rows.is_empty() {
-            return Ok(());
+            return Ok(EventActionOutcome::Continue);
         }
         let mut action_p = copy_runtime_values(p, "warning observation parameters")?;
         write_clock_activation_params(&self.model, &mut action_p, t);
@@ -153,6 +230,18 @@ impl ScalarExecutionView<'_> {
             &mut values,
             context,
         )?;
-        self.report_violated_warnings(&values, y, &action_p, t, context)
+        for &row in &rows {
+            let action = &events.actions[row];
+            if action.kind == solve::SolveEventActionKind::Assert && values[row] > 0.5 {
+                let message = self.event_action_message(
+                    action,
+                    RowEvalPoint { y, p: &action_p, t },
+                    context,
+                )?;
+                return Ok(EventActionOutcome::AssertionFailed { time: t, message });
+            }
+        }
+        self.report_violated_warnings(&values, y, &action_p, t, context)?;
+        Ok(EventActionOutcome::Continue)
     }
 }

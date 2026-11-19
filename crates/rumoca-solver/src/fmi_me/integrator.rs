@@ -60,6 +60,14 @@ pub fn accepted_step_roundoff(current_time: f64, accepted_interval_duration: f64
         .max(f64::MIN_POSITIVE)
 }
 
+/// Return the scheduled coordinate when an accepted endpoint reaches it
+/// within solver-neutral roundoff. Both the component and importer use this
+/// rule to distinguish the event boundary from an ordinary accepted point.
+pub(super) fn reached_event_time(next_event_time: Option<f64>, endpoint: f64) -> Option<f64> {
+    let roundoff = accepted_step_roundoff(endpoint, 0.0);
+    next_event_time.filter(|event| (event - endpoint).abs() <= roundoff)
+}
+
 /// Whether a finite coordinate lies in a closed accepted interval under the
 /// host's solver-neutral roundoff policy.
 ///
