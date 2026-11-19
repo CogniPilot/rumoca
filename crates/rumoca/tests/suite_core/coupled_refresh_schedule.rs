@@ -331,3 +331,50 @@ fn coupled_refresh_preserves_values_before_and_after_the_coupled_solve() {
         }
     }
 }
+
+#[test]
+fn loop_index_conditionals_use_the_same_cell_for_incidence_and_execution() {
+    let compiled = Compiler::new()
+        .model("OrderedSweep")
+        .compile_str(
+            include_str!("../fixtures/solve/OrderedSweep.mo"),
+            "OrderedSweep.mo",
+        )
+        .unwrap();
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.05),
+        ..Default::default()
+    };
+    let report = rumoca_sim::structural_report_for_dae(&compiled.dae, &options).unwrap();
+    assert!(report.blocks.iter().all(|block| !block.is_coupled()));
+
+    let result = simulate_dae_with_diagnostics(&compiled.dae, &options).unwrap();
+    for (name, expected) in [("y[1]", 917.0), ("y[2]", 1838.0), ("y[3]", 3680.0)] {
+        let idx = result.names.iter().position(|value| value == name).unwrap();
+        assert!(!result.data[idx].is_empty());
+        assert!(result.data[idx].iter().all(|&actual| actual == expected));
+    }
+}
+
+#[test]
+fn runtime_index_conditionals_keep_coupled_dependencies() {
+    let compiled = Compiler::new()
+        .model("RuntimeSelection")
+        .compile_str(
+            r#"model RuntimeSelection
+  input Real choose = 0;
+  Real q[2,2];
+equation
+  for i in 1:2 loop
+    q[i,1] = 0;
+    q[i,2] = i + sum(q[j, if choose < 0 then 2 else 1] for j in 1:2);
+  end for;
+end RuntimeSelection;"#,
+            "RuntimeSelection.mo",
+        )
+        .unwrap();
+    let report =
+        rumoca_sim::structural_report_for_dae(&compiled.dae, &SimOptions::default()).unwrap();
+    assert!(report.blocks.iter().any(|block| block.is_coupled()));
+}

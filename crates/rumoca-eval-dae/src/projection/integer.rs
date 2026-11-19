@@ -87,6 +87,11 @@ impl<'dae> Projection<'_, 'dae> {
                 let rhs = self.integer(rhs, scalar_index)?;
                 integer_binary(operator, lhs, rhs, span)
             }
+            dae::ExpressionOperation::Conditional(_) if node.value_type().is_scalar() => {
+                let points = &self.domain_contexts.points;
+                crate::FunctionCallContext::integer_at_domain_point(self.view, expression, points)
+                    .ok_or(ProjectionError::DynamicSubscript { span })
+            }
             dae::ExpressionOperation::Call {
                 function,
                 output,
