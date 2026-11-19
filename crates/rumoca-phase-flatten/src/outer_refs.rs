@@ -5,12 +5,14 @@ use rumoca_core::{ComponentPath, ExpressionRewriter};
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_flat as flat;
 
-/// Redirect outer-prefixed VarRef names in flat model structures (MLS §5.4).
+/// Redirect outer-prefixed VarRef names in variable bindings and attributes
+/// (MLS §5.4).
 ///
-/// When outer components are not instantiated, equations from the parent class
-/// may reference the outer component's path (e.g., "initialStep.stateGraphRoot.suspend").
-/// These must be redirected to the inner instance's path (e.g., "stateGraphRoot.suspend").
-pub(crate) fn redirect_outer_refs(
+/// An `outer` element is its `inner` element, so `fix = system.fixInitial`
+/// under `outer System system` reads the inner instance. This runs before
+/// translation-time evaluation, which folds these bindings to select
+/// if-equation branches and dimensions.
+pub(crate) fn redirect_outer_variable_refs(
     flat: &mut flat::Model,
     outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
 ) {
@@ -19,6 +21,22 @@ pub(crate) fn redirect_outer_refs(
     }
     for var in flat.variables.values_mut() {
         redirect_variable_attributes(var, outer_to_inner);
+    }
+}
+
+/// Redirect outer-prefixed VarRef names in flattened equations and algorithms
+/// (MLS §5.4).
+///
+/// When outer components are not instantiated, equations from the parent class
+/// may reference the outer component's path (e.g., "initialStep.stateGraphRoot.suspend").
+/// These must be redirected to the inner instance's path (e.g., "stateGraphRoot.suspend").
+/// Variable bindings are redirected earlier, by [`redirect_outer_variable_refs`].
+pub(crate) fn redirect_outer_refs(
+    flat: &mut flat::Model,
+    outer_to_inner: &IndexMap<ComponentPath, ComponentPath>,
+) {
+    if outer_to_inner.is_empty() {
+        return;
     }
     // Redirect VarRef names in equations.
     for eq in &mut flat.equations {
@@ -352,6 +370,20 @@ mod tests {
         );
         assert!(flat.definite_roots.contains("innerBus.root"));
         assert!(!flat.definite_roots.contains("outerBus.root"));
+        let var = flat.variables.get(&x_name).expect("expected variable");
+        assert_var_ref(var.binding.as_ref(), "outerBus.binding");
+    }
+
+    #[test]
+    fn test_redirect_outer_variable_refs_updates_bindings_and_attributes() {
+        let (mut flat, x_name) = outer_reference_model();
+        let mut outer_to_inner = IndexMap::default();
+        outer_to_inner.insert(
+            ComponentPath::from_flat_path("outerBus"),
+            ComponentPath::from_flat_path("innerBus"),
+        );
+        redirect_outer_variable_refs(&mut flat, &outer_to_inner);
+
         let var = flat.variables.get(&x_name).expect("expected variable");
         assert_var_ref(var.start.as_ref(), "innerBus.startAttr");
         assert_var_ref(var.min.as_ref(), "innerBus.minAttr");
