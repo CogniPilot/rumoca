@@ -223,16 +223,21 @@ fn insert_modifier_value_with_structural_overrides(
     insert_ctx: &ScopedInsertContext<'_>,
 ) -> InstantiateResult<()> {
     let qn = target_path(target_name);
-    let (binding_source, binding_source_scope) =
-        inherited_modifier_source_metadata(target_name, value_expr, ctx.mod_env()).map_or(
-            (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
-            |(src, scope)| {
-                (
-                    src.or_else(|| Some(value_expr.clone())),
-                    scope.or_else(|| insert_ctx.source_scope.clone()),
-                )
-            },
-        );
+    let (binding_source, binding_source_scope) = inherited_modifier_source_metadata(
+        target_name,
+        value_expr,
+        ctx.mod_env(),
+        effective_components,
+    )
+    .map_or(
+        (Some(value_expr.clone()), insert_ctx.source_scope.clone()),
+        |(src, scope)| {
+            (
+                src.or_else(|| Some(value_expr.clone())),
+                scope.or_else(|| insert_ctx.source_scope.clone()),
+            )
+        },
+    );
     let resolved_expr = resolve_modification_expr(
         value_expr,
         ModifierResolveScope {
@@ -283,7 +288,19 @@ fn inherited_modifier_source_metadata(
     target_name: &str,
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
+    enclosing_components: &IndexMap<String, ast::Component>,
 ) -> Option<(Option<ast::Expression>, Option<ast::QualifiedName>)> {
+    // A resolved reference to an enclosing declaration is a parameter
+    // dependency. Its own lexical expression and scope remain authoritative.
+    if let ast::Expression::ComponentReference(reference) = expr
+        && reference.root_def_id().is_some_and(|definition| {
+            enclosing_components
+                .values()
+                .any(|component| component.def_id == Some(definition))
+        })
+    {
+        return None;
+    }
     let target_qn = ast::QualifiedName::from_ident(target_name);
     if let Some(existing) = mod_env.get(&target_qn)
         && existing.value == *expr

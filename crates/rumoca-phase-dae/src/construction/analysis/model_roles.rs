@@ -332,12 +332,12 @@ fn classify_variable_role(
     scalar_type: dae::ScalarType,
     external_input: bool,
 ) -> PlannedRole {
-    if external_input {
-        PlannedRole::Input
-    } else if matches!(variable.variability, Variability::Constant(_)) {
+    if matches!(variable.variability, Variability::Constant(_)) {
         PlannedRole::Constant
     } else if matches!(variable.variability, Variability::Parameter(_)) {
         PlannedRole::Parameter
+    } else if external_input {
+        PlannedRole::Input
     } else if states.contains(name) {
         PlannedRole::State
     } else if assigned_discrete.contains(name)
