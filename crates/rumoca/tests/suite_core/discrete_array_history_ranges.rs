@@ -20,6 +20,95 @@ end ArrayHistoryRanges;
 "#;
 
 #[test]
+fn large_parameter_prefix_preserves_event_entry_and_same_tick_values() {
+    let compiled = Compiler::new()
+        .model("EventPrefix")
+        .compile_str(
+            r#"
+model EventPrefix
+  parameter Integer n=4096;
+  parameter Real data[n]={i for i in 1:n};
+  discrete Integer index(start=0,fixed=true);
+  discrete Real current(start=0,fixed=true);
+  discrete Real total(start=0,fixed=true);
+  discrete Real before(start=-1,fixed=true);
+equation
+  when sample(0,1) then
+    index=min(pre(index)+1,n);
+    current=data[index];
+    total=pre(total)+current;
+  end when;
+  when time>=1.5 then before=pre(total); end when;
+end EventPrefix;
+"#,
+            "EventPrefix.mo",
+        )
+        .unwrap();
+    for execution_policy in [
+        SimExecutionPolicy::Interpreter,
+        SimExecutionPolicy::NativeRequired,
+    ] {
+        let result = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 2.,
+                dt: Some(0.25),
+                execution_policy,
+                ..SimOptions::default()
+            },
+        )
+        .unwrap();
+        for (name, expected) in [("current", 3.), ("total", 6.), ("before", 3.)] {
+            let channel = result.names.iter().position(|n| n == name).unwrap();
+            assert_eq!(
+                result.data[channel].last().copied(),
+                Some(expected),
+                "{name}: {execution_policy:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_trace_preserves_event_sides_and_requested_channel_order() {
+    let compiled = Compiler::new()
+        .model("ArrayHistoryRanges")
+        .compile_str(SOURCE, "ArrayHistoryRanges.mo")
+        .unwrap();
+    let opts = SimOptions {
+        t_end: 2.,
+        dt: Some(0.25),
+        ..SimOptions::default()
+    };
+    let full = simulate_dae_with_diagnostics(&compiled.dae, &opts).unwrap();
+    let names = vec!["between".to_owned(), "a[1,1]".to_owned()];
+    let selected = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            output_variables: Some(names.clone()),
+            ..opts.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(selected.names, names);
+    assert_eq!(selected.times, full.times);
+    for (column, name) in selected.data.iter().zip(&selected.names) {
+        let original = full.names.iter().position(|n| n == name).unwrap();
+        assert_eq!(column, &full.data[original]);
+    }
+    assert!(
+        simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                output_variables: Some(vec!["missing".to_owned()]),
+                ..opts
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn whole_array_history_matches_scalar_values_across_ticks_and_unrelated_events() {
     let compiled = Compiler::new()
         .model("ArrayHistoryRanges")

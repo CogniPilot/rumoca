@@ -142,6 +142,8 @@ pub(super) struct MeTraceRecorder {
     roles: Vec<TraceObservationRole>,
     columns: Vec<Vec<f64>>,
     state_count: usize,
+    selection: Option<Vec<usize>>,
+    source_width: usize,
 }
 
 impl MeTraceRecorder {
@@ -152,6 +154,8 @@ impl MeTraceRecorder {
         meta: Vec<SimVariableMeta>,
         state_count: usize,
         capacity: usize,
+        selection: Option<Vec<usize>>,
+        source_width: usize,
     ) -> Result<Self, MeTraceViolation> {
         // The first name already seen is the first duplicate in channel order.
         let mut seen = rustc_hash::FxHashSet::default();
@@ -177,6 +181,8 @@ impl MeTraceRecorder {
             roles,
             columns,
             state_count,
+            selection,
+            source_width,
         })
     }
 
@@ -251,15 +257,16 @@ impl MeTraceRecorder {
     ) -> Result<bool, E>
     where
         E: From<MeTraceViolation>,
-        F: FnOnce() -> Result<Vec<f64>, E>,
+        F: FnOnce(Option<&[String]>) -> Result<Vec<f64>, E>,
     {
         let time = canonical_coordinate(time);
         let decision = self.decide(role, time)?;
         if decision == TraceDecision::Suppress {
             return Ok(false);
         }
-        let values = evaluate()?;
-        self.commit(decision, role, time, &values)?;
+        let requested = self.selection.as_ref().map(|_| self.names.as_slice());
+        let values = evaluate(requested)?;
+        self.commit_selected(decision, role, time, &values)?;
         Ok(true)
     }
 
@@ -287,6 +294,33 @@ impl MeTraceRecorder {
 
     /// Apply a decision reached by [`Self::decide`] to already-read values.
     fn commit(
+        &mut self,
+        decision: TraceDecision,
+        role: TraceObservationRole,
+        time: f64,
+        values: &[f64],
+    ) -> Result<(), MeTraceViolation> {
+        if values.len() != self.source_width {
+            return Err(MeTraceViolation::RowWidth {
+                time,
+                actual: values.len(),
+                expected: self.source_width,
+            });
+        }
+        let mut selected = Vec::new();
+        let values = if let Some(selection) = &self.selection {
+            try_reserve(&mut selected, selection.len(), "selected trace slice")?;
+            selected.extend(selection.iter().map(|&index| values[index]));
+            selected.as_slice()
+        } else {
+            values
+        };
+        self.commit_selected(decision, role, time, values)
+    }
+
+    /// Commit values that already contain exactly the selected channels, in
+    /// their requested order.
+    fn commit_selected(
         &mut self,
         decision: TraceDecision,
         role: TraceObservationRole,
@@ -396,8 +430,15 @@ mod tests {
     use std::cell::Cell;
 
     fn recorder() -> MeTraceRecorder {
-        MeTraceRecorder::new(vec!["a".to_string(), "b".to_string()], Vec::new(), 0, 4)
-            .expect("fixture channels are unique")
+        MeTraceRecorder::new(
+            vec!["a".to_string(), "b".to_string()],
+            Vec::new(),
+            0,
+            4,
+            None,
+            2,
+        )
+        .expect("fixture channels are unique")
     }
 
     fn record(
@@ -406,13 +447,19 @@ mod tests {
         time: f64,
         values: [f64; 2],
     ) -> Result<bool, MeTraceViolation> {
-        trace.record_with(role, time, || Ok(values.to_vec()))
+        trace.record_with(role, time, |_| Ok(values.to_vec()))
     }
 
     #[test]
     fn duplicate_channels_are_rejected_at_construction() {
-        let duplicate =
-            MeTraceRecorder::new(vec!["a".to_string(), "a".to_string()], Vec::new(), 0, 1);
+        let duplicate = MeTraceRecorder::new(
+            vec!["a".to_string(), "a".to_string()],
+            Vec::new(),
+            0,
+            1,
+            None,
+            2,
+        );
         assert!(matches!(
             duplicate,
             Err(MeTraceViolation::DuplicateChannel { .. })
@@ -432,7 +479,7 @@ mod tests {
             Err(MeTraceViolation::NonFiniteTime { .. })
         ));
         assert!(matches!(
-            trace.record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.0, || Ok(
+            trace.record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.0, |_| Ok(
                 vec![0.0]
             )),
             Err(MeTraceViolation::RowWidth { .. })
@@ -503,7 +550,7 @@ mod tests {
         record(&mut trace, TraceObservationRole::Nominal, 0.5, [1.0, 1.0]).unwrap();
         let evaluations = Cell::new(0usize);
         let retained = trace
-            .record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.5, || {
+            .record_with::<MeTraceViolation, _>(TraceObservationRole::Nominal, 0.5, |_| {
                 evaluations.set(evaluations.get() + 1);
                 Ok(vec![9.0, 9.0])
             })

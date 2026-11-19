@@ -66,8 +66,17 @@ impl BodyEmitter<'_> {
             self.push(Instruction::I32Add);
             self.push(Instruction::LocalSet(arena.inner_counter));
         }
-        self.push_arena_address(base, Some(arena.inner_counter), stride)?;
-        self.push(Instruction::F64Load(arena::memarg()));
+        if let Some(first) = self.gather_inputs.parameter_start(self.operation_ordinal) {
+            self.push(Instruction::LocalGet(P_PTR_PARAM));
+            self.push(Instruction::LocalGet(arena.inner_counter));
+            self.push(Instruction::I32Const(8));
+            self.push(Instruction::I32Mul);
+            self.push(Instruction::I32Add);
+            self.push(Instruction::F64Load(memarg_for_index(first)?));
+        } else {
+            self.push_arena_address(base, Some(arena.inner_counter), stride)?;
+            self.push(Instruction::F64Load(arena::memarg()));
+        }
         // The gather never writes input memory or changes Y before whole-program success.
         self.set_reg(dst)
     }

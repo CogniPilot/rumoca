@@ -138,7 +138,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         self.begin_current_definition(variable, span)?;
-        let value = self.expression(definition, scalar);
+        let value = match self
+            .same_tick_definitions
+            .as_ref()
+            .and_then(|owner| owner.definitions.definition_domain(self.view, variable))
+        {
+            Some(domain) => self.comprehension(domain, definition, scalar),
+            None => self.expression(definition, scalar),
+        };
         self.active_current_definitions.pop();
         value
     }
@@ -152,7 +159,23 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(None);
         };
         self.begin_current_definition(variable, span)?;
-        let value = self.pack_expression(definition);
+        let value = if let Some(domain) = self
+            .same_tick_definitions
+            .as_ref()
+            .and_then(|owner| owner.definitions.definition_domain(self.view, variable))
+        {
+            self.view
+                .domain(domain)
+                .ok_or_else(|| LowerError::contract("missing current definition domain", span))
+                .and_then(|definition_domain| {
+                    (0..definition_domain.scalar_count())
+                        .map(|scalar| self.comprehension(domain, definition, scalar as usize))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .and_then(|values| self.pack_registers(&values, span))
+        } else {
+            self.pack_expression(definition)
+        };
         self.active_current_definitions.pop();
         value.map(Some)
     }

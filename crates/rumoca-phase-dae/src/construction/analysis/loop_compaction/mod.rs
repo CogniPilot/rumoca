@@ -4,6 +4,7 @@ mod accumulator_reductions;
 mod affine_slice_ranges;
 mod bounded_while;
 mod dependent_domains;
+mod extremum_slices;
 #[cfg(test)]
 mod finite_counter_tests;
 /// Dataflow liveness over the function statement tree, and the store-deletion
@@ -48,6 +49,7 @@ mod preservation_values;
 use accumulator_reductions::{compact_accumulator_loops, ordered_accumulators};
 use affine_slice_ranges::AffineSliceRanges;
 use dependent_domains::{integer_range, rectangularize_dependent_loops};
+use extremum_slices::normalize_extremum_slices;
 use loop_local_substitution::{
     LocalSubstitution, compact_perfect_inner_element_loops, expression_dependencies_change,
     expression_reads_name, first_dependent_loop_range, inline_loop_local_prefixes,
@@ -108,6 +110,7 @@ pub(super) fn compact_function_loops(
         flat,
     )?;
     let kinds = ValueKinds::of(function, flat);
+    let settled = normalize_extremum_slices(&settled, kinds.scope(shapes));
     let settled = bounded_while::bound_while_loops(
         &settled,
         kinds.scope(shapes),

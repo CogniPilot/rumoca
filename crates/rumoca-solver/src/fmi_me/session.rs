@@ -41,6 +41,7 @@ pub use options::{MeAdvanceOutcome, MeOutputCursor, MeSessionOptions, MeSessionO
 
 use error::latched_failure;
 use options::trace_capacity;
+use selected_values::{TraceChannels, select_outputs};
 
 use super::{
     MeEventCause, MeExecutionBackend, MeInstanceConfig, MeModelSource, MeTime, SolveMeKernel,
@@ -241,27 +242,34 @@ fn build_host_state(
     kernel: Rc<MeKernelCell>,
     options: MeSessionOptions,
 ) -> Result<MeHostState, MeSessionError> {
-    let (state_count, indicator_count, names, meta, max_step_duration_reference) = {
+    let (state_count, indicator_count, channels, max_step_duration_reference) = {
         let borrowed = kernel.borrow()?;
-        let (names, meta) = if options.records_trace() {
+        let channels = if options.records_trace() {
             let description = borrowed.model_description();
-            (
+            select_outputs(
                 description.output_names.to_vec(),
                 description.output_meta.to_vec(),
-            )
+                options.output_variables(),
+            )?
         } else {
-            (Vec::new(), Vec::new())
+            TraceChannels::default()
         };
         (
             borrowed.continuous_state_count(),
             borrowed.event_indicator_count(),
-            names,
-            meta,
+            channels,
             borrowed.max_step_duration_value_reference(),
         )
     };
     let capacity = trace_capacity(&options);
-    let mut trace = MeTraceRecorder::new(names, meta, state_count, capacity)?;
+    let mut trace = MeTraceRecorder::new(
+        channels.names,
+        channels.meta,
+        state_count,
+        capacity,
+        channels.selection,
+        channels.source_width,
+    )?;
     let outcome = run_fmi_initialization(
         &mut *kernel.borrow_mut()?,
         &options,

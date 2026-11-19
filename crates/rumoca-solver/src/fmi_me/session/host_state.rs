@@ -84,7 +84,7 @@ fn complete_fmi_initialization(
     // initialization row is read here — before the session concludes anything
     // about termination.
     let initial_values = if records_outputs {
-        Some(read_outputs(kernel)?)
+        Some(read_outputs(kernel, None)?)
     } else {
         None
     };
@@ -150,10 +150,29 @@ pub(super) fn update_discrete_states_to_completion(
     Ok(discrete)
 }
 
-fn read_outputs(kernel: &SolveMeKernel) -> Result<Vec<f64>, MeError> {
+fn read_outputs(
+    kernel: &SolveMeKernel,
+    selected_names: Option<&[String]>,
+) -> Result<Vec<f64>, MeError> {
     let observation = kernel.observe()?;
     let mut values = Vec::new();
-    kernel.get_outputs(&observation, observation.time(), &mut values)?;
+    if let Some(names) = selected_names {
+        let mut selected = Vec::new();
+        kernel.get_selected_outputs(&observation, observation.time(), names, &mut selected)?;
+        values
+            .try_reserve_exact(names.len())
+            .map_err(|_| MeError::Allocation {
+                context: "selected trace values",
+                entries: names.len(),
+            })?;
+        for (value, name) in selected.into_iter().zip(names) {
+            values.push(value.ok_or_else(|| MeError::Contract {
+                reason: format!("trace output '{name}' disappeared after preparation"),
+            })?);
+        }
+    } else {
+        kernel.get_outputs(&observation, observation.time(), &mut values)?;
+    }
     kernel.report_warnings(&observation)?;
     Ok(values)
 }
@@ -420,7 +439,7 @@ impl MeHostState {
         time: f64,
         states: &[f64],
     ) -> Result<Vec<f64>, MeSessionError> {
-        self.anchor().observe_at(time, states)
+        self.anchor().observe_at(time, states, None)
     }
 
     /// Record the component's current outputs under `role`, deciding whether
@@ -434,7 +453,9 @@ impl MeHostState {
             return Ok(());
         }
         let Self { trace, kernel, .. } = self;
-        trace.record_with::<MeSessionError, _>(role, time, || Ok(observe_current(kernel)?))?;
+        trace.record_with::<MeSessionError, _>(role, time, |names| {
+            Ok(observe_current(kernel, names)?)
+        })?;
         Ok(())
     }
 
@@ -467,7 +488,9 @@ impl MeHostState {
             time: *accepted_time,
             states: accepted_states,
         };
-        trace.record_with::<MeSessionError, _>(role, time, || anchor.observe_at(time, states))?;
+        trace.record_with::<MeSessionError, _>(role, time, |names| {
+            anchor.observe_at(time, states, names)
+        })?;
         Ok(())
     }
 
@@ -561,7 +584,7 @@ impl MeHostState {
     }
 
     pub(super) fn observe_current(&self) -> Result<Vec<f64>, MeError> {
-        observe_current(&self.kernel)
+        observe_current(&self.kernel, None)
     }
 
     pub(super) fn refresh_retained_indicators(&mut self) -> Result<(), MeSessionError> {
@@ -803,9 +826,12 @@ fn admissible_event_left_coordinate(
     }
 }
 
-fn observe_current(kernel: &Rc<MeKernelCell>) -> Result<Vec<f64>, MeError> {
+fn observe_current(
+    kernel: &Rc<MeKernelCell>,
+    selected_names: Option<&[String]>,
+) -> Result<Vec<f64>, MeError> {
     let kernel = kernel.borrow()?;
-    read_outputs(&kernel)
+    read_outputs(&kernel, selected_names)
 }
 
 /// The exact accepted point an off-point excursion returns the component to.
@@ -845,8 +871,15 @@ impl AcceptedAnchor<'_> {
     }
 
     /// Batched output getters at a coordinate the session does not stand on.
-    pub(super) fn observe_at(&self, time: f64, states: &[f64]) -> Result<Vec<f64>, MeSessionError> {
-        self.read_settled(time, states, observe_current)
+    pub(super) fn observe_at(
+        &self,
+        time: f64,
+        states: &[f64],
+        selected_names: Option<&[String]>,
+    ) -> Result<Vec<f64>, MeSessionError> {
+        self.read_settled(time, states, |kernel| {
+            observe_current(kernel, selected_names)
+        })
     }
 
     /// One read at a coordinate the session does not stand on, closed back

@@ -11,6 +11,18 @@ pub(in crate::construction) struct ModelEventFunctionCallPlan {
     pub(in crate::construction) terminal_print: bool,
 }
 
+impl ModelEventFunctionCallPlan {
+    /// Complete primitive-coordinate closure across retained result slots.
+    /// Topology and construction consume the same record receiver projections.
+    pub(in crate::construction) fn receiver_targets(&self) -> impl Iterator<Item = &VarName> {
+        self.outputs
+            .iter()
+            .flatten()
+            .flat_map(ModelEventFunctionOutputPlan::receivers)
+            .map(|(target, _)| target)
+    }
+}
+
 #[derive(Clone)]
 pub(in crate::construction) enum ModelEventFunctionOutputPlan {
     Coordinate(VarName),
@@ -104,6 +116,24 @@ pub(in crate::construction) fn when_function_call_key(
     Ok(WhenFunctionCallKey {
         source: span,
         receivers,
+    })
+}
+
+/// Resolve the issued plan by source occurrence and receiver instances, never
+/// by a record's rendered leaf names or source span alone.
+pub(in crate::construction) fn when_function_call_plan<'a>(
+    flat: &flat::Model,
+    plans: &'a HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+    outputs: &[VarName],
+    span: Span,
+) -> Result<&'a ModelEventFunctionCallPlan, ToDaeError> {
+    let key = when_function_call_key(flat, outputs, span)?;
+    plans.get(&key).ok_or_else(|| {
+        ToDaeError::unsupported_flat(
+            "when function-call receivers",
+            "requires an issued exact receiver plan",
+            span,
+        )
     })
 }
 
@@ -322,16 +352,6 @@ fn analyze_event_function_call(
         ));
     }
     let function = &context.flat.functions[&certificate.key.function];
-    if outputs.iter().flatten().count() > 1 && !function.body_is_pure() {
-        return Err(ToDaeError::unsupported_algorithm(
-            "model",
-            format!(
-                "MLS §11.2.1.1 evaluates `{}` once, but canonical DAE result projections may be evaluated independently; an impure function cannot preserve that contract",
-                function.name
-            ),
-            span,
-        ));
-    }
     let mut output_plans = Vec::with_capacity(outputs.len());
     for (ordinal, output) in outputs.iter().enumerate() {
         let Some(output) = output else {
@@ -348,6 +368,23 @@ fn analyze_event_function_call(
         output_plans.push(Some(analyze_event_function_output(
             context, *output, result, &shape, span,
         )?));
+    }
+    if output_plans
+        .iter()
+        .flatten()
+        .map(|output| output.receivers().len())
+        .sum::<usize>()
+        > 1
+        && !super::function_impurity::call_is_repeatable(context.flat, function, arguments)
+    {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            format!(
+                "MLS §11.2.1.1 evaluates `{}` once, but canonical DAE result projections may be evaluated independently; an impure function cannot preserve that contract",
+                function.name
+            ),
+            span,
+        ));
     }
     Ok(ModelEventFunctionCallPlan {
         outputs: output_plans,

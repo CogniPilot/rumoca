@@ -1,4 +1,5 @@
 //! Entries of one shared module return the bits of standalone modules.
+mod gathers;
 use super::*;
 use crate::CompiledNativeCallProgramWasm;
 use crate::host_runtime::HostKernelRuntime;

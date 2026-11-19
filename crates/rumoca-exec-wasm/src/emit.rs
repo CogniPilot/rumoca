@@ -373,6 +373,7 @@ struct BodyEmitter<'a> {
     region_frame_end: Option<Reg>,
     conditional_region: Option<conditional::Region>,
     gather_faults: Vec<crate::NativeGatherFault>,
+    gather_inputs: std::rc::Rc<rumoca_ir_solve::BorrowedParameterGathers>,
     linear_solve_faults: Vec<crate::NativeLinearSolveFault>,
     gather_status_base: Option<u32>,
     kernel_ordinal: usize,
@@ -417,6 +418,7 @@ impl<'a> BodyEmitter<'a> {
             region_frame_end: None,
             conditional_region: None,
             gather_faults: Vec::new(),
+            gather_inputs: std::rc::Rc::default(),
             linear_solve_faults: Vec::new(),
             gather_status_base: None,
             kernel_ordinal: 0,
@@ -437,7 +439,8 @@ impl<'a> BodyEmitter<'a> {
         for row in rows {
             let issued = self.bind_root_program()?;
             let row = issued.as_deref().unwrap_or(row);
-            for op in row {
+            for (index, op) in row.iter().enumerate() {
+                self.operation_ordinal = index;
                 self.emit_op(op.clone())?;
             }
         }
@@ -445,6 +448,9 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_op(&mut self, op: LinearOp) -> Result<(), String> {
+        if self.gather_inputs.skips(self.operation_ordinal) {
+            return Ok(());
+        }
         if let Some(result) = self.emit_compact(&op) {
             return result;
         }

@@ -84,6 +84,7 @@ use crate::simulation_api::{
     model_parameter_metadata_with_source_roots_impl,
     model_parameter_metadata_with_workspace_sources_impl, simulate_model_impl,
     simulate_model_with_workspace_sources_impl,
+    simulate_model_with_workspace_sources_selected_impl,
 };
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::simulation_session_api::WasmSimulationSession;
@@ -1903,6 +1904,28 @@ pub fn simulate_model_with_workspace_sources(
         t_end,
         dt,
         solver,
+        parameter_overrides_json,
+    )
+}
+
+/// Compile with workspace sources and simulate with JSON options.
+/// The object accepts `t_end`, `dt`, `solver` and `output_variables`.
+/// A list in `output_variables` selects the public columns in that order.
+/// Missing or null `output_variables` returns every output column.
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[wasm_bindgen]
+pub fn simulate_model_with_workspace_sources_selected(
+    source: &str,
+    model_name: &str,
+    workspace_sources_json: &str,
+    options_json: &str,
+    parameter_overrides_json: &str,
+) -> Result<String, WasmError> {
+    simulate_model_with_workspace_sources_selected_impl(
+        source,
+        model_name,
+        workspace_sources_json,
+        options_json,
         parameter_overrides_json,
     )
 }

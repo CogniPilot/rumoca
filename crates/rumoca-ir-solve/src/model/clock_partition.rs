@@ -6,7 +6,10 @@
 //! kept beside [`DiscreteSolveSystem`] rather than inside it so the discrete
 //! system stays a shape declaration.
 
-use super::{ClockPartitionStep, DiscreteSolveSystem, EventTransactionProducerOwner};
+use super::{
+    ClockPartitionStep, DiscreteRowRole, DiscreteSolveSystem, EventTransactionProducerOwner,
+    SolveProblem,
+};
 use crate::SolveProblemShapeContractError;
 
 /// One flag per clock-partition producer, used both for the transaction-owned
@@ -83,6 +86,72 @@ fn order_error(row: usize, detail: &'static str) -> SolveProblemShapeContractErr
         row,
         detail,
         span: None,
+    }
+}
+
+impl SolveProblem {
+    /// Certificate for committing one clocked event pass without repeating it.
+    ///
+    /// The construction-issued clock partition already orders every clocked
+    /// producer. This predicate admits only the case where that order is the
+    /// complete action of one periodic clock: no event roots, no dynamic time
+    /// events, no event transactions or structured updates, no clocked history
+    /// bindings, and no unclocked equation rows. Condition memories may remain;
+    /// they are updated at event commit and do not participate in the pass.
+    pub fn single_pass_clock_partition(&self) -> bool {
+        let clocks = &self.clocks;
+        let events = &self.events;
+        let discrete = &self.discrete;
+        if crate::solve_has_runtime_events(self)
+            || clocks.periodic_event_schedules.len() != 1
+            || events.root_conditions.output_count() != 0
+            || !events.scheduled_root_conditions.is_empty()
+            || !events.dynamic_time_event_rhs.is_empty()
+            || !events.dynamic_time_event_names.is_empty()
+            || !discrete.event_transactions.is_empty()
+            || !discrete.structured_rhs.is_empty()
+            || !discrete.structured_updates.is_empty()
+            || !discrete.clock_partition_intermediates.is_empty()
+            || discrete.clock_owners.iter().any(Option::is_some)
+            || discrete.row_roles.iter().any(|role| {
+                !matches!(
+                    role,
+                    DiscreteRowRole::ConditionMemory | DiscreteRowRole::PulseConditionMemory
+                )
+            })
+            || !discrete.runtime_assignment_targets.is_empty()
+            || self
+                .solve_layout
+                .pre_param_bindings
+                .iter()
+                .any(|binding| binding.clock_schedule.is_some())
+        {
+            return false;
+        }
+        let Some(clock) = clocks.periodic_clock_id(0) else {
+            return false;
+        };
+        if discrete
+            .guarded_assignments
+            .iter()
+            .any(|program| program.clock_owner() != Some(clock))
+            || discrete.validate_clock_partition_order().is_err()
+        {
+            return false;
+        }
+        let mut covered = vec![false; discrete.guarded_assignments.len()];
+        for step in &discrete.clock_partition_order {
+            let ClockPartitionStep::GuardedAssignment { program_index } = step else {
+                return false;
+            };
+            let Some(slot) = covered.get_mut(*program_index) else {
+                return false;
+            };
+            if std::mem::replace(slot, true) {
+                return false;
+            }
+        }
+        covered.into_iter().all(|value| value)
     }
 }
 

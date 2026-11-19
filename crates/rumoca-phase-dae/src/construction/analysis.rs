@@ -156,7 +156,7 @@ use initial_algorithms::{
 use loop_compaction::compact_function_loops;
 pub(super) use model_algorithm_calls::{
     ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, WhenFunctionCallKey,
-    when_function_call_key,
+    when_function_call_key, when_function_call_plan,
 };
 use model_algorithm_calls::{analyze_event_function_calls, analyze_when_function_calls};
 use model_algorithm_statements::validate_model_algorithm;
@@ -776,7 +776,13 @@ fn analyze_with_bindings(
     }
     discrete_real_ownership::validate_declared_discrete_real(flat)?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
-        analyze_discrete_connections(flat, &templates, &roles, &record_equations.continuous)?;
+        analyze_discrete_connections(
+            flat,
+            &templates,
+            &roles,
+            &record_equations.continuous,
+            &when_function_calls,
+        )?;
     let initial = analyze_initial_owners(
         flat,
         &roles,
@@ -1185,6 +1191,7 @@ fn analyze_discrete_connections(
     templates: &TemplateSelection,
     roles: &HashMap<VarName, PlannedRole>,
     record_equations: &HashMap<usize, RecordEquationPlan>,
+    when_function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<
     (
         DiscreteConnectionRanks,
@@ -1202,6 +1209,7 @@ fn analyze_discrete_connections(
         &ranks,
         &aggregates,
         record_equations,
+        when_function_calls,
     )?;
     Ok((ranks, aggregates, topology))
 }

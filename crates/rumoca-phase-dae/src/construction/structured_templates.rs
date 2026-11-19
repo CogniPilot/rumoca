@@ -147,7 +147,13 @@ fn checked_calls(
         {
             return false;
         }
-        Expression::BuiltinCall { function, .. } if temporal(*function) => return false,
+        // A model derivative lowers to its checked state coordinate with the
+        // family's binder context. It introduces no history/clock owner.
+        Expression::BuiltinCall { function, .. }
+            if temporal(*function) && *function != BuiltinFunction::Der =>
+        {
+            return false;
+        }
         _ => {}
     }
     expression_children(expression)

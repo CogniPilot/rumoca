@@ -903,7 +903,8 @@ mod root_storage;
 pub use root_storage::{RootRegisterLayout, RootRegisterTarget};
 mod structural_pattern;
 pub use register_versions::{
-    RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
+    BorrowedParameterGathers, RegisterOperandPiece, RegisterOperationVersions,
+    RegisterVersionProgram,
 };
 pub use structural_pattern::{
     ColoredStructuralPattern, ColumnColoring, ExecutionYReadPrefix, KinematicStates,

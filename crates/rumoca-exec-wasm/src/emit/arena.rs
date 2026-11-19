@@ -22,6 +22,7 @@ pub(super) struct ArenaPlan {
 struct IssuedRegisterLayout {
     program: std::rc::Rc<[LinearOp]>,
     layout: std::rc::Rc<register_layout::RegisterLayout>,
+    gathers: std::rc::Rc<rumoca_ir_solve::BorrowedParameterGathers>,
 }
 
 impl ArenaPlan {
@@ -82,6 +83,9 @@ impl ArenaPlan {
                 Ok(IssuedRegisterLayout {
                     program: program.clone().into(),
                     layout: std::rc::Rc::new(register_layout::RegisterLayout::derive(program)?),
+                    gathers: std::rc::Rc::new(rumoca_ir_solve::BorrowedParameterGathers::derive(
+                        program,
+                    )),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -244,6 +248,7 @@ impl BodyEmitter<'_> {
         };
         let issued = arena.root_program(self.root_program_cursor)?;
         self.root_register_layout = Some(std::rc::Rc::clone(&issued.layout));
+        self.gather_inputs = std::rc::Rc::clone(&issued.gathers);
         self.root_program_cursor = self
             .root_program_cursor
             .checked_add(1)

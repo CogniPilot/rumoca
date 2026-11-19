@@ -45,6 +45,7 @@ pub struct MeSessionOptions {
     root_location_tolerance: f64,
     max_wall_seconds: Option<f64>,
     records_trace: bool,
+    output_variables: Option<Vec<String>>,
 }
 
 impl MeSessionOptions {
@@ -102,6 +103,7 @@ impl MeSessionOptions {
             root_location_tolerance: input.root_location_tolerance,
             max_wall_seconds: input.max_wall_seconds,
             records_trace: input.records_trace,
+            output_variables: None,
         })
     }
 
@@ -152,6 +154,18 @@ impl MeSessionOptions {
         self.records_trace
     }
 
+    /// Exact public output columns to record, in requested order.
+    #[must_use]
+    pub fn output_variables(&self) -> Option<&[String]> {
+        self.output_variables.as_deref()
+    }
+
+    #[must_use]
+    pub fn with_output_variables(mut self, output_variables: Option<Vec<String>>) -> Self {
+        self.output_variables = output_variables;
+        self
+    }
+
     /// Re-anchor a defined experiment at a new start, re-proving the ordering.
     pub(super) fn restarted_at(&self, start_time: f64) -> Result<Self, MeSessionError> {
         Self::new(MeSessionOptionsInput {
@@ -165,6 +179,7 @@ impl MeSessionOptions {
             max_wall_seconds: self.max_wall_seconds,
             records_trace: self.records_trace,
         })
+        .map(|options| options.with_output_variables(self.output_variables.clone()))
     }
 }
 
