@@ -21,7 +21,8 @@ use std::collections::{BTreeSet, HashMap};
 use rumoca_core::StateSelect;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
-    FormalDerivativeSystem, PreparedDae, StructuralError, construct_formal_derivatives,
+    FormalDerivativeSystem, PreparedDae, StructuralError, WithheldPreference,
+    construct_formal_derivatives,
 };
 
 use super::{
@@ -41,7 +42,7 @@ pub(super) fn prefer_or_retain<'source>(
     };
     let formal = match construct_formal_derivatives(model) {
         Ok(formal) => formal,
-        Err(error) => return request.refused(prepared, error),
+        Err(error) => return request.refused(model, prepared, error),
     };
     let withheld = withheld_requests(model, &formal);
     if !request.admits(&formal) {
@@ -56,7 +57,7 @@ pub(super) fn prefer_or_retain<'source>(
         Ok(selection)
     }) {
         Ok(candidate) => candidate,
-        Err(error) => return request.refused(prepared, error),
+        Err(error) => return request.refused(model, prepared, error),
     };
     let basis = candidate_basis(&candidate)?;
     if !prepared
@@ -79,7 +80,7 @@ pub(super) fn prefer_or_retain<'source>(
 }
 
 /// The `prefer` declarations the formal construction withheld, each with its
-/// declaration site and the refusal of the derivative its selection needs.
+/// declaration site and the operation whose derivative its selection needs.
 fn withheld_requests(model: &dae::Dae, formal: &FormalDerivativeSystem<'_>) -> Option<String> {
     let withheld = formal.withheld_preferences();
     (!withheld.is_empty()).then(|| {
@@ -87,11 +88,10 @@ fn withheld_requests(model: &dae::Dae, formal: &FormalDerivativeSystem<'_>) -> O
             .iter()
             .map(|request| {
                 format!(
-                    "`{}`{} is not selected because an equation relating it to the \
-                     differentiated values cannot be differentiated ({})",
+                    "`{}`{} is not selected because {}",
                     request.variable,
-                    declaration_site(model, request.declaration),
-                    request.refusal
+                    source_site(model, request.declaration),
+                    refused_operation(model, request)
                 )
             })
             .collect::<Vec<_>>()
@@ -99,14 +99,56 @@ fn withheld_requests(model: &dae::Dae, formal: &FormalDerivativeSystem<'_>) -> O
     })
 }
 
-/// ` (file:line:column)` of a declaration, or nothing when the model carries
-/// no source text for it.
-fn declaration_site(model: &dae::Dae, span: rumoca_core::Span) -> String {
+/// The operation relating a withheld declaration to the differentiated
+/// values, as the source writes it; the refusal alone when it has no site.
+fn refused_operation(model: &dae::Dae, request: &WithheldPreference) -> String {
+    let operation = request
+        .refusal_span
+        .and_then(|span| Some((source_excerpt(model, span)?, span)));
+    match operation {
+        Some((text, span)) => format!(
+            "selecting it needs the time derivative of `{text}`{}, which has no \
+             differentiation rule",
+            source_site(model, span)
+        ),
+        None => format!("its derivative is refused ({})", request.refusal),
+    }
+}
+
+/// The undifferentiated `prefer` declarations of `model` with their sites:
+/// the requests a refused formal construction or selection leaves unhonored.
+fn unintegrated_requests(model: &dae::Dae) -> String {
+    model.inspect(|source| {
+        source
+            .variables()
+            .filter(|&declaration| unintegrated_prefer(declaration))
+            .map(|(_, variable)| {
+                format!(
+                    "`{}`{}",
+                    variable.name(),
+                    source_site(model, variable.declaration().span())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+/// ` (file:line:column)` of a span, or nothing when the model carries no
+/// source text for it.
+fn source_site(model: &dae::Dae, span: rumoca_core::Span) -> String {
     let Some((name, text)) = model.source_map().get_source(span.source) else {
         return String::new();
     };
     let position = rumoca_core::text_position::byte_offset_to_position(text, span.start.0);
     format!(" ({name}:{}:{})", position.line + 1, position.character + 1)
+}
+
+/// The first line of the source text a span covers.
+fn source_excerpt(model: &dae::Dae, span: rumoca_core::Span) -> Option<&str> {
+    let (_, text) = model.source_map().get_source(span.source)?;
+    let excerpt = text.get(span.start.0..span.end.0)?.lines().next()?.trim();
+    (!excerpt.is_empty()).then_some(excerpt)
 }
 
 /// Whether Solve lowering replaces the reducer's manifold-free basis of
@@ -182,14 +224,20 @@ impl PreferenceRequest {
 
     fn refused<'source>(
         &self,
+        model: &dae::Dae,
         prepared: PreparedDae<'source>,
         error: StructuralError,
     ) -> Result<PreparedSelection<'source>, StructuralError> {
         if self.required {
             return Err(error);
         }
+        let requests = unintegrated_requests(model);
         let mut retained = PreparedSelection::retained(prepared);
-        retained.withheld_preferences = Some(error.to_string());
+        retained.withheld_preferences = Some(if requests.is_empty() {
+            error.to_string()
+        } else {
+            format!("{requests} not selected: {error}")
+        });
         Ok(retained)
     }
 }

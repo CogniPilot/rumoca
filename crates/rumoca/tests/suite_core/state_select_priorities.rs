@@ -263,6 +263,7 @@ end Refused;";
         .unwrap()
         .expect("the refusal is recorded");
     assert!(reason.contains("independent state selection"), "{reason}");
+    assert!(reason.contains("`y` (Refused.mo:3:3)"), "{reason}");
     let result = simulate_dae_with_diagnostics(
         &dae(source, "Refused"),
         &SimOptions {
@@ -483,8 +484,9 @@ end ThroughTanh;";
     let reason = rumoca_phase_solve::withheld_state_preferences(&dae(source, "ThroughTanh"))
         .unwrap()
         .expect("the withheld request is recorded");
+    assert!(reason.contains("`p` (ThroughTanh.mo:2:3)"), "{reason}");
     assert!(
-        reason.contains("`p` (ThroughTanh.mo:2:") && reason.contains("is not selected"),
+        reason.contains("`tanh(p)` (ThroughTanh.mo:5:13)"),
         "{reason}"
     );
     let model = dae(source, "ThroughTanh");

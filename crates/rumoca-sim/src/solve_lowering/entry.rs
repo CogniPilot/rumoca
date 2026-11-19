@@ -208,7 +208,8 @@ pub(super) fn report_unlocalizable_guards(guards: &[solve::UnlocalizableGuard]) 
 fn report_withheld_state_preferences(reason: Option<&str>) {
     if let Some(reason) = reason {
         eprintln!(
-            "warning[ES017]: a StateSelect.prefer request was not honored, so other states are integrated and their start values apply: {reason}"
+            "warning[{}]: a StateSelect.prefer request was not honored, so other states are integrated and their start values apply: {reason}",
+            rumoca_phase_structural::diagnostic_codes::ES017_WITHHELD_STATE_PREFERENCE
         );
     }
 }

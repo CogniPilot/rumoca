@@ -907,10 +907,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
         let (smoothness, value) = super::smooth_order::smooth_operands(self.source, arguments)
             .expect("differentiability preflight proved a literal smooth order");
-        let certificate = Some(
-            self.smooth_certificate
-                .map_or(smoothness, |enclosing| enclosing.max(smoothness)),
-        );
+        let certificate =
+            super::smooth_order::certificate_within(self.smooth_certificate, smoothness);
         let enclosing = std::mem::replace(&mut self.smooth_certificate, certificate);
         let derivative = self.differentiate_order(value, order, provenance);
         self.smooth_certificate = enclosing;

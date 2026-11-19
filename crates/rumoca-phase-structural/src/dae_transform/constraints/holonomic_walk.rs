@@ -4,7 +4,7 @@
 //! under the current function-call substitution, recording the states the
 //! derivative is anchored to.
 
-use super::super::smooth_order::smooth_operands;
+use super::super::smooth_order::{admits_live_guards, certificate_within, smooth_operands};
 use super::*;
 
 pub(super) struct HolonomicProofWalk<'facts, 'dae> {
@@ -15,11 +15,11 @@ pub(super) struct HolonomicProofWalk<'facts, 'dae> {
     pub(super) anchored_states: Vec<u32>,
     pub(super) function_context: FunctionCallContext<'dae>,
     pub(super) scratch: &'facts mut HolonomicProofScratch,
-    /// The differentiability order certified by the innermost enclosing
-    /// `smooth(p, ..)` of the operand being walked (MLS §3.7.5); zero outside
-    /// one. It does not extend past a coordinate or a function argument, which
-    /// the certificate does not cover.
-    pub(super) smooth_order: u8,
+    /// The differentiability order certified by the `smooth(p, ..)` enclosing
+    /// the operand being walked (MLS §3.7.5); `None` outside one. It does not
+    /// extend past a coordinate or a function argument, which the certificate
+    /// does not cover.
+    pub(super) smooth_order: Option<u8>,
 }
 
 impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
@@ -84,7 +84,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 .expression_is_zero(self.view, expression, &self.function_context)
                 || self.can_apply_derivative(selected, on_residual);
         }
-        if self.function_context.is_empty() && self.smooth_order == 0 {
+        if self.function_context.is_empty() && self.smooth_order.is_none() {
             match self.scratch.state(index, order as usize, context) {
                 Visit::Differentiable => return true,
                 Visit::InProgress => return false,
@@ -141,18 +141,19 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 .function_context
                 .parameter_argument(parameter)
                 .is_some_and(|argument| {
-                    self.with_smooth_order(0, |walk| {
+                    self.with_smooth_order(None, |walk| {
                         walk.can_differentiate_order(argument, order, on_residual)
                     })
                 }),
-            dae::ExpressionOperation::Coordinate(coordinate) => self.with_smooth_order(0, |walk| {
-                walk.can_differentiate_coordinate(coordinate, order, on_residual)
-            }),
+            dae::ExpressionOperation::Coordinate(coordinate) => self
+                .with_smooth_order(None, |walk| {
+                    walk.can_differentiate_coordinate(coordinate, order, on_residual)
+                }),
             dae::ExpressionOperation::Builtin {
                 builtin: dae::PureBuiltin::Smooth,
                 arguments,
             } => smooth_operands(self.view, arguments).is_some_and(|(smoothness, value)| {
-                let certified = self.smooth_order.max(smoothness);
+                let certified = certificate_within(self.smooth_order, smoothness);
                 self.with_smooth_order(certified, |walk| {
                     walk.can_differentiate_order(value, order, on_residual)
                 })
@@ -186,7 +187,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 .iter()
                 .all(|element| self.can_differentiate_order(element, order, on_residual)),
             dae::ExpressionOperation::Conditional(operands) => {
-                (self.smooth_order >= order
+                (admits_live_guards(self.smooth_order, order)
                     || super::super::parameter_conditionals::has_parameter_guards(
                         self.view,
                         &self.function_context,
@@ -211,7 +212,11 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
 
     /// Walk under the smoothness certificate `smooth_order`, restoring the
     /// enclosing certificate afterwards.
-    fn with_smooth_order<T>(&mut self, smooth_order: u8, walk: impl FnOnce(&mut Self) -> T) -> T {
+    fn with_smooth_order<T>(
+        &mut self,
+        smooth_order: Option<u8>,
+        walk: impl FnOnce(&mut Self) -> T,
+    ) -> T {
         let enclosing = std::mem::replace(&mut self.smooth_order, smooth_order);
         let result = walk(self);
         self.smooth_order = enclosing;
@@ -225,7 +230,7 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
         context: usize,
         differentiable: bool,
     ) {
-        if self.function_context.is_empty() && self.smooth_order == 0 {
+        if self.function_context.is_empty() && self.smooth_order.is_none() {
             self.scratch.set_state(
                 expression,
                 order as usize,

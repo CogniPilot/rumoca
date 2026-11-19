@@ -8,6 +8,13 @@
 //! `if c then d^k a else d^k b` with the guard evaluated live, for `k <= p`.
 //! The derivative of the whole operand keeps the remaining certificate:
 //! `d^k/dt^k smooth(p, e) = smooth(p - k, d^k e)`.
+//!
+//! At `k = p + 1` the branch derivatives exist on each side of a guard change
+//! and the operand has no jump there, so the derivative is still the selected
+//! branch's derivative, with no impulse; it may jump, so it is evaluated under
+//! `noEvent` and certifies nothing further. This module is the one owner of
+//! that bound: the constraint proof walk and the expression differentiator
+//! both ask it.
 
 use rumoca_ir_dae as dae;
 
@@ -33,6 +40,12 @@ pub(super) fn remaining_order(smoothness: u8, order: u8) -> u8 {
     smoothness.saturating_sub(order)
 }
 
+/// The certificate an operand of `smooth(smoothness, ..)` is walked under: the
+/// larger of its own and the enclosing one. `None` is outside every `smooth`.
+pub(super) fn certificate_within(enclosing: Option<u8>, smoothness: u8) -> Option<u8> {
+    Some(enclosing.map_or(smoothness, |enclosing| enclosing.max(smoothness)))
+}
+
 /// Whether a conditional under the enclosing `smooth` certificate
 /// differentiates branch-wise at `order` although its guard is evaluated live.
 ///
@@ -52,7 +65,14 @@ pub(super) fn derivative_is_continuous(smoothness: u8, order: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{admits_live_guards, derivative_is_continuous};
+    use super::{admits_live_guards, certificate_within, derivative_is_continuous};
+
+    #[test]
+    fn a_nested_smooth_keeps_the_larger_certificate() {
+        assert_eq!(certificate_within(None, 0), Some(0));
+        assert_eq!(certificate_within(Some(2), 1), Some(2));
+        assert_eq!(certificate_within(Some(1), 2), Some(2));
+    }
 
     #[test]
     fn a_certificate_admits_live_guards_one_order_past_its_own() {

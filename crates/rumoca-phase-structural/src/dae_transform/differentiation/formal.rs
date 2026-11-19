@@ -91,10 +91,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         if admitted {
             Ok(())
         } else {
+            // The refusal carries the operation's own site, not the site of
+            // the equation that reads it.
+            let operation = self.source.expression(id).unwrap().provenance();
             Err(unsupported(
                 "formal derivative operation",
                 id.index(),
-                provenance,
+                if operation.span().is_dummy() {
+                    provenance
+                } else {
+                    operation
+                },
             ))
         }
     }

@@ -107,7 +107,8 @@ pub const ES016_UNLOCALIZABLE_LOOP_RELATION: &str = "ES016";
 /// * **does not warn** when the preferred basis is selected, or when the
 ///   reducer's basis already ranks at least as high;
 /// * **owner** `crate::dae_transform::formal_derivatives` records each
-///   withheld declaration; Solve state selection carries it to the run;
+///   withheld declaration; Solve state selection carries it to the run
+///   (SPEC_0040 STRUCT-T07);
 /// * **evidence** `suite_core::state_select_priorities`.
 pub const ES017_WITHHELD_STATE_PREFERENCE: &str = "ES017";
 
