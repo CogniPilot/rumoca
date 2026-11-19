@@ -228,9 +228,10 @@ fn select_structural_if_branch<'a>(
     };
     let eval_ctx = eval_ctx?;
     if !if_selection_is_grounded(cond_blocks, else_block.as_deref())
-        || cond_blocks
-            .iter()
-            .any(|block| names_possibly_non_evaluable(eval_ctx, &block.cond))
+        || cond_blocks.iter().any(|block| {
+            names_possibly_non_evaluable(eval_ctx, &block.cond)
+                || reads_outer_element(eval_ctx, &block.cond)
+        })
     {
         return None;
     }
@@ -271,6 +272,14 @@ fn names_possibly_non_evaluable(
                             .is_some()
                 })
         })
+}
+
+/// Whether `condition` reads an `outer` element, directly or through a local
+/// binding. Its value is the matching `inner` element's (MLS §5.4), which the
+/// declaring class does not hold, so the selection is left to flatten.
+fn reads_outer_element(eval_ctx: &InstantiateEvalCtx<'_>, condition: &ast::Expression) -> bool {
+    !super::conditional_components::outer_components_read(condition, eval_ctx.effective_components)
+        .is_empty()
 }
 
 /// True when an if-equation may be decided at instantiation time: either every

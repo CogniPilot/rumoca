@@ -227,9 +227,42 @@ fn decide_condition(
     evaluate_component_condition_with_outer_values(eval_ctx, &qualified, outer_values)
 }
 
-/// Maximum binding hops followed while attributing an undecidable condition to
-/// an unmatched `outer` component.
+/// Maximum binding hops followed while tracing a condition to the `outer`
+/// components it reads.
 const MAX_OUTER_ATTRIBUTION_DEPTH: usize = 8;
+
+/// The `outer` components of this class that `cond` reads, directly or through
+/// a local binding (MLS §5.4), each with the name it is declared under.
+///
+/// `sphereDiameter = world.defaultBodyDiameter` makes an outer-free condition
+/// (`sphereDiameter > 0`) read `world`.
+pub(crate) fn outer_components_read<'a>(
+    cond: &ast::Expression,
+    effective_components: &'a IndexMap<String, ast::Component>,
+) -> Vec<(&'a str, &'a ast::Component)> {
+    let mut outers = Vec::new();
+    let mut seen: rustc_hash::FxHashSet<&str> = rustc_hash::FxHashSet::default();
+    let mut pending: Vec<(String, usize)> = cref_roots(cond).map(|root| (root, 0)).collect();
+    while let Some((root, depth)) = pending.pop() {
+        if depth > MAX_OUTER_ATTRIBUTION_DEPTH {
+            continue;
+        }
+        let Some((name, comp)) = effective_components.get_key_value(&root) else {
+            continue;
+        };
+        if !seen.insert(name.as_str()) {
+            continue;
+        }
+        if comp.outer {
+            outers.push((name.as_str(), comp));
+            continue;
+        }
+        if let Some(binding) = comp.binding.as_ref() {
+            pending.extend(cref_roots(binding).map(|root| (root, depth + 1)));
+        }
+    }
+    outers
+}
 
 /// True when an undecidable condition reads, directly or through a local
 /// binding, an `outer` component that has no matching inner in any enclosing
@@ -246,40 +279,18 @@ fn condition_deferrable_to_synthesized_inner(
     ctx: &InstantiateContext,
     tree: &ast::ClassTree,
 ) -> bool {
-    let mut roots = Vec::new();
-    collect_cref_roots(cond, &mut roots);
-    let mut seen: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
-    let mut pending: Vec<(String, usize)> = roots.into_iter().map(|root| (root, 0)).collect();
-    while let Some((root, depth)) = pending.pop() {
-        if depth > MAX_OUTER_ATTRIBUTION_DEPTH || !seen.insert(root.clone()) {
-            continue;
-        }
-        let Some(comp) = effective_components.get(&root) else {
-            continue;
-        };
-        if comp.outer {
-            // Require an unconditional outer: MLS §5.4 (INST-032) ignores a
-            // disabled conditional outer for automatic inner creation, and only
-            // an unconditional outer is guaranteed to be recorded as missing so
-            // the retry actually runs. A conditional outer keeps the honest
-            // EI006 rather than a silent skip.
-            if comp.condition.is_none()
-                && ctx.find_inner(&root).is_none()
+    // Require an unconditional outer: MLS §5.4 (INST-032) ignores a disabled
+    // conditional outer for automatic inner creation, and only an
+    // unconditional outer is guaranteed to be recorded as missing so the retry
+    // actually runs. A conditional outer keeps the honest EI006 rather than a
+    // silent skip.
+    outer_components_read(cond, effective_components)
+        .into_iter()
+        .any(|(name, comp)| {
+            comp.condition.is_none()
+                && ctx.find_inner(name).is_none()
                 && outer_class_is_synthesizable(tree, comp)
-            {
-                return true;
-            }
-            continue;
-        }
-        // Follow the local binding: `sphereDiameter = world.defaultBodyDiameter`
-        // makes an outer-free condition (`sphereDiameter > 0`) depend on `world`.
-        if let Some(binding) = comp.binding.as_ref() {
-            let mut binding_roots = Vec::new();
-            collect_cref_roots(binding, &mut binding_roots);
-            pending.extend(binding_roots.into_iter().map(|root| (root, depth + 1)));
-        }
-    }
-    false
+        })
 }
 
 /// True when an `outer` component names a class MLS §5.4 permits to be
@@ -291,48 +302,9 @@ fn outer_class_is_synthesizable(tree: &ast::ClassTree, comp: &ast::Component) ->
         .is_some_and(|class| !class.partial)
 }
 
-/// Collect the root identifier of every component reference in an expression.
-///
-/// Covers the operator and reference forms a conditional-component condition can
-/// take (MLS §4.4.5); other expression shapes contribute no roots.
-fn collect_cref_roots(expr: &ast::Expression, roots: &mut Vec<String>) {
-    match expr {
-        ast::Expression::ComponentReference(cref) => {
-            if let Some(first) = cref.parts.first() {
-                roots.push(first.ident.text.to_string());
-            }
-        }
-        ast::Expression::Unary { rhs, .. } => collect_cref_roots(rhs, roots),
-        ast::Expression::Binary { lhs, rhs, .. } => {
-            collect_cref_roots(lhs, roots);
-            collect_cref_roots(rhs, roots);
-        }
-        ast::Expression::Range {
-            start, step, end, ..
-        } => {
-            collect_cref_roots(start, roots);
-            if let Some(step) = step {
-                collect_cref_roots(step, roots);
-            }
-            collect_cref_roots(end, roots);
-        }
-        ast::Expression::Parenthesized { inner, .. } => collect_cref_roots(inner, roots),
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, body) in branches {
-                collect_cref_roots(cond, roots);
-                collect_cref_roots(body, roots);
-            }
-            collect_cref_roots(else_branch, roots);
-        }
-        ast::Expression::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_cref_roots(arg, roots);
-            }
-        }
-        _ => {}
-    }
+/// The root identifier of every component reference in an expression.
+fn cref_roots(expr: &ast::Expression) -> impl Iterator<Item = String> {
+    ast::collect_component_refs(expr)
+        .into_iter()
+        .filter_map(|cref| Some(cref.parts.first()?.ident.text.to_string()))
 }
