@@ -14,6 +14,7 @@
 mod algebra;
 pub(super) mod conditionals;
 mod formal;
+pub(super) use formal::FORMAL_OPERATION_REFUSAL;
 mod geometry;
 mod lifted_values;
 mod linear_solve;
@@ -852,8 +853,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     }
 
     /// `min(a, b)` and `max(a, b)` are continuous and equal one argument on
-    /// each side of `a = b`, so the first derivative is that argument's,
-    /// selected by the same comparison without an event (MLS §3.7.1).
+    /// each side of `a = b`, so the first derivative is that argument's. It
+    /// jumps where the selection changes, so the comparison that selects it
+    /// owns an event (MLS §8.5).
     fn differentiate_selection(
         &mut self,
         builtin: dae::PureBuiltin,
@@ -885,20 +887,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .target
             .at(provenance)
             .binary(selects_lhs, lhs_value, rhs_value)?;
-        let selected = self
-            .target
-            .at(provenance)
-            .conditional([(guard, lhs_derivative)], rhs_derivative)?;
+        self.event_relations.push((guard, provenance.span()));
         self.target
             .at(provenance)
-            .builtin(dae::PureBuiltin::NoEvent, vec![selected])
+            .conditional([(guard, lhs_derivative)], rhs_derivative)
             .map(Derivative::Expression)
     }
 
     /// `d^k/dt^k smooth(p, e) = smooth(p - k, d^k e)` while `k <= p` (MLS
     /// §3.7.5): the derivative keeps the differentiability the operand still
-    /// certifies. At `k = p + 1` the derivative exists on each side of a guard
-    /// change but may jump there, so it is evaluated without an event.
+    /// certifies. Past `p` the operand certifies nothing about its derivative,
+    /// which is returned as it is: its conditionals own their events.
     fn differentiate_smooth(
         &mut self,
         arguments: dae::ExpressionOperands<'source>,
@@ -915,12 +914,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let Derivative::Expression(derivative) = derivative? else {
             return Ok(Derivative::Zero);
         };
-        if !super::smooth_order::derivative_is_continuous(smoothness, order) {
-            return self
-                .target
-                .at(provenance)
-                .builtin(dae::PureBuiltin::NoEvent, vec![derivative])
-                .map(Derivative::Expression);
+        if order > smoothness {
+            return Ok(Derivative::Expression(derivative));
         }
         let remaining = super::smooth_order::remaining_order(smoothness, order);
         let remaining = self

@@ -53,7 +53,7 @@ pub struct LoweredSolveModel<'source> {
     model: solve::SolveModel,
     prepared: rumoca_phase_structural::PreparedDae<'source>,
     formal_aliases: rumoca_phase_structural::AliasQuotientReport,
-    withheld_preferences: Option<String>,
+    withheld_preferences: Vec<rumoca_phase_structural::WithheldPreference>,
     program_seconds: f64,
     runtime_value_seconds: f64,
     pub(crate) input_initializations: Vec<InputInitializationFact>,
@@ -83,11 +83,11 @@ impl LoweredSolveModel<'_> {
         &self.formal_aliases
     }
 
-    /// Why a requested `StateSelect` basis (MLS 3.7 §4.9.7.1) was withheld
-    /// from this model (ES017), or `None` when every request was honored.
+    /// The `StateSelect.prefer` requests (MLS 3.7 §4.9.7.1) this model does
+    /// not honor (ES017); empty when every request was honored.
     #[must_use]
-    pub fn withheld_state_preferences(&self) -> Option<&str> {
-        self.withheld_preferences.as_deref()
+    pub fn withheld_state_preferences(&self) -> &[rumoca_phase_structural::WithheldPreference] {
+        &self.withheld_preferences
     }
 
     #[must_use]

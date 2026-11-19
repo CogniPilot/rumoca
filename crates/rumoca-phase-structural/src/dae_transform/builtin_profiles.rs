@@ -71,6 +71,37 @@ pub(super) fn is_differentiable_power<'dae>(
         })
 }
 
+/// Whether the construction that asks can give a relation an event owner. The
+/// formal prolongation registers the relations of its derivatives; the
+/// reducer's constraint replacement registers none.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EventOwners {
+    Issued,
+    Unavailable,
+}
+
+/// Whether `min(a, b)` or `max(a, b)` differentiates at `order`.
+///
+/// Over two scalars the selection is continuous and equals one argument on
+/// each side of `a = b`, so its first derivative is that argument's. That
+/// derivative jumps where the selection changes, so the comparison selecting
+/// it must own an event (MLS §8.5): the rule holds only where one is issued.
+/// A higher order and the reduction or elementwise forms have no rule.
+pub(super) fn is_differentiable_selection<'dae>(
+    view: dae::DaeView<'dae>,
+    arguments: dae::ExpressionOperands<'dae>,
+    order: u8,
+    events: EventOwners,
+) -> bool {
+    events == EventOwners::Issued
+        && order == 1
+        && arguments.len() == 2
+        && arguments.iter().all(|argument| {
+            view.expression(argument)
+                .is_some_and(|node| node.value_type().dimensions().is_empty())
+        })
+}
+
 /// The structural preflight and reconstruction share this closed derivative profile.
 pub(super) fn is_differentiable_builtin(builtin: dae::PureBuiltin, order: u8) -> bool {
     (1..=2).contains(&order) && is_materializable_builtin(builtin)

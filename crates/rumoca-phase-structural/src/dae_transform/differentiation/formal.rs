@@ -61,17 +61,23 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 dae::ExpressionOperation::Builtin {
                     builtin: dae::PureBuiltin::Min | dae::PureBuiltin::Max,
                     arguments,
-                } => order == 1 && self.selects_between_two_scalars(arguments),
+                } => super::super::builtin_profiles::is_differentiable_selection(
+                    self.source,
+                    arguments,
+                    order,
+                    super::super::builtin_profiles::EventOwners::Issued,
+                ),
                 dae::ExpressionOperation::Builtin { builtin, .. } => {
                     super::super::builtin_profiles::is_differentiable_builtin(builtin, order)
                 }
                 dae::ExpressionOperation::Conditional(operands) => {
                     super::super::smooth_order::admits_live_guards(self.smooth_certificate, order)
-                        || super::super::parameter_conditionals::has_parameter_guards(
+                        || super::super::parameter_conditionals::guards_taking_events(
                             self.source,
                             &self.function_context,
                             operands,
                         )
+                        .is_some()
                 }
                 dae::ExpressionOperation::Index { subscripts, .. } => {
                     subscripts.iter().all(|subscript| match subscript {
@@ -95,7 +101,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             // the equation that reads it.
             let operation = self.source.expression(id).unwrap().provenance();
             Err(unsupported(
-                "formal derivative operation",
+                FORMAL_OPERATION_REFUSAL,
                 id.index(),
                 if operation.span().is_dummy() {
                     provenance
@@ -104,19 +110,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 },
             ))
         }
-    }
-}
-
-impl<'source> ExpressionRebuilder<'source, '_, '_, '_> {
-    /// `min(a, b)` and `max(a, b)` over two scalars; the reduction and
-    /// elementwise forms keep their refusal.
-    fn selects_between_two_scalars(&self, arguments: dae::ExpressionOperands<'source>) -> bool {
-        arguments.len() == 2
-            && arguments.iter().all(|argument| {
-                self.source
-                    .expression(argument)
-                    .is_some_and(|node| node.value_type().dimensions().is_empty())
-            })
     }
 }
 
@@ -139,6 +132,10 @@ fn invariant_index<'dae>(view: dae::DaeView<'dae>, id: dae::ExprId<'dae>) -> boo
         _ => false,
     }
 }
+
+/// The refusal kind of an operation the formal derivative has no rule for;
+/// its index is the operation's source expression ordinal.
+pub(in crate::dae_transform) const FORMAL_OPERATION_REFUSAL: &str = "formal derivative operation";
 
 fn unsupported(
     kind: &'static str,

@@ -48,10 +48,10 @@ pub(crate) struct PreparedSelection<'source> {
     /// primary candidate, with every class it left unchanged; empty when the
     /// source basis is retained.
     pub formal_aliases: AliasQuotientReport,
-    /// Why a requested `StateSelect` basis (MLS 3.7 §4.9.7.1) was withheld:
-    /// its formal construction or checked selection was refused, so the
-    /// reducer's basis is kept.
-    pub withheld_preferences: Option<String>,
+    /// The `StateSelect.prefer` requests (MLS 3.7 §4.9.7.1) this selection
+    /// does not honor, each with its cause: a derivative its selection needs,
+    /// the requested basis, or its checked selection was refused.
+    pub withheld_preferences: Vec<rumoca_phase_structural::WithheldPreference>,
 }
 
 /// The alternate Independent sets of a primary selection, each described by
@@ -367,7 +367,7 @@ impl<'formal, 'source> ReducedCandidate<'formal, 'source> {
             alternates,
             exchanges: self.alternates.exchanges,
             formal_aliases,
-            withheld_preferences: None,
+            withheld_preferences: Vec::new(),
         })
     }
 }
@@ -456,7 +456,7 @@ fn recover_singular_via_formal(
         alternates,
         exchanges: reduced.alternates.exchanges,
         formal_aliases,
-        withheld_preferences: None,
+        withheld_preferences: Vec::new(),
     }))
 }
 
@@ -571,7 +571,7 @@ impl<'source> PreparedSelection<'source> {
             alternates: Vec::new(),
             exchanges: Vec::new(),
             formal_aliases: AliasQuotientReport::default(),
-            withheld_preferences: None,
+            withheld_preferences: Vec::new(),
         }
     }
 }

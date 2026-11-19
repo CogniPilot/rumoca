@@ -176,6 +176,21 @@ impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
                 has_invariant_subscripts(self.view, subscripts)
                     && self.can_differentiate_order(base, order, on_residual)
             }
+            dae::ExpressionOperation::Builtin {
+                builtin: dae::PureBuiltin::Min | dae::PureBuiltin::Max,
+                arguments,
+            } => {
+                // A replaced constraint registers no relation, so the one
+                // owner of this rule refuses it here.
+                super::super::builtin_profiles::is_differentiable_selection(
+                    self.view,
+                    arguments,
+                    order,
+                    super::super::builtin_profiles::EventOwners::Unavailable,
+                ) && arguments
+                    .iter()
+                    .all(|argument| self.can_differentiate_order(argument, order, on_residual))
+            }
             dae::ExpressionOperation::Builtin { builtin, arguments }
                 if is_differentiable_builtin(builtin, order) =>
             {

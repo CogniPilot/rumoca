@@ -38,6 +38,30 @@ pub(super) fn has_parameter_guards<'dae>(
     })
 }
 
+/// The guards of `operands` that are relations owning no event, when giving
+/// each one an event owner makes every guard piecewise constant; `None` when
+/// some guard would still vary between events. MLS §3.7.5 lets a tool
+/// generate events for a relation inside `smooth`, and a relation that owns
+/// one is fixed between its events (MLS §8.5), so the conditional then
+/// differentiates branch-wise like any other.
+pub(super) fn guards_taking_events<'dae>(
+    view: dae::DaeView<'dae>,
+    context: &FunctionCallContext<'dae>,
+    operands: dae::ExpressionOperands<'dae>,
+) -> Option<Vec<dae::ExprId<'dae>>> {
+    let mut taking = Vec::new();
+    for (index, operand) in operands.iter().enumerate() {
+        if !is_guard(index, operands.len()) || piecewise_constant_guard(view, context, operand) {
+            continue;
+        }
+        if !context.is_empty() || !super::loop_guards::may_take_event_owner(view, operand) {
+            return None;
+        }
+        taking.push(operand);
+    }
+    Some(taking)
+}
+
 fn piecewise_constant_guard<'dae>(
     view: dae::DaeView<'dae>,
     context: &FunctionCallContext<'dae>,

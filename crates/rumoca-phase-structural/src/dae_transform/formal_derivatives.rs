@@ -33,15 +33,86 @@ pub struct FormalDerivativeSystem<'source> {
     withheld: Vec<WithheldPreference>,
 }
 
-/// A `StateSelect.prefer` request the construction could not honor: the
-/// declaration, and the refusal of the derivative its selection needs.
+/// A `StateSelect.prefer` request that is not honored: the declaration and
+/// why its selection as a state was refused. `prefer` is a request (MLS 3.7
+/// §4.9.7.1), so the reducer's basis is integrated and this record is what
+/// every consumer reports (ES017).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithheldPreference {
     pub variable: String,
     pub declaration: rumoca_core::Span,
-    pub refusal: String,
-    /// Where the refused derivative was requested, when the refusal has one.
-    pub refusal_span: Option<rumoca_core::Span>,
+    pub cause: WithheldCause,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WithheldCause {
+    /// Selecting the declaration needs the time derivative of the operation
+    /// written at `span`, which is refused.
+    Operation {
+        span: rumoca_core::Span,
+        refusal: RefusedOperation,
+    },
+    /// Any other refusal of the declaration's derivative, of the requested
+    /// basis, or of its checked selection, in the refusal's own words.
+    Refusal(String),
+}
+
+/// Why the time derivative of an operation is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusedOperation {
+    /// It is written under `noEvent`: MLS §3.7.3 forbids the event its
+    /// derivative would need.
+    NoEvent,
+    /// A conditional whose guard is neither fixed between events nor a
+    /// relation that can own one.
+    LiveGuard,
+    /// The shared differentiation rules have none for it.
+    NoRule,
+}
+
+impl WithheldPreference {
+    /// One sentence naming the declaration, its site, and the cause, with the
+    /// refused operation as the source writes it.
+    #[must_use]
+    pub fn message(&self, model: &dae::Dae) -> String {
+        let declaration = source_site(model, self.declaration);
+        let cause = match &self.cause {
+            WithheldCause::Operation { span, refusal } => {
+                let text = source_excerpt(model, *span).unwrap_or("an operation");
+                let site = source_site(model, *span);
+                let why = match refusal {
+                    RefusedOperation::NoEvent => {
+                        "which `noEvent` keeps from owning the event its derivative needs"
+                    }
+                    RefusedOperation::LiveGuard => {
+                        "whose guard is neither fixed between events nor a relation that can \
+                         own an event"
+                    }
+                    RefusedOperation::NoRule => "which has no differentiation rule",
+                };
+                format!("selecting it needs the time derivative of `{text}`{site}, {why}")
+            }
+            WithheldCause::Refusal(refusal) => refusal.clone(),
+        };
+        format!("`{}`{declaration} is not selected: {cause}", self.variable)
+    }
+}
+
+/// ` (file:line:column)` of a span, or nothing when the model carries no
+/// source text for it.
+fn source_site(model: &dae::Dae, span: rumoca_core::Span) -> String {
+    let Some((name, text)) = model.source_map().get_source(span.source) else {
+        return String::new();
+    };
+    let position = rumoca_core::text_position::byte_offset_to_position(text, span.start.0);
+    format!(" ({name}:{}:{})", position.line + 1, position.character + 1)
+}
+
+/// The first line of the source text a span covers.
+fn source_excerpt(model: &dae::Dae, span: rumoca_core::Span) -> Option<&str> {
+    let (_, text) = model.source_map().get_source(span.source)?;
+    let excerpt = text.get(span.start.0..span.end.0)?.lines().next()?.trim();
+    (!excerpt.is_empty()).then_some(excerpt)
 }
 
 /// Both source and constructed coordinate identities stay bound to their roots.
@@ -203,6 +274,10 @@ fn withhold_refused_preferences(
     let Some((owner, level)) = refusal.owner else {
         return Err(refusal.error);
     };
+    let cause = refusal
+        .operation
+        .and_then(|operation| refused_operation(source, operation))
+        .unwrap_or_else(|| WithheldCause::Refusal(refusal.error.to_string()));
     let records = admitted
         .iter()
         .filter(|admission| {
@@ -221,8 +296,7 @@ fn withhold_refused_preferences(
                 WithheldPreference {
                     variable: variable.name().to_string(),
                     declaration: variable.declaration().span(),
-                    refusal: refusal.error.to_string(),
-                    refusal_span: refusal.error.source_span(),
+                    cause: cause.clone(),
                 },
             ))
         })
@@ -231,6 +305,22 @@ fn withhold_refused_preferences(
         return Err(refusal.error);
     }
     Ok(records)
+}
+
+/// The refused operation at source expression ordinal `operation`, with the
+/// reason its own form gives.
+fn refused_operation(source: dae::DaeView<'_>, operation: u32) -> Option<WithheldCause> {
+    let node = source.expression(source.expression_id(operation as usize)?)?;
+    let refusal = match node.operation() {
+        dae::ExpressionOperation::Builtin {
+            builtin: dae::PureBuiltin::NoEvent,
+            ..
+        } => RefusedOperation::NoEvent,
+        dae::ExpressionOperation::Conditional(_) => RefusedOperation::LiveGuard,
+        _ => RefusedOperation::NoRule,
+    };
+    let span = node.provenance().span();
+    (!span.is_dummy()).then_some(WithheldCause::Operation { span, refusal })
 }
 
 /// Raise each bound to the order a later-stage read needs; `false` when no

@@ -3,9 +3,9 @@
 //! `smooth(p, expr)` states that `expr` is `p` times continuously
 //! differentiable, so a conditional inside it differentiates branch-wise up to
 //! order `p` with its guard evaluated live: where the guard changes without an
-//! event, the branch derivatives agree. At order `p + 1` each branch still has
-//! its derivative and the operand has no jump, so the derivative is the
-//! selected branch's, without an impulse; one order further is refused.
+//! event, the branch derivatives agree. Past order `p` the derivative may jump
+//! where the guard changes, so the guard relation of the derivative owns an
+//! event (MLS §3.7.5 permits one inside `smooth`).
 //! `Modelica.Media.Common.smoothStep` is
 //! such a conditional, and `der(state.p)` of a state built by
 //! `setSmoothState` differentiates through it. A conditional with a live guard
@@ -151,33 +151,33 @@ fn uncertified_live_guard_keeps_the_refusal() {
     );
 }
 
-const KINK: &str = r#"
-model Kink
+const CERTIFIED: &str = r#"
+model Once
   Real y;
   Real dy;
 equation
-  y = smooth(0, if time > 0.5 then 2 * time - 0.5 else time);
+  y = smooth(1, if time > 0.5 then (time - 0.5)^2 else 0);
+  dy = der(y);
+end Once;
+model Kink
+  Real x(start = 0, fixed = true);
+  Real y;
+  Real dy;
+equation
+  der(x) = 1;
+  y = smooth(0, if x > 0.5 then 2 * x - 0.5 else x);
   dy = der(y);
 end Kink;
-model KinkTwice
-  Real y;
-  Real dy;
-  Real ddy;
-equation
-  y = smooth(0, if time > 0.5 then 2 * time - 0.5 else time);
-  dy = der(y);
-  ddy = der(dy);
-end KinkTwice;
 "#;
 
-/// `smooth(0, ..)` certifies a continuous operand, so its first derivative is
-/// the selected branch's on each side of the guard change, with no impulse.
+/// `smooth(1, ..)` certifies the first derivative, so it is the selected
+/// branch's derivative with the guard evaluated live.
 #[test]
-fn a_conditional_differentiates_one_order_past_its_certificate() {
+fn a_conditional_differentiates_through_its_certified_order() {
     let compiled = Compiler::new()
-        .model("Kink")
-        .compile_str(KINK, "Kink.mo")
-        .expect("the kink model compiles");
+        .model("Once")
+        .compile_str(CERTIFIED, "Certified.mo")
+        .expect("the certified model compiles");
     let result = simulate_dae_with_diagnostics(
         &compiled.dae,
         &SimOptions {
@@ -186,7 +186,39 @@ fn a_conditional_differentiates_one_order_past_its_certificate() {
             ..SimOptions::default()
         },
     )
-    .expect("the first derivative of a continuous kink exists on each side");
+    .expect("a certified first derivative exists");
+    for (index, time) in result.times.iter().enumerate() {
+        let expected = (2.0 * (time - 0.5)).max(0.0);
+        assert!(
+            (series(&result, "dy")[index] - expected).abs() < 1e-9,
+            "der(y) at t = {time}"
+        );
+    }
+}
+
+/// `smooth(0, ..)` certifies continuity only: its first derivative jumps
+/// where the guard changes, so the derivative's guard relation owns an event
+/// and the derivative is the selected branch's on each side.
+#[test]
+fn a_conditional_past_its_certified_order_owns_the_event_of_its_guard() {
+    let compiled = Compiler::new()
+        .model("Kink")
+        .compile_str(CERTIFIED, "Certified.mo")
+        .expect("the kink model compiles");
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let roots = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &options)
+        .expect("the kink model lowers")
+        .problem
+        .events
+        .root_conditions
+        .output_count();
+    assert_eq!(roots, 1);
+    let result = simulate_dae_with_diagnostics(&compiled.dae, &options)
+        .expect("the first derivative of a continuous kink exists on each side");
     for (index, time) in result.times.iter().enumerate() {
         if (time - 0.5).abs() < 1e-9 {
             continue;
@@ -197,20 +229,4 @@ fn a_conditional_differentiates_one_order_past_its_certificate() {
             "der(y) at t = {time}"
         );
     }
-}
-
-/// The second derivative of a merely continuous operand would differentiate
-/// a jump, so it keeps the refusal.
-#[test]
-fn a_conditional_two_orders_past_its_certificate_keeps_the_refusal() {
-    let compiled = Compiler::new()
-        .model("KinkTwice")
-        .compile_str(KINK, "Kink.mo")
-        .expect("the twice-differentiated kink constructs its DAE");
-    let error = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
-        .expect_err("a jump must not be differentiated");
-    assert!(
-        error.to_string().contains("structurally singular"),
-        "expected the structural refusal, got: {error}"
-    );
 }

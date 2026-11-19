@@ -9,12 +9,11 @@
 //! The derivative of the whole operand keeps the remaining certificate:
 //! `d^k/dt^k smooth(p, e) = smooth(p - k, d^k e)`.
 //!
-//! At `k = p + 1` the branch derivatives exist on each side of a guard change
-//! and the operand has no jump there, so the derivative is still the selected
-//! branch's derivative, with no impulse; it may jump, so it is evaluated under
-//! `noEvent` and certifies nothing further. This module is the one owner of
-//! that bound: the constraint proof walk and the expression differentiator
-//! both ask it.
+//! Past order `p` the certificate says nothing: the derivative may jump where
+//! a guard changes. A conditional there differentiates only when its guards
+//! are fixed between events (`parameter_conditionals`). This module is the
+//! one owner of the certified bound: the constraint proof walk and the
+//! expression differentiator both ask it.
 
 use rumoca_ir_dae as dae;
 
@@ -47,25 +46,16 @@ pub(super) fn certificate_within(enclosing: Option<u8>, smoothness: u8) -> Optio
 }
 
 /// Whether a conditional under the enclosing `smooth` certificate
-/// differentiates branch-wise at `order` although its guard is evaluated live.
-///
-/// An operand certified `p` times continuously differentiable has one-sided
-/// derivatives of order `p + 1` on each side of a guard change and no impulse
-/// there, so through that order the derivative is the selected branch's
-/// derivative. One order further would differentiate a jump.
+/// differentiates branch-wise at `order` with its guard evaluated live: the
+/// certificate covers the order, so the branch derivatives agree wherever the
+/// guard changes.
 pub(super) fn admits_live_guards(certificate: Option<u8>, order: u8) -> bool {
-    certificate.is_some_and(|smoothness| order <= smoothness.saturating_add(1))
-}
-
-/// Whether the derivative of order `order` of an operand certified
-/// `smoothness` is itself still certified continuous.
-pub(super) fn derivative_is_continuous(smoothness: u8, order: u8) -> bool {
-    order <= smoothness
+    certificate.is_some_and(|smoothness| order <= smoothness)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{admits_live_guards, certificate_within, derivative_is_continuous};
+    use super::{admits_live_guards, certificate_within};
 
     #[test]
     fn a_nested_smooth_keeps_the_larger_certificate() {
@@ -75,18 +65,11 @@ mod tests {
     }
 
     #[test]
-    fn a_certificate_admits_live_guards_one_order_past_its_own() {
+    fn a_certificate_admits_live_guards_through_its_own_order() {
         assert!(!admits_live_guards(None, 1));
-        assert!(admits_live_guards(Some(0), 1));
-        assert!(!admits_live_guards(Some(0), 2));
-        assert!(admits_live_guards(Some(1), 2));
+        assert!(!admits_live_guards(Some(0), 1));
+        assert!(admits_live_guards(Some(1), 1));
+        assert!(!admits_live_guards(Some(1), 2));
         assert!(admits_live_guards(Some(u8::MAX), 2));
-    }
-
-    #[test]
-    fn a_derivative_stays_certified_only_within_the_certificate() {
-        assert!(!derivative_is_continuous(0, 1));
-        assert!(derivative_is_continuous(1, 1));
-        assert!(!derivative_is_continuous(1, 2));
     }
 }
