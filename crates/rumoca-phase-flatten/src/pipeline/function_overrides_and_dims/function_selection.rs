@@ -474,8 +474,11 @@ fn exact_package_function_rewrite(
         });
     // An instance scope selects the package per instance, so a call there is
     // respelled through that instance's concrete package even when the alias's
-    // default also exposes the implementation.
-    let instance_selects_package = package.active && !ctx.active_scope.is_root();
+    // default also exposes the implementation. The class's own default is
+    // such a selection too: the source spelling (`Medium.density`) names one
+    // function for the whole model, while two classes whose defaults differ
+    // spell their calls alike.
+    let instance_selects_package = !ctx.active_scope.is_root();
     // An unqualified inherited call also needs the selected package path:
     // identical declaration/implementation IDs do not imply identical package
     // constants (for example, the dimensions of a medium function's inputs).
