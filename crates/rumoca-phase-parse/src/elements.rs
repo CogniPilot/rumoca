@@ -4,7 +4,7 @@
 //! which handles conversion from parser AST to rumoca_ir::ast.
 
 use super::definitions::{ElementList, ElementListPayload, validate_annotation_modifiers};
-use super::helpers::{loc_info, location_span, span_location};
+use super::helpers::{cover_location, loc_info, location_span, span_location};
 use crate::errors::{semantic_error_from_component_reference, semantic_error_from_token};
 use crate::generated::modelica_grammar_trait;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -428,8 +428,10 @@ fn process_class_definition(
     is_inner: bool,
     is_outer: bool,
     is_redeclare: bool,
+    bounds: &rumoca_core::Location,
 ) -> anyhow::Result<()> {
     let mut nested_class = (*class.class_definition).clone();
+    cover_location(&mut nested_class.location, bounds);
     nested_class.is_final = is_final;
     nested_class.is_inner = is_inner;
     nested_class.is_outer = is_outer;
@@ -610,6 +612,7 @@ fn process_replaceable_element(
     is_inner: bool,
     is_outer: bool,
     is_redeclare: bool,
+    bounds: &rumoca_core::Location,
 ) -> anyhow::Result<()> {
     let constrainedby = repl
         .element_definition_opt3
@@ -623,6 +626,7 @@ fn process_replaceable_element(
     match &*repl.element_definition_group_group {
         modelica_grammar_trait::ElementDefinitionGroupGroup::ClassDefinition(class) => {
             let mut nested_class = (*class.class_definition).clone();
+            cover_location(&mut nested_class.location, bounds);
             nested_class.is_final = is_final;
             nested_class.is_inner = is_inner;
             nested_class.is_outer = is_outer;
@@ -875,7 +879,7 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
             ..Default::default()
         };
         for elem_list in &ast.element_list_list {
-            process_element(&mut def, &elem_list.element)?;
+            process_element(&mut def, &elem_list.element, &elem_list.semicolon.location)?;
         }
         Ok(ElementList::new(def))
     }
@@ -885,10 +889,11 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
 fn process_element(
     def: &mut ElementListPayload,
     element: &modelica_grammar_trait::Element,
+    delimiter: &rumoca_core::Location,
 ) -> anyhow::Result<()> {
     match element {
         modelica_grammar_trait::Element::ElementDefinition(edef) => {
-            process_element_definition(def, edef)?;
+            process_element_definition(def, edef, delimiter)?;
         }
         modelica_grammar_trait::Element::ImportClause(import_elem) => {
             def.imports
@@ -905,20 +910,36 @@ fn process_element(
 fn process_element_definition(
     def: &mut ElementListPayload,
     edef: &modelica_grammar_trait::ElementElementDefinition,
+    delimiter: &rumoca_core::Location,
 ) -> anyhow::Result<()> {
     let is_redeclare = edef.element_definition.element_definition_opt.is_some();
     let is_final = edef.element_definition.element_definition_opt0.is_some();
     let is_inner = edef.element_definition.element_definition_opt1.is_some();
     let is_outer = edef.element_definition.element_definition_opt2.is_some();
 
+    let mut bounds = delimiter.clone();
+    let definition = &edef.element_definition;
+    if let Some(prefix) = &definition.element_definition_opt {
+        cover_location(&mut bounds, &prefix.redeclare.redeclare.location);
+    }
+    if let Some(prefix) = &definition.element_definition_opt0 {
+        cover_location(&mut bounds, &prefix.r#final.r#final.location);
+    }
+    if let Some(prefix) = &definition.element_definition_opt1 {
+        cover_location(&mut bounds, &prefix.inner.inner.location);
+    }
+    if let Some(prefix) = &definition.element_definition_opt2 {
+        cover_location(&mut bounds, &prefix.outer.outer.location);
+    }
     match &*edef.element_definition.element_definition_group {
         modelica_grammar_trait::ElementDefinitionGroup::ClassDefinition(class) => {
-            process_class_definition(def, class, is_final, is_inner, is_outer, is_redeclare)?;
+            process_class_definition(def, class, is_final, is_inner, is_outer, is_redeclare, &bounds)?;
         }
         modelica_grammar_trait::ElementDefinitionGroup::ComponentClause(clause) => {
             process_component_clause(def, clause, is_final, is_inner, is_outer, is_redeclare)?;
         }
         modelica_grammar_trait::ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(repl) => {
+            cover_location(&mut bounds, &repl.replaceable.replaceable.location);
             process_replaceable_element(
                 def,
                 repl,
@@ -926,6 +947,7 @@ fn process_element_definition(
                 is_inner,
                 is_outer,
                 is_redeclare,
+                &bounds,
             )?;
         }
     }

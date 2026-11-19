@@ -159,7 +159,7 @@ fn apply_to_text(source: &str, expansion: &Expansion) -> String {
         edits.push((start, end, rewrite.text.clone()));
     }
     for minted in &expansion.minted {
-        let at = insertion_point(source, minted.anchor_end as usize);
+        let at = minted.anchor_end as usize;
         edits.push((at, at, format!("\n\n{}", minted.text)));
     }
     edits.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
@@ -170,22 +170,6 @@ fn apply_to_text(source: &str, expansion: &Expansion) -> String {
         }
     }
     expanded
-}
-
-/// Where generated text goes after the class ending at `anchor_end`.
-fn insertion_point(source: &str, anchor_end: usize) -> usize {
-    let tail = source.get(anchor_end..).unwrap_or("");
-    let mut offset = anchor_end;
-    for character in tail.chars() {
-        if character == ';' {
-            return offset + character.len_utf8();
-        }
-        if !character.is_whitespace() {
-            return anchor_end;
-        }
-        offset += character.len_utf8();
-    }
-    anchor_end
 }
 
 /// Synthesize everything one call site needs, returning the wrapper's name.

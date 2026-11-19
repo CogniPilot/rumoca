@@ -1,7 +1,7 @@
 //! Conversion for class definitions and composition structures.
 
 use super::expressions::ExpressionList;
-use super::helpers::{merge_spans, span_location, token_span};
+use super::helpers::{cover_location, merge_spans, span_location, token_span};
 use super::sections::{AlgorithmSection, EquationSection};
 use crate::errors::semantic_error_from_token;
 use crate::generated::modelica_grammar_trait;
@@ -326,8 +326,12 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
                 ));
             }
 
-            def.classes
-                .insert(class_name.to_string(), (*class.class_definition).clone());
+            let mut definition = (*class.class_definition).clone();
+            if let Some(prefix) = &class.stored_definition_opt0 {
+                cover_location(&mut definition.location, &prefix.r#final.r#final.location);
+            }
+            cover_location(&mut definition.location, &class.semicolon.location);
+            def.classes.insert(class_name.to_string(), definition);
         }
         def.within = ast.stored_definition_opt.as_ref().map(|within_clause| {
             within_clause
@@ -1013,7 +1017,7 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
     ) -> std::result::Result<Self, Self::Error> {
         let ctx = ClassConversionContext::from_ast(ast);
 
-        match &*ast.class_specifier {
+        let mut definition = match &*ast.class_specifier {
             modelica_grammar_trait::ClassSpecifier::LongClassSpecifier(long) => {
                 match &*long.long_class_specifier {
                     modelica_grammar_trait::LongClassSpecifier::StandardClassSpecifier(spec) => {
@@ -1043,7 +1047,53 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
                     ),
                 }
             }
+        }?;
+        cover_class_prefixes(&mut definition.location, ast);
+        Ok(definition)
+    }
+}
+
+fn cover_class_prefixes(
+    location: &mut rumoca_core::Location,
+    ast: &modelica_grammar_trait::ClassDefinition,
+) {
+    cover_location(
+        location,
+        &get_class_type_token(&ast.class_prefixes.class_type).location,
+    );
+    if let Some(prefix) = &ast.class_definition_opt {
+        cover_location(location, &prefix.encapsulated.encapsulated.location);
+    }
+    if let Some(prefix) = &ast.class_prefixes.class_prefixes_opt {
+        cover_location(location, &prefix.partial.partial.location);
+    }
+    match &*ast.class_prefixes.class_type {
+        modelica_grammar_trait::ClassType::ClassTypeOptRecord(record) => {
+            if let Some(prefix) = &record.class_type_opt {
+                cover_location(location, &prefix.operator.operator.location);
+            }
         }
+        modelica_grammar_trait::ClassType::ClassTypeOpt0Connector(connector) => {
+            if let Some(prefix) = &connector.class_type_opt0 {
+                cover_location(location, &prefix.expandable.expandable.location);
+            }
+        }
+        modelica_grammar_trait::ClassType::ClassTypeOpt1ClassTypeOpt2Function(function) => {
+            if let Some(prefix) = &function.class_type_opt2 {
+                cover_location(location, &prefix.operator.operator.location);
+            }
+            if let Some(prefix) = &function.class_type_opt1 {
+                match &*prefix.class_type_opt1_group {
+                    modelica_grammar_trait::ClassTypeOpt1Group::Pure(p) => {
+                        cover_location(location, &p.pure.pure.location)
+                    }
+                    modelica_grammar_trait::ClassTypeOpt1Group::Impure(p) => {
+                        cover_location(location, &p.impure.impure.location)
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 

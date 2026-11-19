@@ -202,10 +202,10 @@ fn add_op_span(op: &modelica_grammar_trait::AddOperator) -> anyhow::Result<Span>
     }
 }
 
-#[derive(Debug, Default, Clone)]
-
+#[derive(Debug, Clone)]
 pub struct ArraySubscripts {
     pub subscripts: Vec<rumoca_ir_ast::Subscript>,
+    pub delimiter_span: Span,
 }
 
 impl TryFrom<&modelica_grammar_trait::ArraySubscripts> for ArraySubscripts {
@@ -218,7 +218,10 @@ impl TryFrom<&modelica_grammar_trait::ArraySubscripts> for ArraySubscripts {
         for subscript in &ast.array_subscripts_list {
             subscripts.push(subscript.subscript.clone());
         }
-        Ok(ArraySubscripts { subscripts })
+        Ok(ArraySubscripts {
+            subscripts,
+            delimiter_span: merge_spans(token_span(&ast.l_bracket)?, token_span(&ast.r_bracket)?),
+        })
     }
 }
 
@@ -1141,6 +1144,7 @@ fn expr_list_to_vec(el: &modelica_grammar_trait::ExpressionList) -> Vec<rumoca_i
 fn convert_range_primary(
     rp: &modelica_grammar_trait::RangePrimary,
 ) -> anyhow::Result<rumoca_ir_ast::Expression> {
+    let span = merge_spans(token_span(&rp.l_bracket)?, token_span(&rp.r_bracket)?);
     // First row
     let first_row = expr_list_to_vec(&rp.expression_list);
     let first_row_span = required_expression_list_span(&first_row, "matrix row")?;
@@ -1149,7 +1153,7 @@ fn convert_range_primary(
     if rp.range_primary_list.is_empty() {
         // Single row: [1, 2, 3] - just return as matrix Array
         Ok(rumoca_ir_ast::Expression::Array {
-            span: first_row_span,
+            span,
             elements: first_row,
             kind: rumoca_core::ArrayConstructor::Horizontal,
         })
@@ -1169,7 +1173,6 @@ fn convert_range_primary(
                 kind: rumoca_core::ArrayConstructor::Horizontal,
             });
         }
-        let span = required_expression_list_span(&rows, "matrix rows")?;
         Ok(rumoca_ir_ast::Expression::Array {
             span,
             elements: rows,
@@ -1182,34 +1185,29 @@ fn convert_range_primary(
 fn convert_output_primary(
     primary: &modelica_grammar_trait::OutputPrimary,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
+    let span = merge_spans(token_span(&primary.l_paren)?, token_span(&primary.r_paren)?);
     let base = if primary.output_expression_list.args.len() > 1 {
         // Multiple outputs like (a, b) = func() - create a Tuple
         rumoca_ir_ast::Expression::Tuple {
-            span: required_expression_list_span(
-                &primary.output_expression_list.args,
-                "tuple output expression list",
-            )?,
+            span,
             elements: primary.output_expression_list.args.clone(),
         }
     } else if primary.output_expression_list.args.len() == 1 {
         // Single expression in parentheses - preserve with Parenthesized wrapper
         rumoca_ir_ast::Expression::Parenthesized {
-            span: primary.output_expression_list.args[0].span(),
+            span,
             inner: Arc::new(primary.output_expression_list.args[0].clone()),
         }
     } else {
         // Empty parentheses - return Empty expression
-        empty_expr(merge_spans(
-            token_span(&primary.l_paren)?,
-            token_span(&primary.r_paren)?,
-        ))
+        empty_expr(span)
     };
 
     if let Some(opt) = &primary.output_primary_opt {
         match &*opt.output_primary_opt_group {
             modelica_grammar_trait::OutputPrimaryOptGroup::ArraySubscripts(subs) => {
                 Ok(rumoca_ir_ast::Expression::ArrayIndex {
-                    span: base.span(),
+                    span: merge_spans(base.span(), subs.array_subscripts.delimiter_span),
                     base: Arc::new(base),
                     subscripts: subs.array_subscripts.subscripts.clone(),
                 })
@@ -1263,12 +1261,33 @@ fn convert_global_function_call(
     // If there are subscripts, wrap in ArrayIndex
     Ok(match &gfc.global_function_call_opt {
         Some(opt) => rumoca_ir_ast::Expression::ArrayIndex {
-            span: func_call.span(),
+            span: merge_spans(func_call.span(), opt.array_subscripts.delimiter_span),
             base: Arc::new(func_call),
             subscripts: opt.array_subscripts.subscripts.clone(),
         },
         None => func_call,
     })
+}
+
+fn convert_unsigned_number(
+    number: &modelica_grammar_trait::UnsignedNumber,
+) -> anyhow::Result<rumoca_ir_ast::Expression> {
+    match number {
+        modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
+            Ok(rumoca_ir_ast::Expression::Terminal {
+                terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
+                token: unsigned_int.unsigned_integer.clone(),
+                span: token_span(&unsigned_int.unsigned_integer)?,
+            })
+        }
+        modelica_grammar_trait::UnsignedNumber::UnsignedReal(unsigned_real) => {
+            Ok(rumoca_ir_ast::Expression::Terminal {
+                terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
+                token: unsigned_real.unsigned_real.clone(),
+                span: token_span(&unsigned_real.unsigned_real)?,
+            })
+        }
+    }
 }
 
 impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
@@ -1291,7 +1310,10 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                         // Check for optional subscripts: f(x)[i]
                         match &args.component_primary_opt0 {
                             Some(subs) => Ok(rumoca_ir_ast::Expression::ArrayIndex {
-                                span: func_call.span(),
+                                span: merge_spans(
+                                    func_call.span(),
+                                    subs.array_subscripts.delimiter_span,
+                                ),
                                 base: Arc::new(func_call),
                                 subscripts: subs.array_subscripts.subscripts.clone(),
                             }),
@@ -1304,22 +1326,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                 }
             }
             modelica_grammar_trait::Primary::UnsignedNumber(unsigned_num) => {
-                match &*unsigned_num.unsigned_number {
-                    modelica_grammar_trait::UnsignedNumber::UnsignedInteger(unsigned_int) => {
-                        Ok(rumoca_ir_ast::Expression::Terminal {
-                            terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-                            token: unsigned_int.unsigned_integer.clone(),
-                            span: token_span(&unsigned_int.unsigned_integer)?,
-                        })
-                    }
-                    modelica_grammar_trait::UnsignedNumber::UnsignedReal(unsigned_real) => {
-                        Ok(rumoca_ir_ast::Expression::Terminal {
-                            terminal_type: rumoca_ir_ast::TerminalType::UnsignedReal,
-                            token: unsigned_real.unsigned_real.clone(),
-                            span: token_span(&unsigned_real.unsigned_real)?,
-                        })
-                    }
-                }
+                convert_unsigned_number(&unsigned_num.unsigned_number)
             }
             modelica_grammar_trait::Primary::String(string) => {
                 Ok(rumoca_ir_ast::Expression::Terminal {
@@ -1349,7 +1356,13 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
             }),
             modelica_grammar_trait::Primary::ArrayPrimary(arr) => {
                 match &arr.array_primary.array_primary_opt {
-                    Some(opt) => collect_array_elements(&opt.array_arguments),
+                    Some(opt) => collect_array_elements(
+                        &opt.array_arguments,
+                        merge_spans(
+                            token_span(&arr.array_primary.l_brace)?,
+                            token_span(&arr.array_primary.r_brace)?,
+                        ),
+                    ),
                     None => Ok(rumoca_ir_ast::Expression::Array {
                         span: merge_spans(
                             token_span(&arr.array_primary.l_brace)?,
@@ -1627,7 +1640,7 @@ impl TryFrom<&modelica_grammar_trait::Expression> for rumoca_ir_ast::Expression 
                 let else_branch = Arc::new((*if_expr.expression1).clone());
 
                 Ok(rumoca_ir_ast::Expression::If {
-                    span: merge_spans(if_expr.expression.span(), else_branch.span()),
+                    span: merge_spans(token_span(&if_expr.r#if.r#if)?, else_branch.span()),
                     branches,
                     else_branch,
                 })

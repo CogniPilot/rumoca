@@ -6766,7 +6766,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 275,
         production: &[ParseType::N(276), ParseType::N(277)],
     },
-    // 68 - stored_definitionList: stored_definitionOpt0 /* Option */ class_definition : crate::BoxedClassDef  ';'^ /* Clipped */ stored_definitionList;
+    // 68 - stored_definitionList: stored_definitionOpt0 /* Option */ class_definition : crate::BoxedClassDef  ';' stored_definitionList;
     Production {
         lhs: 276,
         production: &[
@@ -7294,7 +7294,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 106,
         production: &[ParseType::N(107)],
     },
-    // 160 - element_listList: element ';'^ /* Clipped */ element_listList;
+    // 160 - element_listList: element ';' element_listList;
     Production {
         lhs: 107,
         production: &[ParseType::N(107), ParseType::T(72), ParseType::N(97)],
@@ -8396,7 +8396,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 140,
         production: &[ParseType::N(191)],
     },
-    // 363 - if_expression: if^ /* Clipped */ expression : crate::BoxedExpression  then^ /* Clipped */ expression : crate::BoxedExpression  if_expressionList /* Vec */ else^ /* Clipped */ expression : crate::BoxedExpression ;
+    // 363 - if_expression: if expression : crate::BoxedExpression  then^ /* Clipped */ expression : crate::BoxedExpression  if_expressionList /* Vec */ else^ /* Clipped */ expression : crate::BoxedExpression ;
     Production {
         lhs: 191,
         production: &[
@@ -8750,7 +8750,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 243,
         production: &[],
     },
-    // 430 - range_primary: '['^ /* Clipped */ expression_list range_primaryList /* Vec */ ']'^ /* Clipped */;
+    // 430 - range_primary: '[' expression_list range_primaryList /* Vec */ ']';
     Production {
         lhs: 252,
         production: &[
@@ -8865,7 +8865,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
             ParseType::N(64),
         ],
     },
-    // 451 - component_referenceList: component_ref_part : rumoca_ir_ast::ComponentRefPart  component_referenceList;
+    // 451 - component_referenceList: component_ref_part component_referenceList;
     Production {
         lhs: 63,
         production: &[ParseType::N(63), ParseType::N(60)],
@@ -8885,7 +8885,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 65,
         production: &[],
     },
-    // 455 - component_referenceOpt: '.'^ /* Clipped */;
+    // 455 - component_referenceOpt: '.';
     Production {
         lhs: 64,
         production: &[ParseType::T(79)],
@@ -9141,7 +9141,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 142,
         production: &[],
     },
-    // 505 - array_subscripts: '['^ /* Clipped */ subscript : rumoca_ir_ast::Subscript  array_subscriptsList /* Vec */ ']'^ /* Clipped */;
+    // 505 - array_subscripts: '[' subscript : rumoca_ir_ast::Subscript  array_subscriptsList /* Vec */ ']';
     Production {
         lhs: 26,
         production: &[
