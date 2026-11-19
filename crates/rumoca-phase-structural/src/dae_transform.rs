@@ -104,7 +104,7 @@ pub use self::evaluable_parameters::fold_evaluable_parameters;
 pub use self::formal_derivatives::{
     FormalDerivativeStage, FormalDerivativeSystem, FormalDerivativeView, FormalStageCoordinate,
     FormalStageEquation, FormalStateCandidate, FormalStateCandidateView, FormalStateCoordinate,
-    ReducedSelectionChart, StateSelection, construct_formal_derivatives,
+    ReducedSelectionChart, StateSelection, WithheldPreference, construct_formal_derivatives,
 };
 pub use self::inert_states::demote_inert_states;
 pub use self::initial_pins::{InitialValuePin, InitialValueRole, PinTerm};

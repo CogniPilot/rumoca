@@ -30,6 +30,18 @@ pub struct FormalDerivativeSystem<'source> {
     equations: Vec<EquationProlongation>,
     dimension: usize,
     source_pins: Vec<super::InitialValuePin>,
+    withheld: Vec<WithheldPreference>,
+}
+
+/// A `StateSelect.prefer` request the construction could not honor: the
+/// declaration, and the refusal of the derivative its selection needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldPreference {
+    pub variable: String,
+    pub declaration: rumoca_core::Span,
+    pub refusal: String,
+    /// Where the refused derivative was requested, when the refusal has one.
+    pub refusal_span: Option<rumoca_core::Span>,
 }
 
 /// Both source and constructed coordinate identities stay bound to their roots.
@@ -45,6 +57,12 @@ pub struct FormalDerivativeView<'map, 'source, 'target> {
 }
 
 impl FormalDerivativeSystem<'_> {
+    /// The `prefer` requests withheld to complete this construction, in
+    /// declaration order; empty when every admitted request was constructed.
+    pub fn withheld_preferences(&self) -> &[WithheldPreference] {
+        &self.withheld
+    }
+
     pub fn inspect<R>(
         &self,
         inspect: impl for<'source, 'target> FnOnce(FormalDerivativeView<'_, 'source, 'target>) -> R,
@@ -100,6 +118,7 @@ pub fn construct_formal_derivatives(
         let invariance = crate::time_invariant::TimeInvariance::derive(source);
         let mut order_bounds = vec![0_u32; source.variables().count()];
         let mut withheld = BTreeSet::new();
+        let mut refusals = Vec::new();
         let mut analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
         loop {
             let offsets = analysis
@@ -121,7 +140,12 @@ pub fn construct_formal_derivatives(
             ) {
                 Ok(rebuilt) => rebuilt,
                 Err(refusal) => {
-                    withhold_refused_preferences(&mut withheld, offsets.preferred(), *refusal)?;
+                    refusals.extend(withhold_refused_preferences(
+                        source,
+                        &mut withheld,
+                        offsets.preferred(),
+                        *refusal,
+                    )?);
                     continue;
                 }
             };
@@ -141,6 +165,7 @@ pub fn construct_formal_derivatives(
                     equations,
                     dimension: analysis.formal_dimension(),
                     source_pins: super::transferred_initial_values(source)?,
+                    withheld: in_declaration_order(refusals),
                 });
             }
             if !raise_order_bounds(&mut order_bounds, reads) {
@@ -155,6 +180,11 @@ pub fn construct_formal_derivatives(
     })
 }
 
+fn in_declaration_order(mut records: Vec<(u32, WithheldPreference)>) -> Vec<WithheldPreference> {
+    records.sort_by_key(|(variable, _)| *variable);
+    records.into_iter().map(|(_, record)| record).collect()
+}
+
 /// Withhold the `StateSelect.prefer` admissions that raised a refused owner
 /// across the derivative level its prolongation could not construct. A `prefer`
 /// request is optional (MLS 3.7 §4.9.7.1), so an owner the shared
@@ -162,30 +192,45 @@ pub fn construct_formal_derivatives(
 /// that required it, and the construction repeats without them. A refusal no
 /// admission caused is the source system's own and is returned unchanged. Each
 /// repetition withholds at least one more declaration, so this terminates.
+/// Every withheld declaration is returned with the refusal that caused it, so
+/// the request is never dropped without a record.
 fn withhold_refused_preferences(
+    source: dae::DaeView<'_>,
     withheld: &mut BTreeSet<u32>,
     admitted: &[crate::PreferredAdmission],
     refusal: super::reconstruction::FormalRebuildRefusal,
-) -> Result<(), StructuralError> {
+) -> Result<Vec<(u32, WithheldPreference)>, StructuralError> {
     let Some((owner, level)) = refusal.owner else {
         return Err(refusal.error);
     };
-    let before = withheld.len();
-    withheld.extend(
-        admitted
-            .iter()
-            .filter(|admission| {
-                admission
-                    .raised_owners
-                    .iter()
-                    .any(|&(raised, from)| raised == owner && from < level)
-            })
-            .map(|admission| admission.variable),
-    );
-    if withheld.len() == before {
+    let records = admitted
+        .iter()
+        .filter(|admission| {
+            admission
+                .raised_owners
+                .iter()
+                .any(|&(raised, from)| raised == owner && from < level)
+        })
+        .filter(|admission| withheld.insert(admission.variable))
+        .filter_map(|admission| {
+            let variable = source
+                .variable_id(admission.variable as usize)
+                .and_then(|id| source.variable(id))?;
+            Some((
+                admission.variable,
+                WithheldPreference {
+                    variable: variable.name().to_string(),
+                    declaration: variable.declaration().span(),
+                    refusal: refusal.error.to_string(),
+                    refusal_span: refusal.error.source_span(),
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    if records.is_empty() {
         return Err(refusal.error);
     }
-    Ok(())
+    Ok(records)
 }
 
 /// Raise each bound to the order a later-stage read needs; `false` when no

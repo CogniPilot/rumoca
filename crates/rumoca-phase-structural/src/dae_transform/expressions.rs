@@ -74,6 +74,9 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
         &'borrow [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
     pub(super) transforming_model_arm: bool,
+    /// The order the nearest enclosing `smooth` certifies for the operand
+    /// being differentiated (MLS §3.7.5); `None` outside every `smooth`.
+    pub(super) smooth_certificate: Option<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -182,6 +185,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             literal_expressions: &[],
             rebuilt,
             transforming_model_arm: false,
+            smooth_certificate: None,
         }
     }
 

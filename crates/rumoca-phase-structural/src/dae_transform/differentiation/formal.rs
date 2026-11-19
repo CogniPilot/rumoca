@@ -54,15 +54,24 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                             rhs,
                         )
                 }
+                dae::ExpressionOperation::Builtin {
+                    builtin: dae::PureBuiltin::Smooth,
+                    arguments,
+                } => super::super::smooth_order::smooth_operands(self.source, arguments).is_some(),
+                dae::ExpressionOperation::Builtin {
+                    builtin: dae::PureBuiltin::Min | dae::PureBuiltin::Max,
+                    arguments,
+                } => order == 1 && self.selects_between_two_scalars(arguments),
                 dae::ExpressionOperation::Builtin { builtin, .. } => {
                     super::super::builtin_profiles::is_differentiable_builtin(builtin, order)
                 }
                 dae::ExpressionOperation::Conditional(operands) => {
-                    super::super::parameter_conditionals::has_parameter_guards(
-                        self.source,
-                        &self.function_context,
-                        operands,
-                    )
+                    super::super::smooth_order::admits_live_guards(self.smooth_certificate, order)
+                        || super::super::parameter_conditionals::has_parameter_guards(
+                            self.source,
+                            &self.function_context,
+                            operands,
+                        )
                 }
                 dae::ExpressionOperation::Index { subscripts, .. } => {
                     subscripts.iter().all(|subscript| match subscript {
@@ -88,6 +97,19 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 provenance,
             ))
         }
+    }
+}
+
+impl<'source> ExpressionRebuilder<'source, '_, '_, '_> {
+    /// `min(a, b)` and `max(a, b)` over two scalars; the reduction and
+    /// elementwise forms keep their refusal.
+    fn selects_between_two_scalars(&self, arguments: dae::ExpressionOperands<'source>) -> bool {
+        arguments.len() == 2
+            && arguments.iter().all(|argument| {
+                self.source
+                    .expression(argument)
+                    .is_some_and(|node| node.value_type().dimensions().is_empty())
+            })
     }
 }
 

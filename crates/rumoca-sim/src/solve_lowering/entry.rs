@@ -184,6 +184,7 @@ fn lower_correlated_with_input_policy<'source>(
     )
     .map_err(model_lowering_error)?;
     report_unlocalizable_guards(&lowered.model().problem.continuous.unlocalizable_guards);
+    report_withheld_state_preferences(lowered.withheld_state_preferences());
     let timings = crate::BuildSimulationTimings {
         ir_solve_seconds: lowered.program_seconds() + lowered.runtime_value_seconds(),
         ir_solve_structural_dae_seconds: lowered.runtime_value_seconds(),
@@ -199,6 +200,16 @@ fn lower_correlated_with_input_policy<'source>(
 pub(super) fn report_unlocalizable_guards(guards: &[solve::UnlocalizableGuard]) {
     for guard in guards {
         eprintln!("warning[ES016]: {}", guard.warning());
+    }
+}
+
+/// Warn, before any integration, that a `StateSelect.prefer` request was not
+/// honored (ES017): the run integrates the reducer's basis instead.
+fn report_withheld_state_preferences(reason: Option<&str>) {
+    if let Some(reason) = reason {
+        eprintln!(
+            "warning[ES017]: a StateSelect.prefer request was not honored, so other states are integrated and their start values apply: {reason}"
+        );
     }
 }
 

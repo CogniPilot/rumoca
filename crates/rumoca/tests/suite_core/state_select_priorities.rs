@@ -405,3 +405,91 @@ end Aliased;";
         );
     }
 }
+
+fn final_value(source: &str, model: &str, name: &str) -> f64 {
+    let result = simulate_dae_with_diagnostics(
+        &dae(source, model),
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("{model} simulates: {error}"));
+    *result.data[column(&result, name)].last().unwrap()
+}
+
+/// `min`, `max` and a conditional inside `smooth(0, ..)` are continuous, so
+/// the equation relating a preferred value to the differentiated one has a
+/// first derivative on each side of their switches, and the preferred value
+/// is integrated from its own start value.
+#[test]
+fn a_preferred_value_is_reached_through_min_max_and_a_smooth_conditional() {
+    let through = |start: f64| {
+        format!(
+            "model Through
+  Real p(stateSelect = StateSelect.prefer, start = {start});
+  Real U;
+equation
+  U = min(p, 2)*3 + smooth(0, if p < 5 then p else 2*p - 5);
+  der(U) = -U;
+end Through;"
+        )
+    };
+    // `U = 4*p` while `p < 2`, so `p` decays as `exp(-t)` from its start.
+    let below = through(1.0);
+    assert_eq!(integrated(&below, "Through"), ["p"]);
+    let reason = rumoca_phase_solve::withheld_state_preferences(&dae(&below, "Through")).unwrap();
+    assert_eq!(reason, None);
+    let p = final_value(&below, "Through", "p");
+    assert!((p - (-1.0_f64).exp()).abs() < 1e-5, "p(1) = {p}");
+    // From `p = 3`, `U = 6 + p` until `min` switches at `p = 2`, without an
+    // event; `U = 9*exp(-t)` throughout, so `p(1) = 9*exp(-1)/4`.
+    let across = through(3.0);
+    let p = final_value(&across, "Through", "p");
+    assert!(
+        (p - 9.0 * (-1.0_f64).exp() / 4.0).abs() < 1e-4,
+        "p(1) = {p}"
+    );
+
+    // `U = 6 + p` while `p < 2`, so `p(1) = 7*exp(-1) - 6`.
+    let source = "model ThroughMax
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = max(p, 2)*3 + p;
+  der(U) = -U;
+end ThroughMax;";
+    assert_eq!(integrated(source, "ThroughMax"), ["p"]);
+    let p = final_value(source, "ThroughMax", "p");
+    assert!(
+        (p - (7.0 * (-1.0_f64).exp() - 6.0)).abs() < 1e-5,
+        "p(1) = {p}"
+    );
+}
+
+/// A preferred value behind an operation the differentiation rules refuse is
+/// a request that is withheld: the differentiated value stays the state, and
+/// the selection records which declaration was not selected and why.
+#[test]
+fn a_preferred_value_behind_a_refused_derivative_is_recorded_as_withheld() {
+    let source = "model ThroughTanh
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = 4*p + tanh(p);
+  der(U) = -U;
+end ThroughTanh;";
+    assert_eq!(integrated(source, "ThroughTanh"), ["U"]);
+    let reason = rumoca_phase_solve::withheld_state_preferences(&dae(source, "ThroughTanh"))
+        .unwrap()
+        .expect("the withheld request is recorded");
+    assert!(
+        reason.contains("`p` (ThroughTanh.mo:2:") && reason.contains("is not selected"),
+        "{reason}"
+    );
+    let model = dae(source, "ThroughTanh");
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(&model, &std::collections::HashMap::new(), |_| {})
+            .unwrap_or_else(|error| panic!("the reducer basis lowers: {error:?}"));
+    assert_eq!(lowered.withheld_state_preferences(), Some(reason.as_str()));
+}

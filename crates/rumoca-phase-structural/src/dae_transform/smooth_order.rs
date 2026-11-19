@@ -32,3 +32,41 @@ pub(super) fn smooth_operands<'dae>(
 pub(super) fn remaining_order(smoothness: u8, order: u8) -> u8 {
     smoothness.saturating_sub(order)
 }
+
+/// Whether a conditional under the enclosing `smooth` certificate
+/// differentiates branch-wise at `order` although its guard is evaluated live.
+///
+/// An operand certified `p` times continuously differentiable has one-sided
+/// derivatives of order `p + 1` on each side of a guard change and no impulse
+/// there, so through that order the derivative is the selected branch's
+/// derivative. One order further would differentiate a jump.
+pub(super) fn admits_live_guards(certificate: Option<u8>, order: u8) -> bool {
+    certificate.is_some_and(|smoothness| order <= smoothness.saturating_add(1))
+}
+
+/// Whether the derivative of order `order` of an operand certified
+/// `smoothness` is itself still certified continuous.
+pub(super) fn derivative_is_continuous(smoothness: u8, order: u8) -> bool {
+    order <= smoothness
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{admits_live_guards, derivative_is_continuous};
+
+    #[test]
+    fn a_certificate_admits_live_guards_one_order_past_its_own() {
+        assert!(!admits_live_guards(None, 1));
+        assert!(admits_live_guards(Some(0), 1));
+        assert!(!admits_live_guards(Some(0), 2));
+        assert!(admits_live_guards(Some(1), 2));
+        assert!(admits_live_guards(Some(u8::MAX), 2));
+    }
+
+    #[test]
+    fn a_derivative_stays_certified_only_within_the_certificate() {
+        assert!(!derivative_is_continuous(0, 1));
+        assert!(derivative_is_continuous(1, 1));
+        assert!(!derivative_is_continuous(1, 2));
+    }
+}

@@ -43,8 +43,11 @@ pub(super) fn prefer_or_retain<'source>(
         Ok(formal) => formal,
         Err(error) => return request.refused(prepared, error),
     };
+    let withheld = withheld_requests(model, &formal);
     if !request.admits(&formal) {
-        return Ok(PreparedSelection::retained(prepared));
+        let mut retained = PreparedSelection::retained(prepared);
+        retained.withheld_preferences = withheld;
+        return Ok(retained);
     }
     let mut alternate_selections = AlternateSelections::default();
     let candidate = match formal.construct_state_candidate_with_charts(|formal| {
@@ -60,7 +63,9 @@ pub(super) fn prefer_or_retain<'source>(
         .as_dae()
         .inspect(|view| ranks_above(model, &basis, view))
     {
-        return Ok(PreparedSelection::retained(prepared));
+        let mut retained = PreparedSelection::retained(prepared);
+        retained.withheld_preferences = withheld;
+        return Ok(retained);
     }
     let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
     let (primary, formal_aliases) = quotient_formal_candidate(candidate.into_prepared()?)?;
@@ -69,8 +74,39 @@ pub(super) fn prefer_or_retain<'source>(
         alternates,
         exchanges: alternate_selections.exchanges,
         formal_aliases,
-        withheld_preferences: None,
+        withheld_preferences: withheld,
     })
+}
+
+/// The `prefer` declarations the formal construction withheld, each with its
+/// declaration site and the refusal of the derivative its selection needs.
+fn withheld_requests(model: &dae::Dae, formal: &FormalDerivativeSystem<'_>) -> Option<String> {
+    let withheld = formal.withheld_preferences();
+    (!withheld.is_empty()).then(|| {
+        withheld
+            .iter()
+            .map(|request| {
+                format!(
+                    "`{}`{} is not selected because an equation relating it to the \
+                     differentiated values cannot be differentiated ({})",
+                    request.variable,
+                    declaration_site(model, request.declaration),
+                    request.refusal
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
+/// ` (file:line:column)` of a declaration, or nothing when the model carries
+/// no source text for it.
+fn declaration_site(model: &dae::Dae, span: rumoca_core::Span) -> String {
+    let Some((name, text)) = model.source_map().get_source(span.source) else {
+        return String::new();
+    };
+    let position = rumoca_core::text_position::byte_offset_to_position(text, span.start.0);
+    format!(" ({name}:{}:{})", position.line + 1, position.character + 1)
 }
 
 /// Whether Solve lowering replaces the reducer's manifold-free basis of
