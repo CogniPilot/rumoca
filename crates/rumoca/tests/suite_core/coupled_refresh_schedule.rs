@@ -331,3 +331,47 @@ fn coupled_refresh_preserves_values_before_and_after_the_coupled_solve() {
         }
     }
 }
+
+#[test]
+fn structural_loop_subscripts_keep_ordered_array_assignments_causal() {
+    let file = "StructuralLoopSubscript.mo";
+    let compiled = Compiler::new()
+        .model("StructuralLoopSubscript")
+        .compile_str(
+            include_str!("../fixtures/solve/StructuralLoopSubscript.mo"),
+            file,
+        )
+        .unwrap();
+    let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
+    let plan = model.problem.continuous.refresh_owners.algebraic();
+    let projected = plan
+        .value_stages
+        .iter()
+        .filter(|stage| matches!(stage, RefreshStage::ProjectionBlock { .. }))
+        .count();
+    assert_eq!(
+        projected, 0,
+        "ordered array reads require no projection blocks"
+    );
+    assert!(plan.causal_solution_certified);
+
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // OpenModelica reference values at t = 0.1.
+    for (name, expected) in [
+        ("result[1]", 0.8455859379),
+        ("result[2]", 0.84621585411),
+        ("result[3]", 0.846282927699),
+    ] {
+        let column = result.names.iter().position(|value| value == name).unwrap();
+        let actual = result.data[column].last().unwrap();
+        assert!((actual - expected).abs() < 1e-10, "{name}: {actual}");
+    }
+}

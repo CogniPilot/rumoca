@@ -374,6 +374,63 @@ fn tensor_update_in_a_fold_carries_interleaved_primal_and_tangent_lanes() {
 }
 
 #[test]
+fn runtime_indexed_tensor_jvp_reads_interleaved_lanes_directly() {
+    let source = vec![vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::TensorLoad {
+            dst_start: 1,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 1,
+            count: 6,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::LoadIndexedRegister {
+            dst: 7,
+            base: 1,
+            stride: 1,
+            dimensions: Box::new([2, 3]),
+            indices: Box::new([TensorIndex::Constant(1), TensorIndex::Runtime(0)]),
+        },
+        LinearOp::StoreOutput { src: 7 },
+    ]];
+    let programs = crate::ad::lower_scalar_program_block_ad(&source).unwrap();
+    let gathers = programs[0]
+        .iter()
+        .filter_map(|op| match op {
+            LinearOp::LoadIndexedRegister { stride, .. } => Some(*stride),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(gathers, [2, 2]);
+    assert!(
+        programs[0]
+            .iter()
+            .all(|op| !matches!(op, LinearOp::Move { .. }))
+    );
+
+    let jvp = block(programs);
+    let mut y = [2.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0];
+    let seed = [1.0, 2.0, 3.0, 4.0, 5.0, -0.0, 7.0];
+    let context = crate::RowEvalContext {
+        seed: Some(&seed),
+        ..Default::default()
+    };
+    assert_eq!(
+        evaluate(&jvp, &y, &[], context)[0].to_bits(),
+        seed[5].to_bits()
+    );
+
+    y[0] = 4.0;
+    let result =
+        crate::eval_scalar_program_block_with_context(&jvp, &y, &[], 0.0, context, &mut [0.0]);
+    assert!(matches!(
+        result,
+        Err(crate::EvalSolveError::TensorIndexOutOfBounds { .. })
+    ));
+}
+
+#[test]
 fn runtime_indexed_parameter_tangent_is_the_seed_at_the_same_offset() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 1.0 },

@@ -270,6 +270,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<(solve::TensorIndex, usize), LowerError> {
         match subscript {
             Some(dae::SubscriptView::Index { expression, .. }) => {
+                if let Some(index) = rumoca_eval_dae::FunctionCallContext::integer_at_domain_point(
+                    self.view,
+                    expression,
+                    &self.domain_points,
+                )
+                .and_then(|value| checked_index(value, extent, span).ok())
+                {
+                    return Ok((solve::TensorIndex::Constant(index), 0));
+                }
                 let register = self.expression(expression, 0)?;
                 let index = self.integer_register(register).map_or_else(
                     || Ok(solve::TensorIndex::Runtime(register)),

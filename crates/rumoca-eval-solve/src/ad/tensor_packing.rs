@@ -4,6 +4,22 @@ mod piecewise;
 
 use super::*;
 
+/// Borrow a checked register sequence when an operand can express its stride.
+pub(super) fn strided_register_operand(registers: &[Reg]) -> Option<StridedOperand> {
+    let &start = registers.first()?;
+    let stride = match registers.get(1) {
+        Some(&second) => second.checked_sub(start).filter(|&step| step != 0)?,
+        None => 1,
+    };
+    registers
+        .windows(2)
+        .all(|pair| pair[0].checked_add(stride) == Some(pair[1]))
+        .then_some(StridedOperand {
+            start,
+            stride: stride as usize,
+        })
+}
+
 #[derive(Clone, Copy)]
 enum RegisterRun {
     Contiguous(Reg),
