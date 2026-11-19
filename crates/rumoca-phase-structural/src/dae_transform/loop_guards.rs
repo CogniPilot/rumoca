@@ -292,6 +292,25 @@ fn smooth_relations<'dae>(
     relations
 }
 
+/// Whether the relation `expression` owns no event yet and may be given one:
+/// a primitive scalar relation written at model scope, outside a `semiLinear`
+/// expansion. The caller rules out `noEvent`, which forbids the owner.
+pub(super) fn may_take_event_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> bool {
+    view.expression(expression).is_some_and(|node| {
+        let semi_linear = node.provenance().origin()
+            == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::SemiLinearLowering);
+        !semi_linear
+            && matches!(
+                node.operation(),
+                dae::ExpressionOperation::Binary { operator, .. }
+                    if is_primitive_relation(operator, node)
+            )
+    })
+}
+
 fn is_primitive_relation(operator: dae::BinaryOperator, node: dae::ExpressionView<'_>) -> bool {
     matches!(
         operator,

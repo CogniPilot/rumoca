@@ -184,6 +184,7 @@ fn lower_correlated_with_input_policy<'source>(
     )
     .map_err(model_lowering_error)?;
     report_unlocalizable_guards(&lowered.model().problem.continuous.unlocalizable_guards);
+    report_withheld_state_preferences(model, lowered.withheld_state_preferences());
     let timings = crate::BuildSimulationTimings {
         ir_solve_seconds: lowered.program_seconds() + lowered.runtime_value_seconds(),
         ir_solve_structural_dae_seconds: lowered.runtime_value_seconds(),
@@ -199,6 +200,22 @@ fn lower_correlated_with_input_policy<'source>(
 pub(super) fn report_unlocalizable_guards(guards: &[solve::UnlocalizableGuard]) {
     for guard in guards {
         eprintln!("warning[ES016]: {}", guard.warning());
+    }
+}
+
+/// Warn, before any integration, about every `StateSelect.prefer` request
+/// the Solve model does not honor (ES017): the run integrates the reducer's
+/// basis, so other states and their start values apply.
+fn report_withheld_state_preferences(
+    model: &dae::Dae,
+    withheld: &[rumoca_phase_structural::WithheldPreference],
+) {
+    for request in withheld {
+        eprintln!(
+            "warning[{}]: a StateSelect.prefer request is not honored, so other states are integrated and their start values apply: {}",
+            rumoca_phase_structural::diagnostic_codes::ES017_WITHHELD_STATE_PREFERENCE,
+            request.message(model)
+        );
     }
 }
 

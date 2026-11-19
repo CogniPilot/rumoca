@@ -1121,7 +1121,7 @@ fn prove_holonomic_differentiation<'dae>(
         anchored_states: Vec::new(),
         function_context: FunctionCallContext::default(),
         scratch,
-        smooth_order: 0,
+        smooth_order: None,
     };
     let leaves = component
         .as_ref()
@@ -1238,7 +1238,7 @@ fn prove_algebraic_lift_differentiation<'dae>(
         anchored_states: Vec::new(),
         function_context: FunctionCallContext::default(),
         scratch,
-        smooth_order: 0,
+        smooth_order: None,
     };
     let sources = value.as_ref().map_or_else(
         || vec![definition.index()],

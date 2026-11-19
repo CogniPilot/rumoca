@@ -10,6 +10,9 @@ type RebuiltFormal = (dae::Dae, Vec<Vec<u32>>, Vec<EquationProlongation>);
 /// derivative level it could not construct; it is `None` for any other refusal.
 pub(in crate::dae_transform) struct FormalRebuildRefusal {
     pub owner: Option<(usize, u32)>,
+    /// The source expression ordinal of the operation the formal derivative
+    /// has no rule for, when that is the refusal.
+    pub operation: Option<u32>,
     pub error: StructuralError,
 }
 
@@ -75,8 +78,17 @@ pub(in crate::dae_transform) fn rebuild_formal(
         )
     })
     .map_err(|error| {
+        let operation = match error {
+            dae::DaeConstructionError::IncompleteDefinition { kind, index, .. }
+                if kind == crate::dae_transform::differentiation::FORMAL_OPERATION_REFUSAL =>
+            {
+                Some(index)
+            }
+            _ => None,
+        };
         Box::new(FormalRebuildRefusal {
             owner: refused,
+            operation,
             error: construction_failure(error),
         })
     })?;
@@ -91,6 +103,7 @@ fn append_derivatives<'source, 'target>(
     (equation_orders, refused): (&[u32], &mut Option<(usize, u32)>),
 ) -> Result<Vec<EquationProlongation>, dae::DaeConstructionError> {
     let mut row = 0;
+    let mut owned = std::collections::BTreeSet::new();
     let mut next = context.source.continuous_owner_count();
     let mut equations = Vec::with_capacity(next);
     for (original, owner) in context.source.continuous_owners().enumerate() {
@@ -127,7 +140,7 @@ fn append_derivatives<'source, 'target>(
                 variables,
                 rebuilt_state,
                 owner,
-                level as u8,
+                (level as u8, &mut owned),
             )
             .inspect_err(|_| *refused = Some((start, level)))?;
         }
@@ -160,7 +173,7 @@ fn append_owner<'source, 'target>(
     variables: &[ReservedVariable<'target>],
     rebuilt_state: &mut [Option<dae::ExprId<'target>>],
     owner: dae::ContinuousOwnerView<'source>,
-    order: u8,
+    (order, owned): (u8, &mut std::collections::BTreeSet<u32>),
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::generated(
         dae::DaeGeneration::IndexReduction,
@@ -170,7 +183,7 @@ fn append_owner<'source, 'target>(
         dae::ContinuousOwnerView::Residual { equation, .. } => vec![equation.residual()],
         dae::ContinuousOwnerView::Structured { family, .. } => family.bodies().iter().collect(),
     };
-    let derivatives = target.expressions(|expressions| {
+    let (derivatives, event_relations) = target.expressions(|expressions| {
         let mut rebuilder = ExpressionRebuilder::new(
             context.source,
             expressions,
@@ -180,14 +193,22 @@ fn append_owner<'source, 'target>(
             rebuilt_state,
         )
         .with_formal_derivatives();
-        bodies
+        let derivatives = bodies
             .iter()
             .map(|&body| {
                 let derivative = rebuilder.differentiate_order(body, order, provenance)?;
                 rebuilder.materialize_derivative(derivative, body, provenance)
             })
-            .collect::<Result<Vec<_>, dae::DaeConstructionError>>()
+            .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+        Ok((derivatives, std::mem::take(&mut rebuilder.event_relations)))
     })?;
+    // A derivative that jumps where a relation changes is fixed between that
+    // relation's events only when the relation owns one (MLS §8.5).
+    for (relation, span) in event_relations {
+        if owned.insert(relation.index()) {
+            super::loop_guards::own_relation(target, relation, span)?;
+        }
+    }
     target.continuous(|target| {
         match owner {
             dae::ContinuousOwnerView::Residual { .. } => {

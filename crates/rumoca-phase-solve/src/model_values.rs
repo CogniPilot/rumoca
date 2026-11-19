@@ -53,6 +53,7 @@ pub struct LoweredSolveModel<'source> {
     model: solve::SolveModel,
     prepared: rumoca_phase_structural::PreparedDae<'source>,
     formal_aliases: rumoca_phase_structural::AliasQuotientReport,
+    withheld_preferences: Vec<rumoca_phase_structural::WithheldPreference>,
     program_seconds: f64,
     runtime_value_seconds: f64,
     pub(crate) input_initializations: Vec<InputInitializationFact>,
@@ -80,6 +81,13 @@ impl LoweredSolveModel<'_> {
     #[must_use]
     pub fn formal_alias_report(&self) -> &rumoca_phase_structural::AliasQuotientReport {
         &self.formal_aliases
+    }
+
+    /// The `StateSelect.prefer` requests (MLS 3.7 §4.9.7.1) this model does
+    /// not honor (ES017); empty when every request was honored.
+    #[must_use]
+    pub fn withheld_state_preferences(&self) -> &[rumoca_phase_structural::WithheldPreference] {
+        &self.withheld_preferences
     }
 
     #[must_use]
@@ -184,6 +192,7 @@ pub fn lower_solve_model_for_profile<'source>(
     let package = lower_selection(&selection, overrides, profile)?;
     let prepared = selection.primary;
     let formal_aliases = selection.formal_aliases;
+    let withheld_preferences = selection.withheld_preferences;
     let problem = package.problem;
     let artifacts = rumoca_eval_solve::artifacts::lower_solve_artifacts_with_calls(
         &problem,
@@ -212,6 +221,7 @@ pub fn lower_solve_model_for_profile<'source>(
         model: solve_model,
         prepared,
         formal_aliases,
+        withheld_preferences,
         program_seconds,
         runtime_value_seconds,
         input_initializations: vectors.input_initializations,

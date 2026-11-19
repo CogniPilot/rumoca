@@ -90,6 +90,16 @@ fn own_state_relation<'target>(
         .and_then(|id| source.expression(id))
         .map(|expression| expression.provenance().span())
         .expect("a loop-guard ordinal names a finalized expression");
+    own_relation(target, relation, span)
+}
+
+/// Give the rebuilt `relation`, written at `span`, the owner of a state
+/// relation.
+pub(super) fn own_relation<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    relation: dae::ExprId<'target>,
+    span: rumoca_core::Span,
+) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
     let relation = target.conditions(|conditions| conditions.relation(relation, provenance))?;
     let condition = target.conditions(|conditions| conditions.reserve(provenance))?;
