@@ -148,3 +148,38 @@ end Disjoint;
     assert_eq!(value_at(&result, "n", 0.9), 1.0);
     assert_eq!(value_at(&result, "b", 0.9), 0.0);
 }
+
+#[test]
+fn sampled_component_instances_keep_their_own_event_updates() {
+    let compiled = Compiler::new()
+        .model("SampledCounters.Network")
+        .compile_str(
+            include_str!("../fixtures/solve/SampledCounters.mo"),
+            "SampledCounters.mo",
+        )
+        .unwrap();
+    compiled
+        .dae
+        .inspect(|view| assert_eq!(view.model_event_transaction_count(), 2));
+    for execution_policy in [
+        rumoca_solver::SimExecutionPolicy::Interpreter,
+        rumoca_solver::SimExecutionPolicy::Auto,
+    ] {
+        let result = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 30.0,
+                dt: Some(5.0),
+                solver_mode: rumoca_sim::SimSolverMode::RkLike,
+                execution_policy,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(value_at(&result, "first.state", 30.0), 3.0);
+        assert_eq!(value_at(&result, "second.state", 30.0), 3.0);
+        assert_eq!(value_at(&result, "aliasState", 30.0), 3.0);
+        assert_eq!(value_at(&result, "first.timer", 30.0), 30.0);
+        assert_eq!(value_at(&result, "second.timer", 30.0), 30.0);
+    }
+}

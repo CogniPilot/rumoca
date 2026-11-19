@@ -313,6 +313,7 @@ struct DiscreteRows<'dae> {
     guarded_assignments: Vec<PendingGuardedAssignment>,
     structured_output_cursor: usize,
     event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
+    transaction_owners: Vec<Option<dae::ModelEventTransactionId<'dae>>>,
     selected_event_variables: BTreeSet<u32>,
     selected_event_owners: HashMap<u32, Vec<SelectedEventOwner>>,
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
@@ -460,7 +461,14 @@ impl<'dae> DiscreteRows<'dae> {
         derivatives: &super::ContinuousRowIndex<'dae>,
     ) -> Result<Self, LowerError> {
         let plan = causal_discrete_plan(view)?;
+        let mut transaction_owners = vec![None; view.variable_count()];
+        for (id, transaction) in view.model_event_transactions() {
+            for target in transaction.targets() {
+                transaction_owners[target.variable() as usize] = Some(id);
+            }
+        }
         Ok(Self {
+            transaction_owners,
             same_tick_definitions: std::rc::Rc::new(
                 rumoca_phase_structural::SameTickDefinitions::derive_with_derivative_sources(
                     view,
@@ -1687,6 +1695,9 @@ fn lower_guarded_targets<'dae>(
             && targets[end].pre_mode == pre_mode
             && is_ordinary_target(clocks, targets[end].variable)
                 == is_ordinary_target(clocks, targets[first].variable)
+            // A transaction claims one complete guarded producer program.
+            && rows.transaction_owners[targets[first].variable.index() as usize]
+                == rows.transaction_owners[targets[end].variable.index() as usize]
             && same_guarded_control(&targets[first], &targets[end])
             && exchange.fusable_with_range(&order, first, end)
         {

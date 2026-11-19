@@ -349,11 +349,15 @@ have no unchecked constructor.
 The scan begins at the previous completed point and never queries before it or
 the last Event Mode boundary. Its checked policy limits every adjacent sampled
 interval and takes its tolerance from session options, so a backend supplies
-neither side of an accuracy comparison. One policy applies to every plugin;
-scan resolution never caps the integrator step, and the host may sample a large
-accepted interval at many checked coordinates. When several indicators change
-in one accepted interval, the host refines all first observed brackets and
-applies the earliest domain change observable at the checked policy resolution,
+neither side of an accuracy comparison. One policy applies to every plugin.
+A state-carrying integrator may take a large accepted step, which the host
+samples at many checked coordinates. An open time-only session with monitored
+indicators bounds a deferred interval by one scan resolution. The host derives
+this bound independently of the caller's yield. The time-only plugin advances
+no numerical state, and the usual scan and event iteration still apply. When
+several indicators change in one accepted interval, the host refines all first
+observed brackets and applies the earliest domain change observable at the checked
+policy resolution,
 implementing FMI 3.0.2's closest-event obligation, together with every change
 inside the plan's tolerance window after its left limit (ME-EVENT-004). An
 interior component error aborts with its typed status; the host does not skip,
