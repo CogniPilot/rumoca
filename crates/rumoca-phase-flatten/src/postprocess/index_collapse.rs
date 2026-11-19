@@ -203,6 +203,37 @@ fn collapse_index_statements(
     }
 }
 
+/// `der` of a collapsed operand. The derivative of an array is the array of
+/// its elements' derivatives (MLS §3.7.4.2), so `der` distributes over an
+/// array constructor. That covers a constructor the model writes
+/// (`der({x, y})`) and a reference through an array of components
+/// (`mediums.h`), which names no single variable and collapses to the array
+/// of the elements' variables.
+fn derivative_of_collapsed(
+    operand: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    match operand {
+        rumoca_core::Expression::Array {
+            elements,
+            kind,
+            span: array_span,
+        } => rumoca_core::Expression::Array {
+            elements: elements
+                .into_iter()
+                .map(|element| derivative_of_collapsed(element, span))
+                .collect(),
+            kind,
+            span: array_span,
+        },
+        operand => rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: vec![operand],
+            span,
+        },
+    }
+}
+
 fn collapse_index_expr(
     expr: &mut rumoca_core::Expression,
     known_flat_vars: &KnownFlatVars,
@@ -592,6 +623,15 @@ impl CollapseIndexRewriter<'_> {
 
 impl ExpressionRewriter for CollapseIndexRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args,
+            span,
+        } = expr
+            && let [operand] = args.as_slice()
+        {
+            return derivative_of_collapsed(self.rewrite_expression(operand), *span);
+        }
         if let rumoca_core::Expression::VarRef {
             name,
             subscripts,
