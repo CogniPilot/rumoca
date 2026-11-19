@@ -169,6 +169,7 @@ impl ExtendInterface {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ClassInterface {
     class_type: rumoca_core::ClassType,
+    encapsulated: bool,
     import_map: ImportMap,
     components: IndexMap<String, ComponentInterface>,
     nested_classes: Vec<NestedClassInterface>,
@@ -181,9 +182,12 @@ impl ClassInterface {
         &self.class_type
     }
 
-    #[cfg(test)]
     pub(crate) fn import_map(&self) -> &ImportMap {
         &self.import_map
+    }
+
+    pub(crate) fn is_encapsulated(&self) -> bool {
+        self.encapsulated
     }
 
     pub(crate) fn component_type(&self, component_name: &str) -> Option<&str> {
@@ -351,6 +355,7 @@ impl ClassInterface {
     fn from_summary(class: &super::file_summary::ClassSummary) -> Self {
         Self {
             class_type: class.class_type.clone(),
+            encapsulated: class.encapsulated,
             import_map: import_map_from_summary(class),
             components: class
                 .components

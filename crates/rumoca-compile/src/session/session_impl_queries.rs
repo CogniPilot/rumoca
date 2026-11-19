@@ -1,8 +1,10 @@
+mod class_members;
+
 use super::class_body::FileClassBodyIndex;
 use super::class_body_semantics::FileClassBodySemantics;
 use super::declaration_index::ItemKind;
 use super::session_impl::{
-    NavigationReadContext, apply_break_exclusions, class_name_matches_query_target,
+    NavigationReadContext, class_name_matches_query_target,
     collect_navigation_class_reference_locations_in_definition,
     collect_navigation_class_rename_locations_in_definition, navigation_location_contains_position,
     record_query_class_lookup_match,
@@ -1121,22 +1123,6 @@ impl Session {
             })
     }
 
-    /// Resolve one component member type and its declaring class from the query layer.
-    pub fn class_component_member_info_query(
-        &mut self,
-        class_name: &str,
-        component_name: &str,
-    ) -> Option<(String, String)> {
-        let target = self.lookup_query_class_target(class_name)?;
-        let mut visiting = std::collections::HashSet::<String>::new();
-        self.class_component_member_info_in_class(
-            &target.uri,
-            &target.qualified_name,
-            component_name,
-            &mut visiting,
-        )
-    }
-
     /// Resolve local completion entries for one class scope from the class-interface layer.
     pub fn class_local_completion_items_query(
         &mut self,
@@ -1218,40 +1204,6 @@ impl Session {
             .item_key_for_name(&target.qualified_name)
             .cloned()
             .map(ModelKey::new)
-    }
-
-    /// Collect component members from the parsed query layer.
-    ///
-    /// This follows local components and `extends` edges, applying `break`
-    /// exclusions after each base expansion. If the query layer cannot resolve
-    /// the class uniquely, returns an empty vector and callers may fall back to
-    /// resolved-tree caches.
-    pub fn class_component_members_query(&mut self, class_name: &str) -> Vec<(String, String)> {
-        let Some(target) = self.lookup_query_class_target(class_name) else {
-            return Vec::new();
-        };
-        if let Some(members) = self.cached_query_class_component_members(&target.qualified_name) {
-            return members;
-        }
-
-        let mut members = IndexMap::<String, String>::new();
-        let mut visiting = std::collections::HashSet::<String>::new();
-        let mut signature = SummarySignature::new();
-        self.collect_query_class_component_members(
-            &target.uri,
-            &target.qualified_name,
-            &mut members,
-            &mut visiting,
-            &mut signature,
-        );
-
-        let members = members.into_iter().collect::<Vec<_>>();
-        self.insert_query_class_component_members(
-            target.qualified_name,
-            signature,
-            members.clone(),
-        );
-        members
     }
 
     pub(in crate::session) fn lookup_query_class_target(
@@ -1338,180 +1290,6 @@ impl Session {
             .session_cache
             .as_ref()
             .map(|entry| &entry.def_map)
-    }
-
-    fn cached_query_class_component_members(
-        &mut self,
-        class_name: &str,
-    ) -> Option<Vec<(String, String)>> {
-        let entry = self
-            .query_state
-            .ast
-            .class_component_members_query_cache
-            .shift_remove(class_name)?;
-        if !self.signature_is_current(&entry.signature) {
-            return None;
-        }
-
-        let members = entry.members.clone();
-        self.query_state
-            .ast
-            .class_component_members_query_cache
-            .insert(class_name.to_string(), entry);
-        Some(members)
-    }
-
-    fn insert_query_class_component_members(
-        &mut self,
-        class_name: String,
-        signature: SummarySignature,
-        members: Vec<(String, String)>,
-    ) {
-        self.query_state
-            .ast
-            .class_component_members_query_cache
-            .shift_remove(&class_name);
-        self.query_state
-            .ast
-            .class_component_members_query_cache
-            .insert(
-                class_name,
-                ClassComponentMembersQueryCache { signature, members },
-            );
-        Self::trim_lru_cache(
-            &mut self.query_state.ast.class_component_members_query_cache,
-            MAX_SESSION_CLASS_MEMBER_QUERY_CACHE_ENTRIES,
-        );
-    }
-
-    fn class_component_member_info_in_class(
-        &mut self,
-        uri: &str,
-        qualified_name: &str,
-        component_name: &str,
-        visiting: &mut std::collections::HashSet<String>,
-    ) -> Option<(String, String)> {
-        if !visiting.insert(qualified_name.to_string()) {
-            return None;
-        }
-
-        let Some(class_interface) = self.class_interface_query(uri, qualified_name) else {
-            visiting.remove(qualified_name);
-            return None;
-        };
-        let mut inherited = None;
-
-        for ext in class_interface.extends() {
-            let base_candidates = self
-                .class_type_resolution_candidates_in_class_query(qualified_name, ext.base_name());
-            if let Some(info) = self.class_component_member_info_in_base_candidates(
-                &base_candidates,
-                component_name,
-                visiting,
-            ) {
-                inherited = Some(info);
-            }
-            if ext.break_names().iter().any(|name| name == component_name) {
-                inherited = None;
-            }
-        }
-
-        let local = class_interface
-            .component_type(component_name)
-            .map(|member_type| (qualified_name.to_string(), member_type.to_string()));
-        visiting.remove(qualified_name);
-        local.or(inherited)
-    }
-
-    fn class_component_member_info_in_base_candidates(
-        &mut self,
-        base_candidates: &[String],
-        component_name: &str,
-        visiting: &mut std::collections::HashSet<String>,
-    ) -> Option<(String, String)> {
-        for candidate in base_candidates {
-            let Some(base_target) = self.lookup_query_class_target(candidate) else {
-                continue;
-            };
-            if let Some(info) = self.class_component_member_info_in_class(
-                &base_target.uri,
-                &base_target.qualified_name,
-                component_name,
-                visiting,
-            ) {
-                return Some(info);
-            }
-        }
-        None
-    }
-
-    fn collect_query_class_component_members(
-        &mut self,
-        uri: &str,
-        qualified_name: &str,
-        members: &mut IndexMap<String, String>,
-        visiting: &mut std::collections::HashSet<String>,
-        signature: &mut SummarySignature,
-    ) {
-        if !visiting.insert(qualified_name.to_string()) {
-            return;
-        }
-
-        self.record_query_dependency_signature(uri, signature);
-
-        let Some(class_interface) = self.class_interface_query(uri, qualified_name) else {
-            visiting.remove(qualified_name);
-            return;
-        };
-        for extend in class_interface.extends() {
-            let base_candidates =
-                class_interface.type_resolution_candidates(qualified_name, extend.base_name());
-            if let Some(base_target) = self.lookup_query_extends_target(&base_candidates) {
-                self.collect_query_class_component_members(
-                    &base_target.uri,
-                    &base_target.qualified_name,
-                    members,
-                    visiting,
-                    signature,
-                );
-                apply_break_exclusions(members, extend.break_names());
-            }
-        }
-
-        for (name, component_interface) in class_interface.component_interfaces() {
-            members.insert(name.clone(), component_interface.type_name().to_string());
-        }
-
-        visiting.remove(qualified_name);
-    }
-
-    fn record_query_dependency_signature(&self, uri: &str, signature: &mut SummarySignature) {
-        if let Some(file_id) = self.file_id_for_uri(uri)
-            && let Some(fingerprint) = self.file_summary_fingerprint(uri)
-        {
-            signature.insert(file_id, fingerprint);
-        }
-    }
-
-    fn signature_is_current(&self, signature: &SummarySignature) -> bool {
-        signature.iter().all(|(file_id, fingerprint)| {
-            let Some(uri) = self.file_uris.get(file_id) else {
-                return false;
-            };
-            self.file_summary_fingerprint(uri) == Some(*fingerprint)
-        })
-    }
-
-    fn lookup_query_extends_target(
-        &mut self,
-        base_candidates: &[String],
-    ) -> Option<QueryClassLookup> {
-        for candidate in base_candidates {
-            if let Some(target) = self.lookup_query_class_target(candidate) {
-                return Some(target);
-            }
-        }
-        None
     }
 
     fn navigation_class_references_query(

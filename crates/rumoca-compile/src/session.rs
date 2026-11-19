@@ -1008,8 +1008,14 @@ struct ClassBodySemanticsQueryCache {
 
 #[derive(Debug, Clone)]
 struct ClassComponentMembersQueryCache {
-    signature: SummarySignature,
+    dependencies: ClassMemberDependencies,
     members: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ClassMemberDependencies {
+    summaries: SummarySignature,
+    declarations: IndexMap<String, Option<FileId>>,
 }
 
 #[derive(Debug, Clone)]

@@ -200,6 +200,69 @@ fn class_component_members_query_resolves_relative_qualified_extends() {
 }
 
 #[test]
+fn member_queries_agree_on_the_base_declared_in_the_enclosing_package() {
+    let mut session = Session::default();
+    session
+        .add_document("ScopedBase.mo", include_str!("fixtures/ScopedBase.mo"))
+        .unwrap();
+    for class in ["Library.Derived", "Library.Imported"] {
+        assert_eq!(
+            session.class_component_members_query(class),
+            vec![("localOnly".to_owned(), "Real".to_owned())]
+        );
+        assert_eq!(
+            session.class_component_member_info_query(class, "localOnly"),
+            Some(("Library.Base".to_owned(), "Real".to_owned()))
+        );
+        assert_eq!(
+            session.class_component_member_info_query(class, "unrelated"),
+            None
+        );
+    }
+    assert_eq!(
+        session.class_component_members_query("Library.Global"),
+        vec![("unrelated".to_owned(), "Real".to_owned())]
+    );
+}
+
+#[test]
+fn member_cache_rechecks_a_previously_missing_closer_base() {
+    let mut session = Session::default();
+    session
+        .add_document("package.mo", "package P package Nested end Nested; end P;")
+        .unwrap();
+    session
+        .add_document("Base.mo", "within P; model Base Real outerValue; end Base;")
+        .unwrap();
+    session
+        .add_document(
+            "Derived.mo",
+            "within P.Nested; model Derived extends Base; end Derived;",
+        )
+        .unwrap();
+    let class = "P.Nested.Derived";
+    assert_eq!(
+        session.class_component_members_query(class),
+        vec![("outerValue".to_owned(), "Real".to_owned())]
+    );
+    session
+        .add_document(
+            "NestedBase.mo",
+            "within P.Nested; model Base Real nestedValue; end Base;",
+        )
+        .unwrap();
+    assert_eq!(
+        session.class_component_members_query(class),
+        vec![("nestedValue".to_owned(), "Real".to_owned())]
+    );
+    session.remove_document("NestedBase.mo");
+    assert_eq!(
+        session.class_component_members_query(class),
+        vec![("outerValue".to_owned(), "Real".to_owned())]
+    );
+}
+
+#[test]
 fn class_component_members_query_cache_stays_warm_for_unrelated_edits_and_rebuilds_for_dependencies()
  {
     let mut session = Session::default();
