@@ -1385,6 +1385,7 @@ prohibited. The code constant is authoritative.
 | Facts a construction operation produces are absent and re-issued by replay | Private wire types | Results cannot be forged |
 | Required collections are explicit, including empty | Private wire types | Omission is not ambiguity |
 | Decode calls the same provenance-requiring operations | DAE serde | Deserialization is construction |
+| Replay opens and closes each function branch at its recorded expression boundary and checks the scope with the same construction operations | DAE function replay | A sibling branch sees the enclosing definitions even before its first assignment |
 | Provenance serializes identity/range/origin only | DAE wire | Source text stays canonical |
 | IDs project to deterministic wire-local ordinals; arenas to ordered arrays | DAE serde | Process IDs never leak |
 | Non-dense key duplicates fail before insertion | DAE serde | Maps cannot hide malformed input |

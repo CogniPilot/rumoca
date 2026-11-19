@@ -172,6 +172,7 @@ pub(super) enum FunctionStatementInput {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FunctionBranchInput {
+    pub(super) expressions: std::ops::Range<u32>,
     pub(super) statements: Vec<FunctionStatementInput>,
     #[serde(deserialize_with = "deserialize_provenance")]
     pub(super) provenance: DaeProvenance,

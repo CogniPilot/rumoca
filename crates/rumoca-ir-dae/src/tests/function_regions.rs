@@ -188,6 +188,64 @@ fn current_wire_replays_scoped_prefix_and_derives_outgoing_states() {
 }
 
 #[test]
+fn sibling_branch_read_replays_the_enclosing_definition() {
+    let source = TestSource::new("function choose algorithm y := 1; end choose;");
+    let at = source.source("y := 1", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let (integer, boolean) = dae.types(|types| {
+            Ok((
+                types.derived(ValueType::scalar(ScalarType::Integer), at)?,
+                types.derived(ValueType::scalar(ScalarType::Boolean), at)?,
+            ))
+        })?;
+        dae.function(
+            FunctionSignature::new(VarName::new("choose"), [boolean], [integer], at),
+            |dae, reservation| {
+                let (flag, target) = dae.functions(|functions| {
+                    Ok((
+                        functions.parameter(&reservation, VarName::new("flag"), 0, at)?,
+                        functions.output(&reservation, VarName::new("y"), 0, at)?,
+                    ))
+                })?;
+                let (condition, one, two) = dae.expressions(|expressions| {
+                    Ok((
+                        expressions.at(at).function_parameter(flag)?,
+                        expressions.at(at).literal(DaeLiteral::Integer(1))?,
+                        expressions.at(at).literal(DaeLiteral::Integer(2))?,
+                    ))
+                })?;
+                dae.functions(|functions| {
+                    let mut parent = functions.begin(reservation, at)?;
+                    functions.assign(&mut parent, target, one, at)?;
+                    let (mut arm, finish) = functions.begin_branch(parent, at)?;
+                    functions.assign(&mut arm, target, two, at)?;
+                    let local = functions.read(&arm, target, at)?;
+                    functions.assign(&mut arm, target, local, at)?;
+                    let (parent, branch) = functions.finish_branch(finish, arm)?;
+                    let (mut arm, finish) = functions.begin_branch(parent, at)?;
+                    let enclosing = functions.read(&arm, target, at)?;
+                    functions.assign(&mut arm, target, enclosing, at)?;
+                    let (mut parent, fallback) = functions.finish_branch(finish, arm)?;
+                    functions.finish_conditional(
+                        &mut parent,
+                        vec![(condition, branch)],
+                        fallback,
+                        at,
+                    )?;
+                    functions.define(parent, at)
+                })
+            },
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+
+    let wire = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&wire).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), wire);
+}
+
+#[test]
 fn ordered_branch_schema_rejects_superseded_version() {
     let dae = partial_branch_function();
     let mut wire = serde_json::to_value(&dae).unwrap();
