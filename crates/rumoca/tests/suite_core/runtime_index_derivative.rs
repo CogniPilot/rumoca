@@ -79,3 +79,37 @@ fn an_invalid_runtime_derivative_index_cannot_complete() {
         "{message}"
     );
 }
+
+#[test]
+fn runtime_tensor_gather_derivative_reuses_register_lanes() {
+    use rumoca_eval_solve::{ad::lower_scalar_program_block_ad, to_scalar_program_block};
+    use rumoca_ir_solve::LinearOp;
+
+    let dae = Compiler::new()
+        .model("DynamicTensorGather")
+        .compile_str(
+            include_str!("../fixtures/solve/DynamicTensorGather.mo"),
+            "DynamicTensorGather.mo",
+        )
+        .unwrap()
+        .dae;
+    let solve = rumoca_sim::lower_dae_for_simulation(&dae, &Default::default()).unwrap();
+    let implicit_rhs = to_scalar_program_block(&solve.problem.continuous.implicit_rhs).unwrap();
+    let gather = implicit_rhs
+        .programs()
+        .iter()
+        .find(|row| {
+            row.iter()
+                .any(|op| matches!(op, LinearOp::LoadIndexedRegister { .. }))
+        })
+        .expect("the dynamic state selection must emit a checked gather");
+    let derivative = lower_scalar_program_block_ad(std::slice::from_ref(gather)).unwrap();
+    let strides = derivative[0]
+        .iter()
+        .filter_map(|op| match op {
+            LinearOp::LoadIndexedRegister { stride, .. } => Some(*stride),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(strides, [2, 2]);
+}
