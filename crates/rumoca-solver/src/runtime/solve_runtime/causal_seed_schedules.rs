@@ -10,7 +10,7 @@ mod mixed;
 use cones::StateCones;
 
 struct SeedSchedule {
-    program: DirectionalProgram,
+    program: EvaluationDirectional,
     targets: Vec<Vec<usize>>,
     /// Each program's states, from the construction-issued certificate.
     cones: Option<StateCones>,
@@ -103,15 +103,9 @@ impl CausalSeedSchedules {
                 })
                 .collect::<Vec<_>>();
             let cones = StateCones::from_leaves(model.state_scalar_count(), &leaves);
-            let program =
-                DirectionalProgram::prepare("causal_assignment_seed", directional, backend, None)?;
             schedules.insert(
                 schedule.sequence_id(),
-                Rc::new(SeedSchedule {
-                    program,
-                    targets,
-                    cones,
-                }),
+                Rc::new(SeedSchedule::prepare(directional, targets, cones, backend)?),
             );
         }
         Ok(Self {
@@ -200,6 +194,26 @@ impl CausalSeedSchedules {
 }
 
 impl SeedSchedule {
+    fn prepare(
+        directional: solve::ScalarProgramBlock,
+        targets: Vec<Vec<usize>>,
+        cones: Option<StateCones>,
+        backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    ) -> Result<Self, EvalSolveError> {
+        let program = EvaluationDirectional::prepare(
+            "causal_assignment_seed",
+            directional,
+            None,
+            backend,
+            None,
+        )?;
+        Ok(Self {
+            program,
+            targets,
+            cones,
+        })
+    }
+
     /// [`Self::apply`] restricted to `selected` programs, in order.
     fn apply_selected(
         &self,

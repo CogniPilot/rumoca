@@ -274,6 +274,54 @@ enum DirectionalExecution {
     },
 }
 
+impl DirectionalExecution {
+    fn eval_program_outputs(
+        &self,
+        program: usize,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+        reference: impl FnOnce(RowEvalContext<'_>, &mut Vec<f64>) -> Result<(), EvalSolveError>,
+    ) -> Result<(), RuntimeSolveError> {
+        match self {
+            Self::Reference => reference(
+                RowEvalContext {
+                    seed: Some(inputs.seed),
+                    ..context
+                },
+                out,
+            )
+            .map_err(Into::into),
+            Self::Compiled { code, .. } => code.call_program_outputs(
+                program,
+                inputs,
+                context.external_tables.unwrap_or(&[]),
+                out,
+            ),
+        }
+    }
+
+    fn eval_selected_programs_committing(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        context: RowEvalContext<'_>,
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        match self {
+            Self::Reference => Ok(false),
+            Self::Compiled { code, .. } => code.call_selected_programs_committing(
+                programs,
+                inputs,
+                seed,
+                context.external_tables.unwrap_or(&[]),
+                commit,
+            ),
+        }
+    }
+}
+
 impl DirectionalProgram {
     fn same_backend(&self, requested: Option<&Rc<dyn SolveExecutionBackend>>) -> bool {
         match (&self.execution, requested) {
@@ -401,56 +449,16 @@ impl DirectionalProgram {
         context: RowEvalContext<'_>,
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
-        match &self.execution {
-            DirectionalExecution::Reference => self
-                .source
-                .eval_row_outputs_unchecked_with_context(
-                    program,
-                    inputs.y,
-                    inputs.p,
-                    inputs.t,
-                    RowEvalContext {
-                        seed: Some(inputs.seed),
-                        ..context
-                    },
-                    out,
+        self.execution
+            .eval_program_outputs(program, inputs, context, out, |context, out| {
+                self.source.eval_row_outputs_unchecked_with_context(
+                    program, inputs.y, inputs.p, inputs.t, context, out,
                 )
-                .map_err(Into::into),
-            DirectionalExecution::Compiled { code, .. } => code.call_program_outputs(
-                program,
-                inputs,
-                context.external_tables.unwrap_or(&[]),
-                out,
-            ),
-        }
+            })
     }
 
-    /// Run `programs` in order, committing each before the next; `false`
-    /// declines before any program executes (the reference interpreter, or a
-    /// compiled block without the entry), leaving the caller's
-    /// program-by-program path.
-    pub(super) fn eval_programs_committing(
-        &self,
-        programs: std::ops::Range<usize>,
-        inputs: (&[f64], &[f64], f64),
-        seed: &mut [f64],
-        context: RowEvalContext<'_>,
-        commit: &mut ProgramOutputCommit<'_>,
-    ) -> Result<bool, RuntimeSolveError> {
-        match &self.execution {
-            DirectionalExecution::Reference => Ok(false),
-            DirectionalExecution::Compiled { code, .. } => code.call_programs_committing(
-                programs,
-                inputs,
-                seed,
-                context.external_tables.unwrap_or(&[]),
-                commit,
-            ),
-        }
-    }
-
-    /// [`Self::eval_programs_committing`] over an ordered subset of the
-    /// programs. `false` declines before any program executes.
+    /// Run the ordered subset and commit each program before the next.
+    /// `false` declines before any program executes.
     pub(super) fn eval_selected_programs_committing(
         &self,
         programs: &[usize],
@@ -459,16 +467,8 @@ impl DirectionalProgram {
         context: RowEvalContext<'_>,
         commit: &mut ProgramOutputCommit<'_>,
     ) -> Result<bool, RuntimeSolveError> {
-        match &self.execution {
-            DirectionalExecution::Reference => Ok(false),
-            DirectionalExecution::Compiled { code, .. } => code.call_selected_programs_committing(
-                programs,
-                inputs,
-                seed,
-                context.external_tables.unwrap_or(&[]),
-                commit,
-            ),
-        }
+        self.execution
+            .eval_selected_programs_committing(programs, inputs, seed, context, commit)
     }
 
     /// Whether a native committing sweep issued at construction runs this

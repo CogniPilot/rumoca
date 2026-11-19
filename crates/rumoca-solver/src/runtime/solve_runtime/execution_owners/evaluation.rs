@@ -224,6 +224,55 @@ impl EvaluationDirectional {
             ),
         }
     }
+
+    pub(in crate::runtime::solve_runtime) fn eval_program_outputs(
+        &self,
+        program: usize,
+        inputs: solve_eval::JacobianEvalInputs<'_>,
+        context: RowEvalContext<'_>,
+        out: &mut Vec<f64>,
+    ) -> Result<(), RuntimeSolveError> {
+        self.execution
+            .eval_program_outputs(program, inputs, context, out, |context, out| {
+                self.source.eval_row_outputs_unchecked_with_context(
+                    program, inputs.y, inputs.p, inputs.t, context, out,
+                )
+            })
+    }
+
+    /// Run `programs` in order, committing each before the next. `false`
+    /// declines before any program executes, leaving the per-program path.
+    pub(in crate::runtime::solve_runtime) fn eval_programs_committing(
+        &self,
+        programs: std::ops::Range<usize>,
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        context: RowEvalContext<'_>,
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        match &self.execution {
+            DirectionalExecution::Reference => Ok(false),
+            DirectionalExecution::Compiled { code, .. } => code.call_programs_committing(
+                programs,
+                inputs,
+                seed,
+                context.external_tables.unwrap_or(&[]),
+                commit,
+            ),
+        }
+    }
+
+    pub(in crate::runtime::solve_runtime) fn eval_selected_programs_committing(
+        &self,
+        programs: &[usize],
+        inputs: (&[f64], &[f64], f64),
+        seed: &mut [f64],
+        context: RowEvalContext<'_>,
+        commit: &mut ProgramOutputCommit<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        self.execution
+            .eval_selected_programs_committing(programs, inputs, seed, context, commit)
+    }
 }
 
 fn same_directional_backend(
