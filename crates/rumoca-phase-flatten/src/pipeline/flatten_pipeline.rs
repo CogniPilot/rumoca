@@ -918,6 +918,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     for (outer, inner) in &overlay.outer_prefix_to_inner {
         ctx.record_aliases.insert(outer.clone(), inner.clone());
     }
+    outer_refs::redirect_outer_variable_refs(flat, &overlay.outer_prefix_to_inner);
     compute_transitive_alias_closure(&mut ctx.record_aliases);
     array_comprehension::extract_component_array_dimensions(ctx, overlay);
     let expanded_array_comprehension_bindings =

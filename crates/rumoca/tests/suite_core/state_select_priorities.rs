@@ -4,7 +4,8 @@
 //! `prefer` request whose prolongation cannot be differentiated is withheld.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
+use rumoca_phase_structural::{RefusedOperation, WithheldCause, WithheldPreference};
+use rumoca_sim::{SimOptions, lower_dae_for_simulation, simulate_dae_with_diagnostics};
 
 fn dae(source: &str, model: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
     Compiler::new()
@@ -18,6 +19,16 @@ fn integrated(source: &str, model: &str) -> Vec<String> {
     let mut names = rumoca_phase_solve::integrated_state_names(&dae(source, model)).unwrap();
     names.sort();
     names
+}
+
+/// The single `prefer` request `model` does not honor, with its message.
+fn withheld(source: &str, model: &str) -> (WithheldPreference, String) {
+    let model = dae(source, model);
+    let mut requests = rumoca_phase_solve::withheld_state_preferences(&model).unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    let request = requests.remove(0);
+    let message = request.message(&model);
+    (request, message)
 }
 
 fn column(result: &rumoca_sim::SimResult, name: &str) -> usize {
@@ -259,10 +270,16 @@ equation
   y = 1/x;
 end Refused;";
     assert_eq!(integrated(source, "Refused"), ["x"]);
-    let reason = rumoca_phase_solve::withheld_state_preferences(&dae(source, "Refused"))
-        .unwrap()
-        .expect("the refusal is recorded");
-    assert!(reason.contains("independent state selection"), "{reason}");
+    let (request, message) = withheld(source, "Refused");
+    assert_eq!(request.variable, "y");
+    let WithheldCause::Refusal(refusal) = &request.cause else {
+        panic!("the selection as a whole is refused: {request:?}");
+    };
+    assert!(refusal.contains("independent state selection"), "{refusal}");
+    assert!(
+        message.starts_with("`y` (Refused.mo:3:3) is not selected: "),
+        "{message}"
+    );
     let result = simulate_dae_with_diagnostics(
         &dae(source, "Refused"),
         &SimOptions {
@@ -404,4 +421,183 @@ end Aliased;";
             "w at {time}"
         );
     }
+}
+
+fn final_value(source: &str, model: &str, name: &str) -> f64 {
+    let result = simulate_dae_with_diagnostics(
+        &dae(source, model),
+        &SimOptions {
+            t_end: 1.0,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("{model} simulates: {error}"));
+    *result.data[column(&result, name)].last().unwrap()
+}
+
+fn root_count(source: &str, model: &str) -> usize {
+    lower_dae_for_simulation(&dae(source, model), &SimOptions::default())
+        .unwrap()
+        .problem
+        .events
+        .root_conditions
+        .output_count()
+}
+
+/// `min`, `max` and a conditional inside `smooth(0, ..)` are continuous, so
+/// the equation relating a preferred value to the differentiated one has a
+/// first derivative on each side of their switches, and the preferred value
+/// is integrated from its own start value. That derivative jumps at a switch,
+/// so the relation that selects it owns an event.
+#[test]
+fn a_preferred_value_is_reached_through_min_max_and_a_smooth_conditional() {
+    let through = |start: f64| {
+        format!(
+            "model Through
+  Real p(stateSelect = StateSelect.prefer, start = {start});
+  Real U;
+equation
+  U = min(p, 2)*3 + smooth(0, if p < 5 then p else 2*p - 5);
+  der(U) = -U;
+end Through;"
+        )
+    };
+    // `U = 4*p` while `p < 2`, so `p` decays as `exp(-t)` from its start.
+    let below = through(1.0);
+    assert_eq!(integrated(&below, "Through"), ["p"]);
+    let p = final_value(&below, "Through", "p");
+    assert!((p - (-1.0_f64).exp()).abs() < 1e-5, "p(1) = {p}");
+    // The `min` selection and the `smooth` guard each own one root.
+    assert_eq!(root_count(&below, "Through"), 2);
+    // From `p = 3`, `U = 6 + p` until `min` switches at `p = 2`;
+    // `U = 9*exp(-t)` throughout, so `p(1) = 9*exp(-1)/4`.
+    let across = through(3.0);
+    let p = final_value(&across, "Through", "p");
+    assert!(
+        (p - 9.0 * (-1.0_f64).exp() / 4.0).abs() < 1e-5,
+        "p(1) = {p}"
+    );
+
+    // `U = 6 + p` while `p < 2`, so `p(1) = 7*exp(-1) - 6`.
+    let source = "model ThroughMax
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = max(p, 2)*3 + p;
+  der(U) = -U;
+end ThroughMax;";
+    assert_eq!(integrated(source, "ThroughMax"), ["p"]);
+    assert_eq!(root_count(source, "ThroughMax"), 1);
+    let p = final_value(source, "ThroughMax", "p");
+    assert!(
+        (p - (7.0 * (-1.0_f64).exp() - 6.0)).abs() < 1e-5,
+        "p(1) = {p}"
+    );
+}
+
+/// A request that is honored leaves no record.
+#[test]
+fn an_honored_preference_records_nothing() {
+    let source = "model Honored
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = min(p, 2)*3 + smooth(0, if p < 5 then p else 2*p - 5);
+  der(U) = -U;
+end Honored;";
+    let unhonored = rumoca_phase_solve::withheld_state_preferences(&dae(source, "Honored"));
+    assert_eq!(unhonored.unwrap(), []);
+}
+
+/// A preferred value behind an operation the differentiation rules refuse is
+/// a request that is withheld: the differentiated value stays the state, and
+/// the selection records which declaration was not selected and why.
+#[test]
+fn a_preferred_value_behind_a_refused_derivative_is_recorded_as_withheld() {
+    let source = "model ThroughTanh
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = 4*p + tanh(p);
+  der(U) = -U;
+end ThroughTanh;";
+    assert_eq!(integrated(source, "ThroughTanh"), ["U"]);
+    let (request, message) = withheld(source, "ThroughTanh");
+    assert_eq!(request.variable, "p");
+    assert!(matches!(
+        request.cause,
+        WithheldCause::Operation {
+            refusal: RefusedOperation::NoRule,
+            ..
+        }
+    ));
+    assert_eq!(
+        message,
+        "`p` (ThroughTanh.mo:2:3) is not selected: selecting it needs the time derivative of \
+         `tanh(p)` (ThroughTanh.mo:5:13), which has no differentiation rule"
+    );
+    let model = dae(source, "ThroughTanh");
+    let lowered =
+        rumoca_phase_solve::lower_solve_model(&model, &std::collections::HashMap::new(), |_| {})
+            .unwrap_or_else(|error| panic!("the reducer basis lowers: {error:?}"));
+    assert_eq!(lowered.withheld_state_preferences(), [request]);
+}
+
+/// MLS §3.7.3 forbids an event for a relation under `noEvent`, so a preferred
+/// value behind such a conditional is withheld and reported, never
+/// differentiated across the switch.
+#[test]
+fn a_preferred_value_behind_a_no_event_conditional_is_recorded_as_withheld() {
+    let source = "model ThroughNoEvent
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = noEvent(if p < 5 then p else 2*p - 5);
+  der(U) = -U;
+end ThroughNoEvent;";
+    assert_eq!(integrated(source, "ThroughNoEvent"), ["U"]);
+    let (request, message) = withheld(source, "ThroughNoEvent");
+    assert!(matches!(
+        request.cause,
+        WithheldCause::Operation {
+            refusal: RefusedOperation::NoEvent,
+            ..
+        }
+    ));
+    assert_eq!(
+        message,
+        "`p` (ThroughNoEvent.mo:2:3) is not selected: selecting it needs the time derivative \
+         of `noEvent(if p < 5 then p else 2*p - 5)` (ThroughNoEvent.mo:5:7), which `noEvent` \
+         keeps from owning the event its derivative needs"
+    );
+    assert_eq!(root_count(source, "ThroughNoEvent"), 0);
+}
+
+/// Only a guard that is one relation can own the event: a Boolean combination
+/// inside `smooth(0, ..)` keeps the refusal, and the request is reported.
+#[test]
+fn a_preferred_value_behind_a_combined_guard_is_recorded_as_withheld() {
+    let source = "model ThroughBand
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = smooth(0, if p < 5 and p > -5 then p else 2*p - sign(p)*5);
+  der(U) = -U;
+end ThroughBand;";
+    assert_eq!(integrated(source, "ThroughBand"), ["U"]);
+    let (request, message) = withheld(source, "ThroughBand");
+    assert_eq!(request.variable, "p");
+    assert!(matches!(
+        request.cause,
+        WithheldCause::Operation {
+            refusal: RefusedOperation::LiveGuard,
+            ..
+        }
+    ));
+    assert!(
+        message.ends_with(
+            "whose guard is neither fixed between events nor a relation that can own an event"
+        ),
+        "{message}"
+    );
 }

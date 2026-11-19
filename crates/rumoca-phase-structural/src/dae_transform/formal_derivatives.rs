@@ -30,6 +30,89 @@ pub struct FormalDerivativeSystem<'source> {
     equations: Vec<EquationProlongation>,
     dimension: usize,
     source_pins: Vec<super::InitialValuePin>,
+    withheld: Vec<WithheldPreference>,
+}
+
+/// A `StateSelect.prefer` request that is not honored: the declaration and
+/// why its selection as a state was refused. `prefer` is a request (MLS 3.7
+/// §4.9.7.1), so the reducer's basis is integrated and this record is what
+/// every consumer reports (ES017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldPreference {
+    pub variable: String,
+    pub declaration: rumoca_core::Span,
+    pub cause: WithheldCause,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WithheldCause {
+    /// Selecting the declaration needs the time derivative of the operation
+    /// written at `span`, which is refused.
+    Operation {
+        span: rumoca_core::Span,
+        refusal: RefusedOperation,
+    },
+    /// Any other refusal of the declaration's derivative, of the requested
+    /// basis, or of its checked selection, in the refusal's own words.
+    Refusal(String),
+}
+
+/// Why the time derivative of an operation is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusedOperation {
+    /// It is written under `noEvent`: MLS §3.7.3 forbids the event its
+    /// derivative would need.
+    NoEvent,
+    /// A conditional whose guard is neither fixed between events nor a
+    /// relation that can own one.
+    LiveGuard,
+    /// The shared differentiation rules have none for it.
+    NoRule,
+}
+
+impl WithheldPreference {
+    /// One sentence naming the declaration, its site, and the cause, with the
+    /// refused operation as the source writes it.
+    #[must_use]
+    pub fn message(&self, model: &dae::Dae) -> String {
+        let declaration = source_site(model, self.declaration);
+        let cause = match &self.cause {
+            WithheldCause::Operation { span, refusal } => {
+                let text = source_excerpt(model, *span).unwrap_or("an operation");
+                let site = source_site(model, *span);
+                let why = match refusal {
+                    RefusedOperation::NoEvent => {
+                        "which `noEvent` keeps from owning the event its derivative needs"
+                    }
+                    RefusedOperation::LiveGuard => {
+                        "whose guard is neither fixed between events nor a relation that can \
+                         own an event"
+                    }
+                    RefusedOperation::NoRule => "which has no differentiation rule",
+                };
+                format!("selecting it needs the time derivative of `{text}`{site}, {why}")
+            }
+            WithheldCause::Refusal(refusal) => refusal.clone(),
+        };
+        format!("`{}`{declaration} is not selected: {cause}", self.variable)
+    }
+}
+
+/// ` (file:line:column)` of a span, or nothing when the model carries no
+/// source text for it.
+fn source_site(model: &dae::Dae, span: rumoca_core::Span) -> String {
+    let Some((name, text)) = model.source_map().get_source(span.source) else {
+        return String::new();
+    };
+    let position = rumoca_core::text_position::byte_offset_to_position(text, span.start.0);
+    format!(" ({name}:{}:{})", position.line + 1, position.character + 1)
+}
+
+/// The first line of the source text a span covers.
+fn source_excerpt(model: &dae::Dae, span: rumoca_core::Span) -> Option<&str> {
+    let (_, text) = model.source_map().get_source(span.source)?;
+    let excerpt = text.get(span.start.0..span.end.0)?.lines().next()?.trim();
+    (!excerpt.is_empty()).then_some(excerpt)
 }
 
 /// Both source and constructed coordinate identities stay bound to their roots.
@@ -45,6 +128,12 @@ pub struct FormalDerivativeView<'map, 'source, 'target> {
 }
 
 impl FormalDerivativeSystem<'_> {
+    /// The `prefer` requests withheld to complete this construction, in
+    /// declaration order; empty when every admitted request was constructed.
+    pub fn withheld_preferences(&self) -> &[WithheldPreference] {
+        &self.withheld
+    }
+
     pub fn inspect<R>(
         &self,
         inspect: impl for<'source, 'target> FnOnce(FormalDerivativeView<'_, 'source, 'target>) -> R,
@@ -100,6 +189,7 @@ pub fn construct_formal_derivatives(
         let invariance = crate::time_invariant::TimeInvariance::derive(source);
         let mut order_bounds = vec![0_u32; source.variables().count()];
         let mut withheld = BTreeSet::new();
+        let mut refusals = Vec::new();
         let mut analysis = analyze_differential_structure_with_order_bounds(source, &order_bounds)?;
         loop {
             let offsets = analysis
@@ -121,7 +211,12 @@ pub fn construct_formal_derivatives(
             ) {
                 Ok(rebuilt) => rebuilt,
                 Err(refusal) => {
-                    withhold_refused_preferences(&mut withheld, offsets.preferred(), *refusal)?;
+                    refusals.extend(withhold_refused_preferences(
+                        source,
+                        &mut withheld,
+                        offsets.preferred(),
+                        *refusal,
+                    )?);
                     continue;
                 }
             };
@@ -141,6 +236,7 @@ pub fn construct_formal_derivatives(
                     equations,
                     dimension: analysis.formal_dimension(),
                     source_pins: super::transferred_initial_values(source)?,
+                    withheld: in_declaration_order(refusals),
                 });
             }
             if !raise_order_bounds(&mut order_bounds, reads) {
@@ -155,6 +251,11 @@ pub fn construct_formal_derivatives(
     })
 }
 
+fn in_declaration_order(mut records: Vec<(u32, WithheldPreference)>) -> Vec<WithheldPreference> {
+    records.sort_by_key(|(variable, _)| *variable);
+    records.into_iter().map(|(_, record)| record).collect()
+}
+
 /// Withhold the `StateSelect.prefer` admissions that raised a refused owner
 /// across the derivative level its prolongation could not construct. A `prefer`
 /// request is optional (MLS 3.7 §4.9.7.1), so an owner the shared
@@ -162,30 +263,64 @@ pub fn construct_formal_derivatives(
 /// that required it, and the construction repeats without them. A refusal no
 /// admission caused is the source system's own and is returned unchanged. Each
 /// repetition withholds at least one more declaration, so this terminates.
+/// Every withheld declaration is returned with the refusal that caused it, so
+/// the request is never dropped without a record.
 fn withhold_refused_preferences(
+    source: dae::DaeView<'_>,
     withheld: &mut BTreeSet<u32>,
     admitted: &[crate::PreferredAdmission],
     refusal: super::reconstruction::FormalRebuildRefusal,
-) -> Result<(), StructuralError> {
+) -> Result<Vec<(u32, WithheldPreference)>, StructuralError> {
     let Some((owner, level)) = refusal.owner else {
         return Err(refusal.error);
     };
-    let before = withheld.len();
-    withheld.extend(
-        admitted
-            .iter()
-            .filter(|admission| {
-                admission
-                    .raised_owners
-                    .iter()
-                    .any(|&(raised, from)| raised == owner && from < level)
-            })
-            .map(|admission| admission.variable),
-    );
-    if withheld.len() == before {
+    let cause = refusal
+        .operation
+        .and_then(|operation| refused_operation(source, operation))
+        .unwrap_or_else(|| WithheldCause::Refusal(refusal.error.to_string()));
+    let records = admitted
+        .iter()
+        .filter(|admission| {
+            admission
+                .raised_owners
+                .iter()
+                .any(|&(raised, from)| raised == owner && from < level)
+        })
+        .filter(|admission| withheld.insert(admission.variable))
+        .filter_map(|admission| {
+            let variable = source
+                .variable_id(admission.variable as usize)
+                .and_then(|id| source.variable(id))?;
+            Some((
+                admission.variable,
+                WithheldPreference {
+                    variable: variable.name().to_string(),
+                    declaration: variable.declaration().span(),
+                    cause: cause.clone(),
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    if records.is_empty() {
         return Err(refusal.error);
     }
-    Ok(())
+    Ok(records)
+}
+
+/// The refused operation at source expression ordinal `operation`, with the
+/// reason its own form gives.
+fn refused_operation(source: dae::DaeView<'_>, operation: u32) -> Option<WithheldCause> {
+    let node = source.expression(source.expression_id(operation as usize)?)?;
+    let refusal = match node.operation() {
+        dae::ExpressionOperation::Builtin {
+            builtin: dae::PureBuiltin::NoEvent,
+            ..
+        } => RefusedOperation::NoEvent,
+        dae::ExpressionOperation::Conditional(_) => RefusedOperation::LiveGuard,
+        _ => RefusedOperation::NoRule,
+    };
+    let span = node.provenance().span();
+    (!span.is_dummy()).then_some(WithheldCause::Operation { span, refusal })
 }
 
 /// Raise each bound to the order a later-stage read needs; `false` when no

@@ -17,7 +17,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         derivative_order: Option<u8>,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let taking_events = self.guards_taking_events(operands, derivative_order);
         if let Some(owner) = self.source.model_conditional_of(source_id) {
+            if taking_events.contains(&owner.condition()) {
+                let relation = self.rebuild_instantiated(owner.condition())?;
+                self.take_event_owner(owner.condition(), relation);
+            }
             let transform =
                 derivative_order.map_or(BranchTransform::Exact, BranchTransform::Derivative);
             return self.materialize_owned_conditional(owner, transform, provenance);
@@ -29,7 +34,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         )?;
         let mut branches = Vec::with_capacity((operands.len() - 1) / 2);
         for index in (0..operands.len() - 1).step_by(2) {
-            let guard = self.rebuild_instantiated(operands.get(index).unwrap())?;
+            let source_guard = operands.get(index).unwrap();
+            let guard = self.rebuild_instantiated(source_guard)?;
+            if taking_events.contains(&source_guard) {
+                self.take_event_owner(source_guard, guard);
+            }
             let value = self.parameter_branch_value(
                 operands.get(index + 1).unwrap(),
                 derivative_order,
@@ -38,6 +47,39 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             branches.push((guard, value));
         }
         self.target.at(provenance).conditional(branches, fallback)
+    }
+
+    /// Record that the rebuilt guard `relation` of `source` must own an event.
+    fn take_event_owner(&mut self, source: dae::ExprId<'source>, relation: dae::ExprId<'target>) {
+        let span = self
+            .source
+            .expression(source)
+            .expect("a guard is a finalized expression")
+            .provenance()
+            .span();
+        self.event_relations.push((relation, span));
+    }
+
+    /// The guards whose relations the formal derivative of this conditional
+    /// gives an event owner: none for a rebuilt value, and none while the
+    /// enclosing `smooth` still certifies the requested order.
+    fn guards_taking_events(
+        &self,
+        operands: dae::ExpressionOperands<'source>,
+        derivative_order: Option<u8>,
+    ) -> Vec<dae::ExprId<'source>> {
+        let Some(order) = derivative_order.filter(|_| self.formal_derivatives) else {
+            return Vec::new();
+        };
+        if super::super::smooth_order::admits_live_guards(self.smooth_certificate, order) {
+            return Vec::new();
+        }
+        super::super::parameter_conditionals::guards_taking_events(
+            self.source,
+            &self.function_context,
+            operands,
+        )
+        .unwrap_or_default()
     }
 
     /// MLS 3.6.5/8.5 differentiates only selected values. Each transformed

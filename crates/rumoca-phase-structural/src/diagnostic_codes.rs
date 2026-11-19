@@ -97,6 +97,20 @@ pub const ES015_CONSTANT_CALL_EVALUATION: &str = "ES015";
 /// * **owner** `crate::dae_transform::loop_guards::unlocalizable_loop_guards`;
 /// * **evidence** `suite_core::loop_guarded_smooth_relations`.
 pub const ES016_UNLOCALIZABLE_LOOP_RELATION: &str = "ES016";
+/// Warning, never a refusal: a `StateSelect.prefer` request is not honored.
+///
+/// * **warns** once per continuous Real `prefer` declaration whose selection
+///   as a state needs a derivative the shared differentiation rules refuse,
+///   or whose requested basis or checked selection is refused; `prefer` is a
+///   request (MLS 3.7 §4.9.7.1), so the reducer's basis is integrated and the
+///   run names the declaration, its site, and the refused operation;
+/// * **does not warn** when the preferred basis is selected, or when the
+///   reducer's basis already ranks at least as high;
+/// * **owner** `crate::WithheldPreference`, recorded by
+///   `crate::dae_transform::formal_derivatives` and by Solve state selection,
+///   which carries the typed records to the run (SPEC_0040 STRUCT-T07);
+/// * **evidence** `suite_core::state_select_priorities`.
+pub const ES017_WITHHELD_STATE_PREFERENCE: &str = "ES017";
 
 /// Every structural diagnostic code, in numeric order.
 ///
@@ -113,6 +127,7 @@ pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
     ES014_CONTRACT_VIOLATION,
     ES015_CONSTANT_CALL_EVALUATION,
     ES016_UNLOCALIZABLE_LOOP_RELATION,
+    ES017_WITHHELD_STATE_PREFERENCE,
 ];
 
 #[cfg(test)]
@@ -244,6 +259,7 @@ mod tests {
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
         assert_eq!(ES015_CONSTANT_CALL_EVALUATION, "ES015");
         assert_eq!(ES016_UNLOCALIZABLE_LOOP_RELATION, "ES016");
+        assert_eq!(ES017_WITHHELD_STATE_PREFERENCE, "ES017");
     }
 
     #[test]

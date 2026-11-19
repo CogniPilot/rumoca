@@ -14,6 +14,7 @@
 mod algebra;
 pub(super) mod conditionals;
 mod formal;
+pub(super) use formal::FORMAL_OPERATION_REFUSAL;
 mod geometry;
 mod lifted_values;
 mod linear_solve;
@@ -294,7 +295,21 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             && self.facts.invariance.expression(self.source, source_id)
     }
 
+    /// A coordinate's own definition lies outside the `smooth` that reads it,
+    /// so it is differentiated without that certificate.
     fn differentiate_coordinate(
+        &mut self,
+        coordinate: dae::CoordinateView<'source>,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let enclosing = self.smooth_certificate.take();
+        let derivative = self.differentiate_uncertified_coordinate(coordinate, order, provenance);
+        self.smooth_certificate = enclosing;
+        derivative
+    }
+
+    fn differentiate_uncertified_coordinate(
         &mut self,
         coordinate: dae::CoordinateView<'source>,
         order: u8,
@@ -830,12 +845,59 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             Builtin::Atan2 => self.differentiate_atan2_builtin(arguments, order, provenance),
             Builtin::LinearSolve => self.differentiate_linear_solve(arguments, order, provenance),
             Builtin::Smooth => self.differentiate_smooth(arguments, order, provenance),
+            Builtin::Min | Builtin::Max => {
+                self.differentiate_selection(builtin, arguments, provenance)
+            }
             _ => unreachable!("differentiability preflight rejects this builtin"),
         }
     }
 
-    /// `d^k/dt^k smooth(p, e) = smooth(p - k, d^k e)` (MLS §3.7.5): the
-    /// derivative keeps the differentiability the operand still certifies.
+    /// `min(a, b)` and `max(a, b)` are continuous and equal one argument on
+    /// each side of `a = b`, so the first derivative is that argument's. It
+    /// jumps where the selection changes, so the comparison that selects it
+    /// owns an event (MLS §8.5).
+    fn differentiate_selection(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let (lhs, rhs) = (
+            arguments.get(0).expect("checked selection operand"),
+            arguments.get(1).expect("checked selection operand"),
+        );
+        let lhs_derivative = self.differentiate_order(lhs, 1, provenance)?;
+        let rhs_derivative = self.differentiate_order(rhs, 1, provenance)?;
+        if matches!(
+            (&lhs_derivative, &rhs_derivative),
+            (Derivative::Zero, Derivative::Zero)
+        ) {
+            return Ok(Derivative::Zero);
+        }
+        let lhs_derivative = self.materialize_derivative(lhs_derivative, lhs, provenance)?;
+        let rhs_derivative = self.materialize_derivative(rhs_derivative, rhs, provenance)?;
+        let lhs_value = self.differentiation_value(lhs, provenance)?;
+        let rhs_value = self.differentiation_value(rhs, provenance)?;
+        let selects_lhs = if builtin == dae::PureBuiltin::Min {
+            dae::BinaryOperator::LessEqual
+        } else {
+            dae::BinaryOperator::GreaterEqual
+        };
+        let guard = self
+            .target
+            .at(provenance)
+            .binary(selects_lhs, lhs_value, rhs_value)?;
+        self.event_relations.push((guard, provenance.span()));
+        self.target
+            .at(provenance)
+            .conditional([(guard, lhs_derivative)], rhs_derivative)
+            .map(Derivative::Expression)
+    }
+
+    /// `d^k/dt^k smooth(p, e) = smooth(p - k, d^k e)` while `k <= p` (MLS
+    /// §3.7.5): the derivative keeps the differentiability the operand still
+    /// certifies. Past `p` the operand certifies nothing about its derivative,
+    /// which is returned as it is: its conditionals own their events.
     fn differentiate_smooth(
         &mut self,
         arguments: dae::ExpressionOperands<'source>,
@@ -844,11 +906,17 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
         let (smoothness, value) = super::smooth_order::smooth_operands(self.source, arguments)
             .expect("differentiability preflight proved a literal smooth order");
-        let Derivative::Expression(derivative) =
-            self.differentiate_order(value, order, provenance)?
-        else {
+        let certificate =
+            super::smooth_order::certificate_within(self.smooth_certificate, smoothness);
+        let enclosing = std::mem::replace(&mut self.smooth_certificate, certificate);
+        let derivative = self.differentiate_order(value, order, provenance);
+        self.smooth_certificate = enclosing;
+        let Derivative::Expression(derivative) = derivative? else {
             return Ok(Derivative::Zero);
         };
+        if order > smoothness {
+            return Ok(Derivative::Expression(derivative));
+        }
         let remaining = super::smooth_order::remaining_order(smoothness, order);
         let remaining = self
             .target

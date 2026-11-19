@@ -21,7 +21,8 @@ use std::collections::{BTreeSet, HashMap};
 use rumoca_core::StateSelect;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
-    FormalDerivativeSystem, PreparedDae, StructuralError, construct_formal_derivatives,
+    FormalDerivativeSystem, PreparedDae, StructuralError, WithheldCause, WithheldPreference,
+    construct_formal_derivatives,
 };
 
 use super::{
@@ -41,10 +42,13 @@ pub(super) fn prefer_or_retain<'source>(
     };
     let formal = match construct_formal_derivatives(model) {
         Ok(formal) => formal,
-        Err(error) => return request.refused(prepared, error),
+        Err(error) => return request.refused(model, prepared, error),
     };
+    let withheld = formal.withheld_preferences().to_vec();
     if !request.admits(&formal) {
-        return Ok(PreparedSelection::retained(prepared));
+        let mut retained = PreparedSelection::retained(prepared);
+        retained.withheld_preferences = withheld;
+        return Ok(retained);
     }
     let mut alternate_selections = AlternateSelections::default();
     let candidate = match formal.construct_state_candidate_with_charts(|formal| {
@@ -53,14 +57,16 @@ pub(super) fn prefer_or_retain<'source>(
         Ok(selection)
     }) {
         Ok(candidate) => candidate,
-        Err(error) => return request.refused(prepared, error),
+        Err(error) => return request.refused(model, prepared, error),
     };
     let basis = candidate_basis(&candidate)?;
     if !prepared
         .as_dae()
         .inspect(|view| ranks_above(model, &basis, view))
     {
-        return Ok(PreparedSelection::retained(prepared));
+        let mut retained = PreparedSelection::retained(prepared);
+        retained.withheld_preferences = withheld;
+        return Ok(retained);
     }
     let alternates = prepare_alternate_charts(&formal, &alternate_selections)?;
     let (primary, formal_aliases) = quotient_formal_candidate(candidate.into_prepared()?)?;
@@ -69,7 +75,38 @@ pub(super) fn prefer_or_retain<'source>(
         alternates,
         exchanges: alternate_selections.exchanges,
         formal_aliases,
-        withheld_preferences: None,
+        withheld_preferences: withheld,
+    })
+}
+
+/// The declarations whose request a refused formal construction or selection
+/// leaves unhonored, each with that refusal: the undifferentiated `prefer`
+/// declarations, or for a pure ranking request every declaration that states
+/// a `StateSelect`. The whole requested basis is dropped, so none is honored.
+fn unhonored_requests(model: &dae::Dae, error: &StructuralError) -> Vec<WithheldPreference> {
+    let record = |(_, variable): (dae::VariableId<'_>, dae::VariableView<'_>)| WithheldPreference {
+        variable: variable.name().to_string(),
+        declaration: variable.declaration().span(),
+        cause: WithheldCause::Refusal(error.to_string()),
+    };
+    model.inspect(|source| {
+        let preferred = source
+            .variables()
+            .filter(|&declaration| unintegrated_prefer(declaration))
+            .map(record)
+            .collect::<Vec<_>>();
+        if !preferred.is_empty() {
+            return preferred;
+        }
+        source
+            .variables()
+            .filter(|(_, variable)| {
+                variable
+                    .continuous_state_select()
+                    .is_some_and(|selection| selection != StateSelect::Default)
+            })
+            .map(record)
+            .collect()
     })
 }
 
@@ -146,6 +183,7 @@ impl PreferenceRequest {
 
     fn refused<'source>(
         &self,
+        model: &dae::Dae,
         prepared: PreparedDae<'source>,
         error: StructuralError,
     ) -> Result<PreparedSelection<'source>, StructuralError> {
@@ -153,7 +191,7 @@ impl PreferenceRequest {
             return Err(error);
         }
         let mut retained = PreparedSelection::retained(prepared);
-        retained.withheld_preferences = Some(error.to_string());
+        retained.withheld_preferences = unhonored_requests(model, &error);
         Ok(retained)
     }
 }
