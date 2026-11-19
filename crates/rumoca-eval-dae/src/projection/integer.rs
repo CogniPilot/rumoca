@@ -45,19 +45,12 @@ impl<'dae> Projection<'_, 'dae> {
                     .ok_or(ProjectionError::IntegerOverflow { span })
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                let Some((_, point)) = self
-                    .domain_contexts
-                    .points
-                    .iter()
-                    .rev()
-                    .find(|(domain, _)| *domain == binder.domain())
-                else {
-                    return Err(ProjectionError::DynamicSubscript { span });
-                };
-                point
-                    .get(binder.ordinal() as usize)
-                    .copied()
-                    .ok_or(ProjectionError::DynamicSubscript { span })
+                crate::domain_point_integer(
+                    binder.domain(),
+                    binder.ordinal() as usize,
+                    &self.domain_contexts.points,
+                )
+                .map_err(|_| ProjectionError::DynamicSubscript { span })
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,

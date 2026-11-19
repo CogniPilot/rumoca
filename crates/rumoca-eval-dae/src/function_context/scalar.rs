@@ -130,15 +130,13 @@ impl<'dae> ScalarSelection<'_, 'dae> {
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder))
                 if indices.is_empty() =>
             {
-                let (_, point) = self
-                    .domain_points?
-                    .iter()
-                    .rev()
-                    .find(|(domain, _)| *domain == binder.domain())?;
-                point
-                    .get(binder.ordinal() as usize)
-                    .copied()
-                    .map(dae::DaeLiteral::Integer)
+                crate::domain_point_integer(
+                    binder.domain(),
+                    binder.ordinal() as usize,
+                    self.domain_points?,
+                )
+                .ok()
+                .map(dae::DaeLiteral::Integer)
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,

@@ -10,6 +10,7 @@ mod tests;
 
 use super::*;
 use rumoca_core::{flatten_coordinates, row_major_coordinates};
+use rumoca_eval_dae::{DomainPointError, domain_point_integer};
 
 impl<'dae> ScalarSelector<'dae> {
     pub(in crate::lower) const fn view(&self) -> dae::DaeView<'dae> {
@@ -437,21 +438,20 @@ impl<'dae> ScalarSelector<'dae> {
                     .ok_or_else(|| LowerError::contract("integer overflow", span))
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                let Some((_, values)) = self
-                    .domain_points
-                    .iter()
-                    .rev()
-                    .find(|(domain, _)| *domain == binder.domain())
-                else {
-                    return Err(LowerError::non_computable(
+                domain_point_integer(
+                    binder.domain(),
+                    binder.ordinal() as usize,
+                    &self.domain_points,
+                )
+                .map_err(|error| match error {
+                    DomainPointError::InactiveDomain => LowerError::non_computable(
                         "binder-valued subscript has no active domain",
                         span,
-                    ));
-                };
-                values
-                    .get(binder.ordinal() as usize)
-                    .copied()
-                    .ok_or_else(|| LowerError::contract("binder ordinal is out of range", span))
+                    ),
+                    DomainPointError::InvalidOrdinal => {
+                        LowerError::contract("binder ordinal is out of range", span)
+                    }
+                })
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
                 let variable = self

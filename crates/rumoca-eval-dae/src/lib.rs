@@ -5,11 +5,13 @@
 //! lookup, and malformed expression shapes have already been eliminated by
 //! checked DAE construction.
 
+mod domain_point;
 mod function_context;
 mod numeric;
 mod projection;
 mod selected_values;
 
+pub use domain_point::{DomainPointError, domain_point_integer};
 pub use function_context::{
     ExactDeclarationValues, ExactInitialError, ExactInitialRun, ExactInitialValues,
     FunctionCallContext, exact_initial_values, exact_source_values,
