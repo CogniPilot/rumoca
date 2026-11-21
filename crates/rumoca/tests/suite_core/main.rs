@@ -96,6 +96,7 @@ mod delay_initial_values;
 mod dependent_slice_elimination;
 mod derivative_alias_initial_acceleration;
 mod derivative_kinks;
+mod derivative_of_array_expressions;
 mod derivative_reads_in_derivative_rows;
 mod differential_structure;
 mod discrete_alias_fed_connections;

@@ -266,13 +266,25 @@ pub(super) fn exact_override_package_for_source_package<'a>(
     // MLS §4.5.1: a short class definition without modifications
     // (`package Medium = ConstantPropertyLiquidWater`) denotes the class it
     // names, so selections that reach one package through its aliases are one.
+    let selected = |def_id| {
+        resolve_package_alias_chain(ctx.tree, ctx.class_index, def_id)
+            .map_or(def_id, |selected| selected.def_id)
+    };
     let mut seen = FxHashSet::default();
-    candidates.retain(|package| {
-        seen.insert(
-            resolve_package_alias_chain(ctx.tree, ctx.class_index, package.def_id)
-                .map_or(package.def_id, |selected| selected.def_id),
-        )
-    });
+    candidates.retain(|package| seen.insert(selected(package.def_id)));
+    // A call already spelled through one of the selected packages
+    // (`P.Gas.scale`, as a selection respells it) has made its selection: it
+    // stays with that package when another alias in scope selects a different
+    // one.
+    if let Some(prefix) = reference
+        .component_ref()
+        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
+        && let Some(package) = candidates
+            .iter()
+            .find(|package| selected(package.def_id) == selected(prefix.def_id))
+    {
+        return Ok(Some(*package));
+    }
     if !has_active
         && let Some(lexical_package) = ctx.lexical_package_def_id
         && candidates
@@ -450,38 +462,29 @@ fn exact_package_function_rewrite(
         exposure,
         implementation,
     };
-    // Instantiation may already have retargeted a call spelled through a
-    // package alias to the alias's redeclaration while the alias's own class
-    // (the replaceable slot's default) does not expose that implementation. The
-    // occurrence is then respelled through the redeclaring package so its
+    // A call spelled through a package alias is respelled through the package
+    // its scope selects, whether that selection is a redeclare or the class's
+    // own default. The source spelling (`Medium.density`) names one function
+    // for the whole model, while two classes whose selections differ spell
+    // their calls alike; the selected package's path names each one, and the
     // function is converted in that package's scope, where the formal types
-    // resolve to the redeclared classes.
-    let prefix_part = reference
-        .component_ref()
-        .and_then(|component_ref| component_ref.component_scope().prefix_parts().last());
-    let alias_exposes_selection = prefix_part
-        .and_then(|prefix| exact_prefix_owner_def_id(ctx.class_index, prefix.def_id))
-        .is_some_and(|owner| {
-            let mut exposures = FxHashSet::default();
-            collect_function_exposures_for_implementation(
-                ctx.class_index,
-                owner,
-                projected.implementation,
-                &mut FxHashSet::default(),
-                &mut exposures,
-            );
-            !exposures.is_empty()
-        });
-    // An instance scope selects the package per instance, so a call there is
-    // respelled through that instance's concrete package even when the alias's
-    // default also exposes the implementation.
-    let instance_selects_package = package.active && !ctx.active_scope.is_root();
+    // resolve to the selected classes.
+    //
     // An unqualified inherited call also needs the selected package path:
     // identical declaration/implementation IDs do not imply identical package
     // constants (for example, the dimensions of a medium function's inputs).
-    let respell_through_package = prefix_part.is_none()
-        || ((instance_selects_package || !alias_exposes_selection)
-            && prefix_part.is_some_and(|prefix| prefix.ident == package.alias));
+    //
+    // A package whose function is still partial has selected nothing: the call
+    // keeps its source spelling for the refusal that names it.
+    let selects_implementation = ctx
+        .class_index
+        .get(projected.implementation)
+        .is_some_and(|implementation| !implementation.partial);
+    let respell_through_package = selects_implementation
+        && reference
+            .component_ref()
+            .and_then(|component_ref| component_ref.component_scope().prefix_parts().last())
+            .is_none_or(|prefix| prefix.ident == package.alias);
     if projected == selection && !respell_through_package {
         return Ok(None);
     }
