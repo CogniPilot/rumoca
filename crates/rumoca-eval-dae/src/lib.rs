@@ -20,6 +20,7 @@ pub use numeric::{
     InputFallbackBounds, InputInitialization, InputOrigin, InputOriginRun, NumericEvaluationError,
     NumericEvaluationErrorKind, NumericEvaluator, NumericInitialRun, NumericInitialValues,
     Scalar as NumericSourceScalar, SourceValues, declaration_initial_expression,
+    invariant_boolean_guards,
 };
 pub use projection::{
     CoordinateQuery, LiteralBinding, ProjectionError, PrunedScalarCoordinateProjection,

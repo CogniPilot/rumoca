@@ -70,6 +70,11 @@ pub(super) fn constant_call_plan(view: dae::DaeView<'_>) -> Result<LiteralPlan, 
     let mut plan = vec![None; view.expression_count()];
     let mut evaluator = NumericEvaluator::new(view);
     let mut pending = continuous_roots(view);
+    pending.extend(
+        view.variables()
+            .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
+            .filter_map(|(_, variable)| variable.binding()),
+    );
     pending.extend(function_roots(view));
     while let Some(expression) = pending.pop() {
         let node = view.expression(expression).expect("checked expression");
@@ -112,17 +117,9 @@ fn keep_owners_of_unfolded_projections(view: dae::DaeView<'_>, plan: &mut Litera
     }
 }
 
-/// Every continuous residual root, structured family body, and parameter
-/// binding. A parameter binding is evaluated once at initialization, so a
-/// constant call inside it is as unconditional as one in a residual; folding
-/// the call leaves the binding's other reads, and so the parameter's
-/// tunability, untouched.
+/// Every continuous residual root and structured family body.
 fn continuous_roots<'dae>(view: dae::DaeView<'dae>) -> Vec<dae::ExprId<'dae>> {
-    let mut roots: Vec<_> = view
-        .variables()
-        .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
-        .filter_map(|(_, variable)| variable.binding())
-        .collect();
+    let mut roots = Vec::new();
     for owner in view.continuous_owners() {
         match owner {
             dae::ContinuousOwnerView::Residual { equation, .. } => {
@@ -334,6 +331,13 @@ pub(super) fn literal_binding_plan(view: dae::DaeView<'_>) -> LiteralPlan {
             values[ordinal] = binding_value(view, &mut evaluator, binding);
         }
         slot.clone_from(&values[ordinal]);
+    }
+    for (guard, values) in rumoca_eval_dae::invariant_boolean_guards(view, continuous_roots(view)) {
+        plan[guard.index() as usize] = Some(Arc::new(FoldedValue {
+            scalar: dae::ScalarType::Boolean,
+            dimensions: Box::default(),
+            values,
+        }));
     }
     plan
 }
