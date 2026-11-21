@@ -2713,7 +2713,8 @@ fn first_model_span(view: dae::DaeView<'_>) -> Span {
 /// inverted first when `n` is negative, then multiplied in square-and-multiply
 /// order over the magnitude of `n`. The sequence is `O(log |n|)` long, so no
 /// exponent needs a different algorithm, and every lowering of `x ^ n` (scalar
-/// rows, typed bodies, synthesized family owners) rounds alike.
+/// rows, typed bodies, synthesized family owners) rounds alike. An elementwise
+/// power `.^` of an aggregate base applies the same plan to each element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LiteralPower {
     pub(crate) reciprocal: bool,
@@ -2778,7 +2779,10 @@ fn literal_power_plan<'dae>(
         return None;
     }
     let base = view.expression(base)?.value_type();
-    if !base.is_scalar() || base.scalar_type() != dae::ScalarType::Real {
+    // `.^` applies the scalar rule to each element of an aggregate base; a
+    // plain power of an aggregate is matrix power (MLS §10.6.8).
+    let pointwise = base.is_scalar() || operator == dae::BinaryOperator::ElementwisePower;
+    if !pointwise || base.scalar_type() != dae::ScalarType::Real {
         return None;
     }
     match view.expression(exponent)?.operation() {

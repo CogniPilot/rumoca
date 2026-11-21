@@ -92,7 +92,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         let (lhs_value, rhs_value) = values;
-        if let Some(plan) = literal_power_plan(self.view, operator, source.0, source.1) {
+        // A typed body takes the plan for a scalar source base only. An
+        // aggregate source base, whole or through its selected lanes, keeps
+        // the compact element map (`integer_exponent_power`), whose result is
+        // the same value.
+        let scalar_source = self
+            .view
+            .expression(source.0)
+            .is_some_and(|base| base.value_type().is_scalar());
+        if scalar_source
+            && let Some(plan) = literal_power_plan(self.view, operator, source.0, source.1)
+        {
             let register = self.repeated_product(lhs_value, plan, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
