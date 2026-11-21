@@ -189,7 +189,8 @@ pub(crate) use construction_checks::{
 /// 50 removes the superseded value-only conditional assignment-group wire;
 /// ordered conditional statements are the only function-branch owners.
 /// 52 retains constructor-checked whole or scalar B.1c target selections.
-pub const DAE_SCHEMA_VERSION: u16 = 52;
+/// 53 retains function branch expression boundaries for checked lexical replay.
+pub const DAE_SCHEMA_VERSION: u16 = 53;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -472,6 +473,7 @@ struct FunctionScopeEntry {
 #[derive(Debug, Clone, PartialEq)]
 struct FunctionBranchEntry {
     scope: u32,
+    expressions: std::ops::Range<u32>,
     incoming: Vec<FunctionValueState>,
     outgoing: Vec<FunctionValueState>,
     statements: Vec<FunctionStatementWire>,

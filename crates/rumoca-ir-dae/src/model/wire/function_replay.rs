@@ -267,6 +267,7 @@ fn project_scoped_conditional(
     let project = |ordinal: u32| {
         let branch = &function.branches[ordinal as usize];
         FunctionBranchInput {
+            expressions: branch.expressions.clone(),
             statements: project_statements(function, folds, &branch.statements),
             provenance: branch.declaration,
         }
@@ -428,6 +429,9 @@ fn replay_component<'group, 'dae>(
 ) -> Result<(), DaeConstructionError> {
     let mut functions = begin_functions(wire, dae, reservations)?;
     while ids.expressions.len() < expression_end {
+        for function in &mut functions {
+            advance_branch_boundaries(wire, dae, ids, function)?;
+        }
         if wire
             .expressions
             .model_contexts
@@ -496,6 +500,7 @@ struct FunctionReplay<'wire, 'group, 'dae> {
     function_index: usize,
     operations: Vec<ReplayOp<'wire>>,
     next_operation: usize,
+    branch_boundaries: Vec<(usize, u32)>,
     capability: Option<ReplayCapability<'group, 'dae>>,
     branches: Vec<BranchReplayFrame<'dae>>,
     conditionals: Vec<ConditionalReplayFrame<'wire, 'dae>>,
@@ -520,8 +525,13 @@ enum ReplayOp<'wire> {
         branch_count: usize,
         provenance: DaeProvenance,
     },
-    BeginBranch(DaeProvenance),
-    EndBranch,
+    BeginBranch {
+        expression: u32,
+        provenance: DaeProvenance,
+    },
+    EndBranch {
+        expression: u32,
+    },
     EndConditional,
     Assign(AssignmentInput),
     AssignGroup(AssignmentGroupInput<'wire>),
@@ -594,6 +604,7 @@ fn begin_functions<'wire, 'group, 'dae>(
                     function_index,
                     operations: Vec::new(),
                     next_operation: 0,
+                    branch_boundaries: Vec::new(),
                     capability: Some(ReplayCapability::External(reservation)),
                     branches: Vec::new(),
                     conditionals: Vec::new(),
@@ -601,10 +612,29 @@ fn begin_functions<'wire, 'group, 'dae>(
             }
             let body =
                 dae.functions(|functions| functions.begin(reservation, function.declaration))?;
+            let operations = flatten_operations(&function.statements)?;
+            let branch_boundaries = operations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, operation)| match *operation {
+                    ReplayOp::BeginBranch { expression, .. }
+                    | ReplayOp::EndBranch { expression } => Some((index, expression)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if branch_boundaries.iter().any(|&(_, expression)| {
+                expression < function.construction_start || expression > function.construction_end
+            }) || branch_boundaries
+                .windows(2)
+                .any(|pair| pair[0].1 > pair[1].1)
+            {
+                return Err(malformed("functions.statements.branch.expressions"));
+            }
             Ok(FunctionReplay {
                 function_index,
-                operations: flatten_operations(&function.statements)?,
+                operations,
                 next_operation: 0,
+                branch_boundaries,
                 capability: Some(ReplayCapability::Body(body)),
                 branches: Vec::new(),
                 conditionals: Vec::new(),
@@ -688,9 +718,14 @@ fn push_statement_operation<'wire>(
                 provenance: *provenance,
             });
             for branch in branches.iter().chain(std::iter::once(fallback)) {
-                operations.push(ReplayOp::BeginBranch(branch.provenance));
+                operations.push(ReplayOp::BeginBranch {
+                    expression: branch.expressions.start,
+                    provenance: branch.provenance,
+                });
                 push_statement_operations(operations, &branch.statements)?;
-                operations.push(ReplayOp::EndBranch);
+                operations.push(ReplayOp::EndBranch {
+                    expression: branch.expressions.end,
+                });
             }
             operations.push(ReplayOp::EndConditional);
         }
@@ -852,6 +887,34 @@ fn replay_read<'dae>(
     record_expression(dae, ids, rebuilt, provenance)
 }
 
+/// Replay lexical transitions at their issuance point. Closing a branch
+/// restores the enclosing definitions before replay of the sibling begins.
+fn advance_branch_boundaries<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
+) -> Result<(), DaeConstructionError> {
+    let boundary = state
+        .branch_boundaries
+        .partition_point(|&(operation, _)| operation < state.next_operation);
+    for index in boundary..state.branch_boundaries.len() {
+        let (operation, expression) = state.branch_boundaries[index];
+        if expression as usize > ids.expressions.len() {
+            break;
+        }
+        if (expression as usize) < ids.expressions.len() {
+            return Err(malformed("functions.statements.branch.expressions"));
+        }
+        while state.next_operation <= operation {
+            if !apply_next_ready_operation(wire, dae, ids, state)? {
+                return Err(malformed("functions.statements.branch.expressions"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn advance_to_definition<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
@@ -926,16 +989,23 @@ fn apply_next_ready_operation<'dae>(
             branch_count,
             provenance,
         } => {
-            if conditions
-                .iter()
-                .any(|condition| *condition as usize >= ids.expressions.len())
-            {
-                return Ok(false);
-            }
             scoped_branches::begin_conditional(state, conditions, branch_count, provenance);
         }
-        ReplayOp::BeginBranch(provenance) => scoped_branches::begin_branch(dae, state, provenance)?,
-        ReplayOp::EndBranch => scoped_branches::end_branch(dae, state)?,
+        ReplayOp::BeginBranch {
+            expression,
+            provenance,
+        } => {
+            if expression as usize > ids.expressions.len() {
+                return Ok(false);
+            }
+            scoped_branches::begin_branch(dae, state, provenance)?;
+        }
+        ReplayOp::EndBranch { expression } => {
+            if expression as usize > ids.expressions.len() {
+                return Ok(false);
+            }
+            scoped_branches::end_branch(dae, state)?;
+        }
         ReplayOp::EndConditional => {
             if scoped_branches::projection_count(dae, state)? != 0 {
                 return Ok(false);

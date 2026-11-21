@@ -45,6 +45,7 @@ pub struct FunctionBranchFinish<Parent> {
     parent: Parent,
     state: FunctionBuildState,
     scope: u32,
+    expression_start: u32,
     declaration: DaeProvenance,
 }
 
@@ -114,6 +115,11 @@ impl<'dae> Functions<'_, 'dae> {
         let active_scope = function_build_state(self.storage, body).active_scope;
         let entry = &self.storage.functions[body.function.index() as usize];
         let scope = checked_u32(entry.scopes.len(), "function region", provenance)?;
+        let expression_start = checked_u32(
+            self.storage.expressions.nodes.len(),
+            "function branch expression start",
+            provenance,
+        )?;
         let current = function_build_state(self.storage, body);
         let child_state = FunctionBuildState {
             current_values: current.current_values.clone(),
@@ -139,6 +145,7 @@ impl<'dae> Functions<'_, 'dae> {
             parent,
             state,
             scope,
+            expression_start,
             declaration: provenance,
         };
         Ok((child, finish))
@@ -168,11 +175,17 @@ impl<'dae> Functions<'_, 'dae> {
         }
         let entry = &self.storage.functions[function.index() as usize];
         let ordinal = checked_u32(entry.branches.len(), "function branch", finish.declaration)?;
+        let expression_end = checked_u32(
+            self.storage.expressions.nodes.len(),
+            "function branch expression end",
+            finish.declaration,
+        )?;
         let incoming = finish.state.current_values.clone();
         let child = std::mem::replace(function_build_state_mut(self.storage, &body), finish.state);
         let entry = &mut self.storage.functions[function.index() as usize];
         entry.branches.push(FunctionBranchEntry {
             scope: finish.scope,
+            expressions: finish.expression_start..expression_end,
             incoming,
             outgoing: child.current_values,
             statements: child.statements,
