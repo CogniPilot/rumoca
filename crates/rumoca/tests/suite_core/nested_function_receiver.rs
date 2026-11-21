@@ -17,7 +17,12 @@ package GravityReceiver
   algorithm
     a := g*n;
   end Uniform;
+  model Marker
+    Real x = 0;
+  end Marker;
   model World
+    // A composite receiver retains an outer occurrence in the override map.
+    Marker marker;
     parameter Real g = 9.81;
     parameter Real n[3] = {0,-1,0};
     replaceable function gravity = Uniform(g=g,n=n) constrainedby Gravity;
@@ -27,7 +32,9 @@ package GravityReceiver
     Real z(start=1,fixed=true);
     Real v(start=0,fixed=true);
     Real a[3] = world.gravity({0,0,z});
+    Real b[3];
   equation
+    b = world.gravity({0,0,z});
     der(z) = v;
     der(v) = a[3];
   end Body;
@@ -54,12 +61,18 @@ end GravityReceiver;
 fn nested_outer_function_actuals_keep_each_inner_instance() {
     for mode in [SimSolverMode::RkLike, SimSolverMode::Bdf] {
         for (model, outputs) in [
-            ("GravityReceiver.Drop", vec![("z", 7.5)]),
-            ("GravityReceiver.Wrap", vec![("d.z", 7.5)]),
-            ("GravityReceiver.WrapTwice", vec![("first.d.z", 7.5)]),
+            ("GravityReceiver.Drop", vec![("z", "body.b[3]", 7.5)]),
+            ("GravityReceiver.Wrap", vec![("d.z", "d.body.b[3]", 7.5)]),
+            (
+                "GravityReceiver.WrapTwice",
+                vec![("first.d.z", "first.d.body.b[3]", 7.5)],
+            ),
             (
                 "GravityReceiver.Siblings",
-                vec![("first.z", 2.0), ("second.z", 7.5)],
+                vec![
+                    ("first.z", "first.body.b[3]", 2.0),
+                    ("second.z", "second.body.b[3]", 7.5),
+                ],
             ),
         ] {
             let compiled = Compiler::new()
@@ -76,7 +89,7 @@ fn nested_outer_function_actuals_keep_each_inner_instance() {
                 },
             )
             .unwrap_or_else(|error| panic!("{model}/{mode:?}: {error:?}"));
-            for (name, g) in outputs {
+            for (name, acceleration, g) in outputs {
                 let column = result
                     .names
                     .iter()
@@ -87,6 +100,13 @@ fn nested_outer_function_actuals_keep_each_inner_instance() {
                 assert!(
                     (actual - expected).abs() < 1e-6,
                     "{model}/{mode:?}/{name}: actual {actual}, expected {expected}"
+                );
+                let column = result.names.iter().position(|n| n == acceleration).unwrap();
+                assert!(
+                    result.data[column]
+                        .iter()
+                        .all(|actual| (actual + g).abs() < 1e-6),
+                    "{model}/{mode:?}/{acceleration} must read the selected inner's gravity"
                 );
             }
         }
