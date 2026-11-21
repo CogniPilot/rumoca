@@ -406,10 +406,6 @@ impl MeComponentHost<'_> {
     }
 }
 
-/// Live yields never bound a deferring session's step (issue #513); this fixed
-/// horizon does, together with stop, events and the maximum step duration.
-const LIVE_OBSERVATION_HORIZON_S: f64 = 1.0e6;
-
 /// One natural step accepted and scanned but not yet committed, holding the
 /// live yield it serves from its continuous extension (issue #513).
 struct DeferredCrossing {
@@ -1007,7 +1003,7 @@ impl MeSimulationSession<'_, '_> {
         // A deferring session bounds the step by its own fixed horizon, never by
         // the caller's yield, so the step sequence is independent of cadence.
         let bound = if defer {
-            self.host.time + LIVE_OBSERVATION_HORIZON_S
+            self.deferred_observation_bound()?
         } else {
             yield_time
         };
@@ -1619,6 +1615,13 @@ impl MeSimulationSession<'_, '_> {
                 .map(|value| value.to_bits())
                 .collect(),
         )
+    }
+
+    /// The right endpoint of the held live observation, before commitment.
+    pub(super) fn verification_deferred_end(&self) -> Option<f64> {
+        self.deferred
+            .as_ref()
+            .map(|crossing| crossing.step.accepted().time())
     }
 
     /// The coordinate the *component* is standing on, bit-exact.

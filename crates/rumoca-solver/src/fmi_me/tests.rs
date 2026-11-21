@@ -77,6 +77,71 @@ fn zero_state_event_continuation_is_independent_of_value_tolerance() {
 }
 
 #[test]
+fn time_only_live_root_scan_uses_one_grid_interval_independent_of_poll_cadence() {
+    use crate::runtime::hotpath_stats;
+
+    let mut model = solve::SolveModel::default();
+    model.problem.events.root_conditions = block(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.25,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        "fmi_live_algebraic_root.mo",
+    );
+    let model = refresh_owned(model);
+    let plan = &solve::fmi::RootLocationPlan::STANDARD;
+    let run = |early_yields: &[f64]| {
+        let retained = MeRetainedComponent::instantiate(
+            MeModelSource::fixture(&model),
+            &fixture_instance_config(),
+            None,
+        )
+        .expect("the zero-state model has a checked live component");
+        let options = live_session_options(plan, 0.0, 1.0e-8, 1.0e-8, 1.0, None).unwrap();
+        let expected_bound = options.root_scan_resolution();
+        let mut session = retained
+            .into_lease(options)
+            .unwrap()
+            .into_session(None)
+            .unwrap();
+        let mut cursor = MeOutputCursor::empty();
+
+        hotpath_stats::reset();
+        for &target in early_yields {
+            assert!(matches!(
+                session.advance_to(target, &mut cursor),
+                Ok(MeAdvanceOutcome::Yielded)
+            ));
+            assert_eq!(session.time().to_bits(), target.to_bits());
+            assert_eq!(session.verification_deferred_end(), Some(expected_bound));
+        }
+        assert_eq!(hotpath_stats::snapshot().root_hits, 0);
+        assert!(matches!(
+            session.advance_to(0.4, &mut cursor),
+            Ok(MeAdvanceOutcome::Yielded)
+        ));
+        assert_eq!(session.time().to_bits(), 0.4_f64.to_bits());
+        assert!(hotpath_stats::snapshot().root_hits > 0);
+        (
+            session.verification_session_point(),
+            hotpath_stats::snapshot(),
+        )
+    };
+
+    assert_eq!(run(&[1.0 / 180.0, 0.03]), run(&[0.03]));
+}
+
+#[test]
 fn state_event_application_time_preserves_clock_and_numerical_owners() {
     let semantic_root = 0.21500000000000002;
     let snapped_horizon = 0.215;
