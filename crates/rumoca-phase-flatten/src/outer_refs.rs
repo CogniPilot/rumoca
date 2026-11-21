@@ -45,6 +45,18 @@ pub(crate) fn redirect_outer_refs(
     for eq in &mut flat.initial_equations {
         redirect_flat_expr(&mut eq.residual, outer_to_inner);
     }
+    // MLS §5.4: the authoritative array/loop body reads the same inner
+    // instance as its materialized rows.
+    for family in flat
+        .structured_equations
+        .iter_mut()
+        .chain(flat.initial_structured_equations.iter_mut())
+    {
+        if let Some(template) = &mut family.template {
+            template.body =
+                OuterRefRedirectRewriter { outer_to_inner }.rewrite_expressions(&template.body);
+        }
+    }
     // Redirect each ordered branch without losing its source chain owner.
     for chain in &mut flat.when_chains {
         for branch in chain.branches_mut() {
@@ -321,6 +333,43 @@ mod tests {
             Some("innerBus.signal".to_string())
         );
         assert_eq!(redirect_name_string("other.signal", &outer_to_inner), None);
+    }
+
+    #[test]
+    fn outer_redirect_keeps_regular_and_initial_templates_equal_to_their_rows() {
+        let (mut flat, _) = outer_reference_model();
+        let family = |row: &Equation| flat::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain { binders: vec![] },
+            first_equation_index: 0,
+            equations_per_point: 1,
+            span: row.span,
+            origin: row.origin.clone(),
+            regular: None,
+            template: Some(rumoca_core::ComprehensionTemplate {
+                body: vec![row.residual.clone()],
+                scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+            }),
+            interiors: flat::FamilyInteriors::Materialized,
+        };
+        flat.structured_equations.push(family(&flat.equations[0]));
+        flat.initial_structured_equations
+            .push(family(&flat.initial_equations[0]));
+        let outer_to_inner = IndexMap::from_iter([(
+            ComponentPath::from_flat_path("outerBus"),
+            ComponentPath::from_flat_path("innerBus"),
+        )]);
+
+        redirect_outer_refs(&mut flat, &outer_to_inner);
+
+        for (family, row) in [
+            (&flat.structured_equations[0], &flat.equations[0]),
+            (
+                &flat.initial_structured_equations[0],
+                &flat.initial_equations[0],
+            ),
+        ] {
+            assert_eq!(family.template.as_ref().unwrap().body[0], row.residual);
+        }
     }
 
     #[test]
