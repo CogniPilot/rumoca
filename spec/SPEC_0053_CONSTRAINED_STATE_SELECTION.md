@@ -80,8 +80,12 @@ supplied points; it does not issue a regular basis or an executable prepared mod
 ### 2. Value and derivative agreement
 
 The static implementation first seeds needed acyclic definitions through the
-shared typed lowerer, including assignment coercions. Source states, fixed
-values, `always`/`prefer` guesses, and explicit overrides retain their guesses.
+shared typed lowerer, including assignment coercions. Source states with nonzero guesses, fixed values, `always`/`prefer` guesses,
+and explicit overrides retain their guesses. An unfixed source state whose
+guess is zero may take its acyclic definition as a construction-time trial
+value: retaining zero storage while seeding its dependent intensive values
+can put the trial point far from their shared constraint manifold. This does
+not change runtime start expressions or remove initialization equations.
 Exact source-bound initial-value transfers also seed aliased state coordinates.
 These transfers remain trial guesses, including when their expressions depend
 on an initialization unknown. Corrections retain the full residual and Jacobian.

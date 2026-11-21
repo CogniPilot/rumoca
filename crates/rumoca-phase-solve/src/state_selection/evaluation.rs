@@ -95,7 +95,13 @@ impl TrialPoint {
             stated_initial_values[target.index() as usize] = (0..variable.scalar_count())
                 .map(|scalar| variable.fixed_scalar(scalar) == Some(true))
                 .collect();
+            // A zero, unfixed storage guess need not defeat its causal definition
+            // at the construction-only trial point (SPEC_0053 §2). Runtime
+            // starts and every initialization obligation remain unchanged.
             retained_guesses[target.index() as usize] = variable.role() == dae::VariableRole::State
+                && nonzero_starts[target.index() as usize]
+                    .iter()
+                    .any(|&nonzero| nonzero)
                 || (0..variable.scalar_count())
                     .any(|scalar| variable.fixed_scalar(scalar) == Some(true))
                 || matches!(
