@@ -319,21 +319,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if let Some(register) = self.region_symbolic_point(id, ordinal, span)? {
             return Ok(register);
         }
-        let Some((_, values)) = self
-            .domain_points
-            .iter()
-            .rev()
-            .find(|(domain, _)| *domain == id)
-        else {
-            return Err(LowerError::non_computable(
-                "domain binder escaped its structured owner",
-                span,
-            ));
-        };
-        let value = values
-            .get(ordinal)
-            .copied()
-            .ok_or_else(|| LowerError::contract("binder ordinal is out of range", span))?;
+        let value = rumoca_eval_dae::domain_point_integer(id, ordinal, &self.domain_points)
+            .map_err(|error| match error {
+                rumoca_eval_dae::DomainPointError::InactiveDomain => {
+                    LowerError::non_computable("domain binder escaped its structured owner", span)
+                }
+                rumoca_eval_dae::DomainPointError::InvalidOrdinal => {
+                    LowerError::contract("binder ordinal is out of range", span)
+                }
+            })?;
         self.constant(integer_as_real(value, span)?, span)
     }
 

@@ -45,19 +45,12 @@ impl<'dae> Projection<'_, 'dae> {
                     .ok_or(ProjectionError::IntegerOverflow { span })
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                let Some((_, point)) = self
-                    .domain_contexts
-                    .points
-                    .iter()
-                    .rev()
-                    .find(|(domain, _)| *domain == binder.domain())
-                else {
-                    return Err(ProjectionError::DynamicSubscript { span });
-                };
-                point
-                    .get(binder.ordinal() as usize)
-                    .copied()
-                    .ok_or(ProjectionError::DynamicSubscript { span })
+                crate::domain_point_integer(
+                    binder.domain(),
+                    binder.ordinal() as usize,
+                    &self.domain_contexts.points,
+                )
+                .map_err(|_| ProjectionError::DynamicSubscript { span })
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
@@ -86,6 +79,11 @@ impl<'dae> Projection<'_, 'dae> {
                 let lhs = self.integer(lhs, scalar_index)?;
                 let rhs = self.integer(rhs, scalar_index)?;
                 integer_binary(operator, lhs, rhs, span)
+            }
+            dae::ExpressionOperation::Conditional(_) if node.value_type().is_scalar() => {
+                let points = &self.domain_contexts.points;
+                crate::FunctionCallContext::integer_at_domain_point(self.view, expression, points)
+                    .ok_or(ProjectionError::DynamicSubscript { span })
             }
             dae::ExpressionOperation::Call {
                 function,

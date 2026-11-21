@@ -1,4 +1,4 @@
-//! MLS 10.5: a runtime index on a derivative equation's value side stays dynamic.
+//! MLS 10.5: indexed reads in Solve lowering and differentiation.
 
 use rumoca::Compiler;
 use rumoca_solver::fmi_me::{MeError, MeSessionError};
@@ -78,4 +78,67 @@ fn an_invalid_runtime_derivative_index_cannot_complete() {
         provenance.starts_with(&format!("Span {{ source: {source:?},")),
         "{message}"
     );
+}
+
+#[test]
+fn runtime_tensor_gather_derivative_reuses_register_lanes() {
+    use rumoca_eval_solve::{ad::lower_scalar_program_block_ad, to_scalar_program_block};
+    use rumoca_ir_solve::LinearOp;
+
+    let dae = Compiler::new()
+        .model("DynamicTensorGather")
+        .compile_str(
+            include_str!("../fixtures/solve/DynamicTensorGather.mo"),
+            "DynamicTensorGather.mo",
+        )
+        .unwrap()
+        .dae;
+    let solve = rumoca_sim::lower_dae_for_simulation(&dae, &Default::default()).unwrap();
+    let implicit_rhs = to_scalar_program_block(&solve.problem.continuous.implicit_rhs).unwrap();
+    let gather = implicit_rhs
+        .programs()
+        .iter()
+        .find(|row| {
+            row.iter()
+                .any(|op| matches!(op, LinearOp::LoadIndexedRegister { .. }))
+        })
+        .expect("the dynamic state selection must emit a checked gather");
+    let derivative = lower_scalar_program_block_ad(std::slice::from_ref(gather)).unwrap();
+    let strides = derivative[0]
+        .iter()
+        .filter_map(|op| match op {
+            LinearOp::LoadIndexedRegister { stride, .. } => Some(*stride),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(strides, [2, 2]);
+}
+
+#[test]
+fn loop_conditional_selectors_lower_to_fixed_cells() {
+    let dae = Compiler::new()
+        .model("SelectorGather2")
+        .compile_str(
+            include_str!("../fixtures/solve/SelectorGather2.mo"),
+            "SelectorGather2.mo",
+        )
+        .unwrap()
+        .dae;
+    let solve = rumoca_sim::lower_dae_for_simulation(&dae, &Default::default()).unwrap();
+    let implicit_rhs =
+        rumoca_eval_solve::to_scalar_program_block(&solve.problem.continuous.implicit_rhs).unwrap();
+    assert!(!implicit_rhs.programs().is_empty());
+    let dynamic_gathers = implicit_rhs
+        .programs()
+        .iter()
+        .flatten()
+        .filter(|op| {
+            matches!(
+                op,
+                rumoca_ir_solve::LinearOp::LoadIndexedRegister { indices, .. }
+                    if indices.iter().any(|index| matches!(index, rumoca_ir_solve::TensorIndex::Runtime(_)))
+            )
+        })
+        .count();
+    assert_eq!(dynamic_gathers, 0, "each loop point selects one fixed cell");
 }

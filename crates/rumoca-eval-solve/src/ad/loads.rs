@@ -1,3 +1,4 @@
+use super::tensor_packing::strided_register_operand;
 use super::*;
 
 impl<'a> AdBuilder<'a> {
@@ -289,25 +290,36 @@ impl<'a> AdBuilder<'a> {
             })
             .collect::<Result<Vec<_>, SolveDerivationError>>()?
             .into_boxed_slice();
-        let real_base = self.pack_registers(&real)?;
-        let re = self.alloc_reg()?;
+        let re = self.emit_indexed_register(&real, dimensions.clone(), indices.clone())?;
+        let du = self.emit_indexed_register(&tangent, dimensions, indices)?;
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn emit_indexed_register(
+        &mut self,
+        registers: &[Reg],
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>,
+    ) -> Result<Reg, SolveDerivationError> {
+        let StridedOperand {
+            start: base,
+            stride,
+        } = match strided_register_operand(registers) {
+            Some(operand) => operand,
+            None => StridedOperand {
+                start: self.pack_registers(registers)?,
+                stride: 1,
+            },
+        };
+        let dst = self.alloc_reg()?;
         self.ops.push(LinearOp::LoadIndexedRegister {
-            dst: re,
-            base: real_base,
-            stride: 1,
-            dimensions: dimensions.clone(),
-            indices: indices.clone(),
-        });
-        let tangent_base = self.pack_registers(&tangent)?;
-        let du = self.alloc_reg()?;
-        self.ops.push(LinearOp::LoadIndexedRegister {
-            dst: du,
-            base: tangent_base,
-            stride: 1,
+            dst,
+            base,
+            stride,
             dimensions,
             indices,
         });
-        self.bind(dst, DualReg { re, du })
+        Ok(dst)
     }
 
     pub(super) fn lower_load_indexed_fold_carried(

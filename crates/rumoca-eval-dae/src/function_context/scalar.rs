@@ -12,9 +12,10 @@ use super::FunctionCallContext;
 
 type VisitKey = (u32, Vec<u32>, Vec<usize>);
 
-struct ScalarSelection<'dae> {
+struct ScalarSelection<'points, 'dae> {
     view: dae::DaeView<'dae>,
     active: BTreeSet<VisitKey>,
+    domain_points: Option<&'points [(dae::DomainId<'dae>, Vec<i64>)]>,
 }
 
 impl<'dae> FunctionCallContext<'dae> {
@@ -34,12 +35,36 @@ impl<'dae> FunctionCallContext<'dae> {
         ScalarSelection {
             view,
             active: BTreeSet::new(),
+            domain_points: None,
         }
         .branch(operands, &context)
     }
+
+    /// Prove a scalar Integer index at an already-issued domain point.
+    /// All actuals of an evaluated call must have exact values. Runtime
+    /// parameters, unbound binders and calls with observable effects decline.
+    pub fn integer_at_domain_point(
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+        domain_points: &[(dae::DomainId<'dae>, Vec<i64>)],
+    ) -> Option<i64> {
+        if view.expression(expression)?.function_scope().is_some() {
+            return None;
+        }
+        match (ScalarSelection {
+            view,
+            active: BTreeSet::new(),
+            domain_points: Some(domain_points),
+        })
+        .resolve(expression, &Self::default(), &[])?
+        {
+            dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
-impl<'dae> ScalarSelection<'dae> {
+impl<'dae> ScalarSelection<'_, 'dae> {
     fn branch(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
@@ -88,10 +113,31 @@ impl<'dae> ScalarSelection<'dae> {
         context: &FunctionCallContext<'dae>,
         indices: &[usize],
     ) -> Option<dae::DaeLiteral> {
-        if let Some((result, nested)) = context.call_result(self.view, expression) {
-            return self.resolve(result, &nested, indices);
-        }
         match self.view.expression(expression)?.operation() {
+            dae::ExpressionOperation::Call {
+                function,
+                arguments,
+                ..
+            } => {
+                let (result, nested) = context.call_result(self.view, expression)?;
+                if self.domain_points.is_some()
+                    && !self.total_scalar_call(function, arguments, context)
+                {
+                    return None;
+                }
+                self.resolve(result, &nested, indices)
+            }
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder))
+                if indices.is_empty() =>
+            {
+                crate::domain_point_integer(
+                    binder.domain(),
+                    binder.ordinal() as usize,
+                    self.domain_points?,
+                )
+                .ok()
+                .map(dae::DaeLiteral::Integer)
+            }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
             )) => self.resolve(context.parameter_argument(parameter)?, context, indices),
@@ -102,29 +148,68 @@ impl<'dae> ScalarSelection<'dae> {
                 }
                 self.resolve(variable.binding()?, context, indices)
             }
-            dae::ExpressionOperation::FunctionValue { definition, .. } => {
+            dae::ExpressionOperation::FunctionValue { definition, .. }
+                if self.domain_points.is_none() =>
+            {
                 self.resolve(definition.rhs(), context, indices)
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 let branch = self.branch(operands, context)?;
                 self.resolve(branch, context, indices)
             }
-            dae::ExpressionOperation::Index { base, subscripts } => {
+            dae::ExpressionOperation::Index { base, subscripts }
+                if self.domain_points.is_none() =>
+            {
                 let mut selected = self.indices(subscripts, context)?;
                 selected.extend_from_slice(indices);
                 self.resolve(base, context, &selected)
             }
-            dae::ExpressionOperation::Field { base, field } => {
+            dae::ExpressionOperation::Field { base, field } if self.domain_points.is_none() => {
                 let (field, nested) = context.projected_field(self.view, base, field)?;
                 self.resolve(field, &nested, indices)
             }
-            dae::ExpressionOperation::Array(elements) => {
+            dae::ExpressionOperation::Array(elements) if self.domain_points.is_none() => {
                 let (&index, remaining) = indices.split_first()?;
                 self.resolve(elements.get(index)?, context, remaining)
             }
             operation if indices.is_empty() => self.scalar(operation, context),
             _ => None,
         }
+    }
+
+    fn total_scalar_call(
+        &mut self,
+        function: dae::FunctionId<'dae>,
+        arguments: dae::ExpressionOperands<'dae>,
+        context: &FunctionCallContext<'dae>,
+    ) -> bool {
+        let Some(callee) = self.view.function(function) else {
+            return false;
+        };
+        callee.result_values().len() == 1
+            && callee.result_types().iter().all(|kind| {
+                self.view.value_type(kind).is_some_and(|kind| {
+                    kind.is_scalar()
+                        && matches!(
+                            kind.scalar_type(),
+                            dae::ScalarType::Integer | dae::ScalarType::Boolean
+                        )
+                })
+            })
+            && arguments
+                .iter()
+                .zip(callee.parameter_types().iter())
+                .all(|(argument, kind)| {
+                    let Some(kind) = self.view.value_type(kind).filter(|kind| kind.is_scalar())
+                    else {
+                        return false;
+                    };
+                    matches!(
+                        (kind.scalar_type(), self.resolve(argument, context, &[])),
+                        (dae::ScalarType::Integer, Some(dae::DaeLiteral::Integer(_)))
+                            | (dae::ScalarType::Boolean, Some(dae::DaeLiteral::Boolean(_)))
+                    )
+                })
     }
 
     fn indices(

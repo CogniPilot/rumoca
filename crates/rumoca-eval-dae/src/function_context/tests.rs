@@ -79,6 +79,105 @@ fn integer_guards_are_exact_and_overflow_stays_unknown() {
 }
 
 #[test]
+fn integer_index_specializes_a_call_at_each_domain_point() {
+    let (sources, at) = source();
+    let mut indices = Vec::new();
+    let model = dae::Dae::construct(sources, |model| {
+        let (integer, boolean) = model.types(|types| {
+            Ok((
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at)?,
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), at)?,
+            ))
+        })?;
+        let signature =
+            dae::FunctionSignature::new(VarName::new("first"), [integer], [boolean], at);
+        let (first, ()) = model.function(signature, |model, reservation| {
+            let (input, output) = model.functions(|functions| {
+                Ok((
+                    functions.parameter(&reservation, VarName::new("i"), 0, at)?,
+                    functions.output(&reservation, VarName::new("yes"), 0, at)?,
+                ))
+            })?;
+            let result = model.expressions(|expressions| {
+                let input = expressions.at(at).function_parameter(input)?;
+                let one = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;
+                expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Equal, input, one)
+            })?;
+            let mut body = model.functions(|functions| functions.begin(reservation, at))?;
+            model.functions(|functions| {
+                functions.assign(&mut body, output, result, at)?;
+                functions.define(body, at)
+            })
+        })?;
+        let domain = model.domains(|domains| {
+            domains.structured(
+                rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
+                        id: 0,
+                        display_name: "i".into(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                at,
+            )
+        })?;
+        let binder = model.domains(|domains| domains.binder(domain, 0, at))?;
+        let one = model.expressions(|expr| expr.at(at).literal(dae::DaeLiteral::Integer(1)))?;
+        let parameter = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("runtimeIndex"),
+                integer,
+                at,
+                dae::VariableAttributes {
+                    binding: Some(one),
+                    ..Default::default()
+                },
+            )
+        })?;
+        model.expressions(|expressions| {
+            let bound = expressions.at(at).binder(binder)?;
+            let runtime = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Parameter(parameter))?;
+            let two = expressions.at(at).literal(dae::DaeLiteral::Integer(2))?;
+            for input in [bound, runtime] {
+                let guard = expressions.at(at).call(first, 0, [input])?;
+                let index = expressions.at(at).conditional([(guard, one)], two)?;
+                indices.push(index.index());
+            }
+            Ok(())
+        })
+    })
+    .unwrap();
+    model.inspect(|view| {
+        let bound = view.expression_id(indices[0] as usize).unwrap();
+        let runtime = view.expression_id(indices[1] as usize).unwrap();
+        let domain = view.expression(bound).unwrap().binder_domain().unwrap();
+        assert_eq!(
+            FunctionCallContext::integer_at_domain_point(view, bound, &[(domain, vec![1])]),
+            Some(1)
+        );
+        assert_eq!(
+            FunctionCallContext::integer_at_domain_point(view, bound, &[(domain, vec![2])]),
+            Some(2)
+        );
+        assert_eq!(
+            FunctionCallContext::integer_at_domain_point(view, bound, &[]),
+            None
+        );
+        assert_eq!(
+            FunctionCallContext::integer_at_domain_point(view, runtime, &[]),
+            None
+        );
+    });
+}
+
+#[test]
 fn parameter_defaults_and_runtime_guards_cannot_select_a_branch() {
     let (sources, at) = source();
     let mut cases = Vec::new();
