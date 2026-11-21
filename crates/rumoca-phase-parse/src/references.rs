@@ -1,7 +1,7 @@
 //! Conversion for component references and names.
 
 use crate::generated::modelica_grammar_trait;
-use crate::helpers::{loc_info, merge_spans, token_span};
+use crate::helpers::{merge_spans, token_span};
 
 impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::ComponentReference {
     type Error = anyhow::Error;
@@ -17,21 +17,28 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::Com
             .as_ref()
             .map(|opt| opt.array_subscripts.subscripts.clone());
 
+        let start = match &ast.component_reference_opt {
+            Some(opt) => token_span(&opt.dot)?,
+            None => token_span(&ast.ident)?,
+        };
+        let mut end = match &ast.component_reference_opt0 {
+            Some(opt) => opt.array_subscripts.delimiter_span,
+            None => token_span(&ast.ident)?,
+        };
         parts.push(rumoca_ir_ast::ComponentRefPart {
             ident: ast.ident.clone(),
             subs: first_subs,
             def_id: None,
         });
         for comp_ref in &ast.component_reference_list {
-            parts.push(comp_ref.component_ref_part.clone());
+            let part = &comp_ref.component_ref_part;
+            end = match &part.component_ref_part_opt {
+                Some(opt) => opt.array_subscripts.delimiter_span,
+                None => token_span(&part.ident)?,
+            };
+            parts.push(part.as_ref().try_into()?);
         }
-        let last = parts.last().ok_or_else(|| {
-            anyhow::anyhow!(
-                "component reference conversion produced no parts{}",
-                loc_info(&ast.ident)
-            )
-        })?;
-        let span = merge_spans(token_span(&ast.ident)?, token_span(&last.ident)?);
+        let span = merge_spans(start, end);
         Ok(rumoca_ir_ast::ComponentReference {
             local: ast.component_reference_opt.is_some(),
             parts,

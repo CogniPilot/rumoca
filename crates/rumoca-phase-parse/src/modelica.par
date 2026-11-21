@@ -12,7 +12,6 @@
 %nt_type class_definition = crate::BoxedClassDef
 %nt_type component_list = crate::ComponentList
 %nt_type component_reference = rumoca_ir_ast::ComponentReference
-%nt_type component_ref_part = rumoca_ir_ast::ComponentRefPart
 %nt_type composition = crate::Composition
 %nt_type description_string = crate::TokenList
 %nt_type element_list = crate::ElementList
@@ -317,7 +316,7 @@ unsigned_real
 //✅    [ within [ name ] ";" ]
 //✅    { [ final ] class-definition ";" }
 stored_definition
-    : [ within [ name ] ';'^ ] { [ final ] class_definition ';'^ }
+    : [ within [ name ] ';'^ ] { [ final ] class_definition ';' }
     ;
 
 //=============================================================================
@@ -463,7 +462,7 @@ external_function_call
 //✅ element-list :
 //✅    { element ";" }
 element_list
-    : { element ';'^ }
+    : { element ';' }
     ;
 
 //✅ element :
@@ -856,7 +855,7 @@ expression
     ;
 
 if_expression
-    : if^ expression then^ expression { elseif^ expression then^ expression } else^ expression
+    : if expression then^ expression { elseif^ expression then^ expression } else^ expression
     ;
 
 //✅ simple-expression :
@@ -969,7 +968,7 @@ output_primary
     ;
 
 range_primary
-    : '['^ expression_list { ';'^ expression_list } ']'^
+    : '[' expression_list { ';'^ expression_list } ']'
     ;
 
 array_primary
@@ -1002,7 +1001,7 @@ name: ident { '.'^ ident }
 //✅ component-reference :
 //✅    [ "." ] IDENT [ array-subscripts ] { "." IDENT [ array-subscripts ] }
 component_reference
-    : [ '.'^ ] ident [ array_subscripts ] { component_ref_part }
+    : [ '.' ] ident [ array_subscripts ] { component_ref_part }
     ;
 
 component_ref_part
@@ -1084,7 +1083,7 @@ expression_list
 //✅ array-subscripts :
 //✅    "[" subscript { "," subscript } "]"
 array_subscripts
-    : '['^ subscript { ','^ subscript } ']'^
+    : '[' subscript { ','^ subscript } ']'
     ;
 
 //✅ subscript :

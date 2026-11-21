@@ -74,6 +74,22 @@ fn expansion_mints_the_wrapper_and_rewrites_the_call() {
 }
 
 #[test]
+fn generated_functions_follow_the_complete_commented_declaration() {
+    let source = SCALED.replace("end fscale;", "end fscale /* declaration tail */ ;");
+    let expanded = expand(&source);
+    assert!(expanded.contains("end fscale /* declaration tail */ ;"));
+    let original_end = expanded
+        .find("end fscale /* declaration tail */ ;")
+        .unwrap();
+    let generated_start = expanded.find("function fscale_jacobian_x").unwrap();
+    assert!(original_end < generated_start);
+    let definition = rumoca_phase_parse::parse_to_ast(&expanded, "expanded.mo").unwrap();
+    for name in ["fscale", "fscale_jacobian_x", "fscale_ad_tangent", "Probe"] {
+        assert!(definition.classes.contains_key(name), "{name}");
+    }
+}
+
+#[test]
 fn the_expansion_carries_its_minting_site() {
     let expanded = expand_source(SCALED, "Probe.mo").expect("expansion runs");
     assert!(

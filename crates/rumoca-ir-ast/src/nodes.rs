@@ -463,7 +463,8 @@ pub struct ClassDef {
     pub causality: Causality,
     /// Description string for this class (e.g., "A test model")
     pub description: Vec<Token>,
-    /// Full source location spanning from class keyword to end statement
+    /// Complete authored declaration, including its leading qualifiers and
+    /// terminating semicolon. Element declarations include their constraint.
     pub location: Location,
     pub extends: Vec<Extend>,
     pub imports: Vec<Import>,
