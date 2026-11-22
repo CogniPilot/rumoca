@@ -154,7 +154,7 @@ impl Context {
             crate::ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
         let eval_ctx = self.param_eval_context(Some(var_name));
-        let dim = try_eval_integer_with_context(&lowered, &eval_ctx).or_else(|| {
+        let dim = try_eval_relative_integer_with_context(&lowered, &eval_ctx).or_else(|| {
             // MLS 5.3: a constant the dimension names is evaluated in its own
             // declaration scope, whichever class declares the array.
             let constants = self

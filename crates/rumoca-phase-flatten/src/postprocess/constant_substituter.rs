@@ -607,7 +607,10 @@ fn substitute_resolved_generated_constant(
 /// Only a simple name is looked up through the enclosing scopes (MLS 3.7
 /// §5.3.1); a composite name such as `world.g` starts at the component its
 /// first part names and never reaches a same-spelled constant of an
-/// enclosing scope.
+/// enclosing scope. Read inside an exposing package (`col.cooling.Medium`),
+/// the enclosing scopes are that package's: the components that reach it
+/// (`col.cooling`, `col`) are not, and their own `Medium` may bind the name
+/// differently.
 fn modified_constant_value<'e>(
     key: &str,
     env: ConstantSubstitutionEnv<'e>,
@@ -618,7 +621,17 @@ fn modified_constant_value<'e>(
         Vec::new()
     };
     std::iter::once(key.to_string())
-        .chain(scoped.into_iter().map(|(candidate, _)| candidate))
+        .chain(
+            scoped
+                .into_iter()
+                .filter(|(_, scope)| {
+                    env.exposures.is_empty()
+                        || !env.ctx.component_members.contains_component_path(
+                            &rumoca_core::ComponentPath::from_flat_path(scope),
+                        )
+                })
+                .map(|(candidate, _)| candidate),
+        )
         .find(|candidate| env.ctx.modified_constant_keys.contains(candidate.as_str()))
         .and_then(|candidate| {
             let value = resolve_constant_value_expr(&candidate, env.ctx)?;

@@ -185,6 +185,20 @@ pub fn try_eval_integer_with_context(
     eval_param_expr(expr, ctx).and_then(|value| value.as_integer())
 }
 
+/// Integer evaluation of an expression written in the declaring class of
+/// `ctx.var_context`, such as its dimension: names resolve in the variable's
+/// component scope first, composite ones included (MLS §5.3).
+pub fn try_eval_relative_integer_with_context(
+    expr: &rumoca_core::Expression,
+    ctx: &ParamEvalContext,
+) -> Option<i64> {
+    let mut evaluator = ParamEvaluator::new(ctx);
+    evaluator.eval_ctx.literals.set_relative_names(true);
+    evaluator
+        .eval_value(expr, ctx.var_context)
+        .and_then(|value| value.as_integer())
+}
+
 /// Evaluate a flat expression to a real using scoped lookup context.
 pub fn try_eval_real_with_context(
     expr: &rumoca_core::Expression,
