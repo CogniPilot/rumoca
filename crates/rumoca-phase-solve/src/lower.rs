@@ -2729,38 +2729,25 @@ impl LiteralPower {
         }
     }
 
-    /// Fold the value `base` into the running `result`, returning its value index.
-    fn multiply_into(steps: &mut Vec<(usize, usize)>, result: Option<usize>, base: usize) -> usize {
-        match result {
-            None => base,
-            Some(product) => {
-                steps.push((product, base));
-                steps.len()
-            }
+    /// The signed source exponent this plan was read from.
+    pub(crate) fn exponent(self) -> i64 {
+        if self.reciprocal {
+            // `magnitude` is at most `2^63`, whose negation is `i64::MIN`.
+            0i64.wrapping_sub_unsigned(self.magnitude)
+        } else {
+            self.magnitude as i64
         }
     }
 
-    /// The multiplications of the product, in the order of the canonical rule.
-    /// Value 0 is the (possibly inverted) base and step `k` defines value
-    /// `k + 1` as the product of the two named earlier values; the last step
-    /// is the result, or the base itself when there is no step. A zero
-    /// magnitude has no steps and its result is the constant 1.
+    /// The multiplications of the product, in the order of the canonical rule
+    /// (`IntegerPower::products`). Value 0 is the (possibly inverted) base
+    /// and step `k` defines value `k + 1` as the product of the two named
+    /// earlier values; the last step is the result, or the base itself when
+    /// there is no step. A magnitude below 2 has no steps; a zero magnitude's
+    /// result is the constant 1.
     pub(crate) fn steps(self) -> Vec<(usize, usize)> {
-        let mut steps = Vec::new();
-        let mut base = 0;
-        let mut result: Option<usize> = None;
-        let mut remaining = self.magnitude;
-        while remaining != 0 {
-            if !remaining.is_multiple_of(2) {
-                result = Some(Self::multiply_into(&mut steps, result, base));
-            }
-            remaining /= 2;
-            if remaining != 0 {
-                steps.push((base, base));
-                base = steps.len();
-            }
-        }
-        steps
+        solve::IntegerPower::new(self.exponent())
+            .map_or_else(Vec::new, solve::IntegerPower::products)
     }
 }
 

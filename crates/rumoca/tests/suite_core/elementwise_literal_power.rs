@@ -360,7 +360,8 @@ fn program_operations(model: &rumoca_ir_solve::SolveModel) -> usize {
 }
 
 /// The plan of `s .^ n` over a base of thousands of elements is a few packed
-/// tensor operations, not one scalar product per element and step: going
+/// tensor operations (one shared constant for `n = 0`), not one scalar
+/// product or constant per element and step: going
 /// from 20 to 2000 elements adds no more operations than it adds to the
 /// packed product `s .* s` (SOLVE-C86).
 #[test]
@@ -375,12 +376,74 @@ fn a_large_base_lowers_in_operations_independent_of_its_extent() {
         ))
     };
     let product = operations(2000, "s .* s") - operations(20, "s .* s");
-    for exponent in [3, 63] {
-        let power = format!("s .^ {exponent}");
+    for exponent in [0, -1, 1, 3, 63] {
+        let power = format!("s .^ ({exponent})");
         let growth = operations(2000, &power) - operations(20, &power);
         assert!(
             growth <= product,
             "{power}: 1980 more elements add {growth} operations, `s .* s` adds {product}"
+        );
+    }
+}
+
+/// The registers of the continuous programs: the highest register any
+/// operation writes, plus one.
+fn register_extent(model: &rumoca_ir_solve::SolveModel) -> usize {
+    scalar_programs(model)
+        .flatten()
+        .filter_map(|operation| {
+            Some(operation.dst_register()? as usize + operation.dst_register_count())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// One `TensorIntegerPower` holds only the registers of its result, so the
+/// longest plan, `2^62 - 1` with 122 products (or its reciprocal), takes the
+/// registers and operations of `.^ 2`, and no owner: the register budget of an aggregate
+/// power no longer depends on its exponent, which the former packed chain
+/// multiplied by `1 + steps` (8 526 elements filled its share of the register
+/// file, 137 000 the whole file).
+#[test]
+fn the_longest_plan_takes_the_registers_of_a_square_without_an_owner() {
+    let n = 2000;
+    let model = |exponent: i64| {
+        lowered(
+            "Wide",
+            &format!(
+                "model Wide\n  Real s[{n}](each start = 0.5, each fixed = true);\n  Real x[{n}];\n\
+                 equation\n  der(s) = -0.01 * x;\n  x = s .^ ({exponent});\nend Wide;\n"
+            ),
+        )
+    };
+    let square = model(2);
+    for exponent in [(1i64 << 62) - 1, -((1i64 << 62) - 1)] {
+        let longest = model(exponent);
+        let powers = scalar_programs(&longest)
+            .flatten()
+            .filter(|operation| {
+                matches!(
+                    operation,
+                    LinearOp::TensorIntegerPower { count, power, .. }
+                        if *count == n && power.exponent() == exponent
+                )
+            })
+            .count();
+        assert!(powers >= 1, ".^ {exponent} is one operation per program");
+        assert_eq!(
+            longest.pure_calls.owners().len(),
+            0,
+            ".^ {exponent} issues no owner"
+        );
+        assert_eq!(
+            register_extent(&longest),
+            register_extent(&square),
+            ".^ {exponent} takes the registers of .^ 2"
+        );
+        assert_eq!(
+            program_operations(&longest),
+            program_operations(&square),
+            ".^ {exponent} takes the operations of .^ 2"
         );
     }
 }

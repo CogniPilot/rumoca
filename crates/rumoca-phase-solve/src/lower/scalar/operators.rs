@@ -172,11 +172,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     }
 
     /// Element `scalar` of `base .^ n` for an aggregate base, computed once
-    /// for every element as packed tensor operations that follow the plan's
-    /// multiplications in their order: the reciprocal `1 / x` first for a
-    /// negative exponent, then one elementwise product per step. Each element
-    /// is the value the scalar plan computes, and the operation count is that
-    /// of the plan, independent of the extent.
+    /// for every element. An exponent with a product is one
+    /// `TensorIntegerPower` over the packed base, which every backend
+    /// evaluates as the plan's division and products in their order: its
+    /// registers are those of the result, whatever the exponent. Exponent
+    /// `-1` is the one quotient `1 / x`, the elementwise division it already
+    /// is, and exponent `1` is the base.
     fn packed_literal_power(
         &mut self,
         base: dae::ExprId<'dae>,
@@ -193,45 +194,48 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let key = (self.context_id, base, plan.reciprocal, plan.magnitude);
         if let Some(&start) = self.literal_power_cache.get(&key) {
-            return Ok(start + scalar as solve::Reg);
+            // Exponent 0 caches its one constant, which every element reads.
+            let offset = if plan.magnitude == 0 { 0 } else { scalar };
+            return Ok(start + offset as solve::Reg);
         }
         // The base is evaluated whatever the exponent, as the scalar spelling
         // evaluates its base before `x ^ 0` answers 1, so any call it holds
         // keeps its evaluation and its assertions.
-        let mut values = vec![self.pack_expression(base)?];
+        let src_start = self.pack_expression(base)?;
         if plan.magnitude == 0 {
-            return self.constant(1.0, span);
-        }
-        if plan.reciprocal {
             let one = self.constant(1.0, span)?;
-            let dst_start = self.register_range(count, span)?;
-            self.emit(solve::LinearOp::TensorBinary {
-                dst_start,
-                op: solve::BinaryOp::Div,
-                lhs_start: one,
-                rhs_start: values[0],
-                count,
-                lhs_stride: 0,
-                rhs_stride: 1,
-                lanes: 1,
-            })?;
-            values[0] = dst_start;
+            self.literal_power_cache.insert(key, one);
+            return Ok(one);
         }
-        for (first, second) in plan.steps() {
-            let dst_start = self.register_range(count, span)?;
-            self.emit(solve::LinearOp::TensorBinary {
-                dst_start,
-                op: solve::BinaryOp::Mul,
-                lhs_start: values[first],
-                rhs_start: values[second],
-                count,
-                lhs_stride: 1,
-                rhs_stride: 1,
-                lanes: 1,
-            })?;
-            values.push(dst_start);
-        }
-        let start = values[values.len() - 1];
+        let start = match solve::IntegerPower::new(plan.exponent()) {
+            Some(power) => {
+                let dst_start = self.register_range(count, span)?;
+                self.emit(solve::LinearOp::TensorIntegerPower {
+                    dst_start,
+                    src_start,
+                    count,
+                    power,
+                    lanes: 1,
+                })?;
+                dst_start
+            }
+            None if plan.reciprocal => {
+                let one = self.constant(1.0, span)?;
+                let dst_start = self.register_range(count, span)?;
+                self.emit(solve::LinearOp::TensorBinary {
+                    dst_start,
+                    op: solve::BinaryOp::Div,
+                    lhs_start: one,
+                    rhs_start: src_start,
+                    count,
+                    lhs_stride: 0,
+                    rhs_stride: 1,
+                    lanes: 1,
+                })?;
+                dst_start
+            }
+            None => src_start,
+        };
         self.literal_power_cache.insert(key, start);
         Ok(start + scalar as solve::Reg)
     }

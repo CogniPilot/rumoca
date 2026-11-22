@@ -481,7 +481,8 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
         HashMap<(u64, dae::ExprId<'dae>, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_binary_cache: HashMap<TensorBinaryKey<'dae>, (solve::Reg, usize)>,
     /// Packed result of a literal power of an aggregate base, keyed by
-    /// (context, base, reciprocal, magnitude).
+    /// (context, base, reciprocal, magnitude); for exponent 0, the one
+    /// constant every element reads.
     literal_power_cache: HashMap<(u64, dae::ExprId<'dae>, bool, u64), solve::Reg>,
     tensor_transpose_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_concatenate_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
