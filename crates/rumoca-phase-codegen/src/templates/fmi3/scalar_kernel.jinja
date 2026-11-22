@@ -726,10 +726,10 @@ static {{ prefix }}Status initialize_assertions(ModelInstance* m) {
     return report_warnings(m);
 }
 {%- endif %}
-static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
+static {{ prefix }}Status settle_assertion_event(ModelInstance* m, bool update_history) {
     if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
     if (m->assertions_initialized && report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
-    return update_assertion_memory(m);
+    return update_history ? update_assertion_memory(m) : {{ prefix }}OK;
 }
 {%- endmacro %}
 
@@ -873,7 +873,7 @@ static inline bool rmc_linear_solve_component(const double* matrix, const double
      the caller rolls the state back either way.
    Accuracy therefore follows the tolerance, not the importer's communication
    step size: a stiff mode takes as many substeps as its stability needs. */
-static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double start, double step) {
+static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double start, double step, bool update_history) {
     static const double a[6][6] = {
         {1.0 / 5.0},
         {3.0 / 40.0, 9.0 / 40.0},
@@ -958,7 +958,7 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
         h *= factor;
     }
     m->time = end;
-    const {{ prefix }}Status settled = settle_assertion_event(m);
+    const {{ prefix }}Status settled = settle_assertion_event(m, update_history);
     if (settled == {{ prefix }}Error) RMC_LOG(m, "Co-Simulation step failed to settle its end point");
     return settled;
 }

@@ -79,3 +79,26 @@ fn lane_seed_loads_are_checked_in_their_own_units() {
     // Within `seed_len * lanes` positions but past the last seed.
     assert!(check_seed_loads(0, &tensor(seed_len - 1), seed_len, lanes).is_err());
 }
+
+#[test]
+fn repeated_history_needs_disjoint_parameter_sources() {
+    use rumoca_ir_solve as solve;
+
+    let bind = |dest_p_index, source| solve::PreParamBinding {
+        dest_p_index,
+        source,
+        clock_schedule: None,
+    };
+    let mut layout = solve::SolveLayout::default();
+    assert!(!super::repeatable_parameter_history(&layout));
+    layout
+        .pre_param_bindings
+        .push(bind(4, solve::PreParamSource::P { index: 0 }));
+    assert!(super::repeatable_parameter_history(&layout));
+    layout
+        .pre_param_bindings
+        .push(bind(5, solve::PreParamSource::P { index: 4 }));
+    assert!(!super::repeatable_parameter_history(&layout));
+    layout.pre_param_bindings[1] = bind(5, solve::PreParamSource::Y { index: 0 });
+    assert!(!super::repeatable_parameter_history(&layout));
+}

@@ -20,7 +20,7 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use minijinja::Value;
 use rumoca_eval_solve::{
@@ -289,8 +289,10 @@ fn plan_value(
     } else {
         None
     };
+    let direct = complete.is_none() && rows.iter().all(|row| row[0] == STEP_ASSIGN);
     Ok(minijinja::context! {
         steps => rows,
+        direct => direct,
         complete => complete,
         fallback => fallback && complete.is_some(),
     })
@@ -550,6 +552,9 @@ pub(super) fn me_refresh_value(
             .max(chart_doubles);
     let sizes = block_sizes + init_sizes;
     Ok(minijinja::context! {
+        scan_projection_reusable => !switching
+            && charts[0].get_attr("algebraic")?.get_attr("direct")?.is_true()
+            && assignments.ignores_pre_values(&problem.solve_layout),
         derivative => charts[0].get_attr("derivative")?,
         algebraic => charts[0].get_attr("algebraic")?,
         charts => charts,
@@ -558,6 +563,7 @@ pub(super) fn me_refresh_value(
         block_folds => block_folds(problem, &records),
         table => table,
         kernel => kernel,
+        repeatable_parameter_history => repeatable_parameter_history(&problem.solve_layout),
         assign => assignments.into_value()?,
         init => init,
         work => minijinja::context! { doubles => doubles, sizes => sizes },
@@ -567,6 +573,21 @@ pub(super) fn me_refresh_value(
         policy => policy_value(),
         seed_rule => importer_seed_rule(problem),
     })
+}
+
+/// Copying only P sources that cannot themselves be changed by the copy is
+/// idempotent between consecutive continuous intervals of a communication
+/// step. A Y source can move during integration and must be captured again.
+fn repeatable_parameter_history(layout: &solve::SolveLayout) -> bool {
+    let bindings = &layout.pre_param_bindings;
+    let targets: BTreeSet<_> = bindings
+        .iter()
+        .map(|binding| binding.dest_p_index)
+        .collect();
+    !bindings.is_empty()
+        && bindings.iter().all(|binding| {
+            matches!(binding.source, solve::PreParamSource::P { index } if !targets.contains(&index))
+        })
 }
 
 /// The one numerical policy both executors read.

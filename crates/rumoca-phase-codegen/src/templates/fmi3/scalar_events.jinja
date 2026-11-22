@@ -304,9 +304,9 @@ static void rmc_clear_clock_lanes(ModelInstance* m) {
 
 /* component.rs event_indicators_into: the searched roots at the refreshed
    coordinate, an exact zero reported on its domain's side. */
-static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
+static {{ prefix }}Status rmc_projected_indicators(ModelInstance* m, double* z) {
     double roots[{{ [nroots, 1]|max }}] = {0};
-    if (settle_values(m) != {{ prefix }}OK || rmc_eval_roots(m, roots) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (rmc_eval_roots(m, roots) != {{ prefix }}OK) return {{ prefix }}Error;
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
         size_t root = rmc_indicator_root[k];
         double value = roots[root];
@@ -319,6 +319,11 @@ static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
         z[k] = value;
     }
     return {{ prefix }}OK;
+}
+
+static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
+    if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    return rmc_projected_indicators(m, z);
 }
 
 /* component.rs complete_indicator_domains: a changed domain captures the
@@ -1000,8 +1005,9 @@ static void rmc_root_narrow(RmcRootBracket* b, double trial, bool entered) {
     cadence, the location tolerance, the refinement method, and its budget are
     the component's RootLocationPlan; `integrate` is the plan's error-controlled
     substep integrator over one interval. -#}
-{%- macro cs_events(fmi, integrate, prefix) %}
+{%- macro cs_events(fmi, integrate, prefix, reuse_projection=false, reuse_history=false) %}
 {%- set plan = fmi.root_location %}
+{%- set skip_history = reuse_history and fmi.discrete_memories|length == 0 %}
 {{- root_refinement(plan) }}
 /* RootLocationPlan::scan_resolution. */
 static double rmc_scan_resolution(double width) {
@@ -1021,7 +1027,14 @@ static double rmc_location_tolerance(double start, double scan) {
 static {{ prefix }}Status rmc_domains_changed(ModelInstance* m, double* z, bool* changed) {
     *changed = false;
     if (RMC_EVENT_INDICATORS == 0 || !m->rmc_domain_valid) return {{ prefix }}OK;
+{%- if reuse_projection and fmi.discrete_memories|length == 0 %}
+    /* The integrator just completed a certified direct algebraic plan.
+       If it cannot read written pre() lanes, its values are still current. */
+    if (m->assertion_failed || (m->assertions_initialized && check_assertions(m) != {{ prefix }}OK)
+        || rmc_projected_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- else %}
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- endif %}
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) *changed |= m->rmc_domain[k] != (z[k] > 0.0);
     return {{ prefix }}OK;
 }
@@ -1052,7 +1065,7 @@ static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, co
         /* No representable coordinate strictly inside the bracket. */
         if (!rmc_root_trial(&bracket, least, &trial)) { exhausted = false; break; }
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, trial) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, trial, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
         rmc_root_narrow(&bracket, trial, changed);
         memcpy(changed ? z_high : z_low, z, sizeof(z));
     }
@@ -1065,12 +1078,12 @@ static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, co
     bool integrated_to_application = false;
     if (window > bracket.high) {
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, window) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, window, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
         if (changed) { *application = window; integrated_to_application = true; }
     }
     if (!integrated_to_application) {
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, *application) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, *application, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK) return {{ prefix }}Error;
     }
     return {{ prefix }}OK;
 }
@@ -1082,7 +1095,7 @@ static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, co
    a state root the substep integrator reaches a rounding short of the instant
    joins the time event's iteration, as it does in the simulation, whose
    integration reaches the instant. */
-static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, bool ends_at_time_event, double* advanced) {
+static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, bool ends_at_time_event, double* advanced{% if skip_history %}, bool* history_ready{% endif %}) {
     double y0[Y_LEN];
     /* Every indicator buffer is defined on every path: rmc_domains_changed
        leaves its output untouched while no domain is armed, and the
@@ -1094,16 +1107,19 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
     memcpy(y0, m->y, sizeof(m->y));
     bool slide_changed[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
     rmc_slide_begin(&m->rmc_slide, RMC_EVENT_INDICATORS);
-    {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
+    {{ prefix }}Status integrated = {{ integrate }}(m, t, h, {{ "!*history_ready" if skip_history else "true" }});
     if (integrated != {{ prefix }}OK) return integrated == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
     if (rmc_domains_changed(m, z_high, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
     *advanced = h;
+{%- if skip_history %}
+    *history_ready = !changed && !ends_at_time_event;
+{%- endif %}
     if (!changed && ends_at_time_event && RMC_EVENT_INDICATORS != 0 && m->rmc_domain_valid) {
         double settled[Y_LEN], substep = m->rmc_cs_substep;
         memcpy(settled, m->y, sizeof(settled));
         memcpy(m->y, y0, sizeof(m->y));
         bool past_end = false;
-        if ({{ integrate }}(m, t, h + rmc_location_tolerance(t, h)) != {{ prefix }}OK || rmc_domains_changed(m, z, &past_end) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, h + rmc_location_tolerance(t, h), {{ "false" if skip_history else "true" }}) != {{ prefix }}OK || rmc_domains_changed(m, z, &past_end) != {{ prefix }}OK) return {{ prefix }}Error;
         if (!past_end) { memcpy(m->y, settled, sizeof(settled)); m->rmc_cs_substep = substep; }
         m->time = t + h;
         /* The caller's time event iteration observes the changed domain. */
@@ -1128,7 +1144,7 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
            handles it. */
         if (ends_at_time_event && fabs(h - *advanced) <= rmc_interval_roundoff(t, h)) {
             memcpy(m->y, y0, sizeof(m->y));
-            if ({{ integrate }}(m, t, h) != {{ prefix }}OK) return {{ prefix }}Error;
+            if ({{ integrate }}(m, t, h, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK) return {{ prefix }}Error;
             *advanced = h;
             return {{ prefix }}OK;
         }
@@ -1157,6 +1173,11 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
     if (rmc_events_completed(m, &entered) != {{ prefix }}OK) return {{ prefix }}Error;
     entered |= rmc_discrete_inputs_changed(m);
     if (entered && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
+{%- if skip_history %}
+    /* Hosts set inputs between communication steps. Inside the step the
+       parameter histories are stable until the next event iteration. */
+    bool history_ready = false;
+{%- endif %}
     while (t < end) {
         /* Indicators bound the scan; a component without any integrates a
            whole interval. */
@@ -1168,7 +1189,7 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
         if (next == RMC_EVENT_UNRESOLVED) { RMC_LOG(m, "a clock tick is finer than the time resolution"); return {{ prefix }}Error; }
         bool at_event = next == RMC_EVENT;
         if (at_event) h = fmin(event, t + h) - t;
-        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, at_event, &advanced);
+        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, at_event, &advanced{% if skip_history %}, &history_ready{% endif %});
         if (interval != {{ prefix }}OK) return interval == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
         t = advanced == end - t ? end : t + advanced;
         m->time = t;

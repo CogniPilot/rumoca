@@ -7,7 +7,7 @@
 //! component keeps a single C function per program and drives both refreshes
 //! from step tables in the issued order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use minijinja::Value;
@@ -79,6 +79,20 @@ impl AssignmentCatalog {
         Ok(functions)
     }
 
+    /// Whether the emitted assignments are independent of event history.
+    pub(super) fn ignores_pre_values(&self, layout: &solve::SolveLayout) -> bool {
+        let history: BTreeSet<_> = layout
+            .pre_param_bindings
+            .iter()
+            .map(|binding| binding.dest_p_index)
+            .collect();
+        self.programs.iter().all(|ops| {
+            solve::program_parameter_indices(ops)
+                .into_iter()
+                .all(|index| !history.contains(&index))
+        })
+    }
+
     /// The emitted programs (each storing into its solver-Y targets) and the
     /// shared call sequence.
     pub(in crate::codegen) fn into_value(self) -> Result<Value, CodegenError> {
@@ -94,5 +108,27 @@ impl AssignmentCatalog {
             plan => Value::from_object(ScalarProgramPlan::new(Arc::new(block))?),
             sequence => sequence,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_history_dependency_disables_projection_reuse() {
+        let layout = solve::SolveLayout {
+            pre_param_bindings: vec![solve::PreParamBinding {
+                dest_p_index: 4,
+                source: solve::PreParamSource::Y { index: 0 },
+                clock_schedule: None,
+            }],
+            ..Default::default()
+        };
+        let mut catalog = AssignmentCatalog::default();
+        catalog.programs.push(vec![solve::LinearOp::LoadP { dst: 0, index: 3 }]);
+        assert!(catalog.ignores_pre_values(&layout));
+        catalog.programs[0].push(solve::LinearOp::LoadP { dst: 1, index: 4 });
+        assert!(!catalog.ignores_pre_values(&layout));
     }
 }
