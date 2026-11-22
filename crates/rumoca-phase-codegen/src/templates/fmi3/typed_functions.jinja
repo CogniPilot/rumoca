@@ -1,5 +1,5 @@
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
-{%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic %}
+{%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic, ctype %}
 {%- from "fmi-typed-tensors.jinja" import tensor %}
 
 {#- A binder's trip count. The template engine's `//` does not floor a negative
@@ -13,10 +13,9 @@
 {#- Whether a value of this type is a binary64 array a caller can pass
     through unconverted (nonempty; an empty type keeps its one-element local). -#}
 {%- macro direct(ty) -%}{% if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" and ty.scalar_count > 0 %}1{% endif %}{%- endmacro %}
-{%- macro ctype(ty) -%}{% if ty.scalar.kind == "real" %}double{% elif ty.scalar.kind == "integer" %}int64_t{% else %}bool{% endif %}{%- endmacro %}
 
-{%- macro call(name, inputs, outputs) -%}
-{ int status={{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in outputs %}r{{ output }},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
+{%- macro call(name, inputs, outputs, publish=false) -%}
+{ int status={{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ {% if publish %}out[0]{% else %}{% for output in outputs %}r{{ output }},{% else %}NULL{% endfor %}{% endif %} }, observer); if (status) return status; }
 {% endmacro %}
 
 {%- macro observation_wrapper(owner) -%}
@@ -43,7 +42,7 @@ return status;
 {% endif -%}
 {% endmacro %}
 
-{%- macro operation(op, program, region_name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}) -%}
+{%- macro operation(op, program, region_name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}, publish=false) -%}
 {% if op.operation == "check_assertion" -%}
 if (!r{{ op.condition }}[0]) {
 {% if op.message.kind == "captures" -%}
@@ -66,8 +65,8 @@ if (!observer || !observer->observe || observer->observe(observer->context, {{ s
 {% elif op.operation == "select" -%}
 {{ copy("r" ~ op.destination, "(r" ~ op.condition ~ "[0] ? r" ~ op.if_true ~ " : r" ~ op.if_false ~ ")") -}}
 {% elif op.operation == "conditional" -%}
-if (r{{ op.condition }}[0]) { {{ call(region_name ~ "_true", op.captures, op.destinations)|trim }} }
-else { {{ call(region_name ~ "_false", op.captures, op.destinations)|trim }} }
+if (r{{ op.condition }}[0]) { {{ call(region_name ~ "_true", op.captures, op.destinations, publish)|trim }} }
+else { {{ call(region_name ~ "_false", op.captures, op.destinations, publish)|trim }} }
 {% elif op.operation == "call" -%}
 {% if op.assertion_forwarding|length > 0 -%}
 {
@@ -112,7 +111,7 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% for binder in op.domain.binders %} } {% endfor %}
 }
 {% else -%}
-{{ tensor(op, program) -}}
+{{ tensor(op, program, publish) -}}
 {% endif -%}
 {% endmacro %}
 
@@ -166,11 +165,34 @@ memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
 {% if op.operation == "load" and op.slot in input.pointers and written.ids|select("equalto", op.destination)|list|length == 1 %}{% set alias.ids = alias.ids + [op.destination] %}{% endif -%}
 {% endfor -%}
 {% for ty in program.register_types %}{% if loop.index0 not in alias.ids %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
-{% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
-{% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
+{#- When the only tensor result is stored by the final instruction, publish
+    after all checks directly from its register. A tail conditional or indexed
+    update can publish there itself. No other normal output can alias the input
+    and expose a partially published result. Fold carries can use the same
+    address for input and output. -#}
+{% set outputs = program.slots|selectattr("storage","equalto","output")|list -%}
+{% set final = program.operations[-1].operation if program.operations else none -%}
+{% set last_store = outputs|length == 1 and outputs[0].value_type.scalar_count > 1 and final and final.operation == "store" and final.slot == outputs[0].id -%}
+{% set result = program.operations[-2].operation if last_store and program.operations|length > 1 else none -%}
+{% set forward = result and (
+    (result.operation == "conditional" and result.destinations == [final.source]) or
+    (result.operation == "assigned_conditional" and result.program.destinations == [final.source] and not result.program.state_destinations) or
+    (result.operation == "update_element" and result.destination == final.source)) -%}
+{% for issued in program.operations -%}
+{% set op = issued.operation -%}
+{% if loop.last and last_store -%}
+{% if not forward -%}
+if (out[0] && out[0] != r{{ final.source }}) memmove(out[0], r{{ final.source }}, sizeof(s{{ final.slot }}));
+{% endif -%}
+{% elif op.operation == "load" and op.destination in alias.ids -%}
+const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
+{% else -%}
+{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs, forward and loop.index0 == program.operations|length - 2) -}}
+{% endif -%}
+{% endfor -%}
 {% set output = namespace(index=0) -%}
 {% for slot in program.slots -%}
-{% if slot.storage == "output" -%}
+{% if slot.storage == "output" and not last_store -%}
 if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
 {% set output.index = output.index + 1 -%}
 {% endif -%}

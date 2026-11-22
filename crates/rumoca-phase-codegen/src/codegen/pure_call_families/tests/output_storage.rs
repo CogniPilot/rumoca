@@ -93,3 +93,85 @@ fn scalar_output_storage_survives_fortify_and_wrapping_pointer_arithmetic() {
         ],
     );
 }
+
+#[test]
+fn a_tail_tensor_update_publishes_once_after_validation() {
+    let real = solve::SolveScalarType::real(profile());
+    let row = solve::SolveValueType::tensor(real, vec![4]).unwrap();
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1300),
+            vec![
+                row.clone(),
+                solve::SolveValueType::scalar(real),
+                solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
+                solve::SolveValueType::scalar(solve::SolveScalarType::integer(profile())),
+            ],
+            vec![solve::SolvePureCallOutput::result(row.clone())],
+            span(1300),
+            |builder, inputs, outputs| {
+                let base = builder.load(inputs[0], span(1301))?;
+                let value = builder.load(inputs[1], span(1302))?;
+                let condition = builder.load(inputs[2], span(1303))?;
+                let index = builder.load(inputs[3], span(1304))?;
+                let result = builder.conditional(
+                    condition,
+                    &[base, value, index],
+                    vec![row],
+                    span(1305),
+                    |builder, inputs, outputs| {
+                        let base = builder.load(inputs[0], span(1306))?;
+                        let value = builder.load(inputs[1], span(1307))?;
+                        let index = builder.load(inputs[2], span(1308))?;
+                        let updated = builder.update_element(base, value, &[index], span(1309))?;
+                        builder.store(outputs[0], updated, span(1310))
+                    },
+                    |builder, inputs, outputs| {
+                        let same = builder.load(inputs[0], span(1311))?;
+                        builder.store(outputs[0], same, span(1312))
+                    },
+                )?;
+                builder.store(outputs[0], result[0], span(1313))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let families = PureCallFamilies::new(&table).unwrap();
+    let mut environment = super::super::super::create_environment();
+    let driver = CONTROL.split("int main").next().unwrap().to_owned()
+        + r#"
+int main(void) {
+    double carry[]={1,2,3,4,0};
+    const double value=42;
+    bool update=false;
+    int64_t index=0;
+    const void* in[]={carry,&value,&update,&index};
+    void* out[]={carry};
+    assert(rumoca_pure_0(in,out,NULL)==0);
+    assert(carry[2]==3);
+    update=true;
+    assert(rumoca_pure_0(in,out,NULL)!=0);
+    assert(carry[0]==1 && carry[1]==2 && carry[2]==3 && carry[3]==4);
+    index=3;
+    assert(rumoca_pure_0(in,out,NULL)==0);
+    assert(carry[2]==42 && carry[1]==2);
+    out[0]=carry+1;
+    index=2;
+    assert(rumoca_pure_0(in,out,NULL)==0);
+    assert(carry[1]==1 && carry[2]==42 && carry[3]==42 && carry[4]==4);
+    return 0;
+}
+"#;
+    environment.add_template("tensor_result", &driver).unwrap();
+    let source = environment
+        .get_template("tensor_result")
+        .unwrap()
+        .render(minijinja::context! {
+            table => families.owners_value(), directional => families.directional_value(),
+        })
+        .unwrap();
+    assert!(source.contains("if (result != r"), "{source}");
+    assert!(source.contains("(void*[]){ out[0] }"), "{source}");
+    super::assertion_carrier::compile_and_execute_with_flags(&source, &["-O2"]);
+}

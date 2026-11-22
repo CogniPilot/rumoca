@@ -8,11 +8,15 @@
 {%- else -%}INT64_C({{ value }}){%- endif -%}
 {%- endmacro %}
 
-{%- macro declaration(name, ty) %}
+{%- macro ctype(ty) -%}
 {%- if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" %}double
 {%- elif ty.scalar.kind == "integer" %}int64_t
 {%- elif ty.scalar.kind == "boolean" %}bool
-{%- else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %} {{ name }}[{{ ty.scalar_count if ty.scalar_count > 0 else 1 }}]; (void){{ name }};
+{%- else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %}
+{%- endmacro %}
+
+{%- macro declaration(name, ty) %}
+{{ ctype(ty) }} {{ name }}[{{ ty.scalar_count if ty.scalar_count > 0 else 1 }}]; (void){{ name }};
 {%- endmacro %}
 
 {%- macro copy(dst, src) -%}

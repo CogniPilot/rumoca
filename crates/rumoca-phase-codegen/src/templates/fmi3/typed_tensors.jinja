@@ -1,10 +1,10 @@
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
-{%- from "fmi-typed-arithmetic.jinja" import copy, binary, integer_binary, domain_check %}
+{%- from "fmi-typed-arithmetic.jinja" import copy, binary, integer_binary, domain_check, ctype %}
 {%- macro bounds(index, extent) -%}
 if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% endmacro %}
 
-{%- macro tensor(op, program) -%}
+{%- macro tensor(op, program, publish=false) -%}
 {% set dst = "r" ~ op.destination -%}
 {% set ty = program.register_types[op.destination] -%}
 {% if op.operation in ["scale", "matrix_multiply", "cross"] and (ty.scalar.kind != "real" or ty.scalar.profile.format != "binary64") %}{{ fail("unsupported-feature:fmi.c.pure-call: non-Real tensor arithmetic") }}{% endif -%}
@@ -83,8 +83,17 @@ index=index*{{ shape[loop.index0] }}+(size_t)(r{{ index }}[0]-1);
 {% endif -%}
 {% endfor -%}
 {% if op.operation == "update_element" -%}
+{% if publish -%}
+if (out[0]) {
+    const {{ ctype(ty) }} replacement = r{{ op.value }}[0];
+    {{ ctype(ty) }}* result = out[0];
+    if (result != r{{ op.aggregate }}) memmove(result, r{{ op.aggregate }}, {{ ty.scalar_count }} * sizeof(*result));
+    result[index] = replacement;
+}
+{% else -%}
 {{ copy(dst, "r" ~ op.aggregate) -}}
 {{ dst }}[index]=r{{ op.value }}[0];
+{% endif -%}
 {% else -%}
 {{ dst }}[0]=r{{ op.aggregate }}[index];
 {% endif -%}
