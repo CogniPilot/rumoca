@@ -6,6 +6,19 @@ use super::{
 };
 use crate::{BinaryOp, LinearOp, Reg, TargetAssignmentShape, UnaryOp};
 
+/// The only targets [`derive`] can isolate in `output`: those it depends on,
+/// or `None` when the dependency analysis cannot bound the output. The walk
+/// starts at `output` alone, so an output independent of the target only
+/// accumulates offsets and ends with a zero coefficient, which answers
+/// `None`; `dependency_candidates_tests` checks this against the exhaustive
+/// inventory.
+pub(super) fn candidate_targets<'a>(
+    output: Reg,
+    dependencies: &'a ScalarProgramYDependency<'_>,
+) -> Option<std::borrow::Cow<'a, crate::IndexIntervals>> {
+    dependencies.register_dependencies(output)
+}
+
 pub(super) fn derive(
     program: ProgramPrefix<'_>,
     output: Reg,

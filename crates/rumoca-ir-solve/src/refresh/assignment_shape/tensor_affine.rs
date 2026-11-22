@@ -121,6 +121,71 @@ pub(super) fn derive(
     })
 }
 
+/// The projections of the operations whose lanes one store certifies.
+///
+/// [`derive`] reads its output only through the position of the operation that
+/// produces it, so every lane of that operation has the same projection up to
+/// its output register: each (operation, target) is derived once and rebound
+/// to the asking lane. `dependency_candidates_tests` checks the memo against
+/// the exhaustive inventory, which derives every pair afresh.
+#[derive(Default)]
+pub(super) struct OperationProjections {
+    by_operation: BTreeMap<(usize, usize), Option<AffineTensorProjection>>,
+    certified: BTreeMap<usize, Vec<usize>>,
+}
+
+impl OperationProjections {
+    /// Exactly `derive(program, output, target, dependencies)`.
+    pub(super) fn derive(
+        &mut self,
+        program: ProgramPrefix<'_>,
+        output: Reg,
+        target: usize,
+        dependencies: &ScalarProgramYDependency<'_>,
+    ) -> Option<AffineTensorProjection> {
+        let position = producer_position(program, output)?;
+        let key = (position, hooks::memo_target(target));
+        let projection = self
+            .by_operation
+            .entry(key)
+            .or_insert_with(|| {
+                hooks::count(hooks::Work::Derived, 1);
+                derive(program, output, target, dependencies)
+            })
+            .clone()?;
+        Some(hooks::rebind(projection, output))
+    }
+
+    /// The only targets among `targets` that [`derive`] certifies for
+    /// `output`: those with a projection of the operation producing it.
+    /// `targets` must be the same set for every lane of one operation.
+    pub(super) fn candidate_targets(
+        &mut self,
+        program: ProgramPrefix<'_>,
+        output: Reg,
+        targets: &BTreeSet<usize>,
+        dependencies: &ScalarProgramYDependency<'_>,
+    ) -> Vec<usize> {
+        let Some(position) = producer_position(program, output) else {
+            return Vec::new();
+        };
+        if let Some(certified) = self.certified.get(&position) {
+            return certified.clone();
+        }
+        hooks::count(hooks::Work::Scanned, targets.len());
+        let certified: Vec<usize> = targets
+            .iter()
+            .copied()
+            .filter(|&target| self.derive(program, output, target, dependencies).is_some())
+            .filter(|_| hooks::keep_candidates())
+            .collect();
+        if hooks::memoize_certified() {
+            self.certified.insert(position, certified.clone());
+        }
+        certified
+    }
+}
+
 fn reject_zero_scalar_factor(
     program: ProgramPrefix<'_>,
     operation: &LinearOp,
@@ -191,4 +256,140 @@ fn require_producers(
         cursor = operation_end.min(end);
     }
     Some(())
+}
+
+/// The one implementation of the memo key, the lane rebinding, and the
+/// candidate filter of [`OperationProjections`]. A test injects one fault at
+/// a time into it, to prove the exhaustive oracle catches each, and counts the
+/// work the inventory does; a production build injects none and counts
+/// nothing.
+pub(super) mod hooks {
+    use super::AffineTensorProjection;
+    use crate::Reg;
+
+    /// A fault a test injects.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::refresh) enum Fault {
+        /// Lanes keep the output of the lane that derived the projection.
+        NoRebind,
+        /// The memo forgets the target, sharing one projection across targets.
+        KeyByOperation,
+        /// The operation's certified targets are dropped.
+        NoCandidates,
+        /// Each lane scans its operation's targets again.
+        NoCertifiedMemo,
+    }
+
+    /// Work the inventory does: pairs asked of a rule, projections derived,
+    /// and targets scanned for an operation's candidates.
+    #[derive(Clone, Copy, Debug)]
+    pub(in crate::refresh) enum Work {
+        Asked,
+        Derived,
+        Scanned,
+    }
+
+    pub(super) fn memo_target(target: usize) -> usize {
+        if injected(Fault::KeyByOperation) {
+            0
+        } else {
+            target
+        }
+    }
+
+    pub(super) fn rebind(
+        projection: AffineTensorProjection,
+        output: Reg,
+    ) -> AffineTensorProjection {
+        if injected(Fault::NoRebind) {
+            return projection;
+        }
+        AffineTensorProjection {
+            output,
+            ..projection
+        }
+    }
+
+    pub(super) fn keep_candidates() -> bool {
+        !injected(Fault::NoCandidates)
+    }
+
+    pub(super) fn memoize_certified() -> bool {
+        !injected(Fault::NoCertifiedMemo)
+    }
+
+    #[cfg(not(test))]
+    const fn injected(_fault: Fault) -> bool {
+        false
+    }
+
+    #[cfg(not(test))]
+    pub(in crate::refresh) const fn count(_work: Work, _amount: usize) {}
+
+    #[cfg(test)]
+    use injection::injected;
+    #[cfg(test)]
+    pub(in crate::refresh) use injection::{Counts, count, counted, with};
+
+    #[cfg(test)]
+    mod injection {
+        use std::cell::Cell;
+
+        use super::{Fault, Work};
+
+        /// The work counted while a test runs.
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+        pub(in crate::refresh) struct Counts {
+            pub(in crate::refresh) asked: usize,
+            pub(in crate::refresh) derived: usize,
+            pub(in crate::refresh) scanned: usize,
+        }
+
+        thread_local! {
+            static ACTIVE: Cell<Option<Fault>> = const { Cell::new(None) };
+            static COUNTS: Cell<Counts> = const {
+                Cell::new(Counts { asked: 0, derived: 0, scanned: 0 })
+            };
+        }
+
+        pub(super) fn injected(fault: Fault) -> bool {
+            ACTIVE.with(Cell::get) == Some(fault)
+        }
+
+        pub(in crate::refresh) fn count(work: Work, amount: usize) {
+            COUNTS.with(|counts| {
+                let mut value = counts.get();
+                match work {
+                    Work::Asked => value.asked += amount,
+                    Work::Derived => value.derived += amount,
+                    Work::Scanned => value.scanned += amount,
+                }
+                counts.set(value);
+            });
+        }
+
+        /// Clears the injected fault when dropped, so a panicking `run`
+        /// leaves no fault behind on its thread.
+        struct ClearFault;
+
+        impl Drop for ClearFault {
+            fn drop(&mut self) {
+                ACTIVE.with(|active| active.set(None));
+            }
+        }
+
+        /// `run` with `fault` injected, cleared when `run` returns or panics.
+        pub(in crate::refresh) fn with<T>(fault: Fault, run: impl FnOnce() -> T) -> T {
+            ACTIVE.with(|active| active.set(Some(fault)));
+            let _clear = ClearFault;
+            run()
+        }
+
+        /// `run` and the work it does.
+        pub(in crate::refresh) fn counted<T>(run: impl FnOnce() -> T) -> (T, Counts) {
+            COUNTS.with(|counts| counts.set(Counts::default()));
+            let result = run();
+            (result, COUNTS.with(Cell::get))
+        }
+    }
 }

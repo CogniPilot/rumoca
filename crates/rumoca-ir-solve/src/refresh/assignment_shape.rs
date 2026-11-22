@@ -71,6 +71,19 @@ impl<'prefix, 'dependencies> OutputShapes<'prefix, 'dependencies> {
     }
 
     fn for_target(&self, target_y_index: usize) -> Option<TargetAssignmentShape> {
+        self.for_target_with(target_y_index, |target| {
+            tensor_affine::derive(self.prefix, self.output, target, self.dependencies)
+        })
+    }
+
+    /// The shape of `target_y_index`, the first of the rules in preference
+    /// order that isolates it; `projection` answers exactly as
+    /// [`tensor_affine::derive`] on this output.
+    fn for_target_with(
+        &self,
+        target_y_index: usize,
+        projection: impl FnOnce(usize) -> Option<tensor_affine::AffineTensorProjection>,
+    ) -> Option<TargetAssignmentShape> {
         let (prefix, output, dependencies) = (self.prefix, self.output, self.dependencies);
         self.fixed
             .get(&target_y_index)
@@ -80,15 +93,49 @@ impl<'prefix, 'dependencies> OutputShapes<'prefix, 'dependencies> {
             .or_else(|| {
                 Some(TargetAssignmentShape::TensorAffine {
                     target_y_index,
-                    projection: tensor_affine::derive(
-                        prefix,
-                        output,
-                        target_y_index,
-                        dependencies,
-                    )?,
+                    projection: projection(target_y_index)?,
                     expr_eval_len: prefix.len(),
                 })
             })
+    }
+
+    /// The members of [`assignment_candidates`] some rule can isolate, which
+    /// keeps every candidate [`Self::for_target`] answers: the fixed shapes,
+    /// the additive and reciprocal candidates, and, past a product step, the
+    /// targets of the walked operations with a tensor projection. `None` when
+    /// the output's dependencies are unbounded. Each rule's candidates live
+    /// beside the rule; `dependency_candidates_tests` checks the result against
+    /// the exhaustive inventory.
+    fn isolable(
+        &self,
+        targets: &BTreeSet<usize>,
+        walked: &dependency_candidates::Candidates,
+        projections: &mut tensor_affine::OperationProjections,
+    ) -> Option<BTreeSet<usize>> {
+        let additive = additive::candidate_targets(self.output, self.dependencies)?;
+        // Membership in `assignment_candidates` for a bounded output, without
+        // building the set.
+        let candidate = |target: &usize| {
+            (additive.contains(*target) && targets.contains(target))
+                || (!walked.linear && walked.targets.contains(target))
+        };
+        let mut isolable: BTreeSet<usize> = self
+            .fixed
+            .keys()
+            .copied()
+            .chain(additive.iter())
+            .chain(reciprocal::candidate_targets(self.prefix, self.output))
+            .filter(candidate)
+            .collect();
+        if !walked.linear {
+            isolable.extend(projections.candidate_targets(
+                self.prefix,
+                self.output,
+                &walked.targets,
+                self.dependencies,
+            ));
+        }
+        Some(isolable)
     }
 }
 
@@ -146,6 +193,7 @@ pub fn derive_target_assignment_shapes(
     // The candidate walk starts at the output's producing operation, so the
     // lanes of one operation share it.
     let mut walks: BTreeMap<usize, Option<dependency_candidates::Candidates>> = BTreeMap::new();
+    let mut projections = tensor_affine::OperationProjections::default();
     for (output_offset, (output, store_position)) in store_output_registers(program).enumerate() {
         let Some(prefix) = program.get(..store_position) else {
             continue;
@@ -155,6 +203,7 @@ pub fn derive_target_assignment_shapes(
             .is_none_or(|analysis| analysis.position != store_position)
         {
             walks.clear();
+            projections = tensor_affine::OperationProjections::default();
             // A prefix without unique producers exposes no certificate, so its
             // dependencies and targets are never needed.
             store = Some(PrefixAnalysis {
@@ -190,10 +239,17 @@ pub fn derive_target_assignment_shapes(
                     .or_insert_with(|| dependency_candidates::derive(producers.view(), output))
                     .as_ref()
             });
-        let candidates = assignment_candidates(output, dependencies, targets, walked);
         let output_shapes = OutputShapes::new(producers.view(), output, dependencies);
-        for &target in &candidates {
-            let Some(shape) = output_shapes.for_target(target) else {
+        // Only targets some rule can isolate are asked, so the lanes of one
+        // operation do not each ask every target of the operation.
+        let isolable = walked
+            .and_then(|walked| output_shapes.isolable(targets, walked, &mut projections))
+            .unwrap_or_else(|| assignment_candidates(output, dependencies, targets, walked));
+        for &target in &isolable {
+            tensor_affine::hooks::count(tensor_affine::hooks::Work::Asked, 1);
+            let Some(shape) = output_shapes.for_target_with(target, |target| {
+                projections.derive(producers.view(), output, target, dependencies)
+            }) else {
                 continue;
             };
             if certified.insert((output_offset, shape.target_y_index())) {

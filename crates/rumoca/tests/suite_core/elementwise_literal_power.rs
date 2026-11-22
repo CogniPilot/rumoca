@@ -5,7 +5,7 @@
 //! written one scalar power per element, bit for bit.
 
 use rumoca::Compiler;
-use rumoca_ir_solve::ComputeNode;
+use rumoca_ir_solve::{ComputeNode, LinearOp};
 use rumoca_sim::SimOptions;
 
 /// Pure-call operations in the continuous residual programs, and the
@@ -231,6 +231,101 @@ fn the_ladder_refresh_runs_its_certified_stages_without_an_owner() {
             "{model}: the staged refresh schedule is certified"
         );
     }
+}
+
+/// The isolators of every ladder program, derived once per program, are the
+/// pairs a per-pair derivation finds when asked about every output and every
+/// target, with the same winning rule.
+#[test]
+fn the_ladder_isolators_match_a_derivation_of_every_pair() {
+    let source = include_str!("../fixtures/elementwise_literal_power/PowerLadder.mo");
+    for model in ["PowerLadder.Ladder", "PowerLadder.Ladder50"] {
+        let lowered = lowered(model, source);
+        let mut certified = 0;
+        for program in scalar_programs(&lowered) {
+            let inventory = rumoca_ir_solve::derive_target_assignment_shapes(program);
+            let outputs = stored_outputs(program);
+            let targets = y_extent(program);
+            let every_pair: Vec<_> = (0..outputs)
+                .flat_map(|output| (0..targets).map(move |target| (output, target)))
+                .filter_map(|(output, target)| {
+                    rumoca_ir_solve::derive_target_assignment_shape_for_output(
+                        program, output, target,
+                    )
+                    .map(|shape| (output, shape))
+                })
+                .collect();
+            assert_eq!(rules(&inventory), rules(&every_pair), "{model}");
+            assert_eq!(inventory, every_pair, "{model}");
+            certified += inventory.len();
+        }
+        assert!(certified > 0, "{model}: the ladder certifies isolators");
+    }
+}
+
+/// Each certificate's output, target, and winning rule.
+fn rules(
+    shapes: &[(usize, rumoca_ir_solve::TargetAssignmentShape)],
+) -> Vec<(
+    usize,
+    usize,
+    std::mem::Discriminant<rumoca_ir_solve::TargetAssignmentShape>,
+)> {
+    shapes
+        .iter()
+        .map(|(output, shape)| {
+            (
+                *output,
+                shape.target_y_index(),
+                std::mem::discriminant(shape),
+            )
+        })
+        .collect()
+}
+
+/// The outputs a program stores, the offsets its certificates name.
+fn stored_outputs(program: &[LinearOp]) -> usize {
+    program
+        .iter()
+        .map(|operation| match operation {
+            LinearOp::StoreOutput { .. } => 1,
+            LinearOp::StoreOutputRange { count, .. } => *count,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// One past the largest solver-Y index a program loads.
+fn y_extent(program: &[LinearOp]) -> usize {
+    program
+        .iter()
+        .filter_map(|operation| match operation {
+            LinearOp::LoadY { index, .. } => Some(index + 1),
+            LinearOp::TensorLoad {
+                input: rumoca_ir_solve::TensorInputKind::Y,
+                input_start,
+                count,
+                ..
+            } => Some(input_start + count),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn scalar_programs(model: &rumoca_ir_solve::SolveModel) -> impl Iterator<Item = &[LinearOp]> {
+    [
+        &model.problem.continuous.implicit_rhs.nodes,
+        &model.problem.continuous.derivative_rhs.nodes,
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|node| match node {
+        ComputeNode::ScalarPrograms(block) => Some(block),
+        _ => None,
+    })
+    .flat_map(|block| block.programs().iter())
+    .map(Vec::as_slice)
 }
 
 fn lowered(model: &str, source: &str) -> rumoca_ir_solve::SolveModel {
