@@ -637,6 +637,32 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "lanes" => Some(Value::from(lanes)),
             _ => None,
         },
+        LinearOp::TensorIntegerPower {
+            src_start,
+            count,
+            power,
+            lanes,
+            ..
+        } => match key {
+            "src_start" => Some(Value::from(src_start as usize)),
+            "count" => Some(Value::from(count)),
+            "exponent" => Some(Value::from(power.exponent())),
+            "reciprocal" => Some(Value::from(power.reciprocal())),
+            // The plan's steps in order: `Seed` (`result = base`), `Multiply`
+            // (`result = result * base`) and `Square` (`base = base * base`).
+            "steps" => Some(Value::from(
+                power
+                    .steps()
+                    .map(|step| match step {
+                        solve::IntegerPowerStep::Seed => "Seed",
+                        solve::IntegerPowerStep::Multiply => "Multiply",
+                        solve::IntegerPowerStep::Square => "Square",
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
         LinearOp::TensorCross {
             lhs_start,
             rhs_start,
@@ -936,6 +962,16 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "count",
             "lhs_stride",
             "rhs_stride",
+            "lanes",
+        ],
+        LinearOp::TensorIntegerPower { .. } => &[
+            "kind",
+            "dst",
+            "src_start",
+            "count",
+            "exponent",
+            "reciprocal",
+            "steps",
             "lanes",
         ],
         LinearOp::TensorCross { .. } => &["kind", "dst", "lhs_start", "rhs_start", "lanes"],

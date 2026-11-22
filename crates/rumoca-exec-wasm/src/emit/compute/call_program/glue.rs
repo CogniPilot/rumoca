@@ -581,6 +581,7 @@ fn may_read_y(operation: &LinearOp, cells: &Range<usize>) -> bool {
         | LinearOp::DotProduct { .. }
         | LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorCross { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }

@@ -31,6 +31,7 @@ pub(super) fn renamable(op: &LinearOp) -> bool {
         | LinearOp::DotProduct { .. }
         | LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorCross { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
@@ -123,6 +124,11 @@ fn visit_range_registers(op: &mut LinearOp, visit: &mut dyn FnMut(Role, &mut Reg
         | LinearOp::TensorFill {
             dst_start,
             value_start: start,
+            ..
+        }
+        | LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start: start,
             ..
         } => {
             visit(R, start);

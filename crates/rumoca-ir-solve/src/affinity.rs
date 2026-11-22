@@ -34,6 +34,15 @@ impl Degree {
         }
     }
 
+    /// Every plan multiplies the source by itself or inverts it, which only
+    /// an independent source survives.
+    pub(super) fn integer_power(self) -> Self {
+        match self {
+            Self::Independent => Self::Independent,
+            _ => Self::Nonlinear,
+        }
+    }
+
     fn binary(self, operator: BinaryOp, rhs: Self) -> Self {
         match operator {
             BinaryOp::Add | BinaryOp::Sub => self.max(rhs),

@@ -647,6 +647,7 @@ mod tangent_lane_refusal_tests;
 #[cfg(test)]
 mod tests {
     mod assertions;
+    mod integer_power;
     mod observation;
     mod owner_admission;
     mod projection_jacobian;

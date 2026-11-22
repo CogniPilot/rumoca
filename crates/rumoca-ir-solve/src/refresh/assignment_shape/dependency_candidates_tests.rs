@@ -305,7 +305,7 @@ impl Stream {
 
 /// A random SSA program over scalar and tensor operations of a few extents,
 /// ending in range and scalar stores: the vocabulary every rule reads.
-fn random_program(stream: &mut Stream) -> Vec<LinearOp> {
+fn random_program(stream: &mut Stream, powers: bool) -> Vec<LinearOp> {
     let mut program = Vec::new();
     // (start, count) of every defined value, scalars with count 1.
     let mut values: Vec<(u32, usize)> = Vec::new();
@@ -333,7 +333,7 @@ fn random_program(stream: &mut Stream) -> Vec<LinearOp> {
         push(&mut program, &mut values, op, count);
     }
     for _ in 0..3 + stream.next(8) {
-        if let Some((op, count)) = random_operation(stream, &values) {
+        if let Some((op, count)) = random_operation(stream, &values, powers) {
             push(&mut program, &mut values, op, count);
         }
     }
@@ -354,7 +354,11 @@ fn random_program(stream: &mut Stream) -> Vec<LinearOp> {
 
 /// One random scalar or elementwise operation over the defined `values`, or
 /// `None` for an elementwise pair of mismatched extents.
-fn random_operation(stream: &mut Stream, values: &[(u32, usize)]) -> Option<(LinearOp, usize)> {
+fn random_operation(
+    stream: &mut Stream,
+    values: &[(u32, usize)],
+    powers: bool,
+) -> Option<(LinearOp, usize)> {
     let next = next_register(values);
     let op_kind = [BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div][stream.next(4)];
     let (lhs, lhs_count) = values[stream.next(values.len())];
@@ -362,7 +366,8 @@ fn random_operation(stream: &mut Stream, values: &[(u32, usize)]) -> Option<(Lin
     let scalar = |start: u32, count: usize, stream: &mut Stream| {
         start + u32::try_from(stream.next(count)).unwrap()
     };
-    match stream.next(6) {
+    // Without powers the draws are those of the original corpus.
+    match stream.next(if powers { 7 } else { 6 }) {
         0 => {
             let value = [0.0, 2.0, -1.0, 0.5][stream.next(4)];
             Some((LinearOp::Const { dst: next, value }, 1))
@@ -389,6 +394,18 @@ fn random_operation(stream: &mut Stream, values: &[(u32, usize)]) -> Option<(Lin
             };
             Some((op, 1))
         }
+        4 if powers => {
+            // An elementwise literal power of one value, positive or negative.
+            let exponent = [2, 3, 7, -2, -3][stream.next(5)];
+            let op = LinearOp::TensorIntegerPower {
+                dst_start: next,
+                src_start: lhs,
+                count: lhs_count,
+                power: crate::IntegerPower::new(exponent).expect("exponent has a product"),
+                lanes: 1,
+            };
+            Some((op, lhs_count))
+        }
         _ => {
             // An elementwise operation: equal extents, or a broadcast scalar.
             let count = lhs_count.max(rhs_count);
@@ -411,15 +428,62 @@ fn random_operation(stream: &mut Stream, values: &[(u32, usize)]) -> Option<(Lin
     }
 }
 
+/// Whether a later operation or store of `program` reads a register some
+/// `TensorIntegerPower` defines.
+fn reads_a_power(program: &[LinearOp]) -> bool {
+    let ranges: Vec<_> = program
+        .iter()
+        .filter_map(|op| match op {
+            LinearOp::TensorIntegerPower {
+                dst_start, count, ..
+            } => Some(*dst_start..*dst_start + u32::try_from(*count).unwrap()),
+            _ => None,
+        })
+        .collect();
+    let read = |register: u32, count: usize| {
+        let end = register + u32::try_from(count).unwrap();
+        ranges
+            .iter()
+            .any(|range| register < range.end && range.start < end)
+    };
+    program.iter().any(|op| match *op {
+        LinearOp::StoreOutput { src } | LinearOp::Unary { arg: src, .. } => read(src, 1),
+        LinearOp::StoreOutputRange { start, count, .. } => read(start, count),
+        LinearOp::Binary { lhs, rhs, .. } => read(lhs, 1) || read(rhs, 1),
+        LinearOp::TensorBinary {
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            ..
+        } => {
+            read(lhs_start, if lhs_stride == 0 { 1 } else { count })
+                || read(rhs_start, if rhs_stride == 0 { 1 } else { count })
+        }
+        LinearOp::TensorIntegerPower {
+            src_start, count, ..
+        } => read(src_start, count),
+        _ => false,
+    })
+}
+
 fn next_register(values: &[(u32, usize)]) -> u32 {
     values
         .last()
         .map_or(0, |(start, count)| start + u32::try_from(*count).unwrap())
 }
 
+/// 400 programs of the original vocabulary, then 400 that also hold
+/// elementwise literal powers.
 fn random_corpus() -> Vec<Vec<LinearOp>> {
     let mut stream = Stream(0x9e37_79b9_7f4a_7c15);
-    (0..400).map(|_| random_program(&mut stream)).collect()
+    let mut corpus: Vec<_> = (0..400)
+        .map(|_| random_program(&mut stream, false))
+        .collect();
+    let mut stream = Stream(0x2545_f491_4f6c_dd1d);
+    corpus.extend((0..400).map(|_| random_program(&mut stream, true)));
+    corpus
 }
 
 /// The inventory asks only the targets some rule can isolate, and still
@@ -428,6 +492,7 @@ fn random_corpus() -> Vec<Vec<LinearOp>> {
 #[test]
 fn random_programs_keep_the_exhaustive_inventory_and_its_rules() {
     let mut certified = BTreeMap::new();
+    let mut powers_read = 0usize;
     for program in random_corpus() {
         let expected = exhaustive_shapes(&program);
         let actual = derive_target_assignment_shapes(&program);
@@ -436,7 +501,11 @@ fn random_programs_keep_the_exhaustive_inventory_and_its_rules() {
         for (_, shape) in &actual {
             *certified.entry(rule(shape)).or_insert(0usize) += 1;
         }
+        powers_read += usize::from(reads_a_power(&program));
     }
+    // Powers sit on the path of some stores, so the walk through them (the
+    // non-linear `Kind::Power` projection) is compared with the oracle.
+    assert!(powers_read >= 20, "{powers_read} programs read a power");
     // The corpus reaches every rule the lanes share, so the equivalence is
     // not vacuous.
     for kind in [

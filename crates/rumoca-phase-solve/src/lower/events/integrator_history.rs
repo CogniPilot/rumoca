@@ -352,6 +352,7 @@ fn collect_dependency_reads(
             | solve::LinearOp::MatrixMultiply { .. }
             | solve::LinearOp::LinearSolveComponent { .. }
             | solve::LinearOp::TensorBinary { .. }
+            | solve::LinearOp::TensorIntegerPower { .. }
             | solve::LinearOp::TensorCross { .. }
             | solve::LinearOp::TensorTranspose { .. }
             | solve::LinearOp::TensorConcatenate { .. }

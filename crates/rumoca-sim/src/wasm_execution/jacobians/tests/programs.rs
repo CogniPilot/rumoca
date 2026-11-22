@@ -113,6 +113,46 @@ fn emitted_two_lane_arithmetic_matches_original_program_and_division_kinks() {
 }
 
 #[test]
+fn emitted_two_lane_integer_power_matches_original_program_and_division_kinks() {
+    let y = [
+        0.0,
+        -0.0,
+        0.5,
+        -1.75,
+        3.0e-5,
+        -7.25e3,
+        1.0e300,
+        f64::INFINITY,
+    ];
+    let seed = [2.0, -3.0, 0.25, 1.5, -1.0, 4.0, 0.5, 1.0];
+    let count = y.len();
+    for exponent in [-17, -3, -2, 2, 3, 4, 7, 63, i64::MIN] {
+        let power = rumoca_ir_solve::IntegerPower::new(exponent).unwrap();
+        same_as_source(
+            vec![
+                load(0, rumoca_ir_solve::TensorInputKind::Y, count, 0),
+                LinearOp::TensorIntegerPower {
+                    dst_start: 2 * count as u32,
+                    src_start: 0,
+                    count,
+                    power,
+                    lanes: 2,
+                },
+                LinearOp::StoreOutputRange {
+                    start: 2 * count as u32,
+                    count: 2 * count,
+                    stride: 1,
+                },
+            ],
+            &y,
+            &[],
+            &seed,
+            2 * count,
+        );
+    }
+}
+
+#[test]
 fn emitted_two_lane_matrix_and_cross_keep_original_accumulation_order() {
     same_as_source(
         vec![

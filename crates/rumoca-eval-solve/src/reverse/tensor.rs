@@ -12,6 +12,7 @@
 //! | `DotProduct` `d = Σ l·r` | `l̄ += d̄·r`, `r̄ += d̄·l` |
 //! | `MatrixMultiply` `C = A·B` | `Ā += C̄·Bᵀ`, `B̄ += Aᵀ·C̄` |
 //! | `TensorBinary` | the scalar `Binary` partials, per element (a zero stride accumulates the broadcast operand) |
+//! | `TensorIntegerPower` | the reverse sweep of its plan's `TensorBinary` chain, per element (`integer_power`) |
 //! | `TensorTranspose` | the adjoint transposed back to the source layout |
 //! | `TensorFill` | the sum of the filled elements' adjoints onto the value |
 //! | `TensorIdentity` | none: a constant |
@@ -23,6 +24,7 @@ use super::{
 use crate::EvalSolveError;
 use rumoca_ir_solve::{LinearOp, Reg, TensorInputKind};
 
+mod integer_power;
 #[cfg(test)]
 mod tests;
 
@@ -37,6 +39,7 @@ pub(super) fn supported(op: &LinearOp) -> bool {
         } | LinearOp::DotProduct { .. }
             | LinearOp::MatrixMultiply { lanes: 1, .. }
             | LinearOp::TensorBinary { lanes: 1, .. }
+            | LinearOp::TensorIntegerPower { lanes: 1, .. }
             | LinearOp::TensorTranspose { lanes: 1, .. }
             | LinearOp::TensorFill { lanes: 1, .. }
             | LinearOp::TensorIdentity { lanes: 1, .. }
@@ -55,6 +58,7 @@ pub(super) fn forward(
         LinearOp::DotProduct { .. } => forward_dot(op, regs),
         LinearOp::MatrixMultiply { .. } => forward_matmul(op, regs),
         LinearOp::TensorBinary { .. } => forward_binary(op, regs),
+        LinearOp::TensorIntegerPower { .. } => forward_integer_power(op, regs),
         LinearOp::TensorTranspose { .. } => forward_transpose(op, regs),
         LinearOp::TensorFill { .. } => forward_fill(op, regs),
         LinearOp::TensorIdentity { .. } => forward_identity(op, regs),
@@ -122,6 +126,12 @@ fn refuse_overlap(op: &LinearOp) -> Result<(), EvalSolveError> {
             count,
             ..
         } => overlap((dst_start, count), (value_start, 1)),
+        LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start,
+            count,
+            ..
+        } => overlap((dst_start, count), (src_start, count)),
         _ => false,
     };
     if overlapping {
@@ -223,6 +233,25 @@ fn forward_binary(op: &LinearOp, regs: &mut [f64]) {
     }
 }
 
+fn forward_integer_power(op: &LinearOp, regs: &mut [f64]) {
+    let LinearOp::TensorIntegerPower {
+        dst_start,
+        src_start,
+        count,
+        power,
+        ..
+    } = *op
+    else {
+        unreachable!("forward_integer_power receives a tensor integer power")
+    };
+    let mut value = [0.0];
+    for element in 0..count {
+        let source = [reg(regs, offset(src_start, element))];
+        crate::native_tensors::integer_power_element(power, &source, &mut value);
+        set(regs, offset(dst_start, element), value[0]);
+    }
+}
+
 fn forward_transpose(op: &LinearOp, regs: &mut [f64]) {
     for (dst, src) in transpose_pairs(op) {
         set(regs, dst, reg(regs, src));
@@ -281,6 +310,13 @@ pub(super) fn reverse(
         LinearOp::DotProduct { .. } => reverse_dot(op, regs, &mut state),
         LinearOp::MatrixMultiply { .. } => reverse_matmul(op, regs, &mut state),
         LinearOp::TensorBinary { .. } => reverse_binary(op, regs, &mut state),
+        &LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start,
+            count,
+            power,
+            ..
+        } => integer_power::reverse((dst_start, src_start), count, power, regs, &mut state),
         LinearOp::TensorTranspose { .. } => reverse_transpose(op, &mut state),
         LinearOp::TensorFill { .. } => reverse_fill(op, &mut state),
         LinearOp::TensorIdentity { .. } => reverse_identity(op, &mut state),

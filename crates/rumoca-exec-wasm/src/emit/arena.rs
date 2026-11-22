@@ -3,6 +3,7 @@
 mod arithmetic;
 mod dual_arithmetic;
 mod dual_load;
+mod integer_power;
 pub(in crate::emit) mod layouts;
 pub(in crate::emit) mod register_layout;
 
@@ -183,6 +184,7 @@ fn needs_arena(op: &LinearOp) -> bool {
         | LinearOp::FunctionConditional { .. }
         | LinearOp::PureCall { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorCross { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
@@ -198,6 +200,7 @@ pub(super) fn is_tensor(op: &LinearOp) -> bool {
         LinearOp::TensorLoad { .. }
             | LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorIntegerPower { .. }
             | LinearOp::TensorCross { .. }
             | LinearOp::TensorTranspose { .. }
             | LinearOp::TensorConcatenate { .. }
@@ -218,6 +221,7 @@ fn validate_profile(op: &LinearOp, directional: bool) -> Result<(), String> {
         }
         LinearOp::MatrixMultiply { lanes, .. }
         | LinearOp::TensorBinary { lanes, .. }
+        | LinearOp::TensorIntegerPower { lanes, .. }
         | LinearOp::TensorCross { lanes, .. }
         | LinearOp::TensorTranspose { lanes, .. }
         | LinearOp::TensorConcatenate { lanes, .. }

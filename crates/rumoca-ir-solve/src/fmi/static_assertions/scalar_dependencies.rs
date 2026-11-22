@@ -200,6 +200,14 @@ fn transfer(
                     && r[*rhs_start as usize + i * rhs_stride];
             }
         }
+        // Each element of a literal power reads its source element alone.
+        Op::TensorIntegerPower {
+            dst_start: dst,
+            src_start: src,
+            count,
+            lanes: 1,
+            ..
+        } => copy_elements(r, *src as usize, *dst as usize, *count)?,
         // Every filled element repeats the value lanes.
         Op::TensorFill {
             dst_start,
@@ -231,6 +239,14 @@ fn transfer(
         }
     }
     Some(())
+}
+
+/// Element `i` of `dst..dst + count` takes element `i` of `src..`, or `None`
+/// when either range leaves the dependency vector.
+fn copy_elements(r: &mut [bool], src: usize, dst: usize, count: usize) -> Option<()> {
+    let (source_end, destination_end) = (src.checked_add(count)?, dst.checked_add(count)?);
+    (source_end <= r.len() && destination_end <= r.len())
+        .then(|| r.copy_within(src..source_end, dst))
 }
 
 fn pure_call(

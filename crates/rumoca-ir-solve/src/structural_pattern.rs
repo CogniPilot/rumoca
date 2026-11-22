@@ -2013,6 +2013,8 @@ fn apply_dependency_op(
             dst_start: *dst_start, op: *op, lhs_start: *lhs_start, rhs_start: *rhs_start,
             count: *count, lhs_stride: *lhs_stride, rhs_stride: *rhs_stride, lanes: *lanes,
         })?,
+        LinearOp::TensorIntegerPower { dst_start, src_start, count, lanes, .. } =>
+            walk.tensor_integer_power(*dst_start, *src_start, *count, *lanes)?,
         LinearOp::TensorCross { dst_start, lhs_start, rhs_start, lanes } =>
             walk.tensor_cross(*dst_start, *lhs_start, *rhs_start, *lanes)?,
         LinearOp::TensorTranspose { dst_start, src_start, rows, columns, element_width, lanes } =>
@@ -2591,6 +2593,65 @@ impl DependencyWalk<'_> {
             tangent = tangent.union(primal);
         }
         Ok(tangent)
+    }
+
+    /// Element `i` of an elementwise literal power reads element `i` of its
+    /// source alone: its primal lane the source primal, its tangent lane the
+    /// source tangent and primal, as each product of the plan does.
+    fn tensor_integer_power(
+        &mut self,
+        dst_start: Reg,
+        src_start: Reg,
+        count: usize,
+        lanes: usize,
+    ) -> Result<(), StructuralPatternError> {
+        let width = count
+            .checked_mul(lanes)
+            .and_then(|width| u64::try_from(width).ok())
+            .ok_or(StructuralPatternError::DimensionOverflow)?;
+        let (destination, source) = (u64::from(dst_start), u64::from(src_start));
+        let end = |start: u64| {
+            start
+                .checked_add(width)
+                .filter(|end| *end <= u64::from(Reg::MAX) + 1)
+                .ok_or(StructuralPatternError::DimensionOverflow)
+        };
+        let (destination_end, source_end) = (end(destination)?, end(source)?);
+        let disjoint = destination_end <= source || source_end <= destination;
+        if disjoint
+            && (1..=2).contains(&lanes)
+            && let Some(view) = self.registers.strided_view(src_start, count, 1, lanes)
+        {
+            let lane_terms: &[(usize, usize)] = if lanes == 2 {
+                &[(0, 0), (1, 1), (0, 1)]
+            } else {
+                &[(0, 0)]
+            };
+            let terms = lane_terms
+                .iter()
+                .map(|&(source_lane, output_lane)| register_dependencies::Term {
+                    source: view.clone(),
+                    stride: 1,
+                    source_lane,
+                    output_lane: Some(output_lane),
+                })
+                .collect();
+            self.registers.mapped_union(dst_start, count, lanes, terms);
+            return Ok(());
+        }
+        // Both ends fit a register index, so every element offset does.
+        for element in 0..count {
+            let offset = (element * lanes) as Reg;
+            let (input, output) = (src_start + offset, dst_start + offset);
+            let primal = self.get(input)?;
+            self.set(output, primal.clone());
+            // Every tangent lane reads its own source lane and the primal.
+            for lane in 1..lanes as Reg {
+                let tangent = self.get(input + lane)?.union(primal.clone());
+                self.set(output + lane, tangent);
+            }
+        }
+        Ok(())
     }
 
     fn tensor_cross(

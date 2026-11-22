@@ -305,9 +305,12 @@ plan/API/conformance checks before replacing this snapshot. Cranelift,
 external helpers and arbitrary template routes are outside this initial
 coverage; no WCET or complete migration claim follows from a pass.
 
-R001 (decision `d-pr633-generator-change-20261112`) is the only revision:
-embedded-C GALEC frame overlays consume `SolveAlgorithmBlock::call_levels`, so
-D007 is resolved. Every other group, including D085, remains open.
+R001 (decision `d-pr633-generator-change-20261112`): embedded-C GALEC frame
+overlays consume `SolveAlgorithmBlock::call_levels`, so D007 is resolved.
+R002 (decision `d-pending-owner-elementwise-literal-power-20261122`): the FMI3
+scalar kernel, its plan view and the WGSL rows render the issued
+`TensorIntegerPower`; it resolves no group. Every other group, including D085,
+remains open.
 
 The non-active successor design is DRAFT
 [SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement),

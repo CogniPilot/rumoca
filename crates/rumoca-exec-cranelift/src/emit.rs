@@ -14,8 +14,8 @@ use rumoca_eval_solve::{
     eval_time_table_next_event_value_in,
 };
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, ScalarProgramBlock,
-    UnaryOp,
+    BinaryOp, CompareOp, FoldTensorUpdateStore, IntegerPower, IntegerPowerStep, LinearOp,
+    MatrixProductShape, ScalarProgramBlock, UnaryOp,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -2182,6 +2182,7 @@ fn create_row_register_tape(
             LinearOp::DotProduct { .. }
                 | LinearOp::MatrixMultiply { .. }
                 | LinearOp::TensorBinary { .. }
+                | LinearOp::TensorIntegerPower { .. }
                 | LinearOp::TensorTranspose { .. }
                 | LinearOp::TensorConcatenate { .. }
                 | LinearOp::TensorUpdate { .. }
@@ -2206,7 +2207,9 @@ fn create_fold_register_tape(
     // Runtime scalar indices do not require one: their lowering materializes
     // just the indexed source run in a local stack slot.  Tensor-update slices
     // are the sole operation whose compact scan currently addresses the row's
-    // register namespace dynamically.
+    // register namespace dynamically. An elementwise literal power past the
+    // direct-register work bound takes the tape too, so its elements run as
+    // one loop instead of `count * products` unrolled multiplications.
     if !row.iter().any(|operation| {
         matches!(
             operation,
@@ -2215,7 +2218,7 @@ fn create_fold_register_tape(
                     subscript,
                     rumoca_ir_solve::TensorUpdateSubscript::Slice { .. }
                 ))
-        )
+        ) || register_storage::integer_power_needs_tape(operation)
     }) {
         return Ok(None);
     }
@@ -2837,6 +2840,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 rhs_stride,
                 lanes,
             }),
+            LinearOp::TensorIntegerPower {
+                dst_start,
+                src_start,
+                count,
+                power,
+                lanes,
+            } => self.lower_tensor_integer_power(dst_start, src_start, count, power, lanes),
             LinearOp::TensorCross {
                 dst_start,
                 lhs_start,
@@ -5087,6 +5097,127 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
+    /// One loop over the elements of an elementwise literal power, or one
+    /// unrolled element each on direct registers. Each element runs the plan
+    /// on two live values: the `TensorBinary` division and products of its
+    /// steps, so the code size is the plan's, independent of the extent.
+    fn lower_tensor_integer_power(
+        &mut self,
+        dst_start: u32,
+        src_start: u32,
+        count: usize,
+        power: IntegerPower,
+        lanes: usize,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        if !(1..=2).contains(&lanes) {
+            return Err(CompileError::Backend(format!(
+                "tensor integer power with {lanes} lanes is outside the primal and dual layouts"
+            )));
+        }
+        let Some(regs_ptr) = self.backing_regs_ptr else {
+            for element in 0..count {
+                self.lower_static_integer_power_element(
+                    (dst_start, src_start),
+                    element.saturating_mul(lanes),
+                    power,
+                    lanes,
+                )?;
+            }
+            return Ok(None);
+        };
+        let step = i64::try_from(lanes).map_err(|_| {
+            CompileError::Backend("tensor integer power lane count exceeds i64".to_string())
+        })?;
+        let header = self.fb.create_block();
+        let body = self.fb.create_block();
+        let exit = self.fb.create_block();
+        self.fb.append_block_param(header, types::I64);
+        let zero = self.fb.ins().iconst(types::I64, 0);
+        self.fb.ins().jump(header, &[zero.into()]);
+        self.fb.switch_to_block(header);
+        let element = self.fb.block_params(header)[0];
+        let in_range = self.fb.ins().icmp_imm(
+            IntCC::UnsignedLessThan,
+            element,
+            i64::try_from(count).map_err(|_| {
+                CompileError::Backend("tensor integer power extent exceeds i64".to_string())
+            })?,
+        );
+        self.fb.ins().brif(in_range, body, &[], exit, &[]);
+
+        self.fb.switch_to_block(body);
+        self.fb.seal_block(body);
+        let register_address = |fb: &mut FunctionBuilder<'_>, start: u32| {
+            let register = fb.ins().imul_imm(element, step);
+            let register = fb.ins().iadd_imm(register, i64::from(start));
+            let offset = fb.ins().imul_imm(register, 8);
+            fb.ins().iadd(regs_ptr, offset)
+        };
+        let source_address = register_address(self.fb, src_start);
+        let dst_address = register_address(self.fb, dst_start);
+        let primal = self
+            .fb
+            .ins()
+            .load(types::F64, self.flags, source_address, 0);
+        let tangent = if lanes == 2 {
+            Some(
+                self.fb
+                    .ins()
+                    .load(types::F64, self.flags, source_address, 8),
+            )
+        } else {
+            None
+        };
+        let (re, du) = emit_integer_power_element(
+            self.fb,
+            self.module,
+            self.math,
+            power,
+            (primal, tangent),
+            lanes,
+        )?;
+        self.fb.ins().store(self.flags, re, dst_address, 0);
+        if let Some(du) = du {
+            self.fb.ins().store(self.flags, du, dst_address, 8);
+        }
+        let next = self.fb.ins().iadd_imm(element, 1);
+        self.fb.ins().jump(header, &[next.into()]);
+        self.fb.seal_block(header);
+        self.fb.switch_to_block(exit);
+        self.fb.seal_block(exit);
+        Ok(None)
+    }
+
+    /// One element of an elementwise literal power on direct registers.
+    fn lower_static_integer_power_element(
+        &mut self,
+        (dst_start, src_start): (u32, u32),
+        offset: usize,
+        power: IntegerPower,
+        lanes: usize,
+    ) -> Result<(), CompileError> {
+        let source = checked_reg_offset(src_start, offset, "tensor integer power source")?;
+        let dst = checked_reg_offset(dst_start, offset, "tensor integer power output")?;
+        let primal = self.lookup(source)?;
+        let tangent = match lanes {
+            2 => Some(self.lookup(source + 1)?),
+            _ => None,
+        };
+        let (re, du) = emit_integer_power_element(
+            self.fb,
+            self.module,
+            self.math,
+            power,
+            (primal, tangent),
+            lanes,
+        )?;
+        self.insert(dst, re)?;
+        match du {
+            Some(du) => self.insert(dst + 1, du).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     fn lower_tensor_cross(
         &mut self,
         dst_start: u32,
@@ -7111,6 +7242,72 @@ fn emit_tensor_binary_primal(
     Ok(fb.ins().select(denominator_zero, zero_over_zero, raw))
 }
 
+type DualValue = (
+    cranelift_codegen::ir::Value,
+    Option<cranelift_codegen::ir::Value>,
+);
+
+/// One element of an elementwise literal power on its primal and optional
+/// tangent: the `TensorBinary` division `1 / x` for a negative exponent, then
+/// each product of the plan with the `TensorBinary` product tangent, in order.
+fn emit_integer_power_element(
+    fb: &mut FunctionBuilder<'_>,
+    module: &mut JITModule,
+    math: &mut MathImports,
+    power: IntegerPower,
+    element: DualValue,
+    lanes: usize,
+) -> Result<DualValue, CompileError> {
+    let mut base = element;
+    if power.reciprocal() {
+        let one = fb.ins().f64const(1.0);
+        let re = emit_tensor_binary_primal(fb, module, math, BinaryOp::Div, one, element.0, lanes)?;
+        let du = match element.1 {
+            Some(du) => {
+                let zero = fb.ins().f64const(0.0);
+                Some(emit_tensor_binary_tangent(
+                    fb,
+                    BinaryOp::Div,
+                    one,
+                    zero,
+                    element.0,
+                    du,
+                )?)
+            }
+            None => None,
+        };
+        base = (re, du);
+    }
+    let mut result = base;
+    for step in power.steps() {
+        let (lhs, rhs) = match step {
+            IntegerPowerStep::Seed => {
+                result = base;
+                continue;
+            }
+            IntegerPowerStep::Multiply => (result, base),
+            IntegerPowerStep::Square => (base, base),
+        };
+        let re = emit_tensor_binary_primal(fb, module, math, BinaryOp::Mul, lhs.0, rhs.0, lanes)?;
+        let du = match (lhs.1, rhs.1) {
+            (Some(lhs_du), Some(rhs_du)) => Some(emit_tensor_binary_tangent(
+                fb,
+                BinaryOp::Mul,
+                lhs.0,
+                lhs_du,
+                rhs.0,
+                rhs_du,
+            )?),
+            _ => None,
+        };
+        match step {
+            IntegerPowerStep::Square => base = (re, du),
+            _ => result = (re, du),
+        }
+    }
+    Ok(result)
+}
+
 /// `value` when finite, else zero: `value - value` is zero exactly for a
 /// finite value and NaN otherwise.
 fn emit_finite_or_zero(
@@ -7586,7 +7783,8 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
                     lanes,
                     ..
                 } => rows.saturating_mul(*columns).saturating_mul(*lanes),
-                LinearOp::TensorBinary { count, lanes, .. } => count.saturating_mul(*lanes),
+                LinearOp::TensorBinary { count, lanes, .. }
+                | LinearOp::TensorIntegerPower { count, lanes, .. } => count.saturating_mul(*lanes),
                 LinearOp::TensorCross { lanes, .. } => 3usize.saturating_mul(*lanes),
                 LinearOp::TensorTranspose {
                     rows,
@@ -7722,6 +7920,7 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
             | LinearOp::DotProduct { .. }
             | LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorIntegerPower { .. }
             | LinearOp::TensorCross { .. }
             | LinearOp::TensorTranspose { .. }
             | LinearOp::TensorConcatenate { .. }
@@ -7797,6 +7996,7 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
         | LinearOp::DotProduct { .. }
         | LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorCross { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
@@ -8008,6 +8208,22 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
                         rhs,
                         "matrix multiply rhs",
                     )?) as usize,
+            ))
+        }
+        LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start,
+            count,
+            lanes,
+            ..
+        } => {
+            let width = count.checked_mul(lanes).ok_or_else(|| {
+                CompileError::Backend("tensor integer power range overflow".to_string())
+            })?;
+            Ok(Some(
+                checked_range_last_reg(dst_start, width, "tensor integer power output")?.max(
+                    checked_range_last_reg(src_start, width, "tensor integer power source")?,
+                ) as usize,
             ))
         }
         LinearOp::TensorBinary {
@@ -8487,6 +8703,7 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::PureCallDirectional { dst_start, .. }
         | LinearOp::MatrixMultiply { dst_start, .. }
         | LinearOp::TensorBinary { dst_start, .. }
+        | LinearOp::TensorIntegerPower { dst_start, .. }
         | LinearOp::TensorCross { dst_start, .. } => Some(dst_start as usize),
         LinearOp::TensorTranspose { dst_start, .. } => Some(dst_start as usize),
         LinearOp::TensorConcatenate { dst_start, .. }
@@ -8780,6 +8997,17 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
                 validate_reg_range_defined(defined, rhs, lanes)?;
             }
             Ok(())
+        }
+        LinearOp::TensorIntegerPower {
+            src_start,
+            count,
+            lanes,
+            ..
+        } => {
+            let width = count.checked_mul(lanes).ok_or_else(|| {
+                CompileError::Backend("tensor integer power range overflow".to_string())
+            })?;
+            validate_reg_range_defined(defined, src_start, width)
         }
         LinearOp::TensorCross {
             lhs_start,

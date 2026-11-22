@@ -26,7 +26,7 @@ mod pure_calls;
 mod snapshot_tests;
 mod snapshots;
 
-use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, TensorInputKind};
+use rumoca_ir_solve::{BinaryOp, IntegerPower, LinearOp, Reg, TensorInputKind};
 
 const EXPANSION_LIMIT: usize = 4_000_000;
 
@@ -75,6 +75,12 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
         | LinearOp::TensorFill {
             lanes: 1, count, ..
         } => Some(*count),
+        LinearOp::TensorIntegerPower {
+            lanes: 1,
+            count,
+            power,
+            ..
+        } => integer_power_cost(*count, *power),
         LinearOp::DotProduct { count, .. } => dot_cost(*count),
         LinearOp::MatrixMultiply {
             lanes: 1,
@@ -118,6 +124,15 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
         LinearOp::PureCall { .. } => Some(0),
         _ => None,
     }
+}
+
+/// One constant `1` for a reciprocal, then per element the quotient and the
+/// products of the plan.
+fn integer_power_cost(count: usize, power: IntegerPower) -> Option<usize> {
+    let reciprocal = usize::from(power.reciprocal());
+    count
+        .checked_mul(power.product_count().checked_add(reciprocal)?)?
+        .checked_add(reciprocal)
 }
 
 /// The straight-line cost of unrolling one fold: its update body once per pass,
@@ -272,6 +287,53 @@ impl Lowering<'_> {
             self.dot(out, row, Self::reg(rhs, j)?, inner, 1, columns)?;
         }
         Some(())
+    }
+
+    /// Each element as the scalar plan: the quotient `1 / x` for a negative
+    /// exponent, then the products of its steps in order, the last of which
+    /// is the result and is written to the element's destination.
+    fn integer_power(
+        &mut self,
+        dst: Reg,
+        src: Reg,
+        count: usize,
+        power: IntegerPower,
+    ) -> Option<()> {
+        let products = power.products();
+        let one = if power.reciprocal() {
+            let one = self.fresh()?;
+            self.out.push(LinearOp::Const {
+                dst: one,
+                value: 1.0,
+            });
+            Some(one)
+        } else {
+            None
+        };
+        let mut values = vec![0; products.len() + 1];
+        for element in 0..count {
+            values[0] = Self::reg(src, element)?;
+            if let Some(one) = one {
+                values[0] = self.scalar_binary(None, BinaryOp::Div, one, values[0])?;
+            }
+            let output = Self::reg(dst, element)?;
+            for (index, &(lhs, rhs)) in products.iter().enumerate() {
+                let into = (index + 1 == products.len()).then_some(output);
+                values[index + 1] =
+                    self.scalar_binary(into, BinaryOp::Mul, values[lhs], values[rhs])?;
+            }
+        }
+        Some(())
+    }
+
+    /// `lhs op rhs` into `dst`, or into a fresh register.
+    fn scalar_binary(&mut self, dst: Option<Reg>, op: BinaryOp, lhs: Reg, rhs: Reg) -> Option<Reg> {
+        let dst = match dst {
+            Some(dst) => dst,
+            None => self.fresh()?,
+        };
+        self.out.push(LinearOp::Binary { dst, op, lhs, rhs });
+        Some(dst)
     }
 
     fn identity(&mut self, dst: Reg, size: usize) -> Option<()> {
@@ -620,6 +682,13 @@ impl Lowering<'_> {
                 size,
                 lanes: 1,
             } => self.identity(*dst_start, *size)?,
+            LinearOp::TensorIntegerPower {
+                dst_start,
+                src_start,
+                count,
+                power,
+                lanes: 1,
+            } => self.integer_power(*dst_start, *src_start, *count, *power)?,
             LinearOp::TensorTranspose {
                 dst_start,
                 src_start,

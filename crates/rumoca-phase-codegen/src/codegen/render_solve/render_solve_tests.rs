@@ -667,3 +667,40 @@ fn rendered_matrix_products_start_each_output_from_its_first_term() {
         assert!(!rendered.contains("0.0"), "register {src}: {rendered}");
     }
 }
+
+/// An inline WGSL power holds |n| copies of its base, every square doubling
+/// the text, so a short plan renders while a plan whose expression outgrows
+/// the bound refuses with a diagnostic.
+#[test]
+fn wgsl_integer_power_refuses_an_expression_past_its_bound() {
+    let power = |exponent| solve::IntegerPower::new(exponent).expect("exponent has a product");
+    let base = || vec!["y[0]".to_owned(), "s[0]".to_owned()];
+    let cube = render_integer_power_element(SolveRowDialect::Wgsl, power(3), base())
+        .expect("a cube renders");
+    assert_eq!(cube.len(), 2);
+    assert_eq!(cube[0].matches("y[0]").count(), 3);
+    // The `1 / x` of a negative exponent renders the `TensorBinary` quotient
+    // of `.^ -1`, its numerator the constant 1 with a zero tangent.
+    let one = vec!["1.0".to_owned(), "0.0".to_owned()];
+    let quotient =
+        render_tensor_binary_element(SolveRowDialect::Wgsl, solve::BinaryOp::Div, &one, &base())
+            .expect("a quotient renders");
+    let inverse_square = render_integer_power_element(SolveRowDialect::Wgsl, power(-2), base())
+        .expect("an inverse square renders");
+    let squared = render_tensor_binary_element(
+        SolveRowDialect::Wgsl,
+        solve::BinaryOp::Mul,
+        &quotient,
+        &quotient,
+    )
+    .expect("a square renders");
+    assert_eq!(inverse_square, squared);
+    for exponent in [1 << 40, i64::MAX, i64::MIN] {
+        let error = render_integer_power_element(SolveRowDialect::Wgsl, power(exponent), base())
+            .expect_err("a plan past the bound refuses");
+        assert!(
+            error.to_string().contains("WGSL row expression"),
+            "{exponent}: {error}"
+        );
+    }
+}

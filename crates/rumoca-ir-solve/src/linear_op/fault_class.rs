@@ -27,6 +27,7 @@ impl LinearOp {
             | LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorLoad { .. }
             | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorIntegerPower { .. }
             | LinearOp::TensorCross { .. }
             | LinearOp::TensorTranspose { .. }
             | LinearOp::TensorConcatenate { .. }

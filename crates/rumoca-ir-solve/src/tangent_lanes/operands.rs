@@ -182,6 +182,18 @@ pub(super) fn visit_operands(op: &mut LinearOp, visit: &mut impl FnMut(&mut Reg,
                 Operand::range(strided_len(*count, *rhs_stride, lanes), lanes),
             );
         }
+        LinearOp::TensorIntegerPower {
+            src_start,
+            count,
+            lanes,
+            ..
+        } => {
+            let lanes = *lanes;
+            visit(
+                src_start,
+                Operand::range(count.saturating_mul(lanes), lanes),
+            );
+        }
         LinearOp::TensorCross {
             lhs_start,
             rhs_start,
@@ -361,6 +373,7 @@ pub(super) fn destination(op: &mut LinearOp) -> Option<&mut Reg> {
         | LinearOp::PureCallDirectional { dst_start, .. }
         | LinearOp::MatrixMultiply { dst_start, .. }
         | LinearOp::TensorBinary { dst_start, .. }
+        | LinearOp::TensorIntegerPower { dst_start, .. }
         | LinearOp::TensorCross { dst_start, .. }
         | LinearOp::TensorTranspose { dst_start, .. }
         | LinearOp::TensorConcatenate { dst_start, .. }

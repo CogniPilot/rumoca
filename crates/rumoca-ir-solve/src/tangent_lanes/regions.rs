@@ -8,6 +8,7 @@ pub(super) fn aggregate_lanes(op: &LinearOp) -> Option<usize> {
     match op {
         LinearOp::MatrixMultiply { lanes, .. }
         | LinearOp::TensorBinary { lanes, .. }
+        | LinearOp::TensorIntegerPower { lanes, .. }
         | LinearOp::TensorCross { lanes, .. }
         | LinearOp::TensorTranspose { lanes, .. }
         | LinearOp::TensorConcatenate { lanes, .. }

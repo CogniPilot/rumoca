@@ -1,4 +1,5 @@
 mod faults;
+mod integer_power;
 mod runner;
 mod tensors;
 

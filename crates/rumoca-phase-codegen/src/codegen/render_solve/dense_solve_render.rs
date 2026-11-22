@@ -758,6 +758,7 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
         | solve::LinearOp::DotProduct { .. }
         | solve::LinearOp::MatrixMultiply { .. }
         | solve::LinearOp::TensorBinary { .. }
+        | solve::LinearOp::TensorIntegerPower { .. }
         | solve::LinearOp::TensorCross { .. }
         | solve::LinearOp::TensorTranspose { .. }
         | solve::LinearOp::TensorConcatenate { .. }

@@ -10,6 +10,12 @@ pub(super) fn degree(operation: &LinearOp, registers: &Registers) -> Option<Degr
             .try_fold(Degree::Independent, |degree, source| {
                 Some(degree.max(registers.read(source.start, extent(&source.dimensions)?)?))
             }),
+        LinearOp::TensorIntegerPower {
+            src_start,
+            count,
+            lanes: 1,
+            ..
+        } => Some(registers.read(*src_start, *count)?.integer_power()),
         LinearOp::TensorTranspose {
             src_start,
             rows,
