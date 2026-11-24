@@ -26,11 +26,11 @@ fn packaged_fmi_parameter_assertions_preserve_validation_and_free_fall() {
     }
 }
 
-/// A relation on time, a state, or an input is an event the scalar event
-/// profile tracks (`c_profile_events.rs`); a predicate that changes with them
-/// and no event tracks, a call or a `noEvent` relation, is refused by name.
+/// A predicate that changes with time, a state, or an input and that no event
+/// tracks, a call or a `noEvent` relation, owns no event (MLS §8.3.7): the
+/// component admits it and advertises no indicator for it (#593).
 #[test]
-fn packaged_fmi_static_assertion_profile_refuses_continuously_changing_predicates() {
+fn packaged_fmi_admits_changing_assertion_predicates_without_indicators() {
     for argument in [
         "valid(time)",
         "valid(x)",
@@ -60,25 +60,237 @@ end ChangingAssertion;
             .model("ChangingAssertion")
             .compile_str(&source, "ChangingAssertion.mo")
             .expect("compile changing assertion");
-        let work = tempdir().expect("negative admission work directory");
+        let work = tempdir().expect("changing assertion work directory");
         for target in ["fmi2", "fmi3"] {
-            let error = rumoca::compile_packaged_target(
+            let destination = work.path().join(target);
+            rumoca::compile_packaged_target(
                 &compiled,
                 "ChangingAssertion",
                 target,
-                work.path().join(target),
+                destination.clone(),
             )
-            .expect_err("a changing predicate requires general event support");
-            let diagnostic = format!("{error:#}");
-            assert!(
-                diagnostic.contains("assertion depends on")
-                    || diagnostic
-                        .contains("continuous event indicators require general event support"),
-                "{target}/{argument}: {diagnostic}"
+            .unwrap_or_else(|error| panic!("{target}/{argument}: {error:#}"));
+            let description = fs::read_to_string(
+                destination
+                    .join("ChangingAssertion")
+                    .join("modelDescription.xml"),
+            )
+            .expect("the packaged component describes itself");
+            assert_eq!(
+                indicator_count(target, &description),
+                0,
+                "{target}/{argument}: {description}"
             );
         }
     }
 }
+
+/// Such an assertion is checked only at accepted points (#593): a trial
+/// evaluation past its failure passes, and the first accepted point at or
+/// after t = 0.06 fails with the message, in Model Exchange and in
+/// Co-Simulation, with no event in the model and next to an unrelated one.
+#[test]
+fn packaged_fmi_checks_a_noevent_assertion_at_accepted_points() {
+    for (label, declaration, event) in [
+        ("without_events", "", ""),
+        (
+            "with_an_event",
+            "discrete Real k(start=0,fixed=true);",
+            "when x > 0.05 then k = pre(k) + 1; end when;",
+        ),
+    ] {
+        let source = format!(
+            r#"
+model AcceptedAssertion
+ Real x(start=0,fixed=true);
+ {declaration}
+equation
+ der(x)=sin(10*time);
+ {event}
+ assert(noEvent(time < 0.06 or x > 10), "must hold before 0.06");
+end AcceptedAssertion;
+"#
+        );
+        let compiled = rumoca::Compiler::new()
+            .model("AcceptedAssertion")
+            .compile_str(&source, "AcceptedAssertion.mo")
+            .expect("compile accepted-point assertion");
+        let work = tempdir().expect("accepted assertion work directory");
+        for target in ["fmi2", "fmi3"] {
+            let destination = work.path().join(target);
+            rumoca::compile_packaged_target(
+                &compiled,
+                "AcceptedAssertion",
+                target,
+                destination.clone(),
+            )
+            .unwrap_or_else(|error| panic!("{label}/{target}: {error:#}"));
+            let root = destination.join("AcceptedAssertion");
+            let description = fs::read_to_string(root.join("modelDescription.xml"))
+                .expect("the packaged component describes itself");
+            assert_eq!(
+                indicator_count(target, &description),
+                usize::from(!event.is_empty()),
+                "{label}/{target}: only the when-clause owns an indicator"
+            );
+            run_accepted_driver(label, target, &root, &description);
+        }
+    }
+}
+
+/// Builds the packaged component in `root` with its Model Exchange and
+/// Co-Simulation driver and checks where the assertion fails in each.
+fn run_accepted_driver(label: &str, target: &str, root: &std::path::Path, description: &str) {
+    let (driver, token, headers) = match target {
+        "fmi2" => (
+            ACCEPTED_FMI2,
+            lifecycle::attribute(description, "guid"),
+            "crates/rumoca/tests/fixtures/fmi2-headers",
+        ),
+        _ => (
+            ACCEPTED_FMI3,
+            lifecycle::attribute(description, "instantiationToken"),
+            "crates/rumoca-phase-codegen/src/templates/fmi-ls-wasm/fmi3-headers",
+        ),
+    };
+    let input = root.join("accepted.c");
+    let binary = root.join("accepted");
+    fs::write(&input, driver.replace("@TOKEN@", token)).unwrap();
+    checked_output(
+        Command::new("cc")
+            .args([
+                "-std=c11",
+                "-ffp-contract=off",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ])
+            .arg(format!("-I{}", root.join("sources").display()))
+            .arg(format!("-I{}", workspace_root().join(headers).display()))
+            .arg(&input)
+            .args(lifecycle::source_units(root))
+            .args(["-lm", "-o"])
+            .arg(&binary),
+        "compile accepted-point assertion driver",
+    );
+    for mode in ["me", "cs"] {
+        let output = checked_output(
+            Command::new(&binary).arg(mode),
+            "execute accepted-point assertion driver",
+        );
+        let report = String::from_utf8_lossy(&output.stdout);
+        let expected = if mode == "me" {
+            "trial ok\nfailed at 0.060\n"
+        } else {
+            "step 0.02 ok\nstep 0.04 ok\nfailed at 0.060\n"
+        };
+        assert_eq!(report, expected, "{label}/{target}/{mode}");
+    }
+}
+
+fn indicator_count(target: &str, description: &str) -> usize {
+    if target == "fmi2" {
+        lifecycle::attribute(description, "numberOfEventIndicators")
+            .parse()
+            .expect("an FMI 2 indicator count")
+    } else {
+        description.matches("<EventIndicator ").count()
+    }
+}
+
+/// Model Exchange: a trial derivative evaluation at t = 0.07, then explicit
+/// Euler steps of 1 ms from 0, each completed; Co-Simulation: steps of 20 ms.
+/// The assertion message must reach the logger.
+const ACCEPTED_FMI2: &str = r#"
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "model.h"
+#include "fmi2Functions.h"
+static int logged = 0;
+static void logger(fmi2ComponentEnvironment e, fmi2String n, fmi2Status s, fmi2String category, fmi2String message, ...) {
+    (void)e; (void)n; (void)s; (void)category;
+    char text[512];
+    va_list arguments;
+    va_start(arguments, message);
+    vsnprintf(text, sizeof text, message, arguments);
+    va_end(arguments);
+    if (strstr(text, "must hold before 0.06")) logged = 1;
+}
+int main(int argc, char** argv) {
+    const int cs = argc > 1 && strcmp(argv[1], "cs") == 0;
+    fmi2CallbackFunctions callbacks = {0};
+    callbacks.logger = logger; callbacks.allocateMemory = calloc; callbacks.freeMemory = free;
+    fmi2Component m = fmi2Instantiate("accepted", cs ? fmi2CoSimulation : fmi2ModelExchange, "@TOKEN@", NULL, &callbacks, 0, 1);
+    if (!m || fmi2SetupExperiment(m, 0, 0, 0, 0, 0) != fmi2OK || fmi2EnterInitializationMode(m) != fmi2OK || fmi2ExitInitializationMode(m) != fmi2OK) return 2;
+    if (cs) {
+        for (int k = 0; k < 5; ++k) {
+            const double t = 0.02 * k;
+            if (fmi2DoStep(m, t, 0.02, fmi2True) != fmi2OK) { printf("failed at %.3f\n", t + 0.02); return logged ? 0 : 3; }
+            printf("step %.2f ok\n", t + 0.02);
+        }
+        return 4;
+    }
+    fmi2EventInfo info;
+    if (fmi2NewDiscreteStates(m, &info) != fmi2OK || fmi2EnterContinuousTimeMode(m) != fmi2OK) return 2;
+    double x = 0.0, dx = 0.0;
+    fmi2Boolean enter, terminate;
+    if (fmi2SetTime(m, 0.07) != fmi2OK || fmi2SetContinuousStates(m, &x, 1) != fmi2OK || fmi2GetDerivatives(m, &dx, 1) != fmi2OK) return 5;
+    printf("trial ok\n");
+    for (int k = 1; k <= 100; ++k) {
+        const double t = 0.001 * k;
+        x += 0.001 * dx;
+        if (fmi2SetTime(m, t) != fmi2OK || fmi2SetContinuousStates(m, &x, 1) != fmi2OK || fmi2GetDerivatives(m, &dx, 1) != fmi2OK) return 6;
+        if (fmi2CompletedIntegratorStep(m, fmi2True, &enter, &terminate) != fmi2OK) { printf("failed at %.3f\n", t); return logged ? 0 : 3; }
+    }
+    return 4;
+}
+"#;
+
+const ACCEPTED_FMI3: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "model.h"
+#include "fmi3Functions.h"
+static int logged = 0;
+static void logger(fmi3InstanceEnvironment e, fmi3Status s, fmi3String category, fmi3String message) {
+    (void)e; (void)s; (void)category;
+    if (strstr(message, "must hold before 0.06")) logged = 1;
+}
+int main(int argc, char** argv) {
+    const int cs = argc > 1 && strcmp(argv[1], "cs") == 0;
+    fmi3Instance m = cs
+        ? fmi3InstantiateCoSimulation("accepted", "@TOKEN@", NULL, fmi3False, fmi3True, fmi3False, fmi3False, NULL, 0, NULL, logger, NULL)
+        : fmi3InstantiateModelExchange("accepted", "@TOKEN@", NULL, fmi3False, fmi3True, NULL, logger);
+    if (!m || fmi3EnterInitializationMode(m, fmi3False, 0, 0, fmi3False, 0) != fmi3OK || fmi3ExitInitializationMode(m) != fmi3OK) return 2;
+    if (cs) {
+        for (int k = 0; k < 5; ++k) {
+            const double t = 0.02 * k;
+            fmi3Boolean event, terminate, early;
+            double last;
+            if (fmi3DoStep(m, t, 0.02, fmi3True, &event, &terminate, &early, &last) != fmi3OK) { printf("failed at %.3f\n", t + 0.02); return logged ? 0 : 3; }
+            printf("step %.2f ok\n", t + 0.02);
+        }
+        return 4;
+    }
+    fmi3Boolean b1, b2, b3, b4, b5;
+    double next;
+    if (fmi3UpdateDiscreteStates(m, &b1, &b2, &b3, &b4, &b5, &next) != fmi3OK || fmi3EnterContinuousTimeMode(m) != fmi3OK) return 2;
+    double x = 0.0, dx = 0.0;
+    fmi3Boolean enter, terminate;
+    if (fmi3SetTime(m, 0.07) != fmi3OK || fmi3SetContinuousStates(m, &x, 1) != fmi3OK || fmi3GetContinuousStateDerivatives(m, &dx, 1) != fmi3OK) return 5;
+    printf("trial ok\n");
+    for (int k = 1; k <= 100; ++k) {
+        const double t = 0.001 * k;
+        x += 0.001 * dx;
+        if (fmi3SetTime(m, t) != fmi3OK || fmi3SetContinuousStates(m, &x, 1) != fmi3OK || fmi3GetContinuousStateDerivatives(m, &dx, 1) != fmi3OK) return 6;
+        if (fmi3CompletedIntegratorStep(m, fmi3True, &enter, &terminate) != fmi3OK) { printf("failed at %.3f\n", t); return logged ? 0 : 3; }
+    }
+    return 4;
+}
+"#;
 
 #[test]
 fn packaged_fmi_reports_state_events_independently_of_a_static_assertion() {

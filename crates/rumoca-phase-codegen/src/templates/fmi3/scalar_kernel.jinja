@@ -692,7 +692,7 @@ static {{ prefix }}Status check_assertions_at(ModelInstance* m, bool event_commi
 {%- endfor %}
     }
 {%- endfor %}
-{%- for action in solve.events.actions %}{% if action.kind != "Warning" and action.assertion_projection is none %}
+{%- for action in solve.events.actions %}{% if action.kind != "Warning" and action.assertion_projection is none and not fmi.accepted_actions[loop.index0] %}
     if (actions[{{ loop.index0 }}] != 0.0) {
 {{- log_message(messages[loop.index0], rows, prefix) }}
         m->assertion_failed = true;
@@ -702,6 +702,35 @@ static {{ prefix }}Status check_assertions_at(ModelInstance* m, bool event_commi
 {%- endif %}
     return {{ prefix }}OK;
 }
+{%- if fmi.accepted_assertions %}
+/* MLS §8.3.7 error-level assertions whose condition changes between events
+   (through noEvent): an assertion owns no event, so each is checked only at
+   an accepted point (initialization, an accepted step, an event commit) and
+   never at a trial point the integrator may still reject. A failure aborts
+   the run as any error-level assertion does. */
+static {{ prefix }}Status check_accepted_assertions_at(ModelInstance* m, bool event_commit) {
+    (void)event_commit;
+    if (m->assertion_failed) return {{ prefix }}Error;
+    double actions[{{ solve.events.actions|length }}] = {0}; (void)actions;
+{%- for program in solve.events.action_plan.programs %}
+{%- set clock_lane = fmi.scalar_events.action_clock_lanes[loop.index0] if fmi.scalar_events else none %}
+    {% if clock_lane is not none %}if (event_commit && m->p[{{ clock_lane }}] != 0.0) {% endif %}{
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "actions", prefix ~ "Error") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- for action in solve.events.actions %}{% if fmi.accepted_actions[loop.index0] and action.assertion_projection is none %}
+    if (actions[{{ loop.index0 }}] != 0.0) {
+{{- log_message(messages[loop.index0], rows, prefix) }}
+        m->assertion_failed = true;
+        return {{ prefix }}Error;
+    }
+{%- endif %}{%- endfor %}
+    return {{ prefix }}OK;
+}
+{%- endif %}
 /* MLS §8.3.7 warning-level assertions (SPEC_0008 WX001): evaluated only at
    an accepted point, never aborting, each site logged once at the importer's
    warning status. */
@@ -752,7 +781,7 @@ static {{ prefix }}Status update_assertion_memory(ModelInstance* m) {
 }
 {%- endmacro %}
 
-{%- macro assertion_lifecycle(prefix, scalar_events=none) %}
+{%- macro assertion_lifecycle(prefix, scalar_events=none, accepted=false) %}
 static {{ prefix }}Status settle_values(ModelInstance* m) {
     if (m->assertion_failed) return {{ prefix }}Error;
     if (refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
@@ -781,11 +810,17 @@ static {{ prefix }}Status initialize_assertions(ModelInstance* m) {
     if (refresh_algebraics(m) != {{ prefix }}OK || update_assertion_memory(m) != {{ prefix }}OK) return {{ prefix }}Error;
     m->assertions_initialized = true;
     if (check_assertions(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if accepted %}
+    if (check_accepted_assertions_at(m, false) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- endif %}
     return report_warnings(m);
 }
 {%- endif %}
 static {{ prefix }}Status settle_assertion_event(ModelInstance* m, bool update_history) {
     if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if accepted and not scalar_events %}
+    if (m->assertions_initialized && check_accepted_assertions_at(m, false) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- endif %}
     if (m->assertions_initialized && report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return update_history ? update_assertion_memory(m) : {{ prefix }}OK;
 }
@@ -1009,6 +1044,10 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
             for (size_t i = 0; i < n; ++i) k[0][i] = k[6][i];
             if (!last) m->rmc_cs_substep = h * factor;
             t = last ? end : t + h;
+{%- if fmi.accepted_assertions and not fmi.scalar_events %}
+            /* The last stage settled the accepted point. */
+            if (m->assertions_initialized && check_accepted_assertions_at(m, false) != {{ prefix }}OK) { RMC_LOG(m, "Co-Simulation step failed an assertion at an accepted substep"); return {{ prefix }}Error; }
+{%- endif %}
         } else {
             for (size_t i = 0; i < n; ++i) m->y[i] = y0[i];
             m->time = t;

@@ -182,6 +182,7 @@ impl FmiNativeDeploymentView {
         )?;
         entries.serialize_entry("enumerations", &self.root.metadata().enumerations())?;
         entries.serialize_entry("event_indicator_roots", &[] as &[usize])?;
+        entries.serialize_entry("accepted_assertions", &false)?;
         entries.serialize_entry("carried", &self.carried)?;
         entries.serialize_entry(
             "derivative_value_reference_base_fmi3",

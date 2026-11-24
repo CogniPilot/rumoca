@@ -31,11 +31,13 @@ pub(super) fn lower_condition_memory<'dae>(
         if matches!(condition_view.operation(), dae::ConditionOperation::Always) {
             continue;
         }
-        // A `when`-body assertion's guard and its failure test are not event
-        // generating expressions: no trigger reads their buffers, and refreshing
-        // one would evaluate the failure test at every event pass, outside the
-        // activation it may only be valid under (MLS §8.5, §11.2.7). Their slots
-        // stay zero, like an `Always` buffer's.
+        // An assertion's guard and its failure test are not event generating
+        // expressions: no trigger reads their buffers, and refreshing one would
+        // evaluate the failure test at every event pass, outside the activation
+        // a `when`-body assertion may only be valid under (MLS §8.5, §11.2.7).
+        // A section-level failure test may change between events (through
+        // `noEvent`), and a buffer of it would make the assertion look like an
+        // event of its own. Their slots stay zero, like an `Always` buffer's.
         if unread.contains(&condition) {
             continue;
         }
@@ -212,10 +214,11 @@ fn unowned_edge_conditions<'dae>(
     elements
 }
 
-/// The guard of each `when`-body assertion (`activation and failure`) and every
-/// condition of its failure conjunct, less any condition a trigger, an element
-/// edge, an activation conjunct or another action's guard reaches, since those
-/// buffers are read.
+/// The guard of each assertion and every condition of its failure test (the
+/// failure conjunct of a `when`-body guard `activation and failure`, or the
+/// whole guard of a section-level assertion), less any condition a trigger, an
+/// element edge, an activation conjunct or another action's guard reaches,
+/// since those buffers are read.
 fn unread_assertion_conditions<'dae>(
     view: dae::DaeView<'dae>,
     edges: &BTreeSet<dae::ConditionId<'dae>>,
@@ -236,6 +239,9 @@ fn unread_assertion_conditions<'dae>(
                 read_roots.push(activation);
                 candidates.push(guard);
                 candidates.extend(condition_subtree(view, [failure]));
+            }
+            (dae::EventActionOperation::Assert { .. }, _) => {
+                candidates.extend(condition_subtree(view, [guard]));
             }
             _ => read_roots.push(guard),
         }

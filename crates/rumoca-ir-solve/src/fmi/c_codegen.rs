@@ -58,7 +58,7 @@ impl FmiCodegenView {
     ) -> Result<(Profile, super::static_assertions::DiscreteOrder), FmiCCodegenError> {
         let no_order = super::static_assertions::DiscreteOrder::default;
         if !self.event_indicators.sources().is_empty() {
-            return self.scalar_events().map(|profile| (profile, no_order()));
+            return self.scalar_events();
         }
         if crate::solve_event_class(&self.model.problem).is_none() {
             return self
@@ -71,16 +71,23 @@ impl FmiCodegenView {
             // Events that follow time, states, or inputs, and the discrete
             // rows that follow them, run through the event iteration even
             // when no continuous indicator monitors them.
-            Err(super::static_assertions::StaticRefusal::EventIteration(_)) => {
-                self.scalar_events().map(|profile| (profile, no_order()))
-            }
+            Err(super::static_assertions::StaticRefusal::EventIteration(_)) => self.scalar_events(),
             Err(refusal) => Err(FmiCCodegenError(refusal.message())),
         }
     }
 
-    fn scalar_events(self) -> Result<Profile, FmiCCodegenError> {
+    fn scalar_events(
+        self,
+    ) -> Result<(Profile, super::static_assertions::DiscreteOrder), FmiCCodegenError> {
         let events = super::scalar_events::validate(&self.model).map_err(FmiCCodegenError)?;
-        Ok(Profile::ScalarEvents(self, Box::new(events)))
+        let accepted_actions =
+            super::static_assertions::event_iteration_accepted_actions(&self.model)
+                .map_err(FmiCCodegenError)?;
+        let order = super::static_assertions::DiscreteOrder {
+            accepted_actions,
+            ..Default::default()
+        };
+        Ok((Profile::ScalarEvents(self, Box::new(events)), order))
     }
 }
 
@@ -443,13 +450,18 @@ impl FmiCCodegenView {
         entries.serialize_entry("binding_execution", self.binding_execution.programs())?;
         entries.serialize_entry("discrete_equations", &self.discrete_order.equations)?;
         entries.serialize_entry("discrete_memories", &self.discrete_order.memories)?;
+        entries.serialize_entry("accepted_actions", &self.discrete_order.accepted_actions)?;
+        entries.serialize_entry(
+            "accepted_assertions",
+            &self.discrete_order.accepted_actions.contains(&true),
+        )?;
         Ok(())
     }
 }
 
 impl Serialize for FmiCCodegenView {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut entries = serializer.serialize_map(Some(19))?;
+        let mut entries = serializer.serialize_map(Some(21))?;
         self.serialize_entries(&mut entries)?;
         entries.end()
     }
