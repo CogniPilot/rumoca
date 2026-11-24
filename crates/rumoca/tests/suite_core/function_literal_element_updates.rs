@@ -264,10 +264,11 @@ fn an_unreached_update_past_the_extent_compiles_and_runs() {
 #[test]
 fn a_reached_update_past_the_extent_faults_when_it_runs() {
     let error = simulate("PastEndReached").expect_err("x[4] is written after t = 0.5");
-    // The same cause and span as before: the subscript `4` of `x[4]`.
+    // The same cause, at the whole reference `x[4]` (SPEC_0008: a reference
+    // span includes its trailing subscripts).
     assert!(
         error.contains("native tensor index is out of bounds: index 4 is outside 1..=3")
-            && error.contains("start: BytePos(700), end: BytePos(701)"),
+            && error.contains("start: BytePos(700), end: BytePos(704)"),
         "unexpected failure: {error}"
     );
 }

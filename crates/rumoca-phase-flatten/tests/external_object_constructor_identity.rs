@@ -127,8 +127,8 @@ fn external_object_constructor_is_executable_while_record_constructor_is_structu
     assert_eq!(handle.span, fixture.constructor_span);
     let declaration_text = source_text(handle.span).trim_start();
     assert!(
-        declaration_text.starts_with("constructor")
-            && declaration_text.ends_with("end constructor"),
+        declaration_text.starts_with("function constructor")
+            && declaration_text.ends_with("end constructor;"),
         "unexpected constructor declaration provenance: {declaration_text:?}"
     );
 
