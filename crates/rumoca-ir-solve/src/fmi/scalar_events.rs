@@ -186,23 +186,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
     let pre_commit_needs_snapshot = pre_bindings
         .iter()
         .any(|lane| lane.column == "p" && pre_destinations.contains(&lane.source));
-    let mut iteration_lanes = Vec::new();
-    for run in &discrete.event_iteration_plan.runs {
-        // A clock-owned run advances its history on its tick when the event
-        // commits and takes no part in the pass-to-pass fixed point.
-        if discrete.event_iteration_run_clock(run)?.is_some() {
-            continue;
-        }
-        let storage = layout
-            .variable_storage_runs
-            .get(run.variable)
-            .ok_or("an event iteration run names no storage")?;
-        let lanes = run.pre_binding_start..run.pre_binding_start + storage.scalar_count;
-        if lanes.end > pre_bindings.len() {
-            return Err("an event iteration run names a pre binding outside the layout");
-        }
-        iteration_lanes.extend(lanes);
-    }
+    let iteration_lanes = iteration_lanes(discrete, layout, pre_bindings.len())?;
     let (pulse_rows, pulse_programs) = pulse_producers(discrete)?;
     let guarded_clocks = guarded_clocks(
         discrete,
@@ -276,6 +260,32 @@ fn validate_scalar_discrete_rows(
         return Err("the C profile executes only discrete rows whose pre follows the current pass");
     }
     Ok(())
+}
+
+/// The pre-binding lanes the event iteration compares pass to pass. A
+/// clock-owned run advances its history on its tick when the event commits
+/// and takes no part in the pass-to-pass fixed point.
+fn iteration_lanes(
+    discrete: &crate::DiscreteSolveSystem,
+    layout: &crate::SolveLayout,
+    pre_binding_count: usize,
+) -> Result<Vec<usize>, &'static str> {
+    let mut iteration_lanes = Vec::new();
+    for run in &discrete.event_iteration_plan.runs {
+        if discrete.event_iteration_run_clock(run)?.is_some() {
+            continue;
+        }
+        let storage = layout
+            .variable_storage_runs
+            .get(run.variable)
+            .ok_or("an event iteration run names no storage")?;
+        let lanes = run.pre_binding_start..run.pre_binding_start + storage.scalar_count;
+        if lanes.end > pre_binding_count {
+            return Err("an event iteration run names a pre binding outside the layout");
+        }
+        iteration_lanes.extend(lanes);
+    }
+    Ok(iteration_lanes)
 }
 
 fn pulse_producers(

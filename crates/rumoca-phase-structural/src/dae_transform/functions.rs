@@ -1089,6 +1089,24 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         Ok(())
     }
 
+    /// Rebuild a comprehension's element under its own domain. The element
+    /// may own a dynamic quotient using the induction variable; its lexical
+    /// capability lasts only to this join.
+    fn rebuild_comprehension_element(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        element: dae::ExprId<'source>,
+        domain: dae::DomainId<'target>,
+        body: &dae::FunctionBody<'target>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let enclosing_stack = std::mem::take(&mut self.pending);
+        body.with_comprehension_domain(domain, |scoped| {
+            self.rebuild_postorder(target, element, Some(scoped))
+        })?;
+        self.pending = enclosing_stack;
+        Ok(())
+    }
+
     fn rebuild_postorder(
         &mut self,
         target: &mut dae::DaeConstruction<'target>,
@@ -1112,16 +1130,10 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     domain,
                     body: element,
                 } if !expanded && !self.is_folded_literal(current) && body.is_some() => {
-                    // The element may own a dynamic quotient using the induction
-                    // variable. Its lexical capability lasts only to this join.
-                    let enclosing_stack = std::mem::take(&mut self.pending);
                     let domain = self.identities.domains[domain.index() as usize].id;
-                    body.expect("a function body is open")
-                        .with_comprehension_domain(domain, |scoped| {
-                            self.rebuild_postorder(target, element, Some(scoped))
-                        })?;
-                    self.pending = enclosing_stack;
-                    self.rebuild_expanded_expression(target, current, body)?;
+                    let body = body.expect("a function body is open");
+                    self.rebuild_comprehension_element(target, element, domain, body)?;
+                    self.rebuild_expanded_expression(target, current, Some(body))?;
                 }
                 dae::ExpressionOperation::FunctionValue { value, definition } => {
                     self.rebuild_function_value(
