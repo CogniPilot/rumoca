@@ -85,3 +85,77 @@ fn redeclare_value_aliases_select_the_outer_redeclaration() {
         assert_eq!(result.data[column][0], 2.0, "{name}");
     }
 }
+
+/// MLS §7.2, §7.3: each forwarding step reads the package selected at the
+/// declaration of its right-hand side, including inside an array component.
+#[test]
+fn same_named_package_redeclarations_preserve_the_enclosing_selection() {
+    let classes = r#"
+package Base
+  constant Boolean pin = false;
+  constant Real pressure = 1;
+end Base;
+package Pinned = Base(pin=true, pressure=150000);
+package Alternate = Base(pin=true, pressure=250000);
+partial model Port
+  replaceable package Medium = Base;
+end Port;
+model Cell
+  extends Port;
+  Real p;
+  Real selected = Medium.pressure;
+initial equation
+  if Medium.pin then p = Medium.pressure; end if;
+equation
+  der(p) = 0;
+end Cell;
+model Row
+  extends Port;
+  Cell cells[2](redeclare each package Medium = Medium);
+end Row;
+model Loop
+  replaceable package Medium = Pinned constrainedby Base;
+  Row row(redeclare package Medium = Medium);
+end Loop;
+model Shadow
+  package Medium = Base;
+  parameter Boolean marker = Medium.pin;
+  Loop circuit;
+end Shadow;
+model Renamed
+  package Other = Base;
+  parameter Boolean marker = Other.pin;
+  Loop circuit;
+end Renamed;
+package Library
+  package Medium = Alternate;
+  model Changed
+    package Medium = Base;
+    parameter Boolean marker = Medium.pin;
+    Loop circuit(redeclare package Medium = Library.Medium);
+  end Changed;
+end Library;"#;
+    for (model, pressure) in [
+        ("Renamed", 150000.0),
+        ("Shadow", 150000.0),
+        ("Library.Changed", 250000.0),
+    ] {
+        let compiled = Compiler::new()
+            .model(model)
+            .compile_str(classes, "Forwarding.mo")
+            .unwrap_or_else(|error| panic!("{model}: {error:?}"));
+        assert_eq!(compiled.flat.initial_equations.len(), 2, "{model}");
+        let simulation = rumoca_sim::SimulationSession::new(&compiled.dae, Default::default())
+            .unwrap_or_else(|error| panic!("{model}: {error:?}"));
+        for i in 1..=2 {
+            for field in ["selected", "p"] {
+                let name = format!("circuit.row.cells[{i}].{field}");
+                assert_eq!(
+                    simulation.get(&name).unwrap(),
+                    Some(pressure),
+                    "{model}: {name}"
+                );
+            }
+        }
+    }
+}

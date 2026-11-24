@@ -10,11 +10,12 @@ use super::component_redeclare_validation::{
     reject_unmarked_component_class_replacement, validate_component_class_redeclare_target,
     validate_component_source_modifier_metadata,
 };
+use super::override_map::TypeOverrideMap;
 use super::redeclare_modifiers::{
     class_redeclare_modifier_args, class_redeclare_target_ref,
-    component_source_modifier_target_name, is_forwarding_component_redeclare,
+    component_source_modifier_target_name,
 };
-use super::redeclare_values::{resolve_cref_def_id, resolve_redeclare_value_def_id};
+use super::redeclare_values::resolve_cref_def_id;
 use super::selected_class_members::resolve_class_override_modifier_targets;
 use crate::{InstantiateError, InstantiateResult, location_to_span};
 use rumoca_ir_ast as ast;
@@ -27,11 +28,12 @@ pub(crate) fn extract_component_class_overrides(
     tree: &ast::ClassTree,
     comp: &ast::Component,
     target_class: Option<&ast::ClassDef>,
-    mod_env: Option<&ast::ModificationEnvironment>,
-) -> InstantiateResult<ast::ClassOverrideMap> {
+    enclosing: &TypeOverrideMap,
+) -> InstantiateResult<(ast::ClassOverrideMap, bool)> {
     let mut overrides = IndexMap::default();
+    let mut has_forwarding = false;
     let Some(target_class) = target_class else {
-        return Ok(overrides);
+        return Ok((overrides, has_forwarding));
     };
 
     validate_component_source_modifier_metadata(tree, comp)?;
@@ -72,21 +74,10 @@ pub(crate) fn extract_component_class_overrides(
                 )?,
             )));
         }
-        if is_forwarding_component_redeclare(mod_expr, &target_name) {
-            // The enclosing override is instance-local and is applied by
-            // `resolve_component_nested_type_overrides`; validating the
-            // lexical alias itself would compare the wrong class identity.
-            continue;
-        }
-        let Some(def_id) = resolve_redeclare_value_def_id(tree, resolved_mod_expr, mod_env)
-            .or_else(|| {
-                class_redeclare_target_ref(resolved_mod_expr)
-                    .and_then(|target| resolve_cref_def_id(&target))
-            })
-            .or_else(|| resolve_redeclare_value_def_id(tree, mod_expr, mod_env))
-            .or_else(|| {
-                class_redeclare_target_ref(mod_expr).and_then(|target| resolve_cref_def_id(&target))
-            })
+        let Some((target_ref, rhs)) = [resolved_mod_expr, mod_expr]
+            .into_iter()
+            .filter_map(class_redeclare_target_ref)
+            .find_map(|target| Some((target, resolve_cref_def_id(target)?)))
         else {
             return Err(Box::new(InstantiateError::redeclare_error(
                 &target_name,
@@ -94,6 +85,10 @@ pub(crate) fn extract_component_class_overrides(
                 mod_expr.span(),
             )));
         };
+        // MLS §7.2, §7.3: select the right-hand declaration in the occurrence
+        // that wrote the modifier, before checking or modifying the receiver.
+        let def_id = enclosing.selected_redeclare_value(rhs);
+        has_forwarding |= matches!(target_ref.parts.as_slice(), [part] if part.subs.is_none() && part.ident.text.as_ref() == target_name);
         validate_component_class_redeclare_target(
             tree,
             &target_name,
@@ -118,12 +113,12 @@ pub(crate) fn extract_component_class_overrides(
                     target_name.clone(),
                     declaration_def_id,
                     def_id,
-                    class_redeclare_target_ref(mod_expr),
+                    Some(target_ref.clone()),
                 )
                 .with_modifier_args(modifier_args.clone()),
             );
         }
     }
 
-    Ok(overrides)
+    Ok((overrides, has_forwarding))
 }

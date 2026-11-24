@@ -1869,7 +1869,6 @@ fn instantiate_nested_class(
         PopulateModEnvInput {
             comp,
             effective_components,
-            type_overrides: nested_types.overrides,
             target_class: Some(nested_class),
             class_overrides: nested_types.redeclarations,
             parent_snapshot: &mod_env_snapshot,

@@ -1,11 +1,9 @@
 use super::mod_env::add_class_modifier_defaults;
 use super::type_overrides::{
-    ClassModifierValues, TypeOverrideMap, build_type_override_map, class_redeclare_modifier_args,
-    component_source_modifier_target_name, extract_component_class_overrides,
-    find_all_nested_classes_in_hierarchy, find_nested_class_in_hierarchy,
-    resolve_class_override_modifier_targets, validate_component_class_redeclare_target,
+    ClassModifierValues, TypeOverrideMap, build_type_override_map,
+    extract_component_class_overrides,
 };
-use super::{InstantiateContext, InstantiateError, InstantiateResult, location_to_span};
+use super::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -300,64 +298,6 @@ pub(super) fn shift_modifications_down(ctx: &mut InstantiateContext, comp_name: 
     }
 }
 
-/// Remap a class-redeclare modifier target to the active enclosing override.
-///
-/// MLS §7.3: `redeclare package Medium = Medium` inside component modifiers should
-/// forward to the enclosing class's active `Medium` redeclare, not the local default.
-pub(super) fn remap_redeclare_class_modifier(
-    mod_expr: &ast::Expression,
-    target_name: &str,
-    type_overrides: &TypeOverrideMap,
-) -> ast::Expression {
-    let ast::Expression::ClassModification {
-        target,
-        modifications,
-        span,
-        ..
-    } = mod_expr
-    else {
-        return mod_expr.clone();
-    };
-
-    let Some(last) = target.parts.last() else {
-        return mod_expr.clone();
-    };
-    if last.ident.text.as_ref() != target_name {
-        return mod_expr.clone();
-    }
-
-    let Some(override_def_id) = type_overrides.target_for_reference(target) else {
-        return mod_expr.clone();
-    };
-    if target.root_def_id() == Some(override_def_id)
-        && target.target_def_id() == Some(override_def_id)
-    {
-        return mod_expr.clone();
-    }
-
-    let mut remapped_target = target.clone();
-    remapped_target.set_root_def_id(Some(override_def_id));
-    remapped_target.set_target_def_id(Some(override_def_id));
-    ast::Expression::ClassModification {
-        target: remapped_target,
-        modifications: modifications.clone(),
-        each_flags: Vec::new(),
-        final_flags: Vec::new(),
-        redeclare_flags: Vec::new(),
-        span: *span,
-    }
-}
-
-fn is_self_forwarding_redeclare(mod_expr: &ast::Expression, target_name: &str) -> bool {
-    let ast::Expression::ClassModification { target, .. } = mod_expr else {
-        return false;
-    };
-    let [part] = target.parts.as_slice() else {
-        return false;
-    };
-    part.subs.is_none() && part.ident.text.as_ref() == target_name
-}
-
 /// Resolve component-scoped class/package redeclares for nested instantiation.
 ///
 /// MLS §7.3:
@@ -370,71 +310,8 @@ pub(super) fn resolve_component_nested_type_overrides(
     mod_env: &ast::ModificationEnvironment,
     type_overrides: &TypeOverrideMap,
 ) -> InstantiateResult<NestedTypeOverrides> {
-    let mut class_overrides =
-        extract_component_class_overrides(tree, comp, class_def, Some(mod_env))?;
-    select_redeclare_values_in_scope(&mut class_overrides, type_overrides);
-    let mut has_forwarding_class_redeclare = false;
-
-    if let Some(target_class) = class_def {
-        for (source_modifier, &is_redeclare) in comp
-            .source_modifications
-            .iter()
-            .zip(&comp.source_modification_redeclare_flags)
-        {
-            if !is_redeclare {
-                continue;
-            }
-            let Some(target_name) = component_source_modifier_target_name(source_modifier) else {
-                continue;
-            };
-            let Some(mod_expr) = comp.modifications.get(&target_name) else {
-                continue;
-            };
-            let nested_class = find_nested_class_in_hierarchy(tree, target_class, &target_name);
-            if !nested_class.is_some_and(|nested| nested.is_replaceable)
-                || !is_self_forwarding_redeclare(mod_expr, &target_name)
-            {
-                continue;
-            }
-            let Some(nested_class) = nested_class else {
-                continue;
-            };
-            let Some(alias_def_id) = nested_class.def_id else {
-                return Err(Box::new(InstantiateError::redeclare_error(
-                    &target_name,
-                    "resolved forwarding redeclare target has no DefId",
-                    location_to_span(
-                        &target_class.location,
-                        &tree.source_map,
-                        "forwarding redeclare target class",
-                    )?,
-                )));
-            };
-            if let Some(effective_def_id) = type_overrides
-                .target_for_alias_def_id(alias_def_id)
-                .or_else(|| type_overrides.target_for_alias_name(&target_name))
-            {
-                validate_component_class_redeclare_target(
-                    tree,
-                    &target_name,
-                    nested_class,
-                    mod_expr,
-                    effective_def_id,
-                )?;
-                let modifier_args = resolve_class_override_modifier_targets(
-                    tree,
-                    effective_def_id,
-                    class_redeclare_modifier_args(mod_expr),
-                )?;
-                insert_forwarded_declaration_overrides(
-                    &mut class_overrides,
-                    (tree, target_class, &target_name),
-                    (effective_def_id, mod_expr, modifier_args),
-                );
-                has_forwarding_class_redeclare = true;
-            }
-        }
-    }
+    let (class_overrides, has_forwarding_class_redeclare) =
+        extract_component_class_overrides(tree, comp, class_def, type_overrides)?;
 
     let mut nested_type_overrides = type_overrides.clone();
     if let Some(exposed_package) = exposed_type_package(tree, comp) {
@@ -459,55 +336,6 @@ pub(super) fn resolve_component_nested_type_overrides(
     ))
 }
 
-/// Replace a redeclare value that names a replaceable alias of the enclosing
-/// scope with the class that scope selected for it.
-///
-/// MLS §7.3: in `Inner a(redeclare package Medium = MA)`, `MA` denotes the
-/// class `MA` is in this occurrence of the enclosing class, which a
-/// redeclaration of the enclosing occurrence may have replaced. The recorded
-/// override is the selection every later phase reads, so it names that class
-/// rather than the lexical alias, whose default would otherwise be selected.
-fn select_redeclare_values_in_scope(
-    class_overrides: &mut IndexMap<DefId, ast::ClassOverride>,
-    type_overrides: &TypeOverrideMap,
-) {
-    for class_override in class_overrides.values_mut() {
-        let mut visited = rustc_hash::FxHashSet::default();
-        while visited.insert(class_override.target_def_id)
-            && let Some(selected) =
-                type_overrides.target_for_alias_def_id(class_override.target_def_id)
-        {
-            class_override.target_def_id = selected;
-        }
-    }
-}
-
-/// Record a forwarded redeclare for every inherited declaration of the member.
-///
-/// MLS 7.1.2: several bases may declare the same element; the redeclare
-/// reaches each declaration, not only the first one found.
-fn insert_forwarded_declaration_overrides(
-    class_overrides: &mut IndexMap<DefId, ast::ClassOverride>,
-    (tree, target_class, target_name): (&ast::ClassTree, &ast::ClassDef, &str),
-    (effective_def_id, mod_expr, modifier_args): (DefId, &ast::Expression, Vec<ast::Expression>),
-) {
-    for declaration in find_all_nested_classes_in_hierarchy(tree, target_class, target_name) {
-        let Some(declaration_def_id) = declaration.def_id else {
-            continue;
-        };
-        class_overrides.insert(
-            declaration_def_id,
-            ast::ClassOverride::new(
-                target_name.to_string(),
-                declaration_def_id,
-                effective_def_id,
-                class_redeclare_target_ref(mod_expr),
-            )
-            .with_modifier_args(modifier_args.clone()),
-        );
-    }
-}
-
 fn exposed_type_package<'a>(
     tree: &'a ast::ClassTree,
     comp: &ast::Component,
@@ -519,13 +347,6 @@ fn exposed_type_package<'a>(
     let package_path =
         rumoca_core::ComponentPath::from_parts(package_parts.iter().map(|part| part.text.as_ref()));
     tree.get_class_by_qualified_name(&package_path.to_flat_string())
-}
-
-fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {
-    let ast::Expression::ClassModification { target, .. } = mod_expr else {
-        return None;
-    };
-    Some(target.clone())
 }
 
 #[cfg(test)]
@@ -679,38 +500,6 @@ mod tests {
             .expect("shifted component modifier should replace parent key");
         assert_eq!(shifted.value, make_int_expr(5));
         assert!(shifted.final_);
-    }
-
-    #[test]
-    fn remap_redeclare_class_modifier_preserves_source_reference_parts() {
-        let source_medium = DefId::new(7);
-        let concrete_medium = DefId::new(42);
-        let mut target = make_comp_ref(&["Medium"]);
-        target.set_root_def_id(Some(source_medium));
-        target.set_target_def_id(Some(source_medium));
-        let mod_expr = ast::Expression::ClassModification {
-            target,
-            modifications: Vec::new(),
-            each_flags: Vec::new(),
-            final_flags: Vec::new(),
-            redeclare_flags: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let mut type_overrides = TypeOverrideMap::new();
-        type_overrides.insert_alias(
-            ast::QualifiedName::from_ident("Medium"),
-            None,
-            concrete_medium,
-        );
-
-        let remapped = remap_redeclare_class_modifier(&mod_expr, "Medium", &type_overrides);
-
-        let ast::Expression::ClassModification { target, .. } = remapped else {
-            panic!("expected class modification");
-        };
-        assert_eq!(target.root_def_id(), Some(concrete_medium));
-        assert_eq!(target.target_def_id(), Some(concrete_medium));
-        assert_eq!(target.to_string(), "Medium");
     }
 
     #[test]
