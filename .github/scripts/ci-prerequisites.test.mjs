@@ -7,16 +7,21 @@ import { spawnSync } from 'node:child_process';
 
 const action = readFileSync(new URL('../actions/apt-install/action.yml', import.meta.url), 'utf8');
 const script = action.split('      run: |\n')[1].replace(/^        /gm, '');
+// The real `sleep`, resolved before `runApt` puts its stand-ins first on PATH.
+const realSleep = spawnSync('bash', ['-c', 'command -v sleep'], { encoding: 'utf8' }).stdout.trim();
 
-function runApt(statuses, dnsAttempts = []) {
+function runApt(statuses, dnsAttempts = [], command = script) {
   const dir = mkdtempSync(join(tmpdir(), 'rumoca-apt-'));
   try {
     const commands = {
       'dpkg-query': 'exit 1',
       sleep: 'exit 0',
+      // Everything but apt-get is accepted, after its input is read: a stand-in
+      // that exits first closes the pipe of `printf ... | sudo tee` under the
+      // writer, which then dies of SIGPIPE.
       sudo: `case " $* " in
   *" apt-get "*) ;;
-  *) exit 0 ;;
+  *) cat > /dev/null; exit 0 ;;
 esac
 printf '%s\\n' "$*" >> "$LOG"
 n=$(cat "$COUNT" 2>/dev/null || echo 0)
@@ -31,7 +36,7 @@ exit "\${status:-99}"`,
       writeFileSync(join(dir, name), '#!/bin/bash\n' + body + '\n', { mode: 0o755 });
     }
     writeFileSync(join(dir, 'statuses'), statuses.join('\n') + '\n');
-    const result = spawnSync('bash', ['-c', script], {
+    const result = spawnSync('bash', ['-c', command], {
       encoding: 'utf8',
       env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, APT_PACKAGES: 'libudev-dev',
         APT_TIMEOUT_SECONDS: '300', LOG: join(dir, 'log'), COUNT: join(dir, 'count'), STATUSES: join(dir, 'statuses') },
@@ -72,6 +77,11 @@ test('an earlier DNS error cannot mark a later permanent package failure', () =>
   const r = runApt([100, 0, 100, 0, 100, 0, 100], [1]);
   assert.equal(r.status, 1);
   assert.doesNotMatch(r.stdout, /::error title=APT mirror DNS failure::/);
+});
+
+test('a write piped through sudo cannot lose a race with the stand-in', () => {
+  const piped = `set -euo pipefail\n{ ${realSleep} 0.2; echo mirror; } | sudo tee /dev/null > /dev/null\nsudo apt-get update`;
+  assert.equal(runApt([0], [], piped).status, 0);
 });
 
 test('recovered DNS setup does not emit a failure marker', () => {
