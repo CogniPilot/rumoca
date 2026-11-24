@@ -410,6 +410,7 @@ fn render_fixed_cohort(
         .collect();
     let mut failed = Vec::new();
     let mut not_compared = 0;
+    let mut not_attempted = 0;
     for &model in &cohort {
         if timed.contains_key(model) {
             continue;
@@ -418,7 +419,7 @@ fn render_fixed_cohort(
             Some(Some("sim_ok")) => not_compared += 1,
             Some(Some(status)) => failed.push((model, *status)),
             Some(None) => failed.push((model, "not simulated")),
-            None => failed.push((model, "no result")),
+            None => not_attempted += 1,
         }
     }
     let mut out = format!(
@@ -471,6 +472,11 @@ fn render_fixed_cohort(
         out.push_str(&format!(
             "\n{not_compared} cohort models rumoca simulated are not compared this run (trace \
              band, OMC result, or OMC timing context).\n"
+        ));
+    }
+    if not_attempted > 0 {
+        out.push_str(&format!(
+            "\n{not_attempted} cohort models have no result row: this run did not attempt them.\n"
         ));
     }
     out.push('\n');

@@ -374,3 +374,17 @@ fn a_cohort_model_outside_the_agreeing_bands_is_not_compared_and_not_a_failure()
 fn a_baseline_without_a_runtime_cohort_says_so() {
     assert!(render_with(2, 2, 2).contains("_Fixed cohort not reported"));
 }
+
+#[test]
+fn a_cohort_model_the_run_did_not_attempt_is_not_a_failure() {
+    let rendered = render_cohort(&["A", "Z"]);
+    assert!(
+        rendered.contains("| Simulation | 2 | 1 | 0 | **1.67** |"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("1 cohort models have no result row: this run did not attempt them."),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Rumoca failed on"), "{rendered}");
+}
