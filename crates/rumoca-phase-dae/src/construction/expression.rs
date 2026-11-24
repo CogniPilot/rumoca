@@ -350,7 +350,7 @@ fn lower_expression_event<'dae>(
     }
     match plan {
         Some(ExpressionEventPlan::StateRelation) => {
-            lower_state_relation_root(construction, lowered, provenance)
+            lower_model_relation_root(construction, lowered, provenance)
         }
         Some(ExpressionEventPlan::DynamicTimeEvent(operand)) => {
             if construction
@@ -386,6 +386,16 @@ fn lower_model_relation_root<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let domain =
         construction.expressions(|expressions| expressions.binder_domain(lowered, provenance))?;
+    // A binder-independent relation can still be activated by a particular
+    // loop iteration (for example i == 2 and wind < 0). Its activation and
+    // comparison must be owned by the same structured root.
+    let domain = match (
+        domain,
+        construction.model_activation_guard(lowered, provenance)?,
+    ) {
+        (None, Some(guard)) => construction.expressions(|e| e.binder_domain(guard, provenance))?,
+        (domain, _) => domain,
+    };
     match domain {
         Some(domain) => construction
             .conditions(|conditions| conditions.structured_root(domain, lowered, provenance))

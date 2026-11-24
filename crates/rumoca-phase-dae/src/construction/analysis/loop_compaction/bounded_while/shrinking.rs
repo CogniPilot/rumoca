@@ -5,7 +5,7 @@ use super::super::super::guard_facts::{FactScope, GuardFacts};
 use super::*;
 use rumoca_core::BuiltinFunction;
 
-/// The division proof form: a conjunct `k > 0` (or `0 < k`) whose counter
+/// The division proof form: a conjunct `k > floor` (or `floor < k`) with a nonnegative floor whose counter
 /// `k` is written only by `k := div(k, d)` with a fixed `d > 1`.
 pub(super) fn division_bound(
     block: &StatementBlock,
@@ -19,23 +19,27 @@ pub(super) fn division_bound(
         let Expression::Binary { op, lhs, rhs, .. } = condition else {
             return None;
         };
-        let counter = match op {
-            OpBinary::Gt if fixed_integer(rhs, &written, scope) == Some(0) => lhs,
-            OpBinary::Lt if fixed_integer(lhs, &written, scope) == Some(0) => rhs,
+        let (counter, floor) = match op {
+            OpBinary::Gt => (lhs, rhs),
+            OpBinary::Lt => (rhs, lhs),
             _ => return None,
         };
+        let floor = fixed_integer(floor, &written, scope)?;
+        if floor < 0 {
+            return None;
+        }
         let name = plain_reference(counter)?;
         if !scope.integers.contains(name) {
             return None;
         }
         let divisor = sole_division_update(&block.stmts, &written, name, scope)?;
-        // `m` reaches zero after `floor(log_d m) + 1` divisions; zero after none.
-        let maximum = entry.integer_interval(counter, scope).upper?;
-        Some(
-            maximum
-                .checked_ilog(divisor)
-                .map_or(0, |log| i64::from(log) + 1),
-        )
+        let mut maximum = entry.integer_interval(counter, scope).upper?;
+        let mut passes = 0;
+        while maximum > floor {
+            maximum /= divisor;
+            passes += 1;
+        }
+        Some(passes)
     })
 }
 

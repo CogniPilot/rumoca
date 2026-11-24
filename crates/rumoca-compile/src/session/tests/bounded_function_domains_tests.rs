@@ -164,3 +164,99 @@ fn full14400_selection_refuses_a_tunable_border_floor() {
         "{error}"
     );
 }
+
+#[test]
+fn backward_interpolation_search_bounds_the_index_on_continuing_passes() {
+    let source = r#"
+function search
+  input Real x[4];
+  input Real xi;
+  input Integer last;
+  output Real y;
+protected
+  Integer i;
+algorithm
+  i := min(max(last, 1), size(x,1)-1);
+  while i > 1 and xi < x[i] loop
+    i := i - 1;
+  end while;
+  y := x[i];
+end search;
+model Ordered
+  parameter Real u=1;
+  Real y;
+equation
+  y = search({1,2,3,4},u,3);
+end Ordered;
+"#;
+    assert_eq!(evaluate(source, 1.0), 1.0);
+    assert_eq!(evaluate(source, 2.5), 2.0);
+    assert_eq!(evaluate(source, 4.0), 3.0);
+}
+
+#[test]
+fn indexed_tuple_receivers_count_only_the_selected_elements() {
+    let source = r#"
+function loads
+  input Real u;
+  output Real wet;
+  output Real force[3];
+algorithm
+  wet := u;
+  force := {u, 2*u, 3*u};
+end loads;
+model Ordered
+  input Real u;
+  Real wet[2], force[2,3];
+equation
+  for i in 1:2 loop
+    (wet[i],force[i,:]) = loads(u+i);
+  end for;
+end Ordered;
+"#;
+    let compiled = compile(source).expect("MLS 12.4.3 permits indexed tuple receivers");
+    assert!(compiled.is_balanced());
+    let bad = source.replace("force[2,3]", "force[2,4]");
+    assert!(
+        compile(&bad).is_err(),
+        "a mismatched selected extent must be rejected"
+    );
+}
+
+#[test]
+fn guarded_snapshot_reads_a_local_only_while_the_enclosing_loop_is_active() {
+    let source = r#"
+ function f
+  input Real x; output Real y;
+ protected Real lo;Integer n;
+ algorithm
+  n:=1; y:=0;
+  for visit in 1:5 loop
+    if n>4 then break; end if;
+    lo:=1;
+    for k in 1:3 loop
+     lo:=max(lo,x*k);
+     if lo>8 then break;end if;
+    end for;
+    if lo>2 then
+      n:=n+1;
+    else
+      n:=n+2; lo:=2;
+      for k in 1:3 loop
+        lo:=min(lo,x*k);
+        if lo<0 then break;end if;
+      end for;
+      y:=max(y,lo);
+    end if;
+  end for;
+ end f;
+model Ordered
+  parameter Real u = 2;
+  Real y;
+equation
+  y=f(u);
+end Ordered;
+"#;
+    assert_eq!(evaluate(source, 0.25), 0.25);
+    assert_eq!(evaluate(source, 4.0), 0.0);
+}

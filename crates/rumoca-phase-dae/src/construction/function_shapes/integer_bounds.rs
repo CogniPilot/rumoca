@@ -66,6 +66,14 @@ impl ShapeEnvironment {
                         .unwrap_or(IntegerInterval::UNBOUNDED)
                 }
             }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => branches.iter().fold(
+                self.proven_integer_interval(else_branch),
+                |bounds, (_, arm)| bounds.hull(self.proven_integer_interval(arm)),
+            ),
             Expression::Unary { op, rhs, .. } => match op {
                 OpUnary::Plus => self.proven_integer_interval(rhs),
                 OpUnary::Minus => self.proven_integer_interval(rhs).negate(),

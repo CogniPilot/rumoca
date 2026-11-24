@@ -46,6 +46,17 @@ fn infer_component_ref_dims(
     if let Some(dims) = ctx.get_array_dimensions(&qualified) {
         return Some(dims.clone());
     }
+    // A field occurrence may retain its parent indices in the dimension
+    // table (e.g. cloth[2].mid). Project only the final field's subscripts.
+    if cr.parts.len() > 1 && cr.parts.last()?.subs.is_some() {
+        let mut owner = cr.clone();
+        owner.parts.last_mut()?.subs = None;
+        if let Some(dims) = ctx.get_array_dimensions(&build_qualified_name(prefix, &owner)) {
+            let mut selector = cr.clone();
+            selector.parts.drain(..selector.parts.len() - 1);
+            return project_component_dims_by_subscripts(dims, &selector, prefix, ctx);
+        }
+    }
     if ctx.declared_dimensions.proves_scalar_reference(cr) {
         return Some(Vec::new());
     }

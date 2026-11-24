@@ -82,12 +82,8 @@ impl GuardFacts {
                 }
             }
             (BuiltinFunction::Div, [lhs, rhs]) => self
-                .integer_interval(rhs, scope)
-                .bounds()
-                .filter(|(lower, upper)| lower == upper && *lower > 0)
-                .map_or(IntegerInterval::UNBOUNDED, |(divisor, _)| {
-                    self.integer_interval(lhs, scope).divided_by(divisor)
-                }),
+                .integer_interval(lhs, scope)
+                .divided_by_positive_interval(self.integer_interval(rhs, scope)),
             _ => IntegerInterval::UNBOUNDED,
         }
     }

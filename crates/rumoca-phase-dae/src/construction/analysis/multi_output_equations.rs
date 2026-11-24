@@ -5,6 +5,8 @@ pub(in crate::construction) struct MultiOutputEquationPlan {
     /// One receiving slot per function result ordinal; `None` is an omitted
     /// receiver in the source tuple, or a whole record that `records` owns.
     pub(in crate::construction) outputs: Vec<Option<VarName>>,
+    /// Scalar sizes of selected continuous receivers (MLS §10.6, §12.4.3).
+    pub(super) selected_sizes: HashMap<VarName, usize>,
     /// The whole records that receive one record-valued result: each leaf
     /// coordinate reads its field projection of the result.
     pub(in crate::construction) records: Vec<MultiOutputRecord>,
@@ -191,9 +193,11 @@ fn validate_multi_output_equation(
     }
     let mut outputs = Vec::with_capacity(source.receivers.len());
     let mut records = Vec::new();
+    let mut selected_sizes = HashMap::new();
     let mut claimed = HashSet::new();
     let receiver_context = ReceiverValidation {
         flat,
+        shapes,
         roles,
         function,
         call_prefix: &call.prefix,
@@ -217,13 +221,24 @@ fn validate_multi_output_equation(
             outputs.push(None);
             continue;
         }
-        outputs.push(validate_receiver(
+        let target = validate_receiver(
             receiver_context,
             receiver,
             result_shape,
             ordinal,
             &mut claimed,
-        )?);
+        )?;
+        if let Some(target) = &target
+            && matches!(receiver, Expression::VarRef { subscripts, .. } if !subscripts.is_empty())
+        {
+            let shape = shapes.expression_shape(receiver, shapes.model_values())?;
+            let count = shape
+                .into_iter()
+                .try_fold(1usize, |n, size| n.checked_mul(size as usize))
+                .ok_or_else(|| invalid_receiver(receiver, source.span, "has too many elements"))?;
+            selected_sizes.insert(target.clone(), count);
+        }
+        outputs.push(target);
     }
     if outputs.iter().all(Option::is_none) && records.is_empty() {
         return Err(ToDaeError::unsupported_flat(
@@ -241,12 +256,17 @@ fn validate_multi_output_equation(
             shapes.model_values(),
         )?;
     }
-    Ok(MultiOutputEquationPlan { outputs, records })
+    Ok(MultiOutputEquationPlan {
+        outputs,
+        records,
+        selected_sizes,
+    })
 }
 
 #[derive(Clone, Copy)]
 struct ReceiverValidation<'scope> {
     flat: &'scope flat::Model,
+    shapes: &'scope FunctionShapeAnalysis,
     roles: &'scope HashMap<VarName, PlannedRole>,
     function: &'scope rumoca_core::Function,
     call_prefix: &'scope [u32],
@@ -277,7 +297,12 @@ fn validate_receiver(
             "must be a direct variable reference",
         ));
     };
-    if !subscripts.is_empty() {
+    if !subscripts.is_empty()
+        && !matches!(
+            context.roles.get(name.var_name()),
+            Some(PlannedRole::State | PlannedRole::Output | PlannedRole::Algebraic)
+        )
+    {
         return Err(invalid_receiver(
             receiver,
             context.equation_span,
@@ -424,18 +449,9 @@ fn validate_receiver_type_and_shape(
     span: Span,
 ) -> Result<(), ToDaeError> {
     let variable = &context.flat.variables[target];
-    let declared_shape = variable
-        .dims
-        .iter()
-        .map(|extent| u32::try_from(*extent))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| {
-            invalid_receiver(
-                receiver,
-                context.equation_span,
-                "has a non-concrete declared shape",
-            )
-        })?;
+    let declared_shape = context
+        .shapes
+        .expression_shape(receiver, context.shapes.model_values())?;
     let actual_shape = context
         .call_prefix
         .iter()

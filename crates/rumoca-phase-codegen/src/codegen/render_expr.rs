@@ -234,8 +234,10 @@ pub(crate) fn get_unop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
 
 fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw_name = render_name_field(var_ref, "name", "VarRef")?;
-    let source_ref = var_ref_source_ref(&raw_name, var_ref)?;
-    if let Some(relation) = condition_alias_relation(cfg.condition_aliases.as_ref(), &source_ref)? {
+    if let Some(aliases) = cfg.condition_aliases.as_ref()
+        && let Some(relation) =
+            condition_alias_relation(aliases, &var_ref_source_ref(&raw_name, var_ref)?)?
+    {
         return render_expression(&relation, cfg);
     }
 
@@ -285,8 +287,11 @@ fn render_source_subscripts(var_ref: &Value) -> RenderResult {
         return Ok(String::new());
     }
 
+    // Alias keys describe Modelica source references in both templates and IR.
     let cfg = ExprConfig {
         one_based_index: true,
+        sanitize_dots: false,
+        modelica_builtins: true,
         ..Default::default()
     };
     let mut sub_strs = render_vec_with_capacity(len, "VarRef rendered subscript count")?;
@@ -303,12 +308,9 @@ fn render_source_subscripts(var_ref: &Value) -> RenderResult {
 }
 
 fn condition_alias_relation(
-    aliases: Option<&Value>,
+    aliases: &Value,
     source_ref: &str,
 ) -> Result<Option<Value>, minijinja::Error> {
-    let Some(aliases) = aliases else {
-        return no_condition_alias_relation();
-    };
     let len = aliases
         .len()
         .ok_or_else(|| render_err("condition_aliases field is not a sequence"))?;
@@ -1248,6 +1250,43 @@ mod tests {
 
         let rendered = render_expression(&Value::from_serialize(&condition_ref), &cfg).unwrap();
         assert_eq!(rendered, "(time < 1)");
+    }
+
+    #[test]
+    fn modelica_dimension_call_inside_a_variable_subscript_retains_its_dialect() {
+        use rumoca_core::{BuiltinFunction, Expression, Literal, Reference, Span, Subscript};
+        let span = Span::DUMMY;
+        let a = Expression::VarRef {
+            name: Reference::new("profile"),
+            subscripts: Vec::new(),
+            span,
+        };
+        let dim = Expression::BuiltinCall {
+            function: BuiltinFunction::Size,
+            args: vec![
+                a,
+                Expression::Literal {
+                    value: Literal::Integer(1),
+                    span,
+                },
+            ],
+            span,
+        };
+        let indexed = Expression::VarRef {
+            name: Reference::new("profile"),
+            subscripts: vec![Subscript::expr(Box::new(dim), span)],
+            span,
+        };
+        for aliases in [None, Some(Value::from_serialize(Vec::<Value>::new()))] {
+            let cfg = ExprConfig {
+                modelica_builtins: true,
+                one_based_index: true,
+                condition_aliases: aliases,
+                ..ExprConfig::default()
+            };
+            let result = render_expression(&Value::from_serialize(&indexed), &cfg).unwrap();
+            assert_eq!(result, "profile[size(profile, 1)]");
+        }
     }
 
     #[test]

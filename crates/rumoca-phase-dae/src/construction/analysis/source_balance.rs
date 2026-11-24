@@ -79,7 +79,13 @@ pub(super) fn source_balance(input: SourceBalanceInput<'_>) -> Result<BalanceDet
                 detail.discrete_value_definitions += plans.len();
             }
             EquationPartition::MultiOutput { receivers, .. } => {
-                add_multi_output_receivers(&mut detail, flat, roles, &receivers)?;
+                add_multi_output_receivers(
+                    &mut detail,
+                    flat,
+                    roles,
+                    &receivers,
+                    multi_output_equations.get(&row),
+                )?;
             }
             EquationPartition::ConsumedDiscreteValue => {}
         }
@@ -103,9 +109,13 @@ fn add_multi_output_receivers(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     receivers: &[VarName],
+    plan: Option<&MultiOutputEquationPlan>,
 ) -> Result<(), ToDaeError> {
     for receiver in receivers {
-        let scalar_count = checked_shape_size(receiver, &flat.variables[receiver])?;
+        let scalar_count = match plan.and_then(|plan| plan.selected_sizes.get(receiver)) {
+            Some(count) => *count,
+            None => checked_shape_size(receiver, &flat.variables[receiver])?,
+        };
         match roles[receiver] {
             PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
             PlannedRole::DiscreteValue => detail.discrete_value_definitions += scalar_count,
@@ -130,7 +140,10 @@ fn multi_output_equation_scalar_count(
         .chain(records)
         .try_fold(0usize, |count, target| {
             count
-                .checked_add(checked_shape_size(target, &flat.variables[target])?)
+                .checked_add(match plan.selected_sizes.get(target) {
+                    Some(count) => *count,
+                    None => checked_shape_size(target, &flat.variables[target])?,
+                })
                 .ok_or_else(|| {
                     ToDaeError::unsupported_flat(
                         "multi-output equation",

@@ -1108,6 +1108,21 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 .expect("checked function expression resolves");
             let provenance = expression.provenance();
             match expression.operation() {
+                dae::ExpressionOperation::Comprehension {
+                    domain,
+                    body: element,
+                } if !expanded && !self.is_folded_literal(current) && body.is_some() => {
+                    // The element may own a dynamic quotient using the induction
+                    // variable. Its lexical capability lasts only to this join.
+                    let enclosing_stack = std::mem::take(&mut self.pending);
+                    let domain = self.identities.domains[domain.index() as usize].id;
+                    body.expect("a function body is open")
+                        .with_comprehension_domain(domain, |scoped| {
+                            self.rebuild_postorder(target, element, Some(scoped))
+                        })?;
+                    self.pending = enclosing_stack;
+                    self.rebuild_expanded_expression(target, current, body)?;
+                }
                 dae::ExpressionOperation::FunctionValue { value, definition } => {
                     self.rebuild_function_value(
                         target, current, value, definition, expanded, body,

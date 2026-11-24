@@ -268,12 +268,17 @@ pub(in crate::construction::analysis) fn statement_reads_target(
         rumoca_core::Statement::For {
             indices, equations, ..
         } => {
-            indices
+            for binder in indices {
+                if expression_reads_target(&binder.range, target) {
+                    return true;
+                }
+                if binder.ident == target.as_str() {
+                    return false;
+                }
+            }
+            equations
                 .iter()
-                .any(|index| expression_reads_target(&index.range, target))
-                || equations
-                    .iter()
-                    .any(|statement| statement_reads_target(statement, target))
+                .any(|statement| statement_reads_target(statement, target))
         }
         rumoca_core::Statement::While { block, .. } => {
             expression_reads_target(&block.cond, target)

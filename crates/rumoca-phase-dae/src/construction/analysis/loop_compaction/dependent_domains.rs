@@ -110,9 +110,16 @@ fn rectangularize_statement(
             continue;
         }
         range_facts.refine(&mut index_shapes);
-        let Some(envelope) =
+        let envelope = if let Some(envelope) =
             dependent_range_envelope(&index.range, &index_static, &index_shapes, &bounds)?
-        else {
+        {
+            envelope
+        } else if indices.len() == 1
+            && let Some(envelope) =
+                indexed_loop_envelope(index, equations, &index_static, &index_shapes)?
+        {
+            envelope
+        } else {
             rectangular.push(index.clone());
             continue;
         };
@@ -155,6 +162,198 @@ fn rectangularize_statement(
         equations,
         span: *span,
     })
+}
+
+/// An unconditional array read in the iteration's first expression bounds
+/// every successful ascending, unit-step iteration. Keep one extra iteration
+/// to diagnose an oversized domain at the original point in execution. A
+/// prior break/return may legitimately exit before this first invalid index.
+fn indexed_loop_envelope(
+    index: &rumoca_core::ForIndex,
+    equations: &[rumoca_core::Statement],
+    static_integers: &HashMap<VarName, i64>,
+    shapes: &ShapeEnvironment,
+) -> Result<Option<DependentEnvelope>, ToDaeError> {
+    let Expression::Range {
+        start, step: None, ..
+    } = &index.range
+    else {
+        return Ok(None);
+    };
+    let Some(lower) = static_shape_integer_expression(start, static_integers, shapes)? else {
+        return Ok(None);
+    };
+    let first = match equations.first() {
+        Some(rumoca_core::Statement::Assignment { value, .. }) => Some(value),
+        Some(rumoca_core::Statement::If { cond_blocks, .. }) => {
+            cond_blocks.first().map(|b| &b.cond)
+        }
+        _ => None,
+    };
+    let extent = first
+        .and_then(|expr| eager_index_extent(expr, index, shapes))
+        .or_else(|| guarded_effect_extent(equations, index, shapes, static_integers));
+    let Some(extent) = extent else {
+        return Ok(None);
+    };
+    if lower < 1 || lower > extent + 1 {
+        return Ok(None);
+    }
+    Ok(Some(DependentEnvelope {
+        lower,
+        upper: extent + 1,
+        step: 1,
+    }))
+}
+
+/// A scan guarded by `invariant && row[i] == ...` may perform no read at
+/// all. Beyond the axis extent its first iteration either diagnoses a checked
+/// read or performs no writes. In the latter case every subsequent iteration
+/// follows the same invariant path from the same state.
+fn guarded_effect_extent(
+    statements: &[rumoca_core::Statement],
+    index: &rumoca_core::ForIndex,
+    shapes: &ShapeEnvironment,
+    static_integers: &HashMap<VarName, i64>,
+) -> Option<i64> {
+    use rumoca_core::Statement;
+    match statements {
+        [
+            Statement::For {
+                indices, equations, ..
+            },
+        ] if indices.iter().all(|inner| {
+            inner.ident != index.ident
+                && static_function_range(&inner.range, static_integers, shapes)
+                    .ok()
+                    .flatten()
+                    .is_some()
+        }) =>
+        {
+            guarded_effect_extent(equations, index, shapes, static_integers)
+        }
+        [
+            Statement::If {
+                cond_blocks,
+                else_block: None,
+                ..
+            },
+        ] => {
+            let [branch] = cond_blocks.as_slice() else {
+                return None;
+            };
+            let Expression::Binary {
+                op: OpBinary::And,
+                lhs,
+                rhs,
+                ..
+            } = &branch.cond
+            else {
+                return None;
+            };
+            if !repeatable_guard(lhs) || expression_reads_name(lhs, &VarName::new(&index.ident)) {
+                return None;
+            }
+            eager_index_extent(rhs, index, shapes)
+        }
+        _ => None,
+    }
+}
+
+/// Only compare existing locals and literals. A function call could have a
+/// side effect or read external state even when the iterator does not occur.
+fn repeatable_guard(expr: &Expression) -> bool {
+    let simple_subscripts = |subscripts: &[Subscript]| {
+        subscripts.iter().all(|s| match s {
+            Subscript::Expr { expr, .. } => repeatable_guard(expr),
+            Subscript::Index { .. } => true,
+            _ => false,
+        })
+    };
+    match expr {
+        Expression::Literal { .. } => true,
+        Expression::VarRef { subscripts, .. } => simple_subscripts(subscripts),
+        Expression::Index {
+            base, subscripts, ..
+        } => repeatable_guard(base) && simple_subscripts(subscripts),
+        Expression::Binary { lhs, rhs, .. } => repeatable_guard(lhs) && repeatable_guard(rhs),
+        Expression::Unary { rhs, .. } => repeatable_guard(rhs),
+        _ => false,
+    }
+}
+
+fn eager_index_extent(
+    expr: &Expression,
+    index: &rumoca_core::ForIndex,
+    shapes: &ShapeEnvironment,
+) -> Option<i64> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => indexed_axis_extent(name, subscripts, index, shapes),
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let Expression::VarRef {
+                name,
+                subscripts: inner,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            if !inner.is_empty() {
+                return None;
+            }
+            indexed_axis_extent(name, subscripts, index, shapes)
+        }
+        Expression::Unary { rhs, .. } => eager_index_extent(rhs, index, shapes),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Abs,
+            args,
+            ..
+        } if args.len() == 1 => eager_index_extent(&args[0], index, shapes),
+        Expression::Binary { op, lhs, rhs, .. } => {
+            eager_index_extent(lhs, index, shapes).or_else(|| {
+                if matches!(op, OpBinary::And | OpBinary::Or) {
+                    None
+                } else {
+                    eager_index_extent(rhs, index, shapes)
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+fn indexed_axis_extent(
+    name: &Reference,
+    subscripts: &[Subscript],
+    index: &rumoca_core::ForIndex,
+    shapes: &ShapeEnvironment,
+) -> Option<i64> {
+    let shape = shapes.get(name.var_name())?;
+    subscripts
+        .iter()
+        .zip(shape)
+        .find_map(|(subscript, extent)| {
+            let Subscript::Expr { expr, .. } = subscript else {
+                return None;
+            };
+            let Expression::VarRef {
+                name, subscripts, ..
+            } = expr.as_ref()
+            else {
+                return None;
+            };
+            let bound = match index.binder {
+                rumoca_core::IndexBinderProvenance::Source(id) => name.target_def_id() == Some(id),
+                rumoca_core::IndexBinderProvenance::Generated => {
+                    name.is_generated() && name.as_str() == index.ident
+                }
+            };
+            (bound && subscripts.is_empty()).then_some(i64::from(*extent))
+        })
 }
 
 fn rectangularize_loop_body(

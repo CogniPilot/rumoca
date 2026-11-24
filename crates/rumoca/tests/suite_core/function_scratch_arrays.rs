@@ -242,3 +242,41 @@ fn a_record_with_array_fields_fills_a_record_array_field() {
     assert_eq!(reals.iter().filter(|value| **value == 6.0).count(), 3);
     assert_eq!(reals.iter().filter(|value| **value == 0.0).count(), 3 * 2);
 }
+
+#[test]
+fn deterministic_scatter_must_cover_every_slot_before_read() {
+    let source = r#"
+model Scatter
+  function reorder
+    input Real data[4];
+    output Real buf[4];
+  protected
+    Integer ix;
+  algorithm
+    ix := 1;
+    for i in 1:4 loop
+      buf[ix] := data[i];
+      ix := mod(ix + 2,4) + 1;
+    end for;
+  end reorder;
+  input Real data[4];
+  output Real result[4] = reorder(data);
+end Scatter;
+"#;
+    let compile = |s: &str| {
+        Compiler::new()
+            .model("Scatter")
+            .compile_str(s, "Scatter.mo")
+    };
+    compile(source).expect("the index covers all four slots");
+    for invalid in [
+        source.replace("ix + 2", "ix + 1"),
+        source.replace("data[i];", "buf[1] + data[i];"),
+    ] {
+        let error = compile(&invalid).expect_err("an entry seed could be observed");
+        assert!(
+            error.to_string().contains("function element assignment"),
+            "{error}"
+        );
+    }
+}

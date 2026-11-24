@@ -305,3 +305,33 @@ fn lexical_loop_binding_refuses_missing_normalizer_decisions() {
         snapshot_loop_conditionals_with_entries(&nested_mutable_gate(), &mut guards).unwrap();
     bind_loop_selections(&normalized, &[]);
 }
+
+#[test]
+fn selected_nested_loop_resets_its_private_break_state_before_reading_it() {
+    let inner = for_loop("k", vec![Statement::Break { span: span(40) }], span(41));
+    let outer = for_loop("j", vec![inner], span(42));
+    let body = vec![Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: read("visible", span(30)),
+            stmts: vec![outer],
+        }],
+        else_block: None,
+        span: span(31),
+    }];
+    let mut exits = normalize_function_returns(&body, span(0)).unwrap();
+    let normalized = snapshot_loop_conditionals(&exits.statements, &mut exits.guards).unwrap();
+    let Statement::For { equations, .. } = &normalized[1] else {
+        panic!("expected outer loop");
+    };
+    let reset = super::function_returns::generated_boolean_definition(&equations[0], &exits.guards)
+        .unwrap()
+        .unwrap();
+    assert!(reset.mutable);
+    assert!(matches!(
+        reset.value,
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            ..
+        }
+    ));
+}

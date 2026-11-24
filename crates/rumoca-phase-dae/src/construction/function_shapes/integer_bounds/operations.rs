@@ -20,7 +20,7 @@ pub(super) fn builtin(
     match (function, positive_constant) {
         (BuiltinFunction::Min, _) => lhs.minimum(rhs),
         (BuiltinFunction::Max, _) => lhs.maximum(rhs),
-        (BuiltinFunction::Div, Some(divisor)) => lhs.divided_by(divisor),
+        (BuiltinFunction::Div, _) => lhs.divided_by_positive_interval(rhs),
         (BuiltinFunction::Mod, Some(divisor)) => IntegerInterval::finite(0, divisor - 1),
         _ => IntegerInterval::UNBOUNDED,
     }

@@ -164,7 +164,7 @@ fn validate_statement_function(
         normalized_context,
         &mut definitions,
     )?;
-    entry_seeds.extend(definitions.empty_value_seeds(normalized_context)?);
+    entry_seeds.extend(definitions.entry_value_seeds(normalized_context)?);
     let (statements, definedness) = validate_top_level_statements(
         function,
         &normalized.statements,
@@ -190,8 +190,15 @@ fn validate_nonreturn_path(
     context: FunctionValidationContext<'_>,
 ) -> Result<(), ToDaeError> {
     certify_nonleading_return_branches(function, context)?;
-    let nonreturn =
-        normalize_function_source(function, &nonreturn_path(&function.body), context, false)?;
+    validate_output_path(function, &nonreturn_path(&function.body), context)
+}
+
+pub(super) fn validate_output_path(
+    function: &rumoca_core::Function,
+    path: &[rumoca_core::Statement],
+    context: FunctionValidationContext<'_>,
+) -> Result<(), ToDaeError> {
+    let nonreturn = normalize_function_source(function, path, context, false)?;
     let roles = roles_with_guards(context.roles, &nonreturn.guards);
     let shapes = shapes_with_guards(context.shapes, &nonreturn.guards);
     let snapshot_loops =
@@ -204,7 +211,7 @@ fn validate_nonreturn_path(
         ..context
     };
     let mut definitions = FunctionDefinitions::new(function);
-    definitions.empty_value_seeds(nonreturn_context)?;
+    definitions.entry_value_seeds(nonreturn_context)?;
     validate_top_level_statements(
         function,
         &nonreturn.statements,
