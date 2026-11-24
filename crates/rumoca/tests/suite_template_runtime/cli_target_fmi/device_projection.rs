@@ -211,9 +211,52 @@ fn a_lowered_model_the_c_kernel_refuses_renders_no_device_unit() {
     );
 }
 
-/// The device macros include no header: a unit that includes the documented
-/// headers before `device_instance`, which redefines `snprintf`, compiles
-/// whatever the model, a switching chart set included.
+/// A device unit defines no strong external symbol, so the units of several
+/// models link into one host program.
+#[test]
+fn a_device_unit_defines_no_external_symbol() {
+    let runs = |tool: &str| Command::new(tool).arg("--version").output().is_ok();
+    if !crate::template_runtime_policy::prerequisites_are_available(
+        "symbol check of the device projection unit",
+        &[("c++", runs("c++")), ("nm", runs("nm"))],
+    ) {
+        return;
+    }
+    let work = tempdir().expect("device unit work directory");
+    for (compiled, model) in models() {
+        let source = work.path().join(format!("{model}.cpp"));
+        let object = work.path().join(format!("{model}.o"));
+        fs::write(&source, device_unit(&compiled)).expect("write the device unit");
+        checked_output(
+            Command::new("c++")
+                .args(["-std=c++17", "-Wall", "-Wextra", "-Werror", "-c"])
+                .args(["-D__device__=", "-D__host__="])
+                .arg(&source)
+                .arg("-o")
+                .arg(&object),
+            "compile the device unit as host C++",
+        );
+        let symbols = checked_output(
+            Command::new("nm")
+                .args(["-g", "--defined-only"])
+                .arg(&object),
+            "list the device unit's external symbols",
+        );
+        // Weak symbols (`W`, `V`: inline functions of the C++ library) merge
+        // at link time; any other external symbol would collide.
+        let listing = String::from_utf8_lossy(&symbols.stdout);
+        let strong: Vec<&str> = listing
+            .lines()
+            .filter(|line| !matches!(line.split_whitespace().nth(1), Some("W" | "V")))
+            .collect();
+        assert!(strong.is_empty(), "{model}: {strong:?}");
+    }
+}
+
+/// The device macros include no header after their shims (`device_instance`
+/// includes `<stdio.h>` before it redefines `snprintf`): a unit that includes
+/// the documented headers before `device_instance` compiles whatever the
+/// model, a switching chart set included.
 #[test]
 fn the_device_unit_includes_no_header_after_its_shims() {
     for (compiled, model) in models() {

@@ -26,6 +26,7 @@ mod input_defaults;
 mod integer_parameter;
 mod integer_publication;
 mod integer_quotients;
+mod lane_status_harness;
 mod lifecycle;
 mod mass_matrix;
 mod projection;
