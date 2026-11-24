@@ -166,6 +166,7 @@ mod function_default_argument_fields;
 mod function_dimension_query_reads;
 mod function_equation_shape;
 mod function_exclusive_row_definitions;
+mod function_exit_flag_definitions;
 mod function_fact_bounded_loops;
 mod function_fold_projection;
 mod function_generic_loop_definedness;

@@ -90,6 +90,16 @@ impl GuardFacts {
                     exit.assuming(&block.cond, false, scope)
                 };
             }
+            // MLS §8.3.7: a failed assertion of the default level ends the
+            // evaluation, so every path that goes on proved its condition.
+            rumoca_core::Statement::Assert {
+                condition,
+                level: None,
+                ..
+            } => {
+                self.observe_accesses(condition, scope);
+                *self = self.assuming(condition, true, scope);
+            }
             _ => self.forget_written(statement),
         }
     }

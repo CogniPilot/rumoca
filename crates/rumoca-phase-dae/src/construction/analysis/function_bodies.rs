@@ -158,6 +158,7 @@ fn validate_statement_function(
         ..context
     };
     let mut definitions = FunctionDefinitions::new(function);
+    definitions.assume_declaration_bindings(normalized_context);
     let mut entry_seeds = certified_return_output_seeds(
         function,
         normalized.has_returns && !normalized.guards.iter().any(|guard| guard.mutable),
@@ -211,6 +212,7 @@ pub(super) fn validate_output_path(
         ..context
     };
     let mut definitions = FunctionDefinitions::new(function);
+    definitions.assume_declaration_bindings(nonreturn_context);
     definitions.entry_value_seeds(nonreturn_context)?;
     validate_top_level_statements(
         function,

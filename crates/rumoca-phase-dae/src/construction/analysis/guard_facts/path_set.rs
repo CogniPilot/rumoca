@@ -140,6 +140,19 @@ impl PathSet {
         remaining
     }
 
+    /// The paths on which the Boolean `name` has `value`.
+    pub(in crate::construction::analysis) fn assuming_boolean(
+        &self,
+        name: &VarName,
+        value: bool,
+    ) -> Self {
+        let mut assumed = Self::empty();
+        for facts in &self.0 {
+            assumed.push(facts.assuming_boolean(name, value));
+        }
+        assumed
+    }
+
     fn assuming(&self, condition: &Expression, value: bool, scope: FactScope<'_>) -> Self {
         match condition {
             Expression::Unary {
