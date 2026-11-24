@@ -47,6 +47,12 @@ package NamedData
     Real cp = NamedData.cp(T);
     Real direct = cp_T(H2O, T);
   end Model;
+  model ParameterBinding
+    parameter Real cp300 = cp_T(H2O, 300);
+    Real x(start = 0, fixed = true);
+  equation
+    der(x) = cp300;
+  end ParameterBinding;
   model ReadsName
     Boolean same = sameName(H2O);
     Real x(start = 0, fixed = true);
@@ -97,4 +103,19 @@ fn computing_with_a_text_field_is_refused() {
         refused,
         "a text comparison inside a function must be refused"
     );
+}
+
+/// A parameter binding is evaluated before the trajectory exists; the record's
+/// text field holds its lane there too and is never read as a number.
+#[test]
+fn a_parameter_binding_passes_a_record_with_a_text_field() {
+    let compiled = Compiler::new()
+        .model("NamedData.ParameterBinding")
+        .compile_str(NAMED_DATA, "NamedData.mo")
+        .expect("the named data record compiles");
+    let result = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+        .expect("a parameter binding over a record with a text field simulates");
+    let expected = 461.5 * (1.0 + 2.0 * 300.0 + 3.0 * 300.0 * 300.0);
+    let x = series(&result, "x").last().copied().unwrap();
+    assert!((x - expected).abs() < 1e-9 * expected, "x(1) = {x}");
 }
