@@ -104,6 +104,7 @@ impl<'dae> StateDerivativeWalk<'_, 'dae> {
                     .all(|value| self.expression(value, context))
             }
             dae::ExpressionOperation::Literal(_)
+            | dae::ExpressionOperation::Range(_)
             | dae::ExpressionOperation::Coordinate(
                 dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time,
             ) => true,

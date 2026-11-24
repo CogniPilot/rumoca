@@ -2,6 +2,81 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
+fn a_range_valued_rate_retains_real_tensor_derivatives() {
+    let text = "Real x[3]; equation der(x)=1:3; x[1:2:3]=time*(1:2:3);";
+    let mut sources = SourceMap::new();
+    let source = sources.add("range_rate.mo", text);
+    let at = source_provenance(source, text, text);
+    let model = dae::Dae::construct(sources, |model| {
+        let vector =
+            model.types(|t| t.derived(dae::ValueType::array(dae::ScalarType::Real, [3]), at))?;
+        let x = model
+            .variables(|vars| vars.state(VarName::new("x"), vector, at, Default::default()))?;
+        let rows = model.expressions(|e| {
+            let dx = e.at(at).coordinate(dae::CoordinateInput::Derivative(x))?;
+            let x = e.at(at).coordinate(dae::CoordinateInput::State(x))?;
+            let time = e.at(at).coordinate(dae::CoordinateInput::Time)?;
+            let one = e.at(at).literal(dae::DaeLiteral::Integer(1))?;
+            let two = e.at(at).literal(dae::DaeLiteral::Integer(2))?;
+            let three = e.at(at).literal(dae::DaeLiteral::Integer(3))?;
+            let rates = e.at(at).range(one, None, three)?;
+            let rate = e.at(at).binary(dae::BinaryOperator::Subtract, dx, rates)?;
+            let indices = e.at(at).range(one, Some(two), three)?;
+            let selected = e.at(at).index(
+                x,
+                [dae::Subscript::Slice {
+                    expression: indices,
+                    provenance: at,
+                }],
+            )?;
+            let position = e
+                .at(at)
+                .binary(dae::BinaryOperator::Multiply, time, indices)?;
+            let constraint = e
+                .at(at)
+                .binary(dae::BinaryOperator::Subtract, selected, position)?;
+            Ok([rate, constraint])
+        })?;
+        model.continuous(|c| {
+            for row in rows {
+                c.value_equation(at, row)?;
+            }
+            Ok(())
+        })
+    })
+    .unwrap();
+    let constraint = model.inspect(|view| {
+        constraints::holonomic_constraints(view)
+            .into_iter()
+            .find(|c| c.owner_ordinal == 1)
+            .expect("the slice has a position constraint")
+    });
+    assert_eq!(constraint.proof.maximum_order, 2);
+    let (rebuilt, manifold) =
+        rebuild_holonomic_constraint(&ReductionSource::new(&model), &constraint, &[]).unwrap();
+    assert_eq!(manifold.len(), 2);
+    rebuilt.inspect(|view| {
+        let dae::ContinuousOwnerView::Structured { family, .. } =
+            view.continuous_owners().nth(1).unwrap()
+        else {
+            panic!("the second derivative replaces the position equation");
+        };
+        let tangent = view.expression_id(manifold[1].expression as usize).unwrap();
+        for row in [tangent, family.bodies().get(0).unwrap()] {
+            let ty = view.expression(row).unwrap().value_type();
+            assert_eq!(ty.scalar_type(), dae::ScalarType::Real);
+            assert_eq!(ty.dimensions(), [2]);
+            assert_eq!(
+                rumoca_eval_dae::NumericEvaluator::new(view)
+                    .expression(row)
+                    .unwrap(),
+                [0.0, 0.0]
+            );
+        }
+    });
+}
+
+#[test]
 fn independent_rate_values_retain_their_state_relation() {
     let counts = [1, 3, 4096].map(|extent| {
         let model = rate_model(extent, RateDefinition::Independent);

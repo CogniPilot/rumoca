@@ -86,6 +86,62 @@ fn preferred_values_replace_the_differentiated_balances() {
     }
 }
 
+#[test]
+fn preferred_coordinates_have_their_range_derivatives() {
+    for (array, rhs, rates) in [
+        (
+            "Real a[n] = {1,3,7};",
+            "fill(m,2) .* abs(a[1:2])",
+            [-1.0, -3.0],
+        ),
+        (
+            "parameter Real a[n] = {1,3,7};",
+            "fill(m,2) .* a[2:n]",
+            [-3.0, -7.0],
+        ),
+        (
+            "Real a[n] = {m,3*m,7*m};",
+            "fill(m,2) .* a[1:2:n]",
+            [-2.0, -14.0],
+        ),
+        (
+            "Real a[n] = {m,3*m,7*m};",
+            "fill(m,2) .* (0.5*(a[1:n-1] + a[2:n]))",
+            [-4.0, -10.0],
+        ),
+        ("", "m*(1:2) + ((3:4) .+ m)", [-2.0, -3.0]),
+    ] {
+        let source = format!(
+            "model Slices
+  parameter Integer n = 3;
+  Real m(start=1, fixed=true);
+  Real x[2](each stateSelect=StateSelect.prefer, each start=1);
+  {array}
+equation
+  der(m) = -m;
+  x = {rhs};
+end Slices;"
+        );
+        let model = dae(&source, "Slices");
+        // There is one independent state. Either component of x can replace m.
+        let basis = rumoca_phase_solve::integrated_state_names(&model).unwrap();
+        assert!(basis == ["x[1]"] || basis == ["x[2]"], "{rhs}: {basis:?}");
+        let result = simulate_dae_with_diagnostics(
+            &model,
+            &SimOptions {
+                t_end: 0.0,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{rhs}: {error}"));
+        for (lane, rate) in rates.into_iter().enumerate() {
+            let name = format!("$formal_derivative.1.x[{}]", lane + 1);
+            let actual = result.data[column(&result, &name)][0];
+            assert!((actual - rate).abs() < 1e-5, "{rhs}: {name} = {actual}");
+        }
+    }
+}
+
 /// One differentiated `x` and one algebraic `y = 2*x + 1`, each with a
 /// `StateSelect` value; the basis is the single integrated scalar.
 fn pair(x: &str, y: &str) -> String {
