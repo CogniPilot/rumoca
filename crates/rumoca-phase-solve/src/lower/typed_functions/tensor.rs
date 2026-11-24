@@ -323,18 +323,20 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         arguments: dae::ExpressionOperands<'dae>,
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        if let Some(actual) = self.eager.homotopy.actual(builtin, arguments) {
+            let value = self.expression(actual)?;
+            return self.coerce_value(value, value_type, at);
+        }
         // Function bodies have no event generation (MLS 3.7 §3.7.2), so
         // `smooth` and `noEvent` are value-transparent here just as they are
         // in scalar lowering. Preserve the compact operand instead of
         // scalarizing its tensor payload.
-        if builtin == dae::PureBuiltin::Smooth {
-            let value = arguments.get(1).ok_or(
-                solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
-            )?;
-            return self.expression(value);
-        }
-        if builtin == dae::PureBuiltin::NoEvent {
-            let value = arguments.get(0).ok_or(
+        if matches!(
+            builtin,
+            dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent
+        ) {
+            let index = usize::from(builtin == dae::PureBuiltin::Smooth);
+            let value = arguments.get(index).ok_or(
                 solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
             )?;
             return self.expression(value);

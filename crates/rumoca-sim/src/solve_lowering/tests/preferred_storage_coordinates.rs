@@ -132,3 +132,81 @@ end EmptyArgument;"#;
         assert!((result.data[column][0] - expected).abs() < 1e-9, "{name}");
     }
 }
+
+fn homotopy_guess(value: &str, declarations: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
+    let source = format!(
+        r#"model HomotopyGuess
+  {declarations}
+  Real z; Real dp; Real E; Real w;
+  Real x(start=2, stateSelect=StateSelect.prefer);
+initial equation
+  x = 2; w = 0;
+equation
+  z = {value};
+  w = z - 2;
+  E = x*z;
+  der(E) = 1;
+  der(w) = -dp;
+end HomotopyGuess;"#
+    );
+    compile_with_roots(&source, "HomotopyGuess", &[])
+}
+
+fn preferred_guess_states(dae: &rumoca_ir_dae::Dae) -> Vec<String> {
+    let mut states = rumoca_phase_solve::integrated_state_names(dae).unwrap();
+    let withheld = rumoca_phase_solve::withheld_state_preferences(dae).unwrap();
+    assert!(states.iter().any(|s| s == "x"), "{states:?}, {withheld:?}");
+    assert!(withheld.is_empty(), "{withheld:?}");
+    states.sort_unstable();
+    states
+}
+
+#[test]
+fn homotopy_causal_guesses_select_the_actual_basis_and_initialize() {
+    let expected_states = preferred_guess_states(&homotopy_guess("dp + dp^3", ""));
+    for value in [
+        "homotopy(dp + dp^3, 2*dp)",
+        "if time >= -1 then homotopy(dp + dp^3, 2*dp) else sqrt(1 + dp*dp)",
+    ] {
+        let dae = homotopy_guess(value, "");
+        assert_eq!(preferred_guess_states(&dae), expected_states, "{value}");
+        let result = simulate_dae(
+            &dae,
+            &SimOptions {
+                t_end: 0.0,
+                ..Default::default()
+            },
+        )
+        .expect("initialize the preferred basis");
+        assert_eq!(result.times[0], 0.0);
+        for (name, expected) in [("z", 2.0), ("dp", 1.0), ("x", 2.0), ("E", 4.0), ("w", 0.0)] {
+            let column = result.names.iter().position(|n| n == name).unwrap();
+            let initial = result.data[column][0];
+            assert!(
+                (initial - expected).abs() < 1e-8,
+                "{value}: {name} = {initial}"
+            );
+        }
+    }
+}
+
+#[test]
+fn homotopy_causal_guess_omits_simplified_values_and_their_dependencies() {
+    let expected_states = preferred_guess_states(&homotopy_guess("dp + dp^3", ""));
+    let checked = r#"function checkedValue
+    input Real u;
+    output Real y;
+  algorithm
+    assert(u > 0, "positive value required");
+    y := u;
+    annotation(Inline=false);
+  end checkedValue;
+  Real q(start=0) = 1/dp;"#;
+    for (value, declarations) in [
+        ("homotopy(dp + dp^3, 1/dp)", ""),
+        ("homotopy(dp + dp^3, q + checkedValue(dp))", checked),
+    ] {
+        let dae = homotopy_guess(value, declarations);
+        assert_eq!(preferred_guess_states(&dae), expected_states, "{value}");
+    }
+}

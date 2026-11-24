@@ -41,6 +41,7 @@ pub(super) struct EnvironmentLayout<'dae> {
 #[derive(Clone)]
 pub(super) struct RegionContext<'dae> {
     pub(super) view: dae::DaeView<'dae>,
+    pub(super) homotopy: super::eager_scope::HomotopyMode,
     pub(super) selected_calls: super::zero_products::SelectedCalls<'dae>,
     pub(super) callees: std::sync::Arc<HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>>,
     pub(super) predicate_ranges: std::sync::Arc<HashMap<dae::ExprId<'dae>, Range<usize>>>,
@@ -235,7 +236,7 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         selected_values: Default::default(),
         selected_calls: context.selected_calls.clone(),
         implied_guards: Vec::new(),
-        eager: EagerScope::default(),
+        eager: EagerScope::with_homotopy(context.homotopy),
     })
 }
 
@@ -347,6 +348,7 @@ impl<'dae> ExpressionLowerer<'_, '_, 'dae> {
     pub(super) fn region_context(&self) -> RegionContext<'dae> {
         RegionContext {
             view: self.view,
+            homotopy: self.eager.homotopy,
             selected_calls: self.selected_calls.clone(),
             callees: self.callees.clone(),
             predicate_ranges: self.predicate_ranges.clone(),

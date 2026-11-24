@@ -1,5 +1,6 @@
 //! Aggregate model coordinates captured by shared typed expression lowering.
 
+use super::eager_scope::HomotopyMode;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use std::collections::HashMap;
@@ -113,10 +114,23 @@ pub(super) fn collect_model_coordinate_types<'dae>(
     Vec<(ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)>,
     solve::SolveProgramConstructionError,
 > {
-    let mut coordinates = initial.into_iter().collect::<HashMap<_, _>>();
-    let mut mismatch = false;
-    for expression in expressions {
-        dae::for_each_expression(view, expression, |_, node| {
+    HomotopyMode::Reject.collect_coordinates(view, expressions, initial, provenance)
+}
+
+impl HomotopyMode {
+    pub(super) fn collect_coordinates<'dae>(
+        self,
+        view: dae::DaeView<'dae>,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
+        initial: impl IntoIterator<Item = (ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)>,
+        provenance: rumoca_core::Span,
+    ) -> Result<
+        Vec<(ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)>,
+        solve::SolveProgramConstructionError,
+    > {
+        let mut coordinates = initial.into_iter().collect::<HashMap<_, _>>();
+        let mut mismatch = false;
+        self.visit(view, expressions, |_, node| {
             let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
                 return;
             };
@@ -127,11 +141,11 @@ pub(super) fn collect_model_coordinate_types<'dae>(
                 mismatch |= previous != node.value_type_id();
             }
         });
+        if mismatch {
+            return Err(solve::SolveProgramConstructionError::InvalidCallInterface { provenance });
+        }
+        let mut coordinates = coordinates.into_iter().collect::<Vec<_>>();
+        coordinates.sort_by_key(|(key, _)| key.stable_key());
+        Ok(coordinates)
     }
-    if mismatch {
-        return Err(solve::SolveProgramConstructionError::InvalidCallInterface { provenance });
-    }
-    let mut coordinates = coordinates.into_iter().collect::<Vec<_>>();
-    coordinates.sort_by_key(|(key, _)| key.stable_key());
-    Ok(coordinates)
 }

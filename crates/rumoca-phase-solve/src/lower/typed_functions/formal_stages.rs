@@ -7,11 +7,12 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{FormalDerivativeStage, FormalDerivativeView, FormalStageEquation};
 
-use super::model_coordinates::{ModelCoordinateKey, collect_model_coordinate_types};
+use super::eager_scope::HomotopyMode;
+use super::model_coordinates::ModelCoordinateKey;
 use super::value_types::is_zero_size;
 use super::{
-    AssertionSlot, CallLoweringError, EagerScope, ExpressionLowerer, FunctionAssertionMessage,
-    LoweredValue, PureCallRegistry, arithmetic_profile, lower_primitive_type,
+    AssertionSlot, CallLoweringError, ExpressionLowerer, FunctionAssertionMessage, LoweredValue,
+    PureCallRegistry, arithmetic_profile, lower_primitive_type,
 };
 
 /// Analysis kernels retain their issuing formal root. They are not a prepared
@@ -167,11 +168,12 @@ impl<'formal> FormalCoordinates<'formal> {
     fn collect(
         view: dae::DaeView<'formal>,
         expressions: impl IntoIterator<Item = dae::ExprId<'formal>>,
+        homotopy: HomotopyMode,
         at: Span,
     ) -> Result<Self, solve::SolveProgramConstructionError> {
         let mut inputs = Vec::new();
         let mut empty = Vec::new();
-        for (key, id) in collect_model_coordinate_types(view, expressions, [], at)? {
+        for (key, id) in homotopy.collect_coordinates(view, expressions, [], at)? {
             let value_type = view
                 .value_type(id)
                 .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
@@ -190,6 +192,7 @@ fn lower_guesses<'formal>(
     stages: &[FormalStageProgram<'_, '_, 'formal>],
     registry: &mut PureCallRegistry<'formal>,
 ) -> Result<Vec<FormalCausalGuess<'formal>>, CallLoweringError> {
+    let homotopy = HomotopyMode::CausalGuess;
     let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
     let mut needed = std::collections::BTreeSet::new();
     for equation in stages.iter().flat_map(|stage| stage.equations()) {
@@ -211,7 +214,8 @@ fn lower_guesses<'formal>(
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
             .provenance()
             .span();
-        for (coordinate, _) in FormalCoordinates::collect(view, [expression], at)?.inputs {
+        let coordinates = FormalCoordinates::collect(view, [expression], homotopy, at)?;
+        for (coordinate, _) in coordinates.inputs {
             if let dae::CoordinateView::Algebraic(variable) = coordinate.coordinate() {
                 needed.insert(variable.index());
             }
@@ -237,7 +241,7 @@ fn lower_guesses<'formal>(
                     .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
                     .value_type_id(),
             };
-            let program = registry.formal_expressions(view, vec![body], None, at)?;
+            let program = registry.formal_expressions(view, vec![body], None, homotopy, at)?;
             Ok(FormalCausalGuess { target, program })
         })
         .collect()
@@ -345,7 +349,7 @@ impl<'formal> PureCallRegistry<'formal> {
                 })
             })
             .collect::<Result<_, solve::SolveProgramConstructionError>>()?;
-        let program = self.formal_expressions(view, bodies, domain, at)?;
+        let program = self.formal_expressions(view, bodies, domain, HomotopyMode::Reject, at)?;
         Ok(FormalResidualProgram { equation, program })
     }
 
@@ -354,12 +358,17 @@ impl<'formal> PureCallRegistry<'formal> {
         view: dae::DaeView<'formal>,
         bodies: Vec<FormalExpressionBody<'formal>>,
         domain: Option<ResidualBodyDomain<'formal>>,
+        homotopy: HomotopyMode,
         at: Span,
     ) -> Result<FormalExpressionProgram<'formal>, CallLoweringError> {
         let coordinates =
-            FormalCoordinates::collect(view, bodies.iter().map(|body| body.value), at)?;
-        let (callees, predicate_ranges, assertions, assertion_slots) =
-            self.register_expression_calls(view, bodies.iter().map(|body| (body.value, ())))?;
+            FormalCoordinates::collect(view, bodies.iter().map(|body| body.value), homotopy, at)?;
+        let (callees, predicate_ranges, assertions, assertion_slots, selected_calls) = self
+            .register_expression_calls(
+                view,
+                bodies.iter().map(|body| (body.value, ())),
+                homotopy,
+            )?;
         let inputs = coordinates
             .inputs
             .iter()
@@ -374,7 +383,6 @@ impl<'formal> PureCallRegistry<'formal> {
             .collect::<Result<Vec<_>, _>>()?;
         outputs.extend(assertion_slots.iter().map(AssertionSlot::output));
         let residual_outputs = bodies.len();
-        let selected_calls = std::sync::Arc::new(self.identities.selected_calls.clone());
         let identity = self.identities.issue(at)?;
         let owner =
             self.table
@@ -387,35 +395,15 @@ impl<'formal> PureCallRegistry<'formal> {
                         let value = builder.load(input, at)?;
                         model_coordinates.insert(key, LoweredValue::scalar(ty, value));
                     }
-                    let mut lowerer = ExpressionLowerer {
-                        view,
-                        builder,
-                        model_coordinates,
-                        parameters: HashMap::new(),
-                        function_values: HashMap::new(),
-                        fold_parameters: HashMap::new(),
-                        fold_values: HashMap::new(),
-                        binders: HashMap::new(),
-                        callees: callees.into(),
-                        predicate_ranges: predicate_ranges.into(),
-                        cache: HashMap::new(),
-                        call_values: HashMap::new(),
-                        predicate_values: vec![None; assertion_slots.len()],
-                        assertion_slots: assertion_slots.clone(),
-                        next_direct_assertion: 0,
-                        direct_assertion_count: 0,
-                        direct_assertions: std::sync::Arc::from([]),
-                        assertion_output_base: residual_outputs,
-                        loop_statements: Default::default(),
-                        conditional_statements: Default::default(),
-                        assigned_values: HashMap::new(),
-                        totality: HashMap::new(),
-                        zero_coefficients: Default::default(),
-                        selected_values: Default::default(),
-                        selected_calls: selected_calls.clone(),
-                        implied_guards: Vec::new(),
-                        eager: EagerScope::default(),
-                    };
+                    let mut lowerer =
+                        ExpressionLowerer::for_model_coordinates(view, builder, model_coordinates);
+                    lowerer.eager.homotopy = homotopy;
+                    lowerer.callees = callees.into();
+                    lowerer.predicate_ranges = predicate_ranges.into();
+                    lowerer.predicate_values = vec![None; assertion_slots.len()];
+                    lowerer.assertion_slots = assertion_slots.clone();
+                    lowerer.assertion_output_base = residual_outputs;
+                    lowerer.selected_calls = selected_calls.clone();
                     for (&body, &output) in bodies.iter().zip(outputs) {
                         let value = lowerer.residual_body(body, domain.as_ref(), at)?;
                         lowerer.builder.store(output, value, at)?;

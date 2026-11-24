@@ -23,6 +23,81 @@ use rumoca_ir_solve as solve;
 
 use super::{ExpressionLowerer, total_conditionals::is_total};
 
+/// Only a state-selection trial guess evaluates homotopy at its actual endpoint.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum HomotopyMode {
+    #[default]
+    Reject,
+    CausalGuess,
+}
+
+impl HomotopyMode {
+    pub(super) fn actual(
+        self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'_>,
+    ) -> Option<dae::ExprId<'_>> {
+        if self == Self::CausalGuess && builtin == dae::PureBuiltin::Homotopy {
+            return arguments.get(0);
+        }
+        None
+    }
+
+    pub(super) fn visit<'dae>(
+        self,
+        view: dae::DaeView<'dae>,
+        roots: impl IntoIterator<Item = dae::ExprId<'dae>>,
+        mut visit: impl FnMut(dae::ExprId<'dae>, dae::ExpressionView<'dae>),
+    ) -> bool {
+        self.visit_pruned(
+            &mut dae::ExpressionTraversal::new(),
+            view,
+            roots,
+            |_, _| false,
+            |id, node| {
+                visit(id, node);
+                true
+            },
+        )
+    }
+
+    /// Returns whether the walk followed an actual operand. A model guess has
+    /// no function-local conditional states. A projection back to the visited
+    /// node ends the path when a capture or eager-demand visitor prunes it.
+    pub(super) fn visit_pruned<'dae>(
+        self,
+        traversal: &mut dae::ExpressionTraversal<'dae>,
+        view: dae::DaeView<'dae>,
+        roots: impl IntoIterator<Item = dae::ExprId<'dae>>,
+        has_state: impl FnMut(dae::FunctionConditionalId<'dae>, dae::FunctionValueId<'dae>) -> bool,
+        mut visit: impl FnMut(dae::ExprId<'dae>, dae::ExpressionView<'dae>) -> bool,
+    ) -> bool {
+        if self == Self::Reject {
+            traversal.visit_pruned_with_conditional_states(view, roots, has_state, visit);
+            return false;
+        }
+        let mut projected = false;
+        traversal.visit_projected(
+            view,
+            roots,
+            |id, node| {
+                if !visit(id, node) {
+                    return Some(id);
+                }
+                let dae::ExpressionOperation::Builtin { builtin, arguments } = node.operation()
+                else {
+                    return None;
+                };
+                let actual = self.actual(builtin, arguments);
+                projected |= actual.is_some();
+                actual
+            },
+            |_, _| {},
+        );
+        projected
+    }
+}
+
 /// The calls and conditionals every execution of one scope computes.
 #[derive(Default)]
 struct EagerDemand<'dae> {
@@ -84,11 +159,21 @@ struct ConditionalGroup<'dae> {
 /// captures from the scope (see `issue_demanded_calls`).
 #[derive(Default)]
 pub(super) struct EagerScope<'dae> {
+    pub(super) homotopy: HomotopyMode,
     /// Calls the scope computes whatever its inputs are, in walk order.
     calls: HashMap<dae::ExprId<'dae>, usize>,
     groups: Vec<ConditionalGroup<'dae>>,
     /// Group index of every member, until the group is lowered.
     group_of: HashMap<dae::ExprId<'dae>, usize>,
+}
+
+impl EagerScope<'_> {
+    pub(super) fn with_homotopy(homotopy: HomotopyMode) -> Self {
+        Self {
+            homotopy,
+            ..Self::default()
+        }
+    }
 }
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
@@ -146,16 +231,22 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             return Ok(());
         }
         let mut reached = Vec::new();
-        traversal.visit_pruned(self.view, expressions, |id, _| {
-            if self.cache.contains_key(&id) {
-                return false;
-            }
-            if let Some(ordinal) = self.eager.calls.get(&id) {
-                reached.push((*ordinal, id));
-                return false;
-            }
-            true
-        });
+        self.eager.homotopy.visit_pruned(
+            traversal,
+            self.view,
+            expressions,
+            |_, _| false,
+            |id, _| {
+                if self.cache.contains_key(&id) {
+                    return false;
+                }
+                if let Some(ordinal) = self.eager.calls.get(&id) {
+                    reached.push((*ordinal, id));
+                    return false;
+                }
+                true
+            },
+        );
         reached.sort_unstable();
         for (_, call) in reached {
             self.expression(call)?;
