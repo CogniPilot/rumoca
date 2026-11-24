@@ -12,11 +12,18 @@ struct Program<C: ?Sized> {
     span: rumoca_core::Span,
 }
 
+/// Entries for every program of `source`. A program the whole object does not
+/// bind takes its entry from `family`, the same scalar source lowered once as
+/// one selectable object and only when a first program needs it, so a whole
+/// object that binds nothing costs one more compiled object, not one per
+/// program. A program the family does not bind either is lowered alone, and
+/// that lowering is required.
 fn prepare<C: ?Sized>(
     label: &str,
     source: &solve::ScalarProgramBlock,
     whole: &Rc<C>,
     mut bind: impl FnMut(&C, &solve::ScalarProgramBlock, usize) -> Result<Option<Rc<C>>, String>,
+    family: impl FnOnce() -> Option<Rc<C>>,
     mut compile: impl FnMut(&solve::ScalarProgramBlock) -> Result<Rc<C>, String>,
 ) -> Result<Box<[Program<C>]>, EvalSolveError> {
     let one_dense_program = source.row_count() == 1
@@ -25,14 +32,25 @@ fn prepare<C: ?Sized>(
             .iter()
             .copied()
             .eq(0..source.stored_output_count());
+    let mut pending_family = Some(family);
+    let mut family = None;
     source.programs().iter().enumerate().map(|(index, ops)| {
         let span = source.program_span(index).ok_or_else(|| EvalSolveError::InvalidRow {
             message: format!("selected {label} program {index} has no source span"), span: None,
         })?;
         let outputs = solve::ScalarProgramBlock::program_output_count(ops);
-        let bound = bind(whole, source, index).map_err(|message| EvalSolveError::CompiledExecution {
+        let unbound = |message| EvalSolveError::CompiledExecution {
             message: format!("selected {label} entry {index} could not bind its source: {message}"), span: Some(span),
-        })?;
+        };
+        let mut bound = bind(whole, source, index).map_err(unbound)?;
+        if bound.is_none() && !one_dense_program {
+            if let Some(lower) = pending_family.take() {
+                family = lower();
+            }
+            if let Some(family) = &family {
+                bound = bind(family, source, index).map_err(unbound)?;
+            }
+        }
         let code = if let Some(bound) = bound {
             bound
         } else if one_dense_program {
@@ -189,7 +207,7 @@ pub(super) fn compute_expression(
         )?,
         Err(error) => return required_compiled(label, source.program_spans(), Err(error)),
     };
-    expression_from_whole(backend, label, source, whole)
+    expression_entries(backend, label, source, whole, Unbound::Family)
 }
 
 pub(super) fn compute_jacobian(
@@ -207,7 +225,15 @@ pub(super) fn compute_jacobian(
         )?,
         Err(error) => return required_compiled(label, source.program_spans(), Err(error)),
     };
-    jacobian_from_whole(backend, label, source, whole)
+    jacobian_entries(backend, label, source, whole, Unbound::Family)
+}
+
+/// How a program the whole object does not bind gets its entry: from one
+/// selectable family of the scalar source, or lowered alone.
+#[derive(Clone, Copy)]
+enum Unbound {
+    Family,
+    Alone,
 }
 
 pub(super) fn expression_from_whole(
@@ -216,11 +242,25 @@ pub(super) fn expression_from_whole(
     source: &solve::ScalarProgramBlock,
     whole: Rc<dyn CompiledSolveExpression>,
 ) -> Result<Rc<CompleteExpression>, EvalSolveError> {
+    expression_entries(backend, label, source, whole, Unbound::Alone)
+}
+
+fn expression_entries(
+    backend: &dyn SolveExecutionBackend,
+    label: &str,
+    source: &solve::ScalarProgramBlock,
+    whole: Rc<dyn CompiledSolveExpression>,
+    unbound: Unbound,
+) -> Result<Rc<CompleteExpression>, EvalSolveError> {
     let programs = prepare(
         label,
         source,
         &whole,
         |code, source, index| code.bind_program(source, index),
+        || match unbound {
+            Unbound::Family => backend.compile_selectable_expression(source).ok(),
+            Unbound::Alone => None,
+        },
         |block| {
             backend
                 .compile_expression(block)
@@ -453,6 +493,16 @@ pub(super) fn jacobian_from_whole(
     source: &solve::ScalarProgramBlock,
     whole: Rc<dyn CompiledSolveJacobianExpression>,
 ) -> Result<Rc<CompleteJacobian>, EvalSolveError> {
+    jacobian_entries(backend, label, source, whole, Unbound::Alone)
+}
+
+fn jacobian_entries(
+    backend: &dyn SolveExecutionBackend,
+    label: &str,
+    source: &solve::ScalarProgramBlock,
+    whole: Rc<dyn CompiledSolveJacobianExpression>,
+    unbound: Unbound,
+) -> Result<Rc<CompleteJacobian>, EvalSolveError> {
     let committing = match Rc::clone(&whole).programs_committing() {
         Some(entry) => CommittingExecution::Direct(entry),
         None => CommittingExecution::Programs,
@@ -462,6 +512,10 @@ pub(super) fn jacobian_from_whole(
         source,
         &whole,
         |code, source, index| code.bind_program(source, index),
+        || match unbound {
+            Unbound::Family => backend.compile_jacobian_expression(source).ok(),
+            Unbound::Alone => None,
+        },
         |block| {
             backend
                 .compile_jacobian_expression(block)
@@ -796,3 +850,5 @@ impl CompleteJacobian {
 
 #[cfg(test)]
 mod committing_tests;
+#[cfg(test)]
+mod family_tests;

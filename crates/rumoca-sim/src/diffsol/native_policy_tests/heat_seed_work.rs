@@ -125,3 +125,19 @@ fn shared_heat_seed_native_calls_do_not_grow_per_scalar_output() {
         );
     }
 }
+
+/// One-program blocks handed to the backend while the runtime is built.
+fn lone_programs_at_construction(n: usize) -> usize {
+    let opts = sim_opts(SimExecutionPolicy::NativeRequired);
+    let fixture = lower(&source(n), "Heat", &opts);
+    let (backend, counters) = backend::counted(&fixture.model);
+    SolveRuntime::new_with_execution_backend(&fixture.model, Some(backend)).unwrap();
+    counters.lone_programs.get()
+}
+
+#[test]
+fn heat_construction_lowers_no_array_row_alone() {
+    // `F[N+1]=0` is the only one-program block of `Heat`. Every array row takes
+    // its selected entry from its family, whatever the array size.
+    assert_eq!([4, 16].map(lone_programs_at_construction), [1, 1]);
+}
