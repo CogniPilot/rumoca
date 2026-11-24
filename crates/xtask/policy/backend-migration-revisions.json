@@ -253,6 +253,24 @@
           "after": "93bb4c1195187178b337f4bce5eecc03e43d9b0c10629253ec1f807b26685d96"
         }
       ]
+    },
+    {
+      "id": "R007",
+      "decision": "d-pending-owner-655-657-658-modelica-printing-20261124",
+      "change": "The flat-modelica and base-modelica templates print the value of fixed, one value per element where the elements differ (#655); base-modelica puts array dimensions after the component name (#657) and writes neither each nor a protected section, giving a value for all elements with fill (#658), as the Base Modelica grammar (MCP-0031) requires. No plan decision moves into the templates.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/base-modelica/base_modelica.mo.jinja",
+          "before": "435d72b4fc40b46e45a248df3933dd05ba4d8e9e71f3235b607e969edf32aed4",
+          "after": "a2a8ae8d32232f99cda9cdf26a069e38155da3c778dcc17d584512537829d56f"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/flat-modelica/flat_modelica.mo.jinja",
+          "before": "eff15e8d92c01ce6022edd75fbde73c3f030abdbe3e16f145e7a4e7f350c2924",
+          "after": "0784b473fe478cb30fbe742f845d3178f211ea6ca299a11d067f367eb57061fb"
+        }
+      ]
     }
   ]
 }

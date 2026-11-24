@@ -320,7 +320,10 @@ kernel's `rmc_dalloc_raw` carries an unused attribute, so Clang accepts a
 model that emits no caller; it resolves no group. R006 (decision
 `d-pending-owner-593-accepted-point-assertions-20261124`): the FMI templates
 render the accepted-point error assertions rumoca-ir-solve issues (#593); it
-resolves no group. Every other
+resolves no group. R007 (decision
+`d-pending-owner-655-657-658-modelica-printing-20261124`): the Modelica
+templates print fixed by value and follow the Base Modelica grammar (#655,
+#657, #658); it resolves no group. Every other
 group, including D085, remains open.
 
 The non-active successor design is DRAFT
