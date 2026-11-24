@@ -31,6 +31,7 @@ mod projection;
 mod real_extrema;
 mod reported_models;
 mod residual_split_harness;
+mod shared_rows_harness;
 mod slice_updates;
 mod sliding_modes;
 mod state_events;

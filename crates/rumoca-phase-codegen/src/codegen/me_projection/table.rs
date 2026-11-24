@@ -92,6 +92,125 @@ impl<K: Ord> FunctionFamily<K> {
     }
 }
 
+/// Rows sharing one row function: at least this many rows whose packed
+/// programs differ only in their load indices.
+const MIN_SHARED_ROWS: usize = 2;
+
+impl<K: Ord> FunctionFamily<K> {
+    /// The emitted plan of the residual rows, as [`Self::into_plan`], and
+    /// the rows that share a row function: the classes of at least
+    /// [`MIN_SHARED_ROWS`] packed programs equal up to their load indices
+    /// (`solve::load_index_classes`). Each class emits its representative
+    /// once, reading every load index that differs between its members from
+    /// a per-row table; a load index all members agree on stays a literal.
+    /// Every row's program still enters the plan, so its construction is
+    /// checked as before.
+    pub(super) fn into_rows_plan(self) -> Result<(Value, Value), CodegenError> {
+        let mut targets = Vec::new();
+        let mut operations = Vec::with_capacity(self.programs.len());
+        let mut spans = Vec::with_capacity(self.programs.len());
+        for (program, span) in self.programs {
+            targets.extend(0..solve::ScalarProgramBlock::program_output_count(&program));
+            operations.push(emitted(program));
+            spans.push(span);
+        }
+        let classes: Vec<_> = solve::load_index_classes(&operations)
+            .into_iter()
+            .filter(|class| class.members.len() >= MIN_SHARED_ROWS)
+            .collect();
+        let shared = row_sharing(&operations, &spans, &classes)?;
+        let block = solve::ScalarProgramBlock::with_output_indices(operations, spans, targets)
+            .map_err(|error| CodegenError::template(error.to_string()))?;
+        Ok((
+            Value::from_object(ScalarProgramPlan::new(Arc::new(block))?),
+            shared,
+        ))
+    }
+}
+
+/// The row-sharing tables: the representatives of `classes` with their
+/// varying loads marked, each row's class (`classes.len()` for a row with
+/// its own function) and argument offset, the argument pool, and the rows
+/// with their own function.
+fn row_sharing(
+    operations: &[Vec<solve::LinearOp>],
+    spans: &[Span],
+    classes: &[solve::LoadIndexClass],
+) -> Result<Value, CodegenError> {
+    let mut shape_of = vec![classes.len(); operations.len()];
+    let mut arg = vec![0usize; operations.len()];
+    let mut pool = Vec::new();
+    let (mut representatives, mut rep_spans, mut rep_targets, mut slots) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (shape, class) in classes.iter().enumerate() {
+        let (slot_of, ordinal_of) = argument_slots(class);
+        for (&member, indices) in class.members.iter().zip(&class.indices) {
+            shape_of[member] = shape;
+            arg[member] = pool.len();
+            pool.extend(ordinal_of.iter().map(|&ordinal| indices[ordinal]));
+        }
+        let representative = operations[class.members[0]].clone();
+        slots.push(load_slots(&representative, &slot_of));
+        rep_targets.extend(0..solve::ScalarProgramBlock::program_output_count(&representative));
+        representatives.push(representative);
+        rep_spans.push(spans[class.members[0]]);
+    }
+    let own: Vec<usize> = (0..operations.len())
+        .filter(|&program| shape_of[program] == classes.len())
+        .collect();
+    let block =
+        solve::ScalarProgramBlock::with_output_indices(representatives, rep_spans, rep_targets)
+            .map_err(|error| CodegenError::template(error.to_string()))?;
+    let shapes = ScalarProgramPlan::with_load_slots(Arc::new(block), slots)?;
+    Ok(minijinja::context! {
+        shapes => Value::from_object(shapes),
+        shape_of => shape_of,
+        arg => arg,
+        pool => if pool.is_empty() { vec![0] } else { pool },
+        own => own,
+    })
+}
+
+/// The argument slot of each load ordinal of `class`, `None` for an index
+/// every member shares (it stays a literal), and the ordinal each slot
+/// takes its value from. Ordinals whose indices agree for every member
+/// read one slot.
+fn argument_slots(class: &solve::LoadIndexClass) -> (Vec<Option<usize>>, Vec<usize>) {
+    let column = |ordinal: usize| class.indices.iter().map(move |indices| indices[ordinal]);
+    let mut slot_of = vec![None; class.indices[0].len()];
+    let mut ordinal_of: Vec<usize> = Vec::new();
+    for (ordinal, slot) in slot_of.iter_mut().enumerate() {
+        let first = class.indices[0][ordinal];
+        if column(ordinal).all(|index| index == first) {
+            continue;
+        }
+        let known = ordinal_of
+            .iter()
+            .position(|&other| column(other).eq(column(ordinal)));
+        *slot = Some(known.unwrap_or_else(|| {
+            ordinal_of.push(ordinal);
+            ordinal_of.len() - 1
+        }));
+    }
+    (slot_of, ordinal_of)
+}
+
+/// Per operation of `program`, the argument slot its load reads, from the
+/// slot of each load ordinal.
+fn load_slots(program: &[solve::LinearOp], slot_of: &[Option<usize>]) -> Vec<Option<usize>> {
+    let mut ordinal = 0usize;
+    program
+        .iter()
+        .map(|op| match op {
+            solve::LinearOp::LoadY { .. } | solve::LinearOp::LoadP { .. } => {
+                ordinal += 1;
+                slot_of[ordinal - 1]
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// A program as the kernel emits it: its registers packed by value lifetime
 /// (`rumoca_ir_solve::pack_registers`), so its C register array holds the
 /// values live at one time rather than one register per value.
@@ -219,6 +338,7 @@ impl ProgramTable {
             .map(|id| self.rows.output_count(id))
             .max()
             .unwrap_or(1);
+        let (rows, row_sharing) = self.rows.into_rows_plan()?;
         let iso_max_outputs = (0..isolators.programs.len())
             .map(|id| isolators.output_count(id))
             .max()
@@ -230,7 +350,8 @@ impl ProgramTable {
             self.pool
         };
         Ok(minijinja::context! {
-            rows => self.rows.into_plan()?,
+            rows => rows,
+            row_sharing => row_sharing,
             jvp => self.jvp.into_plan()?,
             lanes => self.lanes.into_plan()?,
             inv => self.inv.into_plan()?,

@@ -16,6 +16,7 @@ mod dead_operations;
 mod defined_registers;
 mod fault_class;
 mod integer_power;
+mod load_index_classes;
 mod output_slice;
 #[cfg(test)]
 mod random_programs;
@@ -29,6 +30,7 @@ pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
 pub use dead_operations::prune_unread_pure_operations;
 pub use integer_power::{IntegerPower, IntegerPowerStep, IntegerPowerSteps};
+pub use load_index_classes::{LoadIndexClass, load_index_classes};
 pub use output_slice::{slice_to_output, slice_to_outputs};
 pub use register_packing::pack_registers;
 pub use shared_values::{

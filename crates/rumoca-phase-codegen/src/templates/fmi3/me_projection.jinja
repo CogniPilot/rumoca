@@ -43,9 +43,9 @@ static const {{ type }} {{ name }}[{{ values|length }}] = { {% for value in valu
     Past rmc_inline_program_max_ops operations it stays out of line
     (RMC_NOINLINE); a smaller one is left to the compiler, which may inline
     it into its case. -#}
-{%- macro program_function(name, program, signature, seed, dispatched=false) %}
+{%- macro program_function(name, program, signature, seed, dispatched=false, args=false) %}
 static {% if dispatched and program.ops|length > rmc_inline_program_max_ops %}RMC_NOINLINE {% endif %}int {{ name }}({{ signature }}) {
-    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r; (void)m; (void)o;{% if seed %} (void)seed;{% endif %}
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r; (void)m; (void)o;{% if seed %} (void)seed;{% endif %}{% if args %} (void)a;{% endif %}
 {%- for op in program.ops %}
 {{ scalar_op(op, "o", "-1") }}
 {%- endfor %}
@@ -2330,6 +2330,9 @@ static inline int rmc_causal_call(size_t program, ModelInstance* m, const size_t
 {#- The residual-row programs of the projection blocks. -#}
 {%- macro rows_unit(me) %}
 {%- if me.blocks|length > 0 %}
+{%- set sharing = me.table.row_sharing %}
+{%- set nshapes = sharing.shapes.programs|length %}
+{%- if nshapes == 0 %}
 {%- for program in me.table.rows.programs %}
 {{ program_function("rmc_row_p" ~ loop.index0, program, "ModelInstance* m, double* o", false, true) }}
 {%- endfor %}
@@ -2341,6 +2344,50 @@ RMC_API int rmc_row_call(size_t program, ModelInstance* m, double* out) {
     default: return rmc_bad_program(m, program);
     }
 }
+{%- else %}
+{#- Rows whose packed programs differ only in their load indices share one
+    function per shape, which reads each varying index from its row's
+    arguments (`a`): offsets into the argument pool, an integer table. The
+    other rows keep their own function. -#}
+{%- for id in sharing.own %}
+{{ program_function("rmc_row_p" ~ id, me.table.rows.programs[id], "ModelInstance* m, double* o", false, true) }}
+{%- endfor %}
+{%- for program in sharing.shapes.programs %}
+{{ program_function("rmc_row_s" ~ loop.index0, program, "ModelInstance* m, double* o, const size_t* a", false, true, true) }}
+{%- endfor %}
+static const size_t rmc_row_shape[{{ sharing.shape_of|length }}] = {
+{%- for chunk in sharing.shape_of|batch(32) %}
+    {% for value in chunk %}{{ value }},{% endfor %}
+{%- endfor %}
+};
+static const size_t rmc_row_arg[{{ sharing.arg|length }}] = {
+{%- for chunk in sharing.arg|batch(32) %}
+    {% for value in chunk %}{{ value }},{% endfor %}
+{%- endfor %}
+};
+static const size_t rmc_row_arg_pool[{{ sharing.pool|length }}] = {
+{%- for chunk in sharing.pool|batch(32) %}
+    {% for value in chunk %}{{ value }},{% endfor %}
+{%- endfor %}
+};
+RMC_API int rmc_row_call(size_t program, ModelInstance* m, double* out) {
+    if (program < {{ sharing.shape_of|length }}) {
+        const size_t* a = rmc_row_arg_pool + rmc_row_arg[program];
+        switch (rmc_row_shape[program]) {
+{%- for program in sharing.shapes.programs %}
+        case {{ loop.index0 }}: return rmc_row_s{{ loop.index0 }}(m, out, a);
+{%- endfor %}
+        default: break;
+        }
+    }
+    switch (program) {
+{%- for id in sharing.own %}
+    case {{ id }}: return rmc_row_p{{ id }}(m, out);
+{%- endfor %}
+    default: return rmc_bad_program(m, program);
+    }
+}
+{%- endif %}
 {%- for program in me.table.inv.programs %}
 {{ program_function("rmc_inv_p" ~ loop.index0, program, "ModelInstance* m, double* o", false, true) }}
 {%- endfor %}

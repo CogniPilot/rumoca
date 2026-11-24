@@ -18,6 +18,9 @@ struct ProgramMetadata {
     output_targets: Vec<Option<Range<usize>>>,
     output_count: usize,
     temporary_count: usize,
+    /// Per operation, the argument slot a shared row function's load reads
+    /// its index from; empty for a program that is not shared.
+    load_slots: Vec<Option<usize>>,
 }
 
 #[derive(Debug)]
@@ -30,6 +33,28 @@ impl ScalarProgramPlan {
     pub(super) fn new(block: Arc<solve::ScalarProgramBlock>) -> Result<Self, CodegenError> {
         let metadata = Arc::new(build_metadata(&block)?);
         Ok(Self { block, metadata })
+    }
+
+    /// The plan of shared row functions: per program, the argument slot of
+    /// each load whose index the function reads from its argument table
+    /// (`load_arg` on that operation).
+    pub(super) fn with_load_slots(
+        block: Arc<solve::ScalarProgramBlock>,
+        slots: Vec<Vec<Option<usize>>>,
+    ) -> Result<Self, CodegenError> {
+        let mut metadata = build_metadata(&block)?;
+        if slots.len() != metadata.len() {
+            return Err(CodegenError::template(
+                "shared row slots do not match their programs",
+            ));
+        }
+        for (program, slots) in metadata.iter_mut().zip(slots) {
+            program.load_slots = slots;
+        }
+        Ok(Self {
+            block,
+            metadata: Arc::new(metadata),
+        })
     }
 }
 
@@ -188,6 +213,14 @@ impl Object for PlanOpValue {
     }
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        if key.as_str()? == "load_arg" {
+            return self.metadata[self.program_index]
+                .load_slots
+                .get(self.op_index)
+                .copied()
+                .flatten()
+                .map(Value::from);
+        }
         if key.as_str()? == "output_span" {
             let span = self
                 .block
@@ -265,6 +298,7 @@ fn build_program_metadata(
         output_targets,
         output_count,
         temporary_count,
+        load_slots: Vec::new(),
     })
 }
 

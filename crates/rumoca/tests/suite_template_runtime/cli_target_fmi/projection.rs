@@ -17,7 +17,8 @@
 //!   the first refresh seeds the block through its row isolations.
 //! - `ArrayLoop`: one nonlinear array equation whose rows are singleton
 //!   blocks; each row runs the slice of the residual program that computes
-//!   its own output (`slice_to_output`), so four row programs are emitted.
+//!   its own output (`slice_to_output`), and the four slices, equal up to
+//!   their load indices, share one row function.
 //! - `SeededLoop`: a projection stage warm-started by a constant-coefficient
 //!   seed (`t + s = 1 + sqrt(y)` for `t`); a seed that isolates through a
 //!   solver value is never issued.
@@ -73,7 +74,7 @@ equation
 end ArrayLoop;"
             .to_string(),
         outputs: &["x1", "u1", "u2", "u4"],
-        marker: Some("rmc_row_p3("),
+        marker: Some("rmc_row_s0("),
     }
 }
 
