@@ -113,6 +113,10 @@ pub(super) struct BlockRecord {
     /// Reduced residual rows of the torn tangent plan: `(lane function, lane
     /// outputs, output offset, group)` per tear row.
     tangent_residuals: usize,
+    /// The block's ES016 fold message, read from the problem of the chart
+    /// the block belongs to; the C table holds its offset in a pool instead.
+    #[serde(skip)]
+    fold: Option<Vec<u8>>,
 }
 
 pub(super) fn refuse(canonical: usize, reason: &str) -> CodegenError {
@@ -160,6 +164,19 @@ impl Csr {
     }
 }
 
+/// The ES016 fold message of `block`: the Solve IR fact
+/// (`UnlocalizableGuard`) whose unknowns the block solves, rendered as the
+/// typed failure the linked runtime reports (SPEC_0044 ME-EVENT-008).
+fn block_fold(
+    problem: &solve::SolveProblem,
+    block: &solve::AlgebraicProjectionBlock,
+) -> Option<Vec<u8>> {
+    let guard = block.y_indices.iter().find_map(|&y_index| {
+        solve::UnlocalizableGuard::covering(&problem.continuous.unlocalizable_guards, y_index)
+    })?;
+    Some(format!("[ES016] {}", guard.fold()).into_bytes())
+}
+
 pub(super) fn block_record(
     sources: &BlockSources<'_>,
     table: &mut ProgramTable,
@@ -199,6 +216,7 @@ pub(super) fn block_record(
     let mut record = BlockRecord {
         canonical,
         n,
+        fold: block_fold(sources.problem, block),
         affine,
         singleton_exact,
         has_tearing: block.tearing.is_some(),
@@ -944,6 +962,15 @@ fn program_span(
 }
 
 impl BlockRecord {
+    /// The block's ES016 fold message, if it has one.
+    pub(super) fn fold(&self) -> Option<&[u8]> {
+        self.fold.as_deref()
+    }
+
+    pub(super) const fn lane_max(&self) -> usize {
+        self.lane_max
+    }
+
     /// Upper bound of the arena this block's deepest projection frame uses,
     /// as (doubles, size indices). Every C path allocates within one frame
     /// per call chain; the bound sums the chain's buffers: saved and scaled
@@ -953,15 +980,6 @@ impl BlockRecord {
     /// elimination's recovery matrix at its promotion capacity with its step
     /// flags and reduced row and tear lists, and one program's outputs and
     /// seeds.
-    /// Canonical index of the block in the continuous projection plan.
-    pub(super) const fn canonical(&self) -> usize {
-        self.canonical
-    }
-
-    pub(super) const fn lane_max(&self) -> usize {
-        self.lane_max
-    }
-
     pub(super) fn workspace(&self, seed_len: usize) -> (usize, usize) {
         let n = self.n;
         let k = self.k.max(self.nelim_tear).max(self.elim_capacity);

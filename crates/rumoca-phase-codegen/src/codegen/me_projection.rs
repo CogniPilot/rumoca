@@ -565,7 +565,7 @@ pub(super) fn me_refresh_value(
         charts => charts,
         switching => switching.then(|| Value::from_serialize(&switch_records)),
         blocks => Value::from_serialize(&records),
-        block_folds => block_folds(problem, &records),
+        block_folds => block_folds(&records),
         table => table,
         kernel => kernel,
         assign => assignments.into_value()?,
@@ -599,26 +599,12 @@ fn policy_value() -> Value {
     }
 }
 
-/// Each recorded block's ES016 fold message, or `None`: the Solve IR fact
-/// (`UnlocalizableGuard`) whose unknowns the block solves, rendered as the
-/// typed failure the linked runtime reports (SPEC_0044 ME-EVENT-008).
-fn block_folds(problem: &solve::SolveProblem, records: &[BlockRecord]) -> Vec<Option<Vec<u8>>> {
-    let guards = &problem.continuous.unlocalizable_guards;
+/// Each recorded block's ES016 fold message, or `None`, read from its own
+/// chart's problem when the block was recorded.
+fn block_folds(records: &[BlockRecord]) -> Vec<Option<Vec<u8>>> {
     records
         .iter()
-        .map(|record| {
-            let block = problem
-                .continuous
-                .algebraic_projection_plan
-                .blocks
-                .scalar_blocks()
-                .get(record.canonical())?;
-            let guard = block
-                .y_indices
-                .iter()
-                .find_map(|&y_index| solve::UnlocalizableGuard::covering(guards, y_index))?;
-            Some(format!("[ES016] {}", guard.fold()).into_bytes())
-        })
+        .map(|record| record.fold().map(<[u8]>::to_vec))
         .collect()
 }
 

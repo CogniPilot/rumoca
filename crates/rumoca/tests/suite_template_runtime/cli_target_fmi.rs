@@ -11,6 +11,7 @@ mod array_bounds;
 mod assertions;
 mod batched_getters;
 mod c_profile_events;
+mod chart_block_folds;
 mod chart_switching;
 mod co_simulation_step;
 mod declared_causality;
