@@ -30,6 +30,7 @@ mod tests;
 mod visited;
 mod whole_visit;
 mod zero_coefficients;
+pub(crate) use literal_bindings::owner_bindings;
 pub use literal_bindings::{LiteralBinding, literal_bindings};
 pub use zero_coefficients::{
     ZeroCoefficientPattern, ZeroCoefficientPatternView, ZeroCoefficients, literal_tensor_selection,

@@ -1,4 +1,6 @@
 mod function_states;
+mod invariant_guards;
+pub use invariant_guards::invariant_boolean_guards;
 mod linear_solve;
 mod native_calls;
 mod scalar;
@@ -101,6 +103,7 @@ pub struct NumericEvaluator<'dae, F = fn(dae::VariableView<'dae>, usize) -> Opti
     function_arguments: Vec<(dae::FunctionId<'dae>, Vec<SourceValues>)>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<SourceValues>)>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
+    guard_bindings: Option<Vec<Option<crate::LiteralBinding<'dae>>>>,
     override_value: F,
     input_policy: InputInitializationPolicy,
     input_initializations: Vec<Option<InputInitialization>>,
@@ -179,6 +182,7 @@ where
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
             domain_points: Vec::new(),
+            guard_bindings: None,
             override_value,
             input_policy,
             input_initializations: vec![None; view.variable_count()],
@@ -474,6 +478,17 @@ where
                     )
                 });
         }
+        if let Some(bindings) = &self.guard_bindings {
+            let value = invariant_guards::constant_coordinate(self.view, coordinate, bindings)
+                .ok_or_else(|| {
+                    failure(
+                        NumericEvaluationErrorKind::NonStaticCoordinate,
+                        "guard depends on a runtime coordinate",
+                        span,
+                    )
+                })?;
+            return self.source_values(value);
+        }
         if let dae::CoordinateView::ClockInterval(clock) = coordinate {
             return Ok(NumericInitialValues::repeat(
                 Scalar::Real(self.view.periodic_clock(clock).period_seconds()),
@@ -522,20 +537,29 @@ where
                         span,
                     )
                 })?;
-            self.domain_points.push((domain, point));
-            let owner = self
-                .view
-                .expression(body)
-                .and_then(|node| node.function_scope());
-            self.scoped_expression_values.push(
-                function_states::NumericFunctionFrame::comprehension_frame(owner),
-            );
-            let body_values = self.source_expression(body);
-            self.scoped_expression_values.pop();
-            self.domain_points.pop();
-            values.extend(body_values?);
+            values.extend(self.values_at_point(domain, point, body)?.materialize());
         }
         Ok(values)
+    }
+
+    fn values_at_point(
+        &mut self,
+        domain: dae::DomainId<'dae>,
+        point: Vec<i64>,
+        body: dae::ExprId<'dae>,
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        self.domain_points.push((domain, point));
+        let owner = self
+            .view
+            .expression(body)
+            .and_then(|node| node.function_scope());
+        self.scoped_expression_values.push(
+            function_states::NumericFunctionFrame::comprehension_frame(owner),
+        );
+        let body_values = self.source_values(body);
+        self.scoped_expression_values.pop();
+        self.domain_points.pop();
+        body_values
     }
 
     fn function_fold(

@@ -397,3 +397,86 @@ fn a_constant_call_in_a_function_body_folds_once_instead_of_running_per_invocati
     let last = *result.data[y].last().expect("a sample");
     assert!((last - 4.0).abs() < 1e-9, "y(1) = 2*2*1: {last}");
 }
+
+#[test]
+fn an_invariant_array_guard_exposes_the_pressure_constraint_at_initialization() {
+    let source = r#"
+model ConstantPortMode
+  Real p1(start=1,fixed=true);
+  Real p2(start=1,fixed=false);
+  Real m;
+  Real height[1];
+  Boolean regular[1];
+equation
+  height=zeros(1);
+  for i in 1:1 loop
+    regular[i]=0>=height[i];
+  end for;
+  der(p1)=-m;
+  der(p2)=m;
+  if regular[1] then
+    p1=p2;
+  else
+    m=0;
+  end if;
+end ConstantPortMode;
+"#;
+    let compiled = Compiler::new()
+        .model("ConstantPortMode")
+        .compile_str(source, "ConstantPortMode.mo")
+        .expect("balanced conditional constraint");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.0,
+            ..Default::default()
+        },
+    )
+    .expect("the active pressure constraint determines zero flow");
+    for (name, expected) in [("p1", 1.0), ("p2", 1.0), ("m", 0.0)] {
+        let column = result.names.iter().position(|n| n == name).unwrap();
+        assert_eq!(result.data[column][0], expected, "{name}");
+    }
+}
+
+#[test]
+fn array_guards_keep_their_element_and_runtime_values() {
+    let source = r#"
+model ArrayGuards
+  Boolean enabled[2];
+  Boolean running[1];
+  parameter Real threshold = 2;
+  Boolean positive[1];
+  Real parameterOutput;
+  Real fixedOutput;
+  Real switchedOutput;
+equation
+  for i in 1:2 loop
+    enabled[i] = i == 1;
+  end for;
+  running[1] = time >= 0.5;
+  positive[1] = threshold > 0;
+  parameterOutput = if positive[1] then 7 else 9;
+  fixedOutput = (if enabled[1] then 10 else 20) + (if enabled[2] then 1 else 2);
+  switchedOutput = if running[1] then 5 else 3;
+end ArrayGuards;
+"#;
+    let compiled = Compiler::new()
+        .model("ArrayGuards")
+        .compile_str(source, "ArrayGuards.mo")
+        .unwrap();
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            param_overrides: vec![("threshold".to_string(), -2.0)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let samples = |name| &result.data[result.names.iter().position(|n| n == name).unwrap()];
+    assert!(samples("fixedOutput").iter().all(|&value| value == 12.0));
+    assert_eq!(samples("parameterOutput").first(), Some(&9.0));
+    assert_eq!(samples("switchedOutput").first(), Some(&3.0));
+    assert_eq!(samples("switchedOutput").last(), Some(&5.0));
+}
