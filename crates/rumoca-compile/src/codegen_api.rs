@@ -40,6 +40,7 @@ pub fn render_ast_template_with_name(
 pub use rumoca_phase_codegen::{
     AlgorithmCodeTemplateRenderer, NativeFmiTemplateRenderer, SolveTemplateRenderer,
     render_algorithm_code_template_with_artifact, render_solve_template_with_name,
+    render_wgsl_value_function,
 };
 
 /// Built-in target metadata, re-exported from the codegen crate.

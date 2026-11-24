@@ -77,7 +77,7 @@ pub use codegen::{
     render_checked_algorithm_block_template_with_solve,
     render_checked_algorithm_block_template_with_sources, render_flat_template_with_name,
     render_solve_template_with_name, render_template, render_template_for_input,
-    render_template_with_name, render_template_with_name_for_input,
+    render_template_with_name, render_template_with_name_for_input, render_wgsl_value_function,
 };
 pub use errors::CodegenError;
 

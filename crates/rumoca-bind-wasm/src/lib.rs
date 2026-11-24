@@ -16,7 +16,7 @@ mod native_program_api;
 #[cfg(feature = "native-assignments")]
 mod native_scratch_report;
 #[cfg(feature = "native-assignments")]
-pub use native_assignment_api::prepare_native_assignments;
+pub use native_assignment_api::{prepare_gpu_value_function, prepare_native_assignments};
 #[cfg(feature = "native-assignments")]
 pub use native_program_api::{
     prepare_native_program, prepare_native_program_carrying, read_native_integer_lane,

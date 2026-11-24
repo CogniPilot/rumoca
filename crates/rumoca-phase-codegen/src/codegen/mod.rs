@@ -41,6 +41,8 @@ mod lazy_scalar_projection;
 mod me_projection;
 mod native_fmi_renderer;
 mod solve_block_renderer;
+mod wgsl_assignment;
+pub use wgsl_assignment::render_wgsl_value_function;
 #[cfg(test)]
 mod solve_render_fixture_tests;
 pub use native_fmi_renderer::NativeFmiTemplateRenderer;

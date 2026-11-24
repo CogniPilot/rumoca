@@ -4360,6 +4360,7 @@ dependencies = [
  "indexmap 2.14.0",
  "js-sys",
  "lsp-types",
+ "naga",
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-ast",

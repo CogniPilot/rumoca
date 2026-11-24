@@ -557,9 +557,16 @@ jobs:
       - name: Enable sccache wrapper
         if: steps.sccache.outcome == 'success'
         shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: "true"
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          rustc_path="$(rustup which rustc)"
+          if sccache "$rustc_path" -vV; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "::warning::sccache compiler probe failed; continuing with uncached Rust builds."
+          fi
 
       - name: Cache MSL
         uses: actions/cache@v5
