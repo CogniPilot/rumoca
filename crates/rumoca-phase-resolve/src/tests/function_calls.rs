@@ -24,6 +24,49 @@ end Test;
     );
 }
 
+/// ModelicaServices is the package each tool writes for itself. OpenModelica's
+/// defines `Integer_inf` by a function only OpenModelica has; the refusal says
+/// which library root to replace.
+#[test]
+fn another_tools_modelica_services_is_refused_with_what_to_replace() {
+    let source = r#"
+package ModelicaServices
+  package Machine
+    final constant Integer Integer_inf = OpenModelica.Internal.Architecture.integerMax();
+  end Machine;
+end ModelicaServices;
+"#;
+    let diags = resolve_parsed_tree_source(source).expect_err("the call cannot resolve");
+    let message = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("ER002"))
+        .map(|d| d.message.as_str())
+        .expect("an unresolved-call diagnostic");
+    assert!(
+        message.starts_with(
+            "unresolved function call: 'OpenModelica.Internal.Architecture.integerMax'. "
+        ),
+        "{message}"
+    );
+    assert!(message.contains("exists only in OpenModelica"), "{message}");
+    assert!(
+        message.contains("replace only the ModelicaServices root"),
+        "{message}"
+    );
+}
+
+/// The same call from a user's own class is an ordinary unresolved name.
+#[test]
+fn an_openmodelica_call_outside_modelica_services_keeps_the_plain_message() {
+    let source = r#"
+model Test
+  Integer n = OpenModelica.Internal.Architecture.integerMax();
+end Test;
+"#;
+    let diags = resolve_parsed_tree_source(source).expect_err("the call cannot resolve");
+    assert!(diags.iter().any(|d| d.message
+        == "unresolved function call: 'OpenModelica.Internal.Architecture.integerMax'"));
+}
 #[test]
 fn failed_resolution_exposes_only_the_planning_artifact() {
     let source = r#"

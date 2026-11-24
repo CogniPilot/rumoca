@@ -807,12 +807,33 @@ fn emit_unresolved_symbol_diagnostics(
             continue;
         };
         let primary_label = PrimaryLabel::new(span).with_message(format!("unresolved {kind}"));
-        resolver.diagnostics.emit(rumoca_core::Diagnostic::error(
-            code,
-            format!("unresolved {kind}: '{}'", unresolved.name),
-            primary_label,
-        ));
+        // The instruction is part of the message: every front end shows the
+        // message, and not every one shows notes.
+        let message = match other_vendor_services_note(unresolved) {
+            Some(note) => format!("unresolved {kind}: '{}'. {note}", unresolved.name),
+            None => format!("unresolved {kind}: '{}'", unresolved.name),
+        };
+        resolver
+            .diagnostics
+            .emit(rumoca_core::Diagnostic::error(code, message, primary_label));
     }
+}
+
+/// MLS Annex: ModelicaServices is the package each tool vendor writes for
+/// itself. A ModelicaServices that calls into `OpenModelica` is that tool's
+/// own, and no other tool defines those functions; say which package to
+/// replace instead of leaving only the unresolved name.
+fn other_vendor_services_note(unresolved: &validation::UnresolvedSymbol) -> Option<String> {
+    let from_services = unresolved.root_class == "ModelicaServices";
+    let openmodelica_only = unresolved.kind == UnresolvedKind::FunctionCall
+        && unresolved.name.starts_with("OpenModelica.");
+    (from_services && openmodelica_only).then(|| {
+        "This function exists only in OpenModelica: this ModelicaServices is OpenModelica's own \
+         copy. Keep your Modelica library root and replace only the ModelicaServices root with \
+         the one from the same Modelica Standard Library release (ModelicaServices 4.1.0 for \
+         Modelica 4.1.0)."
+            .to_string()
+    })
 }
 
 #[cfg(test)]

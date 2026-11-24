@@ -25,6 +25,8 @@ pub struct UnresolvedSymbol {
     /// Resolved lexical scope containing the unresolved source reference.
     pub scope_id: ScopeId,
     pub source_location: Location,
+    /// The top-level class whose text holds the reference.
+    pub root_class: String,
 }
 
 /// The kind of unresolved symbol.
@@ -58,6 +60,7 @@ pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
         tree,
         component_def_ids: collect_component_def_ids(&tree.definitions),
         current_scope: Some(tree.scope_tree.global()),
+        root_class: None,
         unresolved: Vec::new(),
     };
     let _ = ast::Visitor::visit_stored_definition(&mut v, &tree.definitions);
@@ -69,6 +72,8 @@ pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
 struct Validator<'tree> {
     tree: &'tree ClassTree,
     current_scope: Option<ScopeId>,
+    /// The top-level class being visited.
+    root_class: Option<String>,
     component_def_ids: HashSet<DefId>,
     unresolved: Vec<UnresolvedSymbol>,
 }
@@ -86,6 +91,7 @@ impl Validator<'_> {
                 .current_scope
                 .expect("post-resolution validation must have a lexical ScopeId"),
             source_location,
+            root_class: self.root_class.clone().unwrap_or_default(),
         });
     }
 
@@ -188,6 +194,10 @@ impl ast::Visitor for ComponentDefIdCollector {
 
 impl ast::Visitor for Validator<'_> {
     fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
+        let entered_root = self.root_class.is_none();
+        if entered_root {
+            self.root_class = Some(class.name.text.to_string());
+        }
         let previous_scope = self.current_scope.replace(
             class
                 .scope_id
@@ -231,6 +241,9 @@ impl ast::Visitor for Validator<'_> {
         }
 
         self.current_scope = previous_scope;
+        if entered_root {
+            self.root_class = None;
+        }
         ControlFlow::Continue(())
     }
 
