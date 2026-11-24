@@ -212,3 +212,40 @@ end Top;"#
         }
     }
 }
+
+/// MLS §12.9: an external body is foreign code, which numeric evaluation
+/// cannot run. A parameter bound to an external "C" call is refused with the
+/// function and its symbol, not given a plausible value.
+#[test]
+fn a_parameter_bound_to_an_external_c_call_is_refused_with_its_symbol() {
+    let source = r#"model ExternalParameter
+  function f
+    input Real x;
+    output Real y;
+    external "C" y = no_such_symbol(x);
+  end f;
+  parameter Real p = f(1);
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = p;
+end ExternalParameter;"#;
+    let compiled = Compiler::new()
+        .model("ExternalParameter")
+        .compile_str(source, "external_parameter.mo")
+        .unwrap();
+    let error = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect_err("an external C body cannot be evaluated");
+    assert!(
+        error.to_string().contains(
+            "external C function `f` calls `no_such_symbol`, which this runtime cannot execute"
+        ),
+        "{error:#}"
+    );
+}
