@@ -211,3 +211,59 @@ fn a_family_arm_with_an_unbounded_subscript_runs_only_when_selected() {
     let result = simulate("ComputedSubscriptArm", COMPUTED_SUBSCRIPT_ARM, &[]);
     assert_unit_decay(&result, "x[3]");
 }
+
+#[test]
+fn a_guarded_array_result_issues_one_call_for_the_whole_value() {
+    use rumoca_ir_solve::LinearOp;
+    const SOURCE: &str = "
+function advance
+  input Real prior[:];
+  input Real delta;
+  output Real updated[size(prior,1)];
+algorithm
+  for i in 1:size(prior,1) loop updated[i] := prior[i] + delta*i; end for;
+end advance;
+model SampleWindow
+  Real t(start=0, fixed=true);
+  output Integer count(start=0, fixed=true);
+  output Real y[8](each start=0, each fixed=true);
+equation
+  der(t)=1;
+algorithm
+  when sample(0.01, 0.01) then
+    count := pre(count)+1;
+    if mod(count,2)==0 then y := advance(pre(y),t); end if;
+  end when;
+end SampleWindow;";
+    let compiled = Compiler::new()
+        .model("SampleWindow")
+        .compile_str(SOURCE, "sample_window.mo")
+        .unwrap();
+    let package = rumoca_phase_solve::lower_solve_package(&compiled.dae).unwrap();
+    let selections = package
+        .problem
+        .discrete
+        .guarded_assignments
+        .iter()
+        .flat_map(|group| group.program())
+        .filter_map(|op| match op {
+            LinearOp::FunctionConditional { program, .. } => Some(program),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [selection] = selections.as_slice() else {
+        panic!(
+            "expected one conditional for the array, found {}",
+            selections.len()
+        );
+    };
+    assert_eq!(selection.result_count, 8);
+    assert_eq!(
+        selection.arms[0]
+            .result
+            .iter()
+            .filter(|op| matches!(op, LinearOp::PureCall { .. }))
+            .count(),
+        1
+    );
+}
