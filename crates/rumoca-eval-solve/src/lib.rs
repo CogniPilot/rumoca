@@ -21,10 +21,11 @@ use std::{
 };
 
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, Reg,
-    ScalarProgramBlock, ScalarProgramRegisterFlow, SolveEventActionKind, SolveEventPartition,
-    SolvePureCallDirectionalSite, SolvePureCallSite, SolvePureCallTable, SolveScalarType,
-    SolveValueKind, SolveValueType, UnaryOp, resolve_indexed_slot,
+    BinaryOp, CompareOp, FoldTensorUpdateStore, IntegerPower, IntegerPowerStep, LinearOp,
+    MAX_TENSOR_LANES, MatrixProductShape, Reg, ScalarProgramBlock, ScalarProgramRegisterFlow,
+    SolveEventActionKind, SolveEventPartition, SolvePureCallDirectionalSite, SolvePureCallSite,
+    SolvePureCallTable, SolveScalarType, SolveValueKind, SolveValueType, UnaryOp,
+    resolve_indexed_slot,
 };
 
 pub mod ad;
@@ -89,6 +90,7 @@ pub use compute_block_scalarize::{
     tensor_output_indices, to_scalar_program_block, to_scalar_program_projection,
 };
 use linear_solve::{solve_component_op, solve_component_unchecked};
+pub use native_tensors::integer_power_element;
 pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedEvaluationBlock,
@@ -828,6 +830,7 @@ fn lazy_row_op_supported(op: &LinearOp) -> bool {
             | LinearOp::DotProduct { .. }
             | LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorIntegerPower { .. }
             | LinearOp::TensorTranspose { .. }
             | LinearOp::TensorConcatenate { .. }
             | LinearOp::TensorUpdate { .. }
@@ -1400,6 +1403,7 @@ fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
         }
         op @ (LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
         | LinearOp::TensorUpdate { .. }
@@ -1450,6 +1454,12 @@ fn push_lazy_tensor_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
             push_lazy_tensor_elements(tasks, rhs_start, count, rhs_stride, lanes);
             push_lazy_tensor_elements(tasks, lhs_start, count, lhs_stride, lanes);
         }
+        LinearOp::TensorIntegerPower {
+            src_start,
+            count,
+            lanes,
+            ..
+        } => push_lazy_tensor_elements(tasks, src_start, count, 1, lanes),
         LinearOp::TensorTranspose {
             src_start,
             rows,
@@ -1620,6 +1630,7 @@ fn eval_lazy_pure_op(
         }
         op @ (LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
         | LinearOp::TensorUpdate { .. }
@@ -2102,6 +2113,13 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             op @ (LinearOp::MatrixMultiply { .. } | LinearOp::TensorBinary { .. }) => {
                 self.eval_tensor_result(&op)?
             }
+            LinearOp::TensorIntegerPower {
+                dst_start,
+                src_start,
+                count,
+                power,
+                lanes,
+            } => self.eval_integer_power((dst_start, src_start), count, power, lanes)?,
             LinearOp::TensorCross {
                 dst_start,
                 lhs_start,
@@ -2555,6 +2573,29 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
         self.set(dst, self.input.read_input("seed", seed, slot)?)
     }
 
+    /// Each element once, all its lanes together, through the checked
+    /// register reads and writes. The destination never overlaps the source.
+    fn eval_integer_power(
+        &mut self,
+        (dst_start, src_start): (Reg, Reg),
+        count: usize,
+        power: IntegerPower,
+        lanes: usize,
+    ) -> Result<(), EvalSolveError> {
+        let (mut source, mut element) = ([0.0; MAX_TENSOR_LANES], [0.0; MAX_TENSOR_LANES]);
+        for index in 0..count {
+            let offset = (index * lanes) as Reg;
+            for (lane, value) in source[..lanes].iter_mut().enumerate() {
+                *value = self.get(src_start + offset + lane as Reg)?;
+            }
+            native_tensors::integer_power_element(power, &source[..lanes], &mut element[..lanes]);
+            for (lane, value) in element[..lanes].iter().enumerate() {
+                self.set(dst_start + offset + lane as Reg, *value)?;
+            }
+        }
+        Ok(())
+    }
+
     fn eval_tensor_result(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
         let dst = op
             .dst_register()
@@ -2760,6 +2801,7 @@ fn eval_row_prepared_fast(
             }
             op @ (LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorIntegerPower { .. }
             | LinearOp::TensorTranspose { .. }
             | LinearOp::TensorConcatenate { .. }
             | LinearOp::TensorUpdate { .. }
@@ -3651,6 +3693,7 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::DotProduct { .. } => "DotProduct",
         LinearOp::MatrixMultiply { .. } => "MatrixMultiply",
         LinearOp::TensorBinary { .. } => "TensorBinary",
+        LinearOp::TensorIntegerPower { .. } => "TensorIntegerPower",
         LinearOp::TensorCross { .. } => "TensorCross",
         LinearOp::TensorTranspose { .. } => "TensorTranspose",
         LinearOp::TensorConcatenate { .. } => "TensorConcatenate",

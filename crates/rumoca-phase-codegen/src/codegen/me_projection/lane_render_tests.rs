@@ -399,3 +399,79 @@ fn generated_matrix_products_start_each_output_from_its_first_term() {
     }
     assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
+
+/// `y .^ n` for several literal exponents on one loaded vector, on `lanes`
+/// interleaved lanes, every lane stored.
+fn literal_powers(lanes: usize, exponents: &[i64]) -> (Vec<LinearOp>, usize) {
+    let count = 6;
+    let width = count * lanes;
+    let mut ops = vec![LinearOp::TensorLoad {
+        dst_start: 0,
+        input: TensorInputKind::Y,
+        input_start: 0,
+        count,
+        seed_start: (lanes == 2).then_some(0),
+        lanes,
+    }];
+    for (index, &exponent) in exponents.iter().enumerate() {
+        ops.push(LinearOp::TensorIntegerPower {
+            dst_start: ((index + 1) * width) as u32,
+            src_start: 0,
+            count,
+            power: solve::IntegerPower::new(exponent).expect("exponent has a product"),
+            lanes,
+        });
+    }
+    let stored = exponents.len() * width;
+    ops.push(LinearOp::StoreOutputRange {
+        start: width as u32,
+        count: stored,
+        stride: 1,
+    });
+    (ops, stored)
+}
+
+#[test]
+fn generated_literal_powers_match_the_linked_evaluator_on_every_lane_width() {
+    let y = [0.5, -1.75, 1.000_000_000_000_000_2, 0.03, -7.25, 1.3];
+    let exponents = [-17, -3, -2, 2, 3, 4, 7, 16, 31, 63];
+    let span = solve::source_span_from_offsets(1, 0, 1);
+    // One primal lane, one dual tangent, and a widened four-lane owner.
+    for (lanes, width) in [(1, 1), (2, 2), (2, 4)] {
+        let (ops, stored) = literal_powers(lanes, &exponents);
+        let seed = (0..y.len() * (width.max(2) - 1))
+            .map(|index| 0.25 + 0.5 * index as f64 - 0.03 * (index * index) as f64)
+            .collect::<Vec<_>>();
+        let context = rumoca_eval_solve::RowEvalContext {
+            seed: (lanes == 2).then_some(&seed[..]),
+            ..Default::default()
+        };
+        let (plan, linked) = if width > 2 {
+            let program = solve::TangentLaneProgram::replicate(&ops, width - 1)
+                .expect("the dual powers widen");
+            let outputs = solve::ScalarProgramBlock::program_output_count(program.ops());
+            let mut linked = vec![0.0; outputs];
+            rumoca_eval_solve::PreparedTangentLaneProgram::new(program.clone())
+                .eval(&y, &y, 0.0, context, &mut linked)
+                .expect("the linked evaluator runs the lanes");
+            (lane_plan(&program), linked)
+        } else {
+            let block = std::sync::Arc::new(
+                solve::ScalarProgramBlock::with_program_spans(vec![ops], vec![span]).unwrap(),
+            );
+            let mut linked = vec![0.0; stored];
+            rumoca_eval_solve::PreparedScalarProgramBlock::new((*block).clone())
+                .unwrap()
+                .eval_with_context(&y, &y, 0.0, context, &mut linked)
+                .expect("the linked evaluator runs the powers");
+            let plan = crate::codegen::scalar_program_plan::ScalarProgramPlan::new(block).unwrap();
+            (minijinja::Value::from_object(plan), linked)
+        };
+        let generated = run_c(&render_inputs(plan, linked.len(), &y, &seed));
+        assert_eq!(
+            generated.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            linked.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "width {width}: generated {generated:?} linked {linked:?}"
+        );
+    }
+}

@@ -134,7 +134,7 @@ impl BodyEmitter<'_> {
         Ok(())
     }
 
-    fn dual_finite_or_zero(&mut self) {
+    pub(super) fn dual_finite_or_zero(&mut self) {
         self.push(Instruction::LocalSet(LOCAL_BASE));
         self.push(Instruction::LocalGet(LOCAL_BASE));
         self.push(Instruction::F64Const(0.0.into()));

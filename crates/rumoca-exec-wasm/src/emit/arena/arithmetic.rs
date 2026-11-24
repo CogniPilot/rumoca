@@ -6,6 +6,7 @@ impl BodyEmitter<'_> {
     pub(in crate::emit) fn emit_arena_tensor(&mut self, op: LinearOp) -> Result<(), String> {
         match op {
             op @ LinearOp::TensorBinary { .. } => self.arena_binary(op),
+            op @ LinearOp::TensorIntegerPower { .. } => self.arena_integer_power(op),
             op @ LinearOp::MatrixMultiply { .. } => self.arena_matrix(op),
             op @ LinearOp::TensorCross { .. } => self.arena_cross(op),
             op @ LinearOp::TensorLoad { .. } => self.arena_load(op),

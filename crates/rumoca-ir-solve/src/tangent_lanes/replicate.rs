@@ -800,6 +800,7 @@ fn set_aggregate_lanes(op: &mut LinearOp, width: usize) {
     match op {
         LinearOp::MatrixMultiply { lanes, .. }
         | LinearOp::TensorBinary { lanes, .. }
+        | LinearOp::TensorIntegerPower { lanes, .. }
         | LinearOp::TensorCross { lanes, .. }
         | LinearOp::TensorTranspose { lanes, .. }
         | LinearOp::TensorConcatenate { lanes, .. }

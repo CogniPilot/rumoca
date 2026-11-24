@@ -979,27 +979,19 @@ fn render_solve_op_typed(
                 let dst = *dst_start + (element * *lanes) as solve::Reg;
                 let lhs_re = solve_reg(regs, solve_reg_index(lhs, "tensor-binary lhs register")?)?;
                 let rhs_re = solve_reg(regs, solve_reg_index(rhs, "tensor-binary rhs register")?)?;
-                let raw_primal =
-                    dialect.render_binary(op.kind_name(), lhs_re.clone(), rhs_re.clone())?;
-                let primal = if *lanes >= 2 && *op == solve::BinaryOp::Div {
-                    let zero = "0.0".to_owned();
-                    let denominator_zero =
-                        dialect.render_compare("Eq", rhs_re.clone(), zero.clone())?;
-                    let numerator_zero =
-                        dialect.render_compare("Eq", lhs_re.clone(), zero.clone())?;
-                    let zero_over_zero =
-                        dialect.render_select(numerator_zero, zero.clone(), raw_primal.clone());
-                    dialect.render_select(denominator_zero, zero_over_zero, raw_primal)
-                } else {
-                    raw_primal
-                };
+                let primal = render_tensor_binary_primal(
+                    dialect,
+                    *op,
+                    lhs_re.clone(),
+                    rhs_re.clone(),
+                    *lanes,
+                )?;
                 store_solve_reg(
                     regs,
                     solve_reg_index(dst, "tensor-binary destination register")?,
                     primal,
                 )?;
                 for lane in 1..*lanes as solve::Reg {
-                    let (lhs_re, rhs_re) = (lhs_re.clone(), rhs_re.clone());
                     let lhs_du = solve_reg(
                         regs,
                         solve_reg_index(lhs + lane, "tensor-binary lhs tangent register")?,
@@ -1008,35 +1000,58 @@ fn render_solve_op_typed(
                         regs,
                         solve_reg_index(rhs + lane, "tensor-binary rhs tangent register")?,
                     )?;
-                    let tangent = match op {
-                        solve::BinaryOp::Add | solve::BinaryOp::Sub => {
-                            dialect.render_binary(op.kind_name(), lhs_du, rhs_du)?
-                        }
-                        solve::BinaryOp::Mul => {
-                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re)?;
-                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
-                            dialect.render_binary("Add", lhs_term, rhs_term)?
-                        }
-                        solve::BinaryOp::Div => {
-                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
-                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
-                            let numerator = dialect.render_binary("Sub", lhs_term, rhs_term)?;
-                            let denominator =
-                                dialect.render_binary("Mul", rhs_re.clone(), rhs_re.clone())?;
-                            let quotient = dialect.render_binary("Div", numerator, denominator)?;
-                            let zero = "0.0".to_owned();
-                            let denominator_zero =
-                                dialect.render_compare("Eq", rhs_re, zero.clone())?;
-                            dialect.render_select(denominator_zero, zero, quotient)
-                        }
-                        _ => {
-                            return Err(render_err("invalid compact tensor binary operator"));
-                        }
-                    };
+                    let tangent = render_tensor_binary_tangent(
+                        dialect,
+                        *op,
+                        (lhs_re.clone(), lhs_du),
+                        (rhs_re.clone(), rhs_du),
+                    )?;
                     store_solve_reg(
                         regs,
                         solve_reg_index(dst + lane, "tensor-binary tangent destination register")?,
                         tangent,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start,
+            count,
+            power,
+            lanes,
+        } => {
+            let mut rendered = 0usize;
+            for element in 0..*count {
+                let source = *src_start + (element * *lanes) as solve::Reg;
+                let dst = *dst_start + (element * *lanes) as solve::Reg;
+                let source = (0..*lanes as solve::Reg)
+                    .map(|lane| {
+                        solve_reg(
+                            regs,
+                            solve_reg_index(source + lane, "tensor-power source register")?,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let values = render_integer_power_element(dialect, *power, source)?;
+                rendered = values
+                    .iter()
+                    .fold(rendered, |bytes, lane| bytes.saturating_add(lane.len()));
+                if rendered > MAX_INLINE_POWER_OPERATION_BYTES {
+                    return Err(render_err(format!(
+                        "elementwise power `.^ {}` over {count} elements inlines past the \
+                         {MAX_INLINE_POWER_OPERATION_BYTES}-byte bound of one WGSL operation",
+                        power.exponent()
+                    )));
+                }
+                for (lane, value) in values.into_iter().enumerate() {
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            dst + lane as solve::Reg,
+                            "tensor-power destination register",
+                        )?,
+                        value,
                     )?;
                 }
             }
@@ -1450,6 +1465,140 @@ fn render_solve_op_typed(
         }
     }
     Ok(output)
+}
+
+/// The primal of one `TensorBinary` element, with the multi-lane quotient's
+/// `0 / 0` guard.
+fn render_tensor_binary_primal(
+    dialect: SolveRowDialect,
+    op: solve::BinaryOp,
+    lhs_re: String,
+    rhs_re: String,
+    lanes: usize,
+) -> RenderResult {
+    let raw_primal = dialect.render_binary(op.kind_name(), lhs_re.clone(), rhs_re.clone())?;
+    if lanes < 2 || op != solve::BinaryOp::Div {
+        return Ok(raw_primal);
+    }
+    let zero = "0.0".to_owned();
+    let denominator_zero = dialect.render_compare("Eq", rhs_re, zero.clone())?;
+    let numerator_zero = dialect.render_compare("Eq", lhs_re, zero.clone())?;
+    let zero_over_zero = dialect.render_select(numerator_zero, zero, raw_primal.clone());
+    Ok(dialect.render_select(denominator_zero, zero_over_zero, raw_primal))
+}
+
+/// One tangent lane of a `TensorBinary` element from its operands' primal and
+/// tangent lanes.
+fn render_tensor_binary_tangent(
+    dialect: SolveRowDialect,
+    op: solve::BinaryOp,
+    (lhs_re, lhs_du): (String, String),
+    (rhs_re, rhs_du): (String, String),
+) -> RenderResult {
+    Ok(match op {
+        solve::BinaryOp::Add | solve::BinaryOp::Sub => {
+            dialect.render_binary(op.kind_name(), lhs_du, rhs_du)?
+        }
+        solve::BinaryOp::Mul => {
+            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re)?;
+            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+            dialect.render_binary("Add", lhs_term, rhs_term)?
+        }
+        solve::BinaryOp::Div => {
+            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
+            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+            let numerator = dialect.render_binary("Sub", lhs_term, rhs_term)?;
+            let denominator = dialect.render_binary("Mul", rhs_re.clone(), rhs_re.clone())?;
+            let quotient = dialect.render_binary("Div", numerator, denominator)?;
+            let zero = "0.0".to_owned();
+            let denominator_zero = dialect.render_compare("Eq", rhs_re, zero.clone())?;
+            dialect.render_select(denominator_zero, zero, quotient)
+        }
+        _ => {
+            return Err(render_err("invalid compact tensor binary operator"));
+        }
+    })
+}
+
+/// The lanes of one `TensorBinary` element of operands given lane by lane.
+fn render_tensor_binary_element(
+    dialect: SolveRowDialect,
+    op: solve::BinaryOp,
+    lhs: &[String],
+    rhs: &[String],
+) -> Result<Vec<String>, minijinja::Error> {
+    let mut values = Vec::with_capacity(lhs.len());
+    values.push(render_tensor_binary_primal(
+        dialect,
+        op,
+        lhs[0].clone(),
+        rhs[0].clone(),
+        lhs.len(),
+    )?);
+    for lane in 1..lhs.len() {
+        values.push(render_tensor_binary_tangent(
+            dialect,
+            op,
+            (lhs[0].clone(), lhs[lane].clone()),
+            (rhs[0].clone(), rhs[lane].clone()),
+        )?);
+    }
+    Ok(values)
+}
+
+/// Bytes one inline WGSL lane expression of an elementwise literal power may
+/// reach. A row is one expression per register, so each product repeats its
+/// operands' text: a square doubles it, and `.^ n` inlines `|n|` copies of
+/// its base. Past this bound the plan refuses instead of rendering an
+/// expression whose size follows the exponent, not its `O(log |n|)` plan.
+const MAX_INLINE_POWER_EXPRESSION_BYTES: usize = 1 << 20;
+
+/// Bytes the inline WGSL expressions of all elements and lanes of one
+/// elementwise literal power may reach together, so a plan just under the
+/// lane bound cannot render its expression once per element without limit.
+const MAX_INLINE_POWER_OPERATION_BYTES: usize = 16 << 20;
+
+/// The lanes of one element of an elementwise literal power: the expressions
+/// of its plan's `TensorBinary` chain, the numerator of `1 / x` being the
+/// constant `1` with zero tangents, as the chain's constant register renders.
+fn render_integer_power_element(
+    dialect: SolveRowDialect,
+    power: solve::IntegerPower,
+    element: Vec<String>,
+) -> Result<Vec<String>, minijinja::Error> {
+    let mut base = element;
+    if power.reciprocal() {
+        let constant = |value: f64| dialect.format_const(format!("{value:?}"));
+        let mut one = vec![constant(0.0); base.len()];
+        one[0] = constant(1.0);
+        base = render_tensor_binary_element(dialect, solve::BinaryOp::Div, &one, &base)?;
+    }
+    let mut result = base.clone();
+    for step in power.steps() {
+        match step {
+            solve::IntegerPowerStep::Seed => result = base.clone(),
+            solve::IntegerPowerStep::Multiply => {
+                result =
+                    render_tensor_binary_element(dialect, solve::BinaryOp::Mul, &result, &base)?;
+            }
+            solve::IntegerPowerStep::Square => {
+                base = render_tensor_binary_element(dialect, solve::BinaryOp::Mul, &base, &base)?;
+            }
+        }
+        if base
+            .iter()
+            .chain(&result)
+            .any(|lane| lane.len() > MAX_INLINE_POWER_EXPRESSION_BYTES)
+        {
+            return Err(render_err(format!(
+                "elementwise power `.^ {}` inlines |n| copies of its base, every square \
+                 doubling the text, past the {MAX_INLINE_POWER_EXPRESSION_BYTES}-byte bound of \
+                 one WGSL row expression",
+                power.exponent()
+            )));
+        }
+    }
+    Ok(result)
 }
 
 /// Render the array-access expression for a runtime-indexed parameter (or seed)

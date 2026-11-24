@@ -143,6 +143,7 @@ fn seed_operation_fits(operation: &crate::LinearOp, active: &[usize]) -> bool {
         | L::DotProduct { .. }
         | L::MatrixMultiply { .. }
         | L::TensorBinary { .. }
+        | L::TensorIntegerPower { .. }
         | L::TensorCross { .. }
         | L::TensorTranspose { .. }
         | L::TensorConcatenate { .. }

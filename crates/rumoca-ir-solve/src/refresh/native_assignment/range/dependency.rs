@@ -243,6 +243,12 @@ fn operation_dependency(
             lanes: 1,
             ..
         } => Ok(read(*lhs_start, *count, *lhs_stride)? | read(*rhs_start, *count, *rhs_stride)?),
+        LinearOp::TensorIntegerPower {
+            src_start,
+            count,
+            lanes: 1,
+            ..
+        } => read(*src_start, *count, 1),
         LinearOp::TensorCross {
             lhs_start,
             rhs_start,

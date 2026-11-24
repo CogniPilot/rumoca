@@ -44,6 +44,7 @@ const TIME_PARAM: u32 = 2;
 const SEED_PTR_PARAM: u32 = 3;
 const OUT_PTR_PARAM: u32 = 4;
 const LOCAL_BASE: u32 = 5;
+const UNSUPPORTED_TENSOR_OP: &str = "WASM backend does not yet support compact tensor-product ops";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum MathImport {
@@ -500,16 +501,13 @@ impl<'a> BodyEmitter<'a> {
             LinearOp::DotProduct { .. }
             | LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorIntegerPower { .. }
             | LinearOp::TensorCross { .. }
             | LinearOp::TensorTranspose { .. }
             | LinearOp::TensorConcatenate { .. }
             | LinearOp::TensorUpdate { .. }
             | LinearOp::TensorFill { .. }
-            | LinearOp::TensorIdentity { .. } => {
-                return Err(
-                    "WASM backend does not yet support compact tensor-product ops".to_string(),
-                );
-            }
+            | LinearOp::TensorIdentity { .. } => return Err(UNSUPPORTED_TENSOR_OP.to_string()),
             LinearOp::TableBounds { .. }
             | LinearOp::TableLookup { .. }
             | LinearOp::TableLookupSlope { .. }

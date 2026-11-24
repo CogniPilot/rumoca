@@ -115,7 +115,11 @@ fn artifact_of(program: Vec<LinearOp>) -> CompiledNativeCallProgramWasm {
     artifact_with(program, 9, 7)
 }
 
-fn artifact_with(program: Vec<LinearOp>, y: usize, p: usize) -> CompiledNativeCallProgramWasm {
+pub(super) fn artifact_with(
+    program: Vec<LinearOp>,
+    y: usize,
+    p: usize,
+) -> CompiledNativeCallProgramWasm {
     let layout = VarLayout::from_parts(Default::default(), y, p);
     let span = solve::source_span_from_offsets(11, 20, 30);
     let block = solve::ScalarProgramBlock::with_program_spans(vec![program], vec![span]).unwrap();

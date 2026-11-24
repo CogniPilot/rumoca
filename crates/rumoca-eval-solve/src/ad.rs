@@ -32,8 +32,8 @@ pub(crate) use seed_domain::lower_projection_domain;
 pub use error::SolveDerivationError;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, CompareOp, ComputeBlock,
-    ComputeNode, FoldTensorUpdateStore, LinearOp, MatrixProductShape, RandomGenerator, Reg,
-    ScalarProgramBlock, StridedOperand, UnaryOp, VarLayout,
+    ComputeNode, FoldTensorUpdateStore, IntegerPower, LinearOp, MatrixProductShape,
+    RandomGenerator, Reg, ScalarProgramBlock, StridedOperand, UnaryOp, VarLayout,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;

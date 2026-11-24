@@ -480,6 +480,10 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     matrix_multiply_cache:
         HashMap<(u64, dae::ExprId<'dae>, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_binary_cache: HashMap<TensorBinaryKey<'dae>, (solve::Reg, usize)>,
+    /// Packed result of a literal power of an aggregate base, keyed by
+    /// (context, base, reciprocal, magnitude); for exponent 0, the one
+    /// constant every element reads.
+    literal_power_cache: HashMap<(u64, dae::ExprId<'dae>, bool, u64), solve::Reg>,
     tensor_transpose_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_concatenate_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
     tensor_update_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
@@ -553,6 +557,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             typed_pure_call_cache: rustc_hash::FxHashMap::default(),
             matrix_multiply_cache: HashMap::new(),
             tensor_binary_cache: HashMap::new(),
+            literal_power_cache: HashMap::new(),
             tensor_transpose_cache: HashMap::new(),
             tensor_concatenate_cache: HashMap::new(),
             tensor_update_cache: HashMap::new(),

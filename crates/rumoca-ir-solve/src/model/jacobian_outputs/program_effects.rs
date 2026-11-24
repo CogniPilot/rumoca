@@ -42,6 +42,7 @@ fn operation_is_repeatable(op: &LinearOp) -> bool {
         | LinearOp::DotProduct { .. }
         | LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
+        | LinearOp::TensorIntegerPower { .. }
         | LinearOp::TensorCross { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }

@@ -34,6 +34,28 @@ pub(super) fn derive(
     .find_map(|(quotient, rest)| reciprocal_shape(program, quotient, rest, target, dependencies))
 }
 
+/// The only targets [`derive`] can isolate in `output`: the loads dividing a
+/// literal on either side of its sum or difference. [`reciprocal_shape`]
+/// rejects any other target before reading it, so this structural read is
+/// exact; `dependency_candidates_tests` checks it against the exhaustive
+/// inventory.
+pub(super) fn candidate_targets(
+    program: ProgramPrefix<'_>,
+    output: Reg,
+) -> impl Iterator<Item = usize> + '_ {
+    let (output, _) = strip_affine_output_wrappers(program, output);
+    let sides = match binary_operands(program, output) {
+        Some((BinaryOp::Add | BinaryOp::Sub, lhs, rhs)) => [Some(lhs), Some(rhs)],
+        _ => [None, None],
+    };
+    sides.into_iter().flatten().filter_map(move |quotient| {
+        let (BinaryOp::Div, _, denominator) = binary_operands(program, quotient)? else {
+            return None;
+        };
+        Some(target_load(program, denominator)?.index)
+    })
+}
+
 fn reciprocal_shape(
     program: ProgramPrefix<'_>,
     (quotient, quotient_scale): (Reg, f64),

@@ -15,6 +15,7 @@ mod dead_constants;
 mod dead_operations;
 mod defined_registers;
 mod fault_class;
+mod integer_power;
 mod seed_invariance;
 mod shared_values;
 
@@ -23,6 +24,7 @@ pub(crate) use shared_values::{check_same_output, check_same_output_transformed}
 pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
 pub use dead_operations::prune_unread_pure_operations;
+pub use integer_power::{IntegerPower, IntegerPowerStep, IntegerPowerSteps};
 pub use shared_values::{
     AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
     SharedValueSegment, SharedValueSegments, share_program_values, shared_value_proof_failures,
@@ -1038,6 +1040,21 @@ pub enum LinearOp {
         rhs_stride: usize,
         lanes: usize,
     },
+    /// Raise each element of one compact tensor range to one literal Integer
+    /// power. Element `i` of the result reads only element `i` of the
+    /// source, in every lane, and every backend walks the steps of
+    /// [`IntegerPower`] per element: lane 0 as the reciprocal `1 / x` and
+    /// products of the scalar plan, the tangent lanes as the `TensorBinary`
+    /// division and products of those steps, in their order. The register
+    /// count is that of the result, independent of the exponent, and the
+    /// destination never overlaps the source.
+    TensorIntegerPower {
+        dst_start: Reg,
+        src_start: Reg,
+        count: usize,
+        power: IntegerPower,
+        lanes: usize,
+    },
     /// Compute the cross product of two length-three vectors as one owner.
     /// Storage is element-major with one primal or two interleaved AD lanes.
     TensorCross {
@@ -1333,6 +1350,7 @@ impl LinearOp {
             Self::DotProduct { .. } => "DotProduct",
             Self::MatrixMultiply { .. } => "MatrixMultiply",
             Self::TensorBinary { .. } => "TensorBinary",
+            Self::TensorIntegerPower { .. } => "TensorIntegerPower",
             Self::TensorCross { .. } => "TensorCross",
             Self::TensorTranspose { .. } => "TensorTranspose",
             Self::TensorConcatenate { .. } => "TensorConcatenate",
@@ -1409,6 +1427,7 @@ impl LinearOp {
             | Self::PureCallDirectional { dst_start, .. }
             | Self::MatrixMultiply { dst_start, .. }
             | Self::TensorBinary { dst_start, .. }
+            | Self::TensorIntegerPower { dst_start, .. }
             | Self::TensorCross { dst_start, .. }
             | Self::TensorTranspose { dst_start, .. } => Some(*dst_start),
             Self::TensorConcatenate { dst_start, .. }
@@ -1457,6 +1476,7 @@ impl LinearOp {
                 .saturating_mul(*element_width)
                 .saturating_mul(*lanes),
             Self::TensorBinary { count, lanes, .. }
+            | Self::TensorIntegerPower { count, lanes, .. }
             | Self::TensorFill { count, lanes, .. }
             | Self::TensorLoad { count, lanes, .. } => count.saturating_mul(*lanes),
             Self::TensorCross { lanes, .. } => 3usize.saturating_mul(*lanes),
@@ -2004,6 +2024,8 @@ fn validate_op_sources<'a>(
         LinearOp::TensorBinary {
             op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes, ..
         } => tensor_binary(cx, op, (lhs_start, lhs_stride), (rhs_start, rhs_stride), count, lanes),
+        LinearOp::TensorIntegerPower { src_start, count, lanes, .. } =>
+            tensor_integer_power(cx, src_start, count, lanes),
         LinearOp::TensorCross { lhs_start, rhs_start, lanes, .. } =>
             tensor_cross(cx, lhs_start, rhs_start, lanes),
         LinearOp::TensorTranspose { src_start, rows, columns, element_width, lanes, .. } =>
@@ -2614,6 +2636,33 @@ fn tensor_binary(
         cx.range_last(lhs_start, lhs_count)?
             .max(cx.range_last(rhs_start, rhs_count)?),
     ))
+}
+
+/// The compact source range of one elementwise literal Integer power, which
+/// never overlaps its destination: every backend may then write each element
+/// as soon as it is computed.
+fn tensor_integer_power(
+    cx: OpSources<'_>,
+    src_start: Reg,
+    count: usize,
+    lanes: usize,
+) -> Result<Option<Reg>, ScalarProgramRegisterError> {
+    if count == 0 || lanes == 0 || lanes > cx.max_lanes {
+        return Err(cx.tensor_error("tensor integer power has an invalid extent or lane count"));
+    }
+    let source_count = count
+        .checked_mul(lanes)
+        .ok_or_else(|| cx.tensor_error("tensor integer power source range overflows"))?;
+    cx.require_range(src_start, source_count)?;
+    let width = source_count as u64;
+    let (source, destination) = (
+        u64::from(src_start),
+        cx.op.dst_register().map_or(u64::MAX, u64::from),
+    );
+    if source < destination.saturating_add(width) && destination < source.saturating_add(width) {
+        return Err(cx.tensor_error("tensor integer power destination overlaps its source"));
+    }
+    cx.range_last(src_start, source_count).map(Some)
 }
 
 /// Two length-three vector operands of one aggregate cross product.

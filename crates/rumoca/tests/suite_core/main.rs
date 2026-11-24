@@ -104,6 +104,7 @@ mod discrete_alias_orientation;
 mod discrete_array_element_equations;
 mod discrete_time_definitions;
 mod element_connection_sets;
+mod elementwise_literal_power;
 mod enumeration_compact_range_test;
 mod enumeration_declarations;
 mod enumeration_literal_assertions;

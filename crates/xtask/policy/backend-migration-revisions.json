@@ -33,6 +33,44 @@
           "after": "0a25240ba51799480b90621c90a5908796f33d60ddd188d1ea2e25a0dff0ff71"
         }
       ]
+    },
+    {
+      "id": "R002",
+      "decision": "d-pending-owner-elementwise-literal-power-20261122",
+      "change": "The FMI3 scalar kernel, its plan view and the WGSL rows render LinearOp::TensorIntegerPower, the elementwise literal power issued by rumoca-ir-solve, as the TensorBinary quotient and products of its plan; no renderer derives the plan.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection/lane_render_tests.rs",
+          "before": "4793852accc3ab5ddac0a543ee3e2e481749dbfa588057683651b6533ff0240c",
+          "after": "f724d24a6eede1deaaea2705a0d5e270054e7669346577c9e9b86830a0afa487"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/render_solve.rs",
+          "before": "6c5a3623d5edd0ec00a5f241a65c2918d0daa922037d97d892603af7f6894f8f",
+          "after": "8db7078659d03656dac35d3c1ea38cc0d3e88369bbaa58b770bde3387a711af8"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/render_solve/dense_solve_render.rs",
+          "before": "fc5bf57a0ff434aff32a127a897e3095ab1ede35e4fcbf0748f04d617f0cb03d",
+          "after": "abc4f0e66f3b1e30176954d73247ca1b575dcc0f34307f081e8a9301e7c89a5b"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/render_solve/render_solve_tests.rs",
+          "before": "06916d1e5404ae52be7621f8ed1e4ecb1a37b280f697a31e1368a209f0fb0afe",
+          "after": "983616de286521f970a478fa1d31741422ab863958fcc9edb79ecf5d8b91bcb0"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/scalar_program_plan.rs",
+          "before": "1aaefcdf893e640547045b3fb05c0f43b8c8979a960564b74a26cb8fffc520d3",
+          "after": "cd16b15f11accaee3ef4354d436c7d833d3077184374fbb3fac0afc2592f16d3"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_kernel.jinja",
+          "before": "b8f1e5f2ed7d7398eda90aa27471ec8157a675ed22bfe2601815d0130acae921",
+          "after": "c29abfb72fddab972b54cafe64b3d99c20de8084c786b8ca75bac71728c9a11e"
+        }
+      ]
     }
   ]
 }

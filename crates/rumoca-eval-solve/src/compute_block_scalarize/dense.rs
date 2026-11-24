@@ -369,6 +369,17 @@ fn max_reg_in_op(
                 .max(source_last(lhs_start, lhs_stride)?)
                 .max(source_last(rhs_start, rhs_stride)?)
         }
+        LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start,
+            count,
+            lanes,
+            ..
+        } => {
+            let width = checked_product(count, lanes, kind, span)?;
+            checked_reg_range_last(dst_start, width, kind, span)?
+                .max(checked_reg_range_last(src_start, width, kind, span)?)
+        }
         LinearOp::TensorCross {
             dst_start,
             lhs_start,

@@ -96,6 +96,12 @@ impl Snapshot {
             LinearOp::TensorTranspose { src_start, .. } => {
                 intersects(dst, count, *src_start, count, 1, 1)?
             }
+            LinearOp::TensorIntegerPower {
+                src_start,
+                count: elements,
+                lanes,
+                ..
+            } => intersects(dst, count, *src_start, *elements, 1, *lanes)?,
             LinearOp::TensorCross {
                 lhs_start,
                 rhs_start,
@@ -125,9 +131,9 @@ fn result_width(op: &LinearOp) -> Option<usize> {
             lanes,
             ..
         } => rows.checked_mul(*columns)?.checked_mul(*lanes),
-        LinearOp::TensorBinary { count, lanes, .. } | LinearOp::TensorFill { count, lanes, .. } => {
-            count.checked_mul(*lanes)
-        }
+        LinearOp::TensorBinary { count, lanes, .. }
+        | LinearOp::TensorIntegerPower { count, lanes, .. }
+        | LinearOp::TensorFill { count, lanes, .. } => count.checked_mul(*lanes),
         LinearOp::TensorConcatenate {
             dimensions, lanes, ..
         }

@@ -171,6 +171,75 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(latest)
     }
 
+    /// Element `scalar` of `base .^ n` for an aggregate base, computed once
+    /// for every element. An exponent with a product is one
+    /// `TensorIntegerPower` over the packed base, which every backend
+    /// evaluates as the plan's division and products in their order: its
+    /// registers are those of the result, whatever the exponent. Exponent
+    /// `-1` is the one quotient `1 / x`, the elementwise division it already
+    /// is, and exponent `1` is the base.
+    fn packed_literal_power(
+        &mut self,
+        base: dae::ExprId<'dae>,
+        plan: LiteralPower,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let count = scalar_count(self.view, base);
+        if scalar >= count {
+            return Err(LowerError::contract(
+                "literal power scalar is out of range",
+                span,
+            ));
+        }
+        let key = (self.context_id, base, plan.reciprocal, plan.magnitude);
+        if let Some(&start) = self.literal_power_cache.get(&key) {
+            // Exponent 0 caches its one constant, which every element reads.
+            let offset = if plan.magnitude == 0 { 0 } else { scalar };
+            return Ok(start + offset as solve::Reg);
+        }
+        // The base is evaluated whatever the exponent, as the scalar spelling
+        // evaluates its base before `x ^ 0` answers 1, so any call it holds
+        // keeps its evaluation and its assertions.
+        let src_start = self.pack_expression(base)?;
+        if plan.magnitude == 0 {
+            let one = self.constant(1.0, span)?;
+            self.literal_power_cache.insert(key, one);
+            return Ok(one);
+        }
+        let start = match solve::IntegerPower::new(plan.exponent()) {
+            Some(power) => {
+                let dst_start = self.register_range(count, span)?;
+                self.emit(solve::LinearOp::TensorIntegerPower {
+                    dst_start,
+                    src_start,
+                    count,
+                    power,
+                    lanes: 1,
+                })?;
+                dst_start
+            }
+            None if plan.reciprocal => {
+                let one = self.constant(1.0, span)?;
+                let dst_start = self.register_range(count, span)?;
+                self.emit(solve::LinearOp::TensorBinary {
+                    dst_start,
+                    op: solve::BinaryOp::Div,
+                    lhs_start: one,
+                    rhs_start: src_start,
+                    count,
+                    lhs_stride: 0,
+                    rhs_stride: 1,
+                    lanes: 1,
+                })?;
+                dst_start
+            }
+            None => src_start,
+        };
+        self.literal_power_cache.insert(key, start);
+        Ok(start + scalar as solve::Reg)
+    }
+
     fn integer_binary_result(
         &self,
         operator: dae::BinaryOperator,
@@ -214,6 +283,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.identity_operand_scalar(operator, lhs, rhs, scalar)
         {
             return self.expression(operand, operand_scalar);
+        }
+        // A literal Integer exponent is read from the source literal, so its
+        // magnitude never passes through a Real register (SOLVE-C86).
+        if let Some(plan) = crate::lower::literal_power_plan(self.view, operator, lhs, rhs) {
+            if scalar_count(self.view, lhs) > 1 && !self.is_literal_operand(lhs) {
+                return self.packed_literal_power(lhs, plan, scalar, span);
+            }
+            let lhs_scalar = if scalar_count(self.view, lhs) == 1 {
+                0
+            } else {
+                scalar
+            };
+            let base = self.expression(lhs, lhs_scalar)?;
+            return self.literal_power(base, plan, span);
         }
         if let Some(output) =
             self.compact_tensor_binary_expression(operator, lhs, rhs, scalar, span)?

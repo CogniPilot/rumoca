@@ -129,6 +129,13 @@ impl<'a> AdBuilder<'a> {
                 count,
                 lanes,
             ),
+            LinearOp::TensorIntegerPower {
+                dst_start,
+                src_start,
+                count,
+                power,
+                lanes,
+            } => self.lower_tensor_integer_power(dst_start, src_start, count, power, lanes),
             LinearOp::TensorCross {
                 dst_start,
                 lhs_start,

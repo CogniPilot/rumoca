@@ -267,6 +267,66 @@ impl<'a> AdBuilder<'a> {
         Ok(())
     }
 
+    /// An elementwise literal power keeps one operation in its dual form, so
+    /// each tangent lane follows the division and products of the plan the
+    /// `TensorBinary` chain would take, without their intermediate ranges.
+    pub(super) fn lower_tensor_integer_power(
+        &mut self,
+        dst_start: Reg,
+        src_start: Reg,
+        count: usize,
+        power: IntegerPower,
+        lanes: usize,
+    ) -> Result<(), SolveDerivationError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor integer power with one lane",
+            ));
+        }
+        if self.range_tangent_is_zero(src_start, count)? {
+            let src_start = self.pack_primal_range(src_start, count)?;
+            return self.emit_zero_tangent_result(dst_start, count, |dst_start| {
+                LinearOp::TensorIntegerPower {
+                    dst_start,
+                    src_start,
+                    count,
+                    power,
+                    lanes: 1,
+                }
+            });
+        }
+        let src_start = self.pack_dual_register_range(src_start, count)?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor integer power dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorIntegerPower {
+            dst_start: dual_start,
+            src_start,
+            count,
+            power,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor integer power output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor integer power dual lane")?,
+                self.span,
+                "tensor integer power dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn lower_tensor_cross(
         &mut self,
         dst_start: Reg,

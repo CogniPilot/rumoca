@@ -259,6 +259,7 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::DotProduct { .. } => "DotProduct",
         LinearOp::MatrixMultiply { .. } => "MatrixMultiply",
         LinearOp::TensorBinary { .. } => "TensorBinary",
+        LinearOp::TensorIntegerPower { .. } => "TensorIntegerPower",
         LinearOp::TensorCross { .. } => "TensorCross",
         LinearOp::TensorTranspose { .. } => "TensorTranspose",
         LinearOp::TensorConcatenate { .. } => "TensorConcatenate",

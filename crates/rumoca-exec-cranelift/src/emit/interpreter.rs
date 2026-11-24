@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_ir_solve::MAX_TENSOR_LANES;
 
 #[derive(Clone, Copy)]
 struct GeneralOpContext<'a> {
@@ -390,6 +391,29 @@ fn execute_general_op(
                         _ => unreachable!("validated tensor binary operator"),
                     };
                     set_reg_value(regs, dst + 1, tangent);
+                }
+            }
+        }
+        LinearOp::TensorIntegerPower {
+            dst_start,
+            src_start,
+            count,
+            power,
+            lanes,
+        } => {
+            let (mut lanes_in, mut element) = ([0.0; MAX_TENSOR_LANES], [0.0; MAX_TENSOR_LANES]);
+            for index in 0..count {
+                let source = src_start as usize + index * lanes;
+                for (lane, value) in lanes_in[..lanes].iter_mut().enumerate() {
+                    *value = read_reg_value(regs, source + lane);
+                }
+                rumoca_eval_solve::integer_power_element(
+                    power,
+                    &lanes_in[..lanes],
+                    &mut element[..lanes],
+                );
+                for (lane, value) in element[..lanes].iter().enumerate() {
+                    set_reg_value(regs, dst_start as usize + index * lanes + lane, *value);
                 }
             }
         }

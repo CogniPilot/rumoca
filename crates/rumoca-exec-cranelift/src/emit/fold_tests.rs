@@ -1508,3 +1508,100 @@ fn compiled_function_fold_updates_a_run_time_window_of_a_tensor() {
     assert_eq!(out, [100.0, 100.0, 200.0, 40.0]);
     assert_eq!(compiled.jit_call_count(), 1);
 }
+
+/// A literal power in a fold body past the unrolling of its chain takes
+/// the register tape, so it runs as one loop. `.^ 63` over 2000 distinct
+/// bases is 20 000 products in primal and 40 000 in dual: every element and
+/// lane, the dual stride and tangent offset included, keeps the evaluator's
+/// value bit for bit.
+#[test]
+fn compiled_function_fold_runs_a_long_literal_power_on_the_register_tape() {
+    for lanes in [1, 2] {
+        long_literal_power_fold(lanes);
+    }
+}
+
+fn long_literal_power_fold(lanes: usize) {
+    const COUNT: usize = 2000;
+    let width = COUNT * lanes;
+    let power = rumoca_ir_solve::IntegerPower::new(63).expect("63");
+    let operation = LinearOp::TensorIntegerPower {
+        dst_start: width as u32,
+        src_start: 0,
+        count: COUNT,
+        power,
+        lanes,
+    };
+    assert!(register_storage::integer_power_needs_tape(&operation));
+    let mut update: Vec<_> = (0..width)
+        .map(|index| LinearOp::LoadFoldCarried {
+            dst: index as u32,
+            index,
+        })
+        .collect();
+    update.push(operation);
+    update.extend((width as u32..2 * width as u32).map(|src| LinearOp::StoreOutput { src }));
+    let program = std::sync::Arc::new(
+        rumoca_ir_solve::FunctionFoldProgram::checked(
+            rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 1,
+                    step: 1,
+                }],
+            },
+            width,
+            0,
+            update,
+        )
+        .expect("construct literal-power fold"),
+    );
+    // Distinct bases of both signs and distinct tangents, so a shifted
+    // element or lane cannot match.
+    let initial: Vec<f64> = (0..width)
+        .map(|index| {
+            let (element, lane) = (index / lanes, index % lanes);
+            let sign = if element % 2 == 0 { 1.0 } else { -1.0 };
+            if lane == 0 {
+                sign * (0.5 + element as f64 / 4000.0)
+            } else {
+                1.0 + element as f64 / 1000.0
+            }
+        })
+        .collect();
+    let mut row: Vec<_> = initial
+        .iter()
+        .enumerate()
+        .map(|(dst, &value)| LinearOp::Const {
+            dst: dst as u32,
+            value,
+        })
+        .collect();
+    row.push(LinearOp::FunctionFold {
+        dst_start: width as u32,
+        initial_start: 0,
+        capture_start: 0,
+        program,
+    });
+    row.extend((width as u32..2 * width as u32).map(|src| LinearOp::StoreOutput { src }));
+
+    let compiled = compile_residual_rows(&[row]).expect("compile literal-power fold");
+    let mut out = vec![0.0; width];
+    compiled
+        .call(&[], &[], 0.0, &mut out)
+        .expect("evaluate literal-power fold");
+    let mut expected = vec![0.0; lanes];
+    for (element, (actual, source)) in out.chunks(lanes).zip(initial.chunks(lanes)).enumerate() {
+        rumoca_eval_solve::integer_power_element(power, source, &mut expected);
+        for (lane, (a, e)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                e.to_bits(),
+                "lanes {lanes}, element {element}, lane {lane}"
+            );
+        }
+    }
+}

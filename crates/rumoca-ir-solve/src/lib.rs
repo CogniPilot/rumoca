@@ -122,10 +122,11 @@ pub use linear_op::{
     BinaryOp, BlockResidualSplit, BlockResidualSplitError, CompareOp, FoldContinuation,
     FoldInitialSource, FoldTensorNode, FoldTensorUpdate, FoldTensorUpdateStore,
     FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
-    FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg,
-    ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape,
-    TensorConcatenateSource, TensorIndex, TensorInputKind, TensorUpdateSubscript, UnaryOp,
-    prune_dead_constants, prune_unread_pure_operations, resolve_indexed_slot,
+    FunctionFoldProgram, IntegerPower, IntegerPowerStep, IntegerPowerSteps, LinearOp,
+    MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg, ScalarProgramRegisterError,
+    ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape, TensorConcatenateSource,
+    TensorIndex, TensorInputKind, TensorUpdateSubscript, UnaryOp, prune_dead_constants,
+    prune_unread_pure_operations, resolve_indexed_slot,
 };
 pub use model::*;
 pub use parameter_classification::{ExcludedParameter, ExclusionReason, ParameterClassification};
@@ -165,7 +166,9 @@ pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 /// 89 carries checked producer partitions within one event-iteration declaration.
 /// 90 carries source-checked direct Cartesian kinematic pairs.
 /// 91 carries source-bound coupled mechanical mass/damping plans.
-pub const SOLVE_SCHEMA_VERSION: u16 = 92;
+/// 93 carries `LinearOp::TensorIntegerPower`, the elementwise literal power,
+/// which renumbers every later `LinearOp` variant.
+pub const SOLVE_SCHEMA_VERSION: u16 = 93;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)

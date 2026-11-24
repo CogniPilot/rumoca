@@ -165,6 +165,7 @@ fn shipped_record_is_pinned_and_resolves_only_d007() {
         .filter(|(path, hash)| ledger.files.get(*path) != Some(*hash))
         .map(|(path, _)| path.as_str())
         .collect();
-    assert_eq!(moved.len(), 5, "{moved:?}");
+    // R001 moves five paths and R002 six, all existing ones.
+    assert_eq!(moved.len(), 11, "{moved:?}");
     assert_eq!(expected.len(), ledger.files.len() + 1);
 }
