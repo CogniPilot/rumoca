@@ -1295,9 +1295,28 @@ fn test_nested_modifier_forwarding_keeps_outer_alias_scope() {
         !flat_expr_mentions_name(binding, "mach.data.frictionParameters"),
         "nested modifier forwarding should not synthesize non-existent local alias path; binding={binding:?}"
     );
+    // The binding may name an enclosing alias of the same field (#709 keeps it
+    // attached to its resolved declaration); every hop must be a real variable
+    // and the chain must end at the outer source.
+    let mut source = binding;
+    for _ in 0..8 {
+        let rumoca_core::Expression::VarRef { name, .. } = source else {
+            break;
+        };
+        if name.as_str() == "data.frictionParameters.wRef" {
+            break;
+        }
+        source = compiled
+            .flat
+            .variables
+            .iter()
+            .find(|(candidate, _)| candidate.as_str() == name.as_str())
+            .and_then(|(_, var)| var.binding.as_ref())
+            .unwrap_or_else(|| panic!("alias hop {} has no bound variable", name.as_str()));
+    }
     assert!(
-        flat_expr_mentions_name(binding, "data.frictionParameters")
-            || flat_expr_is_numeric_value(binding, 3),
+        flat_expr_mentions_name(source, "data.frictionParameters")
+            || flat_expr_is_numeric_value(source, 3),
         "nested modifier forwarding should preserve outer alias source; binding={binding:?}"
     );
 
