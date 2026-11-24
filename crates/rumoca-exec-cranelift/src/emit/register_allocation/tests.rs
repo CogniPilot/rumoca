@@ -298,3 +298,108 @@ fn shared_flag_changes_replace_the_cached_target_and_equal_flags_reuse_it() {
         assert_eq!(first.flags().opt_level(), module.isa().flags().opt_level());
     }
 }
+
+/// A checked conversion opens the block (its trap is a conditional branch
+/// whose stub waits for the next island), then about 1.2 MiB of straight-line
+/// AArch64 code follow: beyond `b.cond`'s ±1 MiB, so the stub is reachable
+/// only if an island can be placed inside the block (#699). Compiled for
+/// AArch64 on any host.
+#[test]
+fn an_aarch64_block_beyond_the_conditional_branch_range_compiles() {
+    use cranelift_codegen::settings::{self, Configurable};
+    const ADDS: usize = 300_000;
+    let mut shared = settings::builder();
+    shared.set("opt_level", "speed").unwrap();
+    let target = cranelift_codegen::isa::lookup_by_name("aarch64-unknown-linux-gnu")
+        .expect("the AArch64 backend is built for tests")
+        .finish(settings::Flags::new(shared))
+        .unwrap();
+    let mut context = cranelift_codegen::Context::new();
+    context.func.signature.call_conv = target.default_call_conv();
+    context
+        .func
+        .signature
+        .params
+        .push(AbiParam::new(types::F64));
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(types::F64));
+    let mut frontend = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut frontend);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let x = builder.block_params(entry)[0];
+        let whole = builder.ins().fcvt_to_sint(types::I64, x);
+        let mut sum = x;
+        for _ in 0..ADDS {
+            sum = builder.ins().fadd(sum, x);
+        }
+        let back = builder.ins().fcvt_from_sint(types::F64, whole);
+        let result = builder.ins().fadd(sum, back);
+        builder.ins().return_(&[result]);
+        builder.finalize();
+    }
+    let compiled = super::compile_bytes(&*target, FuncId::from_u32(0), &mut context)
+        .expect("a long AArch64 block compiles");
+    assert!(
+        compiled.bytes.len() > 1 << 20,
+        "{} bytes",
+        compiled.bytes.len()
+    );
+}
+
+/// The cut keeps every computed value: a host function holding one long block
+/// returns what the uncut block computes.
+#[test]
+fn a_cut_long_block_computes_the_values_of_the_whole_block() {
+    const ADDS: u32 = 20_000;
+    let mut module = host_module();
+    let mut context = module.make_context();
+    context
+        .func
+        .signature
+        .params
+        .push(AbiParam::new(types::F64));
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(types::F64));
+    let function = module
+        .declare_function("long_block", Linkage::Local, &context.func.signature)
+        .expect("declare long-block function");
+    let mut frontend = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut frontend);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let x = builder.block_params(entry)[0];
+        let whole = builder.ins().fcvt_to_sint(types::I64, x);
+        let mut sum = x;
+        for _ in 0..ADDS {
+            sum = builder.ins().fadd(sum, x);
+        }
+        let back = builder.ins().fcvt_from_sint(types::F64, whole);
+        let result = builder.ins().fadd(sum, back);
+        builder.ins().return_(&[result]);
+        builder.finalize();
+    }
+    assert!(super::has_long_block(&context.func));
+    module
+        .queue_function(function, &mut context)
+        .expect("queue long-block function");
+    crate::emit::finalize_jit_module(&mut module).expect("finalize long-block function");
+    // SAFETY: the function takes one f64 and returns one f64; the module owns
+    // its code until after the call.
+    let call: extern "C" fn(f64) -> f64 =
+        unsafe { std::mem::transmute(module.get_finalized_function(function)) };
+    assert_eq!(call(0.5), f64::from(ADDS + 1) * 0.5);
+    assert_eq!(call(2.0), f64::from(ADDS + 1) * 2.0 + 2.0);
+}
