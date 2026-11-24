@@ -5,6 +5,7 @@ mod certification;
 mod colored_rows;
 mod column_gradient;
 mod combined_names;
+mod declined_singleton;
 mod failed_trials;
 mod manifold;
 mod order_robustness;
@@ -1208,6 +1209,7 @@ fn resistor_assignment_reports_sub_tolerance_current_as_semantic_progress() {
         0.0,
         &model.plan.blocks.scalar_blocks()[0],
         1.0e-6,
+        &mut None,
     )
     .expect("resistor assignment should evaluate")
     .expect("resistor row has an isolated current assignment");

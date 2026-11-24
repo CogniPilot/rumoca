@@ -482,8 +482,14 @@ static int rmc_isolation(ModelInstance* m, const RmcBlock* b, size_t row, size_t
     *value = result;
     return 1;
 }
-/* projection.rs: project_algebraic_singleton_assignment; -1 error, 0 declined, 1 handled */
-static int rmc_project_singleton(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
+/* The residual of a one-row block's row at the current coordinates, when a
+   declined singleton assignment already evaluated it there
+   (projection.rs: project_algebraic_block, `declined_residual`). */
+typedef struct { bool known; double value; } RmcKnownRow;
+/* projection.rs: project_algebraic_singleton_assignment; -1 error, 0 declined, 1 handled.
+   A decline after the row was evaluated leaves the coordinates as they were
+   and records that residual in `declined`. */
+static int rmc_project_singleton(ModelInstance* m, const RmcBlock* b, RmcUpdate* update, RmcKnownRow* declined) {
     if (RMC_BS(b, n) != 1) return 0;
     size_t index = RMC_BP(b, y)[0]; double value = 0.0, before = 0.0, after = 0.0, row_tol = 0.0, variable_tol = 0.0;
     if (RMC_BS(b, singleton_exact)) {
@@ -496,7 +502,8 @@ static int rmc_project_singleton(ModelInstance* m, const RmcBlock* b, RmcUpdate*
     if (rmc_row(m, b, 0, &before) != 0) return -1;
     if (!isfinite(before)) { update->changed = false; update->settled = false; return 1; }
     int found = rmc_isolation(m, b, 0, 0, &value);
-    if (found <= 0) return found;
+    if (found < 0) return -1;
+    if (found == 0) { declined->known = true; declined->value = before; return 0; }
     double previous = m->y[index]; m->y[index] = value;
     /* A failed evaluation of the trial leaves y as the assignment found it. */
     if (rmc_row(m, b, 0, &after) != 0) { m->y[index] = previous; return -1; }
@@ -508,6 +515,7 @@ static int rmc_project_singleton(ModelInstance* m, const RmcBlock* b, RmcUpdate*
         if (improves) { update->changed = previous != value; update->settled = fabs(after) <= row_tol; return 1; }
     }
     m->y[index] = previous;
+    declined->known = true; declined->value = before;
     return 0;
 }
 
@@ -1145,14 +1153,17 @@ static int rmc_accept_delta(ModelInstance* m, const RmcBlock* b, const double* d
 /* projection.rs: project_algebraic_residual_block; an uncertified refresh
    settles an exactly zero or scaled-converged residual without a correction.
    -1 error */
-static int rmc_project_dense(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
+static int rmc_project_dense(ModelInstance* m, const RmcBlock* b, const RmcKnownRow* known, RmcUpdate* update) {
     const size_t b_n = RMC_BS(b, n); const size_t b_nnz = RMC_BS(b, nnz); const size_t* const b_row_ptr_pool = RMC_BP(b, row_ptr); const size_t* const b_col_idx_pool = RMC_BP(b, col_idx);
     RMC_MARK; size_t n = b_n; bool changed = false; int result = 0;
     double* residual = rmc_dalloc(m, n); double* rscale = rmc_dalloc(m, n); double* vscale = rmc_dalloc(m, n); double* delta = rmc_dalloc(m, n);
     double* jac = rmc_dalloc(m, b_nnz + 1); double* dense = rmc_dalloc(m, n * n);
     update->changed = false; update->settled = false;
     if (!residual || !rscale || !vscale || !delta || !jac || !dense) { RMC_RELEASE; return rmc_exhausted(m); }
-    if (rmc_rows(m, b, residual) != 0) { RMC_RELEASE; return -1; }
+    /* The row a declined singleton assignment evaluated at these coordinates
+       is this one-row block's residual: the same program at the same point. */
+    if (known->known) residual[0] = known->value;
+    else if (rmc_rows(m, b, residual) != 0) { RMC_RELEASE; return -1; }
     if (!rmc_all_finite(residual, n)) {
         int seeded = rmc_seed_assignments(m, b);
         if (seeded < 0 || rmc_rows(m, b, residual) != 0) { RMC_RELEASE; return -1; }
@@ -1184,15 +1195,18 @@ static int rmc_project_dense(ModelInstance* m, const RmcBlock* b, RmcUpdate* upd
 /* projection.rs: project_algebraic_block; -1 error */
 static int rmc_project_block_paths(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
     bool singleton_tried = !RMC_BS(b, has_tearing); int handled;
-    if (singleton_tried && (handled = rmc_project_singleton(m, b, update)) != 0) return handled < 0 ? handled : 0;
+    RmcKnownRow declined = { false, 0.0 };
+    if (singleton_tried && (handled = rmc_project_singleton(m, b, update, &declined)) != 0) return handled < 0 ? handled : 0;
     if (RMC_BS(b, affine)) {
-        if (!singleton_tried && (handled = rmc_project_singleton(m, b, update)) != 0) return handled < 0 ? handled : 0;
+        if (!singleton_tried && (handled = rmc_project_singleton(m, b, update, &declined)) != 0) return handled < 0 ? handled : 0;
         return rmc_project_affine(m, b, update);
     }
-    if (RMC_BS(b, torn) && (handled = rmc_project_torn(m, b, update)) != 0) return handled < 0 ? handled : 0;
-    if (RMC_BS(b, torn)) rmc_fb_note(m, b->id);
-    if (!singleton_tried && (handled = rmc_project_singleton(m, b, update)) != 0) return handled < 0 ? handled : 0;
-    return rmc_project_dense(m, b, update);
+    if (RMC_BS(b, torn)) {
+        if ((handled = rmc_project_torn(m, b, update)) != 0) return handled < 0 ? handled : 0;
+        rmc_fb_note(m, b->id);
+    }
+    if (!singleton_tried && (handled = rmc_project_singleton(m, b, update, &declined)) != 0) return handled < 0 ? handled : 0;
+    return rmc_project_dense(m, b, &declined, update);
 }
 /* projection_fallbacks.rs: begin_call around the block projection */
 static int rmc_project_block(ModelInstance* m, const RmcBlock* b, RmcUpdate* update) {
