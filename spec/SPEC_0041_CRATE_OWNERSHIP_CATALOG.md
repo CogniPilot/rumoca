@@ -309,8 +309,12 @@ R001 (decision `d-pr633-generator-change-20261112`): embedded-C GALEC frame
 overlays consume `SolveAlgorithmBlock::call_levels`, so D007 is resolved.
 R002 (decision `d-pending-owner-elementwise-literal-power-20261122`): the FMI3
 scalar kernel, its plan view and the WGSL rows render the issued
-`TensorIntegerPower`; it resolves no group. Every other group, including D085,
-remains open.
+`TensorIntegerPower`; it resolves no group. R003 and R004 (decision
+`d-pr733-pr734-backend-change-20261124`): the FMI templates and their plan
+views render the issued refresh rollback, history reuse and sampled-update
+replay (#733), and `render_wgsl_value_function` renders an issued assignment
+schedule as a WGSL value function (#734); they resolve no group. Every other
+group, including D085, remains open.
 
 The non-active successor design is DRAFT
 [SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement),

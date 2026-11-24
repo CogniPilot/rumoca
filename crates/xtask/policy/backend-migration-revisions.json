@@ -71,6 +71,97 @@
           "after": "c29abfb72fddab972b54cafe64b3d99c20de8084c786b8ca75bac71728c9a11e"
         }
       ]
+    },
+    {
+      "id": "R003",
+      "decision": "d-pr733-pr734-backend-change-20261124",
+      "change": "The FMI2 and FMI3 model templates, the FMI3 kernel, event, projection, typed-function and typed-tensor templates and their plan views render the refresh rollback, history reuse and sampled-update replay issued by rumoca-ir-solve (#733): history copies with change detection, assertion checks at an event commit, and observed actions passed in from the plan.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/fmi_c_assertions/observations.rs",
+          "before": "cf8ce52732d4e5c921e98c7825af574ad92dc1809a04bda97283fe16f820d008",
+          "after": "7e83ce1ff3258fee857f4cb54c8de017583b922c0d0c86ae32ce7d6e03362965"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/fmi_reduction_tests.rs",
+          "before": "67ad80e550067ba97ff47187601ff4cfb2445a72ac0bc7b91b9693b407d93279",
+          "after": "e17476dbcabd59a48a0156693e21b5608979e34e7e9d6bbc598577847151a2a5"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection.rs",
+          "before": "176ea8412e326aaefc87179790ed000c2e4ede68529d1e429fc54bccdc6cf471",
+          "after": "6bbf3bf1408ddfa4e4846f03d634d409886f7bd9b3d6ff61e2253b9e5822a9d2"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/render_expr.rs",
+          "before": "fb1d004ffd7ad8f474352aa23da185d7cc14869a9815cf7f5e8e40b3037653f6",
+          "after": "ea28333130f206fc993447cfce829b9d2d1eb4d31451a3f8184a961515d1d6a7"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi2/model.c.jinja",
+          "before": "c1e982608d799cdbd3dadb2c7192858e35d981ab4c5a0938295913647a421e0b",
+          "after": "dd308051f13b26825a5484db93abc9a82895a111fd203c0f0e92439c79f4ea0c"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/me_projection.jinja",
+          "before": "699e3f2166219a60647963134654b26aa6f96ca9106a5c9d56d2fb956c51c75c",
+          "after": "de71e4f8ef62ebd652150b47e3144b07cb25727146f1fd1283aed1e2e3da78d8"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/model.c.jinja",
+          "before": "e0aa9e82f78f349e3490f659bafc773aa0f1d03df3437f02b355b0ce0f50b145",
+          "after": "6241d891a003e5bd4c50ab0cb8d1a0c80fc5ad42529da89b0409dec67d0b1e06"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_events.jinja",
+          "before": "48900a46e42c091ca1a9fc4875a992fef5d62d9362344991e1b600290a28f46c",
+          "after": "0a117ef62d678d3dc6d1df08ed95d842120749dd7460f04c53798044b3170955"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_kernel.jinja",
+          "before": "c29abfb72fddab972b54cafe64b3d99c20de8084c786b8ca75bac71728c9a11e",
+          "after": "739224aa8262d8b30b98c3fa125984ef248c0579d9d821a49104ce090cc72c76"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "before": "34a6d8b883c17e095de73f0ad0def3cbeb3d5ba65b993d3277a1792f3380f7d7",
+          "after": "43db0a0c37543c708621170fced6bb01736828a463ff56e936d6afd10c0d7a91"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_tensors.jinja",
+          "before": "e0ed770ec6f0dd68df14ccb4e2be9d0606db1660e8fd5e2db90bb9dfbf669b14",
+          "after": "be36a4723cd2ec5a3c0e5698c0d56f9d6af38c8b4d2e7b0903e497681e9d65a3"
+        }
+      ]
+    },
+    {
+      "id": "R004",
+      "decision": "d-pr733-pr734-backend-change-20261124",
+      "change": "render_wgsl_value_function renders a checked rumoca-ir-solve NativeRefreshAssignmentSchedule as a binding-free WGSL value function through a new template; codegen/mod.rs and lib.rs export it (#734). No existing renderer changes.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/mod.rs",
+          "before": "a4d34be5332c426dd1e990123bf88a87d33eb310339503c754838edcf55698ce",
+          "after": "50ecdbcd31f64460e134b86e423ff3d7bda64b4cd7ad5af8ac7971c60ad35f21"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/wgsl_assignment.rs",
+          "before": null,
+          "after": "1725db8ad525eca8ba6f2c72ed0629c3aa8498fd342e15e60630cc5f39e719c4"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/wgsl_value_function.jinja",
+          "before": null,
+          "after": "442d4179edcbcd0d2c7775d6e267db790ff4df48ab5c8965cb48e053c728989f"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/lib.rs",
+          "before": "215a6c91f76616bae58606da32aee81d3258d64951148c9b46906519b66e5390",
+          "after": "38ad10c1d462884e8c30e0df5e33aaf403d1ca9573930b53486ce0bb4acfc29b"
+        }
+      ]
     }
   ]
 }
