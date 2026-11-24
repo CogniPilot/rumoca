@@ -51,6 +51,18 @@ struct DelayState {
     initialized: bool,
     history_committed: bool,
     channels: Vec<DelayChannelHistory>,
+    /// The last event's settled coordinate and its instant (see
+    /// [`DelayRuntime::commit_event`]).
+    event_coordinate: Option<EventCoordinate>,
+}
+
+/// An event settles at a coordinate after its instant: a host's root a few
+/// ulps on, or the superdense right limit. History records the instant, so a
+/// later commit at exactly that coordinate is the same point.
+#[derive(Clone, Copy, Debug)]
+struct EventCoordinate {
+    settled: f64,
+    instant: f64,
 }
 
 /// Opaque accepted delay timeline captured with an ME component state.
@@ -211,6 +223,7 @@ impl DelayRuntime {
             initialized: true,
             history_committed: false,
             channels,
+            event_coordinate: None,
         };
         Ok(())
     }
@@ -287,10 +300,55 @@ impl DelayRuntime {
         self.commit_evaluated_at(time, time, solver_y, params, context)
     }
 
+    /// Commit an event's values, settled at `settled_time`, as the history
+    /// point at its `instant`. With the accepted left limit already there,
+    /// the two form the exact pair that records a jump. A later commit at
+    /// exactly `settled_time` (entering continuous time from the event) is
+    /// recorded at the instant too: two points an ulp apart would enter the
+    /// interpolation stencil with weights of order 1/ulp.
+    pub(crate) fn commit_event(
+        &self,
+        instant: f64,
+        settled_time: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        context: RowEvalContext<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        self.commit_point(instant, settled_time, true, solver_y, params, context)?;
+        if settled_time.to_bits() != instant.to_bits() {
+            self.state.borrow_mut().event_coordinate = Some(EventCoordinate {
+                settled: settled_time,
+                instant,
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn commit_evaluated_at(
         &self,
         accepted_time: f64,
         evaluation_time: f64,
+        solver_y: &[f64],
+        params: &[f64],
+        context: RowEvalContext<'_>,
+    ) -> Result<(), RuntimeSolveError> {
+        self.commit_point(
+            accepted_time,
+            evaluation_time,
+            false,
+            solver_y,
+            params,
+            context,
+        )
+    }
+
+    /// `event` marks the values as an event's right limit: at the instant of
+    /// the accepted left limit they form a pair even when unchanged.
+    fn commit_point(
+        &self,
+        accepted_time: f64,
+        evaluation_time: f64,
+        event: bool,
         solver_y: &[f64],
         params: &[f64],
         context: RowEvalContext<'_>,
@@ -302,6 +360,12 @@ impl DelayRuntime {
         self.evaluate_channel_rows(evaluation_time, solver_y, params, context, &mut rows)?;
         validate_delay_values(&rows.delay_times, &rows.delay_maxima)?;
         let mut state = self.state.borrow_mut();
+        let (accepted_time, event) = match state.event_coordinate {
+            Some(coordinate) if coordinate.settled.to_bits() == accepted_time.to_bits() => {
+                (coordinate.instant, true)
+            }
+            _ => (accepted_time, event),
+        };
         if !state.initialized {
             state.initialized = true;
             state.history_committed = true;
@@ -361,6 +425,7 @@ impl DelayRuntime {
                 accepted_time,
                 rows.sources[index],
                 self.source_is_discrete[index],
+                event,
             );
             if discontinuity {
                 insert_discontinuity_time(channel, accepted_time);
@@ -731,6 +796,7 @@ fn append_accepted_point(
     time: f64,
     value: f64,
     discrete: bool,
+    event: bool,
 ) -> bool {
     let Some(last) = active_points(channel).last().copied() else {
         channel.points.push(DelayPoint { time, value });
@@ -744,7 +810,13 @@ fn append_accepted_point(
     // same timestamp denotes an event left/right pair; a relative tolerance
     // would merge distinct samples at large absolute times.
     if time == last.time {
-        if changed {
+        // An event's right limit is kept even when unchanged: the pair marks
+        // the instant, which the smooth stencil never reaches across, since a
+        // source's slope may jump there (a lag driven by a step) and a cubic
+        // through the kink would overshoot on both sides. One pair suffices.
+        let points = active_points(channel);
+        let paired = points.len() >= 2 && points[points.len() - 2].time == last.time;
+        if changed || (event && !paired) {
             channel.points.push(DelayPoint { time, value });
         }
         return changed;
@@ -1210,6 +1282,40 @@ mod tests {
         assert!((value - quadratic(0.5)).abs() <= 1.0e-14, "{value}");
     }
 
+    /// An event's right limit equal to its left one still marks the instant:
+    /// a lag driven by a step has a kink there, and the cubic stays on its
+    /// side. A second right limit adds nothing; an accepted sample repeated at
+    /// one instant outside an event is not a pair.
+    #[test]
+    fn an_unchanged_event_right_limit_marks_the_instant_once() {
+        let point = |time: f64, value: f64| DelayPoint { time, value };
+        let channel_at = || DelayChannelHistory {
+            points: vec![point(0.0, 0.0), point(0.5, 0.0), point(1.0, 0.0)],
+            delay_time: 2.0,
+            delay_max: 2.0,
+            ..DelayChannelHistory::default()
+        };
+        let mut channel = channel_at();
+        assert!(!append_accepted_point(&mut channel, 1.0, 0.0, false, true));
+        assert_eq!(active_points(&channel).len(), 4);
+        assert!(!append_accepted_point(&mut channel, 1.0, 0.0, false, true));
+        assert_eq!(active_points(&channel).len(), 4);
+        for (time, value) in [(1.2, 0.4), (1.5, 0.8)] {
+            assert!(!append_accepted_point(
+                &mut channel,
+                time,
+                value,
+                false,
+                false
+            ));
+        }
+        assert_eq!(delayed_value(&channel, 2.8, 2.0, 0.0, false), 0.0);
+
+        let mut channel = channel_at();
+        assert!(!append_accepted_point(&mut channel, 1.0, 0.0, false, false));
+        assert_eq!(active_points(&channel).len(), 3);
+    }
+
     #[test]
     fn large_absolute_times_do_not_merge_distinct_accepted_samples() {
         let start = 1.0e15;
@@ -1232,6 +1338,7 @@ mod tests {
             &mut channel,
             start + 1.0,
             1.0,
+            false,
             false
         ));
         assert_eq!(active_points(&channel).len(), 2);

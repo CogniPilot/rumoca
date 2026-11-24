@@ -235,6 +235,9 @@ pub(super) fn lower_delay<'dae>(
         let source = lower_expression_scoped(construction, symbols, binders, &arguments[0], None)?;
         let delay_time =
             lower_expression_scoped(construction, symbols, binders, &arguments[1], None)?;
+        // MLS §3.7.4: delayTime and delayMax are Real; an Integer actual is
+        // converted (§10.6.13), as `delay(u, 2)` writes it.
+        let delay_time = promote_integer_value_to_real(construction, delay_time, provenance)?;
         Ok((source, delay_time))
     })?;
     match plan {
@@ -251,7 +254,9 @@ pub(super) fn lower_delay<'dae>(
         }
         DelayPlan::Bounded(maximum) => {
             let delay_max = construction.outside_model_arm(provenance, |construction| {
-                lower_expression_scoped(construction, symbols, binders, &arguments[2], None)
+                let delay_max =
+                    lower_expression_scoped(construction, symbols, binders, &arguments[2], None)?;
+                promote_integer_value_to_real(construction, delay_max, provenance)
             })?;
             let maximum_provenance = expression_provenance(maximum.provenance(), None)?;
             let maximum = construction.temporal(|temporal| {

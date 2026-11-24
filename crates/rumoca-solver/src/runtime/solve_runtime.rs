@@ -1501,4 +1501,40 @@ impl SolveRuntime {
         self.delay_runtime
             .commit(time, solver_y, params, self.row_eval_context())
     }
+
+    /// Commit the delay sources read at `evaluation_time` as the accepted
+    /// point at `time`: the left limit of a time event the step ends on.
+    pub fn commit_delay_history_evaluated_at(
+        &self,
+        time: f64,
+        evaluation_time: f64,
+        solver_y: &[f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.delay_runtime.commit_evaluated_at(
+            time,
+            evaluation_time,
+            solver_y,
+            params,
+            self.row_eval_context(),
+        )
+    }
+
+    /// Commit an event's delay sources, settled at `settled_time`, at the
+    /// event's `instant` (see `DelayRuntime::commit_event`).
+    pub fn commit_delay_event(
+        &self,
+        instant: f64,
+        settled_time: f64,
+        solver_y: &[f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.delay_runtime.commit_event(
+            instant,
+            settled_time,
+            solver_y,
+            params,
+            self.row_eval_context(),
+        )
+    }
 }

@@ -37,7 +37,7 @@ impl SolveMeKernel {
             && event.pre_mode == EventPreMode::FollowCurrent
             && right_time > event_time
         {
-            self.apply_event_right_limit(right_time, event)?;
+            self.apply_event_right_limit(event_time, right_time, event)?;
             Some(right_time)
         } else {
             None
@@ -85,11 +85,12 @@ impl SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(application_time, event, row_filter, None)
+        self.apply_discrete_event_updates(application_time, event_time, event, row_filter, None)
     }
 
     fn apply_event_right_limit(
         &mut self,
+        instant: f64,
         right_time: f64,
         event: RuntimeEventStop,
     ) -> Result<(), MeError> {
@@ -178,7 +179,13 @@ impl SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(right_time, event, row_filter, Some(iteration_y))?;
+        self.apply_discrete_event_updates(
+            right_time,
+            instant,
+            event,
+            row_filter,
+            Some(iteration_y),
+        )?;
         self.set_post_event_eval_time(Some(right_time));
         Ok(())
     }

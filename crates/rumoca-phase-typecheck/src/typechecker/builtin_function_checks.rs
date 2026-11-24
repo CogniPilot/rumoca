@@ -331,6 +331,8 @@ impl TypeChecker {
         }
     }
 
+    /// MLS §3.7.4: delayTime and delayMax are Real; an Integer argument is
+    /// converted to Real like any Integer actual of a Real formal (§12.4.1).
     fn check_delay_builtin(
         &mut self,
         comp: &rumoca_ir_ast::ComponentReference,
@@ -358,7 +360,7 @@ impl TypeChecker {
                         operator: "delay",
                         argument_name: "time argument",
                         expected_type: "Real",
-                        predicate: Self::is_real_type,
+                        predicate: Self::is_numeric_type,
                     },
                 );
             }
@@ -382,7 +384,7 @@ impl TypeChecker {
                         operator: "delay",
                         argument_name: "time argument",
                         expected_type: "Real",
-                        predicate: Self::is_real_type,
+                        predicate: Self::is_numeric_type,
                     },
                 );
                 self.require_builtin_argument_type(
@@ -393,7 +395,7 @@ impl TypeChecker {
                         operator: "delay",
                         argument_name: "delayMax argument",
                         expected_type: "Real",
-                        predicate: Self::is_real_type,
+                        predicate: Self::is_numeric_type,
                     },
                 );
             }
