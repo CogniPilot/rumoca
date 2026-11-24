@@ -872,11 +872,8 @@ fn push_variable(
 
 /// Whether `expression` has the same value at every instant.
 ///
-/// Restricted to the forms differentiation resolves to zero outright: literal
-/// numbers, parameter coordinates, and the arithmetic over them. A coordinate
-/// that varies, a reference to `time`, and anything scoped to a function or a
-/// comprehension are all excluded, so an accepted expression really is a
-/// constant of the whole-model system.
+/// Numeric literals, checked integer ranges and parameters are invariant at
+/// model scope. Arithmetic, arrays and builtins over those values are too.
 pub(super) fn is_time_invariant<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
@@ -888,6 +885,7 @@ pub(super) fn is_time_invariant<'dae>(
         dae::ExpressionOperation::Literal(
             dae::DaeLiteral::Real(_) | dae::DaeLiteral::Integer(_),
         )
+        | dae::ExpressionOperation::Range(_)
         | dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(_)) => true,
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,

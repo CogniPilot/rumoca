@@ -114,14 +114,11 @@ impl InvarianceScope<'_> {
 /// algebraic variables already proved time-invariant.
 ///
 /// The accepted forms mirror the whole-model constancy that differentiation
-/// resolves to zero: literals, parameter coordinates, invariant algebraic
-/// coordinates, fixed domain binders, and total arithmetic, aggregate, record,
-/// builtin, pure-call, comprehension, and fixed index operations over such
-/// operands. Every
-/// other operation and coordinate refuses, so an accepted expression is a
-/// genuine constant of the whole model. A domain binder is a compile-time loop
-/// index whose value is fixed while differentiating at a domain point, so it
-/// too is invariant.
+/// resolves to zero: literals, checked integer ranges, parameter coordinates,
+/// invariant algebraic coordinates, and domain binders fixed at the current
+/// point. Arithmetic, conditionals, aggregates, field selections, builtins,
+/// pure calls, comprehensions and indexing preserve invariance when their
+/// operands are invariant.
 fn expression_is_time_invariant<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
@@ -138,7 +135,8 @@ fn expression_is_time_invariant<'dae>(
             | dae::DaeLiteral::Integer(_)
             | dae::DaeLiteral::Boolean(_)
             | dae::DaeLiteral::Enumeration(_),
-        ) => true,
+        )
+        | dae::ExpressionOperation::Range(_) => true,
         dae::ExpressionOperation::Coordinate(coordinate) => {
             coordinate_is_time_invariant(coordinate, scope.algebraics)
         }

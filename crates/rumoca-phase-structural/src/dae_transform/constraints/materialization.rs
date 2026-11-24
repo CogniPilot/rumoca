@@ -208,6 +208,7 @@ fn materialize_operation<'dae>(
 ) -> bool {
     match expression.operation() {
         dae::ExpressionOperation::Literal(_)
+        | dae::ExpressionOperation::Range(_)
         | dae::ExpressionOperation::Coordinate(
             dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time,
         ) => true,

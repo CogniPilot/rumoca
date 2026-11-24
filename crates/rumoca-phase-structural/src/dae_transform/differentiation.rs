@@ -568,7 +568,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expression(source_id)
             .expect("materializable expression resolves");
         match source.operation() {
-            dae::ExpressionOperation::Literal(_) => self.rebuild(source_id),
+            dae::ExpressionOperation::Literal(_) | dae::ExpressionOperation::Range(_) => {
+                self.rebuild(source_id)
+            }
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 self.materialize_coordinate_value(source_id, coordinate, provenance)
             }
@@ -1007,13 +1009,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         source_value: dae::ExprId<'source>,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        match derivative {
+        let value = match derivative {
             Derivative::Zero => self.materialize_shaped_zero(source_value, provenance),
             Derivative::Expression(expression) => self
                 .target
                 .at(provenance)
                 .unary(dae::UnaryOperator::Plus, expression),
-        }
+        }?;
+        self.preserve_real_value_type(source_value, value, provenance)
     }
 
     /// Materialize an exact algebraic zero with the range-preserving shape of
