@@ -191,7 +191,7 @@ fn an_unreachable_loop_never_peels_its_body() {
         span: span(),
     };
     let normalized = with_scope(&shapes, |scope| {
-        bound_statement(&statement, scope, &GuardFacts::join(&[]))
+        bound_statement(&statement, scope, &GuardFacts::join(&[]), "f")
     });
     let [rumoca_core::Statement::For { indices, .. }] = normalized.as_slice() else {
         panic!("an unreachable loop has an empty compact domain, not a peeled body");
@@ -348,7 +348,7 @@ fn a_loop_that_can_break_is_not_peeled() {
         with_scope(&shapes, |scope| {
             let mut entry = GuardFacts::entry();
             entry.after(&assign("k", integer(1)), scope);
-            bound_statement(&statement, scope, &entry)
+            bound_statement(&statement, scope, &entry, "f")
         })
     };
     let rise = step(OpBinary::Add, 1);

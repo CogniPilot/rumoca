@@ -115,6 +115,7 @@ pub(super) fn compact_function_loops(
         &settled,
         kinds.scope(shapes),
         GuardFacts::function_entry(function, kinds.scope(shapes)),
+        function.name.as_str(),
     );
     let mut bounded_shapes = shapes.clone();
     infer_function_integer_bounds(&settled, &mut bounded_shapes);

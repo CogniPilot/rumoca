@@ -220,6 +220,7 @@ mod function_spd_loop_compaction;
 mod function_staged_record_update_test;
 mod function_unread_local_calls;
 mod function_valued_arguments;
+mod function_while_capacity;
 mod function_while_counter_floor;
 mod function_while_exit_or_advance;
 mod function_while_loops;
