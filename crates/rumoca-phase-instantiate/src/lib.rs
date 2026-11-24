@@ -108,7 +108,7 @@ use mod_env::{
 use nested_scope::{
     NestedClassTypeSelection, collect_shifted_parent_mod_keys, collect_targeted_mod_keys,
     prepare_nested_class_modifiers, resolve_component_nested_type_overrides,
-    shift_modifications_down,
+    retained_field_modifiers, shift_modifications_down,
 };
 use package_constant_imports::{
     resolved_imports_with_active_package_constants,
@@ -1534,6 +1534,7 @@ fn instantiate_component(
             binding_source_for_record_expansion: binding_source_for_record_expansion.as_ref(),
             binding_scope_for_record_expansion: binding_scope_for_record_expansion.as_ref(),
             binding_is_each,
+            binding_from_modification,
             effective_components: scope.effective_components,
             nested_types: NestedClassTypeSelection {
                 overrides: &nested_type_overrides,
@@ -1730,6 +1731,8 @@ struct NestedComponentRequest<'a> {
     binding_source_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
     binding_is_each: bool,
+    /// The binding is an enclosing modifier, not the declaration's own.
+    binding_from_modification: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     nested_types: NestedClassTypeSelection<'a>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2),
@@ -1771,6 +1774,7 @@ fn instantiate_nested_component_if_needed(
                     each: request.binding_is_each,
                 }
             }),
+            record_binding_from_modification: request.binding_from_modification,
             effective_components: request.effective_components,
             nested_types: request.nested_types,
             modifier_imports: request.modifier_imports,
@@ -1813,6 +1817,8 @@ struct NestedInstantiationInput<'a> {
     flow: bool,
     stream: bool,
     record_binding: Option<RecordBindingProjection<'a>>,
+    /// The record binding is an enclosing modifier, not the declaration's own.
+    record_binding_from_modification: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     nested_types: NestedClassTypeSelection<'a>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2).
@@ -1836,6 +1842,7 @@ fn instantiate_nested_class(
         flow,
         stream,
         record_binding,
+        record_binding_from_modification,
         effective_components,
         nested_types,
         modifier_imports,
@@ -1879,7 +1886,12 @@ fn instantiate_nested_class(
     )?;
 
     let record_projected_keys = if let Some(binding) = record_binding {
-        propagate_record_binding_to_fields(tree, ctx, binding, nested_class, &targeted_keys)?
+        let retained = retained_field_modifiers(
+            record_binding_from_modification,
+            &shifted_parent_keys,
+            &targeted_keys,
+        );
+        propagate_record_binding_to_fields(tree, ctx, binding, nested_class, retained)?
     } else {
         IndexMap::default()
     };
