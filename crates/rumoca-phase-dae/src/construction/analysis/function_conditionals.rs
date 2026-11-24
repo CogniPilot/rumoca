@@ -594,7 +594,7 @@ fn validate_conditional_branch_shape(
     for (statement, plan) in statements.iter().zip(plans) {
         match (statement, plan) {
             (_, FunctionStatementPlan::ProvenAssertion) => continue,
-            (_, FunctionStatementPlan::RuntimeAssertion) => continue,
+            (_, FunctionStatementPlan::RuntimeAssertion { .. }) => continue,
             (_, FunctionStatementPlan::Assignment(_))
             | (_, FunctionStatementPlan::GeneratedBooleanAssignment { .. }) => continue,
             (_, FunctionStatementPlan::RecordAssembly(_))

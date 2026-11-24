@@ -353,7 +353,11 @@ pub(super) enum FunctionStatementPlan {
     ProvenAssertion,
     /// A default-level MLS §8.3.7 assertion owned by the top-level function
     /// statement sequence and evaluated once for every call.
-    RuntimeAssertion,
+    RuntimeAssertion {
+        /// The reads of values defined on the assertion's path only (see
+        /// `FunctionAssignmentPlan::proven_reads`).
+        proven_reads: Vec<(VarName, Span)>,
+    },
     /// A checked Boolean store: an immutable selection snapshot, or the mutable
     /// function-exit state carried between iterations of return-bearing loops.
     GeneratedBooleanAssignment {

@@ -427,7 +427,7 @@ fn resolve_fold_statement(
         (statement, FunctionStatementPlan::ProvenAssertion) => {
             resolve_function_assertion_definition(statement, false, context, definitions)?;
         }
-        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+        (statement, FunctionStatementPlan::RuntimeAssertion { .. }) => {
             resolve_function_assertion_definition(statement, true, context, definitions)?;
         }
         (

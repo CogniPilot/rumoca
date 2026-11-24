@@ -122,7 +122,7 @@ fn flat_group_len(plan: &FunctionStatementPlan) -> Option<usize> {
     match plan {
         FunctionStatementPlan::Assignment(_)
         | FunctionStatementPlan::ProvenAssertion
-        | FunctionStatementPlan::RuntimeAssertion
+        | FunctionStatementPlan::RuntimeAssertion { .. }
         | FunctionStatementPlan::GeneratedBooleanAssignment { .. }
         | FunctionStatementPlan::MultiOutputCall { .. }
         | FunctionStatementPlan::RecordMultiOutputAssembly(_) => Some(1),

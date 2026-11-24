@@ -912,7 +912,9 @@ fn plan_proven_function_assertion(
             assertion.span,
         ));
     }
-    Ok(FunctionStatementPlan::RuntimeAssertion)
+    Ok(FunctionStatementPlan::RuntimeAssertion {
+        proven_reads: Vec::new(),
+    })
 }
 
 fn validate_function_assignment_target(
@@ -1399,8 +1401,9 @@ fn resolve_function_definition(
         (statement, FunctionStatementPlan::ProvenAssertion) => {
             resolve_function_assertion_definition(statement, false, context, definitions)?
         }
-        (statement, FunctionStatementPlan::RuntimeAssertion) => {
-            resolve_function_assertion_definition(statement, true, context, definitions)?
+        (statement, FunctionStatementPlan::RuntimeAssertion { proven_reads }) => {
+            resolve_function_assertion_definition(statement, true, context, definitions)?;
+            *proven_reads = proven_assertion_reads(statement, context, definitions);
         }
         (
             _,
@@ -1619,6 +1622,26 @@ fn resolve_function_assertion_definition(
         definitions.require_readable(assertion.message, context, assertion.span)?;
     }
     Ok(())
+}
+
+/// The mutable values a runtime assertion reads that are defined on its path
+/// only: construction checks each one where the assertion is evaluated, as it
+/// does for the reads of an assignment.
+fn proven_assertion_reads(
+    statement: &rumoca_core::Statement,
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+) -> Vec<(VarName, Span)> {
+    let assertion = function_assertion(statement, context.flat)
+        .expect("the assertion was resolved")
+        .expect("an assertion plan owns an assertion statement");
+    let mut reads =
+        definitions.proven_assignment_reads(assertion.condition, context, assertion.span);
+    extend_unique_reads(
+        &mut reads,
+        definitions.proven_assignment_reads(assertion.message, context, assertion.span),
+    );
+    reads
 }
 
 fn resolve_multi_output_definitions(
