@@ -133,6 +133,56 @@
           "before": "e0ed770ec6f0dd68df14ccb4e2be9d0606db1660e8fd5e2db90bb9dfbf669b14",
           "after": "be36a4723cd2ec5a3c0e5698c0d56f9d6af38c8b4d2e7b0903e497681e9d65a3"
         }
+      ],
+      "regions": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "operation",
+          "before": "7af71b91462b7800c2a055f3796112e07c533688bcf268f82d6ef8a594183622",
+          "start_byte": 3275,
+          "end_byte": 9246,
+          "after": "dc4844fde52e32579fc22cb235d180afdd39576f05b7db9efd1098fc74e6bfc4"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "definition",
+          "before": "ecf8ae048b22aff5d10b51ef1fff4fe71247a9370c8f83557d37910516016215",
+          "start_byte": 9248,
+          "end_byte": 13587,
+          "after": "39ab81c8e4f6d295730509194d48bcc3239b0171fbef34cba8d68034d84a194c"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "wrapper",
+          "before": "871ef8598b2818f22f97844c9c655d928e8b4a79cd6564aa2b11cb3a60395d6b",
+          "start_byte": 13714,
+          "end_byte": 15070,
+          "after": "871ef8598b2818f22f97844c9c655d928e8b4a79cd6564aa2b11cb3a60395d6b"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "functions",
+          "before": "c825c1a41be278a54ca03a2f6192739c297d1efb7dfdc4cb1f102c21757338b8",
+          "start_byte": 15245,
+          "end_byte": 16494,
+          "after": "c825c1a41be278a54ca03a2f6192739c297d1efb7dfdc4cb1f102c21757338b8"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "function_prototypes",
+          "before": "b5d0170e6826d904a7a73a654300056088984ca61a191a9c4d6c4886fa904c7c",
+          "start_byte": 16570,
+          "end_byte": 18530,
+          "after": "b5d0170e6826d904a7a73a654300056088984ca61a191a9c4d6c4886fa904c7c"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_tensors.jinja",
+          "name": "tensor",
+          "before": "d92d38034ceac07fc7dc43f46af17e89142f5d4ac25181b14463fdbe1ac28e4c",
+          "start_byte": 286,
+          "end_byte": 11153,
+          "after": "0cb69ff4dd678799a1eb86bd144805c06900ca003bddf5a270e9fd6587017fab"
+        }
       ]
     },
     {

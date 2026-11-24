@@ -295,7 +295,7 @@ The initial legacy decision freeze is a migration boundary, not compliance:
 | Keep D001–D096 and every covered source hash in `crates/xtask/policy/backend-migration-ledger.json` | migration ledger | Counts alone do not preserve identity |
 | Refuse new, changed, removed or symlinked covered files, including literal template bodies and comments | freeze checker | Moving or relabeling code is not retirement |
 | No baseline update or approval flag may authorize migration | source-bound retirement gate | Requires real issued-plan API authorization and full instruction conformance |
-| An owner-directed revision MUST be a pinned entry in `crates/xtask/policy/backend-migration-revisions.json` naming its decision, the exact before/after SHA-256 of every changed or new covered path, and only findings in those paths it resolves | revision record | The audit ledger stays byte-identical; no flag, wildcard or count admits a change |
+| An owner-directed revision MUST be a pinned entry in `crates/xtask/policy/backend-migration-revisions.json` naming its decision, the exact before/after SHA-256 of every changed or new covered path, the new extent and SHA-256 of every pinned source region it moves or changes, and only findings in those paths it resolves | revision record | The audit ledger stays byte-identical; no flag, wildcard or count admits a change |
 | Report unresolved groups and partial coverage on success | gate output | Freeze acceptance is not print-only compliance |
 
 The snapshot covers only `crates/rumoca-phase-codegen` at
@@ -313,7 +313,8 @@ scalar kernel, its plan view and the WGSL rows render the issued
 `d-pr733-pr734-backend-change-20261124`): the FMI templates and their plan
 views render the issued refresh rollback, history reuse and sampled-update
 replay (#733), and `render_wgsl_value_function` renders an issued assignment
-schedule as a WGSL value function (#734); they resolve no group. Every other
+schedule as a WGSL value function (#734); they resolve no group, and R003
+re-pins the six macro regions #733 moved or changed. Every other
 group, including D085, remains open.
 
 The non-active successor design is DRAFT
