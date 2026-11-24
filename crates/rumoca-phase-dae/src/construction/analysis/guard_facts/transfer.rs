@@ -635,6 +635,7 @@ fn widen_fact(fact: ValueFact, next: ValueFact, thresholds: &[i64]) -> Option<Va
         (ValueFact::Real(fact), ValueFact::Real(next)) => ValueFact::Real(RealInterval {
             lower: keep(fact.lower, next.lower, |n, b| n >= b),
             upper: keep(fact.upper, next.upper, |n, b| n <= b),
+            ..RealInterval::UNBOUNDED
         }),
         _ => return None,
     };

@@ -19,13 +19,13 @@
 //!
 //! The subject of a fact is a scalar value or an element of an array value
 //! named with literal subscripts (`settings[7]`). Integer facts are exact
-//! intervals (`rumoca_core::IntegerInterval`). A Real fact is a closed
+//! intervals (`rumoca_core::IntegerInterval`). A Real fact is an
 //! interval (`rumoca_core::RealInterval`) proven only by a literal assignment
 //! or by a comparison that implies both operands are ordered (a relation that
 //! holds, other than `<>`; or a `<>` that fails), so no Real fact is ever held
-//! by a NaN; a strict comparison keeps its closed hull, a superset, so an
-//! empty Real interval proves a contradiction and a nonempty one proves no
-//! more than its hull.
+//! by a NaN; a strict comparison proves an open endpoint, so `s < c`
+//! contradicts `s >= c`. An empty Real interval proves a contradiction and a
+//! nonempty one proves no more than the interval.
 //!
 //! The facts bound compact dependent domains and while-loop pass counts, and
 //! prove that a path on which a value is undefined cannot reach a later
@@ -937,17 +937,22 @@ impl Relation {
         }
     }
 
-    /// The closed hull of the Real values of the subject that satisfy it for
-    /// some value of `other`.
+    /// The Real values of the subject that satisfy it for some value of
+    /// `other`; a strict relation excludes the endpoint it compares with.
     fn real_bound(self, other: RealInterval) -> RealInterval {
+        let strict = matches!(self, Self::Less | Self::Greater);
         match self {
             Self::Less | Self::LessEqual => RealInterval {
                 lower: None,
                 upper: other.upper,
+                lower_open: false,
+                upper_open: other.upper.is_some() && (strict || other.upper_open),
             },
             Self::Greater | Self::GreaterEqual => RealInterval {
                 lower: other.lower,
                 upper: None,
+                lower_open: other.lower.is_some() && (strict || other.lower_open),
+                upper_open: false,
             },
             Self::Equal => other,
             Self::NotEqual => RealInterval::UNBOUNDED,

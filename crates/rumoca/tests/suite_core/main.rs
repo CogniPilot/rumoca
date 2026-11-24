@@ -203,6 +203,7 @@ mod function_pure_conditional_expression_form;
 mod function_purity_contexts;
 mod function_quotient_sim;
 mod function_read_before_write;
+mod function_real_guard_definedness;
 mod function_record_array_test;
 mod function_record_defaults;
 mod function_record_field_bindings;

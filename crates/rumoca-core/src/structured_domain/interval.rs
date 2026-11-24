@@ -192,31 +192,46 @@ fn corner_products(lhs: (i64, i64), rhs: (i64, i64)) -> Option<(i64, i64)> {
     Some((*products.iter().min()?, *products.iter().max()?))
 }
 
-/// A closed set of Real values `lower <= v <= upper`; `None` leaves that side
-/// unconstrained.
+/// A set of Real values between `lower` and `upper`; `None` leaves that side
+/// unconstrained, and an open endpoint excludes its own value.
 ///
 /// Facts about a Real value come only from literal assignments and from
-/// comparisons with literals (MLS §3.7.1), whose values are never NaN; a
-/// strict comparison is kept as its closed hull, a superset, so an interval
-/// that is empty proves a contradiction while a nonempty one proves nothing.
+/// comparisons that hold (MLS §3.7.1), whose operands are never NaN. A strict
+/// comparison proves an open endpoint and a non-strict one a closed endpoint,
+/// so `v < c` contradicts `v >= c`. Every interval is a superset of the
+/// values it describes: an empty one proves a contradiction, a nonempty one
+/// proves nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RealInterval {
     pub lower: Option<f64>,
     pub upper: Option<f64>,
+    /// Whether `lower` itself is excluded; always false without a `lower`.
+    pub lower_open: bool,
+    /// Whether `upper` itself is excluded; always false without an `upper`.
+    pub upper_open: bool,
 }
 
 impl RealInterval {
     pub const UNBOUNDED: Self = Self {
         lower: None,
         upper: None,
+        lower_open: false,
+        upper_open: false,
     };
+
+    /// A closed interval.
+    pub fn closed(lower: Option<f64>, upper: Option<f64>) -> Self {
+        Self {
+            lower,
+            upper,
+            lower_open: false,
+            upper_open: false,
+        }
+    }
 
     /// The single value of a literal; `None` for a NaN, which no literal is.
     pub fn exact(value: f64) -> Option<Self> {
-        (!value.is_nan()).then_some(Self {
-            lower: Some(value),
-            upper: Some(value),
-        })
+        (!value.is_nan()).then_some(Self::closed(Some(value), Some(value)))
     }
 
     pub fn is_unbounded(self) -> bool {
@@ -225,26 +240,80 @@ impl RealInterval {
 
     /// Whether no Real satisfies both endpoints (a contradiction).
     pub fn is_empty(self) -> bool {
-        matches!((self.lower, self.upper), (Some(lower), Some(upper)) if lower > upper)
+        match (self.lower, self.upper) {
+            (Some(lower), Some(upper)) => {
+                lower > upper || (lower == upper && (self.lower_open || self.upper_open))
+            }
+            _ => false,
+        }
     }
 
     /// Values in both intervals (a conjunction of facts).
     pub fn meet(self, other: Self) -> Self {
-        let pick = |lhs: Option<f64>, rhs: Option<f64>, larger: bool| match (lhs, rhs) {
-            (Some(a), Some(b)) => Some(if larger { a.max(b) } else { a.min(b) }),
-            (value, None) | (None, value) => value,
-        };
+        // The tighter endpoint; on a tie the open one.
+        let pick =
+            |lhs: (Option<f64>, bool), rhs: (Option<f64>, bool), larger: bool| match (lhs.0, rhs.0)
+            {
+                (Some(a), Some(b)) if a == b => (Some(a), lhs.1 || rhs.1),
+                (Some(a), Some(b)) => {
+                    if (a > b) == larger {
+                        lhs
+                    } else {
+                        rhs
+                    }
+                }
+                (Some(_), None) => lhs,
+                (None, _) => rhs,
+            };
+        let (lower, lower_open) = pick(
+            (self.lower, self.lower_open),
+            (other.lower, other.lower_open),
+            true,
+        );
+        let (upper, upper_open) = pick(
+            (self.upper, self.upper_open),
+            (other.upper, other.upper_open),
+            false,
+        );
         Self {
-            lower: pick(self.lower, other.lower, true),
-            upper: pick(self.upper, other.upper, false),
+            lower,
+            upper,
+            lower_open: lower.is_some() && lower_open,
+            upper_open: upper.is_some() && upper_open,
         }
     }
 
     /// The smallest interval holding both (a join of alternative paths).
     pub fn hull(self, other: Self) -> Self {
+        // The looser endpoint; on a tie the closed one.
+        let pick = |lhs: (Option<f64>, bool), rhs: (Option<f64>, bool), smaller: bool| match (
+            lhs.0, rhs.0,
+        ) {
+            (Some(a), Some(b)) if a == b => (Some(a), lhs.1 && rhs.1),
+            (Some(a), Some(b)) => {
+                if (a < b) == smaller {
+                    lhs
+                } else {
+                    rhs
+                }
+            }
+            _ => (None, false),
+        };
+        let (lower, lower_open) = pick(
+            (self.lower, self.lower_open),
+            (other.lower, other.lower_open),
+            true,
+        );
+        let (upper, upper_open) = pick(
+            (self.upper, self.upper_open),
+            (other.upper, other.upper_open),
+            false,
+        );
         Self {
-            lower: self.lower.zip(other.lower).map(|(a, b)| a.min(b)),
-            upper: self.upper.zip(other.upper).map(|(a, b)| a.max(b)),
+            lower,
+            upper,
+            lower_open,
+            upper_open,
         }
     }
 }
@@ -339,13 +408,7 @@ mod real_tests {
         let one = RealInterval::exact(1.0).unwrap();
         assert!(zero.meet(one).is_empty());
         assert!(!zero.meet(RealInterval::UNBOUNDED).is_empty());
-        assert_eq!(
-            zero.hull(one),
-            RealInterval {
-                lower: Some(0.0),
-                upper: Some(1.0)
-            }
-        );
+        assert_eq!(zero.hull(one), RealInterval::closed(Some(0.0), Some(1.0)));
         assert!(zero.hull(RealInterval::UNBOUNDED).is_unbounded());
         assert_eq!(RealInterval::exact(f64::NAN), None);
         assert!(
@@ -353,5 +416,43 @@ mod real_tests {
                 .meet(IntegerInterval::exact(1))
                 .is_empty()
         );
+    }
+
+    fn below(upper: f64, open: bool) -> RealInterval {
+        RealInterval {
+            upper: Some(upper),
+            upper_open: open,
+            ..RealInterval::UNBOUNDED
+        }
+    }
+
+    fn above(lower: f64, open: bool) -> RealInterval {
+        RealInterval {
+            lower: Some(lower),
+            lower_open: open,
+            ..RealInterval::UNBOUNDED
+        }
+    }
+
+    #[test]
+    fn an_open_endpoint_contradicts_the_closed_one_it_meets() {
+        // `v < 1` and `v >= 1` share no value; `v <= 1` and `v >= 1` share 1.
+        assert!(below(1.0, true).meet(above(1.0, false)).is_empty());
+        assert!(below(1.0, false).meet(above(1.0, true)).is_empty());
+        assert!(!below(1.0, false).meet(above(1.0, false)).is_empty());
+        assert!(below(0.5, false).meet(above(1.0, false)).is_empty());
+        assert!(!below(1.0, true).meet(above(0.5, true)).is_empty());
+    }
+
+    #[test]
+    fn a_meet_keeps_the_tighter_endpoint_and_a_hull_the_looser_one() {
+        let meet = below(1.0, true).meet(below(1.0, false));
+        assert_eq!(meet, below(1.0, true));
+        assert_eq!(below(2.0, false).meet(below(1.0, true)), below(1.0, true));
+        let hull = below(1.0, true).hull(below(1.0, false));
+        assert_eq!(hull, below(1.0, false));
+        assert_eq!(below(2.0, true).hull(below(1.0, false)), below(2.0, true));
+        // A side only one interval bounds is unbounded in the hull.
+        assert!(below(1.0, true).hull(above(0.0, true)).is_unbounded());
     }
 }
