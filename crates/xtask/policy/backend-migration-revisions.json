@@ -212,6 +212,19 @@
           "after": "38ad10c1d462884e8c30e0df5e33aaf403d1ca9573930b53486ce0bb4acfc29b"
         }
       ]
+    },
+    {
+      "id": "R005",
+      "decision": "d-pending-owner-741-unused-helper-attribute-20261124",
+      "change": "The projection kernel's rmc_dalloc_raw, a static inline helper a model may not call, carries RMC_UNUSED (__attribute__((unused)) under GCC and Clang), defined beside RMC_COLD in both guards, so Clang's -Wunused-function accepts a model that emits no caller. Printing only; no rendered decision changes.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/me_projection.jinja",
+          "before": "de71e4f8ef62ebd652150b47e3144b07cb25727146f1fd1283aed1e2e3da78d8",
+          "after": "73af5da1993be9eec46d8abb9ef17e0cbbf2a4d125f0b7b34fa084a68c6d92ea"
+        }
+      ]
     }
   ]
 }

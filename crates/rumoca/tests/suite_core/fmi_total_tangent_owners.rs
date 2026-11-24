@@ -293,8 +293,9 @@ fn a_declared_state_initializes_from_its_initial_equation_in_the_fmi_c_component
                 .output()
                 .expect("run the declared state driver");
             assert!(run.status.success(), "{target}/{mode}: {run:?}");
+            // Windows writes stdout in text mode, so a line ends in CRLF there.
             assert_eq!(
-                String::from_utf8_lossy(&run.stdout),
+                String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
                 "x=1 der=-1\n",
                 "{target}/{mode}: x starts from its initial equation, not its seed"
             );
