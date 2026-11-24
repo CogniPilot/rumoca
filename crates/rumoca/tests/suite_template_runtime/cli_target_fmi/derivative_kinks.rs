@@ -24,13 +24,13 @@ int main(void) {
     if (!m) return 2;
     initialize_values(m);
     int status = 0;
-    for (size_t k = 0; k < sizeof(rmc_blocks) / sizeof(rmc_blocks[0]); ++k) {
-        const RmcBlock* b = &rmc_blocks[k];
+    for (size_t k = 0; k < sizeof(rmc_block_desc) / sizeof(rmc_block_desc[0]); ++k) {
+        const RmcBlock* b = rmc_block(k);
         double values[64];
-        if (b->nnz > 64) { status = 3; break; }
+        if (RMC_BS(b, nnz) > 64) { status = 3; break; }
         if (rmc_jacobian(m, b, values) != 0) { printf("block %zu unavailable\n", k); status = 1; continue; }
         printf("block");
-        for (size_t e = 0; e < b->nnz; ++e) printf(" %.17g", values[e]);
+        for (size_t e = 0; e < RMC_BS(b, nnz); ++e) printf(" %.17g", values[e]);
         printf("\n");
     }
     free(m);

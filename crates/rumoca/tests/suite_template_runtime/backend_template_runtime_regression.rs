@@ -881,7 +881,13 @@ fn execute_emitted_algebraic_refresh(model_c: &str, assign_c: &str, prefix: &str
 #define Y_LEN 2
 typedef enum {{ {prefix}OK = 0, {prefix}Error = 3 }} {prefix}Status;
 #define RMC_API
-typedef struct {{ bool parameters_dirty; bool rmc_nonfinite; double time; double y[2]; double p[1]; }} ModelInstance;
+#define RMC_COLD
+#define RMC_NOINLINE
+#define RMC_FATAL (-2)
+#define RMC_FAULTED(m) ((m)->rmc_fatal)
+#define RMC_LOG(m, message) ((void)(m), (void)(message))
+typedef struct {{ bool parameters_dirty; bool rmc_nonfinite; bool rmc_fatal; double time; double y[2]; double p[1]; }} ModelInstance;
+int rmc_bad_program(ModelInstance* m, size_t program);
 {assign}
 {refresh}
 int main(void) {{

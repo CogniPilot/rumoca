@@ -758,6 +758,11 @@ fn create_environment() -> Environment<'static> {
         "galec_kernels_version",
         minijinja::Value::from(templates::galec_kernel_library_version()),
     );
+    // The projection kernel's inlining bound, one number for every component.
+    env.add_global(
+        "rmc_inline_program_max_ops",
+        minijinja::Value::from(me_projection::INLINE_PROGRAM_MAX_OPS),
+    );
     // The shared render environment: every template a target manifest
     // publishes under a shared name, and nothing else. Support partials
     // (`[[partials]]`, e.g. the GALEC-derived C symbol policy, which every C

@@ -1,7 +1,8 @@
 //! Descriptor tables of the shared C projection kernel, as rendered.
 //!
 //! The fmi2 and fmi3 targets settle coupled algebraic blocks through one C
-//! kernel that reads per-block descriptors (`RmcBlock`) over one integer pool.
+//! kernel that reads per-block descriptors (`RmcBlockDesc`, plain offsets
+//! into one integer pool).
 //! These cases render the generated C sources (`model.c` and the program
 //! translation units beside it) for one fixture per projection
 //! path (torn, affine, dense with seeded isolation, seed rescue, and the torn
@@ -117,8 +118,9 @@ fn model_c(model: &str, source: &str, target: &str) -> String {
         .join("\n")
 }
 
-/// `RmcBlock` field names in their C initializer order.
-const FIELDS: [&str; 55] = [
+/// `RmcBlockDesc` field names in their C initializer order.
+const FIELDS: [&str; 56] = [
+    "id",
     "canonical",
     "n",
     "y",
@@ -227,21 +229,16 @@ fn parse_value(token: &str) -> usize {
     match token {
         "true" => 1,
         "false" => 0,
-        _ => {
-            let digits = token
-                .strip_prefix("RMC_P(")
-                .and_then(|rest| rest.strip_suffix(')'))
-                .unwrap_or(token);
-            match digits.parse() {
-                Ok(value) => value,
-                Err(_) => panic!("descriptor value `{token}` is not an integer"),
-            }
-        }
+        // A block descriptor holds integers only, no address constants.
+        _ => match token.parse() {
+            Ok(value) => value,
+            Err(_) => panic!("descriptor value `{token}` is not an integer"),
+        },
     }
 }
 
 fn parse_tables(source: &str) -> Option<Tables> {
-    let blocks = braced_body(source, "static const RmcBlock rmc_blocks[")?
+    let blocks = braced_body(source, "static const RmcBlockDesc rmc_block_desc[")?
         .lines()
         .filter_map(|line| {
             let line = line.trim().trim_end_matches(',');
@@ -249,8 +246,11 @@ fn parse_tables(source: &str) -> Option<Tables> {
             Some(Block(inner.split(',').map(parse_value).collect()))
         })
         .collect::<Vec<_>>();
-    for block in &blocks {
+    for (index, block) in blocks.iter().enumerate() {
         assert_eq!(block.0.len(), FIELDS.len(), "descriptor arity: {block:?}");
+        // A descriptor names its own row: the kernel reads a block's
+        // fallback site from it, not from a second pointer.
+        assert_eq!(block.0[0], index, "descriptor id is its row: {block:?}");
     }
     let pool = braced_body(source, "static const size_t rmc_pool[")?
         .split(',')
@@ -270,7 +270,8 @@ fn parse_tables(source: &str) -> Option<Tables> {
         })
     };
     let isolator_count = entries("RMC_API const size_t rmc_iso_group[");
-    let causal_count = entries("RMC_API const RmcCausalProgram rmc_causal_fn[");
+    // Each causal program is one case of the `rmc_causal_call` dispatcher.
+    let causal_count = source.matches("return rmc_causal_p").count();
     Some(Tables {
         pool,
         blocks,
@@ -641,9 +642,13 @@ fn a_split_circle_renders_both_charts_for_switching() {
         let charts = braced_body(&source, "static const RmcChart rmc_charts[RMC_NCHARTS] = {")
             .expect("the chart descriptors");
         assert_eq!(
-            charts.matches("RMC_P(").count(),
-            6,
-            "{target}: three pool ranges per chart"
+            charts.matches('{').count(),
+            2,
+            "{target}: one descriptor per chart"
+        );
+        assert!(
+            !charts.contains("RMC_P(") && !charts.contains('&'),
+            "{target}: the chart descriptors hold pool offsets, no addresses"
         );
         let nominals = braced_body(
             &source,

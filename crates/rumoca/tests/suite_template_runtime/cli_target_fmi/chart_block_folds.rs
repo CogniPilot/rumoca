@@ -9,9 +9,8 @@ use super::*;
 /// unknown.
 const MODEL: &str = "model FoldChart\n  parameter Real V0 = 15000;\n  parameter Real k = 0.5;\n  Real v_in;\n  Real v_out;\n  Real x(start = 1);\n  Real y(start = 0, fixed = true);\n  Real vx(start = 0);\n  Real vy(start = 1, fixed = true);\n  Real lambda;\nequation\n  v_in = k * v_out - 10 * sin(20 * time) + 0.01 * x;\n  v_out = smooth(0, noEvent(if V0 * v_in > 15 then 15 else if V0 * v_in < -15 then -15 else V0 * v_in));\n  der(x) = vx;\n  der(y) = vy;\n  der(vx) = lambda*x;\n  der(vy) = lambda*y;\n  x*x + y*y = 1;\nend FoldChart;\n";
 
-/// The lines of the C array initializer that follows `declaration`, each
-/// without its trailing comma.
-fn initializer<'a>(source: &'a str, declaration: &str) -> Vec<&'a str> {
+/// The integers of the C array initializer that follows `declaration`.
+fn array<'a>(source: &'a str, declaration: &str) -> Vec<&'a str> {
     let start = source
         .find(declaration)
         .unwrap_or_else(|| panic!("no {declaration}"));
@@ -19,9 +18,9 @@ fn initializer<'a>(source: &'a str, declaration: &str) -> Vec<&'a str> {
     let open = body.find('{').expect("an initializer") + 1;
     let close = open + body[open..].find("\n};").expect("the initializer end");
     body[open..close]
-        .lines()
-        .map(|line| line.trim().trim_end_matches(','))
-        .filter(|line| !line.is_empty())
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
         .collect()
 }
 
@@ -38,25 +37,26 @@ fn every_chart_reports_the_fold_of_its_own_guarded_block() {
         source.contains("#define RMC_NCHARTS 2"),
         "the model switches charts"
     );
-    let pool: Vec<usize> = initializer(&source, "rmc_pool[")
+    let pool: Vec<usize> = array(&source, "rmc_pool[")
         .iter()
-        .flat_map(|line| line.split(','))
-        .map(|item| item.trim().parse().expect("a pool entry"))
+        .map(|item| item.parse().expect("a pool entry"))
         .collect();
-    let folds = initializer(&source, "rmc_block_fold[");
-    let unknowns: Vec<Vec<usize>> = initializer(&source, "rmc_blocks[")
-        .iter()
-        .map(|line| {
-            // canonical, n, RMC_P(y)
-            let fields: Vec<&str> = line.trim_start_matches('{').splitn(4, ',').collect();
-            let n: usize = fields[1].trim().parse().expect("a block size");
-            let y: usize = fields[2]
-                .trim()
-                .strip_prefix("RMC_P(")
-                .and_then(|field| field.strip_suffix(')'))
-                .expect("a pool range")
-                .parse()
-                .expect("a pool offset");
+    let folds = array(&source, "rmc_block_fold[");
+    let start = source
+        .find("rmc_block_desc[")
+        .expect("the block descriptors");
+    let end = start + source[start..].find("\n};").expect("the descriptor end");
+    let unknowns: Vec<Vec<usize>> = source[start..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('{')?.strip_suffix("},"))
+        .map(|fields| {
+            let fields: Vec<usize> = fields
+                .split(',')
+                .take(4)
+                .map(|field| field.trim().parse().expect("a descriptor count"))
+                .collect();
+            // id, canonical, n, y
+            let (n, y) = (fields[2], fields[3]);
             let mut unknowns = pool[y..y + n].to_vec();
             unknowns.sort_unstable();
             unknowns
@@ -66,7 +66,7 @@ fn every_chart_reports_the_fold_of_its_own_guarded_block() {
     let folded: std::collections::BTreeSet<&Vec<usize>> = unknowns
         .iter()
         .zip(&folds)
-        .filter(|(_, fold)| **fold != "NULL")
+        .filter(|(_, fold)| **fold != "RMC_NO_FOLD")
         .map(|(unknowns, _)| unknowns)
         .collect();
     assert_eq!(
@@ -83,7 +83,7 @@ fn every_chart_reports_the_fold_of_its_own_guarded_block() {
     for (unknowns, fold) in unknowns.iter().zip(&folds) {
         assert_eq!(
             unknowns == guarded,
-            *fold != "NULL",
+            *fold != "RMC_NO_FOLD",
             "block over {unknowns:?}"
         );
     }

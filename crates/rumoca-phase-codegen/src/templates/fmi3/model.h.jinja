@@ -23,6 +23,9 @@
 #pragma STDC FP_CONTRACT OFF
 #endif
 #define FMI3_FUNCTION_PREFIX {{ model_identifier }}_
+/* The prefix of the symbols the component's translation units share, in
+   every build (shared_prefix). */
+#define RMC_MODEL_PREFIX {{ model_identifier }}_
 #include "fmi3Functions.h"
 #define FMI_EXPORT FMI3_Export
 enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED };

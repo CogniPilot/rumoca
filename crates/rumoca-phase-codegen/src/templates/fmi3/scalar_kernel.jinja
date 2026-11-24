@@ -1,3 +1,24 @@
+{#- The names a component's translation units share carry the model
+    identifier the component names (RMC_MODEL_PREFIX), so two components link
+    statically into one importer: RMC_PREFIXED(name) is the prefixed name, or
+    the name itself where no identifier is named. A name defined before the
+    unit is included (a harness's rename) is kept. -#}
+{%- macro shared_prefix() -%}
+#ifndef RMC_PREFIXED
+#if defined(RMC_MODEL_PREFIX)
+#define RMC_PASTE_(a, b) a##b
+#define RMC_PASTE(a, b) RMC_PASTE_(a, b)
+#define RMC_PREFIXED(name) RMC_PASTE(RMC_MODEL_PREFIX, name)
+#else
+#define RMC_PREFIXED(name) name
+#endif
+#endif
+{% endmacro -%}
+{%- macro shared_symbol(name) -%}
+#ifndef {{ name }}
+#define {{ name }} RMC_PREFIXED({{ name }})
+#endif
+{% endmacro -%}
 {%- macro scalar_const(op) -%}
 {%- if op.value_class == "finite" -%}{{ op.value }}
 {%- elif op.value_class == "positive_infinity" -%}INFINITY
@@ -592,7 +613,7 @@ static inline bool rmc_captured_convert(RmcMessage* msg, int source, const void*
     return true;
 }
 {% endif -%}
-int rmc_model_assertion(void* context, size_t predicate, const void* const captures[], size_t count) {
+RMC_API int rmc_model_assertion(void* context, size_t predicate, const void* const captures[], size_t count) {
     RmcModelAssertionContext* observed=context;
     ModelInstance* m=observed->instance;
     (void)m; (void)predicate; (void)captures; (void)count;
@@ -636,7 +657,7 @@ int rmc_model_assertion(void* context, size_t predicate, const void* const captu
 {% endfor -%}
     return 1;
 }
-void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status) {
+RMC_API void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status) {
     (void)status;
     RmcAssertionNotice* notice=context->notices;
     while (notice) {

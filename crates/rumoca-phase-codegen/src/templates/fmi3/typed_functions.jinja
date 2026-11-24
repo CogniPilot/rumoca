@@ -1,3 +1,4 @@
+{%- from "fmi-c-kernel.jinja" import shared_prefix, shared_symbol %}
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
 {%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic %}
 {%- from "fmi-typed-tensors.jinja" import tensor %}
@@ -268,12 +269,14 @@ static inline int rmc_forward_assertion(void* context, size_t predicate, const v
 {% endif -%}
 typedef struct RmcAssertionNotice { size_t action; char* message; struct RmcAssertionNotice* next; } RmcAssertionNotice;
 typedef struct { ModelInstance* instance; size_t owner; int mode; double* predicates; RmcAssertionNotice* notices; } RmcModelAssertionContext;
-int rmc_model_assertion(void* context, size_t predicate, const void* const captures[], size_t count);
-void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status);
-{% for owner in table.owners %}RMC_API int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
-{% if owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list|length > 0 %}RMC_API int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+RMC_API int rmc_model_assertion(void* context, size_t predicate, const void* const captures[], size_t count);
+RMC_API void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status);
+{# Each shared typed function carries the model identifier, like the kernel
+    symbols (kernel_declarations). -#}
+{{ shared_prefix() }}{% for owner in table.owners %}{{ shared_symbol("rumoca_scalar_pure_" ~ owner.id) }}RMC_API int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{% if owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list|length > 0 %}{{ shared_symbol("rumoca_scalar_observe_" ~ owner.id) }}RMC_API int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
 {% endif %}
 {% endfor -%}
-{% for owner in directional %}RMC_API int rumoca_scalar_pure_directional_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{% for owner in directional %}{{ shared_symbol("rumoca_scalar_pure_directional_" ~ owner.id) }}RMC_API int rumoca_scalar_pure_directional_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
 {% endfor -%}
 {% endmacro %}

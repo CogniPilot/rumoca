@@ -44,7 +44,7 @@ const RUN_CHAIN: usize = 0;
 const RUN_ISOLATOR: usize = 1;
 
 /// One block descriptor: counts, flags, and pool offsets, in the field order
-/// of the C `RmcBlock`.
+/// of the C `RmcBlockDesc`.
 #[derive(Serialize, Default)]
 pub(super) struct BlockRecord {
     canonical: usize,

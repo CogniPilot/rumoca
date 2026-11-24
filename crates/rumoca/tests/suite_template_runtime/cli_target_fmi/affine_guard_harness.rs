@@ -19,20 +19,27 @@ use super::*;
 
 /// C harness compiled against the generated `model.c`. It exercises the shared
 /// affine elimination kernel directly, so the promotion arithmetic is checked
-/// where it runs rather than only through a full trajectory. Block fields are
-/// written by name so a later field on `RmcBlock` does not silently shift a
-/// positional initializer.
-const HARNESS: &str = r#"#include "model.c"
+/// where it runs rather than only through a full trajectory. Descriptor fields
+/// are written by name so a later field on `RmcBlockDesc` does not silently
+/// shift a positional initializer.
+const HARNESS: &str = r#"#include <stddef.h>
+/* One 4x4 block: tear column 3 (residual row 3), causal steps (0,0),(1,1),(2,2).
+   Its ranges live in one harness pool its descriptor's offsets index, which the
+   kernel reads for that descriptor (RMC_BLOCK_POOL). */
+static const void* h_desc;
+static const size_t H_POOL[38];
+#define RMC_BLOCK_POOL(b) ((const void*)(b) == h_desc ? H_POOL : rmc_pool)
+#include "model.c"
 #include <stdio.h>
 
-/* One 4x4 block: tear column 3 (residual row 3), causal steps (0,0),(1,1),(2,2). */
-static const size_t H_ROW_PTR[5] = {0, 4, 8, 12, 16};
-static const size_t H_COL[16] = {0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3};
-static const size_t H_ELIM_ROW[3] = {0, 1, 2}, H_ELIM_COL[3] = {0, 1, 2};
-static const size_t H_RES[1] = {3}, H_TEAR[1] = {3};
-/* Guards (0,1), (0,2), (1,2) as pattern positions in H_COL. */
-static const size_t H_GUARDS[3] = {1, 2, 6};
-static const size_t H_GSTEP[6] = {0, 1, 0, 2, 1, 2};
+static const size_t H_POOL[38] = {
+    /* row_ptr  0 */ 0, 4, 8, 12, 16,
+    /* col_idx  5 */ 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,
+    /* elim_row 21 */ 0, 1, 2, /* elim_col 24 */ 0, 1, 2,
+    /* residual 27 */ 3, /* tear 28 */ 3,
+    /* guards 29, as pattern positions in col_idx: (0,1), (0,2), (1,2) */ 1, 2, 6,
+    /* guard steps 32 */ 0, 1, 0, 2, 1, 2,
+};
 
 /* Reference solve of a x = rhs by dense partial-pivot Gaussian elimination. */
 static void dense_solve(double a[4][4], double* x) {
@@ -73,22 +80,24 @@ static void dense_solve(double a[4][4], double* x) {
 
 static int run(const char* label, double a[4][4], size_t want_k) {
     ModelInstance* m = calloc(1, sizeof(ModelInstance));
-    RmcBlock b = rmc_blocks[0];
-    b.n = 4;
-    b.row_ptr = H_ROW_PTR;
-    b.col_idx = H_COL;
-    b.nnz = 16;
-    b.elimination = true;
-    b.nelim = 3;
-    b.elim_row = H_ELIM_ROW;
-    b.elim_col = H_ELIM_COL;
-    b.nelim_tear = 1;
-    b.elim_residual = H_RES;
-    b.elim_tear = H_TEAR;
-    b.nguards = 3;
-    b.guards = H_GUARDS;
-    b.guard_step = H_GSTEP;
-    b.elim_capacity = 5;
+    RmcBlockDesc d = rmc_block_desc[0];
+    d.n = 4;
+    d.row_ptr = 0;
+    d.col_idx = 5;
+    d.nnz = 16;
+    d.elimination = true;
+    d.nelim = 3;
+    d.elim_row = 21;
+    d.elim_col = 24;
+    d.nelim_tear = 1;
+    d.elim_residual = 27;
+    d.elim_tear = 28;
+    d.nguards = 3;
+    d.guards = 29;
+    d.guard_step = 32;
+    d.elim_capacity = 5;
+    h_desc = &d;
+    const RmcBlock* b = &d;
 
     double jac[16];
     double rscale[4] = {1, 2, 1, 0.5};
@@ -102,8 +111,8 @@ static int run(const char* label, double a[4][4], size_t want_k) {
     }
 
     RmcElimination e = { .state = -1 };
-    int prepared = rmc_eliminate_prepare(m, &b, jac, rscale, vscale, &e);
-    int solved = prepared == 1 ? rmc_eliminate_solve(m, &b, &e, residual, rscale, vscale, delta) : -9;
+    int prepared = rmc_eliminate_prepare(m, b, jac, rscale, vscale, &e);
+    int solved = prepared == 1 ? rmc_eliminate_solve(m, b, &e, residual, rscale, vscale, delta) : -9;
 
     double reference[4] = {-residual[0], -residual[1], -residual[2], -residual[3]};
     dense_solve(a, reference);

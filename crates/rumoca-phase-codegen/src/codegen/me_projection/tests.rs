@@ -79,3 +79,38 @@ fn lane_seed_loads_are_checked_in_their_own_units() {
     // Within `seed_len * lanes` positions but past the last seed.
     assert!(check_seed_loads(0, &tensor(seed_len - 1), seed_len, lanes).is_err());
 }
+
+/// A dispatched program stays out of line past the inlining bound only, so a
+/// small program may be inlined into its case and a large one keeps its own
+/// function.
+#[test]
+fn a_dispatched_program_stays_out_of_line_only_past_the_inlining_bound() {
+    let program = |ops: usize| {
+        minijinja::context! {
+            temporary_count => 1,
+            ops => vec![minijinja::context! { kind => "Move", dst => 0, src => 0 }; ops],
+        }
+    };
+    let mut environment = crate::codegen::create_environment();
+    environment
+        .add_template(
+            "inlining.c",
+            r#"{%- from "fmi-me-projection.jinja" import program_function -%}
+{{ program_function("rmc_row_p0", small, "ModelInstance* m, double* o", false, true) }}
+{{ program_function("rmc_row_p1", large, "ModelInstance* m, double* o", false, true) }}"#,
+        )
+        .expect("the inlining template parses");
+    let rendered = environment
+        .get_template("inlining.c")
+        .expect("the inlining template")
+        .render(minijinja::context! {
+            small => program(super::INLINE_PROGRAM_MAX_OPS),
+            large => program(super::INLINE_PROGRAM_MAX_OPS + 1),
+        })
+        .expect("render the two programs");
+    assert!(rendered.contains("static int rmc_row_p0("), "{rendered}");
+    assert!(
+        rendered.contains("static RMC_NOINLINE int rmc_row_p1("),
+        "{rendered}"
+    );
+}

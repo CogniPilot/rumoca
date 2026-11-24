@@ -371,7 +371,7 @@ fn packaged_fmi_runs_the_complete_plan_after_a_failed_rescue() {
         "the seeded stage rescues its block"
     );
     assert!(
-        source.contains("failure:\n    if (complete) {"),
+        source.contains("failure:\n    if (m->rmc_fatal) goto fail;\n    if (complete) {"),
         "the staged plans project the complete plan in their fallback"
     );
     let driver = work.path().join("fallback_trace.py");

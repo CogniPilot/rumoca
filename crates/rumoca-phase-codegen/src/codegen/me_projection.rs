@@ -33,6 +33,11 @@ use assign::AssignmentCatalog;
 use block::{BlockRecord, BlockSources, block_record};
 use table::ProgramTable;
 
+/// The largest projection program, in operations, that the C kernel leaves
+/// to the compiler's inlining choice; a larger dispatched, assignment or
+/// causal program stays out of line (`RMC_NOINLINE`).
+pub(super) const INLINE_PROGRAM_MAX_OPS: usize = 32;
+
 fn refusal(label: &str, refusal: solve::StagedRefreshRefusal) -> String {
     let reason = match refusal {
         solve::StagedRefreshRefusal::NonExactStage => {
@@ -599,13 +604,45 @@ fn policy_value() -> Value {
     }
 }
 
-/// Each recorded block's ES016 fold message, or `None`, read from its own
-/// chart's problem when the block was recorded.
-fn block_folds(records: &[BlockRecord]) -> Vec<Option<Vec<u8>>> {
-    records
+/// Each recorded block's ES016 fold message, read from its own chart's
+/// problem when the block was recorded. The distinct messages form one pool
+/// (`texts`, each followed by a NUL), and each block holds its message's byte
+/// offset in that pool, or `None`.
+fn block_folds(records: &[BlockRecord]) -> Value {
+    let mut texts: Vec<Vec<u8>> = Vec::new();
+    let mut offset_of: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    let mut end = 0usize;
+    let offsets: Vec<Option<usize>> = records
         .iter()
-        .map(|record| record.fold().map(<[u8]>::to_vec))
-        .collect()
+        .map(|record| {
+            let text = record.fold()?.to_vec();
+            Some(*offset_of.entry(text.clone()).or_insert_with(|| {
+                let offset = end;
+                end += text.len() + 1;
+                texts.push(text);
+                offset
+            }))
+        })
+        .collect();
+    // The messages one after the other, each closed by a NUL, as the
+    // elements of a character array (a byte past ASCII cast, so a signed
+    // `char` takes it without an overflow warning); an empty pool keeps one
+    // NUL so the array is never empty.
+    let mut pool: Vec<String> = texts
+        .iter()
+        .flat_map(|text| text.iter().copied().chain([0]))
+        .map(|byte| {
+            if byte.is_ascii() {
+                byte.to_string()
+            } else {
+                format!("(char)0x{byte:02X}")
+            }
+        })
+        .collect();
+    if pool.is_empty() {
+        pool.push("0".to_owned());
+    }
+    minijinja::context! { pool => pool, offsets => offsets }
 }
 
 /// The warm-start rule the generated C translates: its component is
