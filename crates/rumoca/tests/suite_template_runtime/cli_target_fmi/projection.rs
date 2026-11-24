@@ -55,6 +55,19 @@ fn affine_chain() -> String {
 fn fixtures() -> Vec<Fixture> {
     vec![
         Fixture {
+            model: "StateStart",
+            source: "model StateStart
+  output Real q(start=0, fixed=false);
+initial equation
+  q = 2;
+equation
+  der(q) = -q;
+end StateStart;"
+                .to_string(),
+            outputs: &["q"],
+            marker: None,
+        },
+        Fixture {
             model: "TornLoop",
             source: "model TornLoop
   output Real x(start=1, fixed=true);

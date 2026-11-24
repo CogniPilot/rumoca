@@ -1232,10 +1232,10 @@ RMC_API int rmc_assign(ModelInstance* m, size_t first, size_t count) {
 {%- if me.derivative.steps|length > 0 or me.algebraic.steps|length > 0 %}
 enum { RMC_STEP_ASSIGN, RMC_STEP_COMPLETE, RMC_STEP_PROJECT };
 typedef struct { unsigned char kind; size_t first; size_t count; size_t block; size_t seed_first; size_t seed_count; size_t rescue; size_t nrescue; } RmcStep;
-static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, size_t nsteps, const size_t* complete, size_t ncomplete) {
-    double incoming[Y_LEN];
+static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, size_t nsteps, const size_t* complete, size_t ncomplete, double* incoming, const size_t (*runs)[2], size_t nruns) {
     if (refresh_parameters(m) != {{ prefix }}OK) return {{ prefix }}Error;
-    memcpy(incoming, m->y, sizeof(incoming));
+    for (size_t j=0, offset=0; j<nruns; offset+=runs[j++][1])
+        memcpy(incoming+offset, m->y+runs[j][0], runs[j][1]*sizeof(double));
     (void)complete; (void)ncomplete;
 {%- if blocks and assigns %}
     size_t failed_site = RMC_FB_PLAN; (void)failed_site;
@@ -1284,7 +1284,7 @@ failure:
 {%- if blocks %}
     if (complete) {
         rmc_fb_note(m, failed_site); m->rmc_fb_active[RMC_FB_PLAN] = false;
-        memcpy(m->y, incoming, sizeof(incoming));
+        memcpy(m->y, incoming, sizeof(m->y));
         const int rescued = rmc_project_complete(m, complete, ncomplete);
         if (rescued == 0) return {{ prefix }}OK;
         RMC_LOG(m, "complete algebraic projection did not establish coordinate convergence");
@@ -1298,7 +1298,8 @@ failure:
     m->rmc_nonfinite = true;
 {%- endif %}
 fail:
-    memcpy(m->y, incoming, sizeof(incoming));
+    for (size_t j=0, offset=0; j<nruns; offset+=runs[j++][1])
+        memcpy(m->y+runs[j][0], incoming+offset, runs[j][1]*sizeof(double));
 {%- if blocks and assigns %}
     m->rmc_fb_active[RMC_FB_PLAN] = false;
 {%- endif %}
@@ -1317,7 +1318,14 @@ static const RmcStep rmc_steps_{{ name }}[{{ plan.steps|length }}] = {
 {%- endif %}
 static {{ prefix }}Status {{ name }}(ModelInstance* m) {
 {%- if plan.steps|length > 0 %}
-    return rmc_refresh(m, rmc_steps_{{ name }}, {{ plan.steps|length }}, {% if plan.complete %}RMC_P({{ plan.complete[0] }}), {{ plan.complete[1] }}{% else %}NULL, 0{% endif %});
+{%- if plan.backup_size > 0 %}
+    static const size_t runs[][2] = { {% for run in plan.backup_runs %}{ {{ run[0] }}, {{ run[1] }} }, {% endfor %} };
+    double incoming[{{ plan.backup_size }}];
+{%- else %}
+    static const size_t runs[][2] = { { 0, Y_LEN } };
+    double incoming[Y_LEN];
+{%- endif %}
+    return rmc_refresh(m, rmc_steps_{{ name }}, {{ plan.steps|length }}, {% if plan.complete %}RMC_P({{ plan.complete[0] }}), {{ plan.complete[1] }}{% else %}NULL, 0{% endif %}, incoming, runs, sizeof(runs)/sizeof(runs[0]));
 {%- else %}
     return refresh_parameters(m);
 {%- endif %}
@@ -1357,7 +1365,7 @@ static int rmc_apply_updates(ModelInstance* m, bool initializing) {
 {%- for op in program.ops %}
 {{ scalar_op(op, "binding_output", "-1") }}
 {%- endfor %}
-{%- for row in execution.parameter_rows %}{% set target = targets[row] %}
+{%- for row in execution.parameter_rows + execution.quotient_seed_rows %}{% set target = targets[row] %}
     m->p[{{ target.P.index }}] = binding_output[{{ row }}];
 {%- endfor %}
 {%- if execution.state_start_rows|length > 0 %}

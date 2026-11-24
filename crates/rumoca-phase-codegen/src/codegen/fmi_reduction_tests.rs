@@ -87,6 +87,10 @@ fn generated_reductions_execute_with_ordered_values_and_ieee_edges() {
         source.push_str(&render(&program(operator, scalar, 3), name).unwrap());
     }
     source.push_str(HARNESS);
+    compile_and_run(&source);
+}
+
+fn compile_and_run(source: &str) {
     let work = tempfile::tempdir().unwrap();
     let path = work.path().join("reductions.c");
     let binary = work.path().join("reductions");
@@ -192,3 +196,116 @@ fn reductions_outside_the_supported_profile_fail_during_rendering() {
 /// reductions carry no assertion, so every call passes no observer.
 const OBSERVER_TYPE: &str = "typedef struct { void* context; int (*observe)(void*, size_t, const void* const[], size_t); } RmcAssertionObserver;\n\
 static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }\n";
+
+#[test]
+fn guarded_fold_predicate_receives_the_same_assigned_captures_as_its_transition() {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("guarded_fold.mo"),
+        0,
+        1,
+    );
+    let profile = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let program = solve::TypedProgram::construct(profile, |b| {
+        let output = b.declare_slot(
+            solve::SolveValueType::scalar(REAL),
+            solve::SolveStorageClass::Output,
+            solve::SolveSlotAccess::ReadWrite,
+            span,
+        )?;
+        let initial = b.constant(solve::SolveValue::real(profile, 1.0), span)?;
+        let state = b.present_assigned_state(initial, span)?;
+        let domain = rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
+                id: 0,
+                display_name: "i".into(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        };
+        let carried = b.fold_while_assigned(
+            domain,
+            &[initial],
+            (&[], &[state]),
+            span,
+            |region, states, _, _, _, outputs| {
+                let present = region.assigned_state_is_present(states[0], span)?;
+                region.store(outputs[0], present, span)
+            },
+            |region, _, carried, _, _, outputs| {
+                let value = region.load(carried[0], span)?;
+                region.store(outputs[0], value, span)
+            },
+        )?;
+        b.store(output, carried[0], span)
+    })
+    .unwrap();
+    let source = render(&program, "guarded_fold").unwrap();
+    for suffix in ["_continue((const void*[])", "_fold((const void*[])"] {
+        let call = source.lines().find(|line| line.contains(suffix)).unwrap();
+        assert!(call.contains("&present0,v0,"), "{call}");
+    }
+}
+
+#[test]
+fn concatenate_copies_nonleading_axes_in_row_major_order() {
+    let span =
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("cat.mo"), 0, 1);
+    let profile = solve::SolveArithmeticProfile::construct(
+        solve::SolveRealFormat::Binary64,
+        solve::SolveIntegerDomain::FULL,
+    );
+    let mut source = String::from(
+        "#include <assert.h>\n#include <stddef.h>\n#include <string.h>\n#include <stdint.h>\n#include <stdbool.h>\n",
+    );
+    source.push_str(OBSERVER_TYPE);
+    for (axis, name, trailing, shape) in [
+        (0, "rows", vec![1, 2], vec![3, 2]),
+        (1, "cols", vec![2, 1], vec![2, 3]),
+    ] {
+        let program = solve::TypedProgram::construct(profile, |b| {
+            let a = b.declare_slot(
+                solve::SolveValueType::tensor(REAL, vec![2, 2]).unwrap(),
+                solve::SolveStorageClass::Input,
+                solve::SolveSlotAccess::ReadOnly,
+                span,
+            )?;
+            let d = b.declare_slot(
+                solve::SolveValueType::tensor(REAL, trailing).unwrap(),
+                solve::SolveStorageClass::Input,
+                solve::SolveSlotAccess::ReadOnly,
+                span,
+            )?;
+            let out = b.declare_slot(
+                solve::SolveValueType::tensor(REAL, shape).unwrap(),
+                solve::SolveStorageClass::Output,
+                solve::SolveSlotAccess::ReadWrite,
+                span,
+            )?;
+            let a = b.load(a, span)?;
+            let d = b.load(d, span)?;
+            let combined = b.concatenate(axis, &[a, d], span)?;
+            b.store(out, combined, span)
+        })
+        .unwrap();
+        let rendered = render(&program, name).unwrap();
+        assert!(!rendered.contains("cursor++"));
+        source.push_str(&rendered);
+    }
+    source.push_str(
+        r#"
+int main(void) {
+    double a[]={1,2,3,4}, b[]={5,6}, out[6]={0};
+    const void* inputs[]={a,b};
+    void* outputs[]={out};
+    assert(rows(inputs,outputs,NULL)==0 && memcmp(out,(double[]){1,2,3,4,5,6},sizeof(out))==0);
+    assert(cols(inputs,outputs,NULL)==0 && memcmp(out,(double[]){1,2,5,3,4,6},sizeof(out))==0);
+}
+"#,
+    );
+    compile_and_run(&source);
+}

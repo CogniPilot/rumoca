@@ -45,9 +45,9 @@ struct Observations<'model> {
 impl SolveVisitor for Observations<'_> {
     type Error = CodegenError;
 
-    fn visit_linear_op_slice(
+    fn enter_linear_op_slice(
         &mut self,
-        kind: rumoca_ir_solve::LinearOpSliceKind,
+        _kind: rumoca_ir_solve::LinearOpSliceKind,
         ops: &[LinearOp],
     ) -> Result<(), Self::Error> {
         for (index, op) in ops.iter().enumerate() {
@@ -65,7 +65,7 @@ impl SolveVisitor for Observations<'_> {
             })?;
             self.insert(&invocation)?;
         }
-        rumoca_ir_solve::visitor::walk_linear_op_slice(self, kind, ops)
+        Ok(())
     }
 }
 

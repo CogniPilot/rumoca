@@ -12,6 +12,7 @@ pub struct FmiBindingProgram {
     initialization_only: bool,
     parameter_rows: Vec<usize>,
     state_start_rows: Vec<usize>,
+    quotient_seed_rows: Vec<usize>,
 }
 
 impl FmiBindingProgram {
@@ -64,6 +65,16 @@ impl BindingExecution {
         })
     }
 
+    pub(super) fn classify_quotient_seeds(mut self, problem: &crate::SolveProblem) -> Self {
+        for program in &mut self.programs {
+            if super::parameter_updates::is_quotient_seed(problem, program.program_index) {
+                program.quotient_seed_rows = std::mem::take(&mut program.parameter_rows);
+                program.initialization_only = true;
+            }
+        }
+        self
+    }
+
     pub(super) fn source(&self) -> &ScalarProgramBlock {
         &self.source
     }
@@ -105,6 +116,7 @@ fn program(
         initialization_only: parameter_rows.is_empty(),
         parameter_rows,
         state_start_rows,
+        quotient_seed_rows: Vec::new(),
     })
 }
 

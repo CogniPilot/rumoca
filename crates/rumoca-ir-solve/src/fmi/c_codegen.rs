@@ -95,7 +95,8 @@ impl FmiCCodegenView {
             view.model.problem.initialization.update_targets(),
             &update_order,
         )
-        .map_err(FmiCCodegenError)?;
+        .map_err(FmiCCodegenError)?
+        .classify_quotient_seeds(&view.model.problem);
         let state_reinitializations =
             super::state_event_access::derive(&view.model.problem, view.metadata.variables());
         let (profile, discrete_order) = view.profile()?;
@@ -123,7 +124,8 @@ impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
             value.model.problem.initialization.update_targets(),
             &update_order,
         )
-        .map_err(FmiCCodegenError)?;
+        .map_err(FmiCCodegenError)?
+        .classify_quotient_seeds(&value.model.problem);
         let state_reinitializations =
             super::state_event_access::derive(&value.model.problem, value.metadata.variables());
         Ok(Self {
@@ -424,6 +426,19 @@ impl FmiCCodegenView {
                 _ => None,
             },
         )?;
+        let no_assertion_memories = self.discrete_order.memories.is_empty();
+        entries.serialize_entry(
+            "reuse_scan_projection",
+            &(no_assertion_memories
+                && self
+                    .problem()
+                    .projection_valid_after_history_copy(&self.artifacts().continuous.structural)),
+        )?;
+        entries.serialize_entry(
+            "reuse_interval_history",
+            &(no_assertion_memories && self.problem().solve_layout.repeatable_parameter_history()),
+        )?;
+        entries.serialize_entry("history_runs", &self.problem().solve_layout.history_runs())?;
         entries.serialize_entry("update_order", &self.update_order)?;
         entries.serialize_entry("binding_execution", self.binding_execution.programs())?;
         entries.serialize_entry("discrete_equations", &self.discrete_order.equations)?;
@@ -434,7 +449,7 @@ impl FmiCCodegenView {
 
 impl Serialize for FmiCCodegenView {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut entries = serializer.serialize_map(Some(16))?;
+        let mut entries = serializer.serialize_map(Some(19))?;
         self.serialize_entries(&mut entries)?;
         entries.end()
     }

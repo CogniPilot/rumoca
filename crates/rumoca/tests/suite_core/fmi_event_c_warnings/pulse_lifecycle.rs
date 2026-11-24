@@ -61,7 +61,7 @@ fn check_pulse_lifecycle(target: &str) {
     };
     let guid = xml_attribute(&xml, b"fmiModelDescription", identity_attribute, None);
     let identifier = xml_attribute(&xml, b"CoSimulation", b"modelIdentifier", None);
-    let references = ["n", "m", "ticks"].map(|name| {
+    let references = ["n", "m", "ticks", "observed"].map(|name| {
         xml_attribute(&xml, variable_tag, b"valueReference", Some(name))
             .parse::<u32>()
             .unwrap()
@@ -115,16 +115,17 @@ int main(void) {
     PulseInstance c = pulse_instantiate("@GUID@");
     CHECK(c != NULL);
     CHECK(pulse_initialize(c));
-    PulseReference references[3] = { @REFERENCES@ };
-    PulseInteger values[3];
+    PulseReference references[4] = { @REFERENCES@ };
+    PulseInteger values[4];
     CHECK(pulse_read(c, references, values));
-    CHECK(values[0] == 0 && values[1] == 0 && values[2] == 0);
+    CHECK(values[0] == 0 && values[1] == 0 && values[2] == 0 && values[3] == 2);
     for (int step = 0; step < 6; ++step) {
         double t = (double)step / 10.0;
         CHECK(pulse_step(c, t));
         CHECK(pulse_read(c, references, values));
         printf("%.17g,%lld,%lld,%lld\n", t + 0.1, (long long)values[0], (long long)values[1], (long long)values[2]);
         CHECK(values[2] == step + 1);
+        CHECK(values[3] == 2 * (step + 1));
         CHECK(values[0] == (step >= 4 ? 1 : 0));
         CHECK(values[1] == (step >= 4 ? 1 : 0));
     }
@@ -148,7 +149,7 @@ static int pulse_initialize(PulseInstance c) {
         fmi2EnterInitializationMode(c) == fmi2OK && fmi2ExitInitializationMode(c) == fmi2OK;
 }
 static int pulse_read(PulseInstance c, const PulseReference* references, PulseInteger* values) {
-    return fmi2GetInteger(c, references, 3, values) == fmi2OK;
+    return fmi2GetInteger(c, references, 4, values) == fmi2OK;
 }
 static int pulse_step(PulseInstance c, double time) {
     return fmi2DoStep(c, time, 0.1, 1) == fmi2OK;
@@ -170,7 +171,7 @@ static int pulse_initialize(PulseInstance c) {
         fmi3ExitInitializationMode(c) == fmi3OK;
 }
 static int pulse_read(PulseInstance c, const PulseReference* references, PulseInteger* values) {
-    return fmi3GetInt64(c, references, 3, values, 3) == fmi3OK;
+    return fmi3GetInt64(c, references, 4, values, 4) == fmi3OK;
 }
 static int pulse_step(PulseInstance c, double time) {
     fmi3Boolean event_needed, terminate, early_return;

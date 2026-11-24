@@ -112,6 +112,40 @@ fn classify_initialized_coordinates(problem: &SolveProblem, variables: &mut [Fmi
     }
 }
 
+/// MLS §8.5 numeric event memory has an initialization program and a discrete
+/// owner. Delegate only a singleton store with the same target and exact RHS.
+pub(super) fn is_quotient_seed(problem: &SolveProblem, program: usize) -> bool {
+    let init = &problem.initialization;
+    let source = init.update_rhs();
+    let Some(range) = source.program_output_ordinals(program) else {
+        return false;
+    };
+    if range.len() != 1 {
+        return false;
+    }
+    let Some(target) = source
+        .output_index_at(range.start)
+        .and_then(|i| init.update_targets().get(i))
+    else {
+        return false;
+    };
+    let discrete = &problem.discrete;
+    let Some(row) = discrete
+        .update_targets
+        .iter()
+        .zip(&discrete.row_roles)
+        .position(|(slot, role)| {
+            slot == target && matches!(role, crate::DiscreteRowRole::QuotientMemory { .. })
+        })
+    else {
+        return false;
+    };
+    let Some(owner) = discrete.rhs.program_index_for_output(row) else {
+        return false;
+    };
+    source.programs()[program] == discrete.rhs.programs()[owner]
+}
+
 /// Admit the parameter bindings and return the order the generated component
 /// evaluates their programs in, with the number of dependency levels (the
 /// repeated sweeps the runtime needs to settle them).
@@ -139,6 +173,9 @@ pub(super) fn validate(
             ScalarSlot::P { index, .. }
                 if owns(problem, SolveVariableStorageRole::Parameter, slot) =>
             {
+                Some(index)
+            }
+            ScalarSlot::P { index, .. } if problem.discrete.update_targets.contains(slot) => {
                 Some(index)
             }
             ScalarSlot::Y { .. } if owns(problem, SolveVariableStorageRole::State, slot) => None,
@@ -169,16 +206,42 @@ pub(super) fn validate(
     if cursor != targets.len() {
         return Err("missing parameter binding output");
     }
-    let candidates = (0..programs.len()).collect::<Vec<_>>();
+    // Discrete event-memory starts can depend on inputs supplied in initialization mode.
+    // Settle parameter bindings first to preserve their stricter variability contract.
+    let (event_rows, parameter_rows): (Vec<_>, Vec<_>) = (0..programs.len()).partition(|i| {
+        let written: &Vec<usize> = &outputs[*i];
+        !written.is_empty()
+            && written.iter().all(|index| {
+                problem
+                    .discrete
+                    .update_targets
+                    .iter()
+                    .any(|s| matches!(s, ScalarSlot::P { index: d, .. } if d == index))
+            })
+    });
     use super::static_assertions::scalar_dependencies::{OrderError, dependency_order};
-    dependency_order(calls, programs, &candidates, &outputs, &y, &mut p).map_err(
-        |error| match error {
-            OrderError::Unsupported => "unsupported parameter binding dependency operation",
-            OrderError::Unsettled => {
-                "parameter binding depends on unsettled or non-parameter values"
-            }
-        },
-    )
+    let explain = |error| match error {
+        OrderError::Unsupported => "unsupported parameter binding dependency operation",
+        OrderError::Unsettled => "parameter binding depends on unsettled or non-parameter values",
+    };
+    let (mut order, levels) =
+        dependency_order(calls, programs, &parameter_rows, &outputs, &y, &mut p)
+            .map_err(explain)?;
+    for run in &problem.solve_layout.variable_storage_runs {
+        if run.role == SolveVariableStorageRole::ExternalInput
+            && let ScalarSlot::P { index, .. } = run.base
+        {
+            p[index..index + run.scalar_count].fill(true);
+        }
+    }
+    let (seeds, input_starts): (Vec<_>, Vec<_>) = event_rows
+        .into_iter()
+        .partition(|&i| is_quotient_seed(problem, i));
+    let (events, event_levels) =
+        dependency_order(calls, programs, &input_starts, &outputs, &y, &mut p).map_err(explain)?;
+    order.extend(events);
+    order.extend(seeds);
+    Ok((order, levels + event_levels))
 }
 
 /// Whether `slot` lies in a storage run of `role`.
@@ -275,13 +338,21 @@ fn validate_projection(
     Ok(())
 }
 
-/// A scalar row reading only parameters, constants and importer inputs that
-/// the binding/discrete refresh does not write has the same value before and after
+/// A scalar row reading only states, parameters, constants and importer inputs
+/// preserved by the binding/discrete refresh has the same value before and after
 /// settling. The existing full Y|P JVP initialization kernel therefore needs no declaration-Y isolation
 /// for these rows. Hidden pre/history lanes are not ordinary P declarations.
-/// Compact tensor/Y/time/history cases retain their existing admission rule.
+/// Algebraics, compact tensors, time, and history retain their existing admission rule.
 fn parameter_input_residuals(problem: &SolveProblem, calls: &SolvePureCallTable) -> bool {
     let mut p = stable_parameters(problem);
+    // State coordinates precede algebraics in Solve storage. An algebraic
+    // refresh preserves them. Initialization/discrete assignments are removed
+    // below since they can overwrite a state or a parameter before evaluation.
+    let mut y = vec![false; problem.layout.y_scalars()];
+    let Some(states) = y.get_mut(..problem.solve_layout.state_scalar_count()) else {
+        return false;
+    };
+    states.fill(true);
     for run in &problem.solve_layout.variable_storage_runs {
         if run.role != SolveVariableStorageRole::ExternalInput {
             continue;
@@ -303,20 +374,34 @@ fn parameter_input_residuals(problem: &SolveProblem, calls: &SolvePureCallTable)
         };
         *value = false;
     }
+    // The binding admission below validate_projection proves calculated parameters
+    // settle solely from other parameters. They remain fixed during a state-only
+    // projection. Keep the original exclusion if a parameter itself is solved.
+    let state_only = problem
+        .initialization
+        .projection_unknowns()
+        .iter()
+        .all(|slot| matches!(slot, ScalarSlot::Y { .. }));
     for target in problem
         .initialization
         .update_targets()
         .iter()
         .chain(problem.discrete.update_targets.iter())
     {
-        if let ScalarSlot::P { index, .. } = *target {
-            let Some(value) = p.get_mut(index) else {
-                return false;
-            };
-            *value = false;
+        if state_only
+            && owns(problem, SolveVariableStorageRole::Parameter, target)
+            && !problem.discrete.update_targets.contains(target)
+        {
+            continue;
         }
+        let slot = match *target {
+            ScalarSlot::P { index, .. } => p.get_mut(index),
+            ScalarSlot::Y { index, .. } => y.get_mut(index),
+            _ => return false,
+        };
+        let Some(value) = slot else { return false };
+        *value = false;
     }
-    let y = vec![false; problem.layout.y_scalars()];
     residuals_over_stable_storage(problem.initialization.residual(), calls, &y, &p)
 }
 

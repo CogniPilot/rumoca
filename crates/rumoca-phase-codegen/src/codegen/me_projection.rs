@@ -289,8 +289,18 @@ fn plan_value(
     } else {
         None
     };
+    let effects = catalog
+        .sources
+        .problem
+        .direct_refresh_effects(plan, &catalog.sources.artifacts.continuous.structural);
+    let runs = effects
+        .as_ref()
+        .map_or(&[][..], solve::DirectRefreshEffects::rollback_runs);
+    let backup_size: usize = runs.iter().map(|run| run[1]).sum();
     Ok(minijinja::context! {
         steps => rows,
+        backup_runs => runs,
+        backup_size => backup_size,
         complete => complete,
         fallback => fallback && complete.is_some(),
     })

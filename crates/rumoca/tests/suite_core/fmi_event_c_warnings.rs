@@ -48,6 +48,9 @@ model StateAndTimeEvents
   Integer n(start = 0, fixed = true);
   Integer m(start = 0, fixed = true);
   Integer ticks(start = 0, fixed = true);
+  Integer sampled[2](each start = 0, each fixed = true);
+  Integer previous[2](each start = -3, each fixed = true);
+  Integer observed = previous[2];
 equation
   der(x) = 1;
   when x >= 0.5 then
@@ -58,6 +61,10 @@ equation
   end when;
   when sample(0.05, 0.1) then
     ticks = pre(ticks) + 1;
+  end when;
+  when sample(0, 0.1) then
+    sampled = pre(sampled) + {1, 2};
+    previous = if initial() then sampled else pre(sampled);
   end when;
   assert(time < 2, "late");
 end StateAndTimeEvents;

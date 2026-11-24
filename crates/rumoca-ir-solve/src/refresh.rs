@@ -9,8 +9,10 @@ mod assignment_shape;
 mod chunks;
 mod compact_owner;
 mod dependency;
+mod effects;
 mod exact_source;
 mod execution;
+mod history;
 mod leaf_dependencies;
 mod materialization;
 mod native_assignment;
@@ -41,6 +43,7 @@ pub use assignment_shape::{
 };
 use dependency::AssignmentDependencies;
 pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
+pub use effects::DirectRefreshEffects;
 pub use exact_source::BoundExactRefreshAssignment;
 pub use execution::RefreshExecutionRefusal;
 pub use leaf_dependencies::LeafDependencies;

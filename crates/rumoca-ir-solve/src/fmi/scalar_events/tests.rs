@@ -134,3 +134,27 @@ fn scalar_event_profile_serializes_only_the_current_input_run_contract() {
     assert_eq!(json["discrete_input_runs"]["scalar_count"], 0);
     assert_eq!(json["discrete_input_runs"]["runs"], serde_json::json!([]));
 }
+
+#[test]
+fn event_commit_snapshots_only_aliasing_parameter_history() {
+    use crate::{PreParamBinding, PreParamSource};
+
+    let mut model = crate::SolveModel::default();
+    model.problem.layout = VarLayout::from_parts(Default::default(), 8, 8);
+    model.problem.solve_layout.pre_param_bindings = vec![
+        PreParamBinding {
+            dest_p_index: 4,
+            source: PreParamSource::P { index: 1 },
+            clock_schedule: None,
+        },
+        PreParamBinding {
+            dest_p_index: 5,
+            source: PreParamSource::Y { index: 4 },
+            clock_schedule: None,
+        },
+    ];
+    assert!(!super::validate(&model).unwrap().pre_commit_needs_snapshot);
+
+    model.problem.solve_layout.pre_param_bindings[1].source = PreParamSource::P { index: 4 };
+    assert!(super::validate(&model).unwrap().pre_commit_needs_snapshot);
+}

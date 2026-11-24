@@ -1,4 +1,4 @@
-//! C admission of the compiler's relation-only initialization mode.
+//! C admission of the compiler's initialization-mode reads.
 
 #[cfg(test)]
 mod tests;
@@ -12,6 +12,8 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
         return Ok(());
     };
     let mut reads = ModeReads {
+        model: Some(model),
+        in_sample: false,
         flag,
         memory: &model.problem.solve_layout.relation_memory_parameter_indices,
         calls: &model.pure_calls,
@@ -29,13 +31,15 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
     }
     if reads.total != reads.guards {
         return Err(
-            "the C profile cannot execute mode reads outside checked relation regions (including authored initial()) yet",
+            "the C profile cannot execute mode reads outside checked relation or sampled assignment regions (including authored initial()) yet",
         );
     }
     Ok(())
 }
 
 struct ModeReads<'a> {
+    model: Option<&'a SolveModel>,
+    in_sample: bool,
     flag: usize,
     memory: &'a [usize],
     calls: &'a crate::SolvePureCallTable,
@@ -47,6 +51,52 @@ struct ModeReads<'a> {
 
 impl SolveVisitor for ModeReads<'_> {
     type Error = std::convert::Infallible;
+
+    fn visit_scalar_program_block(
+        &mut self,
+        block: &crate::ScalarProgramBlock,
+    ) -> Result<(), Self::Error> {
+        let Some(model) = self.model else {
+            return crate::visitor::walk_scalar_program_block(self, block);
+        };
+        let discrete = &model.problem.discrete;
+        let artifacts = &model.artifacts.discrete;
+        let guarded_jvp = artifacts
+            .guarded_jacobian_v
+            .as_ref()
+            .is_some_and(|b| std::ptr::eq(b, block));
+        let condition_rows = std::ptr::eq(block, &discrete.rhs)
+            || artifacts
+                .rhs_jacobian_v
+                .as_ref()
+                .is_some_and(|b| std::ptr::eq(b, block));
+        for (i, ops) in block.programs().iter().enumerate() {
+            // Both primal and directional programs use the same current mode
+            // during the initial clock event. Its isolated edge-memory copy
+            // is seeded through the existing condition-memory lifecycle.
+            self.in_sample = (guarded_jvp
+                && discrete
+                    .guarded_assignments
+                    .get(i)
+                    .is_some_and(|g| g.clock_owner().is_some()))
+                || (condition_rows
+                    && discrete
+                        .rhs
+                        .programs()
+                        .get(i)
+                        .is_some_and(|primal| mode_parameter(primal) == Some(self.flag))
+                    && block
+                        .program_contiguous_output_range(i)
+                        .is_some_and(|rows| {
+                            rows.len() == 1
+                                && discrete.row_roles.get(rows.start)
+                                    == Some(&crate::DiscreteRowRole::ConditionMemory)
+                        }));
+            self.visit_scalar_program(i, block.program_span(i), ops)?;
+        }
+        self.in_sample = false;
+        Ok(())
+    }
 
     fn visit_compute_node(
         &mut self,
@@ -60,15 +110,21 @@ impl SolveVisitor for ModeReads<'_> {
 
     fn visit_linear_op(
         &mut self,
-        _kind: LinearOpSliceKind,
+        kind: LinearOpSliceKind,
         _index: usize,
         op: &LinearOp,
     ) -> Result<(), Self::Error> {
+        let sampled = self.in_sample
+            || matches!(kind, LinearOpSliceKind::GuardedAssignmentProgram { program_index, .. } if self.model.is_some_and(|m| m.problem.discrete.guarded_assignments[program_index].clock_owner().is_some()));
+        if sampled && matches!(op, LinearOp::LoadP { index, .. } if *index == self.flag) {
+            return Ok(());
+        }
         self.total += usize::from(
             crate::parameter_reads::parameter_read_range(op)
                 .is_some_and(|run| run.contains(&self.flag)),
         );
-        if let LinearOp::FunctionConditional { program, .. } = op
+        if !sampled
+            && let LinearOp::FunctionConditional { program, .. } = op
             && let [arm] = program.arms.as_ref()
             && mode_parameter(&arm.condition) == Some(self.flag)
             && parameter_seed(&arm.condition, self.seed_offset)
