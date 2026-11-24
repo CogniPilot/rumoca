@@ -195,20 +195,13 @@ pub(super) fn create_conditional_equation_from_simple(
     } else {
         flat::Equation::new_array(residual, context.span, context.origin.clone(), scalar_count)
     };
-    let dimensions = infer_simple_equation_dims(
+    let structured_equations = simple_equation_families(
+        context.ctx,
         &first.lhs,
         &first.rhs,
         context.prefix,
-        context.ctx,
-        scalar_count,
-    );
-    let structured_equations = if is_tuple_receiver_equation_lhs(&first.lhs) {
-        Vec::new()
-    } else {
-        array_family::structured_array_equation_family(0, &equation, dimensions.as_deref())?
-            .into_iter()
-            .collect()
-    };
+        &equation,
+    )?;
     Ok(FlattenedEquations {
         equations: vec![equation],
         structured_equations,
@@ -300,19 +293,12 @@ fn flatten_simple_in_list(
     if scalar_count == 0 {
         return Ok(FlattenedEquations::default());
     }
-    let equation_dims = infer_simple_equation_dims(&lhs, &rhs, prefix, ctx, scalar_count);
     let equation = if scalar_count == 1 {
         flat::Equation::new(residual, span, origin.clone())
     } else {
         flat::Equation::new_array(residual, span, origin.clone(), scalar_count)
     };
-    let structured_equations = if is_tuple_receiver_equation_lhs(&lhs) {
-        Vec::new()
-    } else {
-        array_family::structured_array_equation_family(0, &equation, equation_dims.as_deref())?
-            .into_iter()
-            .collect()
-    };
+    let structured_equations = simple_equation_families(ctx, &lhs, &rhs, prefix, &equation)?;
     Ok(FlattenedEquations {
         equations: vec![equation],
         structured_equations,
