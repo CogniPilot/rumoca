@@ -1,7 +1,10 @@
 #if defined(__GNUC__) || defined(__clang__)
 #define RMC_COLD __attribute__((cold))
+/* A helper a model may not call; clang warns on an unused static inline. */
+#define RMC_UNUSED __attribute__((unused))
 #else
 #define RMC_COLD
+#define RMC_UNUSED
 #endif
 /* Symbols shared between the component's translation units stay out of the
    dynamic symbol table; Windows objects have no such attribute and a static
@@ -95,7 +98,7 @@ static double* rmc_dalloc(ModelInstance* m, size_t count) {
     return values;
 }
 /* A buffer its caller writes completely before reading it. */
-static inline double* rmc_dalloc_raw(ModelInstance* m, size_t count) {
+RMC_UNUSED static inline double* rmc_dalloc_raw(ModelInstance* m, size_t count) {
     if (count > RMC_DWORK - m->rmc_dtop) return NULL;
     double* values = m->rmc_d + m->rmc_dtop; m->rmc_dtop += count;
     return values;
@@ -2046,8 +2049,10 @@ RMC_COLD static {{ prefix }}Status rmc_initialize(ModelInstance* m, double toler
 {%- macro kernel_declarations(me) %}
 #if defined(__GNUC__) || defined(__clang__)
 #define RMC_COLD __attribute__((cold))
+#define RMC_UNUSED __attribute__((unused))
 #else
 #define RMC_COLD
+#define RMC_UNUSED
 #endif
 /* Symbols shared between the component's translation units stay out of the
    dynamic symbol table; Windows objects have no such attribute and a static

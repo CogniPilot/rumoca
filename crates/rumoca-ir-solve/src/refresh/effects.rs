@@ -18,6 +18,23 @@ impl DirectRefreshEffects {
 }
 
 impl SolveProblem {
+    /// Whether `program`'s source reads no history destination; `None` when
+    /// the program is not bound to this problem's source.
+    fn reads_no_history(
+        &self,
+        program: &super::ExactRefreshAssignmentProgram,
+        history: &BTreeSet<usize>,
+    ) -> Option<bool> {
+        let bound = program.bind_source(&self.continuous.implicit_rhs).ok()?;
+        Some(
+            crate::program_parameter_indices(bound.source_prefix().ok()?)
+                .iter()
+                .all(|index| !history.contains(index)),
+        )
+    }
+}
+
+impl SolveProblem {
     /// Certify the rollback set of this problem's own refresh. Partial projections and
     /// uncertified fallback paths require preserving the full incoming state.
     pub fn direct_refresh_effects(
@@ -45,13 +62,8 @@ impl SolveProblem {
             for id in schedule.program_ids() {
                 let program = owners.exact_assignment_program(*id)?;
                 targets.extend(program.target_indices().iter().copied());
-                if history_independent && !history.is_empty() {
-                    let bound = program.bind_source(&self.continuous.implicit_rhs).ok()?;
-                    history_independent =
-                        crate::program_parameter_indices(bound.source_prefix().ok()?)
-                            .iter()
-                            .all(|index| !history.contains(index));
-                }
+                history_independent = history_independent
+                    && (history.is_empty() || self.reads_no_history(program, &history)?);
             }
         }
         let mut runs: Vec<[usize; 2]> = Vec::new();

@@ -143,3 +143,109 @@ end Probe;"#;
         .unwrap();
     assert_eq!(result.data[y].first().copied(), Some(4.0));
 }
+
+/// MLS §7.2.4: `m(r = d.r)` binds the whole record, so it overrides the field
+/// modifier `r(w = ...)` of the extends clause it modifies, in `m.r` and in
+/// every component `m` forwards `r` to. The field value is once an Integer
+/// literal and once not: either is overridden.
+#[test]
+fn a_record_binding_overrides_the_field_modifiers_of_the_declaration_it_modifies() {
+    for inner_field_value in ["5", "5.5"] {
+        let source = format!(
+            r#"record R
+  parameter Real a = 0;
+  parameter Real w = 1;
+  final parameter Real t = a/w;
+end R;
+record Data
+  parameter R r(a = 0, w = 7);
+end Data;
+model Part
+  parameter R r;
+  Real torque = r.t*r.w;
+  Real speed = r.w;
+end Part;
+model Base
+  parameter R r;
+  Part part(final r = r);
+end Base;
+model Mid
+  extends Base(r(w = {inner_field_value}));
+end Mid;
+model Top
+  parameter Data d(r(a = 180, w = 3));
+  Mid m(r = d.r);
+  Real own = m.r.w;
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = m.part.torque;
+end Top;"#
+        );
+        let compiled = Compiler::new()
+            .model("Top")
+            .compile_str(&source, "record_binding_over_field_modifier.mo")
+            .unwrap();
+        let result = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (name, expected) in [
+            ("own", 3.0),
+            ("m.part.speed", 3.0),
+            ("m.part.torque", 180.0),
+        ] {
+            let channel = result
+                .names
+                .iter()
+                .position(|channel| channel == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert_eq!(
+                result.data[channel].first().copied(),
+                Some(expected),
+                "{name} with the inner field modifier w = {inner_field_value}"
+            );
+        }
+    }
+}
+
+/// MLS §12.9: an external body is foreign code, which numeric evaluation
+/// cannot run. A parameter bound to an external "C" call is refused with the
+/// function and its symbol, not given a plausible value.
+#[test]
+fn a_parameter_bound_to_an_external_c_call_is_refused_with_its_symbol() {
+    let source = r#"model ExternalParameter
+  function f
+    input Real x;
+    output Real y;
+    external "C" y = no_such_symbol(x);
+  end f;
+  parameter Real p = f(1);
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = p;
+end ExternalParameter;"#;
+    let compiled = Compiler::new()
+        .model("ExternalParameter")
+        .compile_str(source, "external_parameter.mo")
+        .unwrap();
+    let error = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect_err("an external C body cannot be evaluated");
+    assert!(
+        error.to_string().contains(
+            "external C function `f` calls `no_such_symbol`, which this runtime cannot execute"
+        ),
+        "{error:#}"
+    );
+}

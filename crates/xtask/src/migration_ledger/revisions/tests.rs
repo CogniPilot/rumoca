@@ -165,7 +165,85 @@ fn shipped_record_is_pinned_and_resolves_only_d007() {
         .filter(|(path, hash)| ledger.files.get(*path) != Some(*hash))
         .map(|(path, _)| path.as_str())
         .collect();
-    // R001 moves five paths and R002 six, all existing ones.
-    assert_eq!(moved.len(), 11, "{moved:?}");
-    assert_eq!(expected.len(), ledger.files.len() + 1);
+    // R001 revises five paths, R002 six, R003 eleven and R004 four. One path
+    // is revised twice, and three are new.
+    assert_eq!(moved.len(), 25, "{moved:?}");
+    assert_eq!(expected.len(), ledger.files.len() + 3);
+}
+
+/// The ledger's first pinned region, re-pinned by a revision of its file.
+fn region_revision(ledger: &Ledger) -> serde_json::Value {
+    let region = &ledger.source_regions[0];
+    let file = &ledger.files[&region.path];
+    serde_json::json!({
+        "id": "R001",
+        "decision": "d-test",
+        "change": "move a pinned macro",
+        "resolves": [],
+        "files": [{"path": region.path, "before": file, "after": digest(b"revised")}],
+        "regions": [{
+            "path": region.path,
+            "name": region.name,
+            "before": region.sha256,
+            "start_byte": region.start_byte + 7,
+            "end_byte": region.end_byte + 7,
+            "after": region.sha256,
+        }],
+    })
+}
+
+fn regions_of(ledger: &Ledger, revision: &serde_json::Value) -> Result<Vec<SourceRegion>> {
+    let record = serde_json::json!({"schema": 1, "revisions": [revision]}).to_string();
+    revisions::regions_in_force(ledger, &record)
+}
+
+#[test]
+fn a_revision_re_pins_a_region_of_a_path_it_revises_and_no_other() {
+    let ledger = parse_ledger(REFERENCE).unwrap();
+    let revision = region_revision(&ledger);
+    let regions = regions_of(&ledger, &revision).unwrap();
+    let (first, pinned) = (&regions[0], &ledger.source_regions[0]);
+    assert_eq!(first.start_byte, pinned.start_byte + 7);
+    assert_eq!(first.end_byte, pinned.end_byte + 7);
+    for (region, pinned) in regions.iter().zip(&ledger.source_regions).skip(1) {
+        assert_eq!(
+            (region.start_byte, region.end_byte, &region.sha256),
+            (pinned.start_byte, pinned.end_byte, &pinned.sha256)
+        );
+    }
+}
+
+#[test]
+fn region_re_pins_outside_the_revision_or_the_ledger_are_refused() {
+    let ledger = parse_ledger(REFERENCE).unwrap();
+    for (field, value, reason) in [
+        (
+            "path",
+            "crates/rumoca-phase-codegen/src/lib.rs",
+            "does not revise",
+        ),
+        ("name", "no_such_macro", "unknown region"),
+        (
+            "before",
+            &*digest(b"other"),
+            "does not match the region in force",
+        ),
+        ("after", "not-a-digest", "invalid hash or extent"),
+    ] {
+        let mut revision = region_revision(&ledger);
+        revision["regions"][0][field] = value.into();
+        let error = regions_of(&ledger, &revision).unwrap_err().to_string();
+        assert!(error.contains(reason), "{field}: {error}");
+    }
+    let mut unchanged = region_revision(&ledger);
+    let pinned = &ledger.source_regions[0];
+    unchanged["regions"][0]["start_byte"] = pinned.start_byte.into();
+    unchanged["regions"][0]["end_byte"] = pinned.end_byte.into();
+    let error = regions_of(&ledger, &unchanged).unwrap_err().to_string();
+    assert!(error.contains("records no change"), "{error}");
+    let mut repeated = region_revision(&ledger);
+    let first = repeated["regions"][0].clone();
+    repeated["regions"].as_array_mut().unwrap().push(first);
+    let error = regions_of(&ledger, &repeated).unwrap_err().to_string();
+    assert!(error.contains("repeats region"), "{error}");
 }

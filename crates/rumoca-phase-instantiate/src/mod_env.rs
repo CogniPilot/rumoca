@@ -705,9 +705,15 @@ fn collect_structural_integer_fields_from_sibling_reference(
         effective_components,
         resolve_class_components: resolve_effective_components_for_eval,
     };
+    // MLS §7.2.4: an enclosing modifier that binds the whole source record
+    // overrides the field modifiers of its declaration.
+    let whole_record_is_bound = mod_env
+        .get(&ast::QualifiedName::from_ident(source_name))
+        .is_some();
     let mut values: Vec<_> = source_component
         .modifications
         .iter()
+        .filter(|_| !whole_record_is_bound)
         .filter_map(|(field_name, field_expr)| {
             let binding = field_expr.component_modifier_binding_value()?;
             try_eval_integer_expr(&eval_ctx, binding).map(|value| {

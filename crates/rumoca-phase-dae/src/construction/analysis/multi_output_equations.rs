@@ -145,6 +145,29 @@ fn multi_output_equation(equation: &flat::Equation) -> Option<MultiOutputEquatio
     })
 }
 
+/// MLS §12.4.3 evaluates the call once. The canonical DAE currently owns one
+/// ordinal projection per retained result, which can repeat evaluation; that
+/// representation is equivalent only for a side-effect-free body.
+fn require_single_evaluation(
+    function: &rumoca_core::Function,
+    name: &rumoca_core::Reference,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    if function.body_is_pure() {
+        return Ok(());
+    }
+    Err(ToDaeError::unsupported_flat(
+        "multi-output equation",
+        format!(
+            "MLS §12.4.3 evaluates a multi-result call once, but the canonical DAE reads \
+             each result as its own call: `{}` is impure, so repeated evaluation would not \
+             preserve the source equation",
+            name.as_str()
+        ),
+        span,
+    ))
+}
+
 fn validate_multi_output_equation(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
@@ -176,21 +199,7 @@ fn validate_multi_output_equation(
         ));
     }
     let function = &flat.functions[&certificate.key.function];
-    // MLS §12.4.3 evaluates the call once. The canonical DAE currently owns
-    // one ordinal projection per retained result, which can repeat evaluation;
-    // that representation is equivalent only for a side-effect-free body.
-    if !function.body_is_pure() {
-        return Err(ToDaeError::unsupported_flat(
-            "multi-output equation",
-            format!(
-                "MLS §12.4.3 evaluates a multi-result call once, but the canonical DAE reads \
-                 each result as its own call: `{}` is impure, so repeated evaluation would not \
-                 preserve the source equation",
-                source.function.as_str()
-            ),
-            source.span,
-        ));
-    }
+    require_single_evaluation(function, source.function, source.span)?;
     let mut outputs = Vec::with_capacity(source.receivers.len());
     let mut records = Vec::new();
     let mut selected_sizes = HashMap::new();

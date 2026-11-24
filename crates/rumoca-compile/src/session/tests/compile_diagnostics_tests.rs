@@ -831,11 +831,11 @@ end UsesHandle;
     assert_ne!(constructor_def_id, destructor_def_id);
     assert_eq!(
         SOURCE[constructor.location.start as usize..constructor.location.end as usize].trim_start(),
-        "constructor\n    input Real seed;\n    output Handle handle;\n    external \"C\" handle = make_handle(seed);\n  end constructor"
+        "function constructor\n    input Real seed;\n    output Handle handle;\n    external \"C\" handle = make_handle(seed);\n  end constructor;"
     );
     assert_eq!(
         SOURCE[destructor.location.start as usize..destructor.location.end as usize].trim_start(),
-        "destructor\n    input Handle handle;\n    external \"C\" free_handle(handle);\n  end destructor"
+        "function destructor\n    input Handle handle;\n    external \"C\" free_handle(handle);\n  end destructor;"
     );
 
     let flat = session

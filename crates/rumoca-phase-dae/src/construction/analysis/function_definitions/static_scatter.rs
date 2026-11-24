@@ -81,6 +81,10 @@ impl Trace {
         Some(())
     }
 
+    fn visit_all(&mut self, statements: &[Statement]) -> Option<()> {
+        statements.iter().try_for_each(|item| self.visit(item))
+    }
+
     fn visit(&mut self, statement: &Statement) -> Option<()> {
         self.budget = self.budget.checked_sub(1)?;
         match statement {
@@ -111,9 +115,7 @@ impl Trace {
                     self.budget = self.budget.checked_sub(1)?;
                     self.values
                         .add_parameter(&binder.ident, EvalValue::Integer(v));
-                    for item in equations {
-                        self.visit(item)?;
-                    }
+                    self.visit_all(equations)?;
                 }
                 self.values.parameters.shift_remove(&binder.ident);
                 if let Some(v) = saved {
@@ -125,9 +127,7 @@ impl Trace {
                 self.observe(&block.cond);
                 while self.condition(&block.cond)? {
                     self.budget = self.budget.checked_sub(1)?;
-                    for item in &block.stmts {
-                        self.visit(item)?;
-                    }
+                    self.visit_all(&block.stmts)?;
                 }
                 Some(())
             }
