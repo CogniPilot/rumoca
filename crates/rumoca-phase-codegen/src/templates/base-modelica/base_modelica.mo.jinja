@@ -121,7 +121,7 @@ assert({{ render_expr(a.condition, cfg) }}, {{ render_expr(a.message, cfg) }}{% 
   // --- variable declarations ---
 {%- for name, var in flat.variables | items %}
 {%- if not var.is_protected %}
-  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) | trim }}{{ dims(var) }} {{ qname(name) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) | trim }} {{ qname(name) }}{{ dims(var) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
 {%- endif %}
 {%- endfor %}
 {%- set ns = namespace(has_protected=false) %}
@@ -134,7 +134,7 @@ protected
   // --- protected declarations ---
 {%- for name, var in flat.variables | items %}
 {%- if var.is_protected %}
-  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) | trim }}{{ dims(var) }} {{ qname(name) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) | trim }} {{ qname(name) }}{{ dims(var) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
 {%- endif %}
 {%- endfor %}
 {%- endif %}

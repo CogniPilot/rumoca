@@ -79,6 +79,22 @@ initial equation
 end Fixed;
 "#;
 
+/// A vector, a matrix and a protected vector, for the place of array dimensions.
+const ARRAYS_MODEL: &str = "Arrays";
+const ARRAYS_SOURCE: &str = r#"
+model Arrays
+  Real a[2](each start = 1);
+  Real c[2, 3];
+  parameter Real k[2] = {1, 2};
+protected
+  Real h[2];
+equation
+  der(a) = -k;
+  c = fill(1.0, 2, 3);
+  h = 2 * a;
+end Arrays;
+"#;
+
 /// A compiled smoke model plus the name the CLI would render it under.
 struct Fixture {
     model_name: &'static str,
@@ -264,6 +280,26 @@ fn modelica_targets_print_the_value_of_fixed() {
             );
         }
     }
+}
+
+/// Base Modelica has one place for array dimensions, after the component name:
+/// the component clause takes none after the type (MCP-0031, grammar.md, B24).
+#[test]
+fn base_modelica_puts_array_dimensions_after_the_name() {
+    let fixture = compile_fixture(ARRAYS_MODEL, ARRAYS_SOURCE);
+    let files = render_target_files(&fixture.compiled, fixture.model_name, "base-modelica", None)
+        .unwrap_or_else(|error| panic!("base-modelica must render: {error:#}"));
+    let text = &files[0].content;
+    for expected in ["Real a[2](", "Real c[2, 3](", "Real k[2](", "Real h[2]("] {
+        assert!(
+            text.contains(expected),
+            "base-modelica must print `{expected}`:\n{text}"
+        );
+    }
+    assert!(
+        !text.contains("Real["),
+        "base-modelica must not put dimensions after the type:\n{text}"
+    );
 }
 
 /// The galec target renders a non-empty `<Model>.alg` (typed-printer output
