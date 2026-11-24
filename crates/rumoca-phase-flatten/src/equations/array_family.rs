@@ -10,6 +10,17 @@ pub(crate) fn structured_array_equation_family(
     if equation.scalar_count <= 1 {
         return Ok(None);
     }
+    array_equation_family(equation_index, equation, preferred_dims).map(Some)
+}
+
+/// The family of an array equation of any extent. A one-element array
+/// equation is still an array equation (MLS §10.6.1): its residual is an
+/// array, and a caller that proved that shape issues its family here.
+pub(crate) fn array_equation_family(
+    equation_index: usize,
+    equation: &flat::Equation,
+    preferred_dims: Option<&[i64]>,
+) -> Result<flat::StructuredEquationFamily, FlattenError> {
     let dims = normalized_family_dims(preferred_dims, equation.scalar_count, equation.span)?;
     let binders = dims
         .iter()
@@ -24,7 +35,7 @@ pub(crate) fn structured_array_equation_family(
             step: 1,
         })
         .collect();
-    Ok(Some(flat::StructuredEquationFamily {
+    Ok(flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain { binders },
         first_equation_index: equation_index,
         equations_per_point: 1,
@@ -36,7 +47,7 @@ pub(crate) fn structured_array_equation_family(
             scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
         }),
         interiors: flat::FamilyInteriors::Materialized,
-    }))
+    })
 }
 
 fn normalized_family_dims(

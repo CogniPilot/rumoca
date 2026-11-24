@@ -576,6 +576,20 @@ pub(crate) fn infer_simple_equation_dims(
         .or_else(|| i64::try_from(scalar_count).ok().map(|count| vec![count]))
 }
 
+/// The dimensions of a simple equation that is provably an array equation of
+/// one element: either side's shape is the equation's shape (MLS §10.6.1).
+pub(crate) fn one_element_array_dims(
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    prefix: &ast::QualifiedName,
+    ctx: &Context,
+) -> Option<Vec<i64>> {
+    [lhs, rhs]
+        .into_iter()
+        .filter_map(|side| dims_for_shape(infer_expression_shape(side, prefix, ctx)))
+        .find(|dims| dims_scalar_size(dims) == 1)
+}
+
 fn dims_for_shape(shape: ExpressionShape) -> Option<Vec<i64>> {
     match shape {
         ExpressionShape::Scalar | ExpressionShape::Other => None,
