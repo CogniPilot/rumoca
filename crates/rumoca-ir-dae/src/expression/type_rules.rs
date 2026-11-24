@@ -699,8 +699,8 @@ fn shaped_builtin_result(
 
 /// MLS 3.7 §10.3.3: `fill(s, n1, n2, ...)` has `s`'s element type at every
 /// position, so a record element keeps its record name and fields. Only an
-/// element value (a scalar or a record) is accepted; an array `s` stays
-/// refused.
+/// element value (a scalar or a record) is accepted here: the checked
+/// constructor writes `fill` of an array `s` as the array of its copies.
 fn fill_result(
     storage: &Storage,
     arguments: &[ExprId<'_>],
@@ -933,7 +933,7 @@ fn promoted_dimensions(dimensions: &[u32], rank: usize) -> Vec<u32> {
         .collect()
 }
 
-fn literal_array_extent(
+pub(super) fn literal_array_extent(
     storage: &Storage,
     expression: ExprId<'_>,
     at: DaeProvenance,

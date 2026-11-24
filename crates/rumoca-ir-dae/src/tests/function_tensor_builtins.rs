@@ -117,6 +117,51 @@ fn ones_and_fill_are_compact_typed_array_operations() {
     });
 }
 
+/// MLS 3.7 §10.3.3: `fill(s, n) = {s, s, ..., s}`. An array `s` keeps its own
+/// axes after the new ones, and every level repeats one expression.
+#[test]
+fn fill_of_an_array_is_the_array_of_its_copies() {
+    let source = TestSource::new("fill({1.0, 2.0}, 3, 2); fill({1.0, 2.0}, 0)");
+    let at = source.source("fill({1.0, 2.0}, 3, 2)", 0);
+    let empty_at = source.source("fill({1.0, 2.0}, 0)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let one = expressions.at(at).literal(DaeLiteral::Real(1.0))?;
+            let two = expressions.at(at).literal(DaeLiteral::Real(2.0))?;
+            let value = expressions.at(at).array([one, two])?;
+            let outer = expressions.at(at).literal(DaeLiteral::Integer(3))?;
+            let inner = expressions.at(at).literal(DaeLiteral::Integer(2))?;
+            expressions
+                .at(at)
+                .builtin(PureBuiltin::Fill, [value, outer, inner])?;
+            let none = expressions.at(empty_at).literal(DaeLiteral::Integer(0))?;
+            expressions
+                .at(empty_at)
+                .builtin(PureBuiltin::Fill, [value, none])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    dae.inspect(|view| {
+        for (index, dimensions, copies, copied) in [
+            (5, &[2, 2][..], 2, Some(2)),
+            (6, &[3, 2, 2][..], 3, Some(5)),
+            (8, &[0, 2][..], 0, None),
+        ] {
+            let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
+            assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
+            assert_eq!(expression.value_type().dimensions(), dimensions);
+            let ExpressionOperation::Array(elements) = expression.operation() else {
+                panic!("expression {index} is not an array constructor");
+            };
+            assert_eq!(elements.len(), copies);
+            let copied = copied.map(|index| view.expression_id(index).unwrap());
+            assert!(elements.iter().all(|element| Some(element) == copied));
+        }
+    });
+}
+
 #[test]
 fn identity_is_a_checked_compact_integer_matrix_operation() {
     let source = TestSource::new("Integer i[2,2] = identity(2)");

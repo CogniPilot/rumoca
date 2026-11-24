@@ -7,6 +7,17 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         arguments: impl IntoIterator<Item = ExprId<'dae>>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let arguments = arguments.into_iter().collect::<Vec<_>>();
+        if builtin == PureBuiltin::Fill
+            && let [value, extents @ ..] = arguments.as_slice()
+            && !extents.is_empty()
+            && !self
+                .storage
+                .expr_type(*value, self.provenance)?
+                .dimensions()
+                .is_empty()
+        {
+            return self.repeated_array(*value, extents);
+        }
         let result = builtin_result(self.storage, builtin, &arguments, self.provenance)?;
         if matches!(
             builtin,
@@ -15,6 +26,40 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             validate_static_quotient(self.storage, builtin, &arguments, self.provenance)?;
         }
         self.insert_builtin(builtin, arguments, result)
+    }
+
+    /// MLS 3.7 §10.3.3: `fill(s, n) = {s, s, ..., s}`, and further extents
+    /// nest outward. `Fill` itself keeps an element value, so an array `s` is
+    /// the array of its copies: every level repeats one expression, and no
+    /// consumer of `Fill` has to place an element of `s`.
+    fn repeated_array(
+        mut self,
+        value: ExprId<'dae>,
+        extents: &[ExprId<'dae>],
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let mut repeated = value;
+        for extent in extents.iter().rev() {
+            let extent = type_rules::literal_array_extent(self.storage, *extent, self.provenance)?;
+            let level = self.reborrow();
+            repeated = if extent == 0 {
+                let element = level.storage.expr_type(repeated, level.provenance)?;
+                let empty = element.with_prefixed_dimensions(&[0]);
+                let empty = level.storage.intern_type(empty, level.provenance)?;
+                level.empty_array(empty)?
+            } else {
+                level.array(std::iter::repeat_n(repeated, extent as usize))?
+            };
+        }
+        Ok(repeated)
+    }
+
+    fn reborrow(&mut self) -> ExpressionAt<'_, 'dae> {
+        ExpressionAt {
+            source_map: self.source_map,
+            storage: self.storage,
+            provenance: self.provenance,
+            marker: std::marker::PhantomData,
+        }
     }
 
     pub(crate) fn checked_runtime_quotient(

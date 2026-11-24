@@ -196,6 +196,8 @@ fn shaping() -> Vec<Row> {
         ("cat", &[Vector, Vector], "cat(1, {a}, {b})", VECTOR6_OUT),
         ("cat", &[Matrix, Matrix], "cat(1, {a}, {b})", MATRIX63_OUT),
         ("fill", &[Scalar], "fill({a}, 2, 2)", FILL_SCALAR_OUT),
+        ("fill", &[Vector], "fill({a}, 2)", FILL_VECTOR_OUT),
+        ("fill", &[Matrix], "fill({a}, 2)", FILL_MATRIX_OUT),
     ];
     let mut rows: Vec<Row> = admitted
         .iter()
@@ -203,24 +205,6 @@ fn shaping() -> Vec<Row> {
             row(Family::Shaping, construct, operands, form, *carrier, HERE)
         })
         .collect();
-    // `fill` given an array builds a rank the canonical DAE does not carry, so
-    // those two rows are taken in OpenModelica.
-    rows.push(row(
-        Family::Shaping,
-        "fill",
-        &[Vector],
-        "fill({a}, 2)",
-        FILL_VECTOR_OUT,
-        ELSEWHERE,
-    ));
-    rows.push(row(
-        Family::Shaping,
-        "fill",
-        &[Matrix],
-        "fill({a}, 2)",
-        FILL_MATRIX_OUT,
-        ELSEWHERE,
-    ));
     let stated = rows.clone();
     rows.extend(unstated_shape_rest(
         Family::Shaping,
