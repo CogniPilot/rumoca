@@ -308,6 +308,39 @@ impl SolveRuntime {
             .settle_initialization_system(y, p, t, tol, max_iters)
     }
 
+    /// The starts of the initially seeded discrete targets, read from the
+    /// parameter vector initialization is about to settle, paired with their
+    /// `pre` slots (empty when no row is seeded).
+    pub fn initial_seed_pre_starts(
+        &self,
+        params: &[f64],
+    ) -> Result<Vec<(usize, f64)>, RuntimeSolveError> {
+        Ok(self.scalar_execution()?.initial_seed_pre_starts(params))
+    }
+
+    /// Keep the `pre` slots of the initially seeded discrete targets at the
+    /// starts saved before the seed, after the initialization `pre` commit;
+    /// the initial event pass publishes those rows.
+    pub fn keep_initial_seed_pre_params(
+        &self,
+        params: &mut [f64],
+        starts: &[(usize, f64)],
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .keep_initial_seed_pre_params(params, starts);
+        Ok(())
+    }
+
+    pub(crate) fn keep_seeded_pre_from_entry(
+        &self,
+        params: &mut [f64],
+        event_pre_p: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .keep_initial_seed_pre_params_from_entry(params, event_pre_p);
+        Ok(())
+    }
+
     pub fn update_relation_memory_from_state(
         &self,
         t: f64,

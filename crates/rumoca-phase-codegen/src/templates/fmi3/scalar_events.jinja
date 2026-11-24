@@ -911,6 +911,28 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
     bool changed = false;
     m->rmc_override_count = 0;
     rmc_clear_clock_lanes(m);
+{%- if ev.seed_rows|length > 0 %}
+    /* initial_seed_rows.rs: a discrete equation whose value the initial
+       parameters and inputs fix holds before the first algebraic refresh reads
+       its target (MLS 3.7 §8.6), in the issued dependency order. The owners
+       pass below publishes the rows, so the history copy keeps each seeded
+       target's pre slot at the declaration start it had before the seed. */
+    double rmc_seed_before[{{ ev.seed_rows|length }}];
+    {
+        double values[{{ solve.discrete.update_targets|length }}];
+{%- for seed in ev.seed_rows %}
+{%- set program = solve.discrete.rhs_plan.programs[seed.program] %}
+        {
+        double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "values", prefix ~ "Error") }}
+{%- endfor %}
+        }
+        rmc_seed_before[{{ loop.index0 }}] = m->p[{{ seed.target }}];
+        m->p[{{ seed.target }}] = values[{{ seed.row }}];
+{%- endfor %}
+    }
+{%- endif %}
 {%- if ev.has_quotient_memory %}
     /* Seed the unclocked discrete equations that supply array subscripts to
        the first algebraic refresh. A guarded sample is still inactive here. */
@@ -944,6 +966,11 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
 {%- endif %}
     if (settle_values(m) != {{ prefix }}OK || rmc_relation_refresh(m, false, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
 {{- copy_history(fmi.history_runs, "m->p", "m->y", "m->p") }}
+{%- for seed in ev.seed_rows %}
+{%- if seed.pre_slot is not none %}
+    m->p[{{ seed.pre_slot }}] = rmc_seed_before[{{ loop.index0 }}];
+{%- endif %}
+{%- endfor %}
     if (rmc_discrete_owners(m, &changed, true, false) != {{ prefix }}OK) return {{ prefix }}Error;
     memcpy(m->rmc_entry_y, m->y, sizeof(m->y));
     memcpy(m->rmc_entry_p, m->p, sizeof(m->p));

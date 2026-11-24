@@ -528,6 +528,7 @@ impl SolveRuntime {
         };
         // MLS §8.6: every ordinary binding holds at initialization, with any
         // relation it contains evaluated directly (#468).
+        let initial_seed_rows = model.problem.initial_seed_discrete_rows();
         let initial_binding_rows = initial_binding_ownership::select_initial_binding_rows(
             &model.problem.discrete.runtime_assignment_targets,
             model.problem.initialization.update_targets(),
@@ -537,6 +538,7 @@ impl SolveRuntime {
             model_jacobian,
             compiled_derivative_operation,
             initial_binding_rows,
+            initial_seed_rows,
             coupled_event_jvps: coupled_event::CoupledEventJvps::prepare(
                 &model.artifacts.discrete,
                 execution_backend.as_ref(),

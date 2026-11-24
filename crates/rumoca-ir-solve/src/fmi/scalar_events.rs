@@ -28,6 +28,9 @@ pub(super) struct ScalarEventProfile {
     /// Per root output: whether and how it is evaluated in Event Mode.
     roots: Vec<ScalarEventRoot>,
     has_quotient_memory: bool,
+    /// Discrete equation rows seeded before the first algebraic refresh, in
+    /// issued dependency order (initial_seed_rows.rs), with their P targets.
+    seed_rows: Vec<SeedRow>,
     /// Destination and source of every pre binding, in binding order.
     pre_bindings: Vec<PreLane>,
     /// The pre bindings (indices into `pre_bindings`) an event pass advances
@@ -138,6 +141,30 @@ struct PreLane {
 }
 
 /// Admit the scalar event profile, or say why the model needs more.
+#[derive(Debug, Serialize)]
+struct SeedRow {
+    row: usize,
+    program: usize,
+    target: usize,
+    pre_slot: Option<usize>,
+}
+
+fn seed_rows(problem: &crate::SolveProblem) -> Result<Vec<SeedRow>, &'static str> {
+    problem
+        .initial_seed_discrete_rows()
+        .into_iter()
+        .map(|seed| match problem.discrete.update_targets.get(seed.row) {
+            Some(ScalarSlot::P { index, .. }) if *index == seed.target => Ok(SeedRow {
+                row: seed.row,
+                program: seed.program,
+                target: seed.target,
+                pre_slot: seed.pre_slot,
+            }),
+            _ => Err("an initial seed row must target a parameter slot"),
+        })
+        .collect()
+}
+
 pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'static str> {
     let problem = &model.problem;
     refuse_unsupported_owners(model)?;
@@ -197,6 +224,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             .row_roles
             .iter()
             .any(|role| matches!(role, DiscreteRowRole::QuotientMemory { .. })),
+        seed_rows: seed_rows(problem)?,
         roots,
         pre_bindings,
         pre_commit_needs_snapshot,

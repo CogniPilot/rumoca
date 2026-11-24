@@ -395,6 +395,9 @@ struct ScalarExecutionInventory {
     runtime_assignment_rhs: PreparedScalarProgramBlock,
     /// Runtime assignment rows that initialization binds itself (#468).
     initial_binding_rows: Vec<usize>,
+    /// Discrete equation rows initialization seeds before its first algebraic
+    /// refresh, in issued dependency order (initial_seed_rows.rs).
+    initial_seed_rows: Vec<rumoca_ir_solve::InitialSeedRow>,
     post_commit_assignment_rhs: PreparedScalarProgramBlock,
     update_values_scratch: RefCell<Vec<f64>>,
     structured_discrete_rows: PreparedStructuredDiscreteRows,

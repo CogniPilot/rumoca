@@ -103,6 +103,7 @@ mod differential_structure;
 mod discrete_alias_fed_connections;
 mod discrete_alias_orientation;
 mod discrete_array_element_equations;
+mod discrete_index_initialization;
 mod discrete_time_definitions;
 mod element_connection_sets;
 mod elementwise_literal_power;

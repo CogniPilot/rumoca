@@ -284,6 +284,19 @@
           "after": "df24339418eee104ecfd457fbd7b295e8b369a3ce5b07f0bf7aacbd12a704c80"
         }
       ]
+    },
+    {
+      "id": "R009",
+      "decision": "d-pending-owner-initial-seed-rows-20261124",
+      "change": "rmc_events_initialize applies the discrete equation rows that Solve IR issues as initially seeded (initial_seed_rows.rs: unclocked equations whose programs read only time, parameter, constant and input slots, or the targets of rows seeded before them) before the first settle_values, in the issued dependency order, so a continuous row that reads such a discrete value at initialization sees the equation value, not the declaration default (MLS 3.7 §8.6). After the history copy, each seeded target's pre slot is kept at the start it had before the seed: the owners pass publishes the row, and the event iteration after initialization sees its change as before. Rendered only when the set is nonempty; every other model renders byte for byte as before.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_events.jinja",
+          "before": "431ad0a5e53af9dfeee2376178dba35399ca7e3c09fd77ba5f74301e0b290fba",
+          "after": "405af81ffdfd52202b38bb8d144e57f1aaa56ab5e265048f8421503d0c877fcd"
+        }
+      ]
     }
   ]
 }

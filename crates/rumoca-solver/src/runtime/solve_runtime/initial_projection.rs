@@ -1108,6 +1108,9 @@ impl ScalarExecutionView<'_> {
         // reconstructed as an explicit assignment) freezes at the branch the
         // seed selects instead of the branch the initialized geometry selects.
         let refresh_algebraics_for_updates = self.initialization_updates_read_algebraic_slots();
+        // A discrete equation the initial inputs fix (`k2 = k`) holds before the
+        // first algebraic refresh reads its target (`y = p[k2]`).
+        self.apply_initial_seed_rows(p, t)?;
         for _ in 0..max_iters {
             // MLS 3.6 §3.7.2 defines delay(u, ...) = u throughout
             // initialization. The delayed-value P slots are runtime storage,

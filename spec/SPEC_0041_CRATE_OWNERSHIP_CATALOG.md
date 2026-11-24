@@ -325,7 +325,7 @@ resolves no group. R007 (decision
 templates print fixed by value and follow the Base Modelica grammar (#655,
 #657, #658); it resolves no group. R008 (decision
 `d-pending-owner-unused-text-helper-attribute-20261124`): the scalar kernel's
-`rmc_own_text` carries the same unused attribute; it resolves no group. Every
+`rmc_own_text` carries the same unused attribute; it resolves no group. R009 (Nov 24, 2026) adds the initially seeded discrete rows to `rmc_events_initialize` in `fmi3/scalar_events.jinja`, rendered before the first algebraic settle when Solve IR issues a nonempty set. Every
 other group, including D085, remains open.
 
 The non-active successor design is DRAFT

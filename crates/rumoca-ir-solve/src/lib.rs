@@ -10,6 +10,7 @@ mod affinity;
 mod assertion_observation;
 mod cartesian_pairs;
 mod geometric_step;
+mod initial_seed_rows;
 mod state_derivative_sources;
 pub use geometric_step::{GeometricStepPlan, QuaternionStateGroup};
 mod mechanical_step;
@@ -159,6 +160,7 @@ pub use visitor::{
     walk_typed_program,
 };
 
+pub use initial_seed_rows::InitialSeedRow;
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
 /// 78 checks lazy quotient root/step activation and exact inactive private holds.

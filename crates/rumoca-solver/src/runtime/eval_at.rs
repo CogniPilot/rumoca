@@ -80,6 +80,25 @@ impl SolveRuntime {
     /// initial state; extra entries are ignored. Evaluation failures are
     /// captured in [`EvalAtReport::error`] with the partially-computed values
     /// still reported, so the variable that produced a `NaN`/`inf` is named.
+    /// The parameters with the seeded discrete rows applied, or `None` for a
+    /// model without seeded rows, so the probe copies nothing for it.
+    fn seeded_probe_params(
+        &self,
+        params: &[f64],
+        t: f64,
+        error: &mut Option<String>,
+    ) -> Option<Vec<f64>> {
+        let scalar = self.scalar_execution().ok()?;
+        if !scalar.has_initial_seed_rows() {
+            return None;
+        }
+        let mut seeded = params.to_vec();
+        if let Err(err) = scalar.apply_initial_seed_rows(&mut seeded, t) {
+            *error = Some(err.to_string());
+        }
+        Some(seeded)
+    }
+
     pub fn eval_at(
         &self,
         t: f64,
@@ -89,6 +108,11 @@ impl SolveRuntime {
         max_iters: usize,
     ) -> EvalAtReport {
         let mut error = None;
+
+        // The discrete equations the parameters and inputs fix hold at every
+        // probed point (initial_seed_rows.rs), as they do at initialization.
+        let seeded_params = self.seeded_probe_params(params, t, &mut error);
+        let params: &[f64] = seeded_params.as_deref().unwrap_or(params);
 
         // `full_solver_y_into` seeds from the model's initial solver vector and
         // overlays the provided state prefix, then refreshes algebraics/outputs.
