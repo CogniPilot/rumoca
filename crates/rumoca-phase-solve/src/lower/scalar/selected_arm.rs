@@ -13,6 +13,22 @@
 use super::*;
 use crate::lower::dae_faults::{CoordinateRead, CoordinateReads, DaeFaults, FaultMemo};
 
+/// A caller can demand one scalar projection or the complete contiguous result.
+#[derive(Clone, Copy)]
+pub(super) enum ConditionalResult {
+    Element(usize),
+    Packed(usize),
+}
+
+impl ConditionalResult {
+    fn width(self) -> usize {
+        match self {
+            Self::Element(_) => 1,
+            Self::Packed(width) => width,
+        }
+    }
+}
+
 /// A coordinate with a same-tick current definition reads that definition.
 impl<'dae> CoordinateReads<'dae> for ScalarCompiler<'_, 'dae> {
     fn read(&self, coordinate: dae::CoordinateView<'dae>) -> CoordinateRead<'dae> {
@@ -100,13 +116,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
-    /// Lower scalar `scalar` of a model conditional as a checked
+    /// Lower the requested result of a model conditional as a checked
     /// function-conditional program: each condition runs under the preceding
     /// conditions being false, and only the selected arm runs.
     pub(super) fn selected_arm_conditional(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
-        scalar: usize,
+        result: ConditionalResult,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         if !self.function_arguments.is_empty()
@@ -145,7 +161,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
         }
         if live.is_empty() {
-            return self.expression(fallback_value, scalar);
+            return self.selected_arm_value(fallback_value, result);
         }
         let conditions = live
             .iter()
@@ -164,13 +180,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .collect::<Vec<_>>();
             let condition_region = self
                 .selected_arm_region(&prior, span)?
-                .selected_arm_output(condition, 0)?;
+                .selected_arm_output(condition, ConditionalResult::Element(0))?;
             let mut selected = prior;
             selected.push((condition, true));
             let value = live[ordinal].1;
             let result_region = self
                 .selected_arm_region(&selected, span)?
-                .selected_arm_output(value, scalar)?;
+                .selected_arm_output(value, result)?;
             arms.push((condition_region, result_region));
         }
         let all_prior = conditions
@@ -179,10 +195,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .collect::<Vec<_>>();
         let fallback = self
             .selected_arm_region(&all_prior, span)?
-            .selected_arm_output(fallback_value, scalar)?;
+            .selected_arm_output(fallback_value, result)?;
         let program = match solve::FunctionConditionalProgram::checked(
             captures.len(),
-            vec![1],
+            vec![result.width()],
             arms,
             fallback,
         ) {
@@ -211,7 +227,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 src: source,
             })?;
         }
-        let result = self.register(span)?;
+        let result = self.register_range(program.result_count, span)?;
         self.emit(solve::LinearOp::FunctionConditional {
             dst_start: result,
             capture_start,
@@ -220,13 +236,33 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(result)
     }
 
+    fn selected_arm_value(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        result: ConditionalResult,
+    ) -> Result<solve::Reg, LowerError> {
+        match result {
+            ConditionalResult::Element(index) => self.expression(expression, index),
+            ConditionalResult::Packed(_) => self.pack_expression(expression),
+        }
+    }
+
     fn selected_arm_output(
         mut self,
         expression: dae::ExprId<'dae>,
-        scalar: usize,
+        result: ConditionalResult,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let output = self.expression(expression, scalar)?;
-        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        let start = self.selected_arm_value(expression, result)?;
+        match result {
+            ConditionalResult::Element(_) => {
+                self.emit(solve::LinearOp::StoreOutput { src: start })?
+            }
+            ConditionalResult::Packed(count) => self.emit(solve::LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride: 1,
+            })?,
+        }
         self.finish_operations()
     }
 

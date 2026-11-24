@@ -1494,7 +1494,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     && (self.relation_observation_enabled()
                         || !self.conditional_is_total(operands)) =>
             {
-                self.selected_arm_conditional(operands, scalar, node.provenance().span())
+                self.selected_arm_conditional(
+                    operands,
+                    selected_arm::ConditionalResult::Element(scalar),
+                    node.provenance().span(),
+                )
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 self.conditional(operands, scalar, node.provenance().span())

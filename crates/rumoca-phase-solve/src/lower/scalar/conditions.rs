@@ -2,6 +2,7 @@ use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
+use super::selected_arm::ConditionalResult;
 use super::{ActivationCondition, ActivationGuard, ScalarCompiler, ScalarContextFrame};
 use crate::LowerError;
 
@@ -580,13 +581,42 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let start = self.pack_expression(value)?;
+        let start = self.pack_guarded_assignment_value(value, width)?;
         self.emit(solve::LinearOp::StoreOutputRange {
             start,
             count: width,
             stride: 1,
         })?;
         Ok(())
+    }
+
+    /// A guarded target consumes the entire selected array. Issue its branch once
+    /// so a call returning N elements is also evaluated once on that path.
+    fn pack_guarded_assignment_value(
+        &mut self,
+        value: dae::ExprId<'dae>,
+        width: usize,
+    ) -> Result<solve::Reg, LowerError> {
+        let node = self.node(value);
+        if width > 1
+            && node.function_scope().is_none()
+            && node.value_type().scalar_type() == dae::ScalarType::Real
+            && let dae::ExpressionOperation::Conditional(operands) = node.operation()
+            && (self.relation_observation_enabled() || !self.conditional_is_total(operands))
+        {
+            let key = (self.context_id, value);
+            if let Some(&start) = self.packed_expression_cache.get(&key) {
+                return Ok(start);
+            }
+            let start = self.selected_arm_conditional(
+                operands,
+                ConditionalResult::Packed(width),
+                node.provenance().span(),
+            )?;
+            self.packed_expression_cache.insert(key, start);
+            return Ok(start);
+        }
+        self.pack_expression(value)
     }
 
     fn load_guarded_target_range(
