@@ -225,6 +225,34 @@
           "after": "73af5da1993be9eec46d8abb9ef17e0cbbf2a4d125f0b7b34fa084a68c6d92ea"
         }
       ]
+    },
+    {
+      "id": "R006",
+      "decision": "d-pending-owner-593-accepted-point-assertions-20261124",
+      "change": "The FMI2 and FMI3 model templates, the FMI3 kernel and event templates render the accepted-point error assertions rumoca-ir-solve classifies (#593): each is checked by check_accepted_assertions_at at initialization, a completed integrator step, an accepted Co-Simulation substep or interval end and an event commit, never at a trial evaluation; no renderer decides which assertions those are.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi2/model.c.jinja",
+          "before": "dd308051f13b26825a5484db93abc9a82895a111fd203c0f0e92439c79f4ea0c",
+          "after": "db83f0fb0c9390ef10533e0ed7a789742bd48f151a39cbd3880260f9edaa5047"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/model.c.jinja",
+          "before": "6241d891a003e5bd4c50ab0cb8d1a0c80fc5ad42529da89b0409dec67d0b1e06",
+          "after": "ad1c6d4f567c8ee8e50f44e4139d2a4ba9aa7765c8771020292b240fcdfb2851"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_events.jinja",
+          "before": "0a117ef62d678d3dc6d1df08ed95d842120749dd7460f04c53798044b3170955",
+          "after": "431ad0a5e53af9dfeee2376178dba35399ca7e3c09fd77ba5f74301e0b290fba"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_kernel.jinja",
+          "before": "739224aa8262d8b30b98c3fa125984ef248c0579d9d821a49104ce090cc72c76",
+          "after": "93bb4c1195187178b337f4bce5eecc03e43d9b0c10629253ec1f807b26685d96"
+        }
+      ]
     }
   ]
 }

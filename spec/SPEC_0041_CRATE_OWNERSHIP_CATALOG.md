@@ -317,7 +317,10 @@ schedule as a WGSL value function (#734); they resolve no group, and R003
 re-pins the six macro regions #733 moved or changed. R005 (decision
 `d-pending-owner-741-unused-helper-attribute-20261124`): the projection
 kernel's `rmc_dalloc_raw` carries an unused attribute, so Clang accepts a
-model that emits no caller; it resolves no group. Every other
+model that emits no caller; it resolves no group. R006 (decision
+`d-pending-owner-593-accepted-point-assertions-20261124`): the FMI templates
+render the accepted-point error assertions rumoca-ir-solve issues (#593); it
+resolves no group. Every other
 group, including D085, remains open.
 
 The non-active successor design is DRAFT
