@@ -117,7 +117,7 @@ use record_constant_arrays::{
 use rumoca_eval_flat::phase_constant::{
     ParamEvalContext, ParamEvaluator, eval_user_func_real, infer_array_dimensions,
     infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
-    try_eval_flat_expr_enum, try_eval_integer_with_context, try_infer_better_dims,
+    try_eval_flat_expr_enum, try_eval_relative_integer_with_context, try_infer_better_dims,
 };
 
 /// Options controlling flatten strictness.
