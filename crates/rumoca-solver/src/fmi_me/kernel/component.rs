@@ -1261,9 +1261,35 @@ impl SolveMeKernel {
     }
 
     pub(super) fn commit_delay_point(&mut self) -> Result<(), MeError> {
+        self.commit_delay_point_recorded_at(self.time)
+    }
+
+    /// Commit the delay sources settled at `self.time` as the history point
+    /// at `recorded_time`. An event commit records its settled values at the
+    /// event instant, where the accepted left limit already sits, so the
+    /// history receives the exact left/right pair that marks a jump. The
+    /// coordinate the event settles at (a host's root a few ulps on, or the
+    /// superdense right limit) is where the sources are read, not a history
+    /// time: two history points an ulp apart would enter the interpolation
+    /// stencil with weights of order 1/ulp.
+    fn commit_delay_point_recorded_at(&mut self, recorded_time: f64) -> Result<(), MeError> {
         if !self.runtime.has_delay_channels() {
             return Ok(());
         }
+        // A step that ends on a scheduled time event commits the event's left
+        // limit. At the tick itself a time expression may already be on its
+        // post-event branch (`if time < 1 then 0 else 1`, MSL Step), which
+        // would record the jump as a ramp over the last step; the sources are
+        // read at the adjacent coordinate before it, as the event's pre values
+        // are. The right limit follows from the event iteration's commit.
+        let time_event_left = self
+            .pending_event_stop
+            .filter(|_| recorded_time.to_bits() == self.time.to_bits())
+            .filter(|(event_time, _)| time_match_with_tol(*event_time, self.time))
+            .map(|_| timeline::event_left_limit_time(self.time));
+        let left_solver_y = time_event_left
+            .map(|left| self.solver_y_at_time(left))
+            .transpose()?;
         let settle = self.numerics_settle();
         let mut solver_y = self.solver_y_guess.borrow_mut();
         if solver_y.len() < self.states.len() {
@@ -1296,8 +1322,20 @@ impl SolveMeKernel {
             )?;
             self.cache_algebraic_coordinate(self.time, &self.states, &self.params, &solver_y);
         }
-        self.runtime
-            .commit_delay_history(self.time, &solver_y, &self.params)?;
+        if let (Some(left), Some(left_y)) = (time_event_left, &left_solver_y) {
+            self.runtime.commit_delay_history_evaluated_at(
+                self.time,
+                left,
+                left_y,
+                &self.params,
+            )?;
+        } else if recorded_time.to_bits() == self.time.to_bits() {
+            self.runtime
+                .commit_delay_history(self.time, &solver_y, &self.params)?;
+        } else {
+            self.runtime
+                .commit_delay_event(recorded_time, self.time, &solver_y, &self.params)?;
+        }
         Ok(())
     }
 
@@ -1459,9 +1497,13 @@ impl SolveMeKernel {
 
     // -- event boundary ----------------------------------------------------
 
+    /// `history_time` is the event instant the delay history records the
+    /// settled values at; `event_time` is the coordinate they are applied at,
+    /// which may be the superdense right limit one ulp after it.
     pub(super) fn apply_discrete_event_updates(
         &mut self,
         event_time: f64,
+        history_time: f64,
         _event: RuntimeEventStop,
         row_filter: EventUpdateRowFilter,
         iteration_y: Option<Vec<f64>>,
@@ -1500,7 +1542,7 @@ impl SolveMeKernel {
         )?;
         // Event iteration uses its scoped closure; the commit certifies the
         // full post-event geometry shared by root and visible-value consumers.
-        self.commit_event_runtime_state(event_time, solver_y, &mut root_overrides)?;
+        self.commit_event_runtime_state(event_time, history_time, solver_y, &mut root_overrides)?;
         self.record_event_action_outcome(outcome, event_time)?;
         // `commit_event_runtime_state` leaves a checked post-event
         // linearization in the retained solver vector. Event actions do not
@@ -1522,6 +1564,7 @@ impl SolveMeKernel {
     pub(super) fn commit_event_runtime_state(
         &mut self,
         event_time: f64,
+        history_time: f64,
         mut solver_y: Vec<f64>,
         root_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<(), MeError> {
@@ -1538,7 +1581,7 @@ impl SolveMeKernel {
         self.invalidate_continuous_linearization();
         self.cache_algebraic_coordinate(event_time, &self.states, &self.params, &solver_y);
         *self.solver_y_guess.borrow_mut() = solver_y;
-        self.commit_delay_point()?;
+        self.commit_delay_point_recorded_at(history_time)?;
         Ok(())
     }
 

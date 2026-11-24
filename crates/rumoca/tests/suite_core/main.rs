@@ -93,6 +93,7 @@ mod coupled_refresh_schedule;
 mod dead_derivative_arms;
 mod delay_event_jumps;
 mod delay_initial_values;
+mod delay_stepped_session;
 mod dependent_slice_elimination;
 mod derivative_alias_initial_acceleration;
 mod derivative_kinks;
