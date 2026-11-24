@@ -1,4 +1,5 @@
 mod algorithm_coordinates;
+mod function_checking_calls;
 use std::borrow::Cow;
 mod assignment_conditionals;
 mod branch_snapshots;

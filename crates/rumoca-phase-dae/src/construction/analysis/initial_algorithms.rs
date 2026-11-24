@@ -46,7 +46,9 @@ mod loops;
 mod relations;
 
 use super::*;
-use checking_calls::{checking_call, expand_checking_call, reject_unsupported_checking_call};
+pub(super) use checking_calls::{
+    CheckingCall, checking_call, expand_checking_call, reject_unsupported_checking_call,
+};
 use element_definitions::{ElementDefinitions, ElementTarget, element_ordinal};
 use relations::{InitialEquationShape, InitialRelation, settle_initial_relations};
 use rumoca_core::ExpressionRewriter;
