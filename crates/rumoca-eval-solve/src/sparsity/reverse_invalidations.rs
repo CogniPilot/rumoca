@@ -126,6 +126,23 @@ fn execution_rows(
             Some(source.provenance().span()),
         ));
     }
+    execution_row_reads(
+        block,
+        Some(source.columns() as usize),
+        Some(source.provenance().span()),
+    )
+}
+
+/// The solver values the execution of each output row of `block` reads: those
+/// of its whole program, whichever output the row stores. A read at or past
+/// `columns` is refused at its program; `span` locates the block for a refusal
+/// no single program owns.
+pub(super) fn execution_row_reads(
+    block: &rumoca_ir_solve::ScalarProgramBlock,
+    columns: Option<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<Vec<Option<std::sync::Arc<rumoca_ir_solve::IndexIntervals>>>, EvalSolveError> {
+    let block_span = span;
     let mut rows = vec![None; block.output_count()];
     let mut ordinal = 0;
     for (program_index, program) in block.programs().iter().enumerate() {
@@ -133,10 +150,7 @@ fn execution_rows(
         let reads =
             StructuralPattern::derive_execution_obligation_y_dependency_ranges(program, span)
                 .map_err(|error| super::from_pattern_error(error, span))?;
-        if reads
-            .iter()
-            .any(|column| column >= source.columns() as usize)
-        {
+        if columns.is_some_and(|columns| reads.iter().any(|column| column >= columns)) {
             return Err(sparsity_error(
                 "execution invalidation read is outside solver columns",
                 span,
@@ -162,7 +176,7 @@ fn execution_rows(
     if ordinal != block.output_indices().len() {
         return Err(sparsity_error(
             "execution invalidation output inventory differs",
-            Some(source.provenance().span()),
+            block_span,
         ));
     }
     Ok(rows)

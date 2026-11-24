@@ -314,6 +314,7 @@ mod reciprocal_isolation;
 mod recursive_functions;
 mod redeclare_value_scope_selection;
 mod reduced_state_charts;
+mod refresh_execution_order;
 mod refresh_profile;
 mod replaceable_alias_member_suffixes;
 mod replaceable_function_redeclare;

@@ -13,6 +13,7 @@
 //! programs", IEEE Computational Science and Engineering 3(3):18-32, 1996,
 //! doi:10.1109/99.537089.
 
+mod execution_order;
 #[cfg(test)]
 mod kinematic_tests;
 mod reverse_invalidations;
@@ -24,6 +25,7 @@ use rumoca_ir_solve::{
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
+pub use execution_order::order_algebraic_projection_by_execution_reads;
 use reverse_invalidations::derive_algebraic_reverse_invalidations_with_execution;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without

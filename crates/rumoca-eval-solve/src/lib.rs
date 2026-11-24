@@ -110,7 +110,7 @@ pub use sparsity::{
     derive_column_coloring, derive_jacobian_pattern_from_jvp,
     derive_jacobian_pattern_from_scalar_jvp, derive_kinematic_states,
     derive_solve_structural_artifacts, derive_solve_structural_artifacts_with_calls,
-    row_seed_dependencies,
+    order_algebraic_projection_by_execution_reads, row_seed_dependencies,
 };
 pub use table_runtime::{
     TableRuntimeError, eval_table_bound_value_in, eval_table_lookup_slope_value_in,

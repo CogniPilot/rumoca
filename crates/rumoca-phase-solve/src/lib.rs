@@ -302,6 +302,7 @@ pub(crate) fn continuous_refresh_owners(
         build_continuous_refresh_owners_from_with_calls, build_continuous_refresh_owners_with_calls,
     };
     proven_tearing::retear_unproven_blocks(problem)?;
+    rumoca_eval_solve::order_algebraic_projection_by_execution_reads(problem)?;
     let Some(primary) = primary else {
         return build_continuous_refresh_owners_with_calls(problem, calls, profile);
     };
