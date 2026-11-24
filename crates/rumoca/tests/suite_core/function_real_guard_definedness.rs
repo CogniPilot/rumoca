@@ -124,3 +124,21 @@ fn a_condition_that_reaches_one_undefined_range_keeps_the_refusal() {
     assert_refused(OUTSIDE, "s >= -0.5 and s <= 1.5");
     assert_refused(OUTSIDE, "s < lim");
 }
+
+#[test]
+fn a_bounded_magnitude_excludes_both_undefined_ranges() {
+    // The shape of `spliceFunction_der`.
+    assert_defined(OUTSIDE, "abs(s) < lim");
+    assert_defined(OUTSIDE, "lim > abs(s)");
+    assert_defined(ABOVE, "abs(s) <= 0.5");
+}
+
+#[test]
+fn a_magnitude_that_reaches_an_undefined_range_keeps_the_refusal() {
+    // `abs(s) <= lim` holds at both endpoints, where `t` is undefined.
+    assert_refused(OUTSIDE, "abs(s) <= lim");
+    // A magnitude above a bound is two ranges, not one.
+    assert_refused(ABOVE, "abs(s) > 0.5");
+    // A failed `abs(s) >= lim` also holds for a NaN.
+    assert_refused(OUTSIDE, "not (abs(s) >= lim)");
+}

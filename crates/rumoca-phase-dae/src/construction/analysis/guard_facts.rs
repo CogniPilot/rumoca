@@ -24,8 +24,9 @@
 //! or by a comparison that implies both operands are ordered (a relation that
 //! holds, other than `<>`; or a `<>` that fails), so no Real fact is ever held
 //! by a NaN; a strict comparison proves an open endpoint, so `s < c`
-//! contradicts `s >= c`. An empty Real interval proves a contradiction and a
-//! nonempty one proves no more than the interval.
+//! contradicts `s >= c`, and `abs(s) < c` that holds proves `-c < s < c`. An
+//! empty Real interval proves a contradiction and a nonempty one proves no
+//! more than the interval.
 //!
 //! The facts bound compact dependent domains and while-loop pass counts, and
 //! prove that a path on which a value is undefined cannot reach a later
@@ -592,6 +593,43 @@ impl GuardFacts {
         }
     }
 
+    /// The two-sided fact `abs(e) < c` (or `<=`) proves for a Real `e` when it
+    /// holds: `-c < e < c`. A magnitude below a bound is ordered, so no NaN
+    /// satisfies it; `abs(e) > c` is a disjunction and proves no interval.
+    fn magnitude_bound(
+        &self,
+        subject: &Expression,
+        other: &Expression,
+        relation: Relation,
+        ordered: bool,
+        scope: FactScope<'_>,
+    ) -> PathFacts {
+        let Expression::BuiltinCall {
+            function: BuiltinFunction::Abs,
+            args,
+            ..
+        } = subject
+        else {
+            return Some(Facts::new());
+        };
+        let bounded = ordered && matches!(relation, Relation::Less | Relation::LessEqual);
+        let inner = match args.as_slice() {
+            [inner] if bounded => FactSubject::of(inner).filter(|inner| scope.is_real(inner)),
+            _ => None,
+        };
+        let bound = relation.real_bound(self.real_interval(other, scope));
+        let (Some(inner), Some(upper)) = (inner, bound.upper) else {
+            return Some(Facts::new());
+        };
+        let fact = ValueFact::Real(RealInterval {
+            lower: Some(-upper),
+            upper: Some(upper),
+            lower_open: bound.upper_open,
+            upper_open: bound.upper_open,
+        });
+        Some(Facts::from(BTreeMap::from([(inner, fact)])))
+    }
+
     /// The facts a relation proves for a subject on either side: an Integer
     /// interval from the proven interval of the other side, a Real interval
     /// when the relation's value implies both operands are ordered, and the
@@ -614,6 +652,10 @@ impl GuardFacts {
         let mut facts = Some(Facts::new());
         for (subject, other, relation) in [(lhs, rhs, relation), (rhs, lhs, relation.mirrored())] {
             facts = conjoin(facts, self.factor_bounds(subject, other, relation, scope));
+            facts = conjoin(
+                facts,
+                self.magnitude_bound(subject, other, relation, ordered, scope),
+            );
             let Some(subject) = FactSubject::of(subject) else {
                 continue;
             };
