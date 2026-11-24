@@ -77,6 +77,24 @@ fn host_input_policy_preserves_source_repeat_and_strict_missing_driver_refusal()
 }
 
 #[test]
+fn an_undriven_input_has_a_trial_value_where_it_has_no_initial_value() {
+    for (start, expected) in [(Some(3.0), 3.0), (None, 0.0)] {
+        let model = input_model(start, None, 3);
+        model.inspect(|view| {
+            let input = view.variable_id(0).unwrap();
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator.initial_values(input).unwrap_err().kind(),
+                ErrorKind::MissingValue
+            );
+            assert_eq!(
+                evaluator.input_trial_value(input).unwrap(),
+                vec![expected; 6]
+            );
+        });
+    }
+}
+#[test]
 fn host_input_policy_keeps_binding_precedence_and_partial_override_partitions() {
     for binding in [None, Some(2.5)] {
         let model = input_model(Some(-0.0), binding, 3);

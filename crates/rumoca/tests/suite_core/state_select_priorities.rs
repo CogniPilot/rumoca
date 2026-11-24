@@ -578,6 +578,61 @@ end PreferThroughFunction;";
     assert!((p - (-1.0f64).exp()).abs() < 1e-5, "p(1) = {p}");
 }
 
+/// One shaft feeding two geared branches, driven by a torque no declaration
+/// values. The selection's trial point is a construction-time value: the
+/// input takes its declared start there, or else its language default, and
+/// stays a host obligation at run time.
+#[test]
+fn a_free_input_does_not_stop_the_selection_of_a_constrained_basis() {
+    let source = "
+model TwoBranches
+  input Real u;
+  Real p1, pa, pb, w1, wa, wb, fa, fb;
+equation
+  der(p1) = w1;
+  der(pa) = wa;
+  der(pb) = wb;
+  1*der(w1) = u - fa - fb;
+  2*der(wa) = 3*fa;
+  0.5*der(wb) = 2*fb;
+  p1 = 3*pa;
+  p1 = 2*pb;
+end TwoBranches;";
+    let states = integrated(source, "TwoBranches");
+    assert_eq!(
+        states.len(),
+        2,
+        "one angle and one speed remain: {states:?}"
+    );
+}
+
+/// An undriven input whose bounds admit no value has no trial value. The
+/// refusal is reported at the input, not without a source span.
+#[test]
+fn an_input_without_a_feasible_trial_value_is_refused_at_its_declaration() {
+    let source = "
+model InfeasibleInput
+  input Real u(min = 1, max = 0);
+  Real p1, pa, pb, w1, wa, wb, fa, fb;
+equation
+  der(p1) = w1;
+  der(pa) = wa;
+  der(pb) = wb;
+  1*der(w1) = u - fa - fb;
+  2*der(wa) = 3*fa;
+  0.5*der(wb) = 2*fb;
+  p1 = 3*pa;
+  p1 = 2*pb;
+end InfeasibleInput;";
+    let error = rumoca_phase_solve::integrated_state_names(&dae(source, "InfeasibleInput"))
+        .expect_err("no value lies in [1, 0]");
+    let rumoca_phase_solve::LowerError::Structural { reason, span } = &error else {
+        panic!("a structural refusal: {error:?}");
+    };
+    assert!(reason.contains("infeasible bounds"), "{reason}");
+    assert!(span.is_some(), "{reason}");
+}
+
 /// A request that is honored leaves no record.
 #[test]
 fn an_honored_preference_records_nothing() {
