@@ -6,8 +6,10 @@ use wasm_bindgen::prelude::*;
 
 /// Compile one stateless assignment module with shared Y/P storage.
 /// The host writes P and calls `eval_assignments` once. Integer and Boolean
-/// inputs are written to the typed input lanes listed in `input_lanes` (i64,
-/// u8) at the start of the typed lane buffer, never to P. Derived discrete
+/// values use the `input_lanes` table at the start of the typed lane buffer.
+/// Initialize each lane (i64 or u8) from `parameters[p_index]`. Its `role`
+/// distinguishes `ExternalInput` from `Parameter` and `Constant`. Only external
+/// inputs appear in `input_names` and receive per-step input values. Derived discrete
 /// outputs (Integer, Boolean, discrete Real) are published through the typed
 /// output lanes listed in `derived_outputs`, after the input lanes; read
 /// Integer lanes with [`read_native_integer_lane`] or a `BigInt64Array`.
@@ -386,6 +388,7 @@ fn input_lanes(
             serde_json::json!({
                 "name": names.get(&input.p_index()),
                 "representation": input.lane().as_str(),
+                "role": input.role(),
                 "byte_offset": input.lane_offset(),
                 "p_index": input.p_index(),
             })

@@ -35,6 +35,7 @@ use crate::{LinearOpSliceKind, SolveVariableStorageRole, SolveVariableValueKind,
 /// program's private P copy holds its Real view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeInputLane {
+    role: SolveVariableStorageRole,
     p_index: usize,
     lane: NativeOutputLane,
     lane_offset: usize,
@@ -42,6 +43,11 @@ pub struct NativeInputLane {
 }
 
 impl NativeInputLane {
+    /// Original storage owner, including parameters read through typed lanes.
+    #[must_use]
+    pub fn role(&self) -> SolveVariableStorageRole {
+        self.role
+    }
     /// The Solve P slot the host does not write; the lane replaces it.
     #[must_use]
     pub fn p_index(&self) -> usize {

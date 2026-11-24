@@ -121,6 +121,25 @@ fn prepare(model: &str) -> serde_json::Value {
 }
 
 #[test]
+fn wasm_host_can_distinguish_fixed_typed_lanes_from_external_inputs() {
+    let _lock = session_test_guard();
+    let source = "model HostInputs parameter Integer scale[2]={2,3}; input Integer index; output Real y; equation y=scale[index]; end HostInputs;";
+    let json = crate::native_program_api::prepare_native_program(source, "HostInputs").unwrap();
+    let artifact: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(artifact["input_names"], serde_json::json!(["index"]));
+    for (name, initial) in [("scale[1]", 2.0), ("scale[2]", 3.0)] {
+        let lane = named(&artifact, "input_lanes", name);
+        assert_eq!(lane["role"], "Parameter");
+        let slot = lane["p_index"].as_u64().unwrap() as usize;
+        assert_eq!(artifact["parameters"][slot].as_f64(), Some(initial));
+    }
+    assert_eq!(
+        named(&artifact, "input_lanes", "index")["role"],
+        "ExternalInput"
+    );
+}
+
+#[test]
 fn native_integer_argument_rejects_positive_i64_overflow_before_call() {
     let _lock = session_test_guard();
     let source = r#"
