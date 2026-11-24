@@ -101,3 +101,26 @@ fn a_comparison_that_admits_the_endpoint_keeps_the_refusal() {
     // A failed `>=` also holds for a NaN, which no path here excludes.
     assert_refused(ABOVE, "not (s >= lim)");
 }
+
+/// Two guards, as in `spliceFunction_der`: `t` is undefined where
+/// `s <= -lim` and where `s >= lim`.
+const OUTSIDE: &str = "    if s <= -lim then
+      y := 0.0;
+    elseif s >= lim then
+      y := 1.0;
+    else
+      t := tan(s);
+      y := 0.5;
+    end if;";
+
+#[test]
+fn a_condition_between_two_undefined_ranges_excludes_both() {
+    assert_defined(OUTSIDE, "s >= -0.5 and s <= 0.5");
+    assert_defined(OUTSIDE, "s > -lim and s < lim");
+}
+
+#[test]
+fn a_condition_that_reaches_one_undefined_range_keeps_the_refusal() {
+    assert_refused(OUTSIDE, "s >= -0.5 and s <= 1.5");
+    assert_refused(OUTSIDE, "s < lim");
+}

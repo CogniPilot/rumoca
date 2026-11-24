@@ -365,6 +365,20 @@ impl GuardFacts {
             })
     }
 
+    /// Whether the two paths can describe one state: no subject both
+    /// constrain has facts that share no value.
+    pub(super) fn numeric_facts_overlap(&self, other: &Self) -> bool {
+        let (Some(mine), Some(theirs)) = (&self.path, &other.path) else {
+            return true;
+        };
+        mine.0.iter().all(|(subject, fact)| {
+            theirs
+                .0
+                .get(subject)
+                .is_none_or(|candidate| !fact.meet(*candidate).is_empty())
+        })
+    }
+
     /// Whether no execution reaches this path: its facts contradict.
     pub(super) fn is_unreachable(&self) -> bool {
         self.path.is_none()
