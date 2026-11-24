@@ -2038,9 +2038,15 @@ fn scaled_derivative_factor<'dae>(
             node.provenance().span(),
         ));
     }
-    if selector.node(factor.0).variability() <= dae::ExpressionVariability::Parameter
-        && selector.constant_real(factor.0, factor.1)? == 0.0
-    {
+    // (a declared value the probe cannot fold is not known to be zero: the
+    // affine quotient checks the coefficient where the program runs)
+    let known_zero = selector.node(factor.0).variability() <= dae::ExpressionVariability::Parameter
+        && match selector.constant_real(factor.0, factor.1) {
+            Ok(value) => value == 0.0,
+            Err(LowerError::NonComputable { .. }) => false,
+            Err(error) => return Err(error),
+        };
+    if known_zero {
         return Err(LowerError::non_computable(
             "matched derivative has a zero affine coefficient",
             node.provenance().span(),

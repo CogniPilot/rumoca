@@ -42,6 +42,7 @@ mod string_constant_elements;
 mod actual_stream_product_events;
 mod additive_torque;
 mod affine_coefficient_aggregates;
+mod affine_coefficient_from_a_function;
 mod affine_switching_circuit;
 mod algebraic_family_compaction;
 mod algebraic_family_paths;
