@@ -232,3 +232,57 @@ pub(super) fn issued_stage_ranges(
         .map(|stage| (stage.source(), stage.target_range().unwrap()))
         .collect()
 }
+
+#[test]
+fn gpu_value_function_uses_the_native_layout_and_validates_as_wgsl() {
+    let _lock = session_test_guard();
+    let cpu: serde_json::Value =
+        serde_json::from_str(&crate::prepare_native_assignments(TWO_STAGE, "NativeImage").unwrap())
+            .unwrap();
+    let gpu: serde_json::Value =
+        serde_json::from_str(&crate::prepare_gpu_value_function(TWO_STAGE, "NativeImage").unwrap())
+            .unwrap();
+    assert_eq!(gpu["profile"], "wgsl-value-function-f32-v1");
+    assert_eq!(gpu["var_layout"], cpu["var_layout"]);
+    assert_eq!(gpu["parameters"], cpu["parameters"]);
+    assert_eq!(gpu["source_sha256"], cpu["source_sha256"]);
+    let src = gpu["wgsl"].as_str().unwrap();
+    let module = naga::front::wgsl::parse_str(src).expect("valid WGSL");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("semantically valid shader");
+    assert!(module.global_variables.is_empty());
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|(_, function)| function.name.as_deref() == Some("rumoca_evaluate"))
+    );
+}
+
+#[test]
+fn gpu_value_function_requires_an_explicit_stateless_real_schedule() {
+    let _lock = session_test_guard();
+    for (source, name) in [
+        (
+            "model Implicit input Real a; Real x; equation x*x = a; end Implicit;",
+            "Implicit",
+        ),
+        (
+            "model Dynamic Real x(start=1); equation der(x)=-x; end Dynamic;",
+            "Dynamic",
+        ),
+        (
+            "model DiscreteInput input Integer k; output Real y; equation y=k; end DiscreteInput;",
+            "DiscreteInput",
+        ),
+    ] {
+        assert!(
+            crate::prepare_gpu_value_function(source, name).is_err(),
+            "{name}"
+        );
+    }
+}

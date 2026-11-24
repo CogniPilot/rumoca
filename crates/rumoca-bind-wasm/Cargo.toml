@@ -58,6 +58,7 @@ wit-parser = "0.241"
 rumoca-sim = { workspace = true, default-features = false, features = ["fmi"] }
 rumoca-eval-solve = { workspace = true }
 flate2 = { workspace = true }
+naga = { version = "27", features = ["wgsl-in"] }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 
 [features]

@@ -68,16 +68,7 @@ fn model_artifact(
     model_name: &str,
 ) -> Result<String, WasmError> {
     let problem = &model.problem;
-    let schedule = checked_native_schedule(model)?;
-    let carries_calls = crate::native_program_api::any_stage_operation(schedule, |operation| {
-        matches!(operation, rumoca_ir_solve::LinearOp::PureCall { .. })
-    });
-    if !schedule.derived_outputs().is_empty() || !schedule.input_runs().is_empty() || carries_calls
-    {
-        return Err(WasmError::new(
-            "typed lanes and pure calls belong to the native program ABI, not the separate-stage copy ABI: its stage modules return no status and link no call table",
-        ));
-    }
+    let schedule = checked_real_stages(model)?;
     let y_count = problem.layout.y_scalars();
     let p_count = problem.layout.p_scalars();
     let max_output = schedule
@@ -154,4 +145,38 @@ fn stage_artifact(
         "target_count": range.len(),
         "module_sha256": format!("{:x}", Sha256::digest(&bytes)), "module_bytes": bytes,
     }))
+}
+
+fn checked_real_stages(
+    model: &rumoca_ir_solve::SolveModel,
+) -> Result<&rumoca_ir_solve::NativeRefreshAssignmentSchedule, WasmError> {
+    let schedule = checked_native_schedule(model)?;
+    let carries_calls = crate::native_program_api::any_stage_operation(schedule, |operation| {
+        matches!(operation, rumoca_ir_solve::LinearOp::PureCall { .. })
+    });
+    if !schedule.derived_outputs().is_empty() || !schedule.input_runs().is_empty() || carries_calls
+    {
+        return Err(WasmError::new(
+            "typed lanes and pure calls belong to the native program ABI, not the separate-stage copy ABI: its stage modules return no status and link no call table",
+        ));
+    }
+    Ok(schedule)
+}
+
+/// Compile a small, stateless, Real-valued model to a callable WGSL function
+/// with lane-indexed P arguments and Y results. It declares no GPU bindings.
+#[wasm_bindgen]
+pub fn prepare_gpu_value_function(source: &str, model_name: &str) -> Result<String, WasmError> {
+    with_prepared_native_model(source, model_name, |model, source, name| {
+        let schedule = checked_real_stages(model)?;
+        let layout = schedule.work_layout();
+        let wgsl = rumoca_compile::codegen::render_wgsl_value_function(schedule)
+            .map_err(|e| WasmError::new(format!("GPU value function rejected: {e}")))?;
+        Ok(
+            serde_json::json!({"profile":"wgsl-value-function-f32-v1", "model_name":name,
+            "wgsl":wgsl, "parameters":model.parameters.as_slice(), "var_layout":layout,
+            "source_sha256":format!("{:x}", Sha256::digest(source.as_bytes())), "compiler":crate::compiler_provenance()})
+            .to_string(),
+        )
+    })
 }

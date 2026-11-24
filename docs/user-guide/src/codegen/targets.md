@@ -69,3 +69,17 @@ and write into `examples/codegen/gen/` (git-ignored):
 If what you want is to *see* a compiler stage rather than generate project
 code, use `--emit` instead of a target — see
 [Inspecting and Debugging Models](../simulation/inspect.md).
+
+### Callable WGSL for algebraic models
+
+The WASM compiler with the `native-assignments` feature exports
+`prepare_gpu_value_function(source, model_name)`. For supported stateless
+Real models it returns JSON containing the WGSL source for
+`rumoca_evaluate(p, time)`, the variable layout, parameter defaults and
+compiler provenance. The caller supplies its own compute entry point, bindings
+and dispatch. Use the P and Y **element indices** from the variable layout to
+pack inputs and read results. WGSL values are f32, including time. The native
+solver's byte offsets describe f64 storage.
+
+Preparation requires a compiler-issued direct-assignment schedule with dense
+targets. Unsupported models produce an error at preparation.
