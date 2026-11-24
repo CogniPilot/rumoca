@@ -1,3 +1,5 @@
+#[cfg(feature = "fmu-packaging")]
+mod cuda_device_projection;
 mod jax_compact_stencils;
 mod jax_lazy_conditionals;
 mod rust_fixed_ode_event_guards;

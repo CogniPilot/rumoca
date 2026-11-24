@@ -1,6 +1,6 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
 {%- from "fmi-c-kernel.jinja" import text_fields, warning_fields, linear_solve_kernel %}
-{%- from "fmi-me-projection.jinja" import workspace_fields, kernel_declarations %}
+{%- from "fmi-me-projection.jinja" import storage_lengths, workspace_fields, kernel_declarations %}
 {%- from "fmi-typed-functions.jinja" import function_prototypes %}
 {%- from "fmi-scalar-events.jinja" import event_fields, event_now %}
 /* Declarations shared by the component's translation units. */
@@ -31,9 +31,7 @@
 #define FMI_EXPORT FMI2_Export
 
 enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED, MODEL_ERROR };
-#define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
-#define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
-#define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
+{{ storage_lengths(solve) }}
 typedef struct {
     bool assertions_initialized; bool assertion_failed; bool parameters_dirty; bool rmc_nonfinite;
     double time; double tolerance; double rmc_cs_substep;
@@ -47,5 +45,5 @@ typedef struct {
 } ModelInstance;
 {{ event_now(fmi) }}
 {{ kernel_declarations(me_refresh) }}{{ linear_solve_kernel() }}
-{{ function_prototypes(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 or fmi_tangents.available else []) }}
+{{ function_prototypes(typed_pure_calls, typed_directional_calls if me_refresh.blocks|length > 0 or me_refresh.table.jvp.programs|length > 0 or fmi_tangents.available else []) }}
 #endif

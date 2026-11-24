@@ -306,3 +306,28 @@ fn artifact_trimmer_covers_exactly_the_pinned_targets() {
         "the backend runtime suite stays part of the gate; reachable tests: {reachable:?}"
     );
 }
+
+/// The Cuda group's NVCC build of the shared projection kernel sits behind
+/// `fmu-packaging` (it lowers the FMI C component), so the group builds with
+/// that feature; without it the test is not compiled and its filter runs none.
+#[test]
+fn cuda_group_builds_the_device_projection_test() {
+    let features = super::template_runtime_features(super::TemplateRuntimeBackend::Cuda);
+    assert!(
+        features
+            .iter()
+            .any(|feature| feature.split(',').any(|name| name == "fmu-packaging")),
+        "{features:?}"
+    );
+    let source = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
+        .join("crates/rumoca/tests/suite_template_runtime/backend_template_runtime_regression.rs");
+    let text = fs::read_to_string(&source).expect("read the regression module list");
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    assert!(
+        lines.windows(2).any(|pair| {
+            pair[0] == "#[cfg(feature = \"fmu-packaging\")]"
+                && pair[1] == "mod cuda_device_projection;"
+        }),
+        "the gate of cuda_device_projection moved: update this guard"
+    );
+}
