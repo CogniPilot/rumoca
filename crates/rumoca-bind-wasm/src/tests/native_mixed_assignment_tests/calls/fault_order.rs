@@ -238,7 +238,7 @@ fn direct_read_fault_precedes_the_helper_read_fault_on_every_iteration_and_rolls
         let (start, end) = span_of(fault);
         assert_eq!(
             &ORDER[start..end],
-            "values",
+            "values[firstIndex+iteration-1]",
             "first={first} second={second}"
         );
         assert_eq!(
@@ -260,7 +260,7 @@ fn direct_read_fault_precedes_the_helper_read_fault_on_every_iteration_and_rolls
     let (status, fault) = run_checked(&artifact, &mut execution, &parameters);
     assert_ne!(status, 0);
     let (start, end) = span_of(fault.unwrap());
-    assert_eq!(&ORDER[start..end], "values");
+    assert_eq!(&ORDER[start..end], "values[index]");
     assert_eq!(start, helper);
 
     // A disabled region reads nothing, so invalid indices are not faults.
@@ -323,7 +323,7 @@ fn unselected_call_arms_and_later_elseif_conditions_stay_lazy_and_fault_when_sel
         let fault = fault.unwrap();
         assert_eq!(fault["kind"], "IndexBounds");
         let (start, end) = span_of(fault);
-        assert_eq!(&ARMS[start..end], "a", "sel={sel} j={j} m={m}");
+        assert_eq!(&ARMS[start..end], "a[j]", "sel={sel} j={j} m={m}");
         set(&mut execution, 1, 0, 0);
         assert_eq!(execution.run(&parameters)[result], 101.0);
     }
