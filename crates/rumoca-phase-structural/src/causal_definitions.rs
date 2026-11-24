@@ -384,24 +384,10 @@ pub(crate) fn exact_row_major_family_body<'dae>(
     }
     let mut bodies = family.bodies().iter();
     let body = bodies.next()?;
-    if bodies.next().is_some() || expression_references_binder(view, body) {
+    if bodies.next().is_some() || view.expression(body)?.binder_domain().is_some() {
         return None;
     }
     Some(body)
-}
-
-fn expression_references_binder<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> bool {
-    let mut found = false;
-    dae::for_each_expression(view, expression, |_, node| {
-        found |= matches!(
-            node.operation(),
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_))
-        );
-    });
-    found
 }
 
 /// Orient exact `x - y = 0` aliases only while constructing a unique target

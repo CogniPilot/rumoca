@@ -54,3 +54,31 @@ end StoredCoordinates;
     assert!((value("m") - mass).abs() < 1e-8);
     assert!((value("U") - energy).abs() < 1e-5);
 }
+
+#[test]
+fn closed_array_comprehension_defines_a_required_state_coordinate_scale() {
+    let source = r#"model RequiredCoordinate
+  parameter Real a[2]={2,3};
+  Real v[2]={a[i]*a[i] for i in 1:2};
+  Real m;
+  Real x(start=2,stateSelect=StateSelect.always);
+initial equation
+  x=2;
+equation
+  der(m)=0;
+  m=v[1]*x;
+end RequiredCoordinate;"#;
+    let dae = compile_with_roots(source, "RequiredCoordinate", &[]);
+    let result = simulate_dae(
+        &dae,
+        &SimOptions {
+            t_end: 0.0,
+            ..Default::default()
+        },
+    )
+    .expect("the comprehension closes its own index and defines the scale");
+    for (name, expected) in [("v[1]", 4.0), ("v[2]", 9.0), ("m", 8.0), ("x", 2.0)] {
+        let index = result.names.iter().position(|n| n == name).unwrap();
+        assert_eq!(result.data[index][0], expected);
+    }
+}
