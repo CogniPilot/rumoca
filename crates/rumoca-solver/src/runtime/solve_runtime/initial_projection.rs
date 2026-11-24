@@ -879,16 +879,20 @@ fn settled_cones(
 fn primal_row_reads(
     block: &solve::ScalarProgramBlock,
     row_count: usize,
-) -> Result<Vec<std::collections::BTreeSet<usize>>, EvalSolveError> {
+) -> Result<Vec<solve::IndexIntervals>, EvalSolveError> {
     row_reads(block, row_count, false)
 }
 
+/// Each row's solver-Y reads, held as intervals. A tensor load or a program's
+/// execution obligations cover whole ranges, and the cone sweep needs only
+/// membership and union, so the footprint follows the reads' structure rather
+/// than their cardinality (#683: one set per output grew with the grid squared).
 fn row_reads(
     block: &solve::ScalarProgramBlock,
     row_count: usize,
     execution: bool,
-) -> Result<Vec<std::collections::BTreeSet<usize>>, EvalSolveError> {
-    let mut rows = vec![std::collections::BTreeSet::new(); row_count];
+) -> Result<Vec<solve::IndexIntervals>, EvalSolveError> {
+    let mut rows = vec![solve::IndexIntervals::default(); row_count];
     for (program_index, program) in block.programs().iter().enumerate() {
         let span = block.program_span(program_index);
         let error = || EvalSolveError::InvalidRow {
@@ -901,11 +905,16 @@ fn row_reads(
                 .map(|outputs| {
                     outputs
                         .into_iter()
-                        .map(|reads| reads.to_set())
+                        .map(std::sync::Arc::unwrap_or_clone)
                         .collect::<Vec<_>>()
                 })
         } else {
-            solve::StructuralPattern::derive_output_y_dependencies(program, span)
+            solve::StructuralPattern::derive_output_y_dependencies(program, span).map(|outputs| {
+                outputs
+                    .into_iter()
+                    .map(solve::IndexIntervals::of)
+                    .collect::<Vec<_>>()
+            })
         }
         .map_err(|failure| EvalSolveError::InvalidRow {
             message: failure.to_string(),
@@ -920,7 +929,7 @@ fn row_reads(
         for (ordinal, reads) in ordinals.zip(dependencies) {
             let output = block.output_index_at(ordinal).ok_or_else(error)?;
             let destination = rows.get_mut(output).ok_or_else(error)?;
-            destination.extend(reads);
+            *destination = destination.union(&reads);
         }
     }
     Ok(rows)
@@ -929,8 +938,8 @@ fn row_reads(
 /// [`settled_read_cones`] over primal solver-Y dependencies, with one entry per
 /// initialization or continuous equation rather than scalar program number.
 fn read_cones(
-    residual: &[std::collections::BTreeSet<usize>],
-    implicit: &[std::collections::BTreeSet<usize>],
+    residual: &[solve::IndexIntervals],
+    implicit: &[solve::IndexIntervals],
     blocks: &[solve::AlgebraicProjectionBlock],
     source_span: Option<Span>,
 ) -> Result<Box<[Box<[usize]>]>, EvalSolveError> {
@@ -954,14 +963,14 @@ fn read_cones(
 /// in `read` and adding the columns its rows read; whether any block was added.
 fn add_blocks_read(
     blocks: &[solve::AlgebraicProjectionBlock],
-    implicit: &[std::collections::BTreeSet<usize>],
-    read: &mut std::collections::BTreeSet<usize>,
+    implicit: &[solve::IndexIntervals],
+    read: &mut solve::IndexIntervals,
     needed: &mut [bool],
     source_span: Option<Span>,
 ) -> Result<bool, EvalSolveError> {
     let mut grew = false;
     for (position, block) in blocks.iter().enumerate().rev() {
-        let solves_a_read = block.y_indices.iter().any(|y| read.contains(y));
+        let solves_a_read = block.y_indices.iter().any(|&y| read.contains(y));
         if needed[position] || !solves_a_read {
             continue;
         }
@@ -974,7 +983,7 @@ fn add_blocks_read(
                     message: "an initial read cone references an absent continuous equation".into(),
                     span: source_span,
                 })?;
-            read.extend(dependencies);
+            *read = read.union(dependencies);
         }
     }
     Ok(grew)
@@ -1208,9 +1217,9 @@ mod read_cone_tests {
     use super::*;
     use std::sync::Arc;
 
-    fn reads(rows: &[Vec<usize>]) -> Vec<std::collections::BTreeSet<usize>> {
+    fn reads(rows: &[Vec<usize>]) -> Vec<solve::IndexIntervals> {
         rows.iter()
-            .map(|row| row.iter().copied().collect())
+            .map(|row| solve::IndexIntervals::of(row.iter().copied()))
             .collect()
     }
 
