@@ -60,6 +60,25 @@ equation
 end DiscreteSmoke;
 "#;
 
+/// Every way to write `fixed`: on a scalar, on all elements, per element, and
+/// on a parameter that an initial equation determines.
+const FIXED_MODEL: &str = "Fixed";
+const FIXED_SOURCE: &str = r#"
+model Fixed
+  input Real u(fixed = false);
+  Real x(start = 1, fixed = false);
+  Real a[2](each start = 1, each fixed = false);
+  Real b[2](start = {1, 2}, fixed = {true, false});
+  parameter Real p(start = 2, fixed = false);
+equation
+  der(x) = u;
+  der(a) = {u, u};
+  der(b) = {u, u};
+initial equation
+  p = 5;
+end Fixed;
+"#;
+
 /// A compiled smoke model plus the name the CLI would render it under.
 struct Fixture {
     model_name: &'static str,
@@ -219,6 +238,31 @@ fn fmi_targets_render_the_checked_continuous_fixture() {
         let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
             .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
         assert!(files.iter().any(|file| file.path == "modelDescription.xml"));
+    }
+}
+
+/// `fixed` is stored per element, so a template that tests whether it is set
+/// prints `fixed = true` for `fixed = false`. A parameter with `fixed = false`
+/// also keeps its start value as a guess, not as a binding (MLS §4.4.4).
+#[test]
+fn modelica_targets_print_the_value_of_fixed() {
+    let fixture = compile_fixture(FIXED_MODEL, FIXED_SOURCE);
+    for target in ["flat-modelica", "base-modelica"] {
+        let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+            .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
+        let text = &files[0].content;
+        for expected in [
+            "u(fixed = false);",
+            "x(start = 1, fixed = false);",
+            "a(each start = 1, each fixed = false);",
+            "b(start = {1, 2}, fixed = {true, false});",
+            "p(start = 2, fixed = false);",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{target} must print `{expected}`:\n{text}"
+            );
+        }
     }
 }
 

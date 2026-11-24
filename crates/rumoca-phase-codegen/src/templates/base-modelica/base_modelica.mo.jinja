@@ -55,6 +55,14 @@
 {%- if expr is mapping and "VarRef" in expr and not expr.VarRef.subscripts and expr.VarRef.name.name in flat.variables and flat.variables[expr.VarRef.name.name].dims | length > 0 -%}yes{%- endif -%}
 {%- endmacro -%}
 {%- macro scalar_mod(var, key, value, expr=none) -%}{{ ("each " if var.dims | length > 0 and value[:1] not in ["{", "["] and not array_ref(expr) else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
+{#- fixed holds one value for every element, or one value per element. -#}
+{%- macro fixed_value(var) -%}
+{%- if false not in var.fixed -%}true
+{%- elif true not in var.fixed -%}false
+{%- elif var.dims | length == 1 -%}{{ "{" }}{%- for f in var.fixed -%}{{ "true" if f else "false" }}{{ ", " if not loop.last }}{%- endfor -%}{{ "}" }}
+{%- else -%}{{ fail("unsupported-feature:fixed.per-element-of-matrix") }}
+{%- endif -%}
+{%- endmacro -%}
 {%- macro var_attrs(var) -%}
 {%- set ns = namespace(parts="") -%}
 {%- if var.quantity -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'quantity = "' ~ var.quantity ~ '"' -%}{%- endif -%}
@@ -63,7 +71,7 @@
 {%- if var.min is not none -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "min", render_expr(var.min, cfg), var.min) -%}{%- endif -%}
 {%- if var.max is not none -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "max", render_expr(var.max, cfg), var.max) -%}{%- endif -%}
 {%- if var.start is not none -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "start", render_expr(var.start, cfg), var.start) -%}{%- endif -%}
-{%- if var.fixed is not none -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "fixed", ("true" if var.fixed else "false")) -%}{%- endif -%}
+{%- if var.fixed is not none -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "fixed", fixed_value(var)) -%}{%- endif -%}
 {%- if var.nominal is not none -%}{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "nominal", render_expr(var.nominal, cfg), var.nominal) -%}{%- endif -%}
 {%- if ns.parts %}({{ ns.parts }}){% endif -%}
 {%- endmacro %}
@@ -89,7 +97,7 @@
 
 {%- macro binding(var) -%}
 {%- set is_pc = var.variability is mapping and (var.variability.Parameter is defined or var.variability.Constant is defined) -%}
-{%- if var.binding is not none %} = {{ render_expr(var.binding, cfg) }}{% elif is_pc and var.start is not none and (var.fixed is none or var.fixed) %} = {{ render_expr(var.start, cfg) }}{% endif -%}
+{%- if var.binding is not none %} = {{ render_expr(var.binding, cfg) }}{% elif is_pc and var.start is not none and (var.fixed is none or false not in var.fixed) %} = {{ render_expr(var.start, cfg) }}{% endif -%}
 {%- endmacro %}
 
 {%- macro var_type(flat, name) -%}
