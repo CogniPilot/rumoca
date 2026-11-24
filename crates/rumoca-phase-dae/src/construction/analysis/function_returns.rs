@@ -298,26 +298,18 @@ pub(super) fn certify_nonleading_return_branches(
     function: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
 ) -> Result<(), ToDaeError> {
-    let targets = function
-        .outputs
-        .iter()
-        .map(|output| VarName::new(&output.name))
-        .collect::<Vec<_>>();
+    // A non-leading return inherits all stores on the path reaching it.
+    // Earlier returning branches cannot reach this point on that path.
+    let mut prefix = Vec::new();
     for statement in &function.body {
-        let Some((blocks, _)) = guarded_return(statement) else {
-            continue;
-        };
-        for block in blocks {
-            let (rumoca_core::Statement::Return { span }, statements) = block
-                .stmts
-                .split_last()
-                .expect("a guarded return branch has a return")
-            else {
-                unreachable!("guarded_return checks the last statement")
-            };
-            let mut definitions = FunctionDefinitions::new(function);
-            let plans = validate_function_statements(statements, context, &mut definitions)?;
-            validate_return_definitions(function, statements, &plans, &targets, *span)?;
+        if let Some((blocks, _)) = guarded_return(statement) {
+            for block in blocks {
+                let mut path = prefix.clone();
+                path.extend_from_slice(&block.stmts[..block.stmts.len() - 1]);
+                function_bodies::validate_output_path(function, &path, context)?;
+            }
+        } else {
+            prefix.push(statement.clone());
         }
     }
     Ok(())

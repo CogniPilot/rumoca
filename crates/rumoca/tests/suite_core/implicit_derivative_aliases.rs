@@ -106,6 +106,65 @@ fn a_complete_coupled_tensor_ode_keeps_its_native_derivative_block() {
 }
 
 #[test]
+fn scalar_inertia_preserves_whole_and_sliced_tensor_rates() {
+    let source = include_str!("../fixtures/index_reduction/DiagonalInertia.mo");
+    let compiled = Compiler::new()
+        .model("DiagonalInertia")
+        .compile_str(source, "DiagonalInertia.mo")
+        .unwrap();
+    assert!(matches!(
+        rumoca_phase_structural::prepare_for_solve(&compiled.dae).unwrap(),
+        rumoca_phase_structural::PreparedDae::Borrowed { .. }
+    ));
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let result = simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.1,
+                dt: Some(0.01),
+                solver_mode,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (name, rate) in [
+            ("v[1]", 1.0),
+            ("v[2]", -2.0),
+            ("u[1,1]", 0.25),
+            ("u[1,2]", -0.5),
+            ("u[2,1]", 0.5),
+            ("u[2,2]", -1.0),
+        ] {
+            let column = result.names.iter().position(|v| v == name).unwrap();
+            for (&value, &time) in result.data[column].iter().zip(&result.times) {
+                assert!(
+                    (value - time * rate).abs() < 1e-7,
+                    "{solver_mode:?} {name} at {time}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn scaled_tensor_rates_remain_available_for_index_reduction() {
+    let source = include_str!("../fixtures/index_reduction/ImplicitRateConstraint.mo")
+        .replace("2*der(q) + q = omega;", "2*der(q) = omega - q;");
+    check_implicit_rate_motion(&source);
+}
+
+#[test]
+fn a_zero_inertia_with_nonzero_force_remains_singular() {
+    let source = include_str!("../fixtures/index_reduction/DiagonalInertia.mo")
+        .replace("mass = 2", "mass = 0");
+    let compiled = Compiler::new()
+        .model("DiagonalInertia")
+        .compile_str(&source, "DiagonalInertia.mo")
+        .unwrap();
+    assert!(simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default()).is_err());
+}
+
+#[test]
 fn partial_explicit_derivative_coverage_still_receives_a_whole_tensor_alias() {
     let source = include_str!("../fixtures/index_reduction/ImplicitRateConstraint.mo").replace(
         "2*der(q) + q = omega;",

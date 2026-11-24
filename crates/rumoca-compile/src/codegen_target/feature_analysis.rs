@@ -182,10 +182,21 @@ pub(super) fn solve_requires_residual_equations(
 }
 
 fn dynamic_subscript<'dae>(view: dae::DaeView<'dae>, subscript: dae::SubscriptView<'dae>) -> bool {
-    let dae::SubscriptView::Index { expression, .. } = subscript else {
-        return true;
-    };
-    !static_index(view, expression)
+    match subscript {
+        dae::SubscriptView::Whole { .. } => false,
+        dae::SubscriptView::Index { expression, .. } => !static_index(view, expression),
+        dae::SubscriptView::Slice { expression, .. } => {
+            !view
+                .expression(expression)
+                .is_some_and(|slice| match slice.operation() {
+                    dae::ExpressionOperation::Range(_) => true,
+                    dae::ExpressionOperation::Array(elements) => {
+                        elements.iter().all(|element| static_index(view, element))
+                    }
+                    _ => false,
+                })
+        }
+    }
 }
 
 /// Whether an integer subscript is fixed at every point it is evaluated: a

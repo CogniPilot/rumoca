@@ -76,8 +76,39 @@ impl Snapshots<'_> {
         active: Option<&Expression>,
     ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
         let mut normalized = Vec::with_capacity(statements.len());
-        for statement in statements {
-            self.statement(statement, active, &mut normalized)?;
+        let mut remaining = statements;
+        while let Some((first, rest)) = remaining.split_first() {
+            if let Some(selection) = active {
+                // A straight-line region executes under one captured selection.
+                // Keeping its definitions and uses together preserves dominance.
+                let length = remaining
+                    .iter()
+                    .take_while(|stmt| {
+                        !statement_contains_loop(stmt)
+                            && !matches!(
+                                stmt,
+                                rumoca_core::Statement::Empty {
+                                    generated_boolean: Some(_),
+                                    ..
+                                }
+                            )
+                    })
+                    .count();
+                if length > 0 {
+                    normalized.push(rumoca_core::Statement::If {
+                        cond_blocks: vec![rumoca_core::StatementBlock {
+                            cond: selection.clone(),
+                            stmts: remaining[..length].to_vec(),
+                        }],
+                        else_block: None,
+                        span: expression_span(selection)?,
+                    });
+                    remaining = &remaining[length..];
+                    continue;
+                }
+            }
+            self.statement(first, active, &mut normalized)?;
+            remaining = rest;
         }
         Ok(normalized)
     }
@@ -89,6 +120,28 @@ impl Snapshots<'_> {
         normalized: &mut Vec<rumoca_core::Statement>,
     ) -> Result<(), ToDaeError> {
         match statement {
+            // Each generated exit state is reset before the loop that owns it.
+            // If an enclosing selection moves into that loop, its reset must
+            // dominate the selected iteration as well. A false initialization
+            // only initializes that private exit state; true exit stores still
+            // execute under their original branch selection.
+            rumoca_core::Statement::Empty {
+                generated_boolean: Some(_),
+                ..
+            } if super::function_returns::generated_boolean_definition(statement, self.guards)?
+                .is_some_and(|guard| {
+                    guard.mutable
+                        && matches!(
+                            guard.value,
+                            Expression::Literal {
+                                value: Literal::Boolean(false),
+                                ..
+                            }
+                        )
+                }) =>
+            {
+                normalized.push(statement.clone());
+            }
             // The selection is invariant in the loop and the static range is
             // evaluated by no runtime path, so `if g then for .. B` is
             // `for .. if g then B`, and B's own conditionals are captured on

@@ -835,3 +835,23 @@ fn loop_prefix_substitution_retains_the_selected_read_assignment_owner() {
         Some(rumoca_core::Statement::If { .. })
     ));
 }
+
+#[test]
+fn shadowing_loop_iterator_reads_only_its_own_range_in_the_enclosing_scope() {
+    let j = VarName::new("j");
+    let inner = for_loop("j", 3, vec![assign("x", var("j"))]);
+    assert!(!statements_read_incoming_name(
+        std::slice::from_ref(&inner),
+        &j
+    ));
+    assert!(statements_read_incoming_name(
+        &[inner.clone(), assign("y", var("j"))],
+        &j
+    ));
+    let mut dynamic = inner;
+    let rumoca_core::Statement::For { indices, .. } = &mut dynamic else {
+        unreachable!()
+    };
+    indices[0].range = var("j");
+    assert!(statements_read_incoming_name(&[dynamic], &j));
+}

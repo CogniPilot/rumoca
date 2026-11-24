@@ -243,3 +243,45 @@ fn derivative_operation_reads_its_own_causal_certificate_without_projection() {
         ["assign [0, 1]"]
     );
 }
+
+#[test]
+fn repeated_history_needs_disjoint_parameter_sources() {
+    use crate as solve;
+
+    let bind = |dest_p_index, source| solve::PreParamBinding {
+        dest_p_index,
+        source,
+        clock_schedule: None,
+    };
+    let mut layout = solve::SolveLayout::default();
+    assert!(!layout.repeatable_parameter_history());
+    layout
+        .pre_param_bindings
+        .push(bind(4, solve::PreParamSource::P { index: 0 }));
+    assert!(layout.repeatable_parameter_history());
+    layout
+        .pre_param_bindings
+        .push(bind(5, solve::PreParamSource::P { index: 4 }));
+    assert!(!layout.repeatable_parameter_history());
+    layout.pre_param_bindings[1] = bind(5, solve::PreParamSource::Y { index: 0 });
+    assert!(!layout.repeatable_parameter_history());
+}
+
+#[test]
+fn only_a_complete_direct_refresh_has_a_compact_rollback_set() {
+    for certified in [false, true] {
+        let mut plan = two_row_dynamic_plan();
+        plan.causal_solution_certified = certified;
+        let component = derivative_component(plan);
+        let view = component.runtime_view();
+        let problem = view.model();
+        let effects = problem.problem.direct_refresh_effects(
+            problem.problem.continuous.refresh_owners.derivative(),
+            &problem.artifacts.continuous.structural,
+        );
+        assert_eq!(
+            effects.as_ref().map(|effects| effects.rollback_runs()),
+            certified.then_some(&[[0, 2]][..])
+        );
+    }
+}

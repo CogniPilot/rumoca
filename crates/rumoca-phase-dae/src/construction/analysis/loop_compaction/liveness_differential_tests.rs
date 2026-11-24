@@ -487,13 +487,13 @@ fn sequencing_two_enclosing_back_edges_hides_the_outer_read() {
 /// A `for` binder shadows an enclosing value of the same name inside the body,
 /// so a body read of the binder is not a read of the enclosing value.
 #[test]
-fn binder_shadowing_separates_the_predicate_from_liveness() {
+fn binder_shadowing_excludes_the_outer_value_from_both_read_analyses() {
     let body = vec![assign("a", &["i"])];
     let program = vec![for_loop("i", &[], body)];
     let binder = VarName::new("i");
     assert!(
-        statements_read_incoming_name(&program, &binder),
-        "the syntactic predicate counts the binder read as a read of `i`"
+        !statements_read_incoming_name(&program, &binder),
+        "the iterator is in scope throughout its loop body"
     );
     assert!(
         !liveness::reads_incoming_value(&program, &binder),

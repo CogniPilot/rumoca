@@ -40,6 +40,8 @@ fn admitted(ops: &[LinearOp]) -> bool {
 
 fn admitted_with_calls(ops: &[LinearOp], calls: &crate::SolvePureCallTable) -> bool {
     let mut reads = ModeReads {
+        model: None,
+        in_sample: false,
         flag: 7,
         memory: &[8],
         calls,
@@ -155,6 +157,8 @@ fn compact_parameter_strides_cannot_hide_a_mode_read() {
             span: Span::DUMMY,
         };
         let mut reads = ModeReads {
+            model: None,
+            in_sample: false,
             flag: 7,
             memory: &[8],
             calls: &crate::SolvePureCallTable::default(),

@@ -44,8 +44,11 @@ fn implicit_states(system: PreparedSystem<'_, '_>) -> Vec<u32> {
     let Some(sorted) = system.structural else {
         return Vec::new();
     };
-    let definitions =
-        existing_derivative_owners(system.view, &sorted.blocks, sorted.matching.iter().copied());
+    let definitions = existing_derivative_owners(
+        system.view,
+        Some(&sorted.blocks),
+        sorted.matching.iter().copied(),
+    );
     let tensor_derivatives = tensor_derivative_states(system.view);
     let mut selected = uncovered_tensor_states(system.view, &definitions, &tensor_derivatives);
     for block in &sorted.blocks {
@@ -81,7 +84,7 @@ pub(super) fn normalize_tensors(model: &dae::Dae) -> Result<Option<dae::Dae>, St
         let matching = match_eq.iter().enumerate().filter_map(|(row, unknown)| {
             unknown.map(|id| (incidence.equation_refs[row], incidence.unknowns[id]))
         });
-        let definitions = existing_derivative_owners(view, &[], matching);
+        let definitions = existing_derivative_owners(view, None, matching);
         Ok::<_, StructuralError>(
             uncovered_tensor_states(view, &definitions, &tensor_derivatives)
                 .into_iter()
@@ -166,11 +169,13 @@ struct ExplicitDerivativeOwner {
 
 fn existing_derivative_owners<'dae>(
     view: dae::DaeView<'dae>,
-    blocks: &[BltBlock<'dae>],
+    complete_blocks: Option<&[BltBlock<'dae>]>,
     matching: impl Iterator<Item = (EquationRef, UnknownId<'dae>)>,
 ) -> BTreeMap<u32, usize> {
-    let block_rows = derivative_block_rows(blocks);
-    let owners = explicit_derivative_owners(view);
+    let block_rows = complete_blocks
+        .map(derivative_block_rows)
+        .unwrap_or_default();
+    let owners = explicit_derivative_owners(view, complete_blocks.is_some());
     let mut covered = BTreeMap::new();
     for (row, unknown) in matching {
         let UnknownId::Derivative { state, .. } = unknown else {
@@ -185,14 +190,21 @@ fn existing_derivative_owners<'dae>(
     covered
 }
 
-fn explicit_derivative_owners(view: dae::DaeView<'_>) -> Vec<ExplicitDerivativeOwner> {
+fn explicit_derivative_owners(
+    view: dae::DaeView<'_>,
+    allow_scaled: bool,
+) -> Vec<ExplicitDerivativeOwner> {
     let mut start = 0;
     view.continuous_owners()
         .map(|owner| {
             let (rows, targets) = match owner {
                 dae::ContinuousOwnerView::Residual { equation, .. } => (
                     1,
-                    vec![explicit_derivative_target(view, equation.residual())],
+                    vec![explicit_derivative_target(
+                        view,
+                        equation.residual(),
+                        allow_scaled,
+                    )],
                 ),
                 dae::ContinuousOwnerView::Structured { family, .. } => {
                     let domain = view
@@ -201,7 +213,7 @@ fn explicit_derivative_owners(view: dae::DaeView<'_>) -> Vec<ExplicitDerivativeO
                     let targets = family
                         .bodies()
                         .iter()
-                        .map(|body| explicit_derivative_target(view, body))
+                        .map(|body| explicit_derivative_target(view, body, allow_scaled))
                         .collect::<Vec<_>>();
                     (domain.scalar_count() as usize * targets.len(), targets)
                 }
@@ -220,11 +232,12 @@ fn explicit_derivative_owners(view: dae::DaeView<'_>) -> Vec<ExplicitDerivativeO
 fn explicit_derivative_target<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
+    allow_scaled: bool,
 ) -> Option<u32> {
     let (lhs, rhs) = crate::residual_normalization::equation_sides(view, residual)?;
     match (
-        derivative_projection(view, lhs),
-        derivative_projection(view, rhs),
+        derivative_projection(view, lhs, allow_scaled),
+        derivative_projection(view, rhs, allow_scaled),
     ) {
         (Some(state), None) | (None, Some(state)) => Some(state),
         _ => None,
@@ -234,6 +247,7 @@ fn explicit_derivative_target<'dae>(
 fn derivative_projection<'dae>(
     view: dae::DaeView<'dae>,
     mut value: dae::ExprId<'dae>,
+    allow_scaled: bool,
 ) -> Option<u32> {
     loop {
         match view.expression(value)?.operation() {
@@ -241,6 +255,32 @@ fn derivative_projection<'dae>(
                 return Some(state.index());
             }
             dae::ExpressionOperation::Index { base, .. } => value = base,
+            dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply,
+                lhs,
+                rhs,
+            } if allow_scaled => {
+                // Preserve the implicit rates used by index reduction until a complete BLT exists.
+                // A scalar parameter scales each derivative lane independently.
+                // Solve's affine derivative lowering checks the coefficient at evaluation.
+                let coefficient = |id| {
+                    view.expression(id).is_some_and(|node| {
+                        node.value_type().is_scalar()
+                            && matches!(
+                                node.variability(),
+                                dae::ExpressionVariability::Constant
+                                    | dae::ExpressionVariability::Parameter
+                            )
+                    })
+                };
+                value = if coefficient(lhs) {
+                    rhs
+                } else if coefficient(rhs) {
+                    lhs
+                } else {
+                    return None;
+                };
+            }
             _ => return None,
         }
     }

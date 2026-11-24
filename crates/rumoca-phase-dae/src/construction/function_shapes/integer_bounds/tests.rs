@@ -229,6 +229,8 @@ fn bounded_integer_builtins_cover_every_concrete_operand_and_refuse_unknown_divi
         args: vec![variable("i"), variable("divisor")],
         span: span(),
     };
+    assert_eq!(shapes.proven_integer_bounds(&expression), Some((-5, 5)));
+    shapes.bind_integer_bounds(VarName::new("divisor"), -1, 2);
     assert_eq!(shapes.proven_integer_bounds(&expression), None);
 }
 

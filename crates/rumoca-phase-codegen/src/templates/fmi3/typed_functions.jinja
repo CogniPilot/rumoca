@@ -43,8 +43,28 @@ return status;
 {% endif -%}
 {% endmacro %}
 
+{%- macro input_count(program) -%}{{ program.slots|selectattr("storage","equalto","input")|list|length }}{%- endmacro %}
+{%- macro output_count(program) -%}{{ program.slots|selectattr("storage","equalto","output")|list|length }}{%- endmacro %}
+{%- macro fold_inputs(op) -%}
+(const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %}{% for i in op.state_captures %}&present{{ i }},v{{ i }},{% endfor %}NULL }
+{%- endmacro %}
 {%- macro operation(op, program, region_name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}) -%}
-{% if op.operation == "check_assertion" -%}
+{% if op.operation == "assigned_state" -%}
+{% set x = op.state_operation -%}
+{% if x.state == "absent" %}present{{ x.destination }}=false;
+{% elif x.state == "present" %}present{{ x.destination }}=true; {{ copy("v" ~ x.destination,"r" ~ x.source) }}
+{% elif x.state == "input" %}present{{ x.destination }}=*(const bool*)in[{{ input_count(program) }}+2*{{ x.input }}]; if(present{{ x.destination }}) {{ copy("v" ~ x.destination, "in[" ~ input_count(program) ~ "+2*" ~ x.input ~ "+1]") }}
+{% elif x.state == "output" %}*(bool*)out[{{ output_count(program) }}+2*{{ x.output }}]=present{{ x.source }}; if(present{{ x.source }}) memcpy(out[{{ output_count(program) }}+2*{{ x.output }}+1],v{{ x.source }},sizeof(v{{ x.source }}));
+{% elif x.state == "is_present" %}r{{ x.destination }}[0]=present{{ x.source }};
+{% elif x.state == "all_present" %}r{{ x.destination }}[0]=true{% for i in x.sources %} && present{{ i }}{% endfor %};
+{% elif x.state == "project_checked" %}if(!present{{ x.source }})return 1; {{ copy("r" ~ x.destination,"v" ~ x.source) }}
+{% else %}{{ fail("unsupported assigned operation") }}{% endif -%}
+{% elif op.operation == "assigned_conditional" -%}
+{% set c=op.program -%}
+{ int status=(r{{ c.condition }}[0] ? {{ region_name }}_true : {{ region_name }}_false)((const void*[]){ {% for i in c.captures %}r{{ i }},{% endfor %}{% for i in c.state_captures %}&present{{ i }},v{{ i }},{% endfor %}NULL }, (void*[]){ {% for i in c.destinations %}r{{ i }},{% endfor %}{% for i in c.state_destinations %}&present{{ i }},v{{ i }},{% endfor %}NULL },observer); if(status)return status; }
+{% elif op.operation == "check_finite" -%}
+for (size_t k=0; k<{{ program.register_types[op.operand].scalar_count }}; ++k) if (!isfinite(r{{ op.operand }}[k])) return 1;
+{% elif op.operation == "check_assertion" -%}
 if (!r{{ op.condition }}[0]) {
 {% if op.message.kind == "captures" -%}
 {{ call(region_name ~ "_message", op.captures, op.destinations) -}}
@@ -91,10 +111,10 @@ for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; 
 if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endfor -%}
 {% if op.continuation -%}
-{ bool fold_continue[1]; int status={{ region_name }}_continue((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %}{% if not op.destinations and not op.captures and not op.domain.binders %}NULL{% endif %} }, (void*[]){ fold_continue }, observer); if (status) return status; fold_done = !fold_continue[0]; }
+{ bool fold_continue[1]; int status={{ region_name }}_continue({{ fold_inputs(op) }}, (void*[]){ fold_continue }, observer); if (status) return status; fold_done = !fold_continue[0]; }
 if (!fold_done)
 {% endif -%}
-{ int status={{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
+{ int status={{ region_name }}_fold({{ fold_inputs(op) }}, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
 {% for binder in op.domain.binders %} } {% endfor %}
 }
 {% elif op.operation == "map" -%}
@@ -112,6 +132,7 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% for binder in op.domain.binders %} } {% endfor %}
 }
 {% else -%}
+{% if op.destination is undefined %}{{ fail("unsupported-feature:fmi.c.pure-call: " ~ op.operation) }}{% endif -%}
 {{ tensor(op, program) -}}
 {% endif -%}
 {% endmacro %}
@@ -122,6 +143,9 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% set child = name ~ "_region_" ~ loop.index0 -%}
 {% if op.operation == "check_assertion" and op.message.kind == "captures" -%}
 {{ definition(op.message.program.body, child ~ "_message", prefix, assertion_outputs, source_predicate_outputs) -}}
+{% elif op.operation == "assigned_conditional" -%}
+{{ definition(op.program.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs) -}}
+{{ definition(op.program.if_false.body, child ~ "_false", prefix, assertion_outputs, source_predicate_outputs) -}}
 {% elif op.operation == "conditional" -%}
 {{ definition(op.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs) -}}
 {{ definition(op.if_false.body, child ~ "_false", prefix, assertion_outputs, source_predicate_outputs) -}}
@@ -165,6 +189,7 @@ memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
 {% set op = issued.operation -%}
 {% if op.operation == "load" and op.slot in input.pointers and written.ids|select("equalto", op.destination)|list|length == 1 %}{% set alias.ids = alias.ids + [op.destination] %}{% endif -%}
 {% endfor -%}
+{% for ty in program.assigned_states.types|default([]) %}bool present{{ loop.index0 }}=false; (void)present{{ loop.index0 }}; {{ declaration("v" ~ loop.index0, ty) }}{% endfor %}
 {% for ty in program.register_types %}{% if loop.index0 not in alias.ids %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
 {% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
 {% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}

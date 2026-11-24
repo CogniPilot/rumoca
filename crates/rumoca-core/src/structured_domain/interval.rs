@@ -124,6 +124,19 @@ impl IntegerInterval {
         }
     }
 
+    /// Hull of div(a, b) for a proven positive Integer interval b. With a
+    /// fixed numerator the extrema lie at the endpoints of b, including
+    /// when the numerator is negative (MLS §3.7.1.1).
+    pub fn divided_by_positive_interval(self, divisor: Self) -> Self {
+        let Some(minimum) = divisor.lower.filter(|value| *value > 0) else {
+            return Self::UNBOUNDED;
+        };
+        self.divided_by(minimum).hull(match divisor.upper {
+            Some(maximum) => self.divided_by(maximum),
+            None => Self::exact(0),
+        })
+    }
+
     fn constant(self) -> Option<i64> {
         self.bounds()
             .and_then(|(lower, upper)| (lower == upper).then_some(lower))
@@ -273,6 +286,32 @@ mod tests {
         assert_eq!(
             upper_only.hull(IntegerInterval::exact(9)),
             half(None, Some(9))
+        );
+    }
+
+    #[test]
+    fn integer_division_over_positive_divisors_contains_all_quotients() {
+        let divisors = IntegerInterval::finite(2, 7);
+        for lo in -9..=9 {
+            for hi in lo..=9 {
+                let hull = IntegerInterval::finite(lo, hi).divided_by_positive_interval(divisors);
+                let values = (lo..=hi).flat_map(|n| (2..=7).map(move |d| n / d));
+                assert_eq!(
+                    hull.bounds(),
+                    Some((values.clone().min().unwrap(), values.max().unwrap()))
+                );
+            }
+        }
+        assert_eq!(
+            IntegerInterval::exact(32)
+                .divided_by_positive_interval(half(Some(2), None))
+                .bounds(),
+            Some((0, 16))
+        );
+        assert!(
+            IntegerInterval::exact(32)
+                .divided_by_positive_interval(IntegerInterval::finite(0, 2))
+                .is_unbounded()
         );
     }
 

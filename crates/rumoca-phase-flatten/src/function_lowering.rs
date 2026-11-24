@@ -799,7 +799,7 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
             };
             for field in &dp.fields {
                 func.inputs
-                    .push(decomposed_record_field_param(&dp.param_name, &input, field));
+                    .push(decomposed_record_field_param(dp, &input, field));
             }
         }
 
@@ -1158,17 +1158,56 @@ fn record_param_shape_source(param: &DecomposedParam) -> Option<String> {
         .map(|field| format!("{}_{}", param.param_name, field.name))
 }
 
+/// A structural extent written in a record field is lexically relative to
+/// that record. After splitting a scalar record, its siblings have new formal
+/// names. Rebind only matching declarations, leaving package constants and
+/// the enclosing formal's own dimensions in their original scope.
+struct RecordFieldExtentRewriter<'a> {
+    record: &'a DecomposedParam,
+}
+
+impl ExpressionRewriter for RecordFieldExtentRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = expr
+            && let Some(reference) = name.component_ref()
+            && let [part] = reference.parts()
+            && part.subs.is_empty()
+            && let Some(field) = self
+                .record
+                .fields
+                .iter()
+                .find(|f| f.def_id == Some(part.def_id))
+        {
+            return rumoca_core::Expression::VarRef {
+                name: record_param_field_reference(&self.record.param_name, &field.name, *span),
+                subscripts: self.rewrite_subscripts(subscripts),
+                span: *span,
+            };
+        }
+        self.walk_expression(expr)
+    }
+}
+
 fn decomposed_record_field_param(
-    param_name: &str,
+    record: &DecomposedParam,
     original_param: &rumoca_core::FunctionParam,
     field: &rumoca_core::FunctionParam,
 ) -> rumoca_core::FunctionParam {
-    record_field_column_param(
-        format!("{}_{}", param_name, field.name),
+    let mut column = record_field_column_param(
+        format!("{}_{}", record.param_name, field.name),
         original_param.dimensions(),
         &original_param.shape_expr,
         field,
-    )
+    );
+    if original_param.dimensions().is_empty() {
+        column.shape_expr =
+            RecordFieldExtentRewriter { record }.rewrite_subscripts(&field.shape_expr);
+    }
+    column
 }
 
 /// The function value holding record field `field` of every element of an

@@ -225,11 +225,9 @@ end RuntimeEigen;
     );
 }
 
-/// An early `return` from a function with an array output is successful
-/// completion in MLS §12.4, but the DAE definedness proof does not yet admit
-/// it; the construction refuses with a typed diagnostic instead of guessing.
+/// An early return inherits definite output assignments made before the guard.
 #[test]
-fn early_return_with_an_array_output_is_refused_until_return_definedness_lands() {
+fn early_return_inherits_the_array_output_definition() {
     let _lock = session_test_guard();
     let source = r#"
 function EarlyArray
@@ -249,12 +247,31 @@ equation
   y = EarlyArray(u);
 end EarlyArrayReturn;
 "#;
-    let refusal = crate::native_program_api::prepare_native_program(source, "EarlyArrayReturn")
-        .expect_err("array-output early return has no checked definedness proof yet");
-    let message = refusal.message();
-    assert!(message.contains("ToDae"), "{message}");
+    let program = crate::native_program_api::prepare_native_program(source, "EarlyArrayReturn")
+        .expect("the prefix assigns both output elements");
+    let artifact: serde_json::Value = serde_json::from_str(&program).unwrap();
+    let mut execution = CallExecution::new(&artifact);
+    let mut parameters = artifact["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_f64().unwrap())
+        .collect::<Vec<_>>();
+    for (input, expected) in [(2.0, [2.0, 4.0]), (-1.0, [0.0, 0.0])] {
+        parameters[slot(&artifact, "u", "P")] = input;
+        let values = execution.run(&parameters);
+        assert_eq!(values[slot(&artifact, "y[1]", "Y")], expected[0]);
+        assert_eq!(values[slot(&artifact, "y[2]", "Y")], expected[1]);
+    }
+
+    let partial = source.replace("y := zeros(2)", "y[1] := 0");
+    let error = crate::native_program_api::prepare_native_program(&partial, "EarlyArrayReturn")
+        .expect_err("the returning path leaves y[2] undefined");
     assert!(
-        message.contains("must define every output before returning"),
-        "{message}"
+        error
+            .message()
+            .contains("without defining every declared element"),
+        "{}",
+        error.message()
     );
 }

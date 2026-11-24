@@ -1209,12 +1209,37 @@ impl LoopIndexSubstituter<'_> {
     }
 }
 
+fn element_subscripts(binding: &ast::Expression, indices: &[i64]) -> Vec<ast::Subscript> {
+    indices
+        .iter()
+        .map(|&i| {
+            ast::Subscript::Expression(ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token: rumoca_core::Token {
+                    text: i.to_string().into(),
+                    ..rumoca_core::Token::default()
+                },
+                span: binding.span(),
+            })
+        })
+        .collect()
+}
+
 /// Index an array modification value for a specific element.
 ///
 /// If the expression is an `Array { elements }`, returns the element at the
 /// given 1-based index. For non-array values, returns None (no change needed).
 fn index_array_modification(expr: &ast::Expression, indices: &[i64]) -> Option<ast::Expression> {
     match expr {
+        // Brackets concatenate promoted operands. An operand is not necessarily
+        // one element of the concatenation (MLS 10.4.2).
+        ast::Expression::Array { kind, .. } if kind.concatenation_axis().is_some() => {
+            Some(ast::Expression::ArrayIndex {
+                base: Arc::new(expr.clone()),
+                subscripts: element_subscripts(expr, indices),
+                span: expr.span(),
+            })
+        }
         ast::Expression::Array { elements, .. } => {
             let (&first_idx, remaining) = indices.split_first()?;
             let idx = first_idx.checked_sub(1)? as usize; // Convert 1-based to 0-based
@@ -1248,22 +1273,6 @@ pub(super) fn index_binding_for_element(
     binding: &ast::Expression,
     indices: &[i64],
 ) -> InstantiateResult<ast::Expression> {
-    let make_subscripts = || -> Vec<ast::Subscript> {
-        indices
-            .iter()
-            .map(|&i| {
-                ast::Subscript::Expression(ast::Expression::Terminal {
-                    terminal_type: ast::TerminalType::UnsignedInteger,
-                    token: rumoca_core::Token {
-                        text: i.to_string().into(),
-                        ..rumoca_core::Token::default()
-                    },
-                    span: binding.span(),
-                })
-            })
-            .collect()
-    };
-
     // For ast::ComponentReference bindings, walk the cref parts using type info
     // to find which part introduces array dimensions.
     if let ast::Expression::ComponentReference(cref) = binding
@@ -1275,7 +1284,7 @@ pub(super) fn index_binding_for_element(
         let Some(pos) = find_array_part(tree, parent_components, &cref.parts)? else {
             return Ok(ast::Expression::ArrayIndex {
                 base: Arc::new(binding.clone()),
-                subscripts: make_subscripts(),
+                subscripts: element_subscripts(binding, indices),
                 span: binding.span(),
             });
         };
@@ -1302,7 +1311,7 @@ pub(super) fn index_binding_for_element(
     // Fallback for non-ast::ComponentReference bindings: wrap with ArrayIndex
     Ok(ast::Expression::ArrayIndex {
         base: Arc::new(binding.clone()),
-        subscripts: make_subscripts(),
+        subscripts: element_subscripts(binding, indices),
         span: binding.span(),
     })
 }

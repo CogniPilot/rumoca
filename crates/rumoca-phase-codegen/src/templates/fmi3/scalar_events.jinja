@@ -7,7 +7,7 @@
     order the schedule lists them. The linked runtime walks the same facts
     (rumoca-solver fmi_me/kernel/component.rs and runtime/solve_runtime/
     relation_memory.rs, discrete_rows.rs). -#}
-{%- from "fmi-c-kernel.jinja" import scalar_op %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, copy_history %}
 
 {%- macro initial_mode(solve, active) -%}
 {%- if solve.solve_layout.initial_event_parameter_index is not none %}m->p[{{ solve.solve_layout.initial_event_parameter_index }}] = {{ "1.0" if active else "0.0" }}; {% endif -%}
@@ -304,9 +304,9 @@ static void rmc_clear_clock_lanes(ModelInstance* m) {
 
 /* component.rs event_indicators_into: the searched roots at the refreshed
    coordinate, an exact zero reported on its domain's side. */
-static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
+static {{ prefix }}Status rmc_projected_indicators(ModelInstance* m, double* z) {
     double roots[{{ [nroots, 1]|max }}] = {0};
-    if (settle_values(m) != {{ prefix }}OK || rmc_eval_roots(m, roots) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (rmc_eval_roots(m, roots) != {{ prefix }}OK) return {{ prefix }}Error;
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
         size_t root = rmc_indicator_root[k];
         double value = roots[root];
@@ -319,6 +319,11 @@ static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
         z[k] = value;
     }
     return {{ prefix }}OK;
+}
+
+static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
+    if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    return rmc_projected_indicators(m, z);
 }
 
 /* component.rs complete_indicator_domains: a changed domain captures the
@@ -406,13 +411,35 @@ static {{ prefix }}Status rmc_event_projection(ModelInstance* m, bool* changed) 
     return {{ prefix }}OK;
 }
 
+/* Keep large guarded computations in their own frames. They read the
+   original snapshot and write only the staged array, as inline owners do. */
+{%- set guarded_programs = solve.discrete.guarded_assignment_plan.programs %}
+#if defined(__clang__) || defined(__GNUC__)
+#define RMC_GUARDED_FRAME __attribute__((noinline))
+#else
+#define RMC_GUARDED_FRAME
+#endif
+{%- for program in guarded_programs %}
+{%- if program.temporary_count >= 256 %}
+static RMC_GUARDED_FRAME {{ prefix }}Status rmc_guarded_rhs_{{ loop.index0 }}(ModelInstance* m, double* gvalues) {
+    (void)m;
+    double r[{{ program.temporary_count }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "gvalues", prefix ~ "Error") }}
+{%- endfor %}
+    return {{ prefix }}OK;
+}
+{%- endif %}
+{%- endfor %}
+#undef RMC_GUARDED_FRAME
+
 /* discrete_rows.rs apply_discrete_rows_for_pre_snapshot: every row reads the
    pass's snapshot, a row writing an overridden relation memory keeps the
    located side, and a change is a change of bits. A settle pass writes the
    discrete equations; `memories_only` writes only the condition memories,
    which advance between passes (advance_condition_memory). */
-static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, bool memories_only) {
-    (void)m; (void)changed; (void)memories_only;
+static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, bool memories_only, bool enable_clocked) {
+    (void)m; (void)changed; (void)memories_only; (void)enable_clocked;
 {%- set nguard = ev.guarded_targets|length %}
 {%- if ndisc > 0 %}
     static const size_t targets[{{ ndisc }}] = { {% for target in ev.discrete_targets %}{{ target }},{% endfor %} };
@@ -425,16 +452,28 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
        the rows; a target that is an overridden relation memory keeps the
        located side. Clock-free owners run in every pass. */
     static const size_t gindex[{{ nguard }}] = { {% for slot in ev.guarded_targets %}{{ slot.index }},{% endfor %} };
-    static const long gclock[{{ nguard }}] = { {% for clock in ev.guarded_clocks %}{{ clock if clock is not none else -1 }},{% endfor %} };
+    /* Elements of a tensor owner share a clock. Keep their snapshot writes
+       in their original order, testing each contiguous run once. */
+    static const struct { long clock; size_t begin; } runs[] = {
+{%- for begin, clock in ev.guarded_clock_runs %}
+        { {{ clock if clock is not none else -1 }}, {{ begin }} },
+{%- endfor %}
+        { -1, {{ nguard }} }
+    };
     static const bool gin_y[{{ nguard }}] = { {% for slot in ev.guarded_targets %}{{ "true" if slot.column == "y" else "false" }},{% endfor %} };
     double gvalues[{{ nguard }}];
     if (!memories_only) {
-{%- for program in solve.discrete.guarded_assignment_plan.programs %}
-    {
-    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for program in guarded_programs %}
+{%- set clock = ev.guarded_clocks[program.output_indices[0]] %}
+    {% if clock is not none %}if (enable_clocked && m->rmc_pass == 0 && rmc_clock_active({{ clock }}, m->time)) {% endif %}{
+{%- if program.temporary_count >= 256 %}
+        if (rmc_guarded_rhs_{{ loop.index0 }}(m, gvalues) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- else %}
+        double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
 {{ scalar_op(op, "gvalues", prefix ~ "Error") }}
 {%- endfor %}
+{%- endif %}
     }
 {%- endfor %}
     }
@@ -458,13 +497,14 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
             if (memory < 0) continue;
             for (size_t g = 0; g < {{ nguard }}; ++g) if (!gin_y[g] && (long)gindex[g] == memory) gvalues[g] = m->rmc_override_value[k];
         }
-        for (size_t g = 0; g < {{ nguard }}; ++g) {
-            /* guarded_assignments.rs guarded_assignment_accepts_snapshot: an
-               owner under a clock runs on its tick, in the first pass only. */
-            if (gclock[g] >= 0 && (m->rmc_pass != 0 || !rmc_clock_active((size_t)gclock[g], m->time))) continue;
-            double* slot = gin_y[g] ? &m->y[gindex[g]] : &m->p[gindex[g]];
-            *changed |= memcmp(slot, &gvalues[g], sizeof(double)) != 0;
-            *slot = gvalues[g];
+        for (size_t run = 0; run + 1 < sizeof(runs)/sizeof(runs[0]); ++run) {
+            long clock = runs[run].clock;
+            if (clock >= 0 && (!enable_clocked || m->rmc_pass != 0 || !rmc_clock_active((size_t)clock, m->time))) continue;
+            for (size_t g = runs[run].begin; g < runs[run+1].begin; ++g) {
+                double* slot = gin_y[g] ? &m->y[gindex[g]] : &m->p[gindex[g]];
+                *changed |= memcmp(slot, &gvalues[g], sizeof(double)) != 0;
+                *slot = gvalues[g];
+            }
         }
     }
 {%- endif %}
@@ -546,6 +586,7 @@ static {{ prefix }}Status rmc_observe(ModelInstance* m) { (void)m; return {{ pre
 
 /* The pre-binding lanes (pre_params.rs). */
 {%- set lanes = ev.pre_bindings %}
+{%- if ev.iteration_lanes|length > 0 %}
 static double rmc_pre_source(const double* y, const double* p, size_t lane) {
 {%- if lanes|length > 0 %}
     static const size_t source[{{ lanes|length }}] = { {% for lane in lanes %}{{ lane.source }},{% endfor %} };
@@ -556,9 +597,6 @@ static double rmc_pre_source(const double* y, const double* p, size_t lane) {
 {%- endif %}
 }
 static const size_t rmc_pre_dest[{{ [lanes|length, 1]|max }}] = { {% for lane in lanes %}{{ lane.dest }},{% else %}0{% endfor %} };
-static const size_t rmc_pre_lanes = {{ lanes|length }};
-#define RMC_PRE_LANES rmc_pre_lanes
-{%- if ev.iteration_lanes|length > 0 %}
 static const size_t rmc_iteration_lanes[{{ [ev.iteration_lanes|length, 1]|max }}] = { {% for lane in ev.iteration_lanes %}{{ lane }},{% else %}0{% endfor %} };
 static const size_t rmc_iteration_lane_count = {{ ev.iteration_lanes|length }};
 #define RMC_ITERATION_LANES rmc_iteration_lane_count
@@ -599,7 +637,7 @@ static {{ prefix }}Status rmc_discrete_settle(ModelInstance* m, bool* changed_an
         bool pass_changed = false;
 {%- for step in schedule.settle_pass %}
 {%- if step == "DiscreteOwners" %}
-        if (rmc_discrete_owners(m, &pass_changed, false) != {{ prefix }}OK) return {{ prefix }}Error;
+        if (rmc_discrete_owners(m, &pass_changed, false, true) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- elif step == "RuntimeAssignments" %}
         if (rmc_runtime_assignments(m, &pass_changed) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- elif step == "SettledIfUnchanged" %}
@@ -626,10 +664,17 @@ static bool rmc_surface_open(const ModelInstance* m, RmcSurface* s) {
     s->width = (size_t)Y_LEN + (size_t)P_LEN;
     size_t window = (size_t)RMC_SURFACE_WINDOW;
     if (window && s->width > SIZE_MAX/window) return false;
+{%- if prefix == "fmi3" %}
+    /* Each history slot is written in full before its count is published.
+       FMI 3 owns this scratch storage and can leave unused slots untouched. */
+    if (window && window * s->width > SIZE_MAX / sizeof(double)) return false;
+    s->data = window ? malloc(window * s->width * sizeof(double)) : NULL;
+{%- else %}
     s->data = window ? rmc_instance_allocate(m, window * s->width, sizeof(double)) : NULL;
+{%- endif %}
     return !window || s->data != NULL;
 }
-static void rmc_surface_close(RmcSurface* s) { rmc_instance_free(s->owner, s->data); s->data = NULL; }
+static void rmc_surface_close(RmcSurface* s) { if (s->data) rmc_instance_free(s->owner, s->data); s->data = NULL; }
 static bool rmc_on_surface(const ModelInstance* m, RmcSurface* s) {
     if (!s->data) return false;
     bool repeats = false;
@@ -722,8 +767,7 @@ static {{ prefix }}Status rmc_mode_search(ModelInstance* m, const RmcSurface* s,
 
 static {{ prefix }}Status rmc_relation_passes(ModelInstance* m, bool* changed_any, RmcSurface* surface);
 static {{ prefix }}Status rmc_relation_settle(ModelInstance* m, bool* changed_any) {
-    RmcSurface surface;
-    if (!rmc_surface_open(m, &surface)) { RMC_LOG(m, "the relation surface history could not be allocated"); return {{ prefix }}Error; }
+    RmcSurface surface = {0};
     {{ prefix }}Status status = rmc_relation_passes(m, changed_any, &surface);
     rmc_surface_close(&surface);
     return status;
@@ -744,6 +788,7 @@ static {{ prefix }}Status rmc_relation_passes(ModelInstance* m, bool* changed_an
         if (rmc_runtime_assignments(m, &step_changed) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- else %}{{ fail("unsupported-feature:fmi.c.relation-step " ~ step) }}{% endif %}
 {%- endfor %}
+        if (!surface->data && !rmc_surface_open(m, surface)) { RMC_LOG(m, "the relation surface history could not be allocated"); return {{ prefix }}Error; }
         if (rmc_on_surface(m, surface)) {
             bool found = false;
             if (rmc_mode_search(m, surface, &found) != {{ prefix }}OK) return {{ prefix }}Error;
@@ -782,19 +827,20 @@ static {{ prefix }}Status rmc_event_pass(ModelInstance* m, bool* changed) {
    component.rs commit_event_runtime_state. Pre values are seeded from the
    event entry; each later pass reads the previous pass (Appendix B). */
 static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canonicalize) {
-    for (size_t k = 0; k < RMC_PRE_LANES; ++k) m->p[rmc_pre_dest[k]] = rmc_pre_source(m->rmc_entry_y, m->rmc_entry_p, k);
+{{- copy_history(fmi.history_runs, "m->p", "m->rmc_entry_y", "m->rmc_entry_p") }}
     bool settled = false;
-    RmcSurface surface;
-    if (!rmc_surface_open(m, &surface)) { RMC_LOG(m, "the event surface history could not be allocated"); return {{ prefix }}Error; }
+    RmcSurface surface = {0};
     for (size_t pass = 0; pass < {{ schedule.fixed_point_cap }} && !settled; ++pass) {
         m->rmc_pass = pass;
         bool changed = pass > 0 && rmc_advance_lanes(m);
         if (rmc_event_pass(m, &changed) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
         /* relation_memory.rs: condition memories advance on the settled pass,
            before the next pass advances the pre lanes. */
-        if (rmc_discrete_owners(m, &changed, true) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
+        if (rmc_discrete_owners(m, &changed, true, false) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
         settled = !changed && rmc_lanes_settled(m);
-        if (settled || !rmc_on_surface(m, &surface)) continue;
+        if (settled) continue;
+        if (!surface.data && !rmc_surface_open(m, &surface)) { RMC_LOG(m, "the event surface history could not be allocated"); return {{ prefix }}Error; }
+        if (!rmc_on_surface(m, &surface)) continue;
         bool found = false;
         if (rmc_mode_search(m, &surface, &found) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
         if (found) { surface.count = 0; surface.head = 0; } else settled = true;
@@ -807,25 +853,24 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
     static const size_t memories[{{ ev.condition_memories|length }}] = { {% for index in ev.condition_memories %}{{ index }},{% endfor %} };
     double held[{{ ev.condition_memories|length }}];
     for (size_t k = 0; k < {{ ev.condition_memories|length }}; ++k) { held[k] = m->p[memories[k]]; m->p[memories[k]] = m->rmc_entry_p[memories[k]]; }
-    {{ prefix }}Status actions = check_assertions(m);
-    if (actions == {{ prefix }}OK) actions = report_warnings(m);
+    {{ prefix }}Status actions = check_assertions_at(m, true);
+    if (actions == {{ prefix }}OK) actions = report_warnings_at(m, true);
     for (size_t k = 0; k < {{ ev.condition_memories|length }}; ++k) m->p[memories[k]] = held[k];
     if (actions != {{ prefix }}OK) return {{ prefix }}Error;
 {%- else %}
-    if (check_assertions(m) != {{ prefix }}OK || report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (check_assertions_at(m, true) != {{ prefix }}OK || report_warnings_at(m, true) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- endif %}
 {%- if ev.pulse_rows|length > 0 %}
     if (rmc_release_condition_pulses(m) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- endif %}
     /* pre_params.rs commit_pre_params_after_event_at. */
     bool history = false;
+{%- if ev.pre_commit_needs_snapshot %}
     double committed_p[P_LEN];
     memcpy(committed_p, m->p, sizeof(m->p));
-    for (size_t k = 0; k < RMC_PRE_LANES; ++k) {
-        double value = rmc_pre_source(m->y, committed_p, k);
-        history |= rmc_value_changed(m->p[rmc_pre_dest[k]], value, m->tolerance);
-        m->p[rmc_pre_dest[k]] = value;
-    }
+{%- endif %}
+{{- copy_history(fmi.history_runs, "m->p", "m->y",
+    "committed_p" if ev.pre_commit_needs_snapshot else "m->p", true) }}
     if (!canonicalize || !history) return {{ prefix }}OK;
     /* component.rs canonicalize_committed_event_view. */
     for (size_t round = 0; round < {{ schedule.fixed_point_cap }}; ++round) {
@@ -860,9 +905,40 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
     bool changed = false;
     m->rmc_override_count = 0;
     rmc_clear_clock_lanes(m);
+{%- if ev.has_quotient_memory %}
+    /* Seed the unclocked discrete equations that supply array subscripts to
+       the first algebraic refresh. A guarded sample is still inactive here. */
+    if (rmc_discrete_owners(m, &changed, false, false) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- endif %}
+{%- if ev.has_quotient_memory %}
+    /* A quotient may read an algebraic supplied by a connected component.
+       Alternate projection and its exact initial owner until both agree,
+       before seeding relation signs or capturing the event-entry snapshot. */
+    for (size_t pass = 0; pass < {{ ev.schedule.fixed_point_cap }}; ++pass) {
+        if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+        bool updated = false;
+{%- for execution in fmi.binding_execution if execution.quotient_seed_rows|length > 0 %}
+{%- set program = solve.initialization.update_plan.programs[execution.program_index] %}
+        {
+            double r[{{ [program.temporary_count, 1]|max }}];
+            double seed[{{ solve.initialization.update_targets|length }}];
+{%- for op in program.ops %}
+{{ scalar_op(op, "seed", prefix ~ "Error") }}
+{%- endfor %}
+{%- for row in execution.quotient_seed_rows %}
+{%- set index = solve.initialization.update_targets[row].P.index %}
+            updated |= memcmp(&m->p[{{ index }}], &seed[{{ row }}], sizeof(double)) != 0;
+            m->p[{{ index }}] = seed[{{ row }}];
+{%- endfor %}
+        }
+{%- endfor %}
+        if (!updated) break;
+        if (pass + 1 == {{ ev.schedule.fixed_point_cap }}) return {{ prefix }}Error;
+    }
+{%- endif %}
     if (settle_values(m) != {{ prefix }}OK || rmc_relation_refresh(m, false, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
-    for (size_t k = 0; k < RMC_PRE_LANES; ++k) m->p[rmc_pre_dest[k]] = rmc_pre_source(m->y, m->p, k);
-    if (rmc_discrete_owners(m, &changed, true) != {{ prefix }}OK) return {{ prefix }}Error;
+{{- copy_history(fmi.history_runs, "m->p", "m->y", "m->p") }}
+    if (rmc_discrete_owners(m, &changed, true, false) != {{ prefix }}OK) return {{ prefix }}Error;
     memcpy(m->rmc_entry_y, m->y, sizeof(m->y));
     memcpy(m->rmc_entry_p, m->p, sizeof(m->p));
     m->rmc_entry_captured = true;
@@ -1002,6 +1078,7 @@ static void rmc_root_narrow(RmcRootBracket* b, double trial, bool entered) {
     substep integrator over one interval. -#}
 {%- macro cs_events(fmi, integrate, prefix) %}
 {%- set plan = fmi.root_location %}
+{%- set skip_history = fmi.reuse_interval_history %}
 {{- root_refinement(plan) }}
 /* RootLocationPlan::scan_resolution. */
 static double rmc_scan_resolution(double width) {
@@ -1021,7 +1098,15 @@ static double rmc_location_tolerance(double start, double scan) {
 static {{ prefix }}Status rmc_domains_changed(ModelInstance* m, double* z, bool* changed) {
     *changed = false;
     if (RMC_EVENT_INDICATORS == 0 || !m->rmc_domain_valid) return {{ prefix }}OK;
+{%- if fmi.reuse_scan_projection %}
+    /* The integrator just completed the direct assignment plan. The only
+       subsequent writes were to pre() lanes that the plan cannot read. Roots
+       and assertions still observe the updated history. */
+    if (m->assertion_failed || (m->assertions_initialized && check_assertions(m) != {{ prefix }}OK)
+        || rmc_projected_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- else %}
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- endif %}
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) *changed |= m->rmc_domain[k] != (z[k] > 0.0);
     return {{ prefix }}OK;
 }
@@ -1052,7 +1137,7 @@ static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, co
         /* No representable coordinate strictly inside the bracket. */
         if (!rmc_root_trial(&bracket, least, &trial)) { exhausted = false; break; }
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, trial) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, trial, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
         rmc_root_narrow(&bracket, trial, changed);
         memcpy(changed ? z_high : z_low, z, sizeof(z));
     }
@@ -1065,12 +1150,12 @@ static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, co
     bool integrated_to_application = false;
     if (window > bracket.high) {
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, window) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, window, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
         if (changed) { *application = window; integrated_to_application = true; }
     }
     if (!integrated_to_application) {
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, *application) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, *application, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK) return {{ prefix }}Error;
     }
     return {{ prefix }}OK;
 }
@@ -1082,7 +1167,7 @@ static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, co
    a state root the substep integrator reaches a rounding short of the instant
    joins the time event's iteration, as it does in the simulation, whose
    integration reaches the instant. */
-static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, bool ends_at_time_event, double* advanced) {
+static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, bool ends_at_time_event, double* advanced{% if skip_history %}, bool* history_ready{% endif %}) {
     double y0[Y_LEN];
     /* Every indicator buffer is defined on every path: rmc_domains_changed
        leaves its output untouched while no domain is armed, and the
@@ -1094,16 +1179,19 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
     memcpy(y0, m->y, sizeof(m->y));
     bool slide_changed[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
     rmc_slide_begin(&m->rmc_slide, RMC_EVENT_INDICATORS);
-    {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
+    {{ prefix }}Status integrated = {{ integrate }}(m, t, h, {{ "!*history_ready" if skip_history else "true" }});
     if (integrated != {{ prefix }}OK) return integrated == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
     if (rmc_domains_changed(m, z_high, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
     *advanced = h;
+{%- if skip_history %}
+    *history_ready = !changed && !ends_at_time_event;
+{%- endif %}
     if (!changed && ends_at_time_event && RMC_EVENT_INDICATORS != 0 && m->rmc_domain_valid) {
         double settled[Y_LEN], substep = m->rmc_cs_substep;
         memcpy(settled, m->y, sizeof(settled));
         memcpy(m->y, y0, sizeof(m->y));
         bool past_end = false;
-        if ({{ integrate }}(m, t, h + rmc_location_tolerance(t, h)) != {{ prefix }}OK || rmc_domains_changed(m, z, &past_end) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, h + rmc_location_tolerance(t, h), {{ "false" if skip_history else "true" }}) != {{ prefix }}OK || rmc_domains_changed(m, z, &past_end) != {{ prefix }}OK) return {{ prefix }}Error;
         if (!past_end) { memcpy(m->y, settled, sizeof(settled)); m->rmc_cs_substep = substep; }
         m->time = t + h;
         /* The caller's time event iteration observes the changed domain. */
@@ -1128,7 +1216,7 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
            handles it. */
         if (ends_at_time_event && fabs(h - *advanced) <= rmc_interval_roundoff(t, h)) {
             memcpy(m->y, y0, sizeof(m->y));
-            if ({{ integrate }}(m, t, h) != {{ prefix }}OK) return {{ prefix }}Error;
+            if ({{ integrate }}(m, t, h, {{ "false" if skip_history else "true" }}) != {{ prefix }}OK) return {{ prefix }}Error;
             *advanced = h;
             return {{ prefix }}OK;
         }
@@ -1157,6 +1245,11 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
     if (rmc_events_completed(m, &entered) != {{ prefix }}OK) return {{ prefix }}Error;
     entered |= rmc_discrete_inputs_changed(m);
     if (entered && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
+{%- if skip_history %}
+    /* Hosts set inputs between communication steps. Inside the step the
+       parameter histories are stable until the next event iteration. */
+    bool history_ready = false;
+{%- endif %}
     while (t < end) {
         /* Indicators bound the scan; a component without any integrates a
            whole interval. */
@@ -1168,7 +1261,7 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
         if (next == RMC_EVENT_UNRESOLVED) { RMC_LOG(m, "a clock tick is finer than the time resolution"); return {{ prefix }}Error; }
         bool at_event = next == RMC_EVENT;
         if (at_event) h = fmin(event, t + h) - t;
-        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, at_event, &advanced);
+        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, at_event, &advanced{% if skip_history %}, &history_ready{% endif %});
         if (interval != {{ prefix }}OK) return interval == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
         t = advanced == end - t ? end : t + advanced;
         m->time = t;

@@ -1093,6 +1093,21 @@ pub struct FunctionBody<'dae> {
     scope: Option<u32>,
 }
 
+impl<'dae> FunctionBody<'dae> {
+    /// Check reads in a comprehension element against its own binder domain,
+    /// retaining the enclosing SSA definitions and function identity.
+    pub fn with_comprehension_domain<T>(
+        &self,
+        domain: DomainId<'dae>,
+        lower: impl FnOnce(&Self) -> T,
+    ) -> T {
+        lower(&Self {
+            domain: Some(domain),
+            ..*self
+        })
+    }
+}
+
 /// Non-owning linear capability for one compact function-loop transition.
 pub struct FunctionLoop<'dae> {
     fold: FunctionFoldId<'dae>,

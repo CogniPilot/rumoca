@@ -1148,7 +1148,15 @@ fn expand_for_equation(
         &mut result,
         cheapen_plan.as_ref(),
     )?;
-    if iterations.is_empty() {
+    // A tuple equation defines one residual per retained result (MLS §12.4.3).
+    // Its materialized rows carry the receivers and ordinal projections; a
+    // structured arithmetic residual would try to subtract a call from a tuple.
+    let projected_results = interiors.materialized()
+        && result.equations.iter().any(|row| {
+            matches!(&row.residual, rumoca_core::Expression::Binary { lhs, .. }
+            if matches!(lhs.as_ref(), rumoca_core::Expression::Tuple { .. }))
+        });
+    if iterations.is_empty() || projected_results {
         return Ok(result);
     }
     let domain = compact_domain_from_iterations(indices, &iterations, span)?;

@@ -655,18 +655,37 @@ void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int sta
 {% endmacro %}
 
 
-{%- macro assertions(solve, fmi, messages, rows, prefix) %}
-{%- if fmi.assertions and solve.events.actions|length > 0 %}
-{{ message_support(rows, prefix, fmi_assertion_observations|default([])|length > 0) }}
+{%- macro copy_history(runs, dest, y, p, compare=false) %}
+{%- for run in runs %}
+    { const double* source = {{ y if run.from_y else p }} + {{ run.src }};
+      double* target = {{ dest }} + {{ run.dst }};
+{%- if compare %}
+      if (!history && memcmp(target, source, {{ run.count }} * sizeof(double)) != 0)
+          for (size_t lane = 0; lane < {{ run.count }} && !history; ++lane)
+              history = rmc_value_changed(target[lane], source[lane], m->tolerance);
 {%- endif %}
-{{ observers(fmi_assertion_observations|default([])) }}
-static {{ prefix }}Status check_assertions(ModelInstance* m) {
+{%- if run.count == 1 %}
+      *target = *source; }
+{%- else %}
+      memmove(target, source, {{ run.count }} * sizeof(double)); }
+{%- endif %}
+{%- endfor %}
+{%- endmacro %}
+
+{%- macro assertions(solve, fmi, messages, rows, prefix, observed_actions) %}
+{%- if fmi.assertions and solve.events.actions|length > 0 %}
+{{ message_support(rows, prefix, observed_actions|length > 0) }}
+{%- endif %}
+{{ observers(observed_actions) }}
+static {{ prefix }}Status check_assertions_at(ModelInstance* m, bool event_commit) {
+    (void)event_commit;
     (void)m;
 {%- if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
     if (m->assertion_failed) return {{ prefix }}Error;
-    double actions[{{ solve.events.actions|length }}]; (void)actions;
+    double actions[{{ solve.events.actions|length }}] = {0}; (void)actions;
 {%- for program in solve.events.action_plan.programs %}
-    {
+{%- set clock_lane = fmi.scalar_events.action_clock_lanes[loop.index0] if fmi.scalar_events else none %}
+    {% if clock_lane is not none %}if (event_commit && m->p[{{ clock_lane }}] != 0.0) {% endif %}{
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
 {{ scalar_op(op, "actions", prefix ~ "Error") }}
@@ -686,13 +705,15 @@ static {{ prefix }}Status check_assertions(ModelInstance* m) {
 /* MLS §8.3.7 warning-level assertions (SPEC_0008 WX001): evaluated only at
    an accepted point, never aborting, each site logged once at the importer's
    warning status. */
-static {{ prefix }}Status report_warnings(ModelInstance* m) {
+static {{ prefix }}Status report_warnings_at(ModelInstance* m, bool event_commit) {
+    (void)event_commit;
     (void)m;
 {%- if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}
     RmcModelAssertionContext warnings={m, 0, 2, NULL, NULL};
-    double actions[{{ solve.events.actions|length }}]; (void)actions;
+    double actions[{{ solve.events.actions|length }}] = {0}; (void)actions;
 {%- for program in solve.events.action_plan.programs %}
-    {
+{%- set clock_lane = fmi.scalar_events.action_clock_lanes[loop.index0] if fmi.scalar_events else none %}
+    {% if clock_lane is not none %}if (event_commit && m->p[{{ clock_lane }}] != 0.0) {% endif %}{
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
 {{ scalar_op(op, "actions", prefix ~ "Error", observation_mode=2) }}
@@ -709,6 +730,12 @@ static {{ prefix }}Status report_warnings(ModelInstance* m) {
 {%- endif %}
     return {{ prefix }}OK;
 }
+static {{ prefix }}Status check_assertions(ModelInstance* m) {
+    return check_assertions_at(m, false);
+}
+static {{ prefix }}Status report_warnings(ModelInstance* m) {
+    return report_warnings_at(m, false);
+}
 /* The parameter-determined discrete equations, settled with the bindings. */
 static {{ prefix }}Status update_discrete_equations(ModelInstance* m) {
     (void)m;
@@ -720,9 +747,7 @@ static {{ prefix }}Status update_discrete_equations(ModelInstance* m) {
 static {{ prefix }}Status update_assertion_memory(ModelInstance* m) {
     (void)m;
 {{- discrete_rows(solve, fmi.discrete_memories, prefix) }}
-{%- for binding in solve.solve_layout.pre_param_bindings %}
-    m->p[{{ binding.dest_p_index }}] = {% if binding.source.Y is defined %}m->y[{{ binding.source.Y.index }}]{% else %}m->p[{{ binding.source.P.index }}]{% endif %};
-{%- endfor %}
+{{- copy_history(fmi.history_runs, "m->p", "m->y", "m->p") }}
     return {{ prefix }}OK;
 }
 {%- endmacro %}
@@ -759,10 +784,10 @@ static {{ prefix }}Status initialize_assertions(ModelInstance* m) {
     return report_warnings(m);
 }
 {%- endif %}
-static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
+static {{ prefix }}Status settle_assertion_event(ModelInstance* m, bool update_history) {
     if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
     if (m->assertions_initialized && report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
-    return update_assertion_memory(m);
+    return update_history ? update_assertion_memory(m) : {{ prefix }}OK;
 }
 {%- endmacro %}
 
@@ -906,7 +931,7 @@ static inline bool rmc_linear_solve_component(const double* matrix, const double
      the caller rolls the state back either way.
    Accuracy therefore follows the tolerance, not the importer's communication
    step size: a stiff mode takes as many substeps as its stability needs. */
-static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double start, double step) {
+static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double start, double step, bool update_history) {
     static const double a[6][6] = {
         {1.0 / 5.0},
         {3.0 / 40.0, 9.0 / 40.0},
@@ -991,7 +1016,7 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
         h *= factor;
     }
     m->time = end;
-    const {{ prefix }}Status settled = settle_assertion_event(m);
+    const {{ prefix }}Status settled = settle_assertion_event(m, update_history);
     if (settled == {{ prefix }}Error) RMC_LOG(m, "Co-Simulation step failed to settle its end point");
     return settled;
 }

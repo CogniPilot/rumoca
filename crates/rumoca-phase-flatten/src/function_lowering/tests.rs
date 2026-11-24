@@ -1266,3 +1266,40 @@ fn coalescing_record_output_writes_keeps_a_field_write_before_a_whole_output_wri
 
     assert_eq!(written_targets(&function), before);
 }
+
+#[test]
+fn split_record_input_extents_resolve_in_the_record_scope() {
+    let mut flat = flat::Model::new();
+    let mut constructor = record_constructor();
+    let n =
+        crate::test_support::integer_param("n", vec![], test_span()).with_def_id(FIELD_A_DEF_ID);
+    let mut b =
+        crate::test_support::real_param("b", vec![0, 0], test_span()).with_def_id(FIELD_B_DEF_ID);
+    b.shape_expr = [FIELD_A_DEF_ID, LOCAL_N_DEF_ID]
+        .map(|id| rumoca_core::Subscript::Expr {
+            expr: Box::new(var_ref("n", id)),
+            span: test_span(),
+        })
+        .to_vec();
+    constructor.inputs = vec![n, b];
+    flat.add_function(constructor);
+    let mut function = function_with_record_input();
+    function.body.clear();
+    flat.add_function(function);
+    lower_record_function_params(&mut flat).unwrap();
+    let column = &flat.functions[&VarName::new("Pkg.f")].inputs[1];
+    let names = column
+        .shape_expr
+        .iter()
+        .map(|axis| {
+            let rumoca_core::Subscript::Expr { expr, .. } = axis else {
+                panic!("expected symbolic axis")
+            };
+            let rumoca_core::Expression::VarRef { name, .. } = expr.as_ref() else {
+                panic!("expected reference")
+            };
+            name.as_str()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["r_n", "n"]);
+}

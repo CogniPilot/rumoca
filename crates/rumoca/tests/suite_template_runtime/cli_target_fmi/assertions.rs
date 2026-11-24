@@ -282,3 +282,38 @@ for interface in ['ModelExchange', 'CoSimulation']:
         else:
             raise AssertionError((interface,parameters,'invalid physical parameters were accepted'))
 "#;
+
+#[test]
+fn a_retained_assertion_in_a_sampled_call_uses_its_clock_lane() {
+    let source = r#"
+model ClockedCheck
+  function check
+    input Real u;
+    output Real y;
+  algorithm
+    assert(u>0,"clocked test");
+    y:=u;
+  end check;
+  input Real u(start=1);
+  discrete output Real y(start=0,fixed=true);
+equation
+  when sample(.5,.5) then y=check(u); end when;
+end ClockedCheck;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("ClockedCheck")
+        .compile_str(source, "ClockedCheck.mo")
+        .unwrap();
+    let work = tempdir().unwrap();
+    for target in ["fmi2", "fmi3"] {
+        let destination = work.path().join(target);
+        rumoca::compile_packaged_target(&compiled, "ClockedCheck", target, destination.clone())
+            .unwrap();
+        let code = fs::read_to_string(destination.join("ClockedCheck/sources/model.c")).unwrap();
+        assert!(code.contains("if (event_commit && m->p["));
+        assert!(
+            code.contains(r"\143\154\157\143\153\145\144\040\164\145\163\164"),
+            "nested call retains its source assertion message"
+        );
+    }
+}

@@ -484,3 +484,84 @@ fn membership_guard_comprehension_preserves_body_read_admission_and_issued_ident
         assert_guard_identity(&branches[0].0, issued);
     }
 }
+
+#[test]
+fn indexed_runtime_domain_preserves_empty_short_and_invalid_iterations() {
+    use super::super::preservation_values::Value;
+    let body = vec![dynamic_loop(
+        integer(1),
+        None,
+        var("n"),
+        vec![assign(
+            "y",
+            binary(
+                OpBinary::Add,
+                var("y"),
+                element(
+                    "r",
+                    Expression::VarRef {
+                        name: Reference::generated("j"),
+                        subscripts: vec![],
+                        span: span(),
+                    },
+                ),
+            ),
+        )],
+    )];
+    let mut shapes = ShapeEnvironment::default();
+    shapes.insert(VarName::new("r"), vec![3]);
+    let normalized =
+        rectangularize_dependent_loops(&body, &HashMap::new(), &shapes, &ValueKinds::default())
+            .unwrap();
+    assert_ne!(normalized, body);
+    for count in [-1, 0, 1, 3, 4, 10] {
+        let mut values = ENTRY_VALUES[0].environment();
+        values.insert(VarName::new("n"), Value::Integer(count));
+        let expected = interpret(&body, &values);
+        let actual = interpret(&normalized, &values);
+        assert_eq!(expected.is_err(), count > 3);
+        assert_eq!(expected, actual);
+    }
+}
+
+#[test]
+fn guarded_indexed_scan_requires_a_repeatable_iterator_independent_predicate() {
+    let iterator = Expression::VarRef {
+        name: Reference::generated("j"),
+        subscripts: vec![],
+        span: span(),
+    };
+    let mut shapes = ShapeEnvironment::default();
+    shapes.insert(VarName::new("r"), vec![3]);
+    let condition = |lhs| rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: binary(
+                OpBinary::And,
+                lhs,
+                binary(OpBinary::Gt, element("r", iterator.clone()), real(2.0)),
+            ),
+            stmts: vec![assign("y", real(7.0))],
+        }],
+        else_block: None,
+        span: span(),
+    };
+    for (lhs, accepted) in [
+        (var("enabled"), true),
+        (binary(OpBinary::Gt, iterator.clone(), integer(7)), false),
+    ] {
+        let source = vec![dynamic_loop(
+            integer(1),
+            None,
+            var("n"),
+            vec![for_loop("i", 3, vec![condition(lhs)])],
+        )];
+        let actual = rectangularize_dependent_loops(
+            &source,
+            &HashMap::new(),
+            &shapes,
+            &ValueKinds::default(),
+        )
+        .unwrap();
+        assert_eq!(source != actual, accepted);
+    }
+}

@@ -84,6 +84,29 @@ fn division_proves_the_exact_worst_case_pass_count() {
 }
 
 #[test]
+fn positive_cutoff_bounds_digit_reversal() {
+    for (start, cutoff, expected) in [(64, 1, 6), (63, 1, 5), (64, 7, 4), (3, 7, 0)] {
+        for cond in [
+            binary(OpBinary::Gt, var("k"), integer(cutoff)),
+            binary(OpBinary::Lt, integer(cutoff), var("k")),
+        ] {
+            assert_eq!(
+                bound(Some(start), cond, vec![assign("k", division(2))]),
+                Some(expected)
+            );
+        }
+    }
+    assert_eq!(
+        bound(
+            Some(64),
+            binary(OpBinary::Gt, var("k"), integer(-1)),
+            vec![assign("k", division(2))]
+        ),
+        None
+    );
+}
+
+#[test]
 fn division_rejects_nonprogress_and_additional_counter_writes() {
     for divisor in [-2, 0, 1] {
         assert_eq!(

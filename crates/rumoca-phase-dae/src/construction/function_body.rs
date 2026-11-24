@@ -411,15 +411,17 @@ fn lower_one_total_function_array_definition<'dae>(
         unreachable!("analysis proves total array-definition statements")
     };
     require_proven_function_reads(construction, input.symbols, body, assignment.proven_reads())?;
-    let element = lower_function_expression_scoped(
-        construction,
-        input.symbols.coordinates,
-        input.symbols.functions,
-        input.symbols.shapes,
-        body,
-        input.binders,
-        value,
-    )?;
+    let element = body.with_comprehension_domain(input.domain, |body| {
+        lower_function_expression_scoped(
+            construction,
+            input.symbols.coordinates,
+            input.symbols.functions,
+            input.symbols.shapes,
+            body,
+            input.binders,
+            value,
+        )
+    })?;
     let generated = dae::DaeProvenance::generated(
         dae::DaeGeneration::FunctionLoopLowering,
         input.owner.span(),

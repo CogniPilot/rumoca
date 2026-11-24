@@ -145,7 +145,13 @@ pub(super) fn progress_bound(
         .filter_map(|conjunct| exit_flag(conjunct))
         .filter(|flag| !scope.integers.contains(flag.name) && !scope.reals.contains(flag.name));
     let mut pass = head.clone();
-    pass.observe_accesses(&block.cond, scope);
+    // MLS §11.2.3: on entry to the body every top-level conjunct is
+    // true. A successful indexed read in such a conjunct bounds its
+    // index even when the loop head lost its entry interval. Preserve
+    // short-circuit alternatives inside a conjunct (e.g. an OR).
+    for condition in &conjuncts {
+        pass.observe_accesses(condition, scope);
+    }
     let pass = pass.assuming(&block.cond, true, scope);
     let mut counters = Vec::new();
     collect_written_integers(&block.stmts, scope, &mut counters);
