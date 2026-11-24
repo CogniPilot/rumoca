@@ -17,6 +17,10 @@ pub(crate) fn is_text_value(value_type: &dae::ValueType) -> bool {
     !value_type.is_record() && value_type.scalar_type() == dae::ScalarType::String
 }
 
+pub(super) fn is_zero_size(value_type: &dae::ValueType) -> bool {
+    value_type.dimensions().contains(&0)
+}
+
 /// Typed leaves one DAE value type occupies in a pure-call interface.
 ///
 /// A leaf holds scalars, so a value type holds exactly as many leaves as it
@@ -97,7 +101,7 @@ fn lower_value_type_layout<'dae>(
     let value_type = view
         .value_type(id)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-    if value_type.dimensions().contains(&0) || is_text_value(value_type) {
+    if is_zero_size(value_type) || is_text_value(value_type) {
         return Ok(ValueTypeLayout {
             leaves: Vec::new(),
             projection: Projection::Leaf,

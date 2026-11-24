@@ -82,3 +82,53 @@ end RequiredCoordinate;"#;
         assert_eq!(result.data[index][0], expected);
     }
 }
+
+#[test]
+fn preferred_coordinate_accepts_an_empty_argument_in_a_causal_guess() {
+    let source = r#"model EmptyArgument
+  function f
+    input Real u;
+    input Real v[:];
+    output Real y;
+  algorithm
+    y := u;
+    for i in 1:size(v,1) loop
+      y := y + v[i];
+    end for;
+    annotation(Inline=false, smoothOrder=2);
+  end f;
+  Real xi[0];
+  Real w[0];
+  Real z;
+  Real x(start=2, stateSelect=StateSelect.prefer);
+  Real m;
+initial equation
+  x = 2;
+equation
+  xi = w;
+  w = fill(time, 0);
+  z = f(x, xi);
+  m = z*x;
+  der(m) = 0;
+end EmptyArgument;"#;
+    let dae = compile_with_roots(source, "EmptyArgument", &[]);
+    assert_eq!(
+        rumoca_phase_solve::integrated_state_names(&dae).unwrap(),
+        ["x"],
+        "withheld preferences: {:?}",
+        rumoca_phase_solve::withheld_state_preferences(&dae).unwrap()
+    );
+    let result = simulate_dae(
+        &dae,
+        &SimOptions {
+            t_end: 0.0,
+            ..Default::default()
+        },
+    )
+    .expect("initialize the selected coordinate from the causal guess");
+    assert_eq!(result.times[0], 0.0);
+    for (name, expected) in [("x", 2.0), ("m", 4.0)] {
+        let column = result.names.iter().position(|n| n == name).unwrap();
+        assert!((result.data[column][0] - expected).abs() < 1e-9, "{name}");
+    }
+}

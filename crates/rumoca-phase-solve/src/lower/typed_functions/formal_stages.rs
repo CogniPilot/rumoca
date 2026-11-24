@@ -7,7 +7,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{FormalDerivativeStage, FormalDerivativeView, FormalStageEquation};
 
-use super::model_coordinates::collect_model_coordinate_types;
+use super::model_coordinates::{ModelCoordinateKey, collect_model_coordinate_types};
+use super::value_types::is_zero_size;
 use super::{
     AssertionSlot, CallLoweringError, EagerScope, ExpressionLowerer, FunctionAssertionMessage,
     LoweredValue, PureCallRegistry, arithmetic_profile, lower_primitive_type,
@@ -157,6 +158,33 @@ struct FormalExpressionBody<'formal> {
     value_type: dae::ValueTypeId<'formal>,
 }
 
+struct FormalCoordinates<'formal> {
+    inputs: Vec<(ModelCoordinateKey<'formal>, dae::ValueTypeId<'formal>)>,
+    empty: Vec<(ModelCoordinateKey<'formal>, dae::ValueTypeId<'formal>)>,
+}
+
+impl<'formal> FormalCoordinates<'formal> {
+    fn collect(
+        view: dae::DaeView<'formal>,
+        expressions: impl IntoIterator<Item = dae::ExprId<'formal>>,
+        at: Span,
+    ) -> Result<Self, solve::SolveProgramConstructionError> {
+        let mut inputs = Vec::new();
+        let mut empty = Vec::new();
+        for (key, id) in collect_model_coordinate_types(view, expressions, [], at)? {
+            let value_type = view
+                .value_type(id)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+            if is_zero_size(value_type) {
+                empty.push((key, id));
+            } else {
+                inputs.push((key, id));
+            }
+        }
+        Ok(Self { inputs, empty })
+    }
+}
+
 fn lower_guesses<'formal>(
     view: dae::DaeView<'formal>,
     stages: &[FormalStageProgram<'_, '_, 'formal>],
@@ -183,7 +211,7 @@ fn lower_guesses<'formal>(
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
             .provenance()
             .span();
-        for (coordinate, _) in collect_model_coordinate_types(view, [expression], [], at)? {
+        for (coordinate, _) in FormalCoordinates::collect(view, [expression], at)?.inputs {
             if let dae::CoordinateView::Algebraic(variable) = coordinate.coordinate() {
                 needed.insert(variable.index());
             }
@@ -329,10 +357,11 @@ impl<'formal> PureCallRegistry<'formal> {
         at: Span,
     ) -> Result<FormalExpressionProgram<'formal>, CallLoweringError> {
         let coordinates =
-            collect_model_coordinate_types(view, bodies.iter().map(|body| body.value), [], at)?;
+            FormalCoordinates::collect(view, bodies.iter().map(|body| body.value), at)?;
         let (callees, predicate_ranges, assertions, assertion_slots) =
             self.register_expression_calls(view, bodies.iter().map(|body| (body.value, ())))?;
         let inputs = coordinates
+            .inputs
             .iter()
             .map(|(_, value_type)| lower_primitive_type(view, *value_type, arithmetic_profile()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -350,15 +379,14 @@ impl<'formal> PureCallRegistry<'formal> {
         let owner =
             self.table
                 .add_owner(identity, inputs, outputs, at, |builder, inputs, outputs| {
-                    let model_coordinates = coordinates
-                        .iter()
-                        .zip(inputs)
-                        .map(|((key, value_type), input)| {
-                            builder
-                                .load(*input, at)
-                                .map(|value| (*key, LoweredValue::scalar(*value_type, value)))
-                        })
-                        .collect::<Result<HashMap<_, _>, _>>()?;
+                    let mut model_coordinates = HashMap::new();
+                    for &(key, ty) in &coordinates.empty {
+                        model_coordinates.insert(key, LoweredValue::empty(ty));
+                    }
+                    for (&(key, ty), &input) in coordinates.inputs.iter().zip(inputs) {
+                        let value = builder.load(input, at)?;
+                        model_coordinates.insert(key, LoweredValue::scalar(ty, value));
+                    }
                     let mut lowerer = ExpressionLowerer {
                         view,
                         builder,
@@ -404,6 +432,7 @@ impl<'formal> PureCallRegistry<'formal> {
                 .call_site(owner)
                 .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance: at })?,
             inputs: coordinates
+                .inputs
                 .into_iter()
                 .map(|(coordinate, _)| coordinate.coordinate())
                 .collect(),
