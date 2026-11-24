@@ -1,3 +1,4 @@
+mod call_errors;
 mod function_states;
 mod invariant_guards;
 pub use invariant_guards::invariant_boolean_guards;
@@ -23,6 +24,8 @@ use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
 use rustc_hash::FxHashMap;
 
+pub(crate) use call_errors::external_function_failure;
+use call_errors::{function_ordinal_error, function_parameter_error, function_result_error};
 use native_calls::native_function_call;
 use tensor_values::{
     combine_extremum, diagonal_values, expand_flat_indices, expect_same_length,
@@ -1880,47 +1883,6 @@ fn host_scalar(
             variable.declaration().span(),
         )
     })
-}
-
-fn function_parameter_error(span: Span) -> NumericEvaluationError {
-    failure(
-        NumericEvaluationErrorKind::NonStaticCoordinate,
-        "function parameter escaped its checked call owner",
-        span,
-    )
-}
-
-fn function_ordinal_error(span: Span) -> NumericEvaluationError {
-    failure(
-        NumericEvaluationErrorKind::OutOfBounds,
-        "function parameter ordinal is out of range",
-        span,
-    )
-}
-
-pub(crate) fn external_function_failure(
-    name: &rumoca_core::VarName,
-    external: dae::ExternalFunctionView<'_>,
-    span: Span,
-) -> NumericEvaluationError {
-    failure(
-        NumericEvaluationErrorKind::ExternalFunction,
-        format!(
-            "external {} function `{}` calls `{}`, which this runtime cannot execute",
-            external.language().as_str(),
-            name,
-            external.symbol()
-        ),
-        span,
-    )
-}
-
-fn function_result_error(span: Span) -> NumericEvaluationError {
-    failure(
-        NumericEvaluationErrorKind::OutOfBounds,
-        "function result ordinal is out of range",
-        span,
-    )
 }
 
 fn coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<dae::VariableId<'_>> {
