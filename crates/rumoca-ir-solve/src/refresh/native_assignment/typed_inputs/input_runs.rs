@@ -339,6 +339,7 @@ impl NativeInputInventory {
     ) -> Option<NativeInputLane> {
         let run = self.run_at(p_index)?;
         Some(NativeInputLane {
+            role: run.role(),
             p_index,
             lane: run.lane,
             lane_offset: run.offset_at(p_index)?,
