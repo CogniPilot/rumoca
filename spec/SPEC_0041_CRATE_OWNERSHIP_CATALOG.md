@@ -323,8 +323,10 @@ render the accepted-point error assertions rumoca-ir-solve issues (#593); it
 resolves no group. R007 (decision
 `d-pending-owner-655-657-658-modelica-printing-20261124`): the Modelica
 templates print fixed by value and follow the Base Modelica grammar (#655,
-#657, #658); it resolves no group. Every other
-group, including D085, remains open.
+#657, #658); it resolves no group. R008 (decision
+`d-pending-owner-unused-text-helper-attribute-20261124`): the scalar kernel's
+`rmc_own_text` carries the same unused attribute; it resolves no group. Every
+other group, including D085, remains open.
 
 The non-active successor design is DRAFT
 [SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement),

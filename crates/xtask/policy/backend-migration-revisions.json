@@ -271,6 +271,19 @@
           "after": "0784b473fe478cb30fbe742f845d3178f211ea6ca299a11d067f367eb57061fb"
         }
       ]
+    },
+    {
+      "id": "R008",
+      "decision": "d-pending-owner-unused-text-helper-attribute-20261124",
+      "change": "The scalar kernel's rmc_own_text, a static inline helper a model may not call, carries RMC_UNUSED (defined in kernel_declarations by R005), in both its String-text and text-free forms, so Clang's -Wunused-function accepts a model that emits no caller. Printing only; no rendered decision changes.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_kernel.jinja",
+          "before": "93bb4c1195187178b337f4bce5eecc03e43d9b0c10629253ec1f807b26685d96",
+          "after": "df24339418eee104ecfd457fbd7b295e8b369a3ce5b07f0bf7aacbd12a704c80"
+        }
+      ]
     }
   ]
 }
