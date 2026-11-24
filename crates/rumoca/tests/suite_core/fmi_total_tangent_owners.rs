@@ -203,14 +203,154 @@ fn optional_initialization_tangent_admission_preserves_both_primal_c_exports() {
     }
 }
 
+/// MLS 3.7 §8.6: with `fixed = false` the initial equation `x = 1` decides
+/// `x`, and its `start = 0` is only a guess. The FMI C component initializes
+/// `x` from the equation, not from the declaration seed: after
+/// initialization `x = 1` and `der(x) = -1`, in Model Exchange and in
+/// Co-Simulation, FMI 2 and FMI 3.
 #[test]
-fn parameter_only_admission_does_not_waive_declaration_y_isolation() {
+fn a_declared_state_initializes_from_its_initial_equation_in_the_fmi_c_component() {
     let source = "model DeclaredState\nReal x(start=0,fixed=false);\ninitial equation\nx=1;\nequation\nder(x)=-x;\nend DeclaredState;";
-    let error = lower_component("DeclaredState", source)
-        .try_c()
-        .expect_err("a declaration-Y row still needs its missing isolated initializer owner");
-    assert!(error.to_string().contains("declaration seeds"));
+    let compiled = Compiler::new()
+        .model("DeclaredState")
+        .compile_str(source, "DeclaredState.mo")
+        .expect("compile the declared state");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    for (target, headers, driver) in [
+        (
+            "fmi2",
+            "crates/rumoca/tests/fixtures/fmi2-headers",
+            DECLARED_STATE_FMI2,
+        ),
+        (
+            "fmi3",
+            "crates/rumoca-phase-codegen/src/templates/fmi-ls-wasm/fmi3-headers",
+            DECLARED_STATE_FMI3,
+        ),
+    ] {
+        let files = rumoca::render_target_files(&compiled, "DeclaredState", target, None)
+            .unwrap_or_else(|error| panic!("{target}: {error:#}"));
+        let work = tempfile::tempdir().expect("declared state work directory");
+        let mut units = Vec::new();
+        for file in &files {
+            let path = work.path().join(&file.path);
+            std::fs::create_dir_all(path.parent().expect("rendered file directory")).unwrap();
+            std::fs::write(&path, &file.content).unwrap();
+            if file.path.ends_with(".c") {
+                units.push(path);
+            }
+        }
+        let description = &files
+            .iter()
+            .find(|file| file.path == "modelDescription.xml")
+            .expect("metadata")
+            .content;
+        let token_key = if target == "fmi2" {
+            "guid=\""
+        } else {
+            "instantiationToken=\""
+        };
+        let token = description
+            .split(token_key)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("instantiation token");
+        let model_c = units
+            .iter()
+            .find(|path| path.ends_with("model.c"))
+            .expect("rendered model.c");
+        let sources = model_c.parent().expect("sources directory").to_path_buf();
+        let input = work.path().join("declared_state.c");
+        let binary = work.path().join("declared_state");
+        std::fs::write(&input, driver.replace("@TOKEN@", token)).unwrap();
+        let compilation = std::process::Command::new("cc")
+            .args([
+                "-std=c11",
+                "-ffp-contract=off",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ])
+            .arg(format!("-I{}", sources.display()))
+            .arg(format!("-I{}", root.join(headers).display()))
+            .arg(&input)
+            .args(&units)
+            .args(["-lm", "-o"])
+            .arg(&binary)
+            .output()
+            .expect("run cc");
+        assert!(
+            compilation.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&compilation.stderr)
+        );
+        for mode in ["me", "cs"] {
+            let run = std::process::Command::new(&binary)
+                .arg(mode)
+                .output()
+                .expect("run the declared state driver");
+            assert!(run.status.success(), "{target}/{mode}: {run:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&run.stdout),
+                "x=1 der=-1\n",
+                "{target}/{mode}: x starts from its initial equation, not its seed"
+            );
+        }
+    }
 }
+
+/// Reads `x` (value reference 1) and `der(x)` (2) right after initialization.
+const DECLARED_STATE_FMI2: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "model.h"
+#include "fmi2Functions.h"
+int main(int argc, char** argv) {
+    const int cs = argc > 1 && strcmp(argv[1], "cs") == 0;
+    fmi2CallbackFunctions callbacks = {0};
+    callbacks.allocateMemory = calloc; callbacks.freeMemory = free;
+    fmi2Component m = fmi2Instantiate("declared", cs ? fmi2CoSimulation : fmi2ModelExchange, "@TOKEN@", NULL, &callbacks, 0, 0);
+    if (!m || fmi2SetupExperiment(m, 0, 0, 0, 0, 0) != fmi2OK || fmi2EnterInitializationMode(m) != fmi2OK || fmi2ExitInitializationMode(m) != fmi2OK) return 2;
+    const fmi2ValueReference refs[2] = {1, 2};
+    double values[2] = {-9.0, -9.0};
+    if (!cs) {
+        fmi2EventInfo info;
+        if (fmi2NewDiscreteStates(m, &info) != fmi2OK || fmi2EnterContinuousTimeMode(m) != fmi2OK) return 3;
+    }
+    if (fmi2GetReal(m, refs, 2, values) != fmi2OK) return 4;
+    printf("x=%g der=%g\n", values[0], values[1]);
+    return 0;
+}
+"#;
+
+const DECLARED_STATE_FMI3: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "model.h"
+#include "fmi3Functions.h"
+int main(int argc, char** argv) {
+    const int cs = argc > 1 && strcmp(argv[1], "cs") == 0;
+    fmi3Instance m = cs
+        ? fmi3InstantiateCoSimulation("declared", "@TOKEN@", NULL, fmi3False, fmi3False, fmi3False, fmi3False, NULL, 0, NULL, NULL, NULL)
+        : fmi3InstantiateModelExchange("declared", "@TOKEN@", NULL, fmi3False, fmi3False, NULL, NULL);
+    if (!m || fmi3EnterInitializationMode(m, fmi3False, 0, 0, fmi3False, 0) != fmi3OK || fmi3ExitInitializationMode(m) != fmi3OK) return 2;
+    const fmi3ValueReference refs[2] = {1, 2};
+    double values[2] = {-9.0, -9.0};
+    if (!cs) {
+        fmi3Boolean b1, b2, b3, b4, b5;
+        double next;
+        if (fmi3UpdateDiscreteStates(m, &b1, &b2, &b3, &b4, &b5, &next) != fmi3OK || fmi3EnterContinuousTimeMode(m) != fmi3OK) return 3;
+    }
+    if (fmi3GetFloat64(m, refs, 2, values, 2) != fmi3OK) return 4;
+    printf("x=%g der=%g\n", values[0], values[1]);
+    return 0;
+}
+"#;
 
 #[test]
 fn post_initial_relation_propagates_parameter_bindings_without_resetting_state_starts() {
