@@ -39,14 +39,12 @@ nearest honest owner span, such as the rewritten expression, owning equation,
 assignment, statement, declaration, or subscript span. Source-backed diagnostics
 must carry the original span through AST -> Flat -> DAE -> Solve.
 
-The span of a parsed expression covers its complete syntax, including leading
-keywords, grouping and array delimiters, the leading dot of an absolute
-reference, and trailing subscripts. The parser retains the original tokens at
-both ends so editors can use the byte range directly in the original source.
+A parsed expression's span covers its complete syntax: leading keywords,
+delimiters, an absolute reference's leading dot, and trailing subscripts, so
+editors can use it directly.
 
-A class declaration's range covers its leading class and element qualifiers,
-any constraining clause, and the terminating semicolon. Its identifier tokens
-retain their own locations.
+A class declaration's range covers its qualifiers, any constraining clause,
+and terminating semicolon; identifier tokens keep their own locations.
 
 ### Fail-Fast Error Semantics
 
