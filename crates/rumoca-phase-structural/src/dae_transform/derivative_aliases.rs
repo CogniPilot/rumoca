@@ -244,6 +244,18 @@ fn explicit_derivative_target<'dae>(
     }
 }
 
+/// A scalar constant or parameter factor, which scales each derivative lane
+/// independently.
+fn is_scalar_coefficient<'dae>(view: dae::DaeView<'dae>, id: dae::ExprId<'dae>) -> bool {
+    view.expression(id).is_some_and(|node| {
+        node.value_type().is_scalar()
+            && matches!(
+                node.variability(),
+                dae::ExpressionVariability::Constant | dae::ExpressionVariability::Parameter
+            )
+    })
+}
+
 fn derivative_projection<'dae>(
     view: dae::DaeView<'dae>,
     mut value: dae::ExprId<'dae>,
@@ -263,16 +275,7 @@ fn derivative_projection<'dae>(
                 // Preserve the implicit rates used by index reduction until a complete BLT exists.
                 // A scalar parameter scales each derivative lane independently.
                 // Solve's affine derivative lowering checks the coefficient at evaluation.
-                let coefficient = |id| {
-                    view.expression(id).is_some_and(|node| {
-                        node.value_type().is_scalar()
-                            && matches!(
-                                node.variability(),
-                                dae::ExpressionVariability::Constant
-                                    | dae::ExpressionVariability::Parameter
-                            )
-                    })
-                };
+                let coefficient = |id| is_scalar_coefficient(view, id);
                 value = if coefficient(lhs) {
                     rhs
                 } else if coefficient(rhs) {

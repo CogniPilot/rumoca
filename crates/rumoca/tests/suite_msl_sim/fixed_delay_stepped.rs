@@ -46,10 +46,11 @@ fn a_fixed_delay_transports_a_step_and_a_lag() {
                 .unwrap_or_else(|error| panic!("{solver_mode:?}: advance_to({time}): {error}"));
             let get = |name: &str| session.get(name).unwrap().unwrap();
             let (dead_step, dead_lag) = (get("deadStep.y"), get("deadLag.y"));
-            if (time - 3.0).abs() > 1e-9 {
-                let expected = if time < 3.0 { 0.0 } else { 1.0 };
-                assert_eq!(dead_step, expected, "{solver_mode:?}: deadStep.y at {time}");
-            }
+            let expected = if time < 3.0 { 0.0 } else { 1.0 };
+            assert!(
+                (time - 3.0).abs() <= 1e-9 || dead_step == expected,
+                "{solver_mode:?}: deadStep.y at {time} is {dead_step}, expected {expected}"
+            );
             let lag = if time <= 3.0 {
                 0.0
             } else {

@@ -346,17 +346,19 @@ mod tests {
         );
         assert_eq!(expanded.len(), 2);
         for (row, i) in expanded.iter().zip([1, 2]) {
-            let ast::Expression::Array { elements, .. } = row else {
-                panic!("missing row axis")
-            };
+            let elements = array_elements(row, "row");
             assert_eq!(elements.len(), 2);
             for (item, j) in elements.iter().zip([10, 20]) {
-                let ast::Expression::Array { elements, .. } = item else {
-                    panic!("missing element axis")
-                };
-                assert_eq!(*elements, vec![int_lit(i), int_lit(j)]);
+                assert_eq!(array_elements(item, "element"), [int_lit(i), int_lit(j)]);
             }
         }
+    }
+
+    fn array_elements<'a>(expression: &'a ast::Expression, axis: &str) -> &'a [ast::Expression] {
+        let ast::Expression::Array { elements, .. } = expression else {
+            panic!("missing {axis} axis")
+        };
+        elements
     }
 
     #[test]

@@ -78,34 +78,13 @@ impl Snapshots<'_> {
         let mut normalized = Vec::with_capacity(statements.len());
         let mut remaining = statements;
         while let Some((first, rest)) = remaining.split_first() {
-            if let Some(selection) = active {
-                // A straight-line region executes under one captured selection.
-                // Keeping its definitions and uses together preserves dominance.
-                let length = remaining
-                    .iter()
-                    .take_while(|stmt| {
-                        !statement_contains_loop(stmt)
-                            && !matches!(
-                                stmt,
-                                rumoca_core::Statement::Empty {
-                                    generated_boolean: Some(_),
-                                    ..
-                                }
-                            )
-                    })
-                    .count();
-                if length > 0 {
-                    normalized.push(rumoca_core::Statement::If {
-                        cond_blocks: vec![rumoca_core::StatementBlock {
-                            cond: selection.clone(),
-                            stmts: remaining[..length].to_vec(),
-                        }],
-                        else_block: None,
-                        span: expression_span(selection)?,
-                    });
-                    remaining = &remaining[length..];
-                    continue;
-                }
+            // A straight-line region executes under one captured selection.
+            // Keeping its definitions and uses together preserves dominance.
+            let length = active.map_or(0, |_| straight_line_length(remaining));
+            if let (Some(selection), true) = (active, length > 0) {
+                normalized.push(captured_region(selection, &remaining[..length])?);
+                remaining = &remaining[length..];
+                continue;
             }
             self.statement(first, active, &mut normalized)?;
             remaining = rest;
@@ -362,6 +341,39 @@ fn branches_contain_loop(
         .flat_map(|block| &block.stmts)
         .chain(else_block.into_iter().flatten())
         .any(statement_contains_loop)
+}
+
+/// The statements at the head of `statements` that neither loop nor define a
+/// generated Boolean.
+fn straight_line_length(statements: &[rumoca_core::Statement]) -> usize {
+    statements
+        .iter()
+        .take_while(|stmt| {
+            !statement_contains_loop(stmt)
+                && !matches!(
+                    stmt,
+                    rumoca_core::Statement::Empty {
+                        generated_boolean: Some(_),
+                        ..
+                    }
+                )
+        })
+        .count()
+}
+
+/// `statements` under the captured `selection`.
+fn captured_region(
+    selection: &Expression,
+    statements: &[rumoca_core::Statement],
+) -> Result<rumoca_core::Statement, ToDaeError> {
+    Ok(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: selection.clone(),
+            stmts: statements.to_vec(),
+        }],
+        else_block: None,
+        span: expression_span(selection)?,
+    })
 }
 
 fn statement_contains_loop(statement: &rumoca_core::Statement) -> bool {

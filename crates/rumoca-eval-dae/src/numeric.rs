@@ -5,6 +5,7 @@ mod linear_solve;
 mod native_calls;
 mod scalar;
 mod tensor_values;
+mod value_checks;
 pub use scalar::Scalar;
 /// Exact typed source runs; construction stays private to this evaluator.
 pub type SourceValues = NumericInitialValues<Scalar>;
@@ -29,6 +30,7 @@ use tensor_values::{
     function_loop_point, identity_values, multiply_values, outer_product_values, range_values,
     skew_values, transpose_values,
 };
+use value_checks::{host_scalar, require_finite};
 
 pub(crate) use dae::InputInitializationPolicy;
 
@@ -1849,39 +1851,6 @@ fn no_override(_variable: dae::VariableView<'_>, _scalar: usize) -> Option<f64> 
     None
 }
 
-fn host_scalar(
-    variable: dae::VariableView<'_>,
-    value: f64,
-) -> Result<Scalar, NumericEvaluationError> {
-    let payload = match variable.value_type().scalar_type() {
-        dae::ScalarType::Real => Some(Scalar::Real(value)),
-        dae::ScalarType::Integer | dae::ScalarType::Enumeration
-            if value.is_finite()
-                && value.fract() == 0.0
-                && value.abs() <= 9_007_199_254_740_992.0 =>
-        {
-            Some(
-                if variable.value_type().scalar_type() == dae::ScalarType::Integer {
-                    Scalar::Integer(value as i64)
-                } else {
-                    Scalar::Enumeration(value as i64)
-                },
-            )
-        }
-        dae::ScalarType::Boolean if value == 0.0 || value == 1.0 => {
-            Some(Scalar::Boolean(value == 1.0))
-        }
-        _ => None,
-    };
-    payload.ok_or_else(|| {
-        failure(
-            NumericEvaluationErrorKind::InvalidOverride,
-            "numerical host override cannot represent the declared exact scalar type",
-            variable.declaration().span(),
-        )
-    })
-}
-
 fn function_parameter_error(span: Span) -> NumericEvaluationError {
     failure(
         NumericEvaluationErrorKind::NonStaticCoordinate,
@@ -1968,33 +1937,6 @@ fn source_binary(operator: dae::BinaryOperator, lhs: Scalar, rhs: Scalar) -> Sca
 
 const fn bool_value(value: bool) -> Scalar {
     Scalar::Boolean(value)
-}
-
-fn require_finite(values: &SourceValues, span: Span) -> Result<(), NumericEvaluationError> {
-    if values.runs().any(|run| match run {
-        NumericInitialRun::Repeat { value, .. } => matches!(value, Scalar::Invalid),
-        NumericInitialRun::Literal(values) => {
-            values.iter().any(|value| matches!(value, Scalar::Invalid))
-        }
-    }) {
-        return Err(failure(
-            NumericEvaluationErrorKind::Overflow,
-            "exact Integer operation has no supported checked result",
-            span,
-        ));
-    }
-    if values.runs().all(|run| match run {
-        NumericInitialRun::Repeat { value, .. } => value.is_finite(),
-        NumericInitialRun::Literal(values) => values.iter().all(|value| value.is_finite()),
-    }) {
-        Ok(())
-    } else {
-        Err(failure(
-            NumericEvaluationErrorKind::InvalidValue,
-            "numeric evaluation produced a non-finite result",
-            span,
-        ))
-    }
 }
 
 const fn role_name(role: dae::VariableRole) -> &'static str {

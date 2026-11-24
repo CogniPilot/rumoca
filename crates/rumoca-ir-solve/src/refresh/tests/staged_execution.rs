@@ -285,3 +285,99 @@ fn only_a_complete_direct_refresh_has_a_compact_rollback_set() {
         );
     }
 }
+
+/// The two-row source of `two_output_source`, its second row reading the
+/// parameter `p[1]` in place of a constant.
+fn parameter_reading_source() -> ComputeBlock {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("refresh_history_test.mo"),
+        0,
+        1,
+    );
+    ComputeBlock::from_scalar_program_block(
+        crate::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                crate::LinearOp::LoadY { dst: 0, index: 0 },
+                crate::LinearOp::Const { dst: 1, value: 1.0 },
+                crate::LinearOp::Binary {
+                    dst: 2,
+                    op: crate::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                crate::LinearOp::StoreOutput { src: 2 },
+                crate::LinearOp::LoadY { dst: 3, index: 1 },
+                crate::LinearOp::LoadP { dst: 4, index: 1 },
+                crate::LinearOp::Binary {
+                    dst: 5,
+                    op: crate::BinaryOp::Sub,
+                    lhs: 3,
+                    rhs: 4,
+                },
+                crate::LinearOp::StoreOutput { src: 5 },
+            ]],
+            rumoca_core::ProvenanceSpan::new(span, "refresh history test").unwrap(),
+        )
+        .unwrap(),
+    )
+}
+
+/// A certified two-row algebraic refresh reading `p[1]`, with one pre() history
+/// binding that copies `y[0]` into `p[history_destination]`.
+fn algebraic_component_with_history(history_destination: usize) -> crate::fmi::FmiComponent {
+    let mut plan = two_row_dynamic_plan();
+    plan.causal_solution_certified = true;
+    let mut model = crate::SolveModel::default();
+    model.problem.layout = crate::VarLayout::from_parts(Default::default(), 2, 2);
+    model.problem.solve_layout.algebraic_scalar_count = 2;
+    model
+        .problem
+        .solve_layout
+        .pre_param_bindings
+        .push(crate::PreParamBinding {
+            dest_p_index: history_destination,
+            source: crate::PreParamSource::Y { index: 0 },
+            clock_schedule: None,
+        });
+    model.initial_y = crate::SolveInitialValues::repeat(0.0, 2).unwrap();
+    model.problem.continuous.implicit_rhs = parameter_reading_source();
+    model.problem.continuous.implicit_row_targets =
+        vec![Some(crate::scalar_slot_y(0)), Some(crate::scalar_slot_y(1))].into();
+    model.problem.continuous.algebraic_projection_plan.blocks = (0..2)
+        .map(|row| crate::AlgebraicProjectionBlock {
+            rows: vec![row],
+            y_indices: vec![row],
+            ..Default::default()
+        })
+        .collect::<Vec<_>>()
+        .into();
+    model.problem.continuous.refresh_owners = ContinuousRefreshOwners::checked_for_source(
+        &model.problem.continuous.implicit_rhs,
+        plan,
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    crate::fmi::FmiComponent::construct(model, Vec::new()).unwrap()
+}
+
+/// A settled projection survives a pre() history copy only while the refresh
+/// reads no history destination: a copy into the unread `p[0]` keeps it, a
+/// copy into the `p[1]` the second row reads does not.
+#[test]
+fn a_history_copy_keeps_the_projection_only_while_the_refresh_reads_no_history() {
+    for (history_destination, valid) in [(0, true), (1, false)] {
+        let component = algebraic_component_with_history(history_destination);
+        let view = component.runtime_view();
+        let problem = view.model();
+        assert_eq!(
+            problem
+                .problem
+                .projection_valid_after_history_copy(&problem.artifacts.continuous.structural),
+            valid,
+            "history copied into p[{history_destination}]"
+        );
+    }
+}

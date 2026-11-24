@@ -231,6 +231,25 @@ pub(super) fn collect_shifted_parent_mod_keys(
     keys
 }
 
+/// The field modifiers a record binding leaves in force.
+///
+/// MLS §7.2.4: an enclosing modifier that binds the whole record overrides
+/// the field modifiers of the declaration it modifies, so only the field
+/// modifiers written beside it, in the enclosing scopes (`shifted`), still
+/// select their fields. A declaration's own binding keeps every targeted
+/// field modifier.
+pub(super) fn retained_field_modifiers<'a>(
+    binding_from_enclosing_modifier: bool,
+    shifted: &'a IndexMap<ast::QualifiedName, ()>,
+    targeted: &'a IndexMap<ast::QualifiedName, ()>,
+) -> &'a IndexMap<ast::QualifiedName, ()> {
+    if binding_from_enclosing_modifier {
+        shifted
+    } else {
+        targeted
+    }
+}
+
 /// Recursively collect modification keys from nested class modifications.
 fn collect_nested_mod_keys_recursive(
     prefix: &ast::QualifiedName,

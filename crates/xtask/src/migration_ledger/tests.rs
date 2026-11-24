@@ -197,7 +197,10 @@ fn source_regions_bind_actual_bytes_without_retiring_a_group() {
         .parent()
         .unwrap();
     assert_eq!(ledger.source_regions.len(), 22);
-    for region in &ledger.source_regions {
+    // Owner-directed revisions re-pin the regions their changes move.
+    let regions = revisions::regions_in_force(&ledger, REVISIONS).unwrap();
+    assert_eq!(regions.len(), ledger.source_regions.len());
+    for region in &regions {
         let source = fs::read(root.join(&region.path)).unwrap();
         let bytes = source.get(region.start_byte..region.end_byte).unwrap();
         assert_eq!(digest(bytes), region.sha256);

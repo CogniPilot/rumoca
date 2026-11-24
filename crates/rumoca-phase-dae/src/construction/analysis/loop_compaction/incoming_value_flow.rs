@@ -370,17 +370,8 @@ impl Query<'_> {
         };
         for index in undefined.keys().copied().collect::<Vec<_>>() {
             let name = self.names[index];
-            for binder in &indices {
-                // The range is in the enclosing scope. After evaluating it,
-                // the iterator shadows a same-named local for subsequent
-                // ranges and the loop body (MLS §11.2.2).
-                if expression_reads_name(&binder.range, name) {
-                    self.mark_read(undefined, index);
-                    break;
-                }
-                if binder.ident == name.as_str() {
-                    break;
-                }
+            if ranges_read_name(&indices, name) {
+                self.mark_read(undefined, index);
             }
         }
         let binders = indices
@@ -607,6 +598,21 @@ mod structural_tests {
         ];
         assert_eq!(structural_reads(&program, &[&a, &b]), vec![false, true]);
     }
+}
+
+/// Whether a loop range reads `name`. The range is in the enclosing scope;
+/// after evaluating it, the iterator shadows a same-named local for
+/// subsequent ranges and the loop body (MLS §11.2.2).
+fn ranges_read_name(binders: &[&rumoca_core::ForIndex], name: &VarName) -> bool {
+    for binder in binders {
+        if expression_reads_name(&binder.range, name) {
+            return true;
+        }
+        if binder.ident == name.as_str() {
+            return false;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
