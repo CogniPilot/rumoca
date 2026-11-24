@@ -26,6 +26,7 @@ const SIZE_BINS: &[(u64, Option<u64>)] = &[
     (250, None),
 ];
 const SLOWER_MODEL_LIMIT: usize = 10;
+const COHORT_FAILURE_LIMIT: usize = 10;
 
 /// Rumoca's seconds for one model, from its results row.
 #[derive(Clone, Default)]
@@ -182,17 +183,18 @@ fn simulation_work(settings: Option<&Value>) -> String {
 }
 
 /// Render the speed section from the joined MSL timing artifacts.
-pub(super) fn render_speed_section(results_dir: &Path) -> Result<String> {
+pub(super) fn render_speed_section(results_dir: &Path, baseline: Option<&Value>) -> Result<String> {
     let Some(inputs) = SpeedInputs::read(results_dir)? else {
         return Ok(
             "_Speed vs OMC not measured: the run published no joined timing inputs._\n".to_string(),
         );
     };
     let (records, other_context) = inputs.records();
+    let mut out = render_fixed_cohort(&inputs, &records, baseline);
     if records.is_empty() {
-        return Ok("_No agreeing models had valid timings on both tools._\n".to_string());
+        out.push_str("_No agreeing models had valid timings on both tools._\n");
+        return Ok(out);
     }
-    let mut out = String::new();
     let high = records.iter().filter(|record| record.high).count();
     out.push_str(&format!(
         "Timed over the **{} trace-agreeing models** (both traces in the `high` or `near` \
@@ -200,7 +202,12 @@ pub(super) fn render_speed_section(results_dir: &Path) -> Result<String> {
         records.len(),
         records.len() - high,
     ));
-    out.push_str("##### Aggregate\n\n");
+    out.push_str(
+        "##### Aggregate over this run's timed models\n\n\
+         The throughput column divides summed seconds, so it follows the heaviest models and \
+         moves when one of them leaves the timed set; read the fixed cohort above for \
+         run-to-run comparison.\n\n",
+    );
     out.push_str(&render_aggregate_table(&records));
     out.push_str(&render_high_only_line(&records));
     out.push_str(FMU_PATH_LINE);
@@ -361,6 +368,129 @@ fn speed_record(
         omc_version,
         plan_warm: rumoca.get("strict_plan_warm").and_then(Value::as_bool),
     })
+}
+
+/// The baseline's runtime cohort (`runtime_ratio_cohort_models`): the fixed
+/// set of models the run-to-run speedup is taken over.
+fn baseline_cohort(baseline: Option<&Value>) -> Vec<&str> {
+    baseline
+        .and_then(|baseline| baseline.get("runtime_ratio_cohort_models"))
+        .and_then(Value::as_array)
+        .map(|models| models.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// The run-to-run headline: the geometric mean of per-model speedups over the
+/// baseline's runtime cohort. The cohort does not depend on this run's
+/// outcomes, and a cohort model rumoca did not simulate is counted and named
+/// as a failure of that model instead of leaving the set.
+fn render_fixed_cohort(
+    inputs: &SpeedInputs,
+    records: &[SpeedRecord],
+    baseline: Option<&Value>,
+) -> String {
+    let cohort = baseline_cohort(baseline);
+    if cohort.is_empty() {
+        return "_Fixed cohort not reported: the quality baseline names no runtime cohort._\n\n"
+            .to_string();
+    }
+    let timed: BTreeMap<&str, &SpeedRecord> = records
+        .iter()
+        .map(|record| (record.model_name.as_str(), record))
+        .collect();
+    let rumoca_status: BTreeMap<&str, Option<&str>> = inputs
+        .rumoca
+        .iter()
+        .filter_map(|model| {
+            Some((
+                json_str(model, "model_name")?,
+                json_str(model, "sim_status"),
+            ))
+        })
+        .collect();
+    let mut failed = Vec::new();
+    let mut not_compared = 0;
+    let mut not_attempted = 0;
+    for &model in &cohort {
+        if timed.contains_key(model) {
+            continue;
+        }
+        match rumoca_status.get(model) {
+            Some(Some("sim_ok")) => not_compared += 1,
+            Some(Some(status)) => failed.push((model, *status)),
+            Some(None) => failed.push((model, "not simulated")),
+            None => not_attempted += 1,
+        }
+    }
+    let mut out = format!(
+        "##### Fixed cohort\n\n\
+         Taken over the **{} models of the baseline's runtime cohort**, the same set every run. \
+         A cohort model rumoca fails is counted as a failure, not dropped.\n\n\
+         | Comparison | Cohort | Timed | Rumoca failed | Geometric mean speedup (×) |\n\
+         |---|--:|--:|--:|--:|\n",
+        cohort.len()
+    );
+    for comparison in COMPARISONS {
+        let speedups: Vec<f64> = cohort
+            .iter()
+            .filter_map(|model| comparison.pair(timed.get(model)?))
+            .map(|(rumoca, omc)| omc / rumoca)
+            .collect();
+        let mean = match geometric_mean(&speedups) {
+            Some(mean) => format!("**{mean:.2}**"),
+            None => "not measured".to_string(),
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {mean} |\n",
+            comparison.label(),
+            cohort.len(),
+            speedups.len(),
+            failed.len(),
+        ));
+    }
+    if !failed.is_empty() {
+        let named = failed
+            .iter()
+            .take(COHORT_FAILURE_LIMIT)
+            .map(|(model, status)| format!("`{model}` ({status})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let hidden = failed.len().saturating_sub(COHORT_FAILURE_LIMIT);
+        let more = if hidden > 0 {
+            format!(", and {hidden} more")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "\n**Rumoca failed on {} of {} cohort models:** {named}{more}. Their speedups are \
+             missing from the mean, so compare it with a run that has the same failures.\n",
+            failed.len(),
+            cohort.len()
+        ));
+    }
+    if not_compared > 0 {
+        out.push_str(&format!(
+            "\n{not_compared} cohort models rumoca simulated are not compared this run (trace \
+             band, OMC result, or OMC timing context).\n"
+        ));
+    }
+    if not_attempted > 0 {
+        out.push_str(&format!(
+            "\n{not_attempted} cohort models have no result row: this run did not attempt them.\n"
+        ));
+    }
+    out.push('\n');
+    out
+}
+
+/// The geometric mean of positive finite `values`, `None` when there are none.
+fn geometric_mean(values: &[f64]) -> Option<f64> {
+    let logs: Vec<f64> = values
+        .iter()
+        .filter(|value| value.is_finite() && **value > 0.0)
+        .map(|value| value.ln())
+        .collect();
+    (!logs.is_empty()).then(|| (logs.iter().sum::<f64>() / logs.len() as f64).exp())
 }
 
 /// Throughput and median per-model speedup of `comparison` over `records`.

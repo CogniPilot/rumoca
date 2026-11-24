@@ -78,7 +78,7 @@ fn render_pr_comment(results_dir: &Path, baseline_path: Option<&Path>) -> Result
         &results_dir.join("msl_package_trace_accuracy.md"),
     )?;
     body.push_str("#### Speed vs OMC\n\n");
-    body.push_str(&render_speed_section(results_dir)?);
+    body.push_str(&render_speed_section(results_dir, baseline.as_ref())?);
     body.push_str("\n\n");
     append_optional_link_note(&mut body, results_dir);
 

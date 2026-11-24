@@ -85,7 +85,7 @@ fn write_inputs(results: &Path, omc_workers: u64, rumoca_workers: u64, stage_wor
 fn render_with(omc_workers: u64, rumoca_workers: u64, stage_workers: u64) -> String {
     let temp = tempfile::tempdir().expect("tempdir");
     write_inputs(temp.path(), omc_workers, rumoca_workers, stage_workers);
-    render_speed_section(temp.path()).expect("render")
+    render_speed_section(temp.path(), None).expect("render")
 }
 
 #[test]
@@ -175,14 +175,14 @@ fn unequal_output_grids_are_flagged() {
         1,
     );
     fs::write(&path, text).expect("write");
-    let rendered = render_speed_section(temp.path()).expect("render");
+    let rendered = render_speed_section(temp.path(), None).expect("render");
     assert!(rendered.contains("**unequal or unrecorded on 1 models**: 1 models with the same number of grid intervals on both tools, 1 different"), "{rendered}");
 }
 
 #[test]
 fn missing_inputs_report_not_measured() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let rendered = render_speed_section(temp.path()).expect("render");
+    let rendered = render_speed_section(temp.path(), None).expect("render");
     assert!(rendered.contains("Speed vs OMC not measured"));
 }
 
@@ -199,7 +199,7 @@ fn a_compile_that_built_the_plan_is_counted_and_still_timed() {
         }
     }
     fs::write(&path, msl.to_string()).expect("write");
-    let rendered = render_speed_section(temp.path()).expect("render");
+    let rendered = render_speed_section(temp.path(), None).expect("render");
     assert!(
         rendered.contains(
             "1 timed rumoca compile(s) built the plan themselves and 0 row(s) do not record it; \
@@ -244,7 +244,7 @@ fn every_timing_table_names_the_actual_backend_settings_groups() {
     omc["models"]["B"]["omc_settings"]["cflags"] = "-O2".into();
     omc["models"]["B"]["omc_settings"]["simflags"] = "-s=cvode".into();
     fs::write(&omc_path, omc.to_string()).unwrap();
-    let rendered = render_speed_section(temp.path()).unwrap();
+    let rendered = render_speed_section(temp.path(), None).unwrap();
     assert_eq!(
         rendered
             .matches("Recorded execution backends for this table")
@@ -312,4 +312,79 @@ fn slower_table_header_excludes_the_eleventh_hidden_backend() {
     assert!(!rendered.contains("hidden-wasm"));
     assert!(!rendered.contains("`Model10`"));
     assert_eq!(rendered.matches("| `Model").count(), 30);
+}
+
+/// The cohort is A, B and E. E timed out on rumoca, so it has no OMC timing
+/// and no band row: it stays in the cohort as a failure.
+fn render_cohort(cohort: &[&str]) -> String {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_inputs(temp.path(), 2, 2, 2);
+    let path = temp.path().join("msl_results.json");
+    let mut msl: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    for row in msl["model_results"].as_array_mut().unwrap() {
+        row["sim_status"] = "sim_ok".into();
+    }
+    msl["model_results"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "model_name": "E", "scalar_equations": 600, "compile_seconds": 0.5,
+            "sim_build_seconds": 0.8, "sim_run_seconds": 45.0, "sim_status": "sim_timeout"
+        }));
+    fs::write(&path, msl.to_string()).unwrap();
+    let baseline = serde_json::json!({ "runtime_ratio_cohort_models": cohort });
+    render_speed_section(temp.path(), Some(&baseline)).expect("render")
+}
+
+#[test]
+fn the_fixed_cohort_reports_a_geometric_mean_and_counts_a_timeout_as_a_failure() {
+    let rendered = render_cohort(&["A", "B", "E"]);
+    assert!(
+        rendered.contains("**3 models of the baseline's runtime cohort**"),
+        "{rendered}"
+    );
+    // Simulation speedups: A 1 / 0.6, B 2 / 3.5; geometric mean 0.976.
+    assert!(
+        rendered.contains("| Simulation | 3 | 2 | 1 | **0.98** |"),
+        "{rendered}"
+    );
+    // Total speedups: A 5 / 2.1, B 8 / 7; geometric mean 1.650.
+    assert!(
+        rendered.contains("| Total (model to results) | 3 | 2 | 1 | **1.65** |"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("**Rumoca failed on 1 of 3 cohort models:** `E` (sim_timeout)."),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_cohort_model_outside_the_agreeing_bands_is_not_compared_and_not_a_failure() {
+    let rendered = render_cohort(&["A", "C"]);
+    assert!(
+        rendered.contains("| Simulation | 2 | 1 | 0 | **1.67** |"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("1 cohort models rumoca simulated are not compared this run"));
+    assert!(!rendered.contains("Rumoca failed on"), "{rendered}");
+}
+
+#[test]
+fn a_baseline_without_a_runtime_cohort_says_so() {
+    assert!(render_with(2, 2, 2).contains("_Fixed cohort not reported"));
+}
+
+#[test]
+fn a_cohort_model_the_run_did_not_attempt_is_not_a_failure() {
+    let rendered = render_cohort(&["A", "Z"]);
+    assert!(
+        rendered.contains("| Simulation | 2 | 1 | 0 | **1.67** |"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("1 cohort models have no result row: this run did not attempt them."),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Rumoca failed on"), "{rendered}");
 }
