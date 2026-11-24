@@ -172,16 +172,16 @@ impl<'dae> PureCallRegistry<'dae> {
         CallLoweringError,
     > {
         let definitions = &transaction.definitions;
-        let (callees, predicate_ranges, assertions, assertion_slots) = self
+        let (callees, predicate_ranges, assertions, assertion_slots, selected_calls) = self
             .register_expression_calls(
                 view,
                 definitions
                     .iter()
                     .map(|definition| (definition.value, definition.clock)),
+                Default::default(),
             )?;
         let (coordinate_inputs, inputs, outputs) =
             event_transaction_interface(view, transaction, coordinate_types, &assertion_slots)?;
-        let selected_calls = std::sync::Arc::new(self.identities.selected_calls.clone());
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,

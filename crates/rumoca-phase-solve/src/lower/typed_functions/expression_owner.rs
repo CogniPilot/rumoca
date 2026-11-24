@@ -254,8 +254,8 @@ impl<'dae> PureCallRegistry<'dae> {
             .map(|(_, ty, _)| lower_primitive_type(view, *ty, arithmetic_profile()))
             .collect::<Result<Vec<_>, _>>()?;
         let output = lower_primitive_type(view, node.value_type_id(), arithmetic_profile())?;
-        let (callees, predicate_ranges, assertions, assertion_slots) =
-            self.register_expression_calls(view, [(form.expression, ())])?;
+        let (callees, predicate_ranges, assertions, assertion_slots, selected_calls) =
+            self.register_expression_calls(view, [(form.expression, ())], Default::default())?;
         let assertion_projections = assertions.iter().map(|entry| entry.projection).collect();
         let assertions = assertions
             .into_iter()
@@ -275,7 +275,6 @@ impl<'dae> PureCallRegistry<'dae> {
         let identity = self.identities.issue(provenance)?;
         let callees = std::sync::Arc::new(callees);
         let predicate_ranges = std::sync::Arc::new(predicate_ranges);
-        let selected_calls = std::sync::Arc::new(self.identities.selected_calls.clone());
         let owner = self.table.add_owner(
             identity,
             inputs,

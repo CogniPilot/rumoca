@@ -350,7 +350,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
         visit: impl FnMut(dae::ExprId<'dae>, dae::ExpressionView<'dae>) -> bool,
     ) {
-        traversal.visit_pruned_with_conditional_states(
+        self.eager.homotopy.visit_pruned(
+            traversal,
             self.view,
             expressions,
             |conditional, value| self.assigned_values.contains_key(&(conditional, value)),

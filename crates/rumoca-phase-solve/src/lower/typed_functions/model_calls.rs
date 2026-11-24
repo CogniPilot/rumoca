@@ -38,6 +38,7 @@ type RegisteredExpressionCalls<'dae, Scope> = (
     HashMap<dae::ExprId<'dae>, Range<usize>>,
     Vec<RegisteredExpressionAssertion<'dae, Scope>>,
     std::sync::Arc<[AssertionSlot]>,
+    super::zero_products::SelectedCalls<'dae>,
 );
 
 impl<'dae> PureCallRegistry<'dae> {
@@ -47,19 +48,15 @@ impl<'dae> PureCallRegistry<'dae> {
         &mut self,
         view: dae::DaeView<'dae>,
         expressions: impl IntoIterator<Item = (dae::ExprId<'dae>, Scope)>,
+        homotopy: super::eager_scope::HomotopyMode,
     ) -> Result<RegisteredExpressionCalls<'dae, Scope>, CallLoweringError> {
         let expressions = expressions.into_iter().collect::<Vec<_>>();
-        super::zero_products::register_selections(
-            &mut self.table,
-            view,
-            expressions.iter().map(|(expression, _)| *expression),
-            &mut self.identities,
-        )?;
+        let mut projected = false;
         let mut roots = Vec::new();
         let mut seen = HashMap::new();
         let mut conflicts = HashSet::new();
-        for (expression, scope) in expressions {
-            dae::for_each_expression(view, expression, |projection, node| {
+        for &(expression, scope) in &expressions {
+            projected |= homotopy.visit(view, [expression], |projection, node| {
                 let dae::ExpressionOperation::Call {
                     owner, function, ..
                 } = node.operation()
@@ -80,6 +77,16 @@ impl<'dae> PureCallRegistry<'dae> {
                     Some(_) => {}
                 }
             });
+        }
+        // A selected owner is cached by source expression alone. A projected
+        // guess lowers its selections locally with its own operand demand.
+        if !projected {
+            super::zero_products::register_selections(
+                &mut self.table,
+                view,
+                expressions.iter().map(|(expression, _)| *expression),
+                &mut self.identities,
+            )?;
         }
         for (_, expression, scope) in &roots {
             let dae::ExpressionOperation::Call { owner, .. } = view
@@ -124,6 +131,17 @@ impl<'dae> PureCallRegistry<'dae> {
             ));
             callees.insert(owner, registered);
         }
-        Ok((callees, predicate_ranges, assertions, slots.into()))
+        let selected_calls = if projected {
+            Default::default()
+        } else {
+            std::sync::Arc::new(self.identities.selected_calls.clone())
+        };
+        Ok((
+            callees,
+            predicate_ranges,
+            assertions,
+            slots.into(),
+            selected_calls,
+        ))
     }
 }
