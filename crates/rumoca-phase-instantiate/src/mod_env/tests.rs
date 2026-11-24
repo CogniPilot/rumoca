@@ -512,11 +512,9 @@ fn test_apply_component_modifier_rejects_inherited_final_component() {
     let mut ctx = InstantiateContext::new();
     let parent_snapshot = IndexMap::default();
     let shifted_parent_keys = IndexMap::default();
-    let type_overrides = TypeOverrideMap::default();
     let eval_ctx = ModifierEvalContext {
         tree: &tree,
         effective_components: &IndexMap::default(),
-        type_overrides: &type_overrides,
         target_class: Some(&derived),
         insert_ctx: ScopedInsertContext {
             parent_snapshot: &parent_snapshot,
@@ -559,12 +557,10 @@ fn test_apply_component_modifier_requires_span_for_final_modifier_error() {
     let mut ctx = InstantiateContext::new();
     let parent_snapshot = IndexMap::default();
     let shifted_parent_keys = IndexMap::default();
-    let type_overrides = TypeOverrideMap::default();
     let tree = ast::ClassTree::default();
     let eval_ctx = ModifierEvalContext {
         tree: &tree,
         effective_components: &IndexMap::default(),
-        type_overrides: &type_overrides,
         target_class: Some(&class),
         insert_ctx: ScopedInsertContext {
             parent_snapshot: &parent_snapshot,

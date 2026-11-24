@@ -6,7 +6,6 @@
 //! because an alias can be reached either way from a component declaration.
 
 use super::class_hierarchy::extends_base_classes;
-use super::redeclare_values::cref_to_qualified_name;
 use crate::type_lookup::find_member_type_in_class;
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
@@ -135,18 +134,15 @@ impl TypeOverrideMap {
             .copied()
     }
 
-    pub(crate) fn target_for_reference(
-        &self,
-        reference: &ast::ComponentReference,
-    ) -> Option<DefId> {
-        let exact_def_id = (reference.parts.len() == 1)
-            .then_some(reference.root_def_id())
-            .flatten()
-            .and_then(|def_id| self.target_for_alias_def_id(def_id));
-        exact_def_id.or_else(|| {
-            let path = cref_to_qualified_name(reference)?;
-            self.targets_by_alias_path.get(&path).copied()
-        })
+    pub(super) fn selected_redeclare_value(&self, mut rhs: DefId) -> DefId {
+        let mut visited = rustc_hash::FxHashSet::default();
+        while let Some(selected) = self.target_for_alias_def_id(rhs)
+            && rhs != selected
+            && visited.insert(rhs)
+        {
+            rhs = selected;
+        }
+        rhs
     }
 
     /// Materialize the effective virtual-class selections for instance IR.

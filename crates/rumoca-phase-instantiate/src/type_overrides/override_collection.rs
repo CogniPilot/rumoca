@@ -78,7 +78,12 @@ fn collect_enclosing_type_overrides(
     let Some(parent_class) = tree.get_class_by_qualified_name(parent_name) else {
         return;
     };
-    collect_nested_overrides_in_extends_chain(tree, parent_class, mod_env, overrides);
+    // A local class can shadow an enclosing class without redeclaring it.
+    // Match inherited slots only within the enclosing class's own hierarchy.
+    let mut enclosing = TypeOverrideMap::new();
+    collect_nested_overrides_in_extends_chain(tree, parent_class, mod_env, &mut enclosing);
+    enclosing.extend_from(overrides);
+    *overrides = enclosing;
 }
 
 /// Collect nested class overrides from a class and all of its base classes.

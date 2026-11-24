@@ -8,8 +8,8 @@ use super::inheritance::{
     find_class_in_tree, get_effective_components, is_type_subtype, nested_arguments,
     resolve_effective_components_for_eval,
 };
-use super::nested_scope::{SelectedClassModifiers, remap_redeclare_class_modifier, target_path};
-use super::type_overrides::{ClassModifierValues, TypeOverrideMap};
+use super::nested_scope::{SelectedClassModifiers, target_path};
+use super::type_overrides::ClassModifierValues;
 use super::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_eval_ast::eval_instantiate::{
     InstantiateEvalCtx, evaluate_component_condition, try_eval_integer_expr, try_eval_string_expr,
@@ -41,7 +41,6 @@ enum ModificationResolveMode {
 pub(super) struct PopulateModEnvInput<'a> {
     pub(super) comp: &'a ast::Component,
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
-    pub(super) type_overrides: &'a TypeOverrideMap,
     pub(super) target_class: Option<&'a ast::ClassDef>,
     pub(super) class_overrides: &'a ast::ClassOverrideMap,
     pub(super) parent_snapshot: &'a IndexMap<ast::QualifiedName, rumoca_ir_ast::ModificationValue>,
@@ -61,7 +60,6 @@ struct ScopedInsertContext<'a> {
 struct ModifierEvalContext<'a> {
     tree: &'a ast::ClassTree,
     effective_components: &'a IndexMap<String, ast::Component>,
-    type_overrides: &'a TypeOverrideMap,
     target_class: Option<&'a ast::ClassDef>,
     insert_ctx: ScopedInsertContext<'a>,
 }
@@ -108,7 +106,6 @@ pub(super) fn populate_modification_environment(
     let PopulateModEnvInput {
         comp,
         effective_components,
-        type_overrides,
         target_class,
         class_overrides,
         parent_snapshot,
@@ -118,7 +115,6 @@ pub(super) fn populate_modification_environment(
     let eval_ctx = ModifierEvalContext {
         tree,
         effective_components,
-        type_overrides,
         target_class,
         insert_ctx: ScopedInsertContext {
             parent_snapshot,
@@ -157,10 +153,10 @@ pub(super) fn populate_modification_environment(
                     final_flags,
                 },
             )?;
+            preserve_redeclare_class_modifier(ctx, owner, mod_expr, &eval_ctx);
             for owner in owners {
                 selected_modifiers.insert(owner.alias_def_id, values.clone());
             }
-            preserve_redeclare_class_modifier(ctx, target_name, mod_expr, &eval_ctx);
         } else {
             apply_component_modifier(ctx, target_name, mod_expr, prefixes, &eval_ctx)?;
         }
@@ -472,15 +468,15 @@ fn apply_nested_class_modifier(
 
 fn preserve_redeclare_class_modifier(
     ctx: &mut InstantiateContext,
-    target_name: &str,
+    owner: &ast::ClassOverride,
     mod_expr: &ast::Expression,
     eval_ctx: &ModifierEvalContext<'_>,
 ) {
-    // MLS §7.3: preserve class/package redeclare bindings in mod_env so
-    // downstream type resolution sees component-level redeclare overrides.
-    let qn = ast::QualifiedName::from_ident(target_name);
-    let resolved_class_mod =
-        remap_redeclare_class_modifier(mod_expr, target_name, eval_ctx.type_overrides);
+    let qn = ast::QualifiedName::from_ident(&owner.alias);
+    let mut resolved_class_mod = mod_expr.clone();
+    if let ast::Expression::ClassModification { target, .. } = &mut resolved_class_mod {
+        target.set_target_def_id(Some(owner.target_def_id));
+    }
     if !eval_ctx.insert_ctx.shifted_parent_keys.contains_key(&qn) {
         ctx.mod_env_mut().active.shift_remove(&qn);
     }
