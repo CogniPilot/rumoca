@@ -142,10 +142,12 @@ int main(void) {
     CHECK(row_calls > 0, "the derivative refresh evaluates residual rows");
     CHECK(status == fmi3Error, "the export that hits a bad index returns an error");
     CHECK(i->rmc_fatal && logged_fault > 0, "the export logs the fault");
+    CHECK(i->rmc_dtop == 0 && i->rmc_stop == 0, "the failed export releases its arena frames");
     fail_row = 0;
     x[0] += 0.25;
     CHECK(fmi3SetTime(i, 0.5) == fmi3OK && fmi3SetContinuousStates(i, x, STATE_LEN) == fmi3OK, "move to another state");
     CHECK(fmi3GetContinuousStateDerivatives(i, dx, STATE_LEN) != fmi3OK, "the fault persists until the instance is reset");
+    CHECK(i->rmc_dtop == 0 && i->rmc_stop == 0, "the refused export releases its arena frames");
     CHECK(fmi3Reset(i) == fmi3OK, "reset the instance");
     CHECK(fmi3EnterInitializationMode(i, fmi3False, 0.0, 0.0, fmi3False, 0.0) == fmi3OK, "enter initialization after the reset");
     CHECK(fmi3ExitInitializationMode(i) == fmi3OK && fmi3EnterContinuousTimeMode(i) == fmi3OK, "a reset instance initializes");

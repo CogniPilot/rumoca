@@ -547,22 +547,18 @@ pub(super) fn me_refresh_value(
         .fold((1, 1), |(doubles, sizes), (d, s)| {
             (doubles.max(d), sizes.max(s))
         });
-    let chart_doubles = switch_records
-        .iter()
-        .map(chart::ChartRecord::workspace)
-        .max()
-        .unwrap_or(0);
     let (init, init_doubles) =
         initial::initialization_value(problem, artifacts, (&mut table, &seed_blocks, seed_len))?;
     let init_sizes = init.get_attr("sizes")?.as_usize().unwrap_or(0);
     let kernel = !records.is_empty() || init_doubles > 0;
     let table = table.into_value(&implicits)?;
-    // The initialization frames hold the algebraic refresh, whose deepest
-    // block frame and isolator outputs nest inside them; a chart
-    // conditioning or transfer frame holds no other.
-    let doubles =
-        (block_doubles + table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1) + init_doubles)
-            .max(chart_doubles);
+    let iso_doubles = table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1);
+    let doubles = arena_doubles(
+        problem.layout.y_scalars(),
+        (block_doubles, iso_doubles),
+        init_doubles,
+        switching.then_some(&switch_records),
+    );
     let sizes = block_sizes + init_sizes;
     Ok(minijinja::context! {
         derivative => charts[0].get_attr("derivative")?,
@@ -582,6 +578,28 @@ pub(super) fn me_refresh_value(
         policy => policy_value(),
         seed_rule => importer_seed_rule(problem),
     })
+}
+
+/// The projection arena's doubles. The algebraic refresh takes its incoming
+/// coordinate (the `Y_LEN` doubles the C allocates), its deepest block frame
+/// and its isolator outputs. It nests inside the initialization frames and,
+/// for a switching component, inside the chart frames: a completed-step
+/// decision and a chart transfer keep the coordinate (`Y_LEN` again) below
+/// the refresh they run, and above it the conditioning frame or the
+/// transfer's row outputs the chart workspace bounds.
+fn arena_doubles(
+    y_scalars: usize,
+    (block_doubles, iso_doubles): (usize, usize),
+    init_doubles: usize,
+    charts: Option<&Vec<chart::ChartRecord>>,
+) -> usize {
+    let y_doubles = y_scalars.max(1);
+    let refresh_doubles = y_doubles + block_doubles + iso_doubles;
+    let chart_frame = charts.map_or(0, |charts| {
+        let workspace = charts.iter().map(chart::ChartRecord::workspace).max();
+        y_doubles + workspace.unwrap_or(0)
+    });
+    refresh_doubles + init_doubles.max(chart_frame)
 }
 
 /// The one numerical policy both executors read.

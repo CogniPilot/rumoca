@@ -1354,6 +1354,19 @@ RMC_COLD RMC_API int rmc_bad_program(ModelInstance* m, size_t program) {
 {%- endif %}
 {%- set blocks = me.blocks|length > 0 %}
 {%- set assigns = me.assign.plan.programs|length > 0 %}
+{%- if me.derivative.steps|length > 0 or me.algebraic.steps|length > 0 or me.switching %}
+/* The coordinate copies of the refresh and of the chart decisions. A device
+   `memcpy` of an unknown alignment may move single bytes, so a device
+   compiler copies one double per access; a host compiler keeps `memcpy`,
+   which its library moves in vector words. Either copies the same values. */
+static inline void rmc_copy_doubles(double* dst, const double* src, size_t count) {
+#if defined(__CUDACC__)
+    for (size_t i = 0; i < count; ++i) dst[i] = src[i];
+#else
+    memcpy(dst, src, count * sizeof(double));
+#endif
+}
+{%- endif %}
 {%- if me.derivative.steps|length > 0 or me.algebraic.steps|length > 0 %}
 enum { RMC_STEP_ASSIGN, RMC_STEP_COMPLETE, RMC_STEP_PROJECT };
 typedef struct { unsigned char kind; size_t first; size_t count; size_t block; size_t seed_first; size_t seed_count; size_t rescue; size_t nrescue; } RmcStep;
@@ -1361,8 +1374,17 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
     /* A faulted instance runs no step, logs nothing more and opens no frame. */
     if (RMC_FAULTED(m)) return {{ prefix }}Error;
     if (refresh_parameters(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if me.kernel %}
+    /* The incoming coordinate lives in the arena, below every frame the
+       steps open, so no caller holds a Y-sized stack array. */
+    RMC_MARK;
+    size_t backup = 0;
+    for (size_t j = 0; j < nruns; ++j) backup += runs[j][1];
+    incoming = rmc_dalloc_raw(m, backup);
+    if (!incoming) { (void)rmc_exhausted(m); return {{ prefix }}Error; }
+{%- endif %}
     for (size_t j=0, offset=0; j<nruns; offset+=runs[j++][1])
-        memcpy(incoming+offset, m->y+runs[j][0], runs[j][1]*sizeof(double));
+        rmc_copy_doubles(incoming+offset, m->y+runs[j][0], runs[j][1]);
     (void)complete; (void)ncomplete;
 {%- if blocks and assigns %}
     size_t failed_site = RMC_FB_PLAN; (void)failed_site;
@@ -1412,19 +1434,19 @@ static {{ prefix }}Status rmc_refresh(ModelInstance* m, const RmcStep* steps, si
     m->rmc_fb_active[RMC_FB_PLAN] = false;
 {%- endif %}
     if (m->rmc_fatal) goto fail;
-    return {{ prefix }}OK;
+    {% if me.kernel %}RMC_RELEASE; {% endif %}return {{ prefix }}OK;
 {%- if assigns %}
 failure:
     if (m->rmc_fatal) goto fail;
 {%- if blocks %}
     if (complete) {
         rmc_fb_note(m, failed_site); m->rmc_fb_active[RMC_FB_PLAN] = false;
-        memcpy(m->y, incoming, sizeof(m->y));
+        rmc_copy_doubles(m->y, incoming, Y_LEN);
         const int rescued = rmc_project_complete(m, complete, ncomplete);
         /* A program fault during the rescue is neither a convergence failure
            nor a non-finite trial value. */
         if (m->rmc_fatal) goto fail;
-        if (rescued == 0) return {{ prefix }}OK;
+        if (rescued == 0) { {% if me.kernel %}RMC_RELEASE; {% endif %}return {{ prefix }}OK; }
         RMC_LOG(m, "complete algebraic projection did not establish coordinate convergence");
         /* An evaluation error during the rescue (a failed pure call, or an
            exhausted workspace) is not a non-finite trial value. */
@@ -1437,16 +1459,16 @@ failure:
 {%- endif %}
 fail:
     for (size_t j=0, offset=0; j<nruns; offset+=runs[j++][1])
-        memcpy(m->y+runs[j][0], incoming+offset, runs[j][1]*sizeof(double));
+        rmc_copy_doubles(m->y+runs[j][0], incoming+offset, runs[j][1]);
 {%- if blocks and assigns %}
     m->rmc_fb_active[RMC_FB_PLAN] = false;
 {%- endif %}
-    return {{ prefix }}Error;
+    {% if me.kernel %}RMC_RELEASE; {% endif %}return {{ prefix }}Error;
 }
 {%- endif %}
 {%- endmacro %}
 
-{%- macro refresh_function(name, plan, prefix) %}
+{%- macro refresh_function(name, plan, prefix, arena=false) %}
 {%- if plan.steps|length > 0 %}
 static const RmcStep rmc_steps_{{ name }}[{{ plan.steps|length }}] = {
 {%- for step in plan.steps %}
@@ -1458,12 +1480,16 @@ static {{ prefix }}Status ({{ name }})(ModelInstance* m) {
 {%- if plan.steps|length > 0 %}
 {%- if plan.backup_size > 0 %}
     static const size_t runs[][2] = { {% for run in plan.backup_runs %}{ {{ run[0] }}, {{ run[1] }} }, {% endfor %} };
+{%- if not arena %}
     double incoming[{{ plan.backup_size }}];
+{%- endif %}
 {%- else %}
     static const size_t runs[][2] = { { 0, Y_LEN } };
+{%- if not arena %}
     double incoming[Y_LEN];
 {%- endif %}
-    return rmc_refresh(m, rmc_steps_{{ name }}, {{ plan.steps|length }}, {% if plan.complete %}RMC_P({{ plan.complete[0] }}), {{ plan.complete[1] }}{% else %}NULL, 0{% endif %}, incoming, runs, sizeof(runs)/sizeof(runs[0]));
+{%- endif %}
+    return rmc_refresh(m, rmc_steps_{{ name }}, {{ plan.steps|length }}, {% if plan.complete %}RMC_P({{ plan.complete[0] }}), {{ plan.complete[1] }}{% else %}NULL, 0{% endif %}, {% if arena %}NULL{% else %}incoming{% endif %}, runs, sizeof(runs)/sizeof(runs[0]));
 {%- else %}
     if (RMC_FAULTED(m)) return {{ prefix }}Error;
     return refresh_parameters(m);
@@ -1537,14 +1563,14 @@ static {{ prefix }}Status refresh_parameters(ModelInstance* m) {
 {%- set plan_suffix = "_plan" if me.blocks|length > 0 and me.seed_rule == "CommittedAcceptedPoint" else "" %}
 {%- if me.switching %}
 {%- for chart in me.charts %}
-{{ refresh_function("refresh_derivative_values" ~ plan_suffix ~ "_c" ~ loop.index0, chart.derivative, prefix) }}
-{{ refresh_function("refresh_algebraics" ~ plan_suffix ~ "_c" ~ loop.index0, chart.algebraic, prefix) }}
+{{ refresh_function("refresh_derivative_values" ~ plan_suffix ~ "_c" ~ loop.index0, chart.derivative, prefix, me.kernel) }}
+{{ refresh_function("refresh_algebraics" ~ plan_suffix ~ "_c" ~ loop.index0, chart.algebraic, prefix, me.kernel) }}
 {%- endfor %}
 {{ chart_dispatch("refresh_derivative_values" ~ plan_suffix, me, prefix) }}
 {{ chart_dispatch("refresh_algebraics" ~ plan_suffix, me, prefix) }}
 {%- else %}
-{{ refresh_function("refresh_derivative_values" ~ plan_suffix, me.derivative, prefix) }}
-{{ refresh_function("refresh_algebraics" ~ plan_suffix, me.algebraic, prefix) }}
+{{ refresh_function("refresh_derivative_values" ~ plan_suffix, me.derivative, prefix, me.kernel) }}
+{{ refresh_function("refresh_algebraics" ~ plan_suffix, me.algebraic, prefix, me.kernel) }}
 {%- endif %}
 {{ committed_seed(me, prefix) }}
 {{ initialization_kernel(me, prefix) }}
@@ -1686,10 +1712,15 @@ static int rmc_chart_sigma(ModelInstance* m, const RmcChart* c, double* sigma, d
    latches the target, its conditioning (its reference once active), and the
    settled coordinate for Event Mode. */
 static {{ prefix }}Status rmc_chart_completed(ModelInstance* m, bool* request) {
-    double saved[Y_LEN]; double sigma[RMC_NCHARTS]; double threshold[RMC_NCHARTS];
+    double sigma[RMC_NCHARTS]; double threshold[RMC_NCHARTS];
     *request = false;
     if (m->rmc_fatal) return {{ prefix }}Error;
-    memcpy(saved, m->y, sizeof(saved));
+    /* The coordinate copy is the decision's own arena frame, below the
+       refresh and the conditioning frames it opens. */
+    RMC_MARK;
+    double* saved = rmc_dalloc_raw(m, Y_LEN);
+    if (!saved) { (void)rmc_exhausted(m); return {{ prefix }}Error; }
+    rmc_copy_doubles(saved, m->y, Y_LEN);
     bool certify = m->rmc_certify;
     m->rmc_certify = false;
     {{ prefix }}Status status = refresh_algebraics(m);
@@ -1724,10 +1755,12 @@ static {{ prefix }}Status rmc_chart_completed(ModelInstance* m, bool* request) {
             RMC_INFO(m, "chart", text);
         }
     }
-    memcpy(m->y, saved, sizeof(saved));
+    rmc_copy_doubles(m->y, saved, Y_LEN);
+    RMC_RELEASE;
     return {{ prefix }}OK;
 fail:
-    memcpy(m->y, saved, sizeof(saved));
+    rmc_copy_doubles(m->y, saved, Y_LEN);
+    RMC_RELEASE;
     return {{ prefix }}Error;
 }
 /* chart_switch.rs: run_basis_change_boundary and basis_transfer, one atomic
@@ -1742,18 +1775,21 @@ fail:
    refuses the transfer at entry, and a fault raised during the transfer
    leaves the switch pending too. */
 static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_changed, bool* nominals_changed) {
-    double before[Y_LEN]; double states[STATE_LEN];
+    double states[STATE_LEN];
     const RmcChart* target = &rmc_charts[m->rmc_chart_target];
     size_t active = m->rmc_chart;
     bool certify = m->rmc_certify;
     *values_changed = false;
     *nominals_changed = false;
     if (m->rmc_fatal) return {{ prefix }}Error;
-    memcpy(before, m->y, sizeof(before));
+    /* The coordinate copy and the row outputs are the transfer's own arena
+       frame, below the target's refresh. */
     RMC_MARK;
-    double* out = rmc_dalloc_raw(m, target->row_max_outputs);
+    double* before = rmc_dalloc_raw(m, Y_LEN);
+    double* out = before ? rmc_dalloc_raw(m, target->row_max_outputs) : NULL;
     if (!out) { RMC_RELEASE; m->rmc_chart_pending = false; (void)rmc_exhausted(m); return {{ prefix }}Error; }
-    memcpy(m->y, m->rmc_chart_y, sizeof(before));
+    rmc_copy_doubles(before, m->y, Y_LEN);
+    rmc_copy_doubles(m->y, m->rmc_chart_y, Y_LEN);
     for (size_t k = 0; k < {{ solve.solve_layout.state_scalar_count }}; ++k) {
         if (rmc_row_call(rmc_pool[target->binding + 2 * k], m, out) != 0) goto fail;
         states[k] = before[k] - out[rmc_pool[target->binding + 2 * k + 1]];
@@ -1765,16 +1801,16 @@ static {{ prefix }}Status rmc_chart_transfer(ModelInstance* m, bool* values_chan
     m->rmc_certify = certify;
     /* A program fault fails the transfer before it commits the target. */
     if (status != {{ prefix }}OK || m->rmc_fatal) goto fail;
-    RMC_RELEASE;
     m->rmc_chart_pending = false;
     m->rmc_chart_reference = m->rmc_chart != 0 ? m->rmc_chart_target_reference : rmc_charts[0].trial_rcond;
     for (size_t k = 0; k < {{ solve.solve_layout.state_scalar_count }}; ++k) *nominals_changed |= rmc_chart_nominals[active][k] != rmc_chart_nominals[m->rmc_chart][k];
     *values_changed = memcmp(before, m->y, {{ solve.solve_layout.state_scalar_count }} * sizeof(double)) != 0;
+    RMC_RELEASE;
     return {{ prefix }}OK;
 fail:
-    RMC_RELEASE;
     m->rmc_chart = active;
-    memcpy(m->y, before, sizeof(before));
+    rmc_copy_doubles(m->y, before, Y_LEN);
+    RMC_RELEASE;
     if (m->rmc_fatal) return {{ prefix }}Error;
     m->rmc_chart_pending = false;
     RMC_LOG(m, "the reduced-chart basis transfer did not establish the target chart");

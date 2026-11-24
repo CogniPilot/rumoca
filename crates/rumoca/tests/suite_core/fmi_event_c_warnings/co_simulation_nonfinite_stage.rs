@@ -112,7 +112,8 @@ fn generated_fmi_c_marks_only_an_unrescued_non_finite_refresh() {
             .unwrap_or_else(|| panic!("refresh failure path lacks {needle:?}:\n{body}"))
     };
     let fault = at("if (m->rmc_fatal) goto fail;\n        if (rescued == 0)");
-    let rescued = at("if (rescued == 0) return fmi3OK;");
+    // The refresh releases its arena frame on every return.
+    let rescued = at("if (rescued == 0) { RMC_RELEASE; return fmi3OK; }");
     let pure_call = at("if (rescued < 0) goto fail;");
     let marked = at("m->rmc_nonfinite = true;");
     assert_eq!(

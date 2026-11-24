@@ -168,9 +168,15 @@ pub(super) struct ChartRecord {
 }
 
 impl ChartRecord {
-    /// Doubles one conditioning evaluation or one transfer allocates.
+    /// Doubles one conditioning evaluation (its slope and dependent blocks,
+    /// pivots and one program's outputs) or one transfer's row outputs
+    /// allocate above the coordinate copy of their caller's frame.
     pub(super) fn workspace(&self) -> usize {
-        self.nrows * (self.ncols + self.ndep) + self.jvp_max_outputs + self.row_max_outputs + 8
+        let conditioning = self.nrows * (self.ncols + self.ndep)
+            + self.nrows.min(self.ndep)
+            + 1
+            + self.jvp_max_outputs;
+        conditioning.max(self.row_max_outputs)
     }
 }
 

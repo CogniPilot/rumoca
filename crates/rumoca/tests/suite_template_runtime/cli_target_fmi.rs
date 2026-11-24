@@ -7,6 +7,7 @@
 mod affine_guard_harness;
 mod affine_promotion;
 mod algebraic;
+mod arena_budget_harness;
 mod array_bounds;
 mod assertions;
 mod batched_getters;
