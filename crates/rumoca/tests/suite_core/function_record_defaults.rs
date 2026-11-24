@@ -114,3 +114,116 @@ fn an_unwritten_field_whose_default_reads_a_sibling_is_refused() {
         .expect_err("a default that reads a written sibling is not seeded");
     assert_eq!(failure.error_code.as_deref(), Some("ED022"));
 }
+
+/// MSL R134a's Helmholtz coefficients: a protected record local whose type
+/// gives its values in an extends clause (`extends Coeff(nc = 3, a = ...)`),
+/// with a field sized by a sibling field (`Real a[nc]`) and a loop bounded
+/// by one (`1:id.ns`). The constructor carries the extends modifiers (MLS 3.7
+/// §12.6), and the never-written local holds them for the whole call. The
+/// second loop's bound is R134a's `scalar(size(breaks))` (MLS 3.7 §10.3.3).
+#[test]
+fn a_record_local_holds_the_extends_modifiers_of_its_type() {
+    let source = r#"
+package Coefficients
+  record Coeff
+    parameter Integer nc = 5;
+    parameter Integer ns;
+    parameter Real[nc] a;
+  end Coeff;
+  record Cubic
+    extends Coeff(nc = 3, ns = 2, a = {1.0, 2.0, 4.0});
+  end Cubic;
+  function f
+    input Real x;
+    output Real y;
+  protected
+    Cubic id;
+  algorithm
+    y := 0;
+    for i in 1:id.ns loop
+      y := y + id.a[i]*x^i;
+    end for;
+    for i in id.ns + 1:scalar(size(id.a)) loop
+      y := y - id.a[i];
+    end for;
+  end f;
+  model Top
+    Real y = f(time);
+  end Top;
+end Coefficients;
+"#;
+    let compiled = Compiler::new()
+        .model("Coefficients.Top")
+        .compile_str(source, "Coefficients.mo")
+        .unwrap_or_else(|error| panic!("Coefficients.Top compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("Coefficients.Top simulates: {error}"));
+    let index = result.names.iter().position(|n| n == "y").expect("y");
+    for (row, &time) in result.times.iter().enumerate() {
+        let expected = time + 2.0 * time * time - 4.0;
+        assert!((result.data[index][row] - expected).abs() < 1e-12);
+    }
+}
+
+/// A record redeclared by extending its base (`redeclare record extends
+/// SaturationProperties end SaturationProperties;`, as MSL R134a's medium
+/// does) declares no field itself; a local's modifiers of the inherited
+/// fields, `sat(psat = p, Tsat = 0)`, are still its declaration value.
+#[test]
+fn modifiers_of_inherited_fields_initialize_a_redeclared_record_local() {
+    let source = r#"
+package Redeclared
+  partial package Base
+    replaceable record Sat
+      Real psat;
+      Real Tsat;
+    end Sat;
+  end Base;
+  package Medium
+    extends Base;
+    redeclare record extends Sat
+    end Sat;
+    function twice
+      input Sat sat;
+      output Real y;
+    algorithm
+      y := 2*sat.psat + sat.Tsat;
+    end twice;
+    function f
+      input Real p;
+      output Real y;
+    protected
+      Sat sat(psat = p, Tsat = 1);
+      Real v = twice(sat = sat);
+    algorithm
+      y := v + 1;
+    end f;
+  end Medium;
+  model Top
+    Real y = Medium.f(time);
+  end Top;
+end Redeclared;
+"#;
+    let compiled = Compiler::new()
+        .model("Redeclared.Top")
+        .compile_str(source, "Redeclared.mo")
+        .unwrap_or_else(|error| panic!("Redeclared.Top compiles: {error:?}"));
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("Redeclared.Top simulates: {error}"));
+    let index = result.names.iter().position(|n| n == "y").expect("y");
+    for (row, &time) in result.times.iter().enumerate() {
+        assert!((result.data[index][row] - (2.0 * time + 2.0)).abs() < 1e-12);
+    }
+}
