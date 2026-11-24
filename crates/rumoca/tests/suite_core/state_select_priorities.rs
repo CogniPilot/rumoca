@@ -551,6 +551,33 @@ end ThroughMax;";
     );
 }
 
+/// A relation inside a function owns no event (MLS §3.7.5), so a medium
+/// function's `h_T = smooth(0, if T < Tlimit then .. else ..)` (DryAirNasa)
+/// differentiates branch-wise past its certificate. `U = 4*p` while `p < 5`,
+/// so the preferred `p` decays as `exp(-t)` from its start; a basis withheld
+/// for `U` would start it at zero.
+#[test]
+fn a_preferred_value_is_reached_through_smooth_inside_a_function() {
+    let source = "
+model PreferThroughFunction
+  function h
+    input Real x;
+    output Real y;
+  algorithm
+    y := smooth(0, if x < 5 then x else 2*x - 5);
+  end h;
+  Real p(stateSelect = StateSelect.prefer, start = 1);
+  Real U;
+equation
+  U = 3*p + h(p);
+  der(U) = -U;
+end PreferThroughFunction;";
+    let model = "PreferThroughFunction";
+    assert_eq!(integrated(source, model), ["p"]);
+    let p = final_value(source, model, "p");
+    assert!((p - (-1.0f64).exp()).abs() < 1e-5, "p(1) = {p}");
+}
+
 /// A request that is honored leaves no record.
 #[test]
 fn an_honored_preference_records_nothing() {
