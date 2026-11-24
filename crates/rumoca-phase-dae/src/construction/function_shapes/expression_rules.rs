@@ -562,17 +562,14 @@ fn fill_shape(
             span,
         ));
     }
-    if !expression_shape(value, values, function_result)?.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "fill requires a scalar value",
-            span,
-        ));
-    }
-    extents
+    // MLS §10.3.3: the new axes come first and the value keeps its own.
+    let value = expression_shape(value, values, function_result)?;
+    let mut shape = extents
         .iter()
         .map(|extent| checked_builtin_extent(BuiltinFunction::Fill, extent, values, span))
-        .collect()
+        .collect::<Result<ValueShape, _>>()?;
+    shape.extend(value);
+    Ok(shape)
 }
 
 fn basic_builtin_shape(

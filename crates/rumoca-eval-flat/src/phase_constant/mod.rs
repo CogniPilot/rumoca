@@ -537,10 +537,16 @@ fn infer_builtin_call_dimensions_with_context(
             eval_dimension_args_with_context(args, ctx)
         }
         rumoca_core::BuiltinFunction::Fill => {
-            if args.len() < 2 {
+            let [value, extents @ ..] = args else {
+                return None;
+            };
+            if extents.is_empty() {
                 return None;
             }
-            eval_dimension_args_with_context(&args[1..], ctx)
+            // MLS §10.3.3: the value keeps its own axes after the new ones.
+            let mut dimensions = eval_dimension_args_with_context(extents, ctx)?;
+            dimensions.extend(infer_dimensions_scoped(value, ctx)?);
+            Some(dimensions)
         }
         rumoca_core::BuiltinFunction::Linspace => {
             if args.len() != 3 {
