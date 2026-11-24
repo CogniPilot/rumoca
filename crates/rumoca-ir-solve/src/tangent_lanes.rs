@@ -24,7 +24,7 @@
 //! A typed directional pure call runs once per lane, recomputing its primal
 //! body in each; its primal results are seed-independent and read once.
 
-mod operands;
+pub(crate) mod operands;
 mod plan;
 mod regions;
 mod replicate;

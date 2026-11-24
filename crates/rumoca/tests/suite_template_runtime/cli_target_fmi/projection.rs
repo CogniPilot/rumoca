@@ -15,6 +15,9 @@
 //! - `DenseSeeded`: a mixed loop (its derivative row drops the tearing) solved
 //!   by the dense block Newton from a start where `log(u)` is undefined, so
 //!   the first refresh seeds the block through its row isolations.
+//! - `ArrayLoop`: one nonlinear array equation whose rows are singleton
+//!   blocks; each row runs the slice of the residual program that computes
+//!   its own output (`slice_to_output`), so four row programs are emitted.
 //! - `SeededLoop`: a projection stage warm-started by a constant-coefficient
 //!   seed (`t + s = 1 + sqrt(y)` for `t`); a seed that isolates through a
 //!   solver value is never issued.
@@ -50,6 +53,28 @@ fn affine_chain() -> String {
     }
     source.push_str("  v20 + 0.5*v1 = x;\nend AffineChain;\n");
     source
+}
+
+/// Rows of one nonlinear array equation, each a singleton block that runs
+/// the slice of the residual program computing its own output.
+fn array_loop() -> Fixture {
+    Fixture {
+        model: "ArrayLoop",
+        source: "model ArrayLoop
+  Real x[4](start={1, 1.5, 2, 2.5}, each fixed=true);
+  Real u[4](each start=0.5);
+  output Real x1 = x[1];
+  output Real u1 = u[1];
+  output Real u2 = u[2];
+  output Real u4 = u[4];
+equation
+  der(x) = -u;
+  u + 0.1*u.*u.*u = x;
+end ArrayLoop;"
+            .to_string(),
+        outputs: &["x1", "u1", "u2", "u4"],
+        marker: Some("rmc_row_p3("),
+    }
 }
 
 fn fixtures() -> Vec<Fixture> {
@@ -186,7 +211,7 @@ fn packaged_fmi_projection_paths_match_the_linked_me_kernel() {
     let work = tempdir().expect("projection FMI work directory");
     let driver = work.path().join("projection_trace.py");
     fs::write(&driver, DRIVER).expect("write projection trace driver");
-    for fixture in fixtures() {
+    for fixture in fixtures().into_iter().chain([array_loop()]) {
         let compiled = rumoca::Compiler::new()
             .model(fixture.model)
             .compile_str(&fixture.source, &format!("{}.mo", fixture.model))
@@ -195,8 +220,7 @@ fn packaged_fmi_projection_paths_match_the_linked_me_kernel() {
         for (target, standard) in [("fmi2", &standards.0), ("fmi3", &standards.1)] {
             let fmu = build_named_fmu(work.path(), &compiled, target, fixture.model);
             if let Some(marker) = fixture.marker {
-                let source = fs::read_to_string(fmu.root.join("sources/model.c"))
-                    .expect("read generated model source");
+                let source = generated_kernel_source(&fmu);
                 assert!(
                     emits_marker(&source, marker),
                     "{} {target} does not emit the projection path `{marker}`",
@@ -588,6 +612,16 @@ model.freeInstance()
 const SEEDED_RESCUE: &str = "a seeded projection step";
 
 /// Whether the generated source emits the projection path `marker`.
+/// The generated model source with its program units (the row programs
+/// live in `rmc_rows.c`), so a marker is found in whichever unit emits it.
+fn generated_kernel_source(fmu: &BuiltFmu) -> String {
+    ["model.c", "rmc_rows.c"]
+        .iter()
+        .filter_map(|unit| fs::read_to_string(fmu.root.join("sources").join(unit)).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn emits_marker(source: &str, marker: &str) -> bool {
     if marker == SEEDED_RESCUE {
         has_seeded_projection_step(source)

@@ -16,6 +16,10 @@ mod dead_operations;
 mod defined_registers;
 mod fault_class;
 mod integer_power;
+mod output_slice;
+#[cfg(test)]
+mod random_programs;
+mod register_packing;
 mod seed_invariance;
 mod shared_values;
 
@@ -25,6 +29,8 @@ pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
 pub use dead_operations::prune_unread_pure_operations;
 pub use integer_power::{IntegerPower, IntegerPowerStep, IntegerPowerSteps};
+pub use output_slice::{slice_to_output, slice_to_outputs};
+pub use register_packing::pack_registers;
 pub use shared_values::{
     AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
     SharedValueSegment, SharedValueSegments, share_program_values, shared_value_proof_failures,

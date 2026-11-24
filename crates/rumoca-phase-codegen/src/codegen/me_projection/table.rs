@@ -83,13 +83,20 @@ impl<K: Ord> FunctionFamily<K> {
         let mut spans = Vec::with_capacity(self.programs.len());
         for (program, span) in self.programs {
             targets.extend(0..solve::ScalarProgramBlock::program_output_count(&program));
-            operations.push(program);
+            operations.push(emitted(program));
             spans.push(span);
         }
         let block = solve::ScalarProgramBlock::with_output_indices(operations, spans, targets)
             .map_err(|error| CodegenError::template(error.to_string()))?;
         Ok(Value::from_object(ScalarProgramPlan::new(Arc::new(block))?))
     }
+}
+
+/// A program as the kernel emits it: its registers packed by value lifetime
+/// (`rumoca_ir_solve::pack_registers`), so its C register array holds the
+/// values live at one time rather than one register per value.
+pub(super) fn emitted(program: Vec<solve::LinearOp>) -> Vec<solve::LinearOp> {
+    solve::pack_registers(&program).unwrap_or(program)
 }
 
 /// Colored Jacobian lane programs (tangent-lane programs), emitted with their
@@ -134,11 +141,17 @@ impl LaneFamily {
 /// (chart, residual program, ordered (output, target) pairs).
 type CausalKey = (usize, usize, Vec<(usize, usize)>);
 
+/// The output key of a row program that is not sliced.
+pub(super) const FULL_PROGRAM: usize = usize::MAX;
+
 /// Shared function families and the index pool of one component.
 #[derive(Default)]
 pub(super) struct ProgramTable {
     /// Implicit-residual programs keyed by (chart, scalar-projection row).
-    pub(super) rows: FunctionFamily<(usize, usize)>,
+    /// Keyed by (chart, program, stored output): a block row reads one
+    /// output, so its program is the slice that computes that output alone;
+    /// `FULL_PROGRAM` keys the unsliced program.
+    pub(super) rows: FunctionFamily<(usize, usize, usize)>,
     /// Forward Jacobian programs keyed by (application source, program).
     pub(super) jvp: FunctionFamily<(usize, usize)>,
     /// Multi-lane forward Jacobian programs, one per colored application
@@ -234,9 +247,10 @@ impl ProgramTable {
 }
 
 /// Target isolators interned per (chart, program, output offset, target) and
-/// emitted as one function per residual program and isolator prefix length:
-/// that prefix of the row is evaluated once and every requested isolation
-/// over it is stored. Grouping only equal prefixes keeps each group's
+/// grouped per residual program and isolator prefix length: that prefix of
+/// the row is evaluated once and every requested isolation over it is
+/// stored, and each isolation runs the slice of the group that computes its
+/// own slot when the group slices (`slice_to_outputs`). Grouping only equal prefixes keeps each group's
 /// failure set that of its members, so a pure call in a longer prefix never
 /// fails an isolation the evaluator answers.
 #[derive(Default)]
@@ -295,21 +309,58 @@ impl IsolatorCatalog {
                 .iter()
                 .map(|&id| (self.keys[id].2, self.keys[id].3))
                 .collect::<Vec<_>>();
-            let group = groups.intern((chart, program, prefix), || {
-                group_program(implicit(chart)?, program, &pairs)
-            })?;
-            for (slot, id) in ids.into_iter().enumerate() {
-                group_of[id] = group;
-                slot_of[id] = slot;
+            let (operations, span) = group_program(implicit(chart)?, program, &pairs)?;
+            // Each isolation reads one slot, so it runs the slice computing
+            // that slot alone; a slot that does not slice runs the shared
+            // group program.
+            let slices = isolation_slices(&operations, ids.len());
+            for ((slot, id), slice) in ids.into_iter().enumerate().zip(slices) {
+                let (key, read) = slice.as_ref().map_or((FULL_PROGRAM, slot), |_| (slot, 0));
+                let ops = || Ok((slice.unwrap_or_else(|| operations.clone()), span));
+                group_of[id] = groups.intern((chart, program, prefix, key), ops)?;
+                slot_of[id] = read;
             }
         }
         Ok((groups, group_of, slot_of))
     }
 }
 
-/// Grouped isolator functions plus, per isolator id, its group and slot.
+/// How far slicing may grow the code of an isolator group. An isolation runs
+/// alone and reads one slot, so its slice saves work on every call; but
+/// `K` slots that share a long prefix each repeat it, `K` functions of
+/// about the group's length where the shared group is one. Keeping the
+/// slices only while they total at most twice the group program bounds the
+/// code to double, and the mean slice to `2/K` of the program.
+const ISOLATION_SLICE_GROWTH: usize = 2;
+
+/// The slice each of `slots` slots of a group program runs, or `None` for a
+/// slot that runs the shared program: every slot's, once the slices total
+/// more than [`ISOLATION_SLICE_GROWTH`] times the program's operations.
+pub(super) fn isolation_slices(
+    operations: &[solve::LinearOp],
+    slots: usize,
+) -> Vec<Option<Vec<solve::LinearOp>>> {
+    let shared = || vec![None; slots];
+    let outputs: Vec<usize> = (0..slots).collect();
+    let Some(slices) = solve::slice_to_outputs(operations, &outputs, false) else {
+        return shared();
+    };
+    let code = slices
+        .iter()
+        .flatten()
+        .map(Vec::len)
+        .fold(0usize, usize::saturating_add);
+    if code > ISOLATION_SLICE_GROWTH.saturating_mul(operations.len()) {
+        return shared();
+    }
+    slices
+}
+
+/// Grouped isolator functions, keyed by (chart, program, prefix, slot) for a
+/// sliced isolation or `FULL_PROGRAM` for the shared group, plus, per
+/// isolator id, its function and slot.
 type IsolatorGroups = (
-    FunctionFamily<(usize, usize, usize)>,
+    FunctionFamily<(usize, usize, usize, usize)>,
     Vec<usize>,
     Vec<usize>,
 );

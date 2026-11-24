@@ -114,3 +114,98 @@ fn a_dispatched_program_stays_out_of_line_only_past_the_inlining_bound() {
         "{rendered}"
     );
 }
+
+/// Isolator groups slice within a bound on their code: slots that each
+/// repeat a long shared prefix stay one shared group, while slots that each
+/// read their own element of a tensor operation, as a ladder's do, slice.
+mod isolation_slices {
+    use rumoca_ir_solve::{BinaryOp, LinearOp, TensorInputKind};
+
+    use super::super::table::isolation_slices;
+
+    /// A chain of `prefix` products every one of `slots` stores reads, each
+    /// slot adding its own parameter.
+    fn shared_prefix(prefix: u32, slots: u32) -> Vec<LinearOp> {
+        let mut program = vec![LinearOp::LoadY { dst: 0, index: 0 }];
+        for k in 1..=prefix {
+            program.push(LinearOp::Binary {
+                dst: k,
+                op: BinaryOp::Mul,
+                lhs: k - 1,
+                rhs: 0,
+            });
+        }
+        for slot in 0..slots {
+            let base = 100 + 2 * slot;
+            program.extend([
+                LinearOp::LoadP {
+                    dst: base,
+                    index: slot as usize,
+                },
+                LinearOp::Binary {
+                    dst: base + 1,
+                    op: BinaryOp::Add,
+                    lhs: prefix,
+                    rhs: base,
+                },
+                LinearOp::StoreOutput { src: base + 1 },
+            ]);
+        }
+        program
+    }
+
+    /// A load of `slots` elements, then for each slot a chain of `chain`
+    /// products of its own element, which it stores: the shape of a ladder
+    /// cell's isolations.
+    fn per_slot_chains(slots: usize, chain: u32) -> Vec<LinearOp> {
+        let mut program = vec![LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: slots,
+            seed_start: None,
+            lanes: 1,
+        }];
+        for slot in 0..slots as u32 {
+            let base = 1000 + slot * (chain + 1);
+            program.push(LinearOp::Move {
+                dst: base,
+                src: slot,
+            });
+            for k in 1..=chain {
+                program.push(LinearOp::Binary {
+                    dst: base + k,
+                    op: BinaryOp::Mul,
+                    lhs: base + k - 1,
+                    rhs: slot,
+                });
+            }
+            program.push(LinearOp::StoreOutput { src: base + chain });
+        }
+        program
+    }
+
+    #[test]
+    fn slots_sharing_a_long_prefix_stay_one_group() {
+        let program = shared_prefix(40, 8);
+        let slices = isolation_slices(&program, 8);
+        assert_eq!(slices.len(), 8);
+        assert!(slices.iter().all(Option::is_none), "{slices:?}");
+        // Two slots repeat the prefix within the bound and slice.
+        assert!(
+            isolation_slices(&shared_prefix(40, 2), 2)
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+
+    #[test]
+    fn slots_reading_their_own_elements_slice() {
+        let program = per_slot_chains(50, 18);
+        let slices = isolation_slices(&program, 50);
+        assert!(slices.iter().all(Option::is_some));
+        let code: usize = slices.iter().flatten().map(Vec::len).sum();
+        assert!(code <= 2 * program.len(), "{code} for {}", program.len());
+        assert!(slices.iter().flatten().all(|slice| slice.len() == 21));
+    }
+}

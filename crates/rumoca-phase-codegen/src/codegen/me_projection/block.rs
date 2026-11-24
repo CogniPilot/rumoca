@@ -229,7 +229,9 @@ pub(super) fn block_record(
         ),
         ..BlockRecord::default()
     };
-    record_rows(sources, table, canonical, &positions, &mut record)?;
+    // An affine block's residual split reads the full program's outputs.
+    let sliced = !(affine && n > 1);
+    record_rows(sources, table, canonical, (&positions, sliced), &mut record)?;
     if affine && n > 1 {
         record_splits(sources, table, canonical, (block, &positions), &mut record)?;
     }
@@ -344,25 +346,67 @@ fn record_rows(
     sources: &BlockSources<'_>,
     table: &mut ProgramTable,
     canonical: usize,
-    positions: &[(usize, usize)],
+    (positions, sliced): (&[(usize, usize)], bool),
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {
     let source = sources.implicit.block();
     let mut functions = Vec::with_capacity(positions.len());
+    let mut offsets = Vec::with_capacity(positions.len());
     record.max_outputs = 1;
-    for &(program, _) in positions {
-        let function = table.rows.intern((sources.chart, program), || {
+    let slices = row_slices(source, positions, sliced);
+    for (&(program, offset), slice) in positions.iter().zip(slices) {
+        let (key, read) = if slice.is_some() {
+            (offset, 0)
+        } else {
+            (super::table::FULL_PROGRAM, offset)
+        };
+        let function = table.rows.intern((sources.chart, program, key), || {
             Ok((
-                source.programs()[program].clone(),
+                slice.unwrap_or_else(|| source.programs()[program].clone()),
                 program_span(source, canonical, program)?,
             ))
         })?;
         record.max_outputs = record.max_outputs.max(table.rows.output_count(function));
         functions.push(function);
+        offsets.push(read);
     }
     record.row_program = table.push(functions);
-    record.row_offset = table.push(positions.iter().map(|&(_, offset)| offset));
+    record.row_offset = table.push(offsets);
     Ok(())
+}
+
+/// The slice each row runs, or `None` for a row that runs its full residual
+/// program. A row reads one output of its program; the slice that computes
+/// it alone stores it as output 0. The rows of one program slice together in
+/// one backward pass (`slice_to_outputs`). A residual sweep runs every row,
+/// so a program keeps its full form when its rows' slices would compute
+/// more register elements than the program does once; the pass stops once
+/// they pass that bound.
+fn row_slices(
+    source: &solve::ScalarProgramBlock,
+    positions: &[(usize, usize)],
+    sliced: bool,
+) -> Vec<Option<Vec<solve::LinearOp>>> {
+    let mut slices: Vec<Option<Vec<solve::LinearOp>>> = positions.iter().map(|_| None).collect();
+    if !sliced {
+        return slices;
+    }
+    let mut rows_of: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (row, &(program, _)) in positions.iter().enumerate() {
+        rows_of.entry(program).or_default().push(row);
+    }
+    let programs = source.programs();
+    for (program, rows) in rows_of {
+        let program = &programs[program];
+        let offsets: Vec<usize> = rows.iter().map(|&row| positions[row].1).collect();
+        let Some(program_slices) = solve::slice_to_outputs(program, &offsets, true) else {
+            continue;
+        };
+        for (row, slice) in rows.into_iter().zip(program_slices) {
+            slices[row] = slice;
+        }
+    }
+    slices
 }
 
 /// The issued colored forward application of the block Jacobian, flattened

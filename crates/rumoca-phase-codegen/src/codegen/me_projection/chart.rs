@@ -352,12 +352,15 @@ fn record_binding(
             .row_output_position(row)
             .ok_or(refuse("a state-binding row has no scalar view"))?;
         let block = sources.implicit.block();
-        let function = table.rows.intern((sources.chart, program), || {
-            let span = block
-                .program_span(program)
-                .ok_or(refuse("a state-binding program has no provenance"))?;
-            Ok((block.programs()[program].clone(), span))
-        })?;
+        let function =
+            table
+                .rows
+                .intern((sources.chart, program, super::table::FULL_PROGRAM), || {
+                    let span = block
+                        .program_span(program)
+                        .ok_or(refuse("a state-binding program has no provenance"))?;
+                    Ok((block.programs()[program].clone(), span))
+                })?;
         record.row_max_outputs = record
             .row_max_outputs
             .max(table.rows.output_count(function));
