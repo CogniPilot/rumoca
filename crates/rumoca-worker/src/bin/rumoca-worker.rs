@@ -1803,7 +1803,7 @@ mod tests {
     fn a_stop_time_equal_to_the_start_is_a_zero_length_experiment() {
         let source = "model ZeroLength\n  parameter Real y0 = 0.5;\n  Real x;\nequation\n  sin(x) = y0;\n  annotation(experiment(StopTime = 0));\nend ZeroLength;\n";
         let (settings, points) = simulate_like_msl("ZeroLength", source);
-        assert_eq!((settings.output_points, points), (1, 1), "one instant, at t = 0");
+        assert_eq!((settings.output_points, points), (1, 1)); // one instant, at t = 0
     }
 
     fn compile_zero_sized_standalone_model() -> Box<DaeCompilationResult> {
