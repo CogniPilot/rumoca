@@ -23,9 +23,15 @@ const MAX_ALIAS_DEPTH: usize = 16;
 /// its type name is spelled through.
 pub(crate) fn component_type_alias_packages(
     overlay: &ast::InstanceOverlay,
+    tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     package_def_ids: &FxHashSet<DefId>,
 ) -> FxHashMap<InstanceId, DefId> {
+    let class_scopes: FxHashMap<DefId, rumoca_core::ScopeId> = tree
+        .scope_to_class
+        .iter()
+        .map(|(scope, class)| (*class, *scope))
+        .collect();
     overlay
         .components
         .values()
@@ -40,7 +46,7 @@ pub(crate) fn component_type_alias_packages(
                 .declaration_source_scope
                 .as_ref()?
                 .to_flat_string();
-            let spelled = lexical_class(class_index, &scope, first)?;
+            let spelled = resolved_class(tree, &class_scopes, class_index, &scope, first)?;
             let package = alias_target(class_index, spelled)?;
             (package_def_ids.contains(&package)
                 && declares_or_inherits(class_index, package, type_class))
@@ -49,17 +55,23 @@ pub(crate) fn component_type_alias_packages(
         .collect()
 }
 
-/// The class `name` denotes in the lexical scope `scope`: the innermost
-/// enclosing class that declares a class of that name.
-fn lexical_class(class_index: &ast::ClassDefIndex<'_>, scope: &str, name: &str) -> Option<DefId> {
-    let mut scope = Some(scope);
-    while let Some(current) = scope {
-        if let Some(def_id) = class_index.def_id_by_qualified_name(&format!("{current}.{name}")) {
-            return Some(def_id);
-        }
-        scope = current.rsplit_once('.').map(|(parent, _)| parent);
-    }
-    class_index.def_id_by_qualified_name(name)
+/// The class `name` denotes where the component was declared, by Resolve's own
+/// lookup from that class's scope (MLS 3.7 section 5.3: inherited elements and
+/// imports before enclosing scopes). A second, separate lookup could disagree
+/// with what Resolve resolved the type through.
+fn resolved_class(
+    tree: &ast::ClassTree,
+    class_scopes: &FxHashMap<DefId, rumoca_core::ScopeId>,
+    class_index: &ast::ClassDefIndex<'_>,
+    scope: &str,
+    name: &str,
+) -> Option<DefId> {
+    let declaring = class_index.def_id_by_qualified_name(scope)?;
+    let class_scope = *class_scopes.get(&declaring)?;
+    tree.scope_tree.lookup(
+        class_scope,
+        &rumoca_core::ComponentPath::from_flat_path(name),
+    )
 }
 
 /// The class a chain of short class definitions without modifications ends

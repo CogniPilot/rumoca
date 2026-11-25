@@ -72,3 +72,67 @@ fn every_medium_takes_moist_air_reference_composition_on_every_flatten() {
         );
     }
 }
+
+/// The package a type is spelled through is the one Resolve resolves the
+/// first segment to (MLS 3.7 section 5.3: inherited elements before enclosing
+/// scopes). Here `M`'s `Medium` is the one `Base` declares (`A`), not the
+/// `Medium` of the enclosing package `P` (`B`). `Probe` is a class both media
+/// only inherit, so either one would contain it: only the lookup itself can
+/// tell them apart, and the start must read `A`'s `c`.
+const INHERITED_ALIAS: &str = "package Media
+  partial package Partial
+    constant Real c = 0;
+    model Probe
+      Real x(start = c, fixed = true);
+    equation
+      der(x) = 0;
+    end Probe;
+  end Partial;
+  package A
+    extends Partial(c = 1);
+  end A;
+  package B
+    extends Partial(c = 2);
+  end B;
+end Media;
+package P
+  package Medium = Media.B;
+  model Base
+    package Medium = Media.A;
+  end Base;
+  model M
+    extends Base;
+    Medium.Probe p;
+  end M;
+end P;
+";
+
+#[test]
+#[ignore = "Resolve rejects a class inherited through a non-replaceable package alias (Board i-c62dd6c9)"]
+fn an_inherited_medium_alias_wins_over_the_enclosing_package_alias() {
+    for run in 0..RUNS {
+        let flat = Compiler::new()
+            .model("P.M")
+            .compile_str_flat(INHERITED_ALIAS, "InheritedAlias.mo")
+            .unwrap_or_else(|error| panic!("P.M flattens: {error}"));
+        let start = flat
+            .variables
+            .iter()
+            .find(|(name, _)| name.as_str() == "p.x")
+            .and_then(|(_, variable)| variable.start.as_ref())
+            .expect("p.x keeps its start");
+        assert!(
+            matches!(
+                start,
+                Expression::Literal { value: Literal::Real(value), .. } if *value == 1.0
+            ) || matches!(
+                start,
+                Expression::Literal {
+                    value: Literal::Integer(1),
+                    ..
+                }
+            ),
+            "flatten {run}: p.x starts at {start:?}, not A's c = 1"
+        );
+    }
+}
