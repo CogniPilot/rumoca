@@ -1793,7 +1793,7 @@ fn a_package_constant_read_without_its_package_while_packages_disagree_is_report
     assert_eq!(ambiguity.constant, "n");
     assert_eq!(ambiguity.packages, ["P.A", "P.B"]);
     assert_eq!(ambiguity.used, "P.B");
-    assert_eq!(ambiguity.span, test_span());
+    assert_eq!(ambiguity.span, Some(test_span()));
 }
 
 #[test]

@@ -547,6 +547,7 @@ impl Session {
                     .into_iter()
                     .chain(package_constant_ambiguity_warnings(
                         &compiled.package_constant_ambiguities,
+                        model_span,
                     ))
                     .collect(),
             );
@@ -714,6 +715,7 @@ fn structural_selection_warnings(
 /// the last exposure recorded, which may not be the package the read meant.
 fn package_constant_ambiguity_warnings(
     ambiguities: &[rumoca_ir_flat::PackageConstantAmbiguity],
+    model_span: Span,
 ) -> Vec<CommonDiagnostic> {
     ambiguities
         .iter()
@@ -728,7 +730,8 @@ fn package_constant_ambiguity_warnings(
                     ambiguity.packages.join(", "),
                     ambiguity.used,
                 ),
-                PrimaryLabel::new(ambiguity.span)
+                // A read without a source location is reported at the model.
+                PrimaryLabel::new(ambiguity.span.unwrap_or(model_span))
                     .with_message("package constant read without its package"),
             )
         })
@@ -751,6 +754,7 @@ fn build_model_diagnostics_for_dae_model(
             ));
             collected.extend(package_constant_ambiguity_warnings(
                 &artifact.flat.package_constant_ambiguities,
+                model_span,
             ));
         }
         DaeModelOutcome::NeedsInner {

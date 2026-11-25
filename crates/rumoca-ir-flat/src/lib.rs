@@ -247,8 +247,8 @@ pub struct PackageConstantAmbiguity {
     pub packages: Vec<String>,
     /// The package whose value was used.
     pub used: String,
-    /// Where the constant was read.
-    pub span: rumoca_core::Span,
+    /// Where the constant was read, when the read carries a source location.
+    pub span: Option<rumoca_core::Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -266,7 +266,7 @@ impl Context {
             constant: read.to_string(),
             packages,
             used: used_package,
-            span: read.span().unwrap_or(rumoca_core::Span::DUMMY),
+            span: read.span(),
         }
     }
 
