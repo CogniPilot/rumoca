@@ -318,6 +318,7 @@ mod process_allocator_address_space;
 mod protected_composite_connector_flow_sign;
 mod proven_tearing;
 mod public_observation_convergence;
+mod qualified_type_through_a_local_package_alias;
 mod receiver_function_redeclare;
 mod reciprocal_isolation;
 mod recursive_functions;

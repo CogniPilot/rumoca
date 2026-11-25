@@ -120,6 +120,7 @@ pub(crate) fn collect_class_dependencies(
     class_name: &str,
 ) -> IndexSet<String> {
     let mut collector = ClassDependencyCollector::new(tree, class_index, substitutions, class_name);
+    collector.scope = class.scope_id;
     assert!(
         !collector.collect_class(class).is_break(),
         "class dependency traversal stopped while collecting `{class_name}`"
@@ -132,6 +133,9 @@ struct ClassDependencyCollector<'tree, 'index, 'name> {
     class_index: &'index ast::ClassDefIndex<'tree>,
     substitutions: &'index RedeclareSubstitutions,
     class_name: &'name str,
+    /// The scope of the class being collected, where its type names are
+    /// looked up.
+    scope: Option<rumoca_core::ScopeId>,
     deps: IndexSet<String>,
 }
 
@@ -147,6 +151,7 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
             class_index,
             substitutions,
             class_name,
+            scope: None,
             deps: IndexSet::new(),
         }
     }
@@ -391,8 +396,30 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
         let Some(def_id) = name.def_id else {
             return;
         };
+        self.add_qualified_name_head_dep(name, def_id);
         self.add_class_dep_by_def_id(def_id);
         self.add_deferred_name_deps(name, def_id);
+    }
+
+    /// The class the first segment of a qualified name denotes where the name
+    /// is written (MLS §5.3), when the lookup goes through it rather than
+    /// through an enclosing class of the target. `Name::def_id` is the final
+    /// class only; in `package Medium = Moist; Medium.Probe probe;` the lookup
+    /// goes through the short class `Medium`, which strict pruning must keep
+    /// with `Probe`, or the name no longer resolves once the tree is pruned.
+    /// A head that encloses the target (`Icons` in `Icons.ExamplesPackage`)
+    /// is kept with it already.
+    fn add_qualified_name_head_dep(&mut self, name: &ast::Name, target: DefId) {
+        let (Some(scope), [head, _, ..]) = (self.scope, name.name.as_slice()) else {
+            return;
+        };
+        let head = rumoca_core::ComponentPath::from_flat_path(head.text.as_ref());
+        let Some(head) = self.tree.scope_tree.lookup(scope, &head) else {
+            return;
+        };
+        if !self.class_index.def_ancestry(target).contains(&head) {
+            self.add_class_dep_by_def_id(head);
+        }
     }
 
     /// Follow the segments of a partially resolved composite name.
