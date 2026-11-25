@@ -698,6 +698,28 @@ LOG_SUCCESS       | info    | The simulation finished successfully.
         assert_eq!(reference_status(messages), "error");
     }
 
+    /// One `LOG_ASSERT` entry that carries the bound notice and a second
+    /// violated assertion is not a bound notice: every assertion of an
+    /// exempt entry must be one.
+    #[test]
+    fn an_entry_with_a_bound_notice_and_another_assertion_stays_an_error() {
+        let messages = format!(
+            "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.\n{BOUND_NOTICE}\n|                 | |       | The following assertion has been violated at time 0.500000\n|                 | |       | ((x < 1.0)) --> \\\"x must stay below 1\\\"\nLOG_SUCCESS       | info    | The simulation finished successfully.\n"
+        );
+        assert_eq!(reference_status(&messages), "error");
+    }
+
+    /// Only an OMC `LOG_` entry has a severity level: a plain line whose
+    /// second field happens to read `warning` is still read for assertions.
+    #[test]
+    fn a_plain_line_with_a_warning_field_is_still_read_for_assertions() {
+        let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+stdout | warning | assertion violated: x must stay below 1
+LOG_SUCCESS       | info    | The simulation finished successfully.
+";
+        assert_eq!(reference_status(messages), "error");
+    }
+
     #[test]
     fn unquote_strips_and_unescapes() {
         assert_eq!(unquote_omc_string("\"hello\\nworld\""), "hello\nworld");

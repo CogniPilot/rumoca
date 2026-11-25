@@ -169,7 +169,12 @@ fn simulation_assertion_failures(error: &str, messages: &str) -> Vec<String> {
     let mut failures = omc_assertion_failure_lines(error);
     let finished = simulation_finished(messages);
     for entry in log_entries(messages) {
-        let level = entry[0].split('|').nth(1).map(str::trim);
+        // Only an OMC `LOG_` entry has a severity level; any other line is
+        // read for assertion text whatever its fields say.
+        let level = entry[0]
+            .starts_with("LOG_")
+            .then(|| entry[0].split('|').nth(1).map(str::trim))
+            .flatten();
         // A warning is not a failure; neither is OMC's info-level notice of a
         // declared min/max bound in a run it reports finished (MLS 3.7 4.9.1
         // states the bound as an assertion; OMC only notes it and continues).
@@ -198,14 +203,15 @@ fn log_entries(messages: &str) -> Vec<Vec<&str>> {
     entries
 }
 
-/// An info-level `LOG_ASSERT` entry that only reports a variable outside its
-/// declared `min`/`max`.
+/// An info-level `LOG_ASSERT` entry that only reports variables outside their
+/// declared `min`/`max`: it states at least one assertion (`cond --> "text"`),
+/// and every assertion it states is that notice.
 fn min_max_notice(entry: &[&str], level: Option<&str>) -> bool {
+    let mut assertions = entry.iter().filter(|line| line.contains("-->")).peekable();
     entry[0].starts_with("LOG_ASSERT")
         && level == Some("info")
-        && entry
-            .iter()
-            .any(|line| line.contains("Variable violating min/max constraint"))
+        && assertions.peek().is_some()
+        && assertions.all(|line| line.contains("Variable violating min/max constraint"))
 }
 
 /// OMC explicitly recovered this optional optimization. Every error must belong
