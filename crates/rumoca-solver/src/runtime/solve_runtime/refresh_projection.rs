@@ -807,6 +807,15 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .parameter_static_y_gradient_params(program_idx)
     }
 
+    fn implicit_row_gradient_inputs(
+        &self,
+        row_idx: usize,
+    ) -> Option<(&[usize], Vec<rumoca_eval_solve::YGradientColumn>)> {
+        let source = self.runtime.scalar.implicit_scalar_rhs.source();
+        let (program_idx, _) = source.row_output_position(row_idx)?;
+        source.gradient_inputs(program_idx)
+    }
+
     fn solve_algebraic_newton_delta(
         &self,
         block_index: usize,

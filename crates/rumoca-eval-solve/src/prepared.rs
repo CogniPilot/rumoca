@@ -12,6 +12,8 @@ mod assignment_shape_tests;
 mod capability_tests;
 mod construction;
 mod dependency;
+mod gradient_inputs;
+pub use gradient_inputs::{YGradientColumn, y_gradient_inputs};
 mod isolated_value;
 #[cfg(test)]
 mod isolated_value_tests;
@@ -162,6 +164,15 @@ impl PreparedScalarProgramBlock {
         self.row_parameter_static_y_gradient_params
             .get(row_idx)?
             .as_deref()
+    }
+
+    /// What each nonzero column of the row's solver-Y gradient reads besides
+    /// the row's parameters, or `None` when the row is not plain scalar
+    /// arithmetic. A block certifies a row from the columns of its own
+    /// unknowns alone. Derived from the program at each call: only an affine
+    /// projection block asks, once, for its own rows.
+    pub fn y_gradient_inputs(&self, row_idx: usize) -> Option<Vec<YGradientColumn>> {
+        y_gradient_inputs(self.block.program(row_idx)?)
     }
 
     /// Exact parameter slots read by one retained scalar/tensor program.

@@ -344,6 +344,19 @@ pub(crate) trait ImplicitProjectionModel {
         None
     }
 
+    /// Implicit residual `row_idx`'s parameter slots and what each nonzero
+    /// column of its solver-Y gradient reads besides them, or `None` when the
+    /// row is not plain scalar arithmetic. A block whose unknowns' columns
+    /// read no block unknown and no time keys the row on those parameters
+    /// and on the outside coordinates the columns read. The columns are
+    /// derived at the call: an affine block asks once, for its key layout.
+    fn implicit_row_gradient_inputs(
+        &self,
+        _row_idx: usize,
+    ) -> Option<(&[usize], Vec<rumoca_eval_solve::YGradientColumn>)> {
+        None
+    }
+
     /// The canonical projection block that fallback counts attribute block
     /// `block_index` of this model's plan to; `None` leaves it uncounted.
     fn projection_site(&self, _block_index: usize) -> Option<usize>

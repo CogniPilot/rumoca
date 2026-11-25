@@ -10,7 +10,19 @@ pub struct HotpathStatsSnapshot {
     pub integrator: Option<&'static str>,
 }
 
+/// Counts of the origin linearizations of affine blocks on this thread.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AffineLinearizationCounts {
+    /// Linearizations formed: a block's first, and each one whose reuse key
+    /// no longer held.
+    pub formed: u64,
+    /// Linearizations a retained one stood for, its reuse key still holding.
+    pub reused: u64,
+}
+
 thread_local! {
+    static AFFINE: Cell<AffineLinearizationCounts> =
+        const { Cell::new(AffineLinearizationCounts { formed: 0, reused: 0 }) };
     static SOLVER_STEPS: Cell<u64> = const { Cell::new(0) };
     static ROOT_HITS: Cell<u64> = const { Cell::new(0) };
     static INTEGRATOR: Cell<Option<&'static str>> = const { Cell::new(None) };
@@ -48,6 +60,30 @@ pub fn torn_declines() -> u64 {
 /// Reset the projection fallback counts [`torn_declines`] reads.
 pub fn reset_torn_declines() {
     super::fallbacks::reset_projection_fallbacks();
+}
+
+/// The affine linearization counts on this thread since the last
+/// [`reset_affine_linearization_counts`].
+#[must_use]
+pub fn affine_linearization_counts() -> AffineLinearizationCounts {
+    AFFINE.get()
+}
+
+/// Zero this thread's affine linearization counts.
+pub fn reset_affine_linearization_counts() {
+    AFFINE.set(AffineLinearizationCounts::default());
+}
+
+pub(crate) fn note_affine_formed() {
+    let mut counts = AFFINE.get();
+    counts.formed += 1;
+    AFFINE.set(counts);
+}
+
+pub(crate) fn note_affine_reused() {
+    let mut counts = AFFINE.get();
+    counts.reused += 1;
+    AFFINE.set(counts);
 }
 
 /// Record the integration method a simulation on this thread is about to run.

@@ -1,5 +1,6 @@
 mod controls;
 mod linearization;
+mod outside_coefficient;
 mod promotion;
 mod seed;
 

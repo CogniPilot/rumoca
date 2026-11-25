@@ -44,7 +44,8 @@ pub use runtime::fallbacks::{
 };
 #[cfg(not(kani))]
 pub use runtime::hotpath_stats::{
-    HotpathStatsSnapshot, note_integrator, reset as reset_step_counts, snapshot as step_counts,
+    AffineLinearizationCounts, HotpathStatsSnapshot, affine_linearization_counts, note_integrator,
+    reset as reset_step_counts, reset_affine_linearization_counts, snapshot as step_counts,
 };
 #[cfg(not(kani))]
 pub use runtime::jacobian::{
