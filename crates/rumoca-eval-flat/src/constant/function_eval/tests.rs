@@ -1756,3 +1756,45 @@ fn a_cataloged_reader_runs_only_in_a_translation_environment() {
         assert_eq!(root, "/");
     }
 }
+
+/// A function body reads one element of an array the environment supplies:
+/// `y := table[k]` is the `k`-th element, as it is for a local array.
+#[test]
+fn a_subscripted_read_of_an_environment_array_is_one_element() {
+    let mut func = Function::new("test.pick", Span::DUMMY);
+    func.add_input(integer_param("k"));
+    func.add_output(integer_param("y"));
+    func.pure = true;
+    func.body = vec![assign(
+        component_reference("y"),
+        Expression::VarRef {
+            name: rumoca_core::Reference::new("table"),
+            subscripts: vec![Subscript::Expr {
+                expr: Box::new(var_ref("k")),
+                span: test_span(),
+            }],
+            span: Span::DUMMY,
+        },
+    )];
+    let mut ctx = EvalContext::new();
+    ctx.add_parameter(
+        "table",
+        Value::Array(vec![
+            Value::Integer(10),
+            Value::Integer(20),
+            Value::Integer(30),
+        ]),
+    );
+
+    let result = eval_function(
+        &func,
+        vec![Value::Integer(2)],
+        &ctx,
+        &EvalLimits::default(),
+        0,
+        Span::DUMMY,
+    )
+    .expect("table[2] evaluates");
+
+    assert_eq!(result.as_integer(), Some(20));
+}

@@ -1398,8 +1398,10 @@ fn eval_var_ref(
         }
         return apply_subscripts_flat(val, subscripts, env, eval);
     }
+    // A value the environment supplies is indexed like a local one: `names[i]`
+    // is one element of `names`, never the whole array.
     if let Some(val) = eval.ctx.get_reference_value(reference) {
-        return Ok(val.into_owned());
+        return apply_subscripts_flat(&val, subscripts, env, eval);
     }
     if let Some((type_name, literal)) = eval.ctx.reference_enum(reference) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
