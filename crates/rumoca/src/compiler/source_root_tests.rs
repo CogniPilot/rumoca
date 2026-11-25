@@ -58,3 +58,32 @@ fn source_roots_close_cycles_and_skip_unreferenced_roots() {
         result.err()
     );
 }
+
+/// A library may be referred to only by a sibling file of the compiled file.
+#[test]
+fn source_roots_follow_references_of_sibling_files() {
+    let temp = tempdir().unwrap();
+    let library = temp.path().join("lib").join("Lib");
+    let models = temp.path().join("models");
+    fs::create_dir_all(&library).unwrap();
+    fs::create_dir_all(&models).unwrap();
+    fs::write(
+        library.join("package.mo"),
+        "package Lib model Level Real H; equation H = 1; end Level; end Lib;",
+    )
+    .unwrap();
+    fs::write(models.join("Base.mo"), "model Base Lib.Level L; end Base;").unwrap();
+    let top = models.join("Top.mo");
+    fs::write(&top, "model Top extends Base; end Top;").unwrap();
+
+    let compiler = Compiler::new()
+        .model("Top")
+        .source_root(&temp.path().join("lib").to_string_lossy());
+    let top = top.to_string_lossy();
+    let result = compiler.compile_file(&top);
+    assert!(result.is_ok(), "compile: {:?}", result.err());
+    let flat = compiler.compile_file_flat(&top);
+    assert!(flat.is_ok(), "flat: {:?}", flat.err());
+    let dae = compiler.compile_file_dae(&top);
+    assert!(dae.is_ok(), "dae: {:?}", dae.err());
+}

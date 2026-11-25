@@ -554,6 +554,8 @@ impl Compiler {
             eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
         }
         self.load_local_compile_unit(&mut session, source, file_name)?;
+        // A sibling file may be the only one referring to a source root.
+        self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
             eprintln!(
@@ -650,6 +652,8 @@ impl Compiler {
         let mut session = Session::new(SessionConfig::default());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
+        // A sibling file may be the only one referring to a source root.
+        self.load_required_source_roots(&mut session, source)?;
         let flat = session
             .compile_model_flat_strict_reachable_uncached_with_recovery(model_name)
             .map_err(CompilerError::FlattenError)?;
@@ -680,6 +684,8 @@ impl Compiler {
             eprintln!("[rumoca] Phase 1-2: Parsing and resolving...");
         }
         self.load_local_compile_unit(&mut session, source, file_name)?;
+        // A sibling file may be the only one referring to a source root.
+        self.load_required_source_roots(&mut session, source)?;
 
         if self.verbose {
             eprintln!("[rumoca] Phase 3-6: Strict-reachable DAE compile...");
