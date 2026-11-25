@@ -158,7 +158,7 @@ pub fn source_dae_forbidden_builtin_name(function: BuiltinFunction) -> Option<&'
 pub mod eval_lookup;
 pub use eval_lookup::EvalLookup;
 pub mod enum_compare;
-pub use enum_compare::enum_values_equal;
+pub use enum_compare::{enum_values_compare, enum_values_equal};
 pub mod integer_binary;
 pub use integer_binary::{
     IntegerBinaryOperator, eval_ast_integer_binary, eval_integer_binary,

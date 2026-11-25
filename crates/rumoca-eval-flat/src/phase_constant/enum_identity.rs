@@ -84,6 +84,9 @@ struct EnumSuffixCandidate {
 /// cannot match `Types.X`.
 pub(crate) struct EnumCanonicalizer {
     suffixes: FxHashMap<Vec<String>, EnumSuffixCandidate>,
+    /// The literals the class tree declares, by each suffix of their
+    /// canonical paths; a suffix two declared literals share is ambiguous.
+    declared: FxHashMap<Vec<String>, EnumSuffixCandidate>,
 }
 
 impl EnumCanonicalizer {
@@ -96,7 +99,24 @@ impl EnumCanonicalizer {
                 merge_enum_suffix_candidate(&mut suffixes, segments[start..].to_vec(), &segments);
             }
         }
-        Self { suffixes }
+        Self {
+            suffixes,
+            declared: FxHashMap::default(),
+        }
+    }
+
+    /// Prefer the literal the class tree declares (MLS 3.7 §4.9.5): a
+    /// spelling relative to an import or an enclosing scope (`MS.c` read in
+    /// `pipe`, `Mode.Slow` inside `Types`) names the declared literal whose
+    /// canonical path ends with it, when exactly one does.
+    pub(crate) fn with_declared<'a>(mut self, declared: impl IntoIterator<Item = &'a str>) -> Self {
+        for path in declared {
+            let segments = ComponentPath::from_flat_path(path).into_parts();
+            for start in 0..segments.len().saturating_sub(1) {
+                merge_declared_suffix(&mut self.declared, segments[start..].to_vec(), &segments);
+            }
+        }
+        self
     }
 
     /// Resolve a possibly partially-qualified enum literal to structured identity.
@@ -109,7 +129,15 @@ impl EnumCanonicalizer {
     pub(crate) fn canonicalize(&self, literal: &str) -> Option<EnumLiteralIdentity> {
         let segments = ComponentPath::from_flat_path(literal).into_parts();
 
-        // Try progressively shorter structured suffixes.
+        // The declared literal first, then the held values, each by
+        // progressively shorter structured suffixes.
+        for start in 0..segments.len().saturating_sub(1) {
+            if let Some(candidate) = self.declared.get(&segments[start..])
+                && !candidate.ambiguous
+            {
+                return EnumLiteralIdentity::from_segments(&candidate.segments);
+            }
+        }
         for start in 0..segments.len().saturating_sub(1) {
             if let Some(candidate) = self.suffixes.get(&segments[start..])
                 && !candidate.ambiguous
@@ -131,6 +159,28 @@ impl EnumCanonicalizer {
             .get(&segments[..])
             .filter(|candidate| !candidate.ambiguous && candidate.segments == segments)
             .and_then(|candidate| EnumLiteralIdentity::from_segments(&candidate.segments))
+    }
+}
+
+/// Index one suffix of a declared literal's canonical path; a suffix two
+/// different declared literals share names neither.
+fn merge_declared_suffix(
+    declared: &mut FxHashMap<Vec<String>, EnumSuffixCandidate>,
+    suffix: Vec<String>,
+    segments: &[String],
+) {
+    match declared.get_mut(&suffix) {
+        Some(candidate) if candidate.segments != segments => candidate.ambiguous = true,
+        Some(_) => {}
+        None => {
+            declared.insert(
+                suffix,
+                EnumSuffixCandidate {
+                    segments: segments.to_vec(),
+                    ambiguous: false,
+                },
+            );
+        }
     }
 }
 
@@ -171,6 +221,51 @@ mod tests {
         EnumCanonicalizer::new(inventory)
             .canonicalize(literal)
             .expect("enum literal has identity")
+    }
+
+    #[test]
+    fn a_relative_spelling_names_the_one_declared_literal_ending_with_it() {
+        let held = known_enums(&[("q", "Mode.Slow")]);
+        let canonicalizer = EnumCanonicalizer::new(&held).with_declared([
+            "Types.Mode.Fast",
+            "Types.Mode.Slow",
+            "P.Types.MS.c",
+        ]);
+        let value = |spelling: &str| {
+            canonicalizer
+                .canonicalize(spelling)
+                .expect("enum literal has identity")
+                .to_value()
+        };
+        assert_eq!(
+            value("Mode.Slow"),
+            Value::Enum("Types.Mode".to_string(), "Slow".to_string())
+        );
+        assert_eq!(
+            value("pipe.MS.c"),
+            Value::Enum("P.Types.MS".to_string(), "c".to_string())
+        );
+    }
+
+    #[test]
+    fn a_spelling_two_declared_literals_end_with_is_not_decided_by_declaration() {
+        let canonicalizer =
+            EnumCanonicalizer::new(&known_enums(&[])).with_declared(["A.Mode.Slow", "B.Mode.Slow"]);
+        assert_eq!(
+            canonicalizer
+                .canonicalize("Mode.Slow")
+                .expect("enum literal has identity")
+                .to_value(),
+            Value::Enum("Mode".to_string(), "Slow".to_string()),
+            "ambiguous by declaration, so the spelling stands as before",
+        );
+        assert_eq!(
+            canonicalizer
+                .canonicalize("A.Mode.Slow")
+                .expect("enum literal has identity")
+                .to_value(),
+            Value::Enum("A.Mode".to_string(), "Slow".to_string())
+        );
     }
 
     #[test]

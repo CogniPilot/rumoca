@@ -33,7 +33,12 @@ impl<'a> BorrowedContext<'a> {
             parameters: *parameters,
             literals: EvalContext::new(),
             functions,
-            canonicalizer: EnumCanonicalizer::new(parameters.known_enums),
+            canonicalizer: EnumCanonicalizer::new(parameters.known_enums).with_declared(
+                parameters
+                    .declared_enums
+                    .into_iter()
+                    .flat_map(|declared| declared.literals.keys().map(String::as_str)),
+            ),
         }
     }
 

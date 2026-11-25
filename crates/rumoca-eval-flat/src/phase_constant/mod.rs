@@ -900,10 +900,21 @@ fn register_enum_value_candidates(
             && !eval_ctx.contains_parameter(name.as_str())
             && looks_like_enum_literal_path(name.as_str()) =>
         {
-            if let Some(identity) = eval_ctx.canonicalizer.canonicalize(name.as_str()) {
+            // The declaration the reference resolved to names the literal
+            // whatever the spelling of its path (MLS 3.7 §4.9.5): an imported
+            // `MS.c` read in `pipe`'s modifier is `P.Types.MS.c`, not a type
+            // `pipe.MS` recovered from the text.
+            let declared = crate::constant::EvalEnvironment::reference_enum(&*eval_ctx, name);
+            let value = if let Some((type_name, literal)) = declared {
+                Some(Value::Enum(type_name.clone(), literal.clone()))
+            } else {
                 eval_ctx
-                    .literals
-                    .add_parameter(name.to_string(), identity.to_value());
+                    .canonicalizer
+                    .canonicalize(name.as_str())
+                    .map(|identity| identity.to_value())
+            };
+            if let Some(value) = value {
+                eval_ctx.literals.add_parameter(name.to_string(), value);
             }
         }
         _ => {}

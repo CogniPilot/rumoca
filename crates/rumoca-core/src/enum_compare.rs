@@ -31,6 +31,27 @@ pub fn enum_values_equal(lhs: &str, rhs: &str) -> bool {
     lhs_type == rhs_type && lhs_literal == rhs_literal
 }
 
+/// Compare two enum value paths, declining when they name different
+/// enumeration types.
+///
+/// Equality of values of different enumeration types is a type error, not
+/// `false` (MLS 3.7 §4.9.5, §10.6.6). Text alone cannot always tell two types
+/// apart, but when both paths carry a type and the type names differ the
+/// comparison is not decided here (`None`), so a structural fold that depends
+/// on it stays unresolved instead of taking the `false` branch.
+pub fn enum_values_compare(lhs: &str, rhs: &str) -> Option<bool> {
+    if enum_values_equal(lhs, rhs) {
+        return Some(true);
+    }
+    match (
+        enum_type_and_literal_tail(lhs),
+        enum_type_and_literal_tail(rhs),
+    ) {
+        (Some((lhs_type, _)), Some((rhs_type, _))) if lhs_type != rhs_type => None,
+        _ => Some(false),
+    }
+}
+
 fn enum_type_and_literal_tail(path: &str) -> Option<(&str, &str)> {
     let (prefix, literal) = split_last_top_level(path)?;
     let enum_type = parent_scope(prefix).map_or(prefix, |_| top_level_last_segment(prefix));
@@ -39,7 +60,21 @@ fn enum_type_and_literal_tail(path: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::enum_values_equal;
+    use super::{enum_values_compare, enum_values_equal};
+
+    #[test]
+    fn enum_compare_declines_different_enumeration_types() {
+        assert_eq!(enum_values_compare("PkgA.Mode.On", "PkgB.Other.On"), None);
+        assert_eq!(enum_values_compare("Types.MS.a", "Types.Other.b"), None);
+        assert_eq!(
+            enum_values_compare("PkgA.Mode.On", "PkgA.Mode.Off"),
+            Some(false)
+        );
+        assert_eq!(
+            enum_values_compare("pipe.Types.Mode.On", "Pkg.Types.Mode.On"),
+            Some(true)
+        );
+    }
 
     #[test]
     fn enum_equal_exact_and_suffix_forms() {
