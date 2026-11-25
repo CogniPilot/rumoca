@@ -5,6 +5,7 @@ mod certification;
 mod colored_rows;
 mod column_gradient;
 mod combined_names;
+mod failed_trials;
 mod manifold;
 mod order_robustness;
 mod row_scoped_initial_residual;

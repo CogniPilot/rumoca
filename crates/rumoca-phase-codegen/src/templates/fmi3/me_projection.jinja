@@ -443,7 +443,8 @@ static int rmc_project_singleton(ModelInstance* m, const RmcBlock* b, RmcUpdate*
     int found = rmc_isolation(m, b, 0, 0, &value);
     if (found <= 0) return found;
     double previous = m->y[index]; m->y[index] = value;
-    if (rmc_row(m, b, 0, &after) != 0) return -1;
+    /* A failed evaluation of the trial leaves y as the assignment found it. */
+    if (rmc_row(m, b, 0, &after) != 0) { m->y[index] = previous; return -1; }
     if (isfinite(after)) {
         rmc_assignment_tolerances(m->rmc_tol, index, before, after, previous, value, &row_tol, &variable_tol);
         /* singleton.rs: singleton_assignment_improves */
@@ -675,7 +676,8 @@ static int rmc_project_torn(ModelInstance* m, const RmcBlock* b, RmcUpdate* upda
     bool stepped = false;
     rmc_save(m, b, snapshot);
     int swept = rmc_torn_sweep(m, b, residual);
-    if (swept < 0) { RMC_RELEASE; return -1; }
+    /* A failed sweep or Newton step leaves y as the torn attempt found it. */
+    if (swept < 0) { rmc_restore(m, b, snapshot); RMC_RELEASE; return -1; }
     if (swept == 1) {
         for (size_t c = 0; c < k; ++c) vscale[c] = rmc_model_scale(b->y[b->tear_col[c]], m->y[b->y[b->tear_col[c]]]);
         if (rmc_all_finite(residual, k)) {
@@ -685,7 +687,7 @@ static int rmc_project_torn(ModelInstance* m, const RmcBlock* b, RmcUpdate* upda
                    forming the Jacobian again. */
                 int step = !m->rmc_certify && stepped && rmc_scaled_converged(m->rmc_tol, residual, step_scales, k) ? 1 : rmc_torn_newton(m, b, residual, vscale, step_scales);
                 if (step == 2) stepped = true;
-                if (step < 0) { RMC_RELEASE; return -1; }
+                if (step < 0) { rmc_restore(m, b, snapshot); RMC_RELEASE; return -1; }
                 if (step == 1) {
                     update->changed = false;
                     for (size_t i = 0; i < b->n; ++i) if (m->y[b->y[i]] != snapshot[i]) update->changed = true;
@@ -964,6 +966,8 @@ static int rmc_project_affine(ModelInstance* m, const RmcBlock* b, RmcUpdate* up
         }
         result = 0;
     }
+    /* A failed solve leaves the block as it was, as affine.rs restores it. */
+    else rmc_restore(m, b, original);
     RMC_RELEASE; return result;
 }
 
@@ -984,7 +988,7 @@ RMC_COLD static int rmc_seed_assignments(ModelInstance* m, const RmcBlock* b) {
                 if (found < 0) { RMC_RELEASE; return -1; }
                 if (found == 0) continue;
                 double previous = m->y[index]; m->y[index] = value;
-                if (rmc_row(m, b, row, &after) != 0) { RMC_RELEASE; return -1; }
+                if (rmc_row(m, b, row, &after) != 0) { m->y[index] = previous; RMC_RELEASE; return -1; }
                 rmc_assignment_tolerances(m->rmc_tol, index, before, after, previous, value, &row_tol, &variable_tol);
                 if (isfinite(after) && fabs(after) <= row_tol) {
                     if (previous != value) changed = 1;
@@ -1054,7 +1058,8 @@ static int rmc_accept_delta(ModelInstance* m, const RmcBlock* b, const double* d
         if (!significant) break;
         alpha = next;
     }
-    if (result == 0) rmc_restore(m, b, snapshot);
+    /* A declined or failed step leaves the block as it was. */
+    rmc_restore(m, b, snapshot);
     RMC_RELEASE; return result;
 }
 /* projection.rs: project_algebraic_residual_block; an uncertified refresh

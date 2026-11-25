@@ -77,7 +77,9 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
     let snapshot = TornValues::save(tearing, y);
 
     let mut residual = Vec::with_capacity(tearing.residual_rows.len());
-    if !model.torn_block_sweep(tearing, y, p, t, &mut residual)? {
+    // A failed sweep or Newton step leaves `y` as the torn attempt found it.
+    let swept = model.torn_block_sweep(tearing, y, p, t, &mut residual);
+    if !swept.inspect_err(|_| snapshot.restore(tearing, y))? {
         snapshot.restore(tearing, y);
         return Ok(None);
     }
@@ -110,7 +112,7 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
                 settled: true,
             }));
         }
-        match advance_torn_newton(
+        let step = advance_torn_newton(
             model,
             y,
             p,
@@ -120,7 +122,8 @@ pub(super) fn project_torn_algebraic_block<M: ImplicitProjectionModel>(
             &variable_scales,
             tol,
             certify_coordinates,
-        )? {
+        );
+        match step.inspect_err(|_| snapshot.restore(tearing, y))? {
             TornStep::Settled => {
                 let changed = snapshot.changed(tearing, y);
                 return Ok(Some(ProjectionBlockUpdate {
