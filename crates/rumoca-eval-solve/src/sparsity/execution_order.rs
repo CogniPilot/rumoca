@@ -162,6 +162,28 @@ fn producer_intervals(stages: &[ProjectionStage]) -> Option<StageIntervals> {
     Some(producers)
 }
 
+/// Include every producer whose target interval intersects a source read.
+fn include_read_producers(
+    columns: &IndexIntervals,
+    producers: &StageIntervals,
+    needed: &mut BTreeSet<usize>,
+) {
+    for interval in columns.intervals() {
+        let start = *interval.start();
+        // A read can begin inside a producer's declaration run.
+        if let Some((_, &(end, producer))) = producers.range(..start).next_back()
+            && end >= start
+        {
+            needed.insert(producer);
+        }
+        needed.extend(
+            producers
+                .range(interval)
+                .map(|(_, &(_, producer))| producer),
+        );
+    }
+}
+
 fn execution_order<'a>(
     stages: &[ProjectionStage],
     reads: impl Fn(usize) -> Option<&'a IndexIntervals>,
@@ -172,20 +194,7 @@ fn execution_order<'a>(
         let mut needed = BTreeSet::new();
         let mut include_row = |row: usize| {
             let columns = reads(row)?;
-            for interval in columns.intervals() {
-                let start = *interval.start();
-                // A read can begin inside a producer's declaration run.
-                if let Some((_, &(end, producer))) = producers.range(..start).next_back()
-                    && end >= start
-                {
-                    needed.insert(producer);
-                }
-                needed.extend(
-                    producers
-                        .range(interval)
-                        .map(|(_, &(_, producer))| producer),
-                );
-            }
+            include_read_producers(columns, &producers, &mut needed);
             Some(())
         };
         match stage {
