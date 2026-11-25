@@ -14,7 +14,7 @@ pub(crate) fn direct_sim_window(
 ) -> (f64, f64) {
     let t_start = start_time.filter(|start| start.is_finite()).unwrap_or(0.0);
     let t_end = t_end
-        .or(stop_time.filter(|stop| stop.is_finite() && *stop > t_start))
+        .or(stop_time.filter(|stop| stop.is_finite() && *stop >= t_start))
         .unwrap_or(t_start + 1.0);
     (t_start, t_end)
 }
@@ -70,11 +70,20 @@ mod tests {
             direct_sim_window(Some(4.0), Some(1.0), Some(3.0)),
             (1.0, 4.0)
         );
-        // A stop at or before the start is not a window; one unit follows it.
-        assert_eq!(direct_sim_window(None, Some(2.0), Some(2.0)), (2.0, 3.0));
+        // A stop equal to the start is a zero-length experiment (MLS 3.7 18.4),
+        // as OMC runs it; a stop before the start is not a window, and one
+        // unit follows the start.
+        assert_eq!(direct_sim_window(None, Some(2.0), Some(2.0)), (2.0, 2.0));
+        assert_eq!(direct_sim_window(None, None, Some(0.0)), (0.0, 0.0));
+        assert_eq!(direct_sim_window(None, Some(2.0), Some(1.0)), (2.0, 3.0));
+        // A non-finite start falls back to 0, so a stop of 0 is zero-length too.
         assert_eq!(
             direct_sim_window(None, Some(f64::NAN), Some(0.0)),
-            (0.0, 1.0)
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            direct_sim_window(None, Some(f64::NAN), Some(2.0)),
+            (0.0, 2.0)
         );
     }
 }
