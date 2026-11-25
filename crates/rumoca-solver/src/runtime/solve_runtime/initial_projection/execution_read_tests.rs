@@ -156,21 +156,11 @@ fn guarded_loop(first_y: usize, guards: usize, outputs: usize) -> solve::ScalarP
     block(vec![ops], (0..outputs).collect())
 }
 
-/// A row's reads as the test sees them, whatever `row_reads` stores them in:
-/// the indices read, and the entries held to represent them.
+/// A row's reads as the test sees them: the indices read, and the entries held
+/// to represent them.
 trait StoredReads {
     fn indices(&self) -> Vec<usize>;
     fn stored_entries(&self) -> usize;
-}
-
-impl StoredReads for std::collections::BTreeSet<usize> {
-    fn indices(&self) -> Vec<usize> {
-        self.iter().copied().collect()
-    }
-
-    fn stored_entries(&self) -> usize {
-        self.len()
-    }
 }
 
 impl StoredReads for solve::IndexIntervals {

@@ -69,3 +69,23 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source read through the owner keeps its register or ordinal in any
+    /// context and is one scalar wide: only a definition range carries a
+    /// context of its own.
+    #[test]
+    fn an_owner_source_is_one_scalar_wide_and_the_same_in_every_context() {
+        for source in [
+            FunctionConditionalCaptureSource::ParentRegister { source: 3 },
+            FunctionConditionalCaptureSource::ParentInherited { source: 4 },
+            FunctionConditionalCaptureSource::ParentCatalog { ordinal: 5 },
+        ] {
+            assert_eq!(source.width(), 1);
+            assert_eq!(source.with_context(7), source);
+        }
+    }
+}
