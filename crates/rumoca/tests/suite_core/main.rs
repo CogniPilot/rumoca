@@ -404,6 +404,7 @@ mod when_current_alias;
 mod when_mixed_value_order;
 mod when_multi_output_calls;
 mod when_right_limit_events;
+mod when_seeded_condition;
 mod when_written_reads;
 
 mod structural_binding_functions;
