@@ -205,13 +205,20 @@ fn log_entries(messages: &str) -> Vec<Vec<&str>> {
 
 /// An info-level `LOG_ASSERT` entry that only reports variables outside their
 /// declared `min`/`max`: it states at least one assertion (`cond --> "text"`),
-/// and every assertion it states is that notice.
+/// and the text of every assertion it states opens with that notice. A model's
+/// own assertion that merely quotes the phrase is not one.
 fn min_max_notice(entry: &[&str], level: Option<&str>) -> bool {
-    let mut assertions = entry.iter().filter(|line| line.contains("-->")).peekable();
+    let mut assertions = entry
+        .iter()
+        .filter_map(|line| line.split_once("-->"))
+        .peekable();
     entry[0].starts_with("LOG_ASSERT")
         && level == Some("info")
         && assertions.peek().is_some()
-        && assertions.all(|line| line.contains("Variable violating min/max constraint"))
+        && assertions.all(|(_, text)| {
+            text.trim_start_matches(|c: char| c.is_whitespace() || c == '\\' || c == '"')
+                .starts_with("Variable violating min/max constraint")
+        })
 }
 
 /// OMC explicitly recovered this optional optimization. Every error must belong

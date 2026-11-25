@@ -720,6 +720,19 @@ LOG_SUCCESS       | info    | The simulation finished successfully.
         assert_eq!(reference_status(messages), "error");
     }
 
+    /// The notice is OMC's own message: it opens the assertion text. A model
+    /// assertion whose message merely quotes the phrase is still a failure.
+    #[test]
+    fn an_assertion_that_only_quotes_the_bound_notice_stays_an_error() {
+        let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_ASSERT        | info    | [Model.mo:3:5-3:40:writable]
+|                 | |       | The following assertion has been violated at time 0.500000
+|                 | |       | ((x < 1.0)) --> \\\"x is too large (not a Variable violating min/max constraint)\\\"
+LOG_SUCCESS       | info    | The simulation finished successfully.
+";
+        assert_eq!(reference_status(messages), "error");
+    }
+
     #[test]
     fn unquote_strips_and_unescapes() {
         assert_eq!(unquote_omc_string("\"hello\\nworld\""), "hello\nworld");
