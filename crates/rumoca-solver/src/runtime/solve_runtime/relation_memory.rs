@@ -221,20 +221,21 @@ impl ScalarExecutionView<'_> {
     /// Apply the discrete equation rows whose values the initial parameters
     /// and inputs fix, before any algebraic row reads them (MLS 3.7 §8.6).
     /// Each row reads only fixed slots or rows seeded before it, so one pass
-    /// in the issued order settles them.
+    /// in the issued order settles them. The rows read no coordinate, but a
+    /// compiled program checks its inputs against the issued layout, so `y`
+    /// is the solver vector of the point being initialized.
     pub(crate) fn apply_initial_seed_rows(
         &self,
+        y: &[f64],
         p: &mut [f64],
         t: f64,
     ) -> Result<(), RuntimeSolveError> {
-        // Seeded rows read and write parameter slots only (initial_seed_rows.rs).
-        let no_y: &mut [f64] = &mut [];
         for seed in &self.scalar.initial_seed_rows {
             let value = self.eval_lifecycle_row_output(
                 &self.scalar.discrete_rhs,
                 seed.program,
                 seed.output,
-                RowEvalPoint { y: no_y, p, t },
+                RowEvalPoint { y, p, t },
             )?;
             let slot = p.get_mut(seed.target).ok_or_else(|| {
                 RuntimeSolveError::solve_ir(
@@ -1493,7 +1494,7 @@ impl ScalarExecutionView<'_> {
         Ok(Some(value))
     }
 
-    pub(super) fn populate_solver_y_from_state(
+    pub(crate) fn populate_solver_y_from_state(
         &self,
         solver_y: &mut Vec<f64>,
         state: &[f64],

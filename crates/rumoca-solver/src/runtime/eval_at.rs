@@ -84,6 +84,7 @@ impl SolveRuntime {
     /// model without seeded rows, so the probe copies nothing for it.
     fn seeded_probe_params(
         &self,
+        state: &[f64],
         params: &[f64],
         t: f64,
         error: &mut Option<String>,
@@ -93,7 +94,12 @@ impl SolveRuntime {
             return None;
         }
         let mut seeded = params.to_vec();
-        if let Err(err) = scalar.apply_initial_seed_rows(&mut seeded, t) {
+        // The solver vector of the probed point, as the issued layout sizes it.
+        let mut solver_y = Vec::new();
+        if let Err(err) = scalar
+            .populate_solver_y_from_state(&mut solver_y, state)
+            .and_then(|()| scalar.apply_initial_seed_rows(&solver_y, &mut seeded, t))
+        {
             *error = Some(err.to_string());
         }
         Some(seeded)
@@ -111,7 +117,7 @@ impl SolveRuntime {
 
         // The discrete equations the parameters and inputs fix hold at every
         // probed point (initial_seed_rows.rs), as they do at initialization.
-        let seeded_params = self.seeded_probe_params(params, t, &mut error);
+        let seeded_params = self.seeded_probe_params(state, params, t, &mut error);
         let params: &[f64] = seeded_params.as_deref().unwrap_or(params);
 
         // `full_solver_y_into` seeds from the model's initial solver vector and
