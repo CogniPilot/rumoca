@@ -1798,16 +1798,12 @@ mod tests {
         }
     }
 
-    /// `experiment(StopTime = 0)` with the default start is a zero-length
-    /// experiment: OMC reports the solution at t = 0 alone, so the MSL worker
-    /// simulates that one instant instead of defaulting to [0, 1]
-    /// (`Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine`).
+    /// `StopTime = 0` is a zero-length experiment at t = 0, as OMC runs it (MSL Inverse_sine).
     #[test]
     fn a_stop_time_equal_to_the_start_is_a_zero_length_experiment() {
         let source = "model ZeroLength\n  parameter Real y0 = 0.5;\n  Real x;\nequation\n  sin(x) = y0;\n  annotation(experiment(StopTime = 0));\nend ZeroLength;\n";
         let (settings, points) = simulate_like_msl("ZeroLength", source);
-        assert_eq!(settings.output_points, 1, "one recorded instant");
-        assert_eq!(points, 1, "one output instant, at t = 0");
+        assert_eq!((settings.output_points, points), (1, 1), "one instant, at t = 0");
     }
 
     fn compile_zero_sized_standalone_model() -> Box<DaeCompilationResult> {
