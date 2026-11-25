@@ -112,6 +112,8 @@
     {"page": "codegen/galec-efmi.md", "line": 80, "language": "bash", "source_sha256": "a1eed5a3a3dfd4166c43082e1cea8611e701d114beb916b993ab4c320488d394", "profile": "executable-command-bash", "source_line_count": 5},
     {"page": "codegen/targets.md", "line": 12, "language": "bash", "source_sha256": "b66962e63174af7ae1bc0c05ca950326c646725647c2cd698ad57f0e5bbf1629", "profile": "executable-command-bash", "source_line_count": 1},
     {"page": "codegen/targets.md", "line": 46, "language": "bash", "source_sha256": "d8d938eb70415588d6031fd423601b439dd7d753a61874f3f1c7afc2b4eb74b9", "profile": "executable-command-bash", "source_line_count": 4},
+    {"page": "codegen/targets.md", "line": 131, "language": "rust", "source_sha256": "83c67f52ade54d00503b266324b7ac3b302b41dd49157bbfea6ddd7a73671e8e", "profile": "executable-context-rust", "source_line_count": 25},
+    {"page": "codegen/targets.md", "line": 159, "language": "rust", "source_sha256": "bcde9cde3ced3183626626793d7cfdab8eb5514f6bed15f59e800ea4187c0d60", "profile": "executable-context-rust", "source_line_count": 3},
     {"page": "getting-started/first-model.md", "line": 77, "language": "bash", "source_sha256": "7d2452093c2d09e9302e3fcd8ab66b30c8ace93c53b6928c38807f997e1e173c", "profile": "executable-command-bash", "source_line_count": 1},
     {"page": "getting-started/first-model.md", "line": 88, "language": "toml", "source_sha256": "96f0801b4a5a8cbecb03963703ad5cdecbded266beea0d892157f5b1cfe7c5d9", "profile": "configuration-context-toml", "source_line_count": 12},
     {"page": "getting-started/first-model.md", "line": 103, "language": "bash", "source_sha256": "3ab283b8bd307a11483b205eaae81e62559df6c658ae298ab97532e83341065a", "profile": "executable-command-bash", "source_line_count": 1},

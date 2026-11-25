@@ -247,7 +247,7 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
         .into_iter()
         .filter(|fence| fence.language != "modelica")
         .collect();
-    assert_eq!(fences.len(), 127, "review newly added guide contexts");
+    assert_eq!(fences.len(), 129, "review newly added guide contexts");
     assert_eq!(
         entries.len(),
         fences.len(),
