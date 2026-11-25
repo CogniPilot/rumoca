@@ -32,9 +32,11 @@ pub(crate) fn component_type_alias_packages(
         .iter()
         .map(|(scope, class)| (*class, *scope))
         .collect();
-    // The model being flattened is no component: its constants are read
-    // through the package that declares it (`TwoPhaseWater.ExtendedProperties`
-    // simulated on its own reads TwoPhaseWater's `nS`).
+    // A class instance no component owns (the model being flattened, and any
+    // other such instance in the overlay) reads its constants through the
+    // package that declares its class (`TwoPhaseWater.ExtendedProperties`
+    // simulated on its own reads TwoPhaseWater's `nS`), when that package
+    // declares or inherits the class.
     let root = overlay
         .classes
         .values()

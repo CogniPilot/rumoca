@@ -856,7 +856,8 @@ fn record_member_source_constant(
             name.as_str(),
             span,
         )?;
-        let Some(record) = exposed.or_else(|| env.ctx.constant_values_by_def_id.get(&declaration))
+        let Some(record) =
+            exposed.or_else(|| env.ctx.declaration_constant_value(name, declaration))
         else {
             continue;
         };

@@ -1135,6 +1135,7 @@ pub(crate) fn finalize_flat_model(
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree, closure);
     flat.enumeration_declarations = enum_literals::collect_enumeration_declarations(tree, flat);
+    flat.package_constant_ambiguities = ctx.take_package_constant_ambiguities();
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;
     }

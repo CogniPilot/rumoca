@@ -387,6 +387,7 @@ struct StrictCompileWarnings {
     synthesized_inners: Vec<String>,
     synthesized_inner_messages: Vec<String>,
     structural_selections: Vec<rumoca_phase_dae::StructuralSelection>,
+    package_constant_ambiguities: Vec<rumoca_ir_flat::PackageConstantAmbiguity>,
 }
 
 #[derive(Debug, Clone)]

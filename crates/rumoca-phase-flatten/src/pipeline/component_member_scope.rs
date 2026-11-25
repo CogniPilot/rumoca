@@ -156,43 +156,118 @@ impl Context {
             .map(|value| (package, value))
     }
 
-    /// The value of a constant by its declaration identity alone: the last
-    /// exposure recorded, deterministic because the exposing scopes are
-    /// visited in sorted order. When two packages expose the declaration with
-    /// different values the identity does not determine it (MLS 3.7 section
-    /// 7.3), so callers ask the exposing package first; this answers only when
-    /// no exposing package can be found. Refusing here instead left references
-    /// unresolved that main resolves (`nS`, `dryair.R_s`).
-    /// Reporting that disagreement as a warning is the follow-up (r4 B).
+    /// The value of a constant by its declaration identity alone, for a read
+    /// no exposing package could be found for (callers ask the exposing
+    /// package first, MLS 3.7 section 7.3).
+    ///
+    /// When every package that is not partial agrees on the value, that value
+    /// answers: a partial interface's value is a placeholder its extensions
+    /// override (`PartialMedium.substanceNames = {"unusablePartialMedium"}`),
+    /// never a value a model means. Otherwise the last exposure recorded
+    /// answers, deterministic because the exposing scopes are visited in
+    /// sorted order; refusing instead left references unresolved that main
+    /// resolves (`nS`, `dryair.R_s`). When concrete packages disagree, the
+    /// read is recorded for a warning (WF001).
     pub(crate) fn declaration_constant_value(
         &self,
+        read: &rumoca_core::Reference,
         declaration: rumoca_core::DefId,
     ) -> Option<&rumoca_core::Expression> {
-        #[cfg(feature = "tracing")]
-        if self.packages_disagree_on(declaration) {
-            tracing::debug!(
-                ?declaration,
-                "packages expose this constant with different values; the declaration-only value answers"
-            );
+        let concrete = self.concrete_exposures(declaration);
+        if let Some((_, agreed)) = concrete.first()
+            && concrete
+                .iter()
+                .all(|(_, value)| value.semantically_eq_ignoring_spans(agreed))
+        {
+            return Some(agreed);
         }
-        self.constant_values_by_def_id.get(&declaration)
+        let value = self.constant_values_by_def_id.get(&declaration)?;
+        if concrete.len() > 1
+            && !self
+                .package_constant_ambiguities
+                .borrow()
+                .contains_key(&declaration)
+        {
+            let ambiguity = self.package_constant_ambiguity(read, declaration, &concrete, value);
+            self.package_constant_ambiguities
+                .borrow_mut()
+                .insert(declaration, ambiguity);
+        }
+        Some(value)
     }
 
-    /// Whether two packages currently expose `declaration` with values that
-    /// are not the same expression.
-    #[cfg_attr(not(feature = "tracing"), allow(dead_code))]
-    fn packages_disagree_on(&self, declaration: rumoca_core::DefId) -> bool {
-        let Some(scopes) = self.constant_exposing_scopes.get(&declaration) else {
-            return false;
-        };
-        let mut values = scopes.iter().filter_map(|scope| {
-            self.constant_values_by_scope
-                .get(&(scope.clone(), declaration))
+    /// The values packages that are not partial expose for `declaration`, in
+    /// the order they were recorded. Component occurrences and partial
+    /// interfaces are not packages a model's value comes from.
+    fn concrete_exposures(
+        &self,
+        declaration: rumoca_core::DefId,
+    ) -> Vec<(&String, &rumoca_core::Expression)> {
+        self.constant_exposing_scopes
+            .get(&declaration)
+            .into_iter()
+            .flatten()
+            .filter(|scope| self.concrete_package_names.contains(scope.as_str()))
+            .filter_map(|scope| {
+                self.constant_values_by_scope
+                    .get(&(scope.clone(), declaration))
+                    .map(|value| (scope, value))
+            })
+            .collect()
+    }
+
+    /// The recorded ambiguities, sorted so the warnings do not depend on the
+    /// order the reads were answered in.
+    pub(crate) fn take_package_constant_ambiguities(
+        &self,
+    ) -> Vec<rumoca_ir_flat::PackageConstantAmbiguity> {
+        let mut ambiguities: Vec<_> = self
+            .package_constant_ambiguities
+            .take()
+            .into_values()
+            .collect();
+        ambiguities.sort_by(|a, b| {
+            a.constant
+                .cmp(&b.constant)
+                .then_with(|| a.packages.cmp(&b.packages))
         });
-        let Some(first) = values.next() else {
-            return false;
-        };
-        values.any(|value| !value.semantically_eq_ignoring_spans(first))
+        ambiguities
+    }
+
+    /// The ambiguity of answering `read` with `used` while the `concrete`
+    /// packages disagree on the value of `declaration`.
+    fn package_constant_ambiguity(
+        &self,
+        read: &rumoca_core::Reference,
+        declaration: rumoca_core::DefId,
+        concrete: &[(&String, &rumoca_core::Expression)],
+        used: &rumoca_core::Expression,
+    ) -> rumoca_ir_flat::PackageConstantAmbiguity {
+        // The value used is the last exposure recorded, which may be a scope
+        // that is not one of the concrete packages; name it either way.
+        let used_package = self
+            .constant_exposing_scopes
+            .get(&declaration)
+            .into_iter()
+            .flatten()
+            .rev()
+            .find(|scope| {
+                self.constant_values_by_scope
+                    .get(&((*scope).clone(), declaration))
+                    .is_some_and(|value| value.semantically_eq_ignoring_spans(used))
+            })
+            .cloned()
+            .unwrap_or_else(|| "its declaration".to_string());
+        let mut packages: Vec<String> =
+            concrete.iter().map(|(scope, _)| (*scope).clone()).collect();
+        packages.sort_unstable();
+        packages.dedup();
+        rumoca_ir_flat::PackageConstantAmbiguity {
+            constant: read.to_string(),
+            packages,
+            used: used_package,
+            span: read.span().unwrap_or(rumoca_core::Span::DUMMY),
+        }
     }
 
     /// The package a component occurrence's type is selected from, when the

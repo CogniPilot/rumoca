@@ -393,6 +393,13 @@ pub fn flatten_ref_in_closure(
             })
             .collect(),
     );
+    ctx.concrete_package_names = std::sync::Arc::new(
+        ctx.package_def_ids
+            .iter()
+            .filter(|&&def_id| class_index.get(def_id).is_some_and(|class| !class.partial))
+            .filter_map(|&def_id| class_index.qualified_name(def_id).map(str::to_string))
+            .collect(),
+    );
     ctx.target_def_names = tree
         .def_map
         .iter()

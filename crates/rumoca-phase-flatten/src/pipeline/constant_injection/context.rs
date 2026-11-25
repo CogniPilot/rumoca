@@ -60,6 +60,12 @@ pub(crate) struct Context {
     /// The packages that expose each constant declaration, the keys of its
     /// entries in `constant_values_by_scope`.
     pub(crate) constant_exposing_scopes: rustc_hash::FxHashMap<rumoca_core::DefId, Vec<String>>,
+    /// Declaration-only reads answered while packages disagree on the value
+    /// (see `Context::declaration_constant_value`), one per declaration,
+    /// reported as warnings on the flat model.
+    pub(crate) package_constant_ambiguities: std::cell::RefCell<
+        indexmap::IndexMap<rumoca_core::DefId, rumoca_ir_flat::PackageConstantAmbiguity>,
+    >,
     /// Component-local overrides keyed by exact instantiated occurrence and
     /// exact Resolve declaration identity.
     pub(crate) constant_values_by_occurrence:
@@ -166,6 +172,10 @@ pub(crate) struct Context {
     /// constant reference spelled through one of them names the package that
     /// exposes the constant (MLS §7.1).
     pub package_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,
+    /// Qualified names of the packages that are not partial: the scopes whose
+    /// exposure of a package constant is a value a model can mean. A partial
+    /// interface exposes its placeholder default (MLS 3.7 section 4.7).
+    pub concrete_package_names: std::sync::Arc<rustc_hash::FxHashSet<String>>,
     /// Canonical class scope path for the class instance currently being flattened.
     /// Derived from `def_map` via the owning class DefId.
     pub current_class_scope_path: Option<String>,

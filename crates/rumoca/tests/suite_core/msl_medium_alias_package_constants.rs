@@ -73,6 +73,26 @@ fn every_medium_takes_moist_air_reference_composition_on_every_flatten() {
     }
 }
 
+/// The DAE as JSON without source positions and identities, which name where
+/// and in which order things were made, not what the model means.
+fn dae_meaning(dae: &rumoca_ir_dae::Dae) -> serde_json::Value {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for key in ["span", "source_span", "def_id", "instance_id", "source"] {
+                    map.remove(key);
+                }
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut value = serde_json::to_value(dae).expect("the DAE serializes");
+    strip(&mut value);
+    value
+}
+
 /// The flat starts above must also survive the rest of the pipeline: a
 /// constant left unresolved in flatten (`nS`, `dryair.R_s`) only fails when
 /// the DAE is built, which the flatten test alone cannot see. Each run
@@ -81,7 +101,7 @@ fn every_medium_takes_moist_air_reference_composition_on_every_flatten() {
 fn psychrometric_data_compiles_to_the_same_dae_on_every_run() {
     let root = super::native_linear_solve::msl_root().expect("the required MSL fixture exists");
     let media = root.join("Modelica 4.1.0/Media/package.mo");
-    let mut shapes = Vec::new();
+    let mut first = None;
     for run in 0..RUNS {
         let compiled = Compiler::new()
             .model("Modelica.Media.Examples.PsychrometricData")
@@ -90,12 +110,12 @@ fn psychrometric_data_compiles_to_the_same_dae_on_every_run() {
             .unwrap_or_else(|error| {
                 panic!("run {run}: PsychrometricData compiles to a DAE: {error}")
             });
-        shapes.push(format!("{:?}", compiled.balance_detail));
+        let dae = dae_meaning(&compiled.dae);
+        match &first {
+            None => first = Some(dae),
+            Some(first) => assert!(*first == dae, "run {run} builds a different DAE than run 0"),
+        }
     }
-    assert!(
-        shapes.windows(2).all(|pair| pair[0] == pair[1]),
-        "every run builds the same DAE: {shapes:?}"
-    );
 }
 
 /// The package a type is spelled through is the one Resolve resolves the

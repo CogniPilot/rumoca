@@ -155,6 +155,7 @@ fn dae_model_outcome_and_warnings_with_options(
             synthesized_inners,
             synthesized_inner_messages,
             structural_selections: artifact.structural_selections.clone(),
+            package_constant_ambiguities: artifact.flat.package_constant_ambiguities.clone(),
         }),
         _ => None,
     };
