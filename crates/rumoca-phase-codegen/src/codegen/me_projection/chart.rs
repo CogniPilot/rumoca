@@ -168,9 +168,15 @@ pub(super) struct ChartRecord {
 }
 
 impl ChartRecord {
-    /// Doubles one conditioning evaluation or one transfer allocates.
+    /// Doubles one conditioning evaluation (its slope and dependent blocks,
+    /// pivots and one program's outputs) or one transfer's row outputs
+    /// allocate above the coordinate copy of their caller's frame.
     pub(super) fn workspace(&self) -> usize {
-        self.nrows * (self.ncols + self.ndep) + self.jvp_max_outputs + self.row_max_outputs + 8
+        let conditioning = self.nrows * (self.ncols + self.ndep)
+            + self.nrows.min(self.ndep)
+            + 1
+            + self.jvp_max_outputs;
+        conditioning.max(self.row_max_outputs)
     }
 }
 
@@ -352,12 +358,15 @@ fn record_binding(
             .row_output_position(row)
             .ok_or(refuse("a state-binding row has no scalar view"))?;
         let block = sources.implicit.block();
-        let function = table.rows.intern((sources.chart, program), || {
-            let span = block
-                .program_span(program)
-                .ok_or(refuse("a state-binding program has no provenance"))?;
-            Ok((block.programs()[program].clone(), span))
-        })?;
+        let function =
+            table
+                .rows
+                .intern((sources.chart, program, super::table::FULL_PROGRAM), || {
+                    let span = block
+                        .program_span(program)
+                        .ok_or(refuse("a state-binding program has no provenance"))?;
+                    Ok((block.programs()[program].clone(), span))
+                })?;
         record.row_max_outputs = record
             .row_max_outputs
             .max(table.rows.output_count(function));

@@ -19,10 +19,10 @@ use super::*;
 use rumoca_eval_solve::{RowEvalContext, TangentPoint, TornTangentEvaluator};
 use rumoca_ir_solve as solve;
 
-const MODEL: &str = "TornTangent";
+pub(super) const MODEL: &str = "TornTangent";
 const WIDE: usize = 34;
 
-fn source() -> String {
+pub(super) fn source() -> String {
     let mut source = format!(
         "model {MODEL}
   Real x(start=1, fixed=true);
@@ -94,23 +94,23 @@ int main(void) {
     bits("y", m->y, Y_LEN);
     bits("p", m->p, P_LEN);
     bits("t", &m->time, 1);
-    for (size_t index = 0; index < sizeof(rmc_blocks) / sizeof(rmc_blocks[0]); ++index) {
-        const RmcBlock* b = &rmc_blocks[index];
-        if (!b->torn) continue;
-        size_t k = b->k;
+    for (size_t index = 0; index < sizeof(rmc_block_desc) / sizeof(rmc_block_desc[0]); ++index) {
+        const RmcBlock* b = rmc_block(index);
+        if (!RMC_BS(b, torn)) continue;
+        size_t k = RMC_BS(b, k);
         double* jac = calloc(k * k + 1, sizeof(double));
-        double* recovered = calloc(b->ncausal * k + 1, sizeof(double));
+        double* recovered = calloc(RMC_BS(b, ncausal) * k + 1, sizeof(double));
         if (!jac || !recovered) return 1;
         size_t top = m->rmc_dtop;
         int result = rmc_reduced_jacobian(m, b, jac, recovered);
         m->rmc_dtop = top;
-        printf("block %d %d", result, b->tangent_directional ? 1 : 0);
-        for (size_t c = 0; c < k; ++c) printf(" %zu", b->y[b->tear_col[c]]);
+        printf("block %d %d", result, RMC_BS(b, tangent_directional) ? 1 : 0);
+        for (size_t c = 0; c < k; ++c) printf(" %zu", RMC_BP(b, y)[RMC_BP(b, tear_col)[c]]);
         printf(" |");
-        for (size_t s = 0; s < b->ncausal; ++s) printf(" %zu", b->causal_target[s]);
+        for (size_t s = 0; s < RMC_BS(b, ncausal); ++s) printf(" %zu", RMC_BP(b, causal_target)[s]);
         printf("\n");
         bits("jac", jac, k * k);
-        bits("recovered", recovered, b->ncausal * k);
+        bits("recovered", recovered, RMC_BS(b, ncausal) * k);
         free(jac);
         free(recovered);
     }

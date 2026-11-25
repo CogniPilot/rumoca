@@ -89,8 +89,9 @@ fn generated_fmi_c_names_a_non_finite_stage_when_retries_run_out() {
 
 /// The refresh marks a non-finite failure only after the complete projection
 /// failed to rescue it numerically: a successful rescue returns with the mark
-/// clear, and an evaluation error during the rescue leaves without it, so a
-/// later failure in the same stage is never retried as non-finite.
+/// clear, and a program fault or an evaluation error during the rescue leaves
+/// without it, so a later failure in the same stage is never retried as
+/// non-finite.
 #[test]
 fn generated_fmi_c_marks_only_an_unrescued_non_finite_refresh() {
     let work = tempfile::tempdir().unwrap();
@@ -110,7 +111,9 @@ fn generated_fmi_c_marks_only_an_unrescued_non_finite_refresh() {
             .map(|offset| failure + offset)
             .unwrap_or_else(|| panic!("refresh failure path lacks {needle:?}:\n{body}"))
     };
-    let rescued = at("if (rescued == 0) return fmi3OK;");
+    let fault = at("if (m->rmc_fatal) goto fail;\n        if (rescued == 0)");
+    // The refresh releases its arena frame on every return.
+    let rescued = at("if (rescued == 0) { RMC_RELEASE; return fmi3OK; }");
     let pure_call = at("if (rescued < 0) goto fail;");
     let marked = at("m->rmc_nonfinite = true;");
     assert_eq!(
@@ -118,7 +121,10 @@ fn generated_fmi_c_marks_only_an_unrescued_non_finite_refresh() {
         1,
         "{body}"
     );
-    assert!(rescued < pure_call && pure_call < marked, "{body}");
+    assert!(
+        fault < rescued && rescued < pure_call && pure_call < marked,
+        "{body}"
+    );
     assert!(!body[..failure].contains("rmc_nonfinite"), "{body}");
 }
 

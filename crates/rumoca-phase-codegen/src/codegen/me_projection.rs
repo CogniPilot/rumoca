@@ -33,6 +33,11 @@ use assign::AssignmentCatalog;
 use block::{BlockRecord, BlockSources, block_record};
 use table::ProgramTable;
 
+/// The largest projection program, in operations, that the C kernel leaves
+/// to the compiler's inlining choice; a larger dispatched, assignment or
+/// causal program stays out of line (`RMC_NOINLINE`).
+pub(super) const INLINE_PROGRAM_MAX_OPS: usize = 32;
+
 fn refusal(label: &str, refusal: solve::StagedRefreshRefusal) -> String {
     let reason = match refusal {
         solve::StagedRefreshRefusal::NonExactStage => {
@@ -542,22 +547,18 @@ pub(super) fn me_refresh_value(
         .fold((1, 1), |(doubles, sizes), (d, s)| {
             (doubles.max(d), sizes.max(s))
         });
-    let chart_doubles = switch_records
-        .iter()
-        .map(chart::ChartRecord::workspace)
-        .max()
-        .unwrap_or(0);
     let (init, init_doubles) =
         initial::initialization_value(problem, artifacts, (&mut table, &seed_blocks, seed_len))?;
     let init_sizes = init.get_attr("sizes")?.as_usize().unwrap_or(0);
     let kernel = !records.is_empty() || init_doubles > 0;
     let table = table.into_value(&implicits)?;
-    // The initialization frames hold the algebraic refresh, whose deepest
-    // block frame and isolator outputs nest inside them; a chart
-    // conditioning or transfer frame holds no other.
-    let doubles =
-        (block_doubles + table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1) + init_doubles)
-            .max(chart_doubles);
+    let iso_doubles = table.get_attr("iso_max_outputs")?.as_usize().unwrap_or(1);
+    let doubles = arena_doubles(
+        problem.layout.y_scalars(),
+        (block_doubles, iso_doubles),
+        init_doubles,
+        switching.then_some(&switch_records),
+    );
     let sizes = block_sizes + init_sizes;
     Ok(minijinja::context! {
         derivative => charts[0].get_attr("derivative")?,
@@ -565,7 +566,7 @@ pub(super) fn me_refresh_value(
         charts => charts,
         switching => switching.then(|| Value::from_serialize(&switch_records)),
         blocks => Value::from_serialize(&records),
-        block_folds => block_folds(problem, &records),
+        block_folds => block_folds(&records),
         table => table,
         kernel => kernel,
         assign => assignments.into_value()?,
@@ -577,6 +578,28 @@ pub(super) fn me_refresh_value(
         policy => policy_value(),
         seed_rule => importer_seed_rule(problem),
     })
+}
+
+/// The projection arena's doubles. The algebraic refresh takes its incoming
+/// coordinate (the `Y_LEN` doubles the C allocates), its deepest block frame
+/// and its isolator outputs. It nests inside the initialization frames and,
+/// for a switching component, inside the chart frames: a completed-step
+/// decision and a chart transfer keep the coordinate (`Y_LEN` again) below
+/// the refresh they run, and above it the conditioning frame or the
+/// transfer's row outputs the chart workspace bounds.
+fn arena_doubles(
+    y_scalars: usize,
+    (block_doubles, iso_doubles): (usize, usize),
+    init_doubles: usize,
+    charts: Option<&Vec<chart::ChartRecord>>,
+) -> usize {
+    let y_doubles = y_scalars.max(1);
+    let refresh_doubles = y_doubles + block_doubles + iso_doubles;
+    let chart_frame = charts.map_or(0, |charts| {
+        let workspace = charts.iter().map(chart::ChartRecord::workspace).max();
+        y_doubles + workspace.unwrap_or(0)
+    });
+    refresh_doubles + init_doubles.max(chart_frame)
 }
 
 /// The one numerical policy both executors read.
@@ -599,27 +622,45 @@ fn policy_value() -> Value {
     }
 }
 
-/// Each recorded block's ES016 fold message, or `None`: the Solve IR fact
-/// (`UnlocalizableGuard`) whose unknowns the block solves, rendered as the
-/// typed failure the linked runtime reports (SPEC_0044 ME-EVENT-008).
-fn block_folds(problem: &solve::SolveProblem, records: &[BlockRecord]) -> Vec<Option<Vec<u8>>> {
-    let guards = &problem.continuous.unlocalizable_guards;
-    records
+/// Each recorded block's ES016 fold message, read from its own chart's
+/// problem when the block was recorded. The distinct messages form one pool
+/// (`texts`, each followed by a NUL), and each block holds its message's byte
+/// offset in that pool, or `None`.
+fn block_folds(records: &[BlockRecord]) -> Value {
+    let mut texts: Vec<Vec<u8>> = Vec::new();
+    let mut offset_of: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    let mut end = 0usize;
+    let offsets: Vec<Option<usize>> = records
         .iter()
         .map(|record| {
-            let block = problem
-                .continuous
-                .algebraic_projection_plan
-                .blocks
-                .scalar_blocks()
-                .get(record.canonical())?;
-            let guard = block
-                .y_indices
-                .iter()
-                .find_map(|&y_index| solve::UnlocalizableGuard::covering(guards, y_index))?;
-            Some(format!("[ES016] {}", guard.fold()).into_bytes())
+            let text = record.fold()?.to_vec();
+            Some(*offset_of.entry(text.clone()).or_insert_with(|| {
+                let offset = end;
+                end += text.len() + 1;
+                texts.push(text);
+                offset
+            }))
         })
-        .collect()
+        .collect();
+    // The messages one after the other, each closed by a NUL, as the
+    // elements of a character array (a byte past ASCII cast, so a signed
+    // `char` takes it without an overflow warning); an empty pool keeps one
+    // NUL so the array is never empty.
+    let mut pool: Vec<String> = texts
+        .iter()
+        .flat_map(|text| text.iter().copied().chain([0]))
+        .map(|byte| {
+            if byte.is_ascii() {
+                byte.to_string()
+            } else {
+                format!("(char)0x{byte:02X}")
+            }
+        })
+        .collect();
+    if pool.is_empty() {
+        pool.push("0".to_owned());
+    }
+    minijinja::context! { pool => pool, offsets => offsets }
 }
 
 /// The warm-start rule the generated C translates: its component is

@@ -875,14 +875,20 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
 fn block_residual_or_seed<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
+    (p, t): (&[f64], f64),
     block: &solve::AlgebraicProjectionBlock,
     tol: f64,
+    known: Option<f64>,
     changed: &mut bool,
 ) -> Result<Option<Vec<f64>>, RuntimeSolveError> {
-    let mut residual =
-        implicit_selected_residuals(model, y, p, t, &block.rows, "algebraic projection block")?;
+    // `eval_implicit_residual_rows` yields exactly the per-row values, so a
+    // row the singleton assignment evaluated at `y` is this block's residual.
+    let mut residual = match known {
+        Some(value) if block.rows.len() == 1 => vec![value],
+        _ => {
+            implicit_selected_residuals(model, y, p, t, &block.rows, "algebraic projection block")?
+        }
+    };
     if !residual.iter().all(|value| value.is_finite()) {
         *changed |= seed_algebraic_block_assignments(model, y, p, t, block, tol)?;
         residual =
@@ -963,15 +969,33 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     // Both untorn paths try the same singleton assignment. Its acceptance is
     // independent of the degree certificate; query that only if it declines.
     let singleton_was_tried = block.tearing.is_none();
+    // A declined assignment that evaluated its row leaves `y` as it found it,
+    // so that value is the one-row residual the dense path would evaluate.
+    let mut declined_residual = None;
     if singleton_was_tried
-        && let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
+        && let Some(update) = project_algebraic_singleton_assignment(
+            model,
+            y,
+            p,
+            t,
+            block,
+            tol,
+            &mut declined_residual,
+        )?
     {
         return Ok(update);
     }
     if model.algebraic_projection_block_is_affine(block_index) {
         if !singleton_was_tried
-            && let Some(update) =
-                project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
+            && let Some(update) = project_algebraic_singleton_assignment(
+                model,
+                y,
+                p,
+                t,
+                block,
+                tol,
+                &mut declined_residual,
+            )?
         {
             return Ok(update);
         }
@@ -1010,21 +1034,39 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         note_block_fallback(site, ProjectionFallback::TornToDense);
     }
     if !singleton_was_tried
-        && let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)?
+        && let Some(update) = project_algebraic_singleton_assignment(
+            model,
+            y,
+            p,
+            t,
+            block,
+            tol,
+            &mut declined_residual,
+        )?
     {
         return Ok(update);
     }
-    project_algebraic_residual_block(model, y, p, t, block, block_index, policy)
+    project_algebraic_residual_block(
+        model,
+        y,
+        p,
+        t,
+        (block, block_index),
+        policy,
+        declined_residual,
+    )
 }
 
+/// `known` is the one-row residual a declined singleton assignment already
+/// evaluated at `y`, if any.
 fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &[f64],
     t: f64,
-    block: &solve::AlgebraicProjectionBlock,
-    block_index: usize,
+    (block, block_index): (&solve::AlgebraicProjectionBlock, usize),
     policy: AlgebraicBlockProjectionPolicy<'_>,
+    known: Option<f64>,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let AlgebraicBlockProjectionPolicy {
         tolerance: tol,
@@ -1033,7 +1075,8 @@ fn project_algebraic_residual_block<M: ImplicitProjectionModel>(
         owner,
     } = policy;
     let mut changed = false;
-    let Some(residual) = block_residual_or_seed(model, y, p, t, block, tol, &mut changed)? else {
+    let Some(residual) = block_residual_or_seed(model, y, (p, t), block, tol, known, &mut changed)?
+    else {
         return Ok(ProjectionBlockUpdate {
             changed,
             settled: false,
@@ -1274,21 +1317,30 @@ fn try_seed_algebraic_target<M: ImplicitProjectionModel>(
     };
     let previous = y[y_index];
     y[y_index] = value;
-    let accepted = context
-        .model
-        .eval_implicit_residual_row(row, y, context.parameters, context.time)?
-        .is_some_and(|after| {
-            let (row_tol, _) = assignment_tolerances(
-                context.model,
-                y_index,
-                before,
-                after,
-                previous,
-                value,
-                context.tolerance,
-            );
-            after.is_finite() && after.abs() <= row_tol
-        });
+    // A failed evaluation of the trial leaves `y` as the seed found it.
+    let after =
+        match context
+            .model
+            .eval_implicit_residual_row(row, y, context.parameters, context.time)
+        {
+            Ok(after) => after,
+            Err(error) => {
+                y[y_index] = previous;
+                return Err(error);
+            }
+        };
+    let accepted = after.is_some_and(|after| {
+        let (row_tol, _) = assignment_tolerances(
+            context.model,
+            y_index,
+            before,
+            after,
+            previous,
+            value,
+            context.tolerance,
+        );
+        after.is_finite() && after.abs() <= row_tol
+    });
     if accepted {
         return Ok(Some(previous != value));
     }
@@ -1296,6 +1348,8 @@ fn try_seed_algebraic_target<M: ImplicitProjectionModel>(
     Ok(None)
 }
 
+/// A decline after the row was evaluated leaves `y` as it found it and
+/// records that residual in `declined_residual`.
 fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
@@ -1303,6 +1357,7 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     tol: f64,
+    declined_residual: &mut Option<f64>,
 ) -> Result<Option<ProjectionBlockUpdate>, RuntimeSolveError> {
     let ([row], [y_index]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
         return Ok(None);
@@ -1332,11 +1387,19 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
         }));
     }
     let Some(value) = model.isolation_value(*row, *y_index, y, p, t)? else {
+        *declined_residual = Some(before);
         return Ok(None);
     };
     let previous = y[*y_index];
     y[*y_index] = value;
-    let after = model.eval_implicit_residual_row(*row, y, p, t)?;
+    // A failed evaluation of the trial leaves `y` as the assignment found it.
+    let after = match model.eval_implicit_residual_row(*row, y, p, t) {
+        Ok(after) => after,
+        Err(error) => {
+            y[*y_index] = previous;
+            return Err(error);
+        }
+    };
     if let Some(after) = after.filter(|after| after.is_finite()) {
         let (row_tol, variable_tol) =
             assignment_tolerances(model, *y_index, before, after, previous, value, tol);
@@ -1358,6 +1421,7 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
         }
     }
     y[*y_index] = previous;
+    *declined_residual = Some(before);
     Ok(None)
 }
 
@@ -1499,8 +1563,21 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
                 settled: false,
             });
         }
-        let after =
-            algebraic_selected_residual_norm(model, y, parameters, time, &block.rows, row_scales)?;
+        // A failed evaluation of the trial leaves the block as it was.
+        let after = match algebraic_selected_residual_norm(
+            model,
+            y,
+            parameters,
+            time,
+            &block.rows,
+            row_scales,
+        ) {
+            Ok(after) => after,
+            Err(error) => {
+                restore_block_values(y, &block.y_indices, &snapshot);
+                return Err(error);
+            }
+        };
         if after.is_finite() && (after <= tolerance || (!step_at_resolution && after < before)) {
             return Ok(ProjectionBlockUpdate {
                 changed: true,

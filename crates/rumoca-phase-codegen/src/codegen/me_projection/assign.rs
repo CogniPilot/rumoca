@@ -82,8 +82,13 @@ impl AssignmentCatalog {
     /// The emitted programs (each storing into its solver-Y targets) and the
     /// shared call sequence.
     pub(in crate::codegen) fn into_value(self) -> Result<Value, CodegenError> {
+        let programs = self
+            .programs
+            .into_iter()
+            .map(super::table::emitted)
+            .collect();
         let block =
-            solve::ScalarProgramBlock::with_output_indices(self.programs, self.spans, self.targets)
+            solve::ScalarProgramBlock::with_output_indices(programs, self.spans, self.targets)
                 .map_err(|error| CodegenError::template(error.to_string()))?;
         let sequence = if self.sequence.is_empty() {
             vec![0]

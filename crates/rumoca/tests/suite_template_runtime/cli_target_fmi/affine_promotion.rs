@@ -159,12 +159,12 @@ fn linked_values(compiled: &rumoca::CompilationResult, names: &[&str]) -> Vec<Ve
 }
 
 /// The promoted block's descriptor row, not generic kernel text, is what the
-/// FMU must carry: at least one `rmc_blocks[]` initializer row is an
+/// FMU must carry: at least one `rmc_block_desc[]` initializer row is an
 /// elimination block, and every such row's `elim_capacity` is exactly the
 /// promotion capacity the shared policy issues for its tear count, so the
 /// generated kernel promotes vanished pivots up to the same bound the linked
-/// kernel does. Fields are decoded by name against the generated `RmcBlock`
-/// struct, so an inserted field (for instance a `causal_offset` after
+/// kernel does. Fields are decoded by name against the generated
+/// `RmcBlockDesc` struct, so an inserted field (for instance a `causal_offset` after
 /// `causal_col`) shifts both the struct and the initializer together and the
 /// decode still lands on the right value.
 fn assert_promoted_block_descriptor(target: &str, source: &str) {
@@ -173,7 +173,7 @@ fn assert_promoted_block_descriptor(target: &str, source: &str) {
         fields
             .iter()
             .position(|field| field == name)
-            .unwrap_or_else(|| panic!("{target}: RmcBlock struct has no `{name}` field"))
+            .unwrap_or_else(|| panic!("{target}: RmcBlockDesc struct has no `{name}` field"))
     };
     let elimination = index("elimination");
     let nelim_tear = index("nelim_tear");
@@ -223,15 +223,17 @@ fn assert_promoted_block_descriptor(target: &str, source: &str) {
     );
 }
 
-/// Field names of the generated C `RmcBlock` struct, in declaration order.
+/// Field names of the generated C `RmcBlockDesc` struct, in declaration
+/// order.
 fn rmc_block_fields(source: &str) -> Vec<String> {
     let close = source
-        .find("} RmcBlock;")
-        .expect("generated source declares the RmcBlock struct");
+        .find("} RmcBlockDesc;")
+        .expect("generated source declares the RmcBlockDesc struct");
+    const OPEN: &str = "typedef struct RmcBlockDescS {";
     let open = source[..close]
-        .rfind("typedef struct {")
-        .expect("RmcBlock struct opens with a typedef")
-        + "typedef struct {".len();
+        .rfind(OPEN)
+        .expect("RmcBlockDesc struct opens with a typedef")
+        + OPEN.len();
     source[open..close]
         .split(';')
         .filter_map(|declaration| declaration.split_whitespace().last())
@@ -239,16 +241,17 @@ fn rmc_block_fields(source: &str) -> Vec<String> {
         .collect()
 }
 
-/// The brace-delimited `rmc_blocks[]` initializer rows, one string per block.
+/// The brace-delimited `rmc_block_desc[]` initializer rows, one string per
+/// block.
 fn rmc_block_rows(source: &str) -> Vec<String> {
-    let marker = "static const RmcBlock rmc_blocks[";
+    let marker = "static const RmcBlockDesc rmc_block_desc[";
     let start = source
         .find(marker)
-        .expect("generated source initializes rmc_blocks");
+        .expect("generated source initializes rmc_block_desc");
     let open = start
         + source[start..]
             .find('{')
-            .expect("rmc_blocks initializer opens with a brace");
+            .expect("rmc_block_desc initializer opens with a brace");
     let mut rows = Vec::new();
     let mut depth = 0i32;
     let mut row_start = 0usize;
@@ -275,8 +278,8 @@ fn rmc_block_rows(source: &str) -> Vec<String> {
     rows
 }
 
-/// One initializer row split at its top-level commas, so `RMC_P(offset)` and
-/// other parenthesized values stay whole.
+/// One initializer row split at its top-level commas, so parenthesized values
+/// stay whole.
 fn split_initializer_fields(row: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut depth = 0i32;

@@ -13,6 +13,9 @@ const HARNESS: &str = r#"
 #include <stddef.h>
 #define RMC_API
 typedef struct { double y[{{ y_count }}]; double p[{{ count }}]; double time; } ModelInstance;
+#define RMC_FATAL (-2)
+#define RMC_NOINLINE
+static int rmc_bad_program(ModelInstance* m, size_t program) { (void)m; (void)program; return RMC_FATAL; }
 {{ assignment_functions(me) }}
 int main(void) {
     ModelInstance m = {0};

@@ -4,7 +4,7 @@ use crate::{LinearOp, Reg, TensorIndex, TensorUpdateSubscript};
 
 /// The registers one operand field reads, relative to its start register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Operand {
+pub(crate) enum Operand {
     /// One scalar register.
     Single,
     /// `count` registers at `stride` apart; `lanes` is the interleaved
@@ -22,6 +22,16 @@ impl Operand {
             count: len,
             stride: 1,
             lanes,
+        }
+    }
+
+    /// How many registers the operand covers from its start register to its
+    /// last one, or `None` when that overflows.
+    pub(crate) fn span(self) -> Option<usize> {
+        match self {
+            Self::Single => Some(1),
+            Self::Strided { count: 0, .. } => Some(0),
+            Self::Strided { count, stride, .. } => (count - 1).checked_mul(stride)?.checked_add(1),
         }
     }
 
@@ -60,7 +70,7 @@ fn strided_len(count: usize, stride: usize, lanes: usize) -> usize {
 /// inside nested programs); such an operation can only run once, unreplicated.
 // SPEC_0021: Exception - one exhaustive operand table over every LinearOp variant.
 #[allow(clippy::too_many_lines)]
-pub(super) fn visit_operands(op: &mut LinearOp, visit: &mut impl FnMut(&mut Reg, Operand)) -> bool {
+pub(crate) fn visit_operands(op: &mut LinearOp, visit: &mut impl FnMut(&mut Reg, Operand)) -> bool {
     match op {
         LinearOp::Const { .. }
         | LinearOp::LoadTime { .. }
@@ -332,7 +342,7 @@ pub(super) fn visit_operands(op: &mut LinearOp, visit: &mut impl FnMut(&mut Reg,
 }
 
 /// The destination start register of `op`, mutably.
-pub(super) fn destination(op: &mut LinearOp) -> Option<&mut Reg> {
+pub(crate) fn destination(op: &mut LinearOp) -> Option<&mut Reg> {
     match op {
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }

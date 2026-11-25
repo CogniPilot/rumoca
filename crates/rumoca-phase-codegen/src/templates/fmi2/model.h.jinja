@@ -24,6 +24,9 @@
 #endif
 
 #define FMI2_FUNCTION_PREFIX {{ model_identifier }}_
+/* The prefix of the symbols the component's translation units share, in
+   every build (shared_prefix). */
+#define RMC_MODEL_PREFIX {{ model_identifier }}_
 #include "fmi2Functions.h"
 #define FMI_EXPORT FMI2_Export
 
