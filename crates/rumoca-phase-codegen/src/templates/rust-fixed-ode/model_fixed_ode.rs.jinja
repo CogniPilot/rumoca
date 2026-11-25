@@ -464,3 +464,174 @@ const NEIGHBOR_OFFSET: &[usize] = &[{% for offset in nb.offsets %}{{ offset }}, 
 const NEIGHBOR: &[usize] = &[{% for root in nb.flat %}{{ root }}, {% endfor %}];
 const SETTLE_PASS: &[SettleStep] = &[{% for s in (schedule.settle_pass if schedule else []) %}SettleStep::{{ s }}, {% endfor %}];
 {% include "rust-fixed-ode-events.jinja" %}
+
+{#- Typed API: one record per variable role over the slot arrays, from the
+    checked per-variable storage view (`solve_variables`). Constants and
+    algebraic variables are not fields. -#}
+{%- if solve_variables is none %}
+{{ fail("unsupported-feature:typed.variables: rust-fixed-ode needs the DAE variable view") }}
+{%- endif %}
+{%- set rust_keywords = ["abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref", "return", "static", "struct", "trait", "true", "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield"] %}
+{%- set typed = namespace(names=[], parameters=[], inputs=[], states=[], outputs=[], discretes=[]) %}
+{%- for v in solve_variables %}
+{%- if v.role not in ["Constant", "Algebraic"] %}
+{%- set name = v.name | replace(".", "_") | replace("$", "_") | replace("[", "_") | replace("]", "") | replace(",", "_") | replace(" ", "") %}
+{%- if "'" in name or name in ["self", "Self", "super", "crate", "_"] %}
+{{ fail("unsupported-feature:typed.field_name: " ~ v.name ~ " has no Rust field spelling") }}
+{%- endif %}
+{%- if name in typed.names %}
+{{ fail("unsupported-feature:typed.field_collision: " ~ v.name ~ " and another variable both spell field " ~ name) }}
+{%- endif %}
+{%- set typed.names = typed.names + [name] %}
+{%- set entry = {"field": ("r#" ~ name) if name in rust_keywords else name, "v": v} %}
+{%- if v.role == "Parameter" %}{% set typed.parameters = typed.parameters + [entry] %}
+{%- elif v.role == "ExternalInput" %}{% set typed.inputs = typed.inputs + [entry] %}
+{%- elif v.role == "State" %}{% set typed.states = typed.states + [entry] %}
+{%- elif v.role == "Output" %}{% set typed.outputs = typed.outputs + [entry] %}
+{%- elif v.role in ["DiscreteReal", "DiscreteValue"] %}{% set typed.discretes = typed.discretes + [entry] %}
+{%- else %}{{ fail("unsupported-feature:typed.role: " ~ v.role) }}
+{%- endif %}
+{%- endif %}
+{%- endfor %}
+{%- macro record(name, doc, entries, column, slots, default) %}
+{%- for entry in entries %}{% if entry.v.column != column %}{{ fail("unsupported-feature:typed.column: " ~ entry.v.name ~ " is not stored in " ~ column) }}{% endif %}{% endfor %}
+    /// {{ doc }}
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct {{ name }} {
+{%- for entry in entries %}
+{%- if entry.v.description %}
+        /// {{ entry.v.description | replace("\r", "") | replace("\n", " ") }}
+{%- endif %}
+        pub {{ entry.field }}: {% if entry.v.shape is none %}f64{% else %}[f64; {{ entry.v.scalar_count }}]{% endif %},
+{%- endfor %}
+    }
+
+    impl {{ name }} {
+        /// Reads every field from its slots of `{{ column }}`.
+        pub fn read({{ column }}: &super::{{ slots }}) -> Self {
+            let _ = {{ column }};
+            Self {
+{%- for entry in entries %}
+{%- if entry.v.shape is none %}
+                {{ entry.field }}: {{ column }}[{{ entry.v.index }}],
+{%- else %}
+                {{ entry.field }}: core::array::from_fn(|i| {{ column }}[{{ entry.v.index }} + i]),
+{%- endif %}
+{%- endfor %}
+            }
+        }
+
+        /// Writes every field into its slots of `{{ column }}`.
+        pub fn write(&self, {{ column }}: &mut super::{{ slots }}) {
+            let _ = &{{ column }};
+{%- for entry in entries %}
+{%- if entry.v.shape is none %}
+            {{ column }}[{{ entry.v.index }}] = self.{{ entry.field }};
+{%- else %}
+            {{ column }}[{{ entry.v.index }}..{{ entry.v.index + entry.v.scalar_count }}].copy_from_slice(&self.{{ entry.field }});
+{%- endif %}
+{%- endfor %}
+        }
+    }
+
+    impl Default for {{ name }} {
+        fn default() -> Self {
+            Self::read(&{{ default }})
+        }
+    }
+{%- endmacro %}
+
+/// Typed records over the slot arrays, with fields named after the model's
+/// variables (dots become underscores, arrays are row-major `[f64; N]`,
+/// Booleans and Integers read as `f64`), and `Model`, a `Simulator` driven
+/// through them.
+pub mod typed {
+    use super::{EventLocation, EventSettings, Method, SimError, Simulator};
+{{ record("Parameters", "Parameters; `Default` reads `DEFAULT_P`.", typed.parameters, "p", "Parameters", "super::DEFAULT_P") }}
+{{ record("Inputs", "Inputs, held over a step; `Default` is zero.", typed.inputs, "p", "Parameters", "[0.0; super::P_LEN]") }}
+{{ record("States", "Continuous states; `Default` is zero.", typed.states, "y", "State", "[0.0; super::Y_LEN]") }}
+{{ record("Outputs", "Outputs; read them from a `State` after `refresh_algebraics`.", typed.outputs, "y", "State", "[0.0; super::Y_LEN]") }}
+{{ record("Discretes", "Discrete variables, changed only at events; `Default` is zero.", typed.discretes, "p", "Parameters", "[0.0; super::P_LEN]") }}
+
+    /// A `Simulator` stepped with typed inputs, and its state with the
+    /// algebraic slots refreshed for reading outputs.
+    #[derive(Clone, Debug)]
+    pub struct Model {
+        sim: Simulator,
+        y: super::State,
+    }
+
+    impl Model {
+        /// [`Model::with`] RK4, bracketed event location, and default
+        /// event settings.
+        pub fn new(parameters: &Parameters) -> Result<Self, SimError> {
+            Self::with(Method::Rk4, EventLocation::Bracketed, EventSettings::default(), parameters)
+        }
+
+        /// Starts at time 0 with zero inputs and zero states, except the
+        /// starts `init_state` computes from parameters, and runs the initial
+        /// event.
+        pub fn with(
+            method: Method,
+            location: EventLocation,
+            settings: EventSettings,
+            parameters: &Parameters,
+        ) -> Result<Self, SimError> {
+            let mut p = super::DEFAULT_P;
+            parameters.write(&mut p);
+            Inputs::default().write(&mut p);
+            super::init_params(&mut p)?;
+            let mut y = [0.0; super::Y_LEN];
+            super::init_state(&p, &mut y)?;
+            let mut sim = Simulator::new(method, location, settings, 0.0, y, p);
+            sim.initialize()?;
+            let mut model = Self { sim, y };
+            model.refresh()?;
+            Ok(model)
+        }
+
+        fn refresh(&mut self) -> Result<(), SimError> {
+            self.y = *self.sim.y();
+            super::refresh_algebraics(self.sim.time(), &mut self.y, self.sim.p())?;
+            Ok(())
+        }
+
+        /// Advances by `dt` in `substeps` equal `do_step` calls with `inputs`
+        /// held.
+        pub fn step(&mut self, inputs: &Inputs, dt: f64, substeps: usize) -> Result<(), SimError> {
+            inputs.write(self.sim.p_mut());
+            let h = dt / substeps as f64;
+            for _ in 0..substeps {
+                self.sim.do_step(h)?;
+            }
+            self.refresh()
+        }
+
+        pub fn time(&self) -> f64 {
+            self.sim.time()
+        }
+
+        pub fn states(&self) -> States {
+            States::read(&self.y)
+        }
+
+        /// Outputs as of the last `new`, `with`, or `step`.
+        pub fn outputs(&self) -> Outputs {
+            Outputs::read(&self.y)
+        }
+
+        pub fn discretes(&self) -> Discretes {
+            Discretes::read(self.sim.p())
+        }
+
+        pub fn simulator(&self) -> &Simulator {
+            &self.sim
+        }
+
+        /// Direct access; `outputs` stays as of the last `step` until the
+        /// next one.
+        pub fn simulator_mut(&mut self) -> &mut Simulator {
+            &mut self.sim
+        }
+    }
+}

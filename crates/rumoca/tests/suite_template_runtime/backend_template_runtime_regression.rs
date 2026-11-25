@@ -3,6 +3,7 @@ mod jax_lazy_conditionals;
 mod rust_fixed_ode_event_guards;
 mod rust_fixed_ode_event_semantics;
 mod rust_fixed_ode_events;
+mod rust_fixed_ode_typed_records;
 mod selected_regions;
 
 use rumoca::Compiler;

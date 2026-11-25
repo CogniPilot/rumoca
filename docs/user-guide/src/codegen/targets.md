@@ -58,6 +58,23 @@ rumoca compile examples/models/SympyDecay.mo \
   event), then `do_step(h)`, which lands exactly on `t + h` and returns the
   number of events it applied. Inputs and tunable parameters are written
   through `p_mut()` between steps.
+- `typed` names the slots: records `Parameters`, `Inputs`, `States`,
+  `Outputs` and `Discretes` with one field per model variable of that role
+  (dots become underscores, Rust keywords get `r#`, arrays are row-major
+  `[f64; N]`, Integers and Booleans are `f64`), documented with its
+  description. Constants and algebraic variables are not fields. Each record
+  has `read(&slots)` and `write(&self, &mut slots)` over `State` or
+  `Parameters`; `Parameters::default()` reads `DEFAULT_P`, the others default
+  to zero. Names with no Rust spelling (`self`, quoted identifiers) and two
+  names spelling one field are refused.
+- `typed::Model` wraps `Simulator`: `Model::new(&parameters)` (RK4,
+  `Bracketed`, default settings) or `Model::with(method, location, settings,
+  &parameters)` runs `init_params`, `init_state` and the initial event with
+  zero inputs at time 0; `step(&inputs, dt, substeps)` holds the inputs over
+  `substeps` equal steps and refreshes algebraics; `states()`, `outputs()`,
+  `discretes()`, `time()`, `simulator()` and `simulator_mut()` read it.
+  `init_state` writes only starts computed from parameters: other states
+  start at 0, so a literal `start` is not applied.
 - `Method` is `Euler`, `Heun`, or `Rk4`. A step is clipped to land on every
   time event (static instants and `sample` clock ticks).
 - `EventLocation` decides where a state event found at a step end is applied:
@@ -101,6 +118,48 @@ source is written.
 The module needs Rust 1.86 or later. The event iteration keeps about twenty
 copies of `State` and `Parameters` on the stack, about 160 bytes per slot of
 `Y_LEN + P_LEN`; size the calling thread's stack for large models.
+
+### Generating rust-fixed-ode from `build.rs`
+
+A crate can render the module at build time with a prebuilt `rumoca`. Cargo
+rescans a `rerun-if-changed` directory recursively, so naming the model
+directory, every source root and the executable rebuilds exactly when one of
+them changes. The module starts with inner attributes, which `include!`
+rejects, so `build.rs` also writes a `#[path]` declaration for it:
+
+```rust
+// build.rs
+use std::{env, fs, path::PathBuf, process::Command};
+
+fn main() {
+    let rumoca = PathBuf::from(env::var_os("RUMOCA").expect("set RUMOCA"));
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-env-changed=RUMOCA");
+    println!("cargo:rerun-if-env-changed=MODELICAPATH");
+    println!("cargo:rerun-if-changed={}", rumoca.display());
+    println!("cargo:rerun-if-changed=models");
+    // Also one rerun-if-changed per --source-root or MODELICAPATH entry.
+    let status = Command::new(&rumoca)
+        .args(["compile", "models/Plant.mo", "--model", "Plant"])
+        .args(["--target", "rust-fixed-ode", "--output"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let module = out.join("Plant_fixed_ode.rs");
+    fs::write(
+        out.join("plant.rs"),
+        format!("#[allow(clippy::all, unused_parens)]\n#[path = {module:?}]\npub mod plant;\n"),
+    )
+    .unwrap();
+}
+```
+
+```rust
+// lib.rs
+include!(concat!(env!("OUT_DIR"), "/plant.rs"));
+pub use plant::typed::{Inputs, Model, Parameters, States};
+```
 
 ## Codegen Scenarios
 
