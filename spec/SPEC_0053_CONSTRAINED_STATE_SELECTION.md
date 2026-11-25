@@ -96,6 +96,7 @@ absolute bound, while a genuinely inconsistent stage keeps a residual far above
 its rounding and still fails. This is the construction-time counterpart of the
 scaled projection tolerances (`InitializationUnknownScale`, SPEC_0043). Those trial points
 select coordinates only: they are not initialization results or overrides.
+An undriven input takes its declared start there, else zero within its bounds.
 Mandatory states are excluded from dependent-column pivoting; declared states
 and their formal derivatives precede newly introduced algebraic candidates.
 Every selected lower stage retains all residuals and requires a full-rank

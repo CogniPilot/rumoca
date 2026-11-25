@@ -328,6 +328,14 @@ impl<'dae> AffineProof<'dae> {
         if variability > dae::ExpressionVariability::Parameter {
             return Ok(None);
         }
-        self.selector.constant_real(expression, scalar).map(Some)
+        // A declared value the probe cannot fold (a parameter given by a
+        // function call) is unknown here, not a refusal: the program computes
+        // the coefficient, and `affine_quotient` rejects a zero or non-finite
+        // one where it runs.
+        match self.selector.constant_real(expression, scalar) {
+            Ok(value) => Ok(Some(value)),
+            Err(LowerError::NonComputable { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }

@@ -34,11 +34,14 @@ impl PathSet {
             return;
         }
         // Paths that agree on which values every Boolean may hold differ only
-        // in numeric facts; they are one path with the facts both prove.
+        // in numeric facts; they are one path with the facts both prove. Two
+        // paths whose facts about one value share nothing (`s <= -1` and
+        // `s >= 1`) stay apart: their hull would say nothing about it, and a
+        // later condition that contradicts each could no longer be seen to.
         match self
             .0
             .iter_mut()
-            .find(|known| known.same_selected_values(&facts))
+            .find(|known| known.same_selected_values(&facts) && known.numeric_facts_overlap(&facts))
         {
             Some(known) => known.join_path(&facts),
             None => self.0.push(facts),
@@ -138,6 +141,19 @@ impl PathSet {
             remaining = remaining.assuming(condition, false, scope);
         }
         remaining
+    }
+
+    /// The paths on which the Boolean `name` has `value`.
+    pub(in crate::construction::analysis) fn assuming_boolean(
+        &self,
+        name: &VarName,
+        value: bool,
+    ) -> Self {
+        let mut assumed = Self::empty();
+        for facts in &self.0 {
+            assumed.push(facts.assuming_boolean(name, value));
+        }
+        assumed
     }
 
     fn assuming(&self, condition: &Expression, value: bool, scope: FactScope<'_>) -> Self {

@@ -109,8 +109,8 @@ pub(in crate::construction) fn lower_function_statement<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match (statement, plan) {
         (_, FunctionStatementPlan::ProvenAssertion) => Ok(body),
-        (statement, FunctionStatementPlan::RuntimeAssertion) => {
-            lower_runtime_function_assertion(construction, symbols, body, statement)
+        (statement, FunctionStatementPlan::RuntimeAssertion { proven_reads }) => {
+            lower_runtime_function_assertion(construction, symbols, body, statement, proven_reads)
         }
         (
             _,
@@ -278,7 +278,9 @@ pub(in crate::construction) fn lower_runtime_function_assertion<'dae>(
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
     statement: &rumoca_core::Statement,
+    proven_reads: &[(VarName, Span)],
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    function_body::require_proven_function_reads(construction, symbols, &mut body, proven_reads)?;
     let assertion = function_assertion(statement, symbols.functions.flat)
         .expect("analysis already validates the assertion statement")
         .expect("a runtime assertion plan owns an assertion statement");

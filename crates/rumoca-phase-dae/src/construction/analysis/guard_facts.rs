@@ -19,13 +19,14 @@
 //!
 //! The subject of a fact is a scalar value or an element of an array value
 //! named with literal subscripts (`settings[7]`). Integer facts are exact
-//! intervals (`rumoca_core::IntegerInterval`). A Real fact is a closed
+//! intervals (`rumoca_core::IntegerInterval`). A Real fact is an
 //! interval (`rumoca_core::RealInterval`) proven only by a literal assignment
 //! or by a comparison that implies both operands are ordered (a relation that
 //! holds, other than `<>`; or a `<>` that fails), so no Real fact is ever held
-//! by a NaN; a strict comparison keeps its closed hull, a superset, so an
+//! by a NaN; a strict comparison proves an open endpoint, so `s < c`
+//! contradicts `s >= c`, and `abs(s) < c` that holds proves `-c < s < c`. An
 //! empty Real interval proves a contradiction and a nonempty one proves no
-//! more than its hull.
+//! more than the interval.
 //!
 //! The facts bound compact dependent domains and while-loop pass counts, and
 //! prove that a path on which a value is undefined cannot reach a later
@@ -365,6 +366,20 @@ impl GuardFacts {
             })
     }
 
+    /// Whether the two paths can describe one state: no subject both
+    /// constrain has facts that share no value.
+    pub(super) fn numeric_facts_overlap(&self, other: &Self) -> bool {
+        let (Some(mine), Some(theirs)) = (&self.path, &other.path) else {
+            return true;
+        };
+        mine.0.iter().all(|(subject, fact)| {
+            theirs
+                .0
+                .get(subject)
+                .is_none_or(|candidate| !fact.meet(*candidate).is_empty())
+        })
+    }
+
     /// Whether no execution reaches this path: its facts contradict.
     pub(super) fn is_unreachable(&self) -> bool {
         self.path.is_none()
@@ -578,6 +593,43 @@ impl GuardFacts {
         }
     }
 
+    /// The two-sided fact `abs(e) < c` (or `<=`) proves for a Real `e` when it
+    /// holds: `-c < e < c`. A magnitude below a bound is ordered, so no NaN
+    /// satisfies it; `abs(e) > c` is a disjunction and proves no interval.
+    fn magnitude_bound(
+        &self,
+        subject: &Expression,
+        other: &Expression,
+        relation: Relation,
+        ordered: bool,
+        scope: FactScope<'_>,
+    ) -> PathFacts {
+        let Expression::BuiltinCall {
+            function: BuiltinFunction::Abs,
+            args,
+            ..
+        } = subject
+        else {
+            return Some(Facts::new());
+        };
+        let bounded = ordered && matches!(relation, Relation::Less | Relation::LessEqual);
+        let inner = match args.as_slice() {
+            [inner] if bounded => FactSubject::of(inner).filter(|inner| scope.is_real(inner)),
+            _ => None,
+        };
+        let bound = relation.real_bound(self.real_interval(other, scope));
+        let (Some(inner), Some(upper)) = (inner, bound.upper) else {
+            return Some(Facts::new());
+        };
+        let fact = ValueFact::Real(RealInterval {
+            lower: Some(-upper),
+            upper: Some(upper),
+            lower_open: bound.upper_open,
+            upper_open: bound.upper_open,
+        });
+        Some(Facts::from(BTreeMap::from([(inner, fact)])))
+    }
+
     /// The facts a relation proves for a subject on either side: an Integer
     /// interval from the proven interval of the other side, a Real interval
     /// when the relation's value implies both operands are ordered, and the
@@ -600,6 +652,10 @@ impl GuardFacts {
         let mut facts = Some(Facts::new());
         for (subject, other, relation) in [(lhs, rhs, relation), (rhs, lhs, relation.mirrored())] {
             facts = conjoin(facts, self.factor_bounds(subject, other, relation, scope));
+            facts = conjoin(
+                facts,
+                self.magnitude_bound(subject, other, relation, ordered, scope),
+            );
             let Some(subject) = FactSubject::of(subject) else {
                 continue;
             };
@@ -937,17 +993,22 @@ impl Relation {
         }
     }
 
-    /// The closed hull of the Real values of the subject that satisfy it for
-    /// some value of `other`.
+    /// The Real values of the subject that satisfy it for some value of
+    /// `other`; a strict relation excludes the endpoint it compares with.
     fn real_bound(self, other: RealInterval) -> RealInterval {
+        let strict = matches!(self, Self::Less | Self::Greater);
         match self {
             Self::Less | Self::LessEqual => RealInterval {
                 lower: None,
                 upper: other.upper,
+                lower_open: false,
+                upper_open: other.upper.is_some() && (strict || other.upper_open),
             },
             Self::Greater | Self::GreaterEqual => RealInterval {
                 lower: other.lower,
                 upper: None,
+                lower_open: other.lower.is_some() && (strict || other.lower_open),
+                upper_open: false,
             },
             Self::Equal => other,
             Self::NotEqual => RealInterval::UNBOUNDED,

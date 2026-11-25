@@ -30,18 +30,18 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.7 CONN contracts | 577–611 | Connection rules (30 contracts) |
 | §4.8 FUNC contracts | 612–661 | Function rules (45 contracts) |
 | §4.9 TYPE contracts | 662–702 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 703–754 | Array rules (47 contracts) |
-| §4.11 PKG contracts | 755–772 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 773–789 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 790–804 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 805–829 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 830–847 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 848–954 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 955–976 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 977–992 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 993–1018 | Category counts and totals |
-| §6. Compiler Phases | 1019–1068 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1069–1096 | MLS chapter → contract category mapping |
+| §4.10 ARR contracts | 703–755 | Array rules (48 contracts) |
+| §4.11 PKG contracts | 756–773 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 774–790 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 791–805 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 806–830 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 831–848 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 849–955 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 956–977 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 978–993 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 994–1019 | Category counts and totals |
+| §6. Compiler Phases | 1020–1069 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1070–1097 | MLS chapter → contract category mapping |
 
 ## Specification
 
@@ -1004,7 +1004,7 @@ areas.
 | Connections | CONN | 30 |
 | Functions | FUNC | 45 |
 | Types/Interfaces | TYPE | 36 |
-| Arrays | ARR | 47 |
+| Arrays | ARR | 48 |
 | Packages | PKG | 13 |
 | Operator Records | OPREC | 12 |
 | Simulation | SIM | 10 |
@@ -1013,7 +1013,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **472** |
+| **Total** | | **473** |
 
 ---
 
@@ -1102,5 +1102,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 472 |
+| Total Contracts | 473 |
 | MLS Chapters Referenced | 21 |

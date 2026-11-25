@@ -62,7 +62,7 @@ pub(super) fn resolve_function_loop_definitions(
         .iter()
         .map(|index| VarName::new(&index.ident))
         .collect::<Vec<_>>();
-    definitions.enter_loop_facts(statements, &binders, context);
+    definitions.enter_loop_facts((statements, span), &binders, context);
     match lowering {
         FunctionLoopLowering::TotalArrayDefinition => {
             let (_, flat_body) = flattened_function_loop_source(indices, statements, source_depth);
@@ -335,17 +335,13 @@ fn resolve_fold_definitions(
             definitions.add_loop_coverage(&target, written);
         }
     }
-    // A value the entry state holds on some paths only, which this loop alone
-    // then defines in full, never has its prior elements read: its initial
-    // value is dead, so the fold starts from a generated seed.
-    for target in joined_at_entry {
-        if definitions.is_total(&target) {
-            entry_seeds.push((
-                target.clone(),
-                definitions.whole_loop_seed(&target, context, span)?,
-            ));
-        }
-    }
+    entry_seeds.extend(dead_entry_seeds(
+        span,
+        (targets, joined_at_entry),
+        &enclosing_definitions,
+        context,
+        definitions,
+    )?);
     confine_guarded_seeds(statements, seeds, context, definitions);
     definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
     targets.retain(|target| {
@@ -370,6 +366,34 @@ fn resolve_fold_definitions(
     entry_reads.retain(|(name, _)| targets.contains(name) && !iteration_locals.contains(name));
     definitions.restore_names(&enclosing_definitions, iteration_locals);
     Ok(())
+}
+
+/// The generated seeds the fold at `span` starts dead entry values from.
+///
+/// A value the entry state holds on some paths only, which this loop alone
+/// then defines in full, never has its prior elements read. A value the loop
+/// writes beside its exit flag has no definition on entry, and is read after
+/// the loop only where the flag proves a pass wrote it (`exit_flags`).
+fn dead_entry_seeds(
+    span: Span,
+    (targets, joined_at_entry): (&[VarName], Vec<VarName>),
+    enclosing: &FunctionDefinitions,
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+) -> Result<Vec<(VarName, FunctionValueSeed)>, ToDaeError> {
+    let flagged = definitions
+        .exit_flag_values(span)
+        .into_iter()
+        .filter(|target| targets.contains(target) && !enclosing.tracks_value(target));
+    joined_at_entry
+        .into_iter()
+        .filter(|target| definitions.is_total(target))
+        .chain(flagged)
+        .map(|target| {
+            let seed = definitions.whole_loop_seed(&target, context, span)?;
+            Ok((target, seed))
+        })
+        .collect()
 }
 
 /// One round of a generic fold iteration; returns what it certainly defines
@@ -427,7 +451,7 @@ fn resolve_fold_statement(
         (statement, FunctionStatementPlan::ProvenAssertion) => {
             resolve_function_assertion_definition(statement, false, context, definitions)?;
         }
-        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+        (statement, FunctionStatementPlan::RuntimeAssertion { .. }) => {
             resolve_function_assertion_definition(statement, true, context, definitions)?;
         }
         (

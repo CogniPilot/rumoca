@@ -250,7 +250,14 @@ fn function_signature<'dae>(
         .iter()
         .zip(&certificate.parameters)
         .map(|(parameter, shape)| {
-            function_value_type(construction, flat, parameter, shape, &mut HashSet::new())
+            function_value_type(
+                construction,
+                flat,
+                parameter,
+                shape,
+                &mut HashSet::new(),
+                Some((&certificate.values, &parameter.name)),
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     let results = function
@@ -258,7 +265,14 @@ fn function_signature<'dae>(
         .iter()
         .zip(&certificate.results)
         .map(|(result, shape)| {
-            function_value_type(construction, flat, result, shape, &mut HashSet::new())
+            function_value_type(
+                construction,
+                flat,
+                result,
+                shape,
+                &mut HashSet::new(),
+                Some((&certificate.values, &result.name)),
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(
@@ -273,6 +287,7 @@ pub(super) fn function_value_type<'dae>(
     value: &rumoca_core::FunctionParam,
     dimensions: &ValueShape,
     active_records: &mut HashSet<rumoca_core::DefId>,
+    proven: Option<(&ShapeEnvironment, &str)>,
 ) -> Result<dae::ValueTypeId<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(value.span)?;
     if let Some(scalar) = effective_function_scalar_type(flat, value) {
@@ -311,12 +326,31 @@ pub(super) fn function_value_type<'dae>(
     .expect("function analysis requires resolved record constructor metadata");
     let mut fields = Vec::with_capacity(constructor.inputs.len());
     for field in &constructor.inputs {
-        let shape = field
-            .dimensions()
-            .iter()
-            .map(|extent| u32::try_from(*extent).expect("function shape analysis proves extents"))
-            .collect::<Vec<_>>();
-        let value_type = function_value_type(construction, flat, field, &shape, active_records)?;
+        // A field sized by a sibling (`Real a[nc]`) declares no extent of its
+        // own; the certificate proves it at the value's joined field path.
+        let path = proven.map(|(values, path)| (values, format!("{path}.{}", field.name)));
+        let shape = path
+            .as_ref()
+            .and_then(|(values, path)| values.get(&VarName::new(path)))
+            .and_then(|full| full.get(dimensions.len()..))
+            .map(<[u32]>::to_vec)
+            .unwrap_or_else(|| {
+                field
+                    .dimensions()
+                    .iter()
+                    .map(|extent| {
+                        u32::try_from(*extent).expect("function shape analysis proves extents")
+                    })
+                    .collect()
+            });
+        let value_type = function_value_type(
+            construction,
+            flat,
+            field,
+            &shape,
+            active_records,
+            path.as_ref().map(|(values, path)| (*values, path.as_str())),
+        )?;
         fields.push((VarName::new(&field.name), value_type));
     }
     active_records.remove(&type_def_id);
@@ -365,6 +399,7 @@ fn define_function<'dae>(
             local,
             shape,
             &mut HashSet::new(),
+            Some((&certificate.values, &local.name)),
         )?;
         let value = construction.functions(|functions| {
             functions.local(
@@ -523,6 +558,7 @@ fn register_record_staging_fields<'dae>(
             field_declaration,
             &shape,
             &mut HashSet::new(),
+            None,
         )?;
         let staging_name = function_record_field_name(&target, &field);
         let provenance = dae::DaeProvenance::source(field_declaration.span)?;

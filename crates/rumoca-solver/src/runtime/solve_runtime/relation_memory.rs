@@ -218,6 +218,83 @@ impl ScalarExecutionView<'_> {
         )))
     }
 
+    /// Apply the discrete equation rows whose values the initial parameters
+    /// and inputs fix, before any algebraic row reads them (MLS 3.7 §8.6).
+    /// Each row reads only fixed slots or rows seeded before it, so one pass
+    /// in the issued order settles them. The rows read no coordinate, but a
+    /// compiled program checks its inputs against the issued layout, so `y`
+    /// is the solver vector of the point being initialized.
+    pub(crate) fn apply_initial_seed_rows(
+        &self,
+        y: &[f64],
+        p: &mut [f64],
+        t: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        for seed in &self.scalar.initial_seed_rows {
+            let value = self.eval_lifecycle_row_output(
+                &self.scalar.discrete_rhs,
+                seed.program,
+                seed.output,
+                RowEvalPoint { y, p, t },
+            )?;
+            let slot = p.get_mut(seed.target).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(
+                    "initial seed row targets a slot outside the parameters",
+                )
+            })?;
+            *slot = value;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_initial_seed_rows(&self) -> bool {
+        !self.scalar.initial_seed_rows.is_empty()
+    }
+
+    /// The value each seeded target's slot holds in `params` before the seed
+    /// overwrites it (its start), paired with the target's `pre` slot. Taken
+    /// from the vector initialization is about to settle, as the generated C
+    /// takes it from the live instance, so a start that depends on a
+    /// parameter set after construction is the one kept.
+    pub(crate) fn initial_seed_pre_starts(&self, params: &[f64]) -> Vec<(usize, f64)> {
+        self.scalar
+            .initial_seed_rows
+            .iter()
+            .filter_map(|seed| {
+                let start = params.get(seed.target).copied()?;
+                seed.pre_slot.map(|pre_slot| (pre_slot, start))
+            })
+            .collect()
+    }
+
+    /// After initialization commits `pre` history from the settled parameters,
+    /// keep the `pre` slot of every seeded target at the start saved before
+    /// the seed: the initial event pass publishes the row (initial_seed_rows.rs).
+    pub(crate) fn keep_initial_seed_pre_params(&self, params: &mut [f64], starts: &[(usize, f64)]) {
+        for &(pre_slot, start) in starts {
+            if let Some(slot) = params.get_mut(pre_slot) {
+                *slot = start;
+            }
+        }
+    }
+
+    /// At the initial event, the `pre` slot of a seeded target keeps the value
+    /// the entry snapshot holds: the start initialization kept there.
+    pub(crate) fn keep_initial_seed_pre_params_from_entry(
+        &self,
+        params: &mut [f64],
+        event_pre_p: &[f64],
+    ) {
+        for seed in &self.scalar.initial_seed_rows {
+            if let Some(pre_slot) = seed.pre_slot
+                && let (Some(slot), Some(start)) =
+                    (params.get_mut(pre_slot), event_pre_p.get(pre_slot))
+            {
+                *slot = *start;
+            }
+        }
+    }
+
     fn eval_initial_binding(
         &self,
         block: &solve_eval::PreparedScalarProgramBlock,
@@ -314,6 +391,10 @@ impl ScalarExecutionView<'_> {
         self.write_event_pass_clock_params(p, t, row_filter);
         let window = self.event_schedule().relation_surface_window();
         let initial_event = self.initial_event_flag(p);
+        if initial_event {
+            // The initial event publishes the seeded rows; their `pre` keeps the kept start.
+            self.runtime.keep_seeded_pre_from_entry(p, event_pre_p)?;
+        }
         // At the initialization event, pass 0 is the initialization instant
         // and its actions act on its values; the event iteration that
         // follows acts on the edges since that instant.
@@ -1413,7 +1494,7 @@ impl ScalarExecutionView<'_> {
         Ok(Some(value))
     }
 
-    pub(super) fn populate_solver_y_from_state(
+    pub(crate) fn populate_solver_y_from_state(
         &self,
         solver_y: &mut Vec<f64>,
         state: &[f64],

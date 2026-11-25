@@ -20,6 +20,8 @@ region = "3.0"
 
 [dev-dependencies]
 rumoca-ir-solve = { workspace = true, features = ["pattern-fixtures"] }
+# The AArch64 backend, to compile for it on any host (#699).
+cranelift-codegen = { version = "0.125", features = ["arm64"] }
 
 # Path A for the Cranelift execution adapter crosses a native JIT function-pointer ABI.
 # Keep the unsafe allowance local to this crate; workspace crates remain

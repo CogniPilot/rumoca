@@ -60,6 +60,56 @@ equation
 end DiscreteSmoke;
 "#;
 
+/// Every way to write `fixed`: on a scalar, on all elements, per element, and
+/// on a parameter that an initial equation determines.
+const FIXED_MODEL: &str = "Fixed";
+const FIXED_SOURCE: &str = r#"
+model Fixed
+  input Real u(fixed = false);
+  Real x(start = 1, fixed = false);
+  Real a[2](each start = 1, each fixed = false);
+  Real b[2](start = {1, 2}, fixed = {true, false});
+  parameter Real p(start = 2, fixed = false);
+equation
+  der(x) = u;
+  der(a) = {u, u};
+  der(b) = {u, u};
+initial equation
+  p = 5;
+end Fixed;
+"#;
+
+/// A vector, a matrix and a protected vector, for the place of array dimensions.
+const ARRAYS_MODEL: &str = "Arrays";
+const ARRAYS_SOURCE: &str = r#"
+model Arrays
+  Real a[2](each start = 1);
+  Real c[2, 3];
+  parameter Real k[2] = {1, 2};
+protected
+  Real h[2];
+equation
+  der(a) = -k;
+  c = fill(1.0, 2, 3);
+  h = 2 * a;
+end Arrays;
+"#;
+
+/// An array with a value for all its elements, and a protected variable.
+const EACH_MODEL: &str = "Each";
+const EACH_SOURCE: &str = r#"
+model Each
+  Real a[2](each start = 1, each nominal = 2);
+  Real b[2](start = {1, 2});
+protected
+  Real h;
+equation
+  der(a) = -b;
+  der(b) = a;
+  h = a[1];
+end Each;
+"#;
+
 /// A compiled smoke model plus the name the CLI would render it under.
 struct Fixture {
     model_name: &'static str,
@@ -219,6 +269,84 @@ fn fmi_targets_render_the_checked_continuous_fixture() {
         let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
             .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
         assert!(files.iter().any(|file| file.path == "modelDescription.xml"));
+    }
+}
+
+/// `fixed` is stored per element, so a template that tests whether it is set
+/// prints `fixed = true` for `fixed = false`. A parameter with `fixed = false`
+/// also keeps its start value as a guess, not as a binding (MLS §4.4.4).
+/// Base Modelica writes a value for all elements of an array with `fill`.
+#[test]
+fn modelica_targets_print_the_value_of_fixed() {
+    let fixture = compile_fixture(FIXED_MODEL, FIXED_SOURCE);
+    for (target, all_elements) in [
+        ("flat-modelica", "a(each start = 1, each fixed = false);"),
+        (
+            "base-modelica",
+            "a[2](start = fill(1, 2), fixed = fill(false, 2));",
+        ),
+    ] {
+        let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+            .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
+        let text = &files[0].content;
+        for expected in [
+            "u(fixed = false);",
+            "x(start = 1, fixed = false);",
+            all_elements,
+            "(start = {1, 2}, fixed = {true, false});",
+            "p(start = 2, fixed = false);",
+        ] {
+            assert!(
+                text.contains(expected),
+                "{target} must print `{expected}`:\n{text}"
+            );
+        }
+    }
+}
+
+/// Base Modelica has one place for array dimensions, after the component name:
+/// the component clause takes none after the type (MCP-0031, grammar.md, B24).
+#[test]
+fn base_modelica_puts_array_dimensions_after_the_name() {
+    let fixture = compile_fixture(ARRAYS_MODEL, ARRAYS_SOURCE);
+    let files = render_target_files(&fixture.compiled, fixture.model_name, "base-modelica", None)
+        .unwrap_or_else(|error| panic!("base-modelica must render: {error:#}"));
+    let text = &files[0].content;
+    for expected in ["Real a[2](", "Real c[2, 3](", "Real k[2](", "Real h[2]("] {
+        assert!(
+            text.contains(expected),
+            "base-modelica must print `{expected}`:\n{text}"
+        );
+    }
+    assert!(
+        !text.contains("Real["),
+        "base-modelica must not put dimensions after the type:\n{text}"
+    );
+}
+
+/// The Base Modelica grammar has neither `each` in a modification nor a
+/// `protected` section (MCP-0031, grammar.md, B25 and B22).
+#[test]
+fn base_modelica_has_no_each_and_no_protected_section() {
+    let fixture = compile_fixture(EACH_MODEL, EACH_SOURCE);
+    let files = render_target_files(&fixture.compiled, fixture.model_name, "base-modelica", None)
+        .unwrap_or_else(|error| panic!("base-modelica must render: {error:#}"));
+    let text = &files[0].content;
+    for expected in [
+        "start = fill(1, 2), nominal = fill(2, 2)",
+        "start = {1, 2}",
+        "Real h",
+    ] {
+        assert!(
+            text.contains(expected),
+            "base-modelica must print `{expected}`:\n{text}"
+        );
+    }
+    for rejected in ["each ", "protected"] {
+        assert!(
+            !text.contains(rejected),
+            "base-modelica must not print `{rejected}`:\n{text}"
+        );
     }
 }
 

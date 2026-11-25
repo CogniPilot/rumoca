@@ -25,6 +25,14 @@
 {%- if expr is mapping and "VarRef" in expr and not expr.VarRef.subscripts and expr.VarRef.name.name in flat.variables and flat.variables[expr.VarRef.name.name].dims | length > 0 -%}yes{%- endif -%}
 {%- endmacro -%}
 {%- macro scalar_mod(var, key, value, expr=none) -%}{{ ("each " if var.dims | length > 0 and value[:1] not in ["{", "["] and not array_ref(expr) else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
+{#- fixed holds one value for every element, or one value per element. -#}
+{%- macro fixed_value(var) -%}
+{%- if false not in var.fixed -%}true
+{%- elif true not in var.fixed -%}false
+{%- elif var.dims | length == 1 -%}{{ "{" }}{%- for f in var.fixed -%}{{ "true" if f else "false" }}{{ ", " if not loop.last }}{%- endfor -%}{{ "}" }}
+{%- else -%}{{ fail("unsupported-feature:fixed.per-element-of-matrix") }}
+{%- endif -%}
+{%- endmacro -%}
 {#- Macro: variable attributes (unit, min, max, start, fixed, nominal, stateSelect) -#}
 {%- macro var_attrs(var) -%}
 {%- set ns = namespace(parts="") -%}
@@ -47,7 +55,7 @@
 {%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "start", render_expr(var.start, cfg), var.start) -%}
 {%- endif -%}
 {%- if var.fixed is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "fixed", ("true" if var.fixed else "false")) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "fixed", fixed_value(var)) -%}
 {%- endif -%}
 {%- if var.nominal is not none -%}
 {%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "nominal", render_expr(var.nominal, cfg), var.nominal) -%}
@@ -80,7 +88,7 @@
 {%- macro binding(var) -%}
 {# MLS §4.4.4: parameter/constant default value falls back to start when fixed=true. #}
 {%- set is_param_or_const = var.variability is mapping and (var.variability.Parameter is defined or var.variability.Constant is defined) -%}
-{%- if var.binding is not none %} = {{ render_expr(var.binding, cfg) }}{% elif is_param_or_const and var.start is not none and (var.fixed is none or var.fixed) %} = {{ render_expr(var.start, cfg) }}{% endif -%}
+{%- if var.binding is not none %} = {{ render_expr(var.binding, cfg) }}{% elif is_param_or_const and var.start is not none and (var.fixed is none or false not in var.fixed) %} = {{ render_expr(var.start, cfg) }}{% endif -%}
 {%- endmacro -%}
 {#- Macro: declared type name with fallback -#}
 {%- macro var_type(flat, name) -%}

@@ -975,14 +975,13 @@ fn convert_function_call_with_context(
             return lower_string_conversion(comp, args, call_span, context);
         }
         if let Some(intrinsic) = context.predefined_intrinsics.resolve(comp.target_def_id()) {
-            return Ok(rumoca_core::Expression::BuiltinCall {
-                function: intrinsic,
-                args: args
-                    .iter()
+            return Ok(builtin_call(
+                intrinsic,
+                args.iter()
                     .map(|argument| expression_from_ast_with_context(argument, context))
                     .collect::<LowerResult<Vec<_>>>()?,
-                span: call_span,
-            });
+                call_span,
+            ));
         }
         if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(func_name) {
             if builtin.requires_predefined_identity()
@@ -992,18 +991,49 @@ fn convert_function_call_with_context(
             {
                 return lower_user_function_call(comp, args, call_span, context);
             }
-            return Ok(rumoca_core::Expression::BuiltinCall {
-                function: builtin,
-                args: args
-                    .iter()
+            return Ok(builtin_call(
+                builtin,
+                args.iter()
                     .map(|a| expression_from_ast_with_context(a, context))
                     .collect::<LowerResult<Vec<_>>>()?,
-                span: call_span,
-            });
+                call_span,
+            ));
         }
     }
 
     lower_user_function_call(comp, args, call_span, context)
+}
+
+/// A builtin call, with `scalar(size(v))` spelled `size(v, 1)`: MLS 3.7
+/// §10.3.3 makes `scalar(A)` the single element of an array whose every
+/// dimension is 1, so its `size(v)` argument has one element and `v` is a
+/// vector (MSL R134a's `FindInterval`).
+fn builtin_call(
+    function: rumoca_core::BuiltinFunction,
+    mut args: Vec<rumoca_core::Expression>,
+    span: Span,
+) -> rumoca_core::Expression {
+    if function == rumoca_core::BuiltinFunction::Scalar
+        && let [
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Size,
+                args: size_args,
+                span: size_span,
+            },
+        ] = args.as_mut_slice()
+        && size_args.len() == 1
+    {
+        size_args.push(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            span: *size_span,
+        });
+        return args.pop().expect("one size argument");
+    }
+    rumoca_core::Expression::BuiltinCall {
+        function,
+        args,
+        span,
+    }
 }
 
 /// Lower the built-in array constructor function.

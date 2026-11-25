@@ -104,6 +104,7 @@ impl GuardFacts {
             return RealInterval {
                 lower: interval.lower.and_then(exact_real),
                 upper: interval.upper.and_then(exact_real),
+                ..RealInterval::UNBOUNDED
             };
         }
         match expression {
@@ -123,6 +124,8 @@ impl GuardFacts {
                 RealInterval {
                     lower: interval.upper.map(|value| -value),
                     upper: interval.lower.map(|value| -value),
+                    lower_open: interval.upper_open,
+                    upper_open: interval.lower_open,
                 }
             }
             Expression::BuiltinCall {
@@ -135,6 +138,7 @@ impl GuardFacts {
                     RealInterval {
                         lower: interval.lower.map(f64::floor),
                         upper: interval.upper.map(f64::floor),
+                        ..RealInterval::UNBOUNDED
                     }
                 }
                 _ => RealInterval::UNBOUNDED,

@@ -1378,6 +1378,10 @@ impl SolveMeKernel {
             .into_iter()
             .map(|index| (index, self.params[index]))
             .collect();
+        // The starts the seeded discrete rows overwrite (initial_seed_rows.rs),
+        // saved from the instance before the seed; the initial event keeps
+        // them in the seeded targets' `pre` slots.
+        let seed_starts = self.runtime.initial_seed_pre_starts(&self.params)?;
         let policy = self.algebraic_projection_policy();
         let settle = policy.settle;
         self.runtime.settle_initialization_system(
@@ -1405,6 +1409,8 @@ impl SolveMeKernel {
         for (index, start) in binding_starts {
             self.params[index] = start;
         }
+        self.runtime
+            .keep_initial_seed_pre_params(&mut self.params, &seed_starts)?;
         self.retain_settled_initialization(solver_y);
         Ok(())
     }

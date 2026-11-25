@@ -208,7 +208,7 @@ fn validate_function_loop_body(
                 | FunctionStatementPlan::RecordAssembly(_)
                 | FunctionStatementPlan::RecordAssemblyMember
                 | FunctionStatementPlan::ProvenAssertion
-                | FunctionStatementPlan::RuntimeAssertion
+                | FunctionStatementPlan::RuntimeAssertion { .. }
                 | FunctionStatementPlan::MultiOutputCall { .. }
                 | FunctionStatementPlan::GeneratedBooleanAssignment { .. }
                 | FunctionStatementPlan::For { .. }
@@ -303,7 +303,7 @@ fn loop_is_ordered_total_array_definitions(
                     expression_reads_only_prior_loop_elements(condition, targets, &[], indices)
                 });
         }
-        if matches!(plan, FunctionStatementPlan::RuntimeAssertion) {
+        if matches!(plan, FunctionStatementPlan::RuntimeAssertion { .. }) {
             return assertion_expressions(statement).iter().all(|expression| {
                 expression_reads_only_prior_loop_elements(expression, targets, &[], indices)
             });

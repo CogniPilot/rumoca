@@ -196,6 +196,7 @@ fn collect_constructor_params(
                 source_map,
                 expressions,
             )?;
+            apply_extends_modification_defaults(ext, params, param_index, expressions)?;
         }
     }
 
@@ -215,6 +216,39 @@ fn collect_constructor_params(
             param_index.insert(comp_name.clone(), params.len());
             params.push(param);
         }
+    }
+    Ok(())
+}
+
+/// MLS 3.7 §12.6: a record constructor's inputs carry the record's components
+/// with their modifiers, and an extends clause's value modifiers are among
+/// them: `record Ideal extends Coeff(nc = 5, a = {...})` constructs with
+/// `nc = 5` and that `a`, not `Coeff`'s own defaults.
+fn apply_extends_modification_defaults(
+    ext: &ast::Extend,
+    params: &mut [rumoca_core::FunctionParam],
+    param_index: &HashMap<String, usize>,
+    expressions: FunctionExpressionContext<'_>,
+) -> Result<(), FlattenError> {
+    for modification in ext.modifications.iter().filter(|m| !m.redeclare) {
+        let ast::Expression::Modification { target, value, .. } = &modification.expr else {
+            continue;
+        };
+        let [part] = target.parts.as_slice() else {
+            continue;
+        };
+        let Some(&index) = param_index.get(part.ident.text.as_ref()) else {
+            continue;
+        };
+        if matches!(value.as_ref(), ast::Expression::Empty { .. }) {
+            continue;
+        }
+        let qualified =
+            qualify_function_expr(value, &qualify::ImportMap::default(), &HashSet::new());
+        params[index].default = Some(ast_lower::expression_from_ast_with_intrinsics(
+            &qualified,
+            expressions.predefined_intrinsics,
+        )?);
     }
     Ok(())
 }

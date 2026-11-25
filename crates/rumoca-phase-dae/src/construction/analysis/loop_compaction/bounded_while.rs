@@ -35,8 +35,23 @@
 //! either ends the loop or moves a counter by at least 1 from within a
 //! proven interval, in one direction on every continuing path. The division
 //! form (`shrinking`) proves a positive counter repeatedly divided by a fixed
-//! Integer greater than one reaches zero. A loop without a proof is left as
-//! written and keeps its typed rejection.
+//! Integer greater than one reaches zero.
+//!
+//! A loop without a proof runs under a capacity instead: the same guarded
+//! `for` over [`WHILE_ITERATION_CAPACITY`] passes, followed by
+//! `assert(not c, ...)`. A loop that ends within the capacity computes what
+//! the source computes, by the argument above; one that does not is an error
+//! where the source would still be running, never a truncated value. The
+//! assertion reads `c` in the state the last pass left, which is where the
+//! source loop evaluates it next. A loop without a proof that also leaves
+//! through `break` or `return` can end with `c` still true, so that assertion
+//! would not describe it; it is left as written and keeps its typed rejection.
+//!
+//! The capacity is affordable only because the fold ends at its first pass
+//! whose condition is false (`loop_exit`), and that exit never tests a
+//! condition that calls a function. Such a loop would evaluate its condition
+//! in all `WHILE_ITERATION_CAPACITY` passes of every call, so it is left as
+//! written as well.
 //!
 //! A `break` of the loop (MLS §11.2.4) or a `return` (MLS §11.2.5) leaves
 //! the counter and division proofs intact: they bound the passes by the
@@ -65,10 +80,11 @@ pub(super) fn bound_while_loops(
     statements: &[rumoca_core::Statement],
     scope: FactScope<'_>,
     mut facts: GuardFacts,
+    function: &str,
 ) -> Vec<rumoca_core::Statement> {
     let mut bounded = Vec::with_capacity(statements.len());
     for statement in statements {
-        bounded.extend(bound_statement(statement, scope, &facts));
+        bounded.extend(bound_statement(statement, scope, &facts, function));
         facts.after(statement, scope);
     }
     bounded
@@ -85,21 +101,28 @@ fn bound_statement(
     statement: &rumoca_core::Statement,
     scope: FactScope<'_>,
     facts: &GuardFacts,
+    function: &str,
 ) -> Vec<rumoca_core::Statement> {
     let rumoca_core::Statement::While { block, span } = statement else {
-        return vec![bound_nested_statement(statement, scope, facts)];
+        return vec![bound_nested_statement(statement, scope, facts, function)];
     };
     let head = facts.while_head(block, scope);
     let mut pass = head.clone();
     pass.observe_accesses(&block.cond, scope);
     let pass = pass.assuming(&block.cond, true, scope);
-    let body = bound_while_loops(&block.stmts, scope, pass);
+    let body = bound_while_loops(&block.stmts, scope, pass, function);
     let block = StatementBlock {
         cond: block.cond.clone(),
         stmts: body,
     };
     let Some(bound) = iteration_bound(&block, facts, &head, scope) else {
-        return vec![rumoca_core::Statement::While { block, span: *span }];
+        let calls = block
+            .cond
+            .contains_subexpression(|node| matches!(node, Expression::FunctionCall { .. }));
+        if calls || statements_break(&block.stmts) || contains_return(&block.stmts) {
+            return vec![rumoca_core::Statement::While { block, span: *span }];
+        }
+        return capacity_fold(block, function, *span);
     };
     if bound == 0
         || statements_break(&block.stmts)
@@ -114,10 +137,41 @@ fn bound_statement(
     peeled
 }
 
+/// The passes a `while` loop without a proven iteration bound may run before
+/// its lowering reports an error.
+const WHILE_ITERATION_CAPACITY: i64 = 10_000;
+
+/// The loop of `block` under [`WHILE_ITERATION_CAPACITY`] (see the module
+/// note): the guarded fold, then the assertion that its condition ended it.
+fn capacity_fold(block: StatementBlock, function: &str, span: Span) -> Vec<rumoca_core::Statement> {
+    let ended = Expression::Unary {
+        op: rumoca_core::OpUnary::Not,
+        rhs: Box::new(block.cond.clone()),
+        span,
+    };
+    let message = format!(
+        "while loop of `{function}` did not end within its iteration capacity of \
+         {WHILE_ITERATION_CAPACITY} passes; its condition has no translation-time bound"
+    );
+    vec![
+        guarded_for(block, WHILE_ITERATION_CAPACITY, span),
+        rumoca_core::Statement::Assert {
+            condition: ended,
+            message: Box::new(Expression::Literal {
+                value: Literal::String(message),
+                span,
+            }),
+            level: None,
+            span,
+        },
+    ]
+}
+
 fn bound_nested_statement(
     statement: &rumoca_core::Statement,
     scope: FactScope<'_>,
     facts: &GuardFacts,
+    function: &str,
 ) -> rumoca_core::Statement {
     match statement {
         rumoca_core::Statement::For {
@@ -134,7 +188,7 @@ fn bound_nested_statement(
                 .loop_entry(&[], &binders);
             rumoca_core::Statement::For {
                 indices: indices.clone(),
-                equations: bound_while_loops(equations, scope, body),
+                equations: bound_while_loops(equations, scope, body, function),
                 span: *span,
             }
         }
@@ -155,13 +209,15 @@ fn bound_nested_statement(
                     .zip(entries)
                     .map(|(block, entry)| StatementBlock {
                         cond: block.cond.clone(),
-                        stmts: bound_while_loops(&block.stmts, scope, entry),
+                        stmts: bound_while_loops(&block.stmts, scope, entry, function),
                     })
                     .collect(),
                 else_block: else_block
                     .as_ref()
                     .zip(fallthrough)
-                    .map(|(statements, entry)| bound_while_loops(statements, scope, entry)),
+                    .map(|(statements, entry)| {
+                        bound_while_loops(statements, scope, entry, function)
+                    }),
                 span: *span,
             }
         }

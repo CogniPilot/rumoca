@@ -758,6 +758,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'ARR-048'
+category = 'Array'
+name = 'fill of an array'
+mls_ref = '§10.3.3'
+requirement = 'fill(s, n1, n2, ...) repeats the whole value s: an array s keeps its own axes after the new ones, and a zero extent gives the empty array with the axes of s'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'CLK-001'
 category = 'Clock'
 name = 'Clock not in function'

@@ -90,6 +90,16 @@ impl GuardFacts {
                     exit.assuming(&block.cond, false, scope)
                 };
             }
+            // MLS §8.3.7: a failed assertion of the default level ends the
+            // evaluation, so every path that goes on proved its condition.
+            rumoca_core::Statement::Assert {
+                condition,
+                level: None,
+                ..
+            } => {
+                self.observe_accesses(condition, scope);
+                *self = self.assuming(condition, true, scope);
+            }
             _ => self.forget_written(statement),
         }
     }
@@ -625,6 +635,7 @@ fn widen_fact(fact: ValueFact, next: ValueFact, thresholds: &[i64]) -> Option<Va
         (ValueFact::Real(fact), ValueFact::Real(next)) => ValueFact::Real(RealInterval {
             lower: keep(fact.lower, next.lower, |n, b| n >= b),
             upper: keep(fact.upper, next.upper, |n, b| n <= b),
+            ..RealInterval::UNBOUNDED
         }),
         _ => return None,
     };

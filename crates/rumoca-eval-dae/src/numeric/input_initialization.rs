@@ -121,6 +121,32 @@ where
         Ok(value)
     }
 
+    /// A value for an input no binding or override values: its declared
+    /// start, or else zero moved into its declared bounds.
+    ///
+    /// A construction-time value only, under every input policy. A
+    /// state-selection trial point needs a number for every coordinate;
+    /// evaluating the model still requires a driver for the input.
+    pub fn input_trial_value(
+        &mut self,
+        id: dae::VariableId<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let variable = self.view.variable(id).expect("branded variable resolves");
+        if variable.role() != dae::VariableRole::Input {
+            return Err(failure(
+                NumericEvaluationErrorKind::UnsupportedOperation,
+                "a trial value is issued for inputs only",
+                variable.declaration().span(),
+            ));
+        }
+        let start = variable
+            .start()
+            .map(|start| self.variable_source_expression(variable, start))
+            .transpose()?;
+        let (values, _) = self.input_default_base(variable, start.as_ref(), &[])?;
+        Ok(values.map(Scalar::real).materialize())
+    }
+
     fn issue_input_initialization(
         &mut self,
         variable: dae::VariableView<'dae>,

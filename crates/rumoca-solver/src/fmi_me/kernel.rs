@@ -787,12 +787,14 @@ impl SolveMeKernel {
         } else if self.last_projection_changed {
             self.clear_derivative_cache();
         }
-        if self.runtime.observes_accepted_step_assertions
-            && !enter_event_mode
+        let accepted_without_event = !enter_event_mode
             && reached_event_time(self.pending_event_stop.map(|(time, _)| time), self.time)
-                .is_none()
-        {
-            self.check_error_assertions_at_accepted_step()?;
+                .is_none();
+        if accepted_without_event {
+            if self.runtime.observes_accepted_step_assertions {
+                self.check_error_assertions_at_accepted_step()?;
+            }
+            self.check_native_effects_at_accepted_step()?;
         }
         self.commit_delay_point()
             .map_err(|error| error.at_stage(MeStage::Integration))?;
@@ -939,6 +941,24 @@ impl SolveMeKernel {
             }
             EventActionOutcome::Continue | EventActionOutcome::Terminated { .. } => Ok(()),
         }
+    }
+
+    /// A native component's value schedule owns its checked effects (an
+    /// assigned-read check, a checked call): they fault where the schedule is
+    /// evaluated. A step accepted without a pending event evaluates it at the
+    /// accepted point, so a fault surfaces there with its source span, whether
+    /// or not the caller reads an output (#692). At a located or scheduled
+    /// event the schedule reads the settled event state instead.
+    fn check_native_effects_at_accepted_step(&self) -> Result<(), MeError> {
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            self.native_coordinate(
+                self.public_time_eval_time(self.time),
+                &self.solver_y_guess.borrow(),
+                &self.params,
+            )?;
+        }
+        Ok(())
     }
 
     /// An error-level assertion whose condition changes between events

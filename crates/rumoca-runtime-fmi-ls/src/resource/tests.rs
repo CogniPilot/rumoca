@@ -217,3 +217,67 @@ fn a_hosted_engine_runs_the_lifecycle_through_do_step_and_a_session_reset() {
     );
     f.resource.terminate().unwrap();
 }
+
+const READ_ASSIGNED: &str = r#"
+function ReadAssigned
+  input Real u;
+  output Real y;
+protected
+  Real x;
+algorithm
+  if u > 0 then
+    x := 1;
+  end if;
+  y := x;
+end ReadAssigned;
+
+model Plant
+  output Real y;
+equation
+  y = ReadAssigned(0.125 - time);
+end Plant;
+"#;
+
+/// A checked native assertion (here: a function reads a local no path
+/// assigned) fails at the endpoint of the communication step that reaches it,
+/// with its source span, whether or not the caller reads an output there
+/// (#692). Before, DoStep accepted the endpoint and only a later output read
+/// revealed the fault.
+#[test]
+fn a_step_whose_endpoint_fails_a_checked_native_assertion_is_refused() {
+    let mut session = Session::new(SessionConfig::default());
+    session.add_document("Plant.mo", READ_ASSIGNED).unwrap();
+    let dae = session.compile_model("Plant").unwrap().dae;
+    let component = rumoca_sim::lower_fmi_export_component(&dae).unwrap();
+    let root = component.runtime_view().retain_assertion_root();
+    let code = rumoca_exec_wasm::compile_retained_native_preparation_wasm(
+        root.native_preparation().unwrap(),
+    )
+    .unwrap();
+    let y = reference(root.metadata().variables(), "y");
+    let retained =
+        rumoca_solver::fmi_me::session::MeRetainedComponent::prepare_retained_native_wasm(
+            MeModelSource::new(&component),
+            &code,
+        )
+        .unwrap();
+    let mut resource = FmiLsResource::from_retained(retained);
+    resource
+        .enter_initialization_mode(&config(0.0, 1.0))
+        .unwrap();
+    resource.complete_initialization().unwrap();
+
+    resource.do_step(0.0, 0.0625).unwrap();
+    let mut value = [f64::NAN];
+    resource.get_native_float64(&[y], &mut value).unwrap();
+    assert_eq!(value[0], 1.0);
+
+    let error = match resource.do_step(0.0625, 0.1875) {
+        Ok(step) => panic!(
+            "the endpoint t = 0.25 fails the assertion, yet DoStep accepted t = {}",
+            step.last_successful_time
+        ),
+        Err(error) => format!("{error:?}"),
+    };
+    assert!(error.contains("AssertionFailed"), "{error}");
+}

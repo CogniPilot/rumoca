@@ -52,7 +52,7 @@ fn lower_loop_action_statement<'dae>(
 ) -> Result<bool, dae::DaeConstructionError> {
     let (target, value, span, proven_reads) = match plan {
         FunctionStatementPlan::ProvenAssertion => return Ok(true),
-        FunctionStatementPlan::RuntimeAssertion => {
+        FunctionStatementPlan::RuntimeAssertion { .. } => {
             lower_function_loop_assertion(construction, symbols, loop_body, binders, statement)?;
             return Ok(true);
         }
@@ -331,7 +331,7 @@ pub(super) fn lower_total_function_array_definition<'dae>(
     if input
         .plans
         .iter()
-        .any(|plan| matches!(plan, FunctionStatementPlan::RuntimeAssertion))
+        .any(|plan| matches!(plan, FunctionStatementPlan::RuntimeAssertion { .. }))
     {
         let mut loop_body = construction
             .functions(|functions| functions.begin_loop(body, input.domain, [], input.owner))?;
@@ -358,7 +358,7 @@ fn lower_total_function_assertions<'dae>(
     loop_body: &mut dae::FunctionLoop<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     for (statement, plan) in input.statements.iter().zip(input.plans) {
-        if !matches!(plan, FunctionStatementPlan::RuntimeAssertion) {
+        if !matches!(plan, FunctionStatementPlan::RuntimeAssertion { .. }) {
             continue;
         }
         let assertion = function_assertion(statement, input.symbols.functions.flat)

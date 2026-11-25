@@ -21,7 +21,8 @@ use rumoca_sim::{SimOptions, eval_dae_at};
 /// The reduced shape: an unreducible `while`-loop search reached only through a
 /// proven-false guard, its else arm the value the program actually takes. The
 /// Collatz step neither moves one way on every path nor divides on every pass,
-/// so no `while` bound form proves it.
+/// so no `while` bound form proves it, and the loop can leave through `break`,
+/// which the iteration capacity does not cover.
 const DEAD_ARM_MODEL: &str = r#"
 within;
 model DeadArmModelConditional
@@ -34,7 +35,7 @@ model DeadArmModelConditional
     p := 0;
     i := n;
     while i > 1 loop
-      if i == 3 then p := i; end if;
+      if i == 3 then p := i; break; end if;
       i := if mod(i, 2) == 0 then div(i, 2) else 3 * i + 1;
     end while;
   end searchLike;

@@ -681,7 +681,7 @@ fn record_modification_default(
         || !component
             .modifications
             .keys()
-            .all(|field| record.components.contains_key(field))
+            .all(|field| record_declares(class_index, record, field, &mut HashSet::new()))
     {
         return Ok(None);
     }
@@ -724,6 +724,27 @@ fn record_modification_default(
         is_constructor: true,
         span,
     }))
+}
+
+/// Whether `record` declares `field` itself or inherits it (MLS 3.7 §7.1), as
+/// `redeclare record extends SaturationProperties end SaturationProperties;`
+/// inherits every field of the record it redeclares.
+fn record_declares(
+    class_index: &ast::ClassDefIndex<'_>,
+    record: &ast::ClassDef,
+    field: &str,
+    visited: &mut HashSet<usize>,
+) -> bool {
+    if !visited.insert(record as *const ast::ClassDef as usize) {
+        return false;
+    }
+    record.components.contains_key(field)
+        || record.extends.iter().any(|ext| {
+            ext.base_def_id
+                .and_then(|def_id| class_index.get(def_id))
+                .or_else(|| class_index.get_by_qualified_name(&ext.base_name.to_string()))
+                .is_some_and(|base| record_declares(class_index, base, field, visited))
+        })
 }
 
 /// A reference to class `def_id` by its qualified path, resolved part by part

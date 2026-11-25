@@ -2,6 +2,7 @@
 mod assertion_calls;
 mod authored_models;
 mod conditional_ranges;
+mod initial_seed_rows;
 mod linear_solve;
 mod observations;
 mod outer_scalar_fold;

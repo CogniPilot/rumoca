@@ -108,6 +108,10 @@ pub(crate) fn settle_prepared_vectors(
     let model = runtime.model();
     let mut y = model.initial_y.to_vec();
     let settle = |message: String| PreparedVectorError::Settle { message };
+    // The starts the seeded discrete rows overwrite, saved before the seed.
+    let seed_starts = runtime
+        .initial_seed_pre_starts(&params)
+        .map_err(|e| settle(e.to_string()))?;
     runtime
         .settle_initialization_system(&mut y, &mut params, t_start, SETTLE_TOL, SETTLE_MAX_ITERS)
         .map_err(|e| settle(e.to_string()))?;
@@ -126,6 +130,9 @@ pub(crate) fn settle_prepared_vectors(
         .refresh_algebraic_and_output_slots(t_start, &mut y, &params, SETTLE_TOL, SETTLE_MAX_ITERS)
         .map_err(|e| settle(e.to_string()))?;
     commit_pre_params_after_event(model, &y, &mut params, SETTLE_TOL);
+    runtime
+        .keep_initial_seed_pre_params(&mut params, &seed_starts)
+        .map_err(|e| settle(e.to_string()))?;
     Ok((y, params))
 }
 

@@ -238,3 +238,66 @@ fn a_call_read_inside_and_after_a_nested_conditional_keeps_one_assertion() {
     let error = simulate_shared_call("-1").expect_err("g(dp) fails while dp <= -1");
     assert!(error.contains("x too small"), "{error}");
 }
+
+/// An assertion in one arm of a two-arm conditional reads a value the loop
+/// before it carried: defined on that arm's path only.
+fn after_loop(limit: &str) -> String {
+    format!(
+        r#"
+model AfterLoop
+  function climb
+    input Real b;
+    input Boolean skip;
+    output Real n;
+  protected
+    Integer y;
+  algorithm
+    if skip then
+      n := 1;
+    else
+      y := integer(b);
+      for k in 1:3 loop
+        if y < 2 then
+          y := y + 1;
+        end if;
+      end for;
+      assert(y < {limit}, "y passed the limit");
+      n := y;
+    end if;
+  end climb;
+  parameter Boolean skip = false;
+  Real r = climb(4*time, skip);
+end AfterLoop;
+"#
+    )
+}
+
+fn simulate_after_loop(limit: &str) -> Result<SimResult, String> {
+    let compiled = Compiler::new()
+        .model("AfterLoop")
+        .compile_str(&after_loop(limit), "AfterLoop.mo")
+        .unwrap_or_else(|error| panic!("AfterLoop compiles: {error:?}"));
+    simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            dt: Some(0.25),
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("{error:?}"))
+}
+
+#[test]
+fn a_branch_assertion_reads_a_value_the_loop_before_it_carried() {
+    let result = simulate_after_loop("10").expect("AfterLoop simulates");
+    let column = result.names.iter().position(|n| n == "r").expect("r");
+    for (sample, time) in result.times.iter().enumerate() {
+        // The loop raises y to 2 from below and leaves a larger y alone.
+        let expected = (4.0 * time).floor().max(2.0);
+        let value = result.data[column][sample];
+        assert!((value - expected).abs() < 1e-9, "r({time}) = {value}");
+    }
+    let error = simulate_after_loop("4").expect_err("y reaches 4 at the end");
+    assert!(error.contains("y passed the limit"), "{error}");
+}

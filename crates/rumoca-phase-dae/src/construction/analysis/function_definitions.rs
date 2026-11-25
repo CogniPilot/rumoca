@@ -1,4 +1,5 @@
 mod assignment_reads;
+mod exit_flags;
 mod iterator_values;
 mod loop_entry;
 mod path_partial_admission;
@@ -38,6 +39,9 @@ pub(super) struct FunctionDefinitions {
     pub(super) folds: FoldScopes,
     /// The value facts proven on the current path.
     facts: PathSet,
+    /// The values each loop entered so far writes beside an exit flag that
+    /// was false on its entry, keyed by the loop (see `exit_flags`).
+    exit_flags: Vec<(Span, VarName, VarName)>,
 }
 
 /// Guarded definedness proofs captured before a conditional joins its branches.
@@ -154,7 +158,18 @@ impl FunctionDefinitions {
             admit_path_partial: PathPartialAdmission::default(),
             folds: FoldScopes::default(),
             facts: PathSet::single(GuardFacts::entry()),
+            exit_flags: Vec::new(),
         }
+    }
+
+    /// Start the value facts from the declaration bindings: MLS §12.4.4
+    /// gives each local that has one the value of that binding before the
+    /// algorithm runs.
+    pub(super) fn assume_declaration_bindings(&mut self, context: FunctionValidationContext<'_>) {
+        self.facts = PathSet::single(GuardFacts::function_entry(
+            context.function,
+            context.fact_scope(),
+        ));
     }
 
     pub(super) fn is_defined(&self, name: &VarName) -> bool {
@@ -1484,6 +1499,31 @@ impl FunctionDefinitions {
             after.after(statement, scope);
             after
         });
+        if let rumoca_core::Statement::For { span, .. } = statement {
+            self.track_exit_flag_values(*span);
+        }
+        self.define_where_no_undefined_path_remains();
+    }
+
+    /// Define every tracked value whose undefined paths no execution reaches
+    /// any more.
+    fn define_where_no_undefined_path_remains(&mut self) {
+        let defined = self
+            .branch_only
+            .iter()
+            .filter(|(_, definition)| {
+                definition
+                    .undefined_when
+                    .as_ref()
+                    .is_some_and(PathSet::is_unreachable)
+            })
+            .map(|(name, definition)| (name.clone(), definition.defined_coverage.clone()))
+            .collect::<Vec<_>>();
+        for (name, coverage) in defined {
+            self.branch_only.remove(&name);
+            self.values
+                .insert(name, coverage.unwrap_or(ValueCoverage::Whole));
+        }
     }
 
     /// The facts after the whole scalar `target` is assigned `value`, here and
@@ -1521,11 +1561,12 @@ impl FunctionDefinitions {
     /// may hold any iteration's value, and a binder shadows its name.
     pub(super) fn enter_loop_facts(
         &mut self,
-        body: &[rumoca_core::Statement],
+        (body, span): (&[rumoca_core::Statement], Span),
         binders: &[VarName],
         context: FunctionValidationContext<'_>,
     ) {
         let scope = context.fact_scope();
+        self.note_exit_flags(body, span, context);
         self.facts = self.facts.loop_entry(body, binders, scope);
         self.map_undefined_paths(|paths| paths.loop_entry(body, binders, scope));
     }
@@ -1542,22 +1583,7 @@ impl FunctionDefinitions {
         let scope = context.fact_scope();
         self.facts = self.facts.entering(conditions, ordinal, scope);
         self.map_undefined_paths(|paths| paths.entering(conditions, ordinal, scope));
-        let defined = self
-            .branch_only
-            .iter()
-            .filter(|(_, definition)| {
-                definition
-                    .undefined_when
-                    .as_ref()
-                    .is_some_and(PathSet::is_unreachable)
-            })
-            .map(|(name, definition)| (name.clone(), definition.defined_coverage.clone()))
-            .collect::<Vec<_>>();
-        for (name, coverage) in defined {
-            self.branch_only.remove(&name);
-            self.values
-                .insert(name, coverage.unwrap_or(ValueCoverage::Whole));
-        }
+        self.define_where_no_undefined_path_remains();
     }
 
     /// Whether any execution reaches each branch of a conditional over

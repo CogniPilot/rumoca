@@ -152,17 +152,13 @@ fn full14400_selection_bounds_every_compact_domain() {
 
 /// MLS 3.7 §11.2.2: a tunable `minimumBorder` is the only lower bound of the
 /// border the grid traversal stops at, so that `while` loop has no
-/// translation-time trip count; it is refused rather than frozen at the
-/// parameter's declared value.
+/// translation-time trip count. It is neither refused nor frozen at the
+/// parameter's declared value: it runs under the loop capacity.
 #[test]
-fn full14400_selection_refuses_a_tunable_border_floor() {
-    let error = compile_feature_selection(FEATURE_SELECTION_FULL)
-        .expect_err("a tunable border floor leaves the grid traversal unbounded");
-    assert!(
-        error.contains("has no translation-time iteration bound")
-            && error.contains("tunable parameter passed to the function"),
-        "{error}"
-    );
+fn full14400_selection_runs_a_tunable_border_floor_under_the_loop_capacity() {
+    if let Err(error) = compile_feature_selection(FEATURE_SELECTION_FULL) {
+        panic!("a tunable border floor leaves a loop with a capacity: {error}");
+    }
 }
 
 #[test]

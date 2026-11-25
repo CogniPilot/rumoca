@@ -70,6 +70,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 dae::ExpressionOperation::Builtin { builtin, .. } => {
                     super::super::builtin_profiles::is_differentiable_builtin(builtin, order)
                 }
+                // Past its `smooth` certificate, a conditional inside a
+                // function, whose guard cannot own an event (a medium's
+                // `h_T = smooth(0, if T < Tlimit ...)`), still differentiates
+                // branch-wise, without one: MLS §3.7.5 lets a tool avoid the
+                // events of the relations inside `smooth`. In the model's own
+                // equations the guard must own one, as above.
                 dae::ExpressionOperation::Conditional(operands) => {
                     super::super::smooth_order::admits_live_guards(self.smooth_certificate, order)
                         || super::super::parameter_conditionals::guards_taking_events(
@@ -78,6 +84,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                             operands,
                         )
                         .is_some()
+                        || (self.smooth_certificate.is_some() && !self.function_context.is_empty())
                 }
                 dae::ExpressionOperation::Index { subscripts, .. } => {
                     subscripts.iter().all(|subscript| match subscript {

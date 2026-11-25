@@ -331,6 +331,9 @@ static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
 static {{ prefix }}Status rmc_events_completed(ModelInstance* m, bool* enter) {
     double z[{{ [nind, 1]|max }}];
     *enter = false;
+{%- if fmi.accepted_assertions %}
+    if (m->assertions_initialized && (settle_values(m) != {{ prefix }}OK || check_accepted_assertions_at(m, false) != {{ prefix }}OK)) return {{ prefix }}Error;
+{%- endif %}
     if (RMC_EVENT_INDICATORS == 0) return {{ prefix }}OK;
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
     if (!m->rmc_domain_valid) {
@@ -854,11 +857,14 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
     double held[{{ ev.condition_memories|length }}];
     for (size_t k = 0; k < {{ ev.condition_memories|length }}; ++k) { held[k] = m->p[memories[k]]; m->p[memories[k]] = m->rmc_entry_p[memories[k]]; }
     {{ prefix }}Status actions = check_assertions_at(m, true);
+{%- if fmi.accepted_assertions %}
+    if (actions == {{ prefix }}OK) actions = check_accepted_assertions_at(m, true);
+{%- endif %}
     if (actions == {{ prefix }}OK) actions = report_warnings_at(m, true);
     for (size_t k = 0; k < {{ ev.condition_memories|length }}; ++k) m->p[memories[k]] = held[k];
     if (actions != {{ prefix }}OK) return {{ prefix }}Error;
 {%- else %}
-    if (check_assertions_at(m, true) != {{ prefix }}OK || report_warnings_at(m, true) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (check_assertions_at(m, true) != {{ prefix }}OK{% if fmi.accepted_assertions %} || check_accepted_assertions_at(m, true) != {{ prefix }}OK{% endif %} || report_warnings_at(m, true) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- endif %}
 {%- if ev.pulse_rows|length > 0 %}
     if (rmc_release_condition_pulses(m) != {{ prefix }}OK) return {{ prefix }}Error;
@@ -905,6 +911,28 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
     bool changed = false;
     m->rmc_override_count = 0;
     rmc_clear_clock_lanes(m);
+{%- if ev.seed_rows|length > 0 %}
+    /* initial_seed_rows.rs: a discrete equation whose value the initial
+       parameters and inputs fix holds before the first algebraic refresh reads
+       its target (MLS 3.7 §8.6), in the issued dependency order. The owners
+       pass below publishes the rows, so the history copy keeps each seeded
+       target's pre slot at the declaration start it had before the seed. */
+    double rmc_seed_before[{{ ev.seed_rows|length }}];
+    {
+        double values[{{ solve.discrete.update_targets|length }}];
+{%- for seed in ev.seed_rows %}
+{%- set program = solve.discrete.rhs_plan.programs[seed.program] %}
+        {
+        double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "values", prefix ~ "Error") }}
+{%- endfor %}
+        }
+        rmc_seed_before[{{ loop.index0 }}] = m->p[{{ seed.target }}];
+        m->p[{{ seed.target }}] = values[{{ seed.row }}];
+{%- endfor %}
+    }
+{%- endif %}
 {%- if ev.has_quotient_memory %}
     /* Seed the unclocked discrete equations that supply array subscripts to
        the first algebraic refresh. A guarded sample is still inactive here. */
@@ -938,6 +966,11 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
 {%- endif %}
     if (settle_values(m) != {{ prefix }}OK || rmc_relation_refresh(m, false, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
 {{- copy_history(fmi.history_runs, "m->p", "m->y", "m->p") }}
+{%- for seed in ev.seed_rows %}
+{%- if seed.pre_slot is not none %}
+    m->p[{{ seed.pre_slot }}] = rmc_seed_before[{{ loop.index0 }}];
+{%- endif %}
+{%- endfor %}
     if (rmc_discrete_owners(m, &changed, true, false) != {{ prefix }}OK) return {{ prefix }}Error;
     memcpy(m->rmc_entry_y, m->y, sizeof(m->y));
     memcpy(m->rmc_entry_p, m->p, sizeof(m->p));
@@ -1265,6 +1298,11 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
         if (interval != {{ prefix }}OK) return interval == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
         t = advanced == end - t ? end : t + advanced;
         m->time = t;
+{%- if fmi.accepted_assertions %}
+        /* The interval's end is an accepted point (its integrator may also
+           probe past it, which the interval discards). */
+        if (m->assertions_initialized && (settle_values(m) != {{ prefix }}OK || check_accepted_assertions_at(m, false) != {{ prefix }}OK)) return {{ prefix }}Error;
+{%- endif %}
         if (at_event && advanced == h && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
     }
     return {{ prefix }}OK;

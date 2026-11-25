@@ -1,11 +1,13 @@
 //! Admission proof for parameter-determined event partitions in generated C.
 //!
 //! The C profile executes a model's events only where every one is fixed
-//! between parameter changes: error assertions whose predicates, their
-//! condition memories, and every discrete equation depend on parameters and
-//! constants alone. Such a partition changes nothing between events, so the
-//! component evaluates it at initialization and at each event, exactly as the
-//! runtime's event iteration would settle it in one pass.
+//! between parameter changes: predicates, their condition memories, and every
+//! discrete equation depend on parameters and constants alone. Such a
+//! partition changes nothing between events, so the component evaluates it at
+//! initialization and at each event, exactly as the runtime's event iteration
+//! would settle it in one pass. An assertion owns no event (MLS §8.3.7): one
+//! whose condition changes between events, through `noEvent`, is checked at
+//! accepted points instead.
 
 mod memory_reads;
 pub(super) mod scalar_dependencies;
@@ -116,8 +118,11 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, StaticRefusa
         }
     }
     require_static(model, &events.root_conditions, &y, &p).map_err(StaticRefusal::Predicate)?;
-    require_static_actions(model, &y, &p).map_err(StaticRefusal::Predicate)?;
-    Ok(order)
+    let accepted_actions = accepted_actions(model, &y, &p).map_err(StaticRefusal::Predicate)?;
+    Ok(DiscreteOrder {
+        accepted_actions,
+        ..order
+    })
 }
 
 /// The two evaluation orders of the discrete rows. Parameter-determined
@@ -132,6 +137,9 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, StaticRefusa
 pub(in crate::fmi) struct DiscreteOrder {
     pub(in crate::fmi) equations: Vec<usize>,
     pub(in crate::fmi) memories: Vec<usize>,
+    /// Per event action: whether it is an error-level assertion checked only
+    /// at accepted points (see [`accepted_actions`]).
+    pub(in crate::fmi) accepted_actions: Vec<bool>,
 }
 
 fn discrete_order(
@@ -197,30 +205,52 @@ fn discrete_order(
     Ok(DiscreteOrder {
         equations,
         memories,
+        accepted_actions: Vec::new(),
     })
 }
 
-/// Every error-level action condition is static. A warning-level action
-/// (MLS §8.3.7) owns no event and is observed only at accepted points, so
-/// its condition may read any coordinate.
-fn require_static_actions(model: &SolveModel, y: &[bool], p: &[bool]) -> Result<(), &'static str> {
+/// Per event action, whether it is an error-level assertion whose condition
+/// may change between events under the settled values `y` and `p`.
+///
+/// An assertion owns no event (MLS §8.3.7), so such a condition is checked
+/// only at accepted points (initialization, an accepted step, an event
+/// commit), where it aborts the run, and never at a trial point the
+/// integrator may still reject. A condition fixed between events is also
+/// checked wherever values are settled, as it cannot change at a trial
+/// point. A warning-level action is observed only at accepted points anyway.
+pub(in crate::fmi) fn accepted_actions(
+    model: &SolveModel,
+    y: &[bool],
+    p: &[bool],
+) -> Result<Vec<bool>, &'static str> {
     let events = &model.problem.events;
     match scalar_dependencies::outputs(&model.pure_calls, &events.action_conditions, y, p) {
-        Some(outputs)
-            if outputs.len() == events.actions.len()
-                && outputs
-                    .iter()
-                    .zip(&events.actions)
-                    .all(|(is_static, action)| {
-                        *is_static || action.kind == SolveEventActionKind::Warning
-                    }) =>
-        {
-            Ok(())
-        }
-        _ => Err(
-            "assertion depends on time, a continuous state, an input, or an unsupported dependence operation",
-        ),
+        Some(outputs) if outputs.len() == events.actions.len() => Ok(outputs
+            .iter()
+            .zip(&events.actions)
+            .map(|(is_static, action)| !is_static && action.kind == SolveEventActionKind::Assert)
+            .collect()),
+        _ => Err("assertion depends on an unsupported dependence operation"),
     }
+}
+
+/// [`accepted_actions`] under the event iteration, where every coordinate
+/// may change between events and only parameter storage outside the external
+/// inputs holds still: a parameter, a constant, a discrete value, a relation
+/// memory, or a pre() value changes only at an event.
+pub(in crate::fmi) fn event_iteration_accepted_actions(
+    model: &SolveModel,
+) -> Result<Vec<bool>, &'static str> {
+    let problem = &model.problem;
+    let mut p = vec![true; problem.layout.p_scalars()];
+    for run in &problem.solve_layout.variable_storage_runs {
+        if let (crate::SolveVariableStorageRole::ExternalInput, ScalarSlot::P { index, .. }) =
+            (run.role, run.base)
+        {
+            p[index..index + run.scalar_count].fill(false);
+        }
+    }
+    accepted_actions(model, &vec![false; problem.layout.y_scalars()], &p)
 }
 
 fn require_static(

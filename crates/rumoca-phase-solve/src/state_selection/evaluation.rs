@@ -1,6 +1,6 @@
 use super::*;
 use crate::{FormalDerivativePrograms, FormalResidualProgram, FormalStageProgram};
-use rumoca_eval_dae::NumericEvaluator;
+use rumoca_eval_dae::{NumericEvaluationErrorKind, NumericEvaluator};
 use rumoca_eval_solve::dense_basis::DenseStageMatrix;
 use rumoca_eval_solve::{TypedValue, eval_pure_call, eval_pure_call_directional};
 use rumoca_ir_dae as dae;
@@ -85,7 +85,20 @@ impl TrialPoint {
             if variable.value_type().scalar_type() == dae::ScalarType::String {
                 continue;
             }
-            let value = evaluator.initial_value(source).map_err(failure)?;
+            // The trial point is a construction-only value. An input no
+            // declaration or override values is a host obligation at run
+            // time; here it takes its declared start, or else its language
+            // default.
+            let value = match evaluator.initial_value(source) {
+                Err(error)
+                    if variable.role() == dae::VariableRole::Input
+                        && error.kind() == NumericEvaluationErrorKind::MissingValue =>
+                {
+                    evaluator.input_trial_value(source)
+                }
+                value => value,
+            }
+            .map_err(numeric_failure)?;
             let target = formal
                 .coordinate(source, 0)
                 .ok_or_else(|| failure("trial source coordinate has no formal value"))?;
@@ -392,4 +405,13 @@ fn check_assertions(
         }
     }
     Ok(())
+}
+
+/// A refusal of the trial point's own values keeps the span of the
+/// declaration or expression that could not be evaluated.
+fn numeric_failure(error: rumoca_eval_dae::NumericEvaluationError) -> StructuralError {
+    StructuralError::ContractViolation {
+        reason: format!("independent state selection: {error}"),
+        span: error.span(),
+    }
 }

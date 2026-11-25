@@ -50,11 +50,18 @@
 use super::*;
 
 /// A zero-output statement call whose callee the Flat function table collected.
-pub(super) struct CheckingCall<'flat> {
+pub(in crate::construction::analysis) struct CheckingCall<'flat> {
     flat: &'flat flat::Model,
     function: &'flat rumoca_core::Function,
     arguments: &'flat [Expression],
     span: Span,
+}
+
+impl<'flat> CheckingCall<'flat> {
+    /// The collected callee.
+    pub(in crate::construction::analysis) fn function(&self) -> &'flat rumoca_core::Function {
+        self.function
+    }
 }
 
 /// Recognize a zero-output statement call to a collected function.
@@ -63,7 +70,7 @@ pub(super) struct CheckingCall<'flat> {
 /// checking call: it is either the `assert` operator, which
 /// [`super::assertion_call`] owns, or an absent callee, which the caller
 /// rejects by name.
-pub(super) fn checking_call<'flat>(
+pub(in crate::construction::analysis) fn checking_call<'flat>(
     flat: &'flat flat::Model,
     statement: &'flat rumoca_core::Statement,
 ) -> Option<CheckingCall<'flat>> {
@@ -95,7 +102,9 @@ pub(super) fn checking_call<'flat>(
 /// This runs in the statement-grammar gate, before anything evaluates
 /// expressions, so a call with an effect is reported as the missing owner
 /// rather than as a consequence of replaying it.
-pub(super) fn reject_unsupported_checking_call(call: &CheckingCall<'_>) -> Result<(), ToDaeError> {
+pub(in crate::construction::analysis) fn reject_unsupported_checking_call(
+    call: &CheckingCall<'_>,
+) -> Result<(), ToDaeError> {
     require_span(call.span, "initial algorithm checking call")?;
     let name = call.function.name.as_str();
     if !call.function.outputs.is_empty() {
@@ -207,7 +216,7 @@ fn reject_unsupported_body(
 /// The result is expressed in the section's own statement grammar, so the
 /// caller folds guards and validates conditions through the owners it already
 /// has.
-pub(super) fn expand_checking_call(
+pub(in crate::construction::analysis) fn expand_checking_call(
     call: &CheckingCall<'_>,
     constants: &EvalContext,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {

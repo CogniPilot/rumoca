@@ -22,8 +22,9 @@ use rumoca_core::Reference;
 use super::super::*;
 use super::support::*;
 
-/// A scalar-Integer function whose `while`-loop body this compiler cannot
-/// reduce; its call is certifiable but never constructible.
+/// A scalar-Integer function whose `while` loop has no proven bound and can
+/// leave through `break`, so this compiler cannot reduce it; its call is
+/// certifiable but never constructible.
 fn search_like_function(source: &TestSource) -> rumoca_core::Function {
     let mut function = rumoca_core::Function::new("searchLike", source.span("searchLike", 0));
     function.add_input(integer_function_param(
@@ -76,7 +77,10 @@ fn search_like_function(source: &TestSource) -> rumoca_core::Function {
                                 rhs: Box::new(integer_literal(3)),
                                 span: body_span,
                             },
-                            stmts: vec![assign("p", integer_ref("i"))],
+                            stmts: vec![
+                                assign("p", integer_ref("i")),
+                                rumoca_core::Statement::Break { span: body_span },
+                            ],
                         }],
                         else_block: None,
                         span: body_span,

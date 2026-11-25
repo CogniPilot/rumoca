@@ -1904,3 +1904,46 @@ fn arr_047_min_max_mismatched_vector_shapes_rejected() {
         "ET009",
     );
 }
+
+// =============================================================================
+// ARR-048: fill of an array (MLS §10.3.3)
+// =============================================================================
+
+#[test]
+fn arr_048_fill_of_an_array_repeats_the_whole_value() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model Test
+            parameter Real c[2] = {1.5, 2.5};
+            Real copies[3, 2] = fill(c, 3);
+            Real scalar[2] = fill(time, 2);
+        end Test;
+    "#,
+        "Test",
+        1.0,
+    );
+    for (name, expected) in [
+        ("copies[1,1]", 1.5),
+        ("copies[1,2]", 2.5),
+        ("copies[3,1]", 1.5),
+        ("copies[3,2]", 2.5),
+        ("scalar[1]", 1.0),
+        ("scalar[2]", 1.0),
+    ] {
+        assert!((trace.final_value(name) - expected).abs() < 1e-12, "{name}");
+    }
+}
+
+#[test]
+fn arr_048_fill_of_an_array_with_a_zero_extent_is_empty() {
+    expect_success(
+        r#"
+        model Test
+            parameter Real c[2] = {1.5, 2.5};
+            Real empty[0, 2] = fill(c, 0);
+            Real y = 1;
+        end Test;
+    "#,
+        "Test",
+    );
+}

@@ -13,7 +13,8 @@ pub(super) fn prepared_flat(
 ) -> Result<(Cow<'_, flat::Model>, Option<ParameterBindings>), ToDaeError> {
     let carrying = model_algorithm_loops::has_carrying_loops(flat);
     if !carrying && !has_decidable_conditionals(flat) {
-        return Ok((resolve_algorithm_coordinates(Cow::Borrowed(flat))?, None));
+        let resolved = resolve_algorithm_coordinates(Cow::Borrowed(flat))?;
+        return Ok((super::function_checking_calls::replay(resolved)?, None));
     }
     let mut bindings = ParameterBindings::evaluate(flat)?;
     register_deferred_parameters(flat, &mut bindings.constants);
@@ -22,7 +23,8 @@ pub(super) fn prepared_flat(
     let unrolled =
         model_algorithm_loops::unroll_carrying_algorithm_loops(flat, shapes.model_values())?;
     let selected = select_structural_branches(unrolled, shapes.model_values());
-    let resolved = resolve_algorithm_coordinates(selected)?;
+    let resolved =
+        super::function_checking_calls::replay(resolve_algorithm_coordinates(selected)?)?;
     // These rewrites preserve parameter and constant declarations and their
     // bindings, so analysis can reuse the evaluated values.
     Ok((resolved, Some(bindings)))

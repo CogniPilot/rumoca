@@ -2741,6 +2741,20 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'ARR-048'
+case_id = 'arr_048_fill_of_an_array_repeats_the_whole_value'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-048'
+case_id = 'arr_048_fill_of_an_array_with_a_zero_extent_is_empty'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'ALG-011'
 case_id = 'alg_011_non_boolean_when_condition_rejected'
 test_file = 'tests/alg_contracts.rs'
