@@ -120,6 +120,22 @@ package Lib
   equation
     der(x) = ind;
   end AbsentWarning;
+  model AssertFirst
+    constant String names[2] = {"N2", "CO2"};
+    parameter String w = "CO2";
+    parameter Integer ind(fixed = false);
+    Real x(start = 0, fixed = true);
+  initial algorithm
+    ind := 0;
+    assert(ind == 0, "ind starts at zero");
+    for i in 1:2 loop
+      if names[i] == w then
+        ind := i;
+      end if;
+    end for;
+  equation
+    der(x) = ind;
+  end AssertFirst;
 end Lib;
 "#;
 
@@ -236,4 +252,23 @@ fn a_false_warning_assertion_in_a_decided_initial_algorithm_stays_a_warning() {
         "one warning assertion with its evaluated message: {kept:?}"
     );
     assert_eq!(last("Lib.AbsentWarning", "x"), -1.0, "the model still runs");
+}
+
+/// An assertion written before the last assignment of the target holds at
+/// its own point (`ind` is 0 there) and fails at the end (`ind` is 2), so it
+/// cannot be decided with the final value: the algorithm is left as it is,
+/// not rejected with EF030 (Ada's probe).
+#[test]
+fn an_assertion_before_the_last_assignment_leaves_the_algorithm_as_it_is() {
+    let flat = Compiler::new()
+        .model("Lib.AssertFirst")
+        .compile_str_flat(PACKAGE, "Lib.mo")
+        .unwrap_or_else(|error| panic!("Lib.AssertFirst flattens: {error:?}"));
+    let ind = &flat.variables[&rumoca_core::VarName::new("ind")];
+    assert!(
+        ind.binding.is_none(),
+        "ind is not decided: {:?}",
+        ind.binding
+    );
+    assert_eq!(flat.initial_algorithms.len(), 1, "the algorithm stays");
 }

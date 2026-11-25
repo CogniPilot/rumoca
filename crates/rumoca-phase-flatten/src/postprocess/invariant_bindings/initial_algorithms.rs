@@ -12,8 +12,9 @@
 //! fixed and not tunable, and the algorithm is removed. Anything the
 //! interpreter refuses leaves the algorithm as it was.
 //!
-//! The algorithm's top-level assertions (the sensor's `assert(ind > 0, ...)`)
-//! are decided with the target's value (MLS §8.3.7): a true one goes; a false
+//! The algorithm's top-level assertions (the sensor's `assert(ind > 0, ...)`),
+//! when all of them follow the last statement assigning the target, are
+//! decided with the target's value (MLS §8.3.7): a true one goes; a false
 //! one at error level is the EF030 translation error at its span, with its
 //! message; a false one at warning level stays as a warning assertion with
 //! its condition and message evaluated, which the runtime reports.
@@ -158,6 +159,26 @@ fn run<'a>(
     index: usize,
     algorithm: &'a flat::Algorithm,
 ) -> Option<(VarName, Value, Vec<&'a Statement>)> {
+    // The top-level assertions are decided after the body, with the target's
+    // final value, so each must follow the last statement that assigns the
+    // target: one written before it would see a value the target no longer
+    // has (MLS 3.7 §11.1, statements execute in order). RoomCO2's sensor
+    // asserts after its loop.
+    let assigns_target = |statement: &Statement| {
+        let mut targets = Vec::new();
+        collect_targets(std::slice::from_ref(statement), &mut targets)
+            .is_none_or(|()| !targets.is_empty())
+    };
+    let last_assignment = algorithm.statements.iter().rposition(assigns_target);
+    let first_assert = algorithm
+        .statements
+        .iter()
+        .position(|statement| matches!(statement, Statement::Assert { .. }));
+    if let (Some(first_assert), Some(last_assignment)) = (first_assert, last_assignment)
+        && first_assert < last_assignment
+    {
+        return None;
+    }
     let (asserts, body): (Vec<&Statement>, Vec<&Statement>) = algorithm
         .statements
         .iter()
