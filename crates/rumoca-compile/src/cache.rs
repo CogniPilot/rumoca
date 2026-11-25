@@ -15,6 +15,10 @@ const CACHE_ACCESS_METADATA_SUFFIX: &str = ".rumoca-access";
 const CACHE_PRUNE_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 const CACHE_AUTO_PRUNE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const CACHE_AUTO_PRUNE_CHECK_FILE: &str = ".rumoca-prune-checked";
+/// A cache hit rewrites its access marker only when the marker is at least
+/// this old. LRU pruning orders by last use, and an hour is far finer than any
+/// prune age, while a warm compile no longer writes one marker per hit (#152).
+const CACHE_ACCESS_REFRESH: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct CacheStatus {
@@ -99,12 +103,25 @@ fn default_prune_options() -> CachePruneOptions {
 }
 
 pub(crate) fn record_cache_file_access(path: &Path) {
+    if cache_access_is_current(path) {
+        return;
+    }
     if let Err(err) = write_cache_file_access(path, SystemTime::now()) {
         eprintln!(
             "failed to record cache access for {}: {err}",
             path.display()
         );
     }
+}
+
+/// The marker was written less than [`CACHE_ACCESS_REFRESH`] ago. A missing
+/// marker, an unreadable mtime or one in the future counts as not current.
+fn cache_access_is_current(path: &Path) -> bool {
+    fs::metadata(cache_access_metadata_path(path))
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age < CACHE_ACCESS_REFRESH)
 }
 
 fn write_cache_file_access(path: &Path, accessed: SystemTime) -> std::io::Result<()> {
@@ -722,6 +739,41 @@ mod tests {
         assert_eq!(report.removed_bytes, 5);
         assert!(!root.join("a-old.bin").exists());
         assert!(root.join("b-new.bin").exists());
+    }
+
+    /// A cache hit does not rewrite an access marker that is still current
+    /// (#152: a warm MSL compile rewrote 2,554 markers per run); one older
+    /// than the refresh interval is rewritten, so LRU pruning still sees use.
+    #[test]
+    fn a_cache_hit_rewrites_its_access_marker_only_when_stale() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let artifact = temp.path().join("artifact.bin");
+        write_file(&artifact, 3);
+        let marker = cache_access_metadata_path(&artifact);
+        let modified = |path: &Path| {
+            fs::metadata(path)
+                .and_then(|m| m.modified())
+                .expect("mtime")
+        };
+
+        record_cache_file_access(&artifact);
+        let first = modified(&marker);
+        std::thread::sleep(Duration::from_millis(20));
+        record_cache_file_access(&artifact);
+        assert_eq!(
+            modified(&marker),
+            first,
+            "a current marker is not rewritten"
+        );
+
+        let stale = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(&marker)
+            .and_then(|file| file.set_modified(stale))
+            .expect("age the marker");
+        record_cache_file_access(&artifact);
+        assert!(modified(&marker) > stale, "a stale marker is rewritten");
     }
 
     #[test]

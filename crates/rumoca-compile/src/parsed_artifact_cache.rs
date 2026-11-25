@@ -140,9 +140,7 @@ pub(crate) fn parse_file_with_precomputed_hash_status(
         return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
     }
 
-    if let Some(cache_dir) = cache_dir
-        && fs::create_dir_all(cache_dir).is_ok()
-    {
+    if let Some(cache_dir) = cache_dir {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(definition) = try_read_cache(&cache_file) {
             crate::cache::record_cache_file_access(&cache_file);
@@ -170,9 +168,7 @@ fn parse_file_with_preloaded_source_status(
         return Ok((file_name, definition, ParsedArtifactCacheStatus::Hit));
     }
 
-    if let Some(cache_dir) = cache_dir
-        && fs::create_dir_all(cache_dir).is_ok()
-    {
+    if let Some(cache_dir) = cache_dir {
         let cache_file = cache_file_path(cache_dir, &cache_key);
         if let Some(definition) = try_read_cache(&cache_file) {
             crate::cache::record_cache_file_access(&cache_file);
