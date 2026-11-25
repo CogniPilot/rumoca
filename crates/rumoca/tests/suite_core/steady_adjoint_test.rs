@@ -286,3 +286,98 @@ fn steady_state_adjoint_handles_algebraic_objective() {
         );
     }
 }
+
+/// A smooth mesh coordinate changes both discrete diffusion fluxes and the
+/// gradient used for wall traction. The manufactured steady velocity x(1-x)
+/// is quadratic, so the nonuniform three-point stencil is exact. The measured
+/// one-sided wall shear is 1-h; recovering its slope needs the state response.
+#[test]
+fn adjoint_follows_a_moving_grid_line_through_flow_and_wall_shear() {
+    let model = r#"
+model MovingGrid
+  function flux
+    input Real u[2];
+    input Real dx;
+    output Real q;
+  algorithm
+    q := (u[2]-u[1])/dx;
+    annotation(Inline=false);
+  end flux;
+  parameter Real h=0.25;
+  parameter Real b=0.65;
+  Real u(start=0.1875), v(start=0.2275), wallShear;
+equation
+  der(u) = 2/b*(flux({u,v},b-h)-flux({0,u},h))+2;
+  der(v) = 2/(1-h)*(flux({v,0},1-b)-flux({u,v},b-h))+2;
+  wallShear = flux({0,u},h);
+end MovingGrid;
+"#;
+    let compiled = Compiler::new()
+        .model("MovingGrid")
+        .compile_str(model, "MovingGrid.mo")
+        .unwrap();
+    let point = [("u".to_string(), 0.1875), ("v".to_string(), 0.2275)];
+    let probe = rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
+        &compiled.dae,
+        &SimOptions::default(),
+        &point,
+        "wallShear",
+        0.0,
+    )
+    .unwrap();
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    assert!((param(&probe.report, "h") + 1.0).abs() < 1e-9);
+    assert!(param(&probe.report, "b").abs() < 1e-9);
+}
+
+#[test]
+fn nested_loop_branch_objective_has_the_same_forward_and_reverse_sensitivity() {
+    let source = r#"
+model NestedBranchAdjoint
+  function loadHistory
+    input Real gain;
+    input Real bias;
+    output Real force;
+  algorithm
+    force := bias;
+    for i in 1:2 loop
+      for j in 1:2 loop
+        if force > 0 then
+          force := gain*force + bias;
+        else
+          force := force - gain;
+        end if;
+      end for;
+    end for;
+  end loadHistory;
+  parameter Real gain=2;
+  parameter Real bias=1;
+  Real x(start=31);
+equation
+  der(x)=loadHistory(gain,bias)-x;
+end NestedBranchAdjoint;
+"#;
+    let result = Compiler::new()
+        .model("NestedBranchAdjoint")
+        .compile_str(source, "NestedBranchAdjoint.mo")
+        .unwrap();
+    let state = [("x".to_string(), 31.)];
+    let options = SimOptions::default();
+    let reverse = rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
+        &result.dae,
+        &options,
+        &state,
+        "x",
+        0.,
+    )
+    .unwrap();
+    let forward =
+        rumoca_sim::steady_state_objective_gradient_for_dae(&result.dae, &options, &state, "x", 0.)
+            .unwrap();
+    // At this point x* = bias*(1+g+g²+g³+g⁴).
+    for report in [&reverse.report, &forward.report] {
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert!((param(report, "gain") - 49.).abs() < 1e-9);
+        assert!((param(report, "bias") - 31.).abs() < 1e-9);
+    }
+}

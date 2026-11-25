@@ -306,6 +306,9 @@ fn reverse_y_gradient_supported(row: &[LinearOp]) -> bool {
         .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
         .count()
         == 1
+        && !row
+            .iter()
+            .any(|op| matches!(op, LinearOp::StoreOutputRange { .. }))
         && row.iter().all(crate::reverse::reverse_row_op_supported)
 }
 

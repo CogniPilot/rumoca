@@ -184,8 +184,8 @@ impl PreparedScalarProgramBlock {
 
     /// Reverse-mode VJP: accumulate `Jᵀ · output_cotangents` of this block into
     /// `cot` at the `LoadY` / `LoadP` / `LoadSeed` input sites (Track A scalar
-    /// reverse core). `scratch` is caller-owned so a hot loop stays
-    /// allocation-free. See [`crate::reverse`].
+    /// reverse core). The caller can reuse `scratch` across evaluations.
+    /// Executed loop iterations retain their intermediates until the reverse sweep.
     pub fn reverse_vjp(
         &self,
         inputs: &crate::reverse::ReverseInputs<'_>,
@@ -207,9 +207,8 @@ impl PreparedScalarProgramBlock {
     }
 
     /// Evaluate the complete solver-`y` gradient of one scalar residual row.
-    /// Returns `false` when that row contains an operation without a reverse AD
-    /// rule, allowing the projection solver to retain its exact forward-JVP
-    /// fallback.
+    /// An absent or non-scalar row returns `false`. Missing rules return errors.
+    /// Automatic solver selection can query `reverse_row_y_gradient_supported` first.
     pub fn reverse_row_y_gradient(
         &self,
         row_idx: usize,
@@ -220,9 +219,6 @@ impl PreparedScalarProgramBlock {
         let Some(requirements) = self.row_requirements.get(row_idx).copied() else {
             return Ok(false);
         };
-        if !self.reverse_row_y_gradient_supported(row_idx) {
-            return Ok(false);
-        }
         validate_output_len(gradient, inputs.y.len())?;
         validate_input_requirements(requirements, inputs.y, inputs.p, inputs.context.seed)?;
         record_solve_block_eval("scalar_reverse_row", self.output_count, 1);
