@@ -157,9 +157,15 @@ Modelica, DAE, or Solve lowering.
 | FMI 3 ME+CS | Selected at instantiation | FMU, Wasm |
 | eFMI Algorithm Code | Integrator/toolchain | eFMU |
 | eFMI Production Code | Generated production runtime | eFMU, generated C |
+| Fixed-step Rust kernel (`rust-fixed-ode`) | Component: fixed communication step, events located by the component | generated Rust module, no heap allocation |
 
 CLI profiles select one generator's capabilities; independent equation lowering,
-initialization, event, and state-machine code are prohibited.
+initialization, event, and state-machine code are prohibited. A generator that
+executes events renders them from the checked scalar event profile and the
+`RootLocationPlan` and `EventIterationSchedule` the compiler issued (SPEC_0044
+ME-EVENT-002, 004, 006), never from its own derivation, and admits only the
+event owners its differential evidence against the common host covers
+(SPEC_0044 ME-FIX-001).
 A raw derivative-only C kernel may remain an internal fixture, but MUST NOT be
 a user-visible target once FMI 2/3 are exposed.
 

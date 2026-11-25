@@ -1302,6 +1302,12 @@ fn validate_directory_shared_templates(dir: &Path, manifest: &TargetManifest) ->
         let path = safe_target_join(dir, template)?;
         let source = std::fs::read_to_string(&path)
             .with_context(|| format!("Read target template {}", path.display()))?;
+        // A non-`.jinja` partial is registered verbatim, inside `{% raw %}`.
+        let source = if template.ends_with(".jinja") {
+            source
+        } else {
+            format!("{{% raw %}}{source}{{% endraw %}}")
+        };
         if source != shared.source {
             bail!(
                 "Target directory '{}' declares shared render-environment name '{name}' for \

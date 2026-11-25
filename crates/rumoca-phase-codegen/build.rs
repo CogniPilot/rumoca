@@ -19,6 +19,10 @@
 //! `codegen::create_environment`, which registers exactly the names generated
 //! here).
 //!
+//! A support partial whose file is not `.jinja` (the `rust-fixed-ode` event
+//! runtime, `events.rs`) is plain source included verbatim: it is registered
+//! wrapped in `{% raw %}`, so an `{% include %}` copies it unchanged.
+//!
 //! Every `.jinja` file in a target directory must be declared exactly once,
 //! as one kind or the other. An undeclared template, a template declared as
 //! both, a partial that also has a `[[files]]` entry, or a duplicated shared
@@ -72,6 +76,8 @@ struct TemplateFile {
     /// template under one (`[[partials]].name` / `[[files]].shared_as`).
     shared_name: Option<String>,
     role: TemplateRole,
+    /// A non-`.jinja` support partial, registered verbatim.
+    verbatim: bool,
 }
 
 /// Which manifest declaration owns a template file.
@@ -234,21 +240,29 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
             .into());
         }
         let source_path = entry.path();
-        if file_type.is_file()
-            && source_path.extension().and_then(|ext| ext.to_str()) == Some("jinja")
-        {
+        let jinja = source_path.extension().and_then(|ext| ext.to_str()) == Some("jinja");
+        let verbatim = !jinja
+            && source_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| declarations.partials.contains_key(name));
+        if file_type.is_file() && (jinja || verbatim) {
             let path = source_path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| build_error("template file must have a UTF-8 name"))?
                 .to_string();
             let (role, shared_name) = declarations.classify(&manifest_path, &path)?;
+            if verbatim {
+                validate_verbatim_partial(&source_path)?;
+            }
             templates.push(TemplateFile {
                 const_name: generated_template_const_name(&name, &path),
                 path,
                 source_path,
                 shared_name,
                 role,
+                verbatim,
             });
         }
     }
@@ -256,6 +270,12 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
     declarations.validate_every_declaration_has_a_file(&manifest_path, &templates)?;
     let mut asset_paths = Vec::new();
     collect_asset_files(dir, dir, &mut asset_paths)?;
+    // A verbatim partial is a template, not an asset.
+    asset_paths.retain(|path| {
+        !templates
+            .iter()
+            .any(|template| template.verbatim && &template.source_path == path)
+    });
     let assets = asset_paths
         .into_iter()
         .map(|source_path| {
@@ -277,6 +297,21 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
         assets,
         borrowed_assets,
     })
+}
+
+/// A verbatim partial is registered inside `{% raw %}`; it must not close
+/// that block itself.
+fn validate_verbatim_partial(path: &Path) -> BuildResult<()> {
+    let source = fs::read_to_string(path)
+        .map_err(|error| build_error(format!("read {}: {error}", path.display())))?;
+    if source.contains("endraw") {
+        return Err(build_error(format!(
+            "{}: a verbatim partial may not contain `endraw`",
+            path.display()
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 fn validate_target_readme(path: &Path, target: &str) -> BuildResult<()> {
@@ -710,10 +745,17 @@ fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &Targe
     ));
     for template in &target.templates {
         let include_path = include_path(manifest_dir, &template.source_path);
-        out.push_str(&format!(
-            "const {}: &str = include_str!(\"{}\");\n",
-            template.const_name, include_path
-        ));
+        if template.verbatim {
+            out.push_str(&format!(
+                "const {}: &str = concat!(\"{{% raw %}}\", include_str!(\"{}\"), \"{{% endraw %}}\");\n",
+                template.const_name, include_path
+            ));
+        } else {
+            out.push_str(&format!(
+                "const {}: &str = include_str!(\"{}\");\n",
+                template.const_name, include_path
+            ));
+        }
     }
     // A borrowed asset is embedded once, by the target that owns the bytes.
     // Every borrower's bundle names that same constant.

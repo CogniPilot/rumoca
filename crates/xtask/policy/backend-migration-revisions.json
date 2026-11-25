@@ -297,6 +297,69 @@
           "after": "405af81ffdfd52202b38bb8d144e57f1aaa56ab5e265048f8421503d0c877fcd"
         }
       ]
+    },
+    {
+      "id": "R010",
+      "decision": "d-pending-owner-rust-fixed-ode-events-20261124",
+      "change": "rust-fixed-ode renders the scalar event profile issued by rumoca-ir-solve as model facts and includes a hand-written event runtime partial (fixed-step Simulator, RootBracket location, Appendix B iteration); the DAE context carries Boolean start values so discrete Boolean parameters get their defaults.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/build.rs",
+          "before": "9e3260e40aa48f9575f00da4d79f4d6ef70e22cde6a14375ac8ef6a8e4831fee",
+          "after": "5c92b765bd85ea268a3318895dceb3be0f7522d3a7e74e468e854a29bd371f56"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/dae_backend.rs",
+          "before": "2e45cc434c72442dbb02f0ba8e82b3ae9e3d171f97b79664752cfd9d3529ee84",
+          "after": "0a885cdd99e5a1aaba0cb3f23f70baab562bb5c1ef00e700a454488cd2794951"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/galec_manifest_template_tests.rs",
+          "before": "17e7811784ae156799effc611a64823a7c34cdce06007f5f751b258edabdfbd0",
+          "after": "7d1fffd5462bed3f1e027b13d1f93be8f5e44f8bc197f8d34a5d7f31f58effcb"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/solve_lazy.rs",
+          "before": "5b1747099075f0926fa660fd8e080f5c2b3ea9c7e7bb48be0412d89d0cefea98",
+          "after": "2d1b8fd6149cc29445ae1bb8f22b5127809e359f810f9fd1a88b270c7709da18"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs",
+          "before": "7d2013dcf42e53dba352e57ed905d7b95380077fefdae60e7d30cc903fbb4658",
+          "after": "2b2269072f550f2d999eb542ea27fc0748548cdd4675f8e632285a5e9fd6915a"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/README.md",
+          "before": "90b119d9bbbfc6a347478fd958cf75c9f6b77a137c3d25d820bd9e378b4de8e0",
+          "after": "b6c37b7b0e64b3585715ec3300abd2490b86cd9eac557f07b52d7df7e198ef51"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/events.rs",
+          "before": null,
+          "after": "a4dfc1a3f269353ca82051f502fdda7c2aaf314aa385fa271a0c63134afa2b94"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/model_fixed_ode.rs.jinja",
+          "before": "546d563cf493b20ab51684713630b8bc676cfa1396994ba7eb2f0c50d88562bd",
+          "after": "2d643cc527f7c5ee1847ffb8f7c3c3a9dd971901bfa395fa1398a0840fef10a3"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/target.toml",
+          "before": "b99069252a727a126a9ed2356cd7565b28c43a9c8686baa0dc339df4307fadd5",
+          "after": "27c7afe77e3cd718144fa754fe6ad6c72ad78b9a821365920bb7bd97c17ad853"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/tests/rust_fixed_ode_event_runtime.rs",
+          "before": null,
+          "after": "5ce5e1536cfb60442f8611cf06fa080ee59fdb988be1c696dd724217d993c0a9"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/tests/rust_fixed_ode_event_runtime_mock.rs",
+          "before": null,
+          "after": "c88a69601b9ed26345992749b4c8fffdfd79d89cb643529224aad4c75384734b"
+        }
+      ]
     }
   ]
 }
