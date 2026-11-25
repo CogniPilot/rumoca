@@ -11,6 +11,7 @@ use super::{
     CodegenError, LazyDerivativeNodesValue, LazyScalarRowsValue, create_environment,
     dae_template_json_for_solve_context, solve_template_blocks_value,
 };
+use crate::views::solve_variables::solve_variables;
 
 #[derive(Debug)]
 pub struct SolveTemplateRenderer {
@@ -420,11 +421,13 @@ fn solve_render_context_value_with_handles(
     let parameter_defaults = Value::from(parameter_defaults(solve_problem, &dae_entry));
     let parameter_names = Value::from(parameter_names(solve_problem));
     let parameter_inputs = Value::from(parameter_inputs(solve_problem));
+    let variables = Value::from_serialize(solve_variables(solve_problem, &dae_entry));
     let context = match model_name {
         Some(name) => minijinja::context! {
             solve_parameter_defaults => parameter_defaults.clone(),
             solve_parameter_names => parameter_names.clone(),
             solve_parameter_inputs => parameter_inputs.clone(),
+            solve_variables => variables.clone(),
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
@@ -444,6 +447,7 @@ fn solve_render_context_value_with_handles(
             solve_parameter_defaults => parameter_defaults,
             solve_parameter_names => parameter_names,
             solve_parameter_inputs => parameter_inputs,
+            solve_variables => variables,
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
             solve => solve_value.clone(),

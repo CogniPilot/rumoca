@@ -3,4 +3,5 @@
 pub(crate) mod algorithm_code;
 mod algorithm_code_symbols;
 mod algorithm_code_typed;
+pub(crate) mod solve_variables;
 pub(crate) mod source_trace;
