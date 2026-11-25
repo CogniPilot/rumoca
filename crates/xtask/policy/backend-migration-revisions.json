@@ -360,6 +360,166 @@
           "after": "2a098ef728a1ebbb8cc72d929f58dfbf6476c51f407adb1d1f0cbaa9f43619e0"
         }
       ]
+    },
+    {
+      "id": "R011",
+      "decision": "d-pending-owner-me-projection-c-emission-20261124",
+      "change": "The FMI3 projection kernel, the FMI2 and FMI3 model headers and their plan views render projection block and chart descriptors as offsets into the index pool instead of pointers, reach each program family through one switch dispatcher instead of function-pointer tables, and carry the model identifier on the shared kernel and typed-function symbols. An out-of-range program index answers a logged fatal status that later kernel entries refuse until reset. A block's ES016 fold message is read from the block's own chart, and a block projection whose trial evaluation fails restores the coordinate it saved before it returns the error. Row, isolator and assignment functions render the output slices and packed registers issued by rumoca-ir-solve (slice_to_outputs, pack_registers), and rows equal up to their load indices (load_index_classes) share one row function. With a projection arena, the coordinate copies of the refresh and of the chart functions are arena frames. A one-row block whose singleton assignment declines passes its residual to the dense Newton. No in-range value or decision changes.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection.rs",
+          "before": "6bbf3bf1408ddfa4e4846f03d634d409886f7bd9b3d6ff61e2253b9e5822a9d2",
+          "after": "4cbd8570785f849038a248b4aed35465f0737c56a7603724d5dd5d3187f74163"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection/assign.rs",
+          "before": "d060bafef1cdc3a7c1bc77ab3d49d8fe145f6d30bd2a781f46b3536136fe75ee",
+          "after": "ebff7b2381bf70529a5829e5e5d2ca83030bc59bd4258a9a3063419e6c286c3b"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection/block.rs",
+          "before": "32bb01e5066ed219f85b561411538424630079ecaa18d5e91a0501e77b74ee2a",
+          "after": "f66ad74c662209d1eabbe6e94a808c13d341b6f761d2d56b6bbf81fd9ef6492c"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection/chart.rs",
+          "before": "8653fa7b6f6fe5a2418ae538be11c704e4c9c14341d6a0ac8914b12ee5667229",
+          "after": "7b5b4e6525e0133f77213f3d9fe5706fdf5777034b58a1da550e55046cf7f689"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection/table.rs",
+          "before": "4decfe39f558ae223b2f7a5e6e193005c2def7a50dbedd78b9273e34ba3c654e",
+          "after": "bcbc0ee91f203832170bfcd9abe71663af497eb714e4e002bf9684d7235f4848"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/me_projection/tests.rs",
+          "before": "17d1712e875288a8f0f121d14bb6758ce479d8c15c99117fe6ff55054e95a394",
+          "after": "67cacc71da6056ecac95975f8c17547615c0e11006b6e336a7c6da9e0f521765"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/mod.rs",
+          "before": "50ecdbcd31f64460e134b86e423ff3d7bda64b4cd7ad5af8ac7971c60ad35f21",
+          "after": "8c06a141c90a2e4f0f78a47f42334af6ecc43c7fa2ad878082b3115b473ef23f"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/native_range_render_tests.rs",
+          "before": "f0e7c1ddaec2bac60855aa9977eaf3a953d1c8f4cb0d108058ee4963ad4b2b8f",
+          "after": "e788ef72808570c6af8c5f71255c860225a30e0329edccd6ff7b511f0c9df0ed"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/codegen/scalar_program_plan.rs",
+          "before": "cd16b15f11accaee3ef4354d436c7d833d3077184374fbb3fac0afc2592f16d3",
+          "after": "83af20efbbab7fe1d5d0e2123b3482596d8626d526fa587f53183bd8c099e968"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi2/model.h.jinja",
+          "before": "80f2604f1381747890baf52c07a09735702986290c090b404d21f890564e0e6d",
+          "after": "4b88e44dbe3e8b381c614acd87e7050f40c22c4497430f8dedcf52fd34f09003"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/me_projection.jinja",
+          "before": "73af5da1993be9eec46d8abb9ef17e0cbbf2a4d125f0b7b34fa084a68c6d92ea",
+          "after": "3ad1e96b98c7ba6e2686c3b8923ff8515cd47a9143d143386de8793f3e97671a"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/model.h.jinja",
+          "before": "dec9a78f95b44da2392dff7425cfa62a2929dec25a6f5c8d571e80f1fe73b6e1",
+          "after": "3db4316f74021e5550e673040d5581e9c431aaa659d13811d97d37e5c7af4109"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/scalar_kernel.jinja",
+          "before": "df24339418eee104ecfd457fbd7b295e8b369a3ce5b07f0bf7aacbd12a704c80",
+          "after": "a54e5d3a5e266804333656108ae98df11ab94bb72aa08411cabc520c7cc1d098"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "before": "43db0a0c37543c708621170fced6bb01736828a463ff56e936d6afd10c0d7a91",
+          "after": "89eb15506a3bf0f2d38f667420dd6b40cfce897e8a859a86a2c7fe1c5e369f58"
+        }
+      ],
+      "regions": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "call",
+          "before": "4830d81614f2fc1f8ef0ba4cf22f5a36dac342d6ab477a17695b240f3e004fd0",
+          "start_byte": 1185,
+          "end_byte": 1472,
+          "after": "4830d81614f2fc1f8ef0ba4cf22f5a36dac342d6ab477a17695b240f3e004fd0"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "ctype",
+          "before": "5ba461981efa40139ae19da9f95d53c882e96007eaec81bb49c326be7768c0b8",
+          "start_byte": 1036,
+          "end_byte": 1183,
+          "after": "5ba461981efa40139ae19da9f95d53c882e96007eaec81bb49c326be7768c0b8"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "definition",
+          "before": "39ab81c8e4f6d295730509194d48bcc3239b0171fbef34cba8d68034d84a194c",
+          "start_byte": 9317,
+          "end_byte": 13656,
+          "after": "39ab81c8e4f6d295730509194d48bcc3239b0171fbef34cba8d68034d84a194c"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "direct",
+          "before": "901574685649d1c68e035291e62e716232bcacfe88cf06fb3d95a7ca014c6394",
+          "start_byte": 884,
+          "end_byte": 1035,
+          "after": "901574685649d1c68e035291e62e716232bcacfe88cf06fb3d95a7ca014c6394"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "function_prototypes",
+          "before": "b5d0170e6826d904a7a73a654300056088984ca61a191a9c4d6c4886fa904c7c",
+          "start_byte": 16639,
+          "end_byte": 18925,
+          "after": "b970d7b6fb8fa4425ec9ee595bbdd9bc313d0958111274a2f50d7566fdc4062f"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "functions",
+          "before": "c825c1a41be278a54ca03a2f6192739c297d1efb7dfdc4cb1f102c21757338b8",
+          "start_byte": 15314,
+          "end_byte": 16563,
+          "after": "c825c1a41be278a54ca03a2f6192739c297d1efb7dfdc4cb1f102c21757338b8"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "observation_wrapper",
+          "before": "02f81e72ea261e16b4b5cb68dc2cef614c09863578355d14c56bdcc64614794e",
+          "start_byte": 1474,
+          "end_byte": 2818,
+          "after": "02f81e72ea261e16b4b5cb68dc2cef614c09863578355d14c56bdcc64614794e"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "operation",
+          "before": "dc4844fde52e32579fc22cb235d180afdd39576f05b7db9efd1098fc74e6bfc4",
+          "start_byte": 3344,
+          "end_byte": 9315,
+          "after": "dc4844fde52e32579fc22cb235d180afdd39576f05b7db9efd1098fc74e6bfc4"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "trip_count",
+          "before": "d664529ae0d46494990b358446a9d91f8d5de064bb8513d04af9933c8e2e087e",
+          "start_byte": 541,
+          "end_byte": 728,
+          "after": "d664529ae0d46494990b358446a9d91f8d5de064bb8513d04af9933c8e2e087e"
+        },
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/fmi3/typed_functions.jinja",
+          "name": "wrapper",
+          "before": "871ef8598b2818f22f97844c9c655d928e8b4a79cd6564aa2b11cb3a60395d6b",
+          "start_byte": 13783,
+          "end_byte": 15139,
+          "after": "871ef8598b2818f22f97844c9c655d928e8b4a79cd6564aa2b11cb3a60395d6b"
+        }
+      ]
     }
   ]
 }
