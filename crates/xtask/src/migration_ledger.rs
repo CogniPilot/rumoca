@@ -26,7 +26,7 @@ const REFERENCE_SHA256: &str = "51f97c10ba2b189ac327597782b00d8bbee3c3b21013186c
 const LEDGER_PATH: &str = "crates/xtask/policy/backend-migration-ledger.json";
 // Owner-directed path-scoped revisions (SPEC_0041 §7), pinned like the ledger.
 const REVISIONS: &str = include_str!("../policy/backend-migration-revisions.json");
-const REVISIONS_SHA256: &str = "331014fde3378efcf83b6615e0eeeaadb062e5cc6c6b555df8f51ece3002b77a";
+const REVISIONS_SHA256: &str = "6634e49cfbfe619400594a11da8c1b634b3127ee118fcf8b3d1165e65679fae7";
 const REVISIONS_PATH: &str = "crates/xtask/policy/backend-migration-revisions.json";
 const BACKEND: &str = "crates/rumoca-phase-codegen";
 

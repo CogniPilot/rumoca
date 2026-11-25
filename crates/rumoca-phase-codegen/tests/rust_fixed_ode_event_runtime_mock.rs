@@ -71,54 +71,10 @@ mod model {
     ) -> Result<(), SolveError> {
         Ok(())
     }
-    fn discrete_values(
-        t: Scalar,
-        y: &State,
-        p: &Parameters,
-        out: &mut [f64],
-    ) -> Result<(), SolveError> {
-        no_rows(t, y, p, out)
-    }
-    fn pulse_values(
-        t: Scalar,
-        y: &State,
-        p: &Parameters,
-        out: &mut [f64],
-    ) -> Result<(), SolveError> {
-        no_rows(t, y, p, out)
-    }
-    fn guarded_values(
-        t: Scalar,
-        y: &State,
-        p: &Parameters,
-        out: &mut [f64],
-    ) -> Result<(), SolveError> {
-        no_rows(t, y, p, out)
-    }
-    fn runtime_values(
-        t: Scalar,
-        y: &State,
-        p: &Parameters,
-        out: &mut [f64],
-    ) -> Result<(), SolveError> {
-        no_rows(t, y, p, out)
-    }
-    fn post_commit_values(
-        t: Scalar,
-        y: &State,
-        p: &Parameters,
-        out: &mut [f64],
-    ) -> Result<(), SolveError> {
-        no_rows(t, y, p, out)
-    }
-    fn action_values(
-        t: Scalar,
-        y: &State,
-        p: &Parameters,
-        out: &mut [f64],
-    ) -> Result<(), SolveError> {
-        no_rows(t, y, p, out)
-    }
+    use self::{
+        no_rows as action_values, no_rows as discrete_values, no_rows as guarded_values,
+        no_rows as post_commit_values, no_rows as pulse_values, no_rows as runtime_values,
+    };
 
     const ROW_SLOTS: usize = 1;
     const DISCRETE_TARGETS: &[usize] = &[];
