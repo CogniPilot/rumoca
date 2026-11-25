@@ -287,12 +287,6 @@ checked arithmetic/query results; they MUST NOT return target-language
 fragments or perform lowering, name resolution, type repair, target dispatch,
 file assembly, or escaping for a particular output language.
 
-The legacy backend source freeze (decision ledger D001–D096 and its pinned
-revisions R001–R012) was removed by owner decision on Nov 25, 2026. Backend
-changes are reviewed like any other change; the non-active successor design
-remains DRAFT
-[SPEC_0037 §2a](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md#2a-source-bound-backend-retirement).
-
 ## References
 
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — owning boundary rules, tier
