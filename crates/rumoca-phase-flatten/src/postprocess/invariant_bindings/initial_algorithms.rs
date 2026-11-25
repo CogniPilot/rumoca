@@ -10,8 +10,13 @@
 //! or a String, `evaluate` or `final` parameter with a literal binding), and it
 //! reads a String's value. The target then takes the result as its binding,
 //! fixed and not tunable, and the algorithm is removed. Anything the
-//! interpreter refuses, a false assertion included, leaves the algorithm as it
-//! was.
+//! interpreter refuses leaves the algorithm as it was.
+//!
+//! The algorithm's top-level assertions (the sensor's `assert(ind > 0, ...)`)
+//! are decided with the target's value (MLS §8.3.7): a true one goes; a false
+//! one at error level is the EF030 translation error at its span, with its
+//! message; a false one at warning level stays as a warning assertion with
+//! its condition and message evaluated, which the runtime reports.
 
 use std::borrow::Cow;
 
@@ -26,32 +31,29 @@ use rumoca_eval_flat::translation_reads::ResourceRoots;
 use rumoca_ir_flat as flat;
 
 use super::{FunctionInventory, value_expression};
+use crate::FlattenError;
 
-/// One initial algorithm decided at translation: its index, its target and
-/// the target's value.
+/// One initial algorithm decided at translation: its index, its target, the
+/// target's value, and the warning assertions that stay.
 pub(super) struct Decided {
     index: usize,
     target: VarName,
     value: Value,
+    warnings: Vec<Statement>,
 }
 
 /// The initial algorithms the module documentation describes, run.
 pub(super) fn decide_string_initial_algorithms(
     flat: &flat::Model,
     inventory: &FunctionInventory<'_>,
-) -> Vec<Decided> {
-    flat.initial_algorithms
-        .iter()
-        .enumerate()
-        .filter_map(|(index, algorithm)| {
-            let (target, value) = decide(flat, inventory, index, algorithm)?;
-            Some(Decided {
-                index,
-                target,
-                value,
-            })
-        })
-        .collect()
+) -> Result<Vec<Decided>, FlattenError> {
+    let mut decided = Vec::new();
+    for (index, algorithm) in flat.initial_algorithms.iter().enumerate() {
+        if let Some(found) = decide(flat, inventory, index, algorithm)? {
+            decided.push(found);
+        }
+    }
+    Ok(decided)
 }
 
 /// Give each decided target its value, fixed and not tunable, and remove the
@@ -61,9 +63,16 @@ pub(super) fn apply(flat: &mut flat::Model, decided: Vec<Decided>) {
         index,
         target,
         value,
+        warnings,
     } in decided.into_iter().rev()
     {
-        let algorithm = flat.initial_algorithms.remove(index);
+        let algorithm = if warnings.is_empty() {
+            flat.initial_algorithms.remove(index)
+        } else {
+            let algorithm = &mut flat.initial_algorithms[index];
+            algorithm.statements = warnings;
+            algorithm.clone()
+        };
         let Some(variable) = flat.variables.get_mut(&target) else {
             continue;
         };
@@ -73,15 +82,89 @@ pub(super) fn apply(flat: &mut flat::Model, decided: Vec<Decided>) {
     }
 }
 
-/// The target and its value, when the algorithm qualifies and runs.
+/// The algorithm decided, when it qualifies and runs; the EF030 error when
+/// one of its top-level assertions fails at error level.
 fn decide(
     flat: &flat::Model,
     inventory: &FunctionInventory<'_>,
     index: usize,
     algorithm: &flat::Algorithm,
-) -> Option<(VarName, Value)> {
+) -> Result<Option<Decided>, FlattenError> {
+    let Some((target, value, asserts)) = run(flat, inventory, index, algorithm) else {
+        return Ok(None);
+    };
+    let environment = FixedReads {
+        flat,
+        inventory,
+        target: &target,
+    };
+    let with_target = WithTarget {
+        inner: &environment,
+        target: &target,
+        value: &value,
+    };
+    let mut warnings = Vec::new();
+    for statement in asserts {
+        let Statement::Assert {
+            condition,
+            message,
+            level,
+            span,
+        } = statement
+        else {
+            continue;
+        };
+        let Ok(Value::Bool(holds)) = eval_expr(condition, &with_target) else {
+            return Ok(None);
+        };
+        if holds {
+            continue;
+        }
+        let Ok(Value::String(text)) = eval_expr(message, &with_target) else {
+            return Ok(None);
+        };
+        match flat::AssertionLevel::of_settled(level.as_deref()) {
+            Some(flat::AssertionLevel::Error) => {
+                return Err(FlattenError::structural_assertion_failed(text, *span));
+            }
+            Some(flat::AssertionLevel::Warning) => warnings.push(Statement::Assert {
+                condition: Expression::Literal {
+                    value: rumoca_core::Literal::Boolean(false),
+                    span: condition.span().unwrap_or(*span),
+                },
+                message: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::String(text),
+                    span: message.span().unwrap_or(*span),
+                }),
+                level: level.clone(),
+                span: *span,
+            }),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(Decided {
+        index,
+        target,
+        value,
+        warnings,
+    }))
+}
+
+/// The target, its value, and the algorithm's top-level assertions, when the
+/// algorithm qualifies and its body runs.
+fn run<'a>(
+    flat: &flat::Model,
+    inventory: &FunctionInventory<'_>,
+    index: usize,
+    algorithm: &'a flat::Algorithm,
+) -> Option<(VarName, Value, Vec<&'a Statement>)> {
+    let (asserts, body): (Vec<&Statement>, Vec<&Statement>) = algorithm
+        .statements
+        .iter()
+        .partition(|statement| matches!(statement, Statement::Assert { .. }));
+    let body = body.into_iter().cloned().collect::<Vec<_>>();
     let mut targets = Vec::new();
-    collect_targets(&algorithm.statements, &mut targets)?;
+    collect_targets(&body, &mut targets)?;
     targets.dedup();
     let [target] = targets.as_slice() else {
         return None;
@@ -121,7 +204,7 @@ fn decide(
         algorithm.span,
     ));
     let mut rename = RenameTarget { target };
-    function.body = rename.statements(&algorithm.statements)?;
+    function.body = rename.statements(&body)?;
     let value = eval_function(
         &function,
         Vec::new(),
@@ -131,7 +214,47 @@ fn decide(
         algorithm.span,
     )
     .ok()?;
-    Some((target.clone(), value))
+    Some((target.clone(), value, asserts))
+}
+
+/// [`FixedReads`] with the target's decided value.
+struct WithTarget<'e, 'a> {
+    inner: &'e FixedReads<'a>,
+    target: &'e VarName,
+    value: &'e Value,
+}
+
+impl EvalEnvironment for WithTarget<'_, '_> {
+    fn get_value(&self, name: &str) -> Option<Cow<'_, Value>> {
+        if name == self.target.as_str() {
+            return Some(Cow::Borrowed(self.value));
+        }
+        self.inner.get_value(name)
+    }
+
+    fn get_enum(&self, name: &str) -> Option<&(String, String)> {
+        self.inner.get_enum(name)
+    }
+
+    fn enumeration_type(&self, declaration: rumoca_core::DefId) -> Option<&str> {
+        self.inner.enumeration_type(declaration)
+    }
+
+    fn get_function(&self, name: &str) -> Option<&Function> {
+        self.inner.get_function(name)
+    }
+
+    fn get_array_dimensions(&self, name: &str) -> Option<&[i64]> {
+        self.inner.get_array_dimensions(name)
+    }
+
+    fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource> {
+        self.inner.deferred_parameter(name)
+    }
+
+    fn translation_resources(&self) -> Option<&ResourceRoots> {
+        self.inner.translation_resources()
+    }
 }
 
 /// The local name the target takes in the function the algorithm runs as.

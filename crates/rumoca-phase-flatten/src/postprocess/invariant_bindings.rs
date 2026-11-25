@@ -17,7 +17,10 @@ mod initial_algorithms;
 use rustc_hash::FxHashMap;
 
 /// Fold the invariant bindings SPEC_0040 FLAT-C01 proves into their values.
-pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, ctx: &Context) {
+pub(crate) fn fold_invariant_bindings(
+    flat: &mut flat::Model,
+    ctx: &Context,
+) -> Result<(), crate::FlattenError> {
     let mut evaluator = BindingEvaluator::new(
         flat,
         &ctx.resource_roots,
@@ -59,8 +62,9 @@ pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, ctx: &Context) {
         resources: &ctx.resource_roots,
         enumeration_literals: &ctx.declared_enumeration_literals,
     };
-    let decided = initial_algorithms::decide_string_initial_algorithms(flat, &inventory);
+    let decided = initial_algorithms::decide_string_initial_algorithms(flat, &inventory)?;
     initial_algorithms::apply(flat, decided);
+    Ok(())
 }
 
 struct BindingEvaluator<'a> {
