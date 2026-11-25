@@ -520,6 +520,19 @@
           "after": "871ef8598b2818f22f97844c9c655d928e8b4a79cd6564aa2b11cb3a60395d6b"
         }
       ]
+    },
+    {
+      "id": "R012",
+      "decision": "d-pending-owner-rust-fixed-ode-event-tick-cost-20261125",
+      "change": "The rust-fixed-ode event runtime partial skips event-iteration work whose result is already known: each clock's activity is computed once per iteration, a pass whose guarded rows are all inactive evaluates none of them, the mode-search history is built from its second recorded pass, and ev_static_instant returns at once for a model without static instants. Hand-written runtime only; no rendered decision changes.",
+      "resolves": [],
+      "files": [
+        {
+          "path": "crates/rumoca-phase-codegen/src/templates/rust-fixed-ode/events.rs",
+          "before": "a4dfc1a3f269353ca82051f502fdda7c2aaf314aa385fa271a0c63134afa2b94",
+          "after": "d85267733b12177781eebc0e96644b86e01c448e9fcc8e442b3ea4142707645b"
+        }
+      ]
     }
   ]
 }

@@ -334,7 +334,10 @@ projection kernel and its plan views render failed trials that restore their
 coordinate, offset descriptors, switch dispatch, model-prefixed shared
 symbols, per-chart fold messages, sliced and packed programs, shared row
 functions, arena coordinate copies and a declined singleton's residual
-reused by the dense Newton; it resolves no group. Every other group,
+reused by the dense Newton; it resolves no group. R012 (decision
+`d-pending-owner-rust-fixed-ode-event-tick-cost-20261125`): the
+`rust-fixed-ode` event runtime skips event-iteration work whose result is
+already known; it resolves no group. Every other group,
 including D085, remains open.
 
 The non-active successor design is DRAFT
