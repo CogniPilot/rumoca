@@ -159,7 +159,7 @@ pub(super) fn exposed_constant_value<'a>(
     if scoped.iter().all(Option::is_none) {
         return Ok(None);
     }
-    let declared = ctx.constant_values_by_def_id.get(&target);
+    let declared = ctx.declaration_constant_value(target);
     let values = scoped
         .iter()
         .map(|value| value.or(declared))

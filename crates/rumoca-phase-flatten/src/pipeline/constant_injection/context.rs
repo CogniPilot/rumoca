@@ -57,6 +57,9 @@ pub(crate) struct Context {
     /// or `None` when two packages give it different values.
     pub(crate) constant_values_by_declaration:
         rustc_hash::FxHashMap<rumoca_core::DefId, Option<rumoca_core::Expression>>,
+    /// The packages that expose each constant declaration, the keys of its
+    /// entries in `constant_values_by_scope`.
+    pub(crate) constant_exposing_scopes: rustc_hash::FxHashMap<rumoca_core::DefId, Vec<String>>,
     /// Component-local overrides keyed by exact instantiated occurrence and
     /// exact Resolve declaration identity.
     pub(crate) constant_values_by_occurrence:
@@ -77,6 +80,13 @@ pub(crate) struct Context {
         rumoca_core::InstanceId,
         (rumoca_core::DefId, Option<rumoca_core::InstanceId>),
     >,
+    /// The package each component occurrence's type is spelled through when
+    /// Resolve resolved the type outright and no slot is recorded
+    /// (`package Medium = Moist` with `Medium.BaseProperties medium` gives
+    /// `Moist`): the package whose constants the component's class reads
+    /// (MLS §5.3, §7.3). See `pipeline::component_type_alias_packages`.
+    pub(crate) component_type_alias_packages:
+        rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::DefId>,
     /// Instance path of each instantiated component occurrence, as the exact
     /// reference Instantiate proved for it (one part per enclosing component,
     /// each carrying its Resolve declaration identity).

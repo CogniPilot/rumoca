@@ -141,6 +141,53 @@ impl Context {
             .collect()
     }
 
+    /// The value of the constant `declaration` as the package `component`'s
+    /// type is spelled through exposes it, with that package: only when the
+    /// package records an exposure of this very declaration.
+    pub(crate) fn alias_package_constant(
+        &self,
+        component: rumoca_core::InstanceId,
+        declaration: rumoca_core::DefId,
+    ) -> Option<(rumoca_core::DefId, &rumoca_core::Expression)> {
+        let package = *self.component_type_alias_packages.get(&component)?;
+        let name = self.target_def_names.get(&package)?;
+        self.constant_values_by_scope
+            .get(&(name.clone(), declaration))
+            .map(|value| (package, value))
+    }
+
+    /// The value of a constant by its declaration identity alone. When two
+    /// packages expose the declaration with different values the identity
+    /// does not determine it (MLS §7.3), and the answer is none rather than
+    /// whichever exposure was recorded last. One package that records the
+    /// same constant again in another form (folded, or through an alias) is
+    /// not a disagreement.
+    pub(crate) fn declaration_constant_value(
+        &self,
+        declaration: rumoca_core::DefId,
+    ) -> Option<&rumoca_core::Expression> {
+        if self.packages_disagree_on(declaration) {
+            return None;
+        }
+        self.constant_values_by_def_id.get(&declaration)
+    }
+
+    /// Whether two packages currently expose `declaration` with values that
+    /// are not the same expression.
+    fn packages_disagree_on(&self, declaration: rumoca_core::DefId) -> bool {
+        let Some(scopes) = self.constant_exposing_scopes.get(&declaration) else {
+            return false;
+        };
+        let mut values = scopes.iter().filter_map(|scope| {
+            self.constant_values_by_scope
+                .get(&(scope.clone(), declaration))
+        });
+        let Some(first) = values.next() else {
+            return false;
+        };
+        values.any(|value| !value.semantically_eq_ignoring_spans(first))
+    }
+
     /// The package a component occurrence's type is selected from, when the
     /// type is spelled through a package slot.
     pub(crate) fn component_type_package(

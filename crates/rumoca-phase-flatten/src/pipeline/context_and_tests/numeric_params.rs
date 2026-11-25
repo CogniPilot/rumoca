@@ -14,6 +14,10 @@ impl Context {
         value: rumoca_core::Expression,
     ) {
         if let Some(scope) = crate::path_utils::enclosing_scope(qualified_name) {
+            let scopes = self.constant_exposing_scopes.entry(def_id).or_default();
+            if !scopes.iter().any(|known| known == scope) {
+                scopes.push(scope.to_string());
+            }
             self.constant_values_by_scope
                 .insert((scope.to_string(), def_id), value.clone());
         }

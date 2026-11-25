@@ -14,6 +14,7 @@ mod flatten_pipeline;
 mod function_overrides_and_dims;
 mod import_scopes;
 mod instance_identity;
+mod type_alias_packages;
 
 pub(crate) use component_alias_injection::*;
 pub(crate) use constant_injection::*;
@@ -24,3 +25,4 @@ pub(crate) use flatten_pipeline::*;
 pub(crate) use function_overrides_and_dims::*;
 pub(crate) use import_scopes::*;
 pub(crate) use instance_identity::*;
+pub(crate) use type_alias_packages::*;

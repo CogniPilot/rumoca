@@ -399,6 +399,8 @@ pub fn flatten_ref_in_closure(
         .map(|(id, name)| (*id, name.clone()))
         .collect();
     ctx.seed_component_member_scopes(overlay);
+    ctx.component_type_alias_packages =
+        pipeline::component_type_alias_packages(overlay, &class_index, &ctx.package_def_ids);
     let mut flat = flat::Model::new();
     flat.predefined_string_declaration = tree
         .scope_tree
