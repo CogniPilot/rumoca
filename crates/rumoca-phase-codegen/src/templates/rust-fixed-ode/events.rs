@@ -573,9 +573,11 @@ fn next_time_event(current: f64, target: f64) -> Result<Option<f64>, SimError> {
     Ok(next)
 }
 
-fn write_clock_lanes(p: &mut Parameters, t: f64) {
-    for clock in CLOCKS {
-        p[clock.activation] = if clock_active(clock, t) { 1.0 } else { 0.0 };
+/// Mark the clocks ticking at `t`, in `ticking` and in their activation lanes.
+fn write_clock_lanes(ticking: &mut [bool; CLOCK_SLOTS], p: &mut Parameters, t: f64) {
+    for (k, clock) in CLOCKS.iter().enumerate() {
+        ticking[k] = clock_active(clock, t);
+        p[clock.activation] = if ticking[k] { 1.0 } else { 0.0 };
     }
 }
 
@@ -588,6 +590,8 @@ fn clear_clock_lanes(p: &mut Parameters) {
 // ---------------------------------------------------------------------------
 // Event iteration (MLS Appendix B), as the FMI 3 C component runs it.
 // ---------------------------------------------------------------------------
+
+const CLOCK_SLOTS: usize = if CLOCKS.is_empty() { 1 } else { CLOCKS.len() };
 
 /// Event bookkeeping kept between steps.
 #[derive(Clone, Copy, Debug)]
@@ -607,6 +611,8 @@ struct EventMemory {
     changed: [bool; INDICATOR_SLOTS],
     /// The discrete inputs as the latest event saw them.
     inputs_seen: [f64; INPUT_SLOTS],
+    /// Per clock: whether it ticks at the running iteration's time.
+    ticking: [bool; CLOCK_SLOTS],
 }
 
 impl EventMemory {
@@ -622,6 +628,7 @@ impl EventMemory {
             pass: 0,
             changed: [false; INDICATOR_SLOTS],
             inputs_seen: [0.0; INPUT_SLOTS],
+            ticking: [false; CLOCK_SLOTS],
         }
     }
 
@@ -843,9 +850,9 @@ fn ev_is_reinit(slot: Slot) -> bool {
 
 /// Whether guarded owner `g` runs: a clocked one on its tick in the first
 /// pass only.
-fn ev_guard_runs(events: &EventMemory, g: usize, time: Scalar) -> bool {
+fn ev_guard_runs(events: &EventMemory, g: usize) -> bool {
     match GUARDED_CLOCK[g] {
-        Some(clock) => events.pass == 0 && clock_active(&CLOCKS[clock], time),
+        Some(clock) => events.pass == 0 && events.ticking[clock],
         None => true,
     }
 }
@@ -865,7 +872,9 @@ fn ev_discrete_owners(
     let mut values = [0.0; ROW_SLOTS];
     discrete_values(time, y, p, &mut values)?;
     let mut guarded = [0.0; ROW_SLOTS];
-    if !memories_only {
+    // A pass in which no guarded assignment runs does not evaluate them.
+    let writes_guarded = !memories_only && (0..GUARDED_TARGETS.len()).any(|g| !ev_is_reinit(GUARDED_TARGETS[g]) && ev_guard_runs(events, g));
+    if writes_guarded {
         guarded_values(time, y, p, &mut guarded)?;
     }
     for (d, &target) in DISCRETE_TARGETS.iter().enumerate() {
@@ -878,7 +887,7 @@ fn ev_discrete_owners(
         return Ok(changed);
     }
     for (g, &slot) in GUARDED_TARGETS.iter().enumerate() {
-        if ev_is_reinit(slot) || !ev_guard_runs(events, g, time) {
+        if ev_is_reinit(slot) || !ev_guard_runs(events, g) {
             continue;
         }
         let value = if slot.in_y { guarded[g] } else { events.overrides.for_memory(slot.index).unwrap_or(guarded[g]) };
@@ -890,14 +899,14 @@ fn ev_discrete_owners(
 /// Copy each active `reinit` into its state at the end of a pass, evaluated
 /// on the pass's settled coordinate (MLS 8.3.6); whether a state changed.
 fn ev_reinit(events: &EventMemory, time: Scalar, y: &mut State, p: &Parameters) -> Result<bool, SimError> {
-    if !GUARDED_TARGETS.iter().any(|&slot| ev_is_reinit(slot)) {
+    if !(0..GUARDED_TARGETS.len()).any(|g| ev_is_reinit(GUARDED_TARGETS[g]) && ev_guard_runs(events, g)) {
         return Ok(false);
     }
     let mut values = [0.0; ROW_SLOTS];
     guarded_values(time, y, p, &mut values)?;
     let mut changed = false;
     for (g, &slot) in GUARDED_TARGETS.iter().enumerate() {
-        if ev_is_reinit(slot) && ev_guard_runs(events, g, time) {
+        if ev_is_reinit(slot) && ev_guard_runs(events, g) {
             changed |= ev_write(&mut y[slot.index], values[g]);
         }
     }
@@ -987,7 +996,7 @@ fn ev_relation_settle(
     p: &mut Parameters,
     changed_any: &mut bool,
 ) -> Result<(), SimError> {
-    let mut surface = EvSurface::new();
+    let mut history = EvHistory::new();
     for _ in 0..FIXED_POINT_CAP {
         for step in RELATION_PASS {
             match step {
@@ -1006,11 +1015,11 @@ fn ev_relation_settle(
                 }
             }
         }
-        if surface.repeats(y, p) {
-            if !ev_mode_search(events, &surface, time, y, p)? {
+        if let Some(surface) = history.repeats(y, p) {
+            if !ev_mode_search(events, surface, time, y, p)? {
                 return Ok(());
             }
-            surface.clear();
+            history.clear();
             *changed_any = true;
         }
     }
@@ -1053,6 +1062,43 @@ impl EvSurface {
             self.count += 1;
         }
         repeats
+    }
+}
+
+/// An `EvSurface` built on the second pass it records: most iterations
+/// settle before then, and the first pass only records.
+struct EvHistory {
+    first: Option<(State, Parameters)>,
+    surface: Option<EvSurface>,
+}
+
+impl EvHistory {
+    const fn new() -> Self {
+        Self { first: None, surface: None }
+    }
+
+    fn clear(&mut self) {
+        self.first = None;
+        if let Some(surface) = &mut self.surface {
+            surface.clear();
+        }
+    }
+
+    /// `EvSurface::repeats`: the surface, when this pass repeats a recorded one.
+    fn repeats(&mut self, y: &State, p: &Parameters) -> Option<&EvSurface> {
+        let repeats = match (&mut self.surface, self.first.take()) {
+            (Some(surface), _) => surface.repeats(y, p),
+            (None, None) => {
+                self.first = Some((*y, *p));
+                false
+            }
+            (None, Some((first_y, first_p))) => {
+                let surface = self.surface.insert(EvSurface::new());
+                surface.repeats(&first_y, &first_p);
+                surface.repeats(y, p)
+            }
+        };
+        if repeats { self.surface.as_ref() } else { None }
     }
 }
 
@@ -1187,7 +1233,7 @@ fn ev_iterate_passes(
         p[PRE_LANES[lane].dest] = ev_pre_source(&events.entry_y, &events.entry_p, lane);
     }
     let mut settled = false;
-    let mut surface = EvSurface::new();
+    let mut history = EvHistory::new();
     for pass in 0..FIXED_POINT_CAP {
         events.pass = pass;
         let mut changed = pass > 0 && ev_advance_lanes(y, p);
@@ -1199,12 +1245,12 @@ fn ev_iterate_passes(
         if settled {
             break;
         }
-        if surface.repeats(y, p) {
-            if !ev_mode_search(events, &surface, time, y, p)? {
+        if let Some(surface) = history.repeats(y, p) {
+            if !ev_mode_search(events, surface, time, y, p)? {
                 settled = true;
                 break;
             }
-            surface.clear();
+            history.clear();
         }
     }
     if !settled {
@@ -1394,9 +1440,10 @@ fn ev_iterate(
     p: &mut Parameters,
     canonicalize: bool,
 ) -> Result<(), SimError> {
-    write_clock_lanes(p, time);
+    write_clock_lanes(&mut events.ticking, p, time);
     let status = ev_iterate_passes(events, time, y, p, canonicalize);
     clear_clock_lanes(p);
+    events.ticking = [false; CLOCK_SLOTS];
     events.pass = 0;
     status
 }
@@ -1425,7 +1472,7 @@ fn ev_initialize(events: &mut EventMemory, time: Scalar, y: &mut State, p: &mut 
 /// The static instant `time` matches, unless a clock ticks there: an event
 /// there is observed at the instant's right limit.
 fn ev_static_instant(time: Scalar) -> Option<Scalar> {
-    if CLOCKS.iter().any(|clock| clock_active(clock, time)) {
+    if TIME_EVENTS.is_empty() || CLOCKS.iter().any(|clock| clock_active(clock, time)) {
         return None;
     }
     TIME_EVENTS.iter().copied().find(|&instant| ev_time_match(instant, time))
