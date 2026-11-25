@@ -398,6 +398,7 @@ mod translation_enumeration_literals;
 mod translation_file_reads;
 mod translation_package_functions_named_like_builtins;
 mod translation_string_functions;
+mod translation_string_parameters;
 mod trial_residual_scale;
 mod type_attribute_inheritance;
 mod variability_classes;

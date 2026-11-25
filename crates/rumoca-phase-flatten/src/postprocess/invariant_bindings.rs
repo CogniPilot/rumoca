@@ -3,8 +3,8 @@
 use std::borrow::Cow;
 
 use rumoca_core::{
-    ArrayConstructor, Expression, ExpressionVisitor, FallibleExpressionRewriter, Function,
-    InstanceId, Literal, Reference, Span, Subscript, Variability,
+    ArrayConstructor, BuiltinFunction, Expression, ExpressionVisitor, FallibleExpressionRewriter,
+    Function, InstanceId, Literal, Reference, Span, Subscript, Variability,
 };
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment, Value, eval_expr};
 use rumoca_eval_flat::phase_constant::DeclaredEnumerationLiterals;
@@ -25,10 +25,16 @@ pub(crate) fn fold_invariant_bindings(flat: &mut flat::Model, ctx: &Context) {
         evaluator.value(variable.instance_id);
     }
     let values = evaluator.values;
+    let string_bound = evaluator.string_bound;
     for variable in flat.variables.values_mut() {
         let Some(Some(value)) = values.get(&variable.instance_id) else {
             continue;
         };
+        // Its value is fixed here, so it is not tunable either: setting it
+        // at run time would change nothing (MLS §18.3 Evaluate).
+        if string_bound.contains(&variable.instance_id) {
+            variable.evaluate = true;
+        }
         let Some(binding) = variable.binding.as_ref() else {
             continue;
         };
@@ -54,6 +60,9 @@ struct BindingEvaluator<'a> {
     functions: FunctionInventory<'a>,
     // None also marks an evaluation in progress, so cyclic bindings cannot fold.
     values: FxHashMap<InstanceId, Option<Value>>,
+    /// Non-String parameters evaluated here only because their binding reads
+    /// a String's value.
+    string_bound: rustc_hash::FxHashSet<InstanceId>,
 }
 
 impl<'a> BindingEvaluator<'a> {
@@ -78,6 +87,7 @@ impl<'a> BindingEvaluator<'a> {
                 enumeration_literals,
             },
             values: FxHashMap::default(),
+            string_bound: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -93,11 +103,21 @@ impl<'a> BindingEvaluator<'a> {
 
     fn evaluate_binding(&mut self, id: InstanceId) -> Option<Value> {
         let variable = self.variables.get(&id).copied().flatten()?;
+        // The runtime owns no String storage (SPEC_0022 ALG-015), so a
+        // String parameter is its declared value, and a parameter whose
+        // binding reads a String's value can only be evaluated here.
+        let string_bound = matches!(variable.variability, Variability::Parameter(_))
+            && !variable.evaluate
+            && !self.is_string(variable)
+            && variable
+                .binding
+                .as_ref()
+                .is_some_and(|binding| self.reads_string_value(binding));
         let invariant = match variable.variability {
             Variability::Constant(_) => true,
-            // The runtime owns no String storage (SPEC_0022 ALG-015), so a
-            // String parameter is its declared value.
-            Variability::Parameter(_) => variable.evaluate || self.is_string(variable),
+            Variability::Parameter(_) => {
+                variable.evaluate || self.is_string(variable) || string_bound
+            }
             _ => false,
         };
         if !invariant || variable.fixed_uniform() == Some(false) {
@@ -111,7 +131,11 @@ impl<'a> BindingEvaluator<'a> {
         }
         let binding = self.rewrite_expression(binding).ok()?;
         let value = eval_expr(&binding, &self.functions).ok()?;
-        is_foldable(&value, variable.dims.is_empty()).then_some(value)
+        let value = is_foldable(&value, variable.dims.is_empty()).then_some(value)?;
+        if string_bound {
+            self.string_bound.insert(id);
+        }
+        Some(value)
     }
 
     fn is_string(&self, variable: &flat::Variable) -> bool {
@@ -126,6 +150,19 @@ impl<'a> BindingEvaluator<'a> {
     fn reads_string(&self, expression: &Expression) -> bool {
         let mut reads = StringReads {
             evaluator: self,
+            values_only: false,
+            found: false,
+        };
+        reads.visit_expression(expression);
+        reads.found
+    }
+
+    /// Whether an expression reads a String's value: a String read only for
+    /// its shape (`size(substanceNames, 1)`) has a value Solve can evaluate.
+    fn reads_string_value(&self, expression: &Expression) -> bool {
+        let mut reads = StringReads {
+            evaluator: self,
+            values_only: true,
             found: false,
         };
         reads.visit_expression(expression);
@@ -194,6 +231,8 @@ fn value_expression(value: &Value, span: Span) -> Option<Expression> {
 /// Whether an expression reads a String literal or a String variable.
 struct StringReads<'e, 'a> {
     evaluator: &'e BindingEvaluator<'a>,
+    /// Skip the operands of `size` and `ndims`, which read a shape only.
+    values_only: bool,
     found: bool,
 }
 
@@ -212,6 +251,10 @@ impl ExpressionVisitor for StringReads<'_, '_> {
             {
                 self.found = true;
             }
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Size | BuiltinFunction::Ndims,
+                ..
+            } if self.values_only => {}
             _ => self.walk_expression(expr),
         }
     }
