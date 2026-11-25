@@ -153,7 +153,6 @@ Error codes use mnemonic prefixes for readability:
 | EI0xx | instantiate | **I**nstantiate | Modification errors |
 | WI0xx | instantiate | **I**nstantiate | Non-fatal instantiation diagnostics |
 | EF0xx | flatten | **F**latten | Connection errors |
-| WF0xx | flatten | **F**latten | Non-fatal flatten diagnostics (`WF001` package constant read without its package while concrete packages disagree, MLS 3.7 §7.3) |
 | ED0xx | todae | **D**AE | Equation errors |
 | EC0xx | codegen | **C**odegen | Code generation errors |
 | EM0xx | class merge | **M**erge | Class-tree merge errors |
