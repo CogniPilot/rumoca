@@ -1076,6 +1076,9 @@ fn compare_channel(
     omc: ChannelSeries<'_>,
     rule: ChannelRule<'_>,
 ) -> Option<ChannelDeviationMetric> {
+    if let Some(instant) = single_instant(rumoca, omc) {
+        return compare_single_instant(name, rumoca, omc, rule, instant);
+    }
     if !rumoca.is_comparable() || !omc.is_comparable() {
         return None;
     }
@@ -1147,6 +1150,72 @@ fn compare_channel(
         initial_abs_error,
         initial_bounded_normalized_error,
         phasor: rule.phasor.map(|phasor| phasor.evidence(undefined_samples)),
+    })
+}
+
+/// The one instant both traces cover, when each has every sample at it: an
+/// experiment with `StartTime = StopTime` (MSL
+/// `Media.Examples.SolveOneNonlinearEquation.Inverse_sine`) has no interval
+/// to integrate over.
+fn single_instant(rumoca: ChannelSeries<'_>, omc: ChannelSeries<'_>) -> Option<f64> {
+    let instant = *rumoca.times.first()?;
+    let only_at = |series: ChannelSeries<'_>| {
+        !series.times.is_empty()
+            && series.times.len() == series.values.len()
+            && series.times.iter().all(|time| *time == instant)
+    };
+    (instant.is_finite() && only_at(rumoca) && only_at(omc)).then_some(instant)
+}
+
+/// A channel of a single-instant experiment, compared pointwise at its
+/// instant: the settled values, normalized by the reference value's scale.
+/// A phasor channel is left uncompared.
+fn compare_single_instant(
+    name: &str,
+    rumoca: ChannelSeries<'_>,
+    omc: ChannelSeries<'_>,
+    rule: ChannelRule<'_>,
+    instant: f64,
+) -> Option<ChannelDeviationMetric> {
+    if rule.phasor.is_some() {
+        return None;
+    }
+    let rumoca_value = settled_value_at_exact_start(rumoca)?;
+    let omc_value = settled_value_at_exact_start(omc)?;
+    let error = (rumoca_value - omc_value).abs();
+    if !error.is_finite() {
+        return None;
+    }
+    let scale = reference_scale(&[omc_value], rule.use_step_hold, rule.array_group_floor);
+    let normalization_scale = scale.normalization_scale;
+    let normalized_l1_error = error / normalization_scale;
+    let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
+    let shape = classify_channel_deviation_shape(
+        &[(instant, rumoca_value, omc_value)],
+        ChannelErrorSummary {
+            mean_abs_error: error,
+            max_abs_error: error,
+            bounded_normalized_l1_error,
+        },
+        scale,
+    );
+    Some(ChannelDeviationMetric {
+        name: name.to_string(),
+        shape,
+        samples: 1,
+        integral_duration: 0.0,
+        integral_abs_error: 0.0,
+        mean_abs_error: error,
+        normalization_scale,
+        reference_range: scale.range,
+        reference_magnitude: scale.magnitude,
+        reference_array_group_floor: scale.array_group_floor,
+        normalized_l1_error,
+        bounded_normalized_l1_error,
+        normalized_max_abs_error: normalized_l1_error,
+        initial_abs_error: Some(error),
+        initial_bounded_normalized_error: Some(bounded_normalized_l1_error),
+        phasor: None,
     })
 }
 
