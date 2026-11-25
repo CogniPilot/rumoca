@@ -92,6 +92,7 @@ impl std::error::Error for TableRuntimeError {}
 #[derive(Debug, Clone, Copy)]
 struct TableLookupResult {
     value: f64,
+    curvature: f64,
     slope: f64,
 }
 
@@ -124,6 +125,17 @@ pub fn eval_table_lookup_slope_value_in(
     let table = lookup_external_table(table_id, tables)?;
     let col_idx = table_col_index(table, col_arg)?;
     Ok(eval_table_1d_lookup(table, col_idx, x)?.slope)
+}
+
+pub(super) fn eval_table_curvature(
+    table_id: f64,
+    col_arg: f64,
+    x: f64,
+    tables: &[ExternalTableData],
+) -> Result<f64, TableRuntimeError> {
+    let table = lookup_external_table(table_id, tables)?;
+    let col_idx = table_col_index(table, col_arg)?;
+    Ok(eval_table_1d_lookup(table, col_idx, x)?.curvature)
 }
 
 pub fn eval_time_table_next_event_value_in(
@@ -308,6 +320,7 @@ fn eval_table_1d_lookup(
     if table.data.len() == 1 {
         return Ok(TableLookupResult {
             value: table_row_value(table, 0, output_col)?,
+            curvature: 0.0,
             slope: 0.0,
         });
     }
@@ -320,6 +333,7 @@ fn eval_table_1d_lookup(
         let row = if x < x_min { 0 } else { last_idx };
         return Ok(TableLookupResult {
             value: table_row_value(table, row, output_col)?,
+            curvature: 0.0,
             slope: 0.0,
         });
     }
@@ -337,12 +351,14 @@ fn eval_table_1d_lookup(
             } else {
                 y0
             },
+            curvature: 0.0,
             slope: 0.0,
         });
     }
     if (x1 - x0).abs() <= f64::EPSILON {
         return Ok(TableLookupResult {
             value: y0,
+            curvature: 0.0,
             slope: 0.0,
         });
     }
@@ -358,6 +374,7 @@ fn eval_table_1d_lookup(
     let slope = (y1 - y0) / (x1 - x0);
     Ok(TableLookupResult {
         value: y0 + (x_real - x0) * slope,
+        curvature: 0.0,
         slope: if preserve_slope { slope } else { 0.0 },
     })
 }
@@ -410,6 +427,7 @@ fn eval_akima_1d(
             let (_, _, c2) = akima_interval_coeffs(&xs, &ys, &slopes, 0);
             return Ok(TableLookupResult {
                 value: ys[0] + c2 * (x - x_min),
+                curvature: 0.0,
                 slope: c2,
             });
         }
@@ -419,6 +437,7 @@ fn eval_akima_1d(
         let slope = (3.0 * c0 * v + 2.0 * c1) * v + c2;
         return Ok(TableLookupResult {
             value: ys[n - 1] + slope * (x - x_max),
+            curvature: 0.0,
             slope,
         });
     }
@@ -435,7 +454,16 @@ fn eval_akima_1d(
     } else {
         0.0
     };
-    Ok(TableLookupResult { value, slope })
+    let curvature = if preserve_slope {
+        6.0 * c0 * v + 2.0 * c1
+    } else {
+        0.0
+    };
+    Ok(TableLookupResult {
+        value,
+        slope,
+        curvature,
+    })
 }
 
 /// The Akima first-order derivative at every knot of one table column.

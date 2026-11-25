@@ -19,12 +19,12 @@
 //! The dot-product identity
 //! `λᵀ(J v) = (Jᵀλ)ᵀ v` must hold against the forward JVP for random `v`, `λ`.
 //!
-//! Scope: scalar ops, `LinearSolveComponent` (the linear-solve VJP — adjoint
-//! `Aᵀμ = λ·e_c`), and the single-lane tensor ops of the `tensor` submodule (loads, dot and
-//! matrix products, elementwise binaries, transpose, fill, identity). Table
-//! lookups, random generators, runtime-indexed loads, and the remaining tensor
-//! and region ops are still deferred and raise an explicit error here rather
-//! than silently returning a wrong gradient.
+//! Admission, the primal tape, and the pullback each match Solve IR exhaustively.
+//! The Rust compiler diagnoses a missing instruction arm. The explicit VJP checks
+//! all rows before accumulating cotangents. Single-lane tensors, scalar
+//! arithmetic, indexed reads, tables and typed differentiable calls have rules.
+//! Structured regions tape the iterations and branches actually evaluated.
+//! Higher-order calls and impure effects have separate contracts.
 //!
 //! The reverse-sweep types are `pub` only so that
 //! `rumoca_solver::runtime::solve_runtime` (the runtime state machine that owns
@@ -77,6 +77,15 @@
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp};
 
+#[macro_use]
+mod patterns;
+
+mod call;
+#[cfg(test)]
+mod contract_tests;
+mod history;
+mod indexed;
+mod region;
 mod tensor;
 
 use crate::{
@@ -111,12 +120,15 @@ pub struct ReverseInputs<'a> {
 }
 
 /// Reusable per-row register tape and adjoint buffers. Holding these across calls
-/// keeps a hot reverse loop (e.g. an optimizer) allocation-free after warm-up —
+/// reuses the tape and gradient storage across calls —
 /// `clear` + `resize` retains capacity. Mirrors how `SolveRuntime` reuses its
 /// forward `StateDerivativeScratch`.
 #[derive(Default, Clone)]
 pub struct ReverseScratch {
     regs: Vec<f64>,
+    history: history::History,
+    last_store: Vec<usize>,
+    pending: [Vec<f64>; 3],
     adj: Vec<f64>,
     /// Registers reached only from the unselected arm of a selection.
     untaken: Vec<bool>,
@@ -143,6 +155,15 @@ pub fn reverse_scalar_block_vjp(
         inputs.p,
         inputs.context.seed,
     )?;
+    for (buffer, required) in [
+        (&*cot.y, program.requirements.y_len),
+        (&*cot.p, program.requirements.p_len),
+        (&*cot.seed, program.requirements.seed_len),
+    ] {
+        if !buffer.is_empty() {
+            crate::validate_output_len(buffer, required)?;
+        }
+    }
     let required_outputs = block.output_count();
     if output_cotangents.len() < required_outputs {
         return Err(EvalSolveError::OutputTooSmall {
@@ -151,21 +172,80 @@ pub fn reverse_scalar_block_vjp(
             span: block.program_span(0),
         });
     }
+    // Validate the entire requested VJP before touching caller-owned cotangents.
+    // In particular, a valid prefix cannot publish a partial gradient on a
+    // missing rule in a later row.
+    let mut admission = region::Admission::default();
+    for (row_idx, row) in block.programs().iter().enumerate() {
+        if program.row_registers.get(row_idx).copied() != block.program_register_count(row_idx) {
+            return Err(
+                unsupported("reverse register extent differs from the checked program")
+                    .with_source_span(block.program_span(row_idx)),
+            );
+        }
+        admission
+            .row(row, row_idx)
+            .map_err(|e| e.with_source_span(block.program_span(row_idx)))?;
+    }
+    // The primal output sink assigns each slot. If several stores target
+    // the same slot, only the final writer contributes to its derivative.
+    scratch.last_store.resize(block.output_count(), 0);
+    for (ordinal, &slot) in block.output_indices().iter().enumerate() {
+        scratch.last_store[slot] = ordinal;
+    }
+    // Table data and typed-call owners come from the execution context and can
+    // still fail at runtime. Publish all requested input spaces together.
+    let mut pending = std::mem::take(&mut scratch.pending);
+    let [y, p, seed] = &mut pending;
+    for (buffer, original) in [
+        (&mut *y, &*cot.y),
+        (&mut *p, &*cot.p),
+        (&mut *seed, &*cot.seed),
+    ] {
+        buffer.clear();
+        buffer.extend_from_slice(original);
+    }
+    let result = accumulate_block(
+        program,
+        inputs,
+        output_cotangents,
+        &mut ReverseCotangents { y, p, seed },
+        scratch,
+    );
+    if result.is_ok() {
+        cot.y.copy_from_slice(y);
+        cot.p.copy_from_slice(p);
+        cot.seed.copy_from_slice(seed);
+    }
+    scratch.pending = pending;
+    result
+}
+
+fn accumulate_block(
+    program: &ScalarVjpProgram<'_>,
+    inputs: &ReverseInputs<'_>,
+    output_cotangents: &[f64],
+    cot: &mut ReverseCotangents<'_>,
+    scratch: &mut ReverseScratch,
+) -> Result<(), EvalSolveError> {
+    let block = program.block;
     let mut output_ordinal = 0usize;
     for (row_idx, row) in block.programs().iter().enumerate() {
         let register_count = program.row_registers[row_idx];
         scratch.prepare(register_count);
         let span = block.program_span(row_idx);
-        forward_row_tape(row, inputs, &mut scratch.regs)
+        forward_row_tape(row, inputs, &mut scratch.regs, &mut scratch.history)
             .map_err(|error| error.with_source_span(span))?;
         output_ordinal = seed_row_output_adjoints(
             row,
             block,
             output_ordinal,
             output_cotangents,
-            &mut scratch.adj,
+            &scratch.last_store,
+            &mut scratch.history,
         );
-        reverse_row_adjoints(row, scratch, cot).map_err(|error| error.with_source_span(span))?;
+        reverse_row_adjoints(row, inputs.context, scratch, cot)
+            .map_err(|error| error.with_source_span(span))?;
         debug_assert!(scratch.adj.iter().all(|value| *value == 0.0));
     }
     Ok(())
@@ -174,9 +254,8 @@ pub fn reverse_scalar_block_vjp(
 /// Reverse one scalar-output row into its complete solver-`y` gradient.
 ///
 /// A scalar residual row has one output, so reverse mode obtains every
-/// `d(row)/d(y[i])` in one forward/reverse sweep. Returning `false` preserves a
-/// precise fallback for rows containing operations whose reverse rule is not
-/// implemented yet.
+/// `d(row)/d(y[i])` in one forward/reverse sweep. An absent or non-scalar row
+/// returns `false`. A missing reverse rule returns a diagnostic.
 pub fn reverse_scalar_row_y_gradient(
     program: &ScalarVjpProgram<'_>,
     row_idx: usize,
@@ -187,11 +266,11 @@ pub fn reverse_scalar_row_y_gradient(
     let Some(row) = program.block.programs().get(row_idx) else {
         return Ok(false);
     };
-    let mut output_sources = row.iter().filter_map(|op| match op {
-        LinearOp::StoreOutput { src } => Some(*src),
+    let mut output_sources = row.iter().enumerate().filter_map(|(i, op)| match op {
+        LinearOp::StoreOutput { src } => Some((i, *src)),
         _ => None,
     });
-    let Some(output_source) = output_sources.next() else {
+    let Some((instruction, output_source)) = output_sources.next() else {
         return Ok(false);
     };
     // A range stores further outputs, so the row has more than one and the
@@ -199,35 +278,48 @@ pub fn reverse_scalar_row_y_gradient(
     let stores_a_range = row
         .iter()
         .any(|op| matches!(op, LinearOp::StoreOutputRange { .. }));
-    if output_sources.next().is_some()
-        || stores_a_range
-        || row.iter().any(|op| !reverse_row_op_supported(op))
-    {
+    if output_sources.next().is_some() || stores_a_range {
         return Ok(false);
     }
 
+    let span = program.block.program_span(row_idx);
+    region::Admission::default()
+        .row(row, row_idx)
+        .map_err(|e| e.with_source_span(span))?;
     scratch.prepare(program.row_registers[row_idx]);
-    forward_row_tape(row, inputs, &mut scratch.regs)
+    forward_row_tape(row, inputs, &mut scratch.regs, &mut scratch.history)
         .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
-    add_adj(&mut scratch.adj, output_source, 1.0);
-    y_gradient.fill(0.0);
-    reverse_row_adjoints(
+    scratch
+        .history
+        .output(instruction, output_source, 1.0, false);
+    let mut pending = std::mem::take(&mut scratch.pending[0]);
+    pending.clear();
+    pending.resize(y_gradient.len(), 0.0);
+    let result = reverse_row_adjoints(
         row,
+        inputs.context,
         scratch,
         &mut ReverseCotangents {
-            y: y_gradient,
+            y: &mut pending,
             p: &mut [],
             seed: &mut [],
         },
     )
-    .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    .map_err(|error| error.with_source_span(span));
+    if result.is_ok() {
+        y_gradient.copy_from_slice(&pending);
+    }
+    scratch.pending[0] = pending;
+    result?;
     debug_assert!(scratch.adj.iter().all(|value| *value == 0.0));
     Ok(true)
 }
 
 impl ReverseScratch {
     fn prepare(&mut self, register_count: usize) {
+        self.history.clear();
         self.regs.resize(register_count, 0.0);
+        self.adj.clear();
         self.adj.resize(register_count, 0.0);
         self.untaken.clear();
         self.untaken.resize(register_count, false);
@@ -236,22 +328,7 @@ impl ReverseScratch {
 }
 
 pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
-    matches!(
-        op,
-        LinearOp::Const { .. }
-            | LinearOp::LoadTime { .. }
-            | LinearOp::LoadY { .. }
-            | LinearOp::LoadP { .. }
-            | LinearOp::LoadIndexedP { .. }
-            | LinearOp::Move { .. }
-            | LinearOp::LinearSolveComponent { .. }
-            | LinearOp::Unary { .. }
-            | LinearOp::Binary { .. }
-            | LinearOp::Compare { .. }
-            | LinearOp::Select { .. }
-            | LinearOp::StoreOutput { .. }
-            | LinearOp::StoreOutputRange { .. }
-    ) || tensor::supported(op)
+    region::Admission::default().check(op).is_ok()
 }
 
 /// Seed the row's `StoreOutput` register adjoints with the matching output
@@ -263,32 +340,33 @@ fn seed_row_output_adjoints(
     block: &ScalarProgramBlock,
     mut ordinal: usize,
     output_cotangents: &[f64],
-    adj: &mut [f64],
+    last_store: &[usize],
+    history: &mut history::History,
 ) -> usize {
-    for op in row {
+    for (i, op) in row.iter().enumerate() {
         // `ordinal` and the dense output slot are in bounds by block invariant
         // (one `output_indices` entry per stored scalar, values < output_count)
         // and the caller's `output_cotangents` length is validated up front.
-        match *op {
-            LinearOp::StoreOutput { src } => {
-                let dense = block.output_indices()[ordinal];
-                add_adj(adj, src, output_cotangents[dense]);
-                ordinal += 1;
-            }
-            // A range stores `count` consecutive outputs, `start + k * stride`,
-            // in the order the canonical evaluator's sink receives them.
+        let (start, count, stride) = match *op {
+            LinearOp::StoreOutput { src } => (src, 1, 1),
             LinearOp::StoreOutputRange {
                 start,
                 count,
                 stride,
-            } => {
-                for k in 0..count {
-                    let dense = block.output_indices()[ordinal];
-                    add_adj(adj, start + (k * stride) as Reg, output_cotangents[dense]);
-                    ordinal += 1;
-                }
+            } => (start, count, stride),
+            _ => continue,
+        };
+        for k in 0..count {
+            let dense = block.output_indices()[ordinal];
+            if last_store[dense] == ordinal {
+                history.output(
+                    i,
+                    start + (k * stride) as Reg,
+                    output_cotangents[dense],
+                    false,
+                );
             }
-            _ => {}
+            ordinal += 1;
         }
     }
     ordinal
@@ -300,69 +378,137 @@ fn forward_row_tape(
     row: &[LinearOp],
     inputs: &ReverseInputs<'_>,
     regs: &mut [f64],
+    history: &mut history::History,
 ) -> Result<(), EvalSolveError> {
-    for op in row {
-        match *op {
-            LinearOp::Const { dst, value } => set(regs, dst, value),
-            LinearOp::LoadTime { dst } => set(regs, dst, inputs.t),
-            LinearOp::LoadY { dst, index } => set(regs, dst, load(inputs.y, "y", index)?),
-            LinearOp::LoadP { dst, index } => set(regs, dst, load(inputs.p, "p", index)?),
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => {
-                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
-                set(regs, dst, load(inputs.p, "p", slot)?);
-            }
-            LinearOp::LoadSeed { dst, index } => {
-                let seed = inputs
-                    .context
-                    .seed
-                    .ok_or_else(|| unsupported("LoadSeed evaluated without a seed vector"))?;
-                set(regs, dst, load(seed, "seed", index)?);
-            }
-            LinearOp::Move { dst, src } => set(regs, dst, reg(regs, src)),
-            LinearOp::Unary { dst, op, arg } => set(regs, dst, eval_unary(op, reg(regs, arg))),
-            LinearOp::Binary { dst, op, lhs, rhs } => {
-                set(regs, dst, eval_binary(op, reg(regs, lhs), reg(regs, rhs)));
-            }
-            LinearOp::Compare { dst, op, lhs, rhs } => {
-                set(regs, dst, eval_compare(op, reg(regs, lhs), reg(regs, rhs)));
-            }
-            LinearOp::Select {
-                dst,
-                cond,
-                if_true,
-                if_false,
-            } => {
-                let value = if reg(regs, cond) != 0.0 {
-                    reg(regs, if_true)
-                } else {
-                    reg(regs, if_false)
-                };
-                set(regs, dst, value);
-            }
-            LinearOp::LinearSolveComponent {
-                dst,
-                matrix_start,
-                rhs_start,
-                n,
-                component,
-            } => {
-                let solution = solve_linear_system(regs, matrix_start, rhs_start, n)?;
-                let value = if component < n {
-                    solution[component]
-                } else {
-                    0.0
-                };
-                set(regs, dst, value);
-            }
-            LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. } => {}
-            ref op if tensor::supported(op) => tensor::forward(op, inputs, regs)?,
-            ref other => return Err(unsupported_reverse_op(other)),
+    history.demanded = region::conditional::demanded(inputs, row, regs.len(), None)?;
+    for (i, op) in row.iter().enumerate() {
+        if history.demanded.as_ref().is_none_or(|mask| mask[i]) {
+            forward_instruction(i, op, inputs, regs, history)?;
         }
+    }
+    Ok(())
+}
+
+// SPEC_0021: Keep the scalar instruction rules together in opcode order.
+#[allow(clippy::too_many_lines)]
+fn forward_instruction(
+    i: usize,
+    op: &LinearOp,
+    inputs: &ReverseInputs<'_>,
+    regs: &mut [f64],
+    history: &mut history::History,
+) -> Result<(), EvalSolveError> {
+    history.before_write(i, op, regs);
+    match *op {
+        LinearOp::Const { dst, value } => set(regs, dst, value),
+        LinearOp::LoadTime { dst } => set(regs, dst, inputs.t),
+        LinearOp::LoadY { dst, index } => set(regs, dst, load(inputs.y, "y", index)?),
+        LinearOp::LoadP { dst, index } => set(regs, dst, load(inputs.p, "p", index)?),
+        LinearOp::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        } => {
+            let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+            set(regs, dst, load(inputs.p, "p", slot)?);
+        }
+        LinearOp::LoadIndexedRegister {
+            dst,
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+        } => {
+            let src = indexed::source(base, stride, dimensions, indices, regs)?;
+            set(regs, dst, reg(regs, src));
+        }
+        LinearOp::LoadIndexedSeed {
+            dst,
+            base,
+            count,
+            index,
+        } => {
+            let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+            let seed = inputs
+                .context
+                .seed
+                .ok_or_else(|| unsupported("LoadIndexedSeed requires seed inputs"))?;
+            set(regs, dst, load(seed, "seed", slot)?);
+        }
+        LinearOp::TableBounds { .. }
+        | LinearOp::TableLookup { .. }
+        | LinearOp::TableLookupSlope { .. }
+        | LinearOp::TableNextEvent { .. } => {
+            crate::apply_table_op(regs, &mut vec![true; regs.len()], op, inputs.context, None)?;
+        }
+        LinearOp::RandomInitialState { .. }
+        | LinearOp::RandomResult { .. }
+        | LinearOp::RandomState { .. } => {
+            crate::apply_random_op(
+                regs,
+                &mut vec![true; regs.len()],
+                op,
+                inputs.t,
+                inputs.context,
+                None,
+            )?;
+        }
+        LinearOp::LoadSeed { dst, index } => {
+            let seed = inputs
+                .context
+                .seed
+                .ok_or_else(|| unsupported("LoadSeed evaluated without a seed vector"))?;
+            set(regs, dst, load(seed, "seed", index)?);
+        }
+        LinearOp::Move { dst, src } => set(regs, dst, reg(regs, src)),
+        LinearOp::Unary { dst, op, arg } => set(regs, dst, eval_unary(op, reg(regs, arg))),
+        LinearOp::Binary { dst, op, lhs, rhs } => {
+            set(regs, dst, eval_binary(op, reg(regs, lhs), reg(regs, rhs)));
+        }
+        LinearOp::Compare { dst, op, lhs, rhs } => {
+            set(regs, dst, eval_compare(op, reg(regs, lhs), reg(regs, rhs)));
+        }
+        LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        } => {
+            let value = if reg(regs, cond) != 0.0 {
+                reg(regs, if_true)
+            } else {
+                reg(regs, if_false)
+            };
+            set(regs, dst, value);
+        }
+        LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start,
+            rhs_start,
+            n,
+            component,
+        } => {
+            let solution = solve_linear_system(regs, matrix_start, rhs_start, n)?;
+            let value = if component < n {
+                solution[component]
+            } else {
+                0.0
+            };
+            set(regs, dst, value);
+        }
+        LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. } => {}
+        LinearOp::PureCall {
+            dst_start,
+            ref input_starts,
+            ref site,
+        } => call::forward(dst_start, input_starts, site, inputs.context, regs)?,
+        tensor_ops!() => tensor::forward(op, inputs, regs)?,
+        region_ops!() => {
+            let invocation = region::Invocation::execute(op, inputs, regs)?;
+            history.regions.push((i, invocation));
+        }
+        region_local_ops!() | outside_first_order!() => return Err(unsupported_reverse_op(op)),
     }
     Ok(())
 }
@@ -376,14 +522,26 @@ fn forward_row_tape(
 /// assignment — so it does not silently depend on the lowering staying SSA. For
 /// today's SSA programs (the bump-allocated register stream) the zero is a no-op
 /// observationally, since a written register is not touched again going backward.
+// SPEC_0021: Keep the scalar instruction rules together in opcode order.
+#[allow(clippy::too_many_lines)]
 fn reverse_row_adjoints(
     row: &[LinearOp],
+    context: RowEvalContext<'_>,
     scratch: &mut ReverseScratch,
     cot: &mut ReverseCotangents<'_>,
 ) -> Result<(), EvalSolveError> {
-    let ReverseScratch { regs, adj, untaken } = scratch;
-    let regs = regs.as_slice();
-    for op in row.iter().rev() {
+    let ReverseScratch {
+        regs,
+        adj,
+        untaken,
+        history,
+        ..
+    } = scratch;
+    for (i, op) in row.iter().enumerate().rev() {
+        if history.demanded.as_ref().is_some_and(|mask| !mask[i]) {
+            continue;
+        }
+        history.rewind(i, regs, adj, untaken);
         match *op {
             // No destination register: nothing to consume.
             LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. } => {}
@@ -405,6 +563,67 @@ fn reverse_row_adjoints(
             } => {
                 let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
                 accumulate(cot.p, slot, take_adj(adj, dst));
+            }
+            LinearOp::LoadIndexedRegister {
+                dst,
+                base,
+                stride,
+                ref dimensions,
+                ref indices,
+            } => {
+                let src = indexed::source(base, stride, dimensions, indices, regs)?;
+                let weight = take_adj(adj, dst);
+                if !skips_untaken(untaken, adj, dst, weight, &[src]) {
+                    add_adj(adj, src, weight);
+                }
+            }
+            LinearOp::LoadIndexedSeed {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+                accumulate(cot.seed, slot, take_adj(adj, dst));
+            }
+            LinearOp::TableBounds { dst, .. }
+            | LinearOp::TableNextEvent { dst, .. }
+            | LinearOp::RandomInitialState { dst, .. }
+            | LinearOp::RandomResult { dst, .. }
+            | LinearOp::RandomState { dst, .. } => {
+                take_adj(adj, dst);
+            }
+            LinearOp::TableLookup {
+                dst,
+                table_id,
+                column,
+                input,
+            }
+            | LinearOp::TableLookupSlope {
+                dst,
+                table_id,
+                column,
+                input,
+            } => {
+                let weight = take_adj(adj, dst);
+                if skips_untaken(untaken, adj, dst, weight, &[input]) {
+                    continue;
+                }
+                let lookup = if matches!(op, LinearOp::TableLookup { .. }) {
+                    crate::eval_table_lookup_slope_value_in
+                } else {
+                    crate::table_runtime::eval_table_curvature
+                };
+                let id = reg(regs, table_id);
+                let col = reg(regs, column);
+                let derivative = lookup(
+                    id,
+                    col,
+                    reg(regs, input),
+                    context.external_tables.unwrap_or(&[]),
+                )
+                .map_err(|e| crate::external_table_error("lookup derivative", id, Some(col), e))?;
+                add_adj(adj, input, weight * derivative);
             }
             LinearOp::LoadSeed { dst, index } => accumulate(cot.seed, index, take_adj(adj, dst)),
             LinearOp::Move { dst, src } => {
@@ -449,8 +668,13 @@ fn reverse_row_adjoints(
                 } else {
                     (if_false, if_true)
                 };
+                if skips_untaken(untaken, adj, dst, dst_adj, &[taken, unselected]) {
+                    continue;
+                }
                 add_adj(adj, taken, dst_adj);
-                untaken[unselected as usize] = true;
+                if taken != unselected {
+                    untaken[unselected as usize] = true;
+                }
             }
             LinearOp::LinearSolveComponent {
                 dst,
@@ -472,8 +696,23 @@ fn reverse_row_adjoints(
                     },
                 )?;
             }
-            ref op if tensor::supported(op) => tensor::reverse(op, regs, adj, untaken, cot),
-            ref other => return Err(unsupported_reverse_op(other)),
+            LinearOp::PureCall {
+                dst_start,
+                ref input_starts,
+                ref site,
+            } => call::reverse(dst_start, input_starts, site, context, regs, adj, untaken)?,
+            tensor_ops!() => tensor::reverse(op, regs, adj, untaken, cot),
+            region_ops!() => {
+                let (_, invocation) = history
+                    .regions
+                    .pop()
+                    .filter(|(step, _)| *step == i)
+                    .ok_or_else(|| {
+                        unsupported("reverse region tape does not match its instruction")
+                    })?;
+                invocation.reverse(context, adj, untaken, cot)?;
+            }
+            region_local_ops!() | outside_first_order!() => return Err(unsupported_reverse_op(op)),
         }
     }
     Ok(())
@@ -684,7 +923,7 @@ fn skips_untaken(
     dst_adj: f64,
     operands: &[Reg],
 ) -> bool {
-    let skip = dst_adj == 0.0 && std::mem::take(&mut untaken[dst as usize]);
+    let skip = std::mem::take(&mut untaken[dst as usize]) && dst_adj == 0.0;
     if skip {
         for &operand in operands {
             if adj[operand as usize] == 0.0 {
@@ -735,7 +974,7 @@ fn unsupported(reason: &str) -> EvalSolveError {
 
 fn unsupported_reverse_op(op: &LinearOp) -> EvalSolveError {
     unsupported(&format!(
-        "reverse-mode AD does not yet support the `{}` op (Track B: tensor / table / random VJP)",
+        "reverse-mode AD has no rule for {}",
         op.kind_name()
     ))
 }
@@ -1120,6 +1359,7 @@ mod tests {
                     context: RowEvalContext::default(),
                 },
                 &mut regs,
+                &mut Default::default(),
             )
             .expect("forward");
             regs[6]

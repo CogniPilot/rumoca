@@ -829,6 +829,9 @@ struct AdBuilder<'a> {
     ops: Vec<LinearOp>,
     next_reg: Reg,
     map: DualMap,
+    // Bindings visible at entry to an instruction that reuses destination registers.
+    prior_start: usize,
+    prior_values: Vec<Option<DualReg>>,
     unary_values: HashMap<(UnaryOp, Reg), Reg>,
     tangent_planes: HashMap<(Reg, usize), Reg>,
     cached_zero: Option<Reg>,
@@ -848,6 +851,8 @@ impl Default for AdBuilder<'_> {
             ops: Vec::new(),
             next_reg: 0,
             map: DualMap::default(),
+            prior_start: 0,
+            prior_values: Vec::new(),
             unary_values: HashMap::new(),
             tangent_planes: HashMap::new(),
             cached_zero: None,

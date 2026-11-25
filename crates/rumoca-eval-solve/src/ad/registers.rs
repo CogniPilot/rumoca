@@ -9,8 +9,11 @@ impl<'a> AdBuilder<'a> {
     }
 
     pub(super) fn lookup(&self, reg: Reg) -> Result<DualReg, SolveDerivationError> {
-        self.map
-            .get(reg)
+        let old = (reg as usize)
+            .checked_sub(self.prior_start)
+            .and_then(|i| self.prior_values.get(i));
+        old.copied()
+            .unwrap_or_else(|| self.map.get(reg))
             .ok_or_else(|| unsupported("missing source register in primal row"))
     }
 

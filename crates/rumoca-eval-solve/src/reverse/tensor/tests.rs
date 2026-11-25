@@ -270,6 +270,7 @@ fn the_tape_records_the_canonical_primal_bit_for_bit() {
             context: RowEvalContext::default(),
         },
         &mut regs,
+        &mut Default::default(),
     )
     .expect("tape");
     assert_eq!(regs[54].to_bits(), canonical(&block, &Y, &P).to_bits());
@@ -556,4 +557,117 @@ fn a_destination_that_overlaps_a_source_is_refused() {
         error.to_string().contains("overlaps a source range"),
         "{error}"
     );
+}
+
+#[test]
+fn concatenate_inner_axis_accumulates_repeated_sources() {
+    use LinearOp::*;
+    use rumoca_ir_solve::TensorConcatenateSource;
+    let piece = |start| TensorConcatenateSource {
+        start,
+        dimensions: vec![2, 1].into(),
+    };
+    let program = block(vec![
+        TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 4,
+            seed_start: None,
+            lanes: 1,
+        },
+        TensorConcatenate {
+            dst_start: 4,
+            sources: vec![piece(0), piece(2), piece(0)].into(),
+            dimensions: vec![2, 3].into(),
+            axis: 1,
+            lanes: 1,
+        },
+        DotProduct {
+            dst: 10,
+            lhs_start: 4,
+            rhs_start: 4,
+            count: 3,
+            lhs_stride: 2,
+            rhs_stride: 2,
+        },
+        StoreOutput { src: 10 },
+    ]);
+    let y = [2., 3., 5., 7.];
+    let (gradient, _) = reverse_gradient(&program, &y, &[]);
+    assert_eq!(gradient, [8., 0., 0., 14.]);
+    assert_close(
+        "cat",
+        &gradient,
+        &central_difference(|v| canonical(&program, v, &[]), &y),
+    );
+}
+
+#[test]
+fn updated_cross_product_routes_load_to_replacement_and_untouched_components() {
+    use LinearOp::*;
+    use rumoca_ir_solve::{TensorIndex, TensorUpdateSubscript};
+    for index in [TensorIndex::Constant(1), TensorIndex::Runtime(12)] {
+        let program = block(vec![
+            TensorLoad {
+                dst_start: 0,
+                input: TensorInputKind::Y,
+                input_start: 0,
+                count: 6,
+                seed_start: None,
+                lanes: 1,
+            },
+            TensorCross {
+                dst_start: 6,
+                lhs_start: 0,
+                rhs_start: 3,
+                lanes: 1,
+            },
+            Const {
+                dst: 12,
+                value: 2.0,
+            },
+            TensorUpdate {
+                dst_start: 9,
+                base_start: 6,
+                value_start: 1,
+                dimensions: vec![3].into(),
+                subscripts: vec![TensorUpdateSubscript::Index(index)].into(),
+                lanes: 1,
+            },
+            DotProduct {
+                dst: 13,
+                lhs_start: 9,
+                rhs_start: 9,
+                count: 3,
+                lhs_stride: 1,
+                rhs_stride: 1,
+            },
+            StoreOutput { src: 13 },
+        ]);
+        let y = [0.3, -1., 0.7, 2., 1.2, -0.6];
+        let (gradient, _) = reverse_gradient(&program, &y, &[]);
+        assert_close(
+            "cross and update",
+            &gradient,
+            &central_difference(|v| canonical(&program, v, &[]), &y),
+        );
+    }
+}
+
+#[test]
+fn reused_register_keeps_its_old_value_for_the_reverse_product_rule() {
+    use LinearOp::*;
+    let program = block(vec![
+        LoadY { dst: 0, index: 0 },
+        Binary {
+            dst: 0,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        StoreOutput { src: 0 },
+    ]);
+    let (gradient, _) = reverse_gradient(&program, &[3.], &[]);
+    assert_eq!(gradient, [6.]);
 }

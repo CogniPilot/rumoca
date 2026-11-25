@@ -587,21 +587,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         if self.jacobian_v.owner().is_compiled() {
             return Ok(false);
         }
-        let Some((program_idx, _)) = self
-            .runtime
-            .scalar
-            .implicit_scalar_rhs
-            .source()
-            .row_output_position(row_idx)
-        else {
+        let primal = self.runtime.scalar.implicit_scalar_rhs.source();
+        let Some((program_idx, _)) = primal.row_output_position(row_idx) else {
             return Ok(false);
         };
-        let gradient_params = self
-            .runtime
-            .scalar
-            .implicit_scalar_rhs
-            .source()
-            .parameter_static_y_gradient_params(program_idx);
+        if !primal.reverse_row_y_gradient_supported(program_idx) {
+            return Ok(false);
+        }
+        let gradient_params = primal.parameter_static_y_gradient_params(program_idx);
         if let Some(parameter_indices) = gradient_params
             && self
                 .runtime

@@ -1,9 +1,26 @@
 use super::*;
 
 impl<'a> AdBuilder<'a> {
+    pub(super) fn lower_op(&mut self, op: LinearOp) -> Result<(), SolveDerivationError> {
+        // The primal reads every operand before publishing its destination range.
+        // Keep that version visible while binding fresh SSA duals, including for
+        // aggregate operations whose sources partially overlap their destination.
+        if let Some(dst) = op.dst_register()
+            && let Some(tail) = self.map.0.get_mut(dst as usize..)
+        {
+            self.prior_start = dst as usize;
+            let count = tail.len().min(op.dst_register_count());
+            self.prior_values
+                .extend(tail[..count].iter_mut().map(Option::take));
+        }
+        let result = self.lower_instruction(op);
+        self.prior_values.clear();
+        result
+    }
+
     // SPEC_0021: Exception - exhaustive AD lowering dispatch over every LinearOp variant.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn lower_op(&mut self, op: LinearOp) -> Result<(), SolveDerivationError> {
+    fn lower_instruction(&mut self, op: LinearOp) -> Result<(), SolveDerivationError> {
         match op {
             LinearOp::PureCallObservation { .. } => Err(unsupported(
                 "assertion observation is outside the scalar AD contract",

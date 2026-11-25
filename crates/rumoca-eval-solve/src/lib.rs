@@ -3079,8 +3079,14 @@ fn eval_fold_tensor_update(
             values.clear();
             values.push(carried[source_base + element * source_stride + lane]);
             for node in nodes {
-                values.push(fold_tensor_node_value(
-                    regs, updates, &offsets, &values, lane, node,
+                values.push(fold_tensor_node(
+                    regs,
+                    updates,
+                    &offsets,
+                    &values,
+                    lane,
+                    node,
+                    |register| regs[register as usize],
                 ));
             }
             sink.store(values[result as usize])?;
@@ -3089,14 +3095,15 @@ fn eval_fold_tensor_update(
     Ok(())
 }
 
-fn fold_tensor_node_value(
+fn fold_tensor_node<T: Copy>(
     regs: &[f64],
     updates: &[rumoca_ir_solve::FoldTensorUpdate],
     offsets: &[Option<usize>],
-    values: &[f64],
+    values: &[T],
     lane: usize,
     node: &rumoca_ir_solve::FoldTensorNode,
-) -> f64 {
+    patch_value: impl Fn(Reg) -> T,
+) -> T {
     match *node {
         rumoca_ir_solve::FoldTensorNode::Update { base, update } => {
             let patch = &updates[update as usize];
@@ -3108,7 +3115,7 @@ fn fold_tensor_node_value(
                 return values[base as usize];
             }
             offsets[update as usize].map_or(values[base as usize], |offset| {
-                regs[patch.value_start as usize + offset * patch.value_stride + lane]
+                patch_value(patch.value_start + (offset * patch.value_stride + lane) as Reg)
             })
         }
         rumoca_ir_solve::FoldTensorNode::Select {
