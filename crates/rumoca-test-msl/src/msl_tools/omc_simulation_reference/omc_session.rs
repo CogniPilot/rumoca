@@ -635,6 +635,91 @@ end SimulationResult;"#,
         assert_eq!(result.error, None);
     }
 
+    /// The reference status of a run with a fresh result file and `messages`.
+    fn reference_status(messages: &str) -> String {
+        let record = format!(
+            "record SimulationResult\n    resultFile = \"result.csv\",\n    messages = \"{messages}\"\nend SimulationResult;"
+        );
+        let outcome = parse_sim_record(&record, String::new());
+        let directory = tempfile::tempdir().expect("result directory");
+        let path = directory.path().join("result.csv");
+        std::fs::write(&path, "time,y\n0,1\n").expect("fresh result");
+        let reply = outcome
+            .raw_reply
+            .replace("result.csv", &path.display().to_string());
+        let outcome = FreshResultFile::from_request(&path, Ok(None), &reply, outcome.error);
+        super::super::build_session_model_result(&outcome, 1.0).status
+    }
+
+    /// The MSL `Modelica.Media.Examples.MoistAir` log: a declared bound noted
+    /// at info level, then a finished simulation.
+    const BOUND_NOTICE: &str = "LOG_ASSERT        | info    | [MoistAir.mo:59:5-60:78:writable]
+|                 | |       | The following assertion has been violated at time 0.954000
+|                 | |       | ((medium.x_sat >= 0.0 and medium.x_sat <= 1.0)) --> \\\"Variable violating min/max constraint: 0.0 <= medium.x_sat <= 1.0, has value: 1.00869\\\"";
+
+    #[test]
+    fn an_info_level_bound_notice_in_a_finished_run_is_a_reference() {
+        let messages = format!(
+            "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.\n{BOUND_NOTICE}\nLOG_SUCCESS       | info    | The simulation finished successfully.\n"
+        );
+        assert_eq!(reference_status(&messages), "success");
+    }
+
+    #[test]
+    fn a_bound_notice_without_a_finished_run_stays_an_error() {
+        let messages = format!(
+            "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.\n{BOUND_NOTICE}\n"
+        );
+        assert_eq!(reference_status(&messages), "error");
+    }
+
+    #[test]
+    fn a_bound_notice_beside_a_real_assertion_stays_an_error() {
+        let messages = format!(
+            "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+{BOUND_NOTICE}
+LOG_ASSERT        | info    | [Model.mo:3:5-3:40:writable]
+|                 | |       | The following assertion has been violated at time 0.500000
+|                 | |       | ((x < 1.0)) --> \\\"x must stay below 1\\\"
+LOG_SUCCESS       | info    | The simulation finished successfully.
+"
+        );
+        assert_eq!(reference_status(&messages), "error");
+    }
+
+    #[test]
+    fn an_info_level_assertion_that_is_not_a_bound_stays_an_error() {
+        let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_ASSERT        | info    | [Model.mo:3:5-3:40:writable]
+|                 | |       | The following assertion has been violated at time 0.500000
+|                 | |       | ((x < 1.0)) --> \\\"x must stay below 1\\\"
+LOG_SUCCESS       | info    | The simulation finished successfully.
+";
+        assert_eq!(reference_status(messages), "error");
+    }
+
+    /// One `LOG_ASSERT` entry that carries the bound notice and a second
+    /// violated assertion is not a bound notice: every assertion of an
+    /// exempt entry must be one.
+    #[test]
+    fn an_entry_with_a_bound_notice_and_another_assertion_stays_an_error() {
+        let messages = format!(
+            "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.\n{BOUND_NOTICE}\n|                 | |       | The following assertion has been violated at time 0.500000\n|                 | |       | ((x < 1.0)) --> \\\"x must stay below 1\\\"\nLOG_SUCCESS       | info    | The simulation finished successfully.\n"
+        );
+        assert_eq!(reference_status(&messages), "error");
+    }
+
+    /// Only an OMC `LOG_` entry has a severity level: a plain line whose
+    /// second field happens to read `warning` is still read for assertions.
+    #[test]
+    fn a_plain_line_with_a_warning_field_is_still_read_for_assertions() {
+        let messages = "LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+stdout | warning | assertion violated: x must stay below 1
+LOG_SUCCESS       | info    | The simulation finished successfully.
+";
+        assert_eq!(reference_status(messages), "error");
+    }
+
     #[test]
     fn unquote_strips_and_unescapes() {
         assert_eq!(unquote_omc_string("\"hello\\nworld\""), "hello\nworld");

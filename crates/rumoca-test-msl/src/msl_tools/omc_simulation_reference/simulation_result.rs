@@ -167,22 +167,51 @@ pub(super) fn build_session_model_result(outcome: &OmcSimOutcome, elapsed: f64) 
 
 fn simulation_assertion_failures(error: &str, messages: &str) -> Vec<String> {
     let mut failures = omc_assertion_failure_lines(error);
-    let mut warning_log = false;
-    for line in messages.lines() {
-        let line = line.trim_start();
-        if line.starts_with("LOG_") {
-            warning_log = line
-                .split('|')
-                .nth(1)
-                .is_some_and(|level| level.trim() == "warning");
-        } else if !line.starts_with('|') {
-            warning_log = false;
+    let finished = simulation_finished(messages);
+    for entry in log_entries(messages) {
+        // Only an OMC `LOG_` entry has a severity level; any other line is
+        // read for assertion text whatever its fields say.
+        let level = entry[0]
+            .starts_with("LOG_")
+            .then(|| entry[0].split('|').nth(1).map(str::trim))
+            .flatten();
+        // A warning is not a failure; neither is OMC's info-level notice of a
+        // declared min/max bound in a run it reports finished (MLS 3.7 4.9.1
+        // states the bound as an assertion; OMC only notes it and continues).
+        if level == Some("warning") || (finished && min_max_notice(&entry, level)) {
+            continue;
         }
-        if !warning_log {
+        for line in entry {
             failures.extend(omc_assertion_failure_lines(line));
         }
     }
     failures
+}
+
+/// The OMC log split into entries: a `LOG_` line with the `|` continuation
+/// lines that follow it, or one other line on its own.
+fn log_entries(messages: &str) -> Vec<Vec<&str>> {
+    let mut entries: Vec<Vec<&str>> = Vec::new();
+    for line in messages.lines().map(str::trim_start) {
+        match entries.last_mut() {
+            Some(entry) if line.starts_with('|') && entry[0].starts_with("LOG_") => {
+                entry.push(line);
+            }
+            _ => entries.push(vec![line]),
+        }
+    }
+    entries
+}
+
+/// An info-level `LOG_ASSERT` entry that only reports variables outside their
+/// declared `min`/`max`: it states at least one assertion (`cond --> "text"`),
+/// and every assertion it states is that notice.
+fn min_max_notice(entry: &[&str], level: Option<&str>) -> bool {
+    let mut assertions = entry.iter().filter(|line| line.contains("-->")).peekable();
+    entry[0].starts_with("LOG_ASSERT")
+        && level == Some("info")
+        && assertions.peek().is_some()
+        && assertions.all(|line| line.contains("Variable violating min/max constraint"))
 }
 
 /// OMC explicitly recovered this optional optimization. Every error must belong

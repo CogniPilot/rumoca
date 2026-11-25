@@ -751,11 +751,13 @@ fn simulation_settings(result: &rumoca_compile::compile::DaeCompilationResult) -
         .experiment_start_time
         .filter(|seconds| seconds.is_finite())
         .unwrap_or(0.0);
+    // A stop equal to the start is a zero-length experiment (MLS 3.7 18.4: OMC
+    // reports the initialization at that instant), not a missing stop time.
     let mut t_end = result
         .experiment_stop_time
-        .filter(|seconds| seconds.is_finite() && *seconds > t_start)
+        .filter(|seconds| seconds.is_finite() && *seconds >= t_start)
         .unwrap_or(t_start + DEFAULT_SIM_END_TIME_SECS);
-    if !t_start.is_finite() || !t_end.is_finite() || t_end <= t_start {
+    if !t_start.is_finite() || !t_end.is_finite() || t_end < t_start {
         t_start = 0.0;
         t_end = DEFAULT_SIM_END_TIME_SECS;
     }
@@ -1794,6 +1796,14 @@ mod tests {
             assert_eq!(points, omc_intervals + 1, "{name}");
             assert_ne!(settings.integrator, "not recorded", "{name}");
         }
+    }
+
+    /// `StopTime = 0` is a zero-length experiment at t = 0, as OMC runs it (MSL Inverse_sine).
+    #[test]
+    fn a_stop_time_equal_to_the_start_is_a_zero_length_experiment() {
+        let source = "model ZeroLength\n  parameter Real y0 = 0.5;\n  Real x;\nequation\n  sin(x) = y0;\n  annotation(experiment(StopTime = 0));\nend ZeroLength;\n";
+        let (settings, points) = simulate_like_msl("ZeroLength", source);
+        assert_eq!((settings.output_points, points), (1, 1)); // one instant, at t = 0
     }
 
     fn compile_zero_sized_standalone_model() -> Box<DaeCompilationResult> {

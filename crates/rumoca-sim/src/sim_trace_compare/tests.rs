@@ -109,6 +109,51 @@ fn channel_normalized_l1_matches_expected_value() {
     assert_eq!(metric.reference_magnitude, scale.magnitude);
 }
 
+/// `Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine` has
+/// `experiment(StopTime=0)`: OMC writes its one instant twice, Rumoca once.
+#[test]
+fn a_single_instant_experiment_compares_at_its_instant() {
+    let x_zero = 0.5235987755982987;
+    let rumoca = trace(
+        "Inverse_sine",
+        vec![0.0],
+        vec!["x_zero"],
+        vec![vec![x_zero]],
+    );
+    let omc = trace(
+        "Inverse_sine",
+        vec![0.0, 0.0],
+        vec!["x_zero"],
+        vec![vec![x_zero, x_zero]],
+    );
+    let metric = compare_model_traces("Inverse_sine", &rumoca, &omc).expect("comparable");
+    assert_eq!(metric.compared_variables, 1);
+    assert_eq!(metric.samples_compared, 1);
+    assert_eq!(metric.max_channel_bounded_normalized_l1, 0.0);
+    assert_eq!(metric.channel_high_count, 1);
+
+    let wrong = trace(
+        "Inverse_sine",
+        vec![0.0],
+        vec!["x_zero"],
+        vec![vec![2.0 * x_zero]],
+    );
+    let metric = compare_model_traces("Inverse_sine", &wrong, &omc).expect("comparable");
+    assert_eq!(metric.channel_high_count, 0);
+    assert!(metric.max_channel_bounded_normalized_l1 > 0.4);
+}
+
+#[test]
+fn single_instants_at_different_times_are_not_compared() {
+    let metric = compare_channel(
+        "x",
+        ChannelSeries::new(&[0.0], &[Some(1.0)]),
+        ChannelSeries::new(&[1.0, 1.0], &[Some(1.0), Some(1.0)]),
+        ChannelRule::pointwise(false),
+    );
+    assert!(metric.is_none());
+}
+
 #[test]
 fn channel_normalized_l1_is_finite_when_reference_is_near_zero() {
     let metric = compare_channel(
