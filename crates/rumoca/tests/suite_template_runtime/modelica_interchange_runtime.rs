@@ -34,11 +34,21 @@ fn rendered_targets() -> Vec<(&'static str, RenderedTargetFile)> {
         .collect()
 }
 
+/// The class to load from a rendered document: Base Modelica puts the model in
+/// a package of the same name (MCP-0031, grammar.md, start rule).
+fn rendered_class(target: &str, model: &str) -> String {
+    if target == "base-modelica" {
+        format!("'{model}'.'{model}'")
+    } else {
+        model.to_owned()
+    }
+}
+
 #[test]
 fn targets_round_trip_through_the_compiler() {
     for (target, file) in rendered_targets() {
         Compiler::new()
-            .model(SMOKE_MODEL)
+            .model(&rendered_class(target, SMOKE_MODEL))
             .compile_str(&file.content, &file.path)
             .unwrap_or_else(|error| {
                 panic!(
@@ -60,13 +70,14 @@ fn targets_are_accepted_by_required_omc() {
     }
 
     for (target, file) in rendered_targets() {
+        let class = rendered_class(target, SMOKE_MODEL);
         let directory = tempfile::tempdir().expect("temporary OMC interchange directory");
         fs::write(directory.path().join(&file.path), &file.content)
             .expect("write Modelica interchange source");
         fs::write(
             directory.path().join("check.mos"),
             format!(
-                "loadFile(\"{}\");\ncheckModel({SMOKE_MODEL});\ngetErrorString();\n",
+                "loadFile(\"{}\");\ncheckModel({class});\ngetErrorString();\n",
                 file.path
             ),
         )
@@ -83,7 +94,7 @@ fn targets_are_accepted_by_required_omc() {
         );
         assert!(
             output.status.success()
-                && transcript.contains(&format!("Check of {SMOKE_MODEL} completed successfully")),
+                && transcript.contains(&format!("Check of {class} completed successfully")),
             "OMC rejected {target} output:\n{transcript}\n{}",
             file.content,
         );

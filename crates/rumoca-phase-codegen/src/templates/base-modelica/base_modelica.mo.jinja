@@ -114,9 +114,11 @@ assert({{ render_expr(a.condition, cfg) }}, {{ render_expr(a.message, cfg) }}{% 
 {%- if class_kw not in ["model", "block", "record", "connector", "function"] %}
 {%- set class_kw = "model" %}
 {%- endif %}
-// BaseModelica — {{ model_name }}{% if flat.model_description %} "{{ flat.model_description }}"{% endif %}
-
-{{ class_kw }} {{ model_name }}{% if flat.model_description %} "{{ flat.model_description }}"{% endif %}
+{#- Base Modelica: the version header, then one package with the model as its last class
+    (MCP-0031, grammar.md, B2 and B3) -#}
+//! base 0.1.0
+package '{{ model_name }}'
+{{ class_kw }} '{{ model_name }}'{% if flat.model_description %} "{{ flat.model_description }}"{% endif %}
 
   // --- variable declarations ---
 {%- for name, var in flat.variables | items %}
@@ -139,4 +141,5 @@ initial equation
 {%- endfor %}
 {%- endif %}
 
-end {{ model_name }};
+end '{{ model_name }}';
+end '{{ model_name }}';
