@@ -172,15 +172,6 @@ cargo xtask verify quick
 cargo xtask verify template-runtimes
 ```
 
-`cargo xtask repo policy backend-migration` runs the legacy source freeze
-that is also part of `verify lint`. It checks the whole recorded codegen crate,
-including literal template bodies, against the immutable ledger plus the pinned
-owner-directed revisions in `crates/xtask/policy/backend-migration-revisions.json`.
-R001 resolves D007; the other 95 decision groups remain unresolved. A pass means
-no other byte moved; it does not mean those decisions have moved into Solve IR. See [SPEC_0041 §7](spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#7-codegen-target-and-command-ownership-catalog-spec_0029-12)
-for coverage and retirement requirements. Do not rebaseline it to permit a
-backend change.
-
 `cargo xtask verify quick` runs lint, full MSL parity, the pinned real-model
 corpus, architecture gates, and workspace tests. `cargo xtask verify full`
 also runs examples, binary builds, template runtimes, coverage, documentation,

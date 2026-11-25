@@ -47,11 +47,10 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~94 | PROPOSED |
 | [SPEC_0053](SPEC_0053_CONSTRAINED_STATE_SELECTION.md) | Constrained State Selection | compiler/runtime | ~188 | DRAFT |
 | [SPEC_0054](SPEC_0054_PLAYGROUND_ASSISTANT.md) | Playground Assistant | tooling/web | ~101 | PROPOSED |
-| [SPEC_0055](SPEC_0055_BACKEND_RETIREMENT_CATALOG.md) | Source-Bound Backend Retirement Catalog | verification/architecture | ~102 | REFERENCE |
 
 ### Reference annexes
 
-`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`, `SPEC_0050`, and `SPEC_0055` are REFERENCE annexes:
+`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`, and `SPEC_0050` are REFERENCE annexes:
 they carry the lookup catalogs split out of their parent spec under SPEC_0000
 §3/§3a size budgets. Every row in an annex is normative by reference from the
 parent section that links it (SPEC_0007→0040, SPEC_0029→0041, SPEC_0034→0042,
@@ -62,9 +61,6 @@ by SEV-001/002/007 (grammar and coverage), SEV-011/024 (contract
 classes and element-kind splits), and TRP-042 (the capability profile keyed to
 its rows). Annexes add no rules of their own; edit the parent when the
 requirement itself changes.
-
-`SPEC_0055` maps DRAFT SPEC_0037 §2a. Its proposed joint contract is non-active;
-the implemented SPEC_0041 §7 freeze remains authoritative.
 
 ## Deferred Specifications
 

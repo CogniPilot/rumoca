@@ -84,11 +84,10 @@ not handle MUST refuse by name.
 
 ### 2a. Source-Bound Backend Retirement
 
-This DRAFT proposes the joint contract below. Today,
-`xtask::migration_ledger::run` enforces only the unchanged legacy snapshot;
-this contract grants no migration permission. The implementation and refusal
-catalog is [SPEC_0055](SPEC_0055_BACKEND_RETIREMENT_CATALOG.md), normative only
-under this DRAFT section.
+This DRAFT proposes the joint contract below; it grants no migration
+permission. The legacy backend source freeze that once stood in for it was
+removed by owner decision on Nov 25, 2026: backend changes are reviewed like
+any other change.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
